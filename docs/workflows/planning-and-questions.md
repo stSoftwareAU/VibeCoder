@@ -12,16 +12,16 @@ created. For internal details, see **Further reading** at the end.
 
 **Four ways to use issues without writing code (yet).** Add a label and the
 worker does something different: **question** → answer in a comment, remove
-`question`, add `needs-human` (re-add `question` to ask a
-follow-up); **planning** → draft-then-self-critique a breakdown into sub-issues
-(carrying **no** reserved labels — you triage priority), post a model-usage
-stats block, comment, close parent; **refine-issue** → update title/body from
-your feedback; **clarification** (no label) → before implementing, worker may
-ask questions and add `needs-human` if the issue is unclear. **Target
-behaviour:** if the clarification phase detects an issue is too complex for a
-single PR, it automatically adds the `planning` label and routes the issue
-through planning (complexity-to-planning escalation). All of this happens on the
-issue only — no branches or PRs until you go to implementation.
+`question`, add `needs-human` (re-add `question` to ask a follow-up);
+**planning** → draft-then-self-critique a breakdown into sub-issues (carrying
+**no** reserved labels — you triage priority), post a model-usage stats block,
+comment, close parent; **refine-issue** → update title/body from your feedback;
+**clarification** (no label) → before implementing, worker may ask questions and
+add `needs-human` if the issue is unclear. **Target behaviour:** if the
+clarification phase detects an issue is too complex for a single PR, it
+automatically adds the `planning` label and routes the issue through planning
+(complexity-to-planning escalation). All of this happens on the issue only — no
+branches or PRs until you go to implementation.
 
 ```mermaid
 flowchart TD
@@ -131,8 +131,7 @@ flowchart TD
 ## 📏 Preconditions / invariants
 
 - **Question:** Worker posts an answer comment, removes `question`, and adds
-  `needs-human` to signal the user's turn. Re-add `question` to
-  ask a follow-up.
+  `needs-human` to signal the user's turn. Re-add `question` to ask a follow-up.
 - **Planning:** Worker must not create branches, commits, or PRs; only create
   sub-issues and comment. Sub-issues are created with **no reserved
   workflow/priority label** (you triage priority afterwards); the run uses
@@ -170,22 +169,21 @@ response even while the worker has an unmerged PR in the same repository.
 1. **Claim** — Claim the issue.
 2. **Answer** — Run Claude with question prompt (timeout: 600 seconds by default
    —); post answer as issue comment.
-3. **Clarification request** — If Claude determines the question is
-   too broad or ambiguous, it outputs a structured clarification request
-   (starting with `## Clarification Needed`) instead of a poor answer. The
-   worker posts the clarification as a comment, removes the `question` label,
-   adds `needs-human`, and unassigns. This does **not** count as a failure — no
-   `failed-once` progression. You respond on the issue and re-add the `question`
-   label to retry.
-4. **Partial answer on timeout** — If Claude times out (exit code
-   124 or 137) but has produced some output, that output is posted as a
-   **partial answer** with a "Partial Answer (Timed Out)" disclaimer, rather
-   than being discarded. The `question` label is removed (preventing retry
-   loops), but `needs-human` and `failed-once` labels are **not** added. If the
-   output is empty or only meta-commentary, normal failure handling continues.
-5. **Cleanup** — Remove `question`; add `needs-human` so the label
-   list reads as the user's turn. The user re-adds `question` to ask a
-   follow-up.
+3. **Clarification request** — If Claude determines the question is too broad or
+   ambiguous, it outputs a structured clarification request (starting with
+   `## Clarification Needed`) instead of a poor answer. The worker posts the
+   clarification as a comment, removes the `question` label, adds `needs-human`,
+   and unassigns. This does **not** count as a failure — no `failed-once`
+   progression. You respond on the issue and re-add the `question` label to
+   retry.
+4. **Partial answer on timeout** — If Claude times out (exit code 124 or 137)
+   but has produced some output, that output is posted as a **partial answer**
+   with a "Partial Answer (Timed Out)" disclaimer, rather than being discarded.
+   The `question` label is removed (preventing retry loops), but `needs-human`
+   and `failed-once` labels are **not** added. If the output is empty or only
+   meta-commentary, normal failure handling continues.
+5. **Cleanup** — Remove `question`; add `needs-human` so the label list reads as
+   the user's turn. The user re-adds `question` to ask a follow-up.
 
 ### 📋 Planning
 
@@ -204,21 +202,21 @@ response even while the worker has an unmerged PR in the same repository.
 #### 🔐 Comment recovery trusts only fleet-authored comments (Issue #1352)
 
 Before it runs the planner, a planning run first checks whether a **previous**
-run already published the sub-issues and crashed before closing the parent —
-its summary comment still names them, so the parent can be closed without
-invoking Claude at all.
+run already published the sub-issues and crashed before closing the parent — its
+summary comment still names them, so the parent can be closed without invoking
+Claude at all.
 
 A comment thread is open to **any** GitHub account, and the author is the only
 authenticated part of a comment. Matching on the URL alone let one outsider
-comment carrying any `…/issues/N` link close the parent citing that issue as
-its plan, with the planner never running — and a benign cross-reference
-("related to #500") did the same by accident. The recovery therefore re-reads
-the thread with `getIssueComments` (the flattened prompt blob carries no
-per-comment author), attributes **each comment** through
-`selectFleetAuthoredComments()` against the fleet identity
-(`resolveFleetMaintenanceAuthorSet` — this host's login ∪ `fleet_pr_authors` ∪
-`service_accounts`), and takes URLs **per comment**, so an outsider's link
-elsewhere in the thread cannot ride in on a fleet comment's verification.
+comment carrying any `…/issues/N` link close the parent citing that issue as its
+plan, with the planner never running — and a benign cross-reference ("related to
+#500") did the same by accident. The recovery therefore re-reads the thread with
+`getIssueComments` (the flattened prompt blob carries no per-comment author),
+attributes **each comment** through `selectFleetAuthoredComments()` against the
+fleet identity (`resolveFleetMaintenanceAuthorSet` — this host's login ∪
+`fleet_pr_authors` ∪ `service_accounts`), and takes URLs **per comment**, so an
+outsider's link elsewhere in the thread cannot ride in on a fleet comment's
+verification.
 
 The fail direction matches the sibling close-out checks: an unattributable
 comment — an outsider author, an unresolvable fleet set, an unreadable thread —
@@ -241,9 +239,8 @@ Sub-issues the worker files during planning are created **without** any reserved
 workflow or priority label — none of `top-priority`, `work-on`, `low-priority`,
 `planning`, `question`, `refine-issue`, `best-model`, `failed`, `needs-human`,
 etc. The worker is not on the trusted-author allowlist, so any reserved label it
-tried to apply would be silently stripped anyway; planning strips
-them **at creation** instead, and the planning prompt is hardened to never
-request them.
+tried to apply would be silently stripped anyway; planning strips them **at
+creation** instead, and the planning prompt is hardened to never request them.
 
 What this means for you: a fresh batch of sub-issues lands with only descriptive
 labels (e.g. `documentation`, `enhancement`, `bug`). **You triage priority
@@ -263,7 +260,8 @@ The presence gate and the self-repair below are **post-publication** backstops:
 by the time they fire, the non-conforming sub-issues already exist on GitHub.
 Prevention is cheaper, so the **publish turn** of the two-stage planning flow
 (`prompts/planning_critique/` v4 onward) now instructs the model to verify each
-sub-issue's `## Failure Detection` section **immediately before** running `gh
+sub-issue's `## Failure Detection` section **immediately before** running
+`gh
 issue create`. The wording mirrors the gate's accepted shapes exactly — a
 concrete test / CI gate / alert, or an explicit `N/A — <reason>`; a bare `[...]`
 placeholder does not count — so prompt and gate never disagree. When a section
@@ -272,26 +270,28 @@ its own draft** (fills in the real criterion) rather than publishing a
 non-conforming sub-issue; a sub-issue for which no real criterion can be stated
 is treated as a **blocker** to publishing that sub-issue (re-scope, merge, or
 drop it) rather than published-then-fixed. This is prompt-only prevention — the
-deterministic presence gate and the model-driven repair below
-remain the backstops.
+deterministic presence gate and the model-driven repair below remain the
+backstops.
 
-The two **in-code fallback publish prompts** — `buildCritiqueFallbackPublishPrompt()`
-(used when the critique prompt fails to build) and
-`buildSingleInvocationPlanningPrompt()` (used when the draft stage produced no
-usable plan) — carry the same requirement, so a run that degrades to a fallback
-does not publish a whole plan of gate offenders. Both interpolate the single
-exported `FAILURE_DETECTION_REQUIREMENT` constant in
-`worker/deno/lib/planning_processor.ts` (alongside `RESERVED_LABEL_PROHIBITION`),
-which states the section, the concrete test / CI gate / alert criterion, the
-`N/A — <reason>` escape hatch, and that a bracketed placeholder does not count.
-One constant means the fallbacks cannot drift from each other or from the gate.
+The two **in-code fallback publish prompts** —
+`buildCritiqueFallbackPublishPrompt()` (used when the critique prompt fails to
+build) and `buildSingleInvocationPlanningPrompt()` (used when the draft stage
+produced no usable plan) — carry the same requirement, so a run that degrades to
+a fallback does not publish a whole plan of gate offenders. Both interpolate the
+single exported `FAILURE_DETECTION_REQUIREMENT` constant in
+`worker/deno/lib/planning_processor.ts` (alongside
+`RESERVED_LABEL_PROHIBITION`), which states the section, the concrete test / CI
+gate / alert criterion, the `N/A — <reason>` escape hatch, and that a bracketed
+placeholder does not count. One constant means the fallbacks cannot drift from
+each other or from the gate.
 
 #### 🛡️ Failure-Detection presence gate
 
 After a planning run publishes its sub-issues, a **deterministic presence gate**
-verifies that every published sub-issue body carries a filled `## Failure
-Detection` section (the planner emits it from `prompts/planning/` v19 onward,
-). This closes the "quality escape" of an unchecked prose rule: a
+verifies that every published sub-issue body carries a filled
+`## Failure
+Detection` section (the planner emits it from `prompts/planning/`
+v19 onward, ). This closes the "quality escape" of an unchecked prose rule: a
 prompt instruction alone can be silently ignored, so the gate turns a missing
 criterion into a **loud, labelled outcome** rather than a silent pass.
 
@@ -332,9 +332,8 @@ sub-issues but one or more still lack the criterion, the worker:
 - posts the existing short, actionable comment on **each** offending sub-issue;
 - leaves the parent **open** — reopening it when the planner closed it inline —
   so the repair stays discoverable; and
-- returns a **success-shaped** result carrying
-  `pendingFailureDetectionRepair`, so the run is not counted as a failed
-  planning run.
+- returns a **success-shaped** result carrying `pendingFailureDetectionRepair`,
+  so the run is not counted as a failed planning run.
 
 `needs-failure-detection-repair` is **reserved** (`RESERVED_LABELS`), so the
 planner can never apply it to a sub-issue as a descriptive label and manufacture
@@ -344,7 +343,7 @@ in `worker/deno/lib/failure_detection_repair_label.ts`.
 
 The **loud failure path is unchanged for genuine planning failures** — a prompt
 failure, a timeout, or a publish failure still drives `handlePlanningFailure()`
-with the `failed-once` → `failed` progression. This change narrows *when* the
+with the `failed-once` → `failed` progression. This change narrows _when_ the
 gate fails a run, not the failure machinery itself.
 
 ```mermaid
@@ -361,22 +360,22 @@ flowchart TD
 
 Before the gate hard-fails a run, the worker tries to **repair** each offending
 sub-issue rather than dead-fail. This closes a **retry deadlock**: the gate runs
-*after* sub-issues are published, and on a retry the recovery pre-check paths
+_after_ sub-issues are published, and on a retry the recovery pre-check paths
 (sub-issues found in fleet-authored comments, or via the GitHub API pre-check)
-skip
-Claude entirely and go straight to `closePlanningIssue()`. Without repair the
-gate fast-fails again in seconds with **no model invocation** — the run stats
-then report "no served model observed" — and every subsequent retry repeats the
-same fast-fail.
+skip Claude entirely and go straight to `closePlanningIssue()`. Without repair
+the gate fast-fails again in seconds with **no model invocation** — the run
+stats then report "no served model observed" — and every subsequent retry
+repeats the same fast-fail.
 
 The repair (`worker/deno/lib/failure_detection_repair.ts`) runs once per
 offender: it invokes Claude (planning-phase model/effort, so a degraded run
-stays consistent with /) to draft a concrete `## Failure Detection`
-section from the sub-issue's title/body — a real test / CI gate / alert, or an
-explicit `N/A — <reason>` — patches it into the sub-issue body via `gh issue
-edit`, and re-runs the **pure** gate to confirm the drafted section actually
-passes. Each Claude call is recorded into the run's `invocations`, so stats no
-longer say "no served model observed" on the repair path.
+stays consistent with /) to draft a concrete `## Failure Detection` section from
+the sub-issue's title/body — a real test / CI gate / alert, or an explicit
+`N/A — <reason>` — patches it into the sub-issue body via `gh issue
+edit`, and
+re-runs the **pure** gate to confirm the drafted section actually passes. Each
+Claude call is recorded into the run's `invocations`, so stats no longer say "no
+served model observed" on the repair path.
 
 ```mermaid
 flowchart TD
@@ -404,14 +403,13 @@ flowchart TD
 The repair is **best-effort and idempotent**: an offender whose body cannot be
 read, whose Claude call fails/times out/empties, that the batched output omits,
 whose draft still fails the gate, or whose `gh issue edit` throws stays in
-`stillOffending` and is recorded on the parent as an outstanding repair
-(Issue #59; before that it drove `handlePlanningFailure`). Only a positively
-confirmed repair is reported as repaired. The re-gate is performed on the
-constructed body *before* the patch, so a still-failing draft never overwrites
-the sub-issue.
+`stillOffending` and is recorded on the parent as an outstanding repair (Issue
+#59; before that it drove `handlePlanningFailure`). Only a positively confirmed
+repair is reported as repaired. The re-gate is performed on the constructed body
+_before_ the patch, so a still-failing draft never overwrites the sub-issue.
 
 **Deadline-awareness (Issue #58)** stops the handler watchdog from killing the
-repair mid-way. The repair runs *inside* the Planning handler, after sub-issues
+repair mid-way. The repair runs _inside_ the Planning handler, after sub-issues
 are published; on one live run the watchdog killed the handler with 6 of 8
 offenders repaired, and the two Claude calls still in flight were reported as
 "timed out or was empty" — indistinguishable, in the logs and in the result,
@@ -437,15 +435,16 @@ and `deferred` is empty.
 
 The gate and repair outcome used to be visible **only** by reading worker logs —
 which is how its systemic scale was found (8/8 offenders on one run, 3/3 on
-another, by grepping a single day's log) and why the omission went unnoticed long
-enough for the self-repair to become a routine, load-bearing part of every
+another, by grepping a single day's log) and why the omission went unnoticed
+long enough for the self-repair to become a routine, load-bearing part of every
 planning run rather than a rare fallback.
 
 The planning run-stats comment now carries the counts, so the rate is measurable
 without log archaeology:
 
 ```markdown
-- **Failure-Detection gate:** published 8 · offenders 8 · repaired 6 · still offending 1 · deferred 1
+- **Failure-Detection gate:** published 8 · offenders 8 · repaired 6 · still
+  offending 1 · deferred 1
 - **Failure-Detection repair:** 1m 4s
 ```
 
@@ -486,15 +485,15 @@ offenders it cannot fit are deferred exactly as they are inside planning.
 failed records an attempt marker
 (`<!-- failure-detection-resume-attempt: N -->`) in its parent comment — the
 count lives in the comments so it survives a restart and reads the same for
-every worker in the fleet. Once
-`MAX_FAILURE_DETECTION_RESUME_ATTEMPTS` (3) attempts are spent, the parent goes
-through the existing `escalateToHuman()` chokepoint (`needs-human` + an
-explanation naming each sub-issue) and the resume label is dropped, so the pass
-stops re-picking a parent that is now a human's to finish. Offenders the budget
-merely **deferred** never spend an attempt: not having tried is no evidence that
-a repair is impossible. A parent whose native sub-issues cannot be enumerated is
-treated the same way as a failed repair — the label stays, the attempt is
-recorded, and repeated failure escalates rather than looping.
+every worker in the fleet. Once `MAX_FAILURE_DETECTION_RESUME_ATTEMPTS` (3)
+attempts are spent, the parent goes through the existing `escalateToHuman()`
+chokepoint (`needs-human` + an explanation naming each sub-issue) and the resume
+label is dropped, so the pass stops re-picking a parent that is now a human's to
+finish. Offenders the budget merely **deferred** never spend an attempt: not
+having tried is no evidence that a repair is impossible. A parent whose native
+sub-issues cannot be enumerated is treated the same way as a failed repair — the
+label stays, the attempt is recorded, and repeated failure escalates rather than
+looping.
 
 ```mermaid
 flowchart TD
@@ -528,11 +527,11 @@ it has one, otherwise the asks in the body):
 ```markdown
 ## Plan Coverage
 
-| Ask | Covered by | Notes |
-| --- | --- | --- |
-| Cache query results in-process | #101 | |
-| Rewrite the query planner | #102 | Depends on #101 |
-| Add a cache-eviction policy | Out of scope | The issue mentions it only as future work |
+| Ask                            | Covered by   | Notes                                     |
+| ------------------------------ | ------------ | ----------------------------------------- |
+| Cache query results in-process | #101         |                                           |
+| Rewrite the query planner      | #102         | Depends on #101                           |
+| Add a cache-eviction policy    | Out of scope | The issue mentions it only as future work |
 ```
 
 An ask deliberately left out of the plan is a **row too**, marked `Out of scope`
@@ -543,69 +542,81 @@ reviewer can follow sub-issue → ask → parent.
 
 **The gate.** `worker/deno/lib/plan_coverage_gate.ts` re-reads the parent at
 `closePlanningIssue()` — the same chokepoint as the Failure-Detection gate,
-never a second one — and locates the table by its **column signature** (an
-ask column and a covering-sub-issue column), so a reworded heading cannot hide
-it. A row **passes** when `Covered by` names at least one sub-issue (`#N` or a
-GitHub issue URL), or when the ask is marked `Out of scope` **and** a reason is
-given. A row **fails** when the cell is empty, reads `None` / `TBD`, or is left
-as a bracketed placeholder — mirroring how the Failure-Detection gate rejects a
+never a second one — and locates the table by its **column signature** (an ask
+column and a covering-sub-issue column), so a reworded heading cannot hide it. A
+row **passes** when `Covered by` names at least one sub-issue (`#N` or a GitHub
+issue URL), or when the ask is marked `Out of scope` **and** a reason is given.
+A row **fails** when the cell is empty, reads `None` / `TBD`, or is left as a
+bracketed placeholder — mirroring how the Failure-Detection gate rejects a
 bracketed placeholder — and a bare `Out of scope` with no reason fails too. A
 **missing** table, a table with **no rows**, and a parent that cannot be read
 all fail: absence of the artefact is not evidence of coverage.
 
-**The scan is bounded.** Every comment on the parent is re-read on each
-planning close, and a comment body is writable by any account on a public
-repository, so a candidate longer than `MAX_COVERAGE_SCAN_CHARS` (64 KiB) is
-**rejected without being scanned** and the skip is logged — an unscanned
-candidate is not a candidate that carried no table (Issue #1245). A genuine
-coverage table is a few hundred characters, so the next candidate, or the
-parent body, still decides.
+**The scan is bounded.** Every comment on the parent is re-read on each planning
+close, and a comment body is writable by any account on a public repository, so
+a candidate longer than `MAX_COVERAGE_SCAN_CHARS` (64 KiB) is **rejected without
+being scanned** and the skip is logged — an unscanned candidate is not a
+candidate that carried no table (Issue #1245). A genuine coverage table is a few
+hundred characters, so the next candidate, or the parent body, still decides.
 
-**The outcome — no second escalation path.** An uncovered ask needs a decision
-no self-repair can make (create the missing sub-issue, or accept the ask as out
-of scope), so the gate routes through the existing `escalateToHuman()`
-chokepoint: `needs-human` plus one explanation comment naming every offending
-ask and why. The parent is left **open** (reopened when the planner closed it
-inline) and the run still completes with `uncoveredAsks` on its result — the
-plan is published and usable, exactly as with a partial Failure-Detection
-repair. The gate deliberately does **not** borrow
-`needs-failure-detection-repair`: that label's resume pass re-gates Failure
-Detection only, so it would find nothing to repair and clear the label, burying
-the coverage defect. Both in-code fallback publish prompts interpolate the same
-`COVERAGE_TABLE_REQUIREMENT` constant that lives beside the gate, so a degraded
-run does not publish a plan the gate is bound to reject.
+**Self-repair first.** A failing gate is repaired before anyone is asked
+(`worker/deno/lib/plan_coverage_repair.ts`). The commonest failure is a publish
+turn that created sound sub-issues and never posted the table, and the table is
+derivable from the parent and those sub-issues — so one planning-phase model
+call drafts it, the worker posts **only the table it parsed back out of the
+draft** (never the model's prose), and the real gate is re-run against the
+parent. The repair cannot manufacture a pass: the draft is told to write `None`
+for an ask nothing covers, and that row fails the re-gate like any other. An
+unreadable parent, a failed or timed-out model call, a draft with no table and
+an exhausted handler budget all leave the original verdict standing.
+
+**The outcome — no second escalation path.** What survives the repair is an
+uncovered ask, which needs a decision no draft can make (create the missing
+sub-issue, or accept the ask as out of scope), so the gate routes through the
+existing `escalateToHuman()` chokepoint: `needs-human` plus one explanation
+comment naming every offending ask and why. The parent is left **open**
+(reopened when the planner closed it inline) and the run still completes with
+`uncoveredAsks` on its result — the plan is published and usable, exactly as
+with a partial Failure-Detection repair. The gate deliberately does **not**
+borrow `needs-failure-detection-repair`: that label's resume pass re-gates
+Failure Detection only, so it would find nothing to repair and clear the label,
+burying the coverage defect. Both in-code fallback publish prompts interpolate
+the same `COVERAGE_TABLE_REQUIREMENT` constant that lives beside the gate, so a
+degraded run does not publish a plan the gate is bound to reject.
 
 ```mermaid
 flowchart TD
     A[Publish turn posts the summary comment<br/>with the ## Plan Coverage table] --> B["closePlanningIssue() reads the parent"]
     B --> C{Table found with rows?}
-    C -->|no| E
+    C -->|no| R
     C -->|yes| D{Every ask covered<br/>or out of scope with a reason?}
     D -->|yes| F[Close the parent as completed]
-    D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
+    D -->|no| R["Self-repair: draft the table,<br/>post it, re-run the gate"]
+    R -->|gate now passes| F
+    R -->|still failing or not attempted| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
 ```
 
 #### 🗺️ Milestones table and structural gate (Issue #2172)
 
 A planning run groups its sub-issues by **file area** so the fleet can work
 several milestones in parallel instead of serialising one milestone branch
-(Issue #2163). The publish turn records that grouping as a `## Milestones`
-table in the same summary comment as the coverage table — one row per group,
-naming the milestone, the file area and the group's sub-issues:
+(Issue #2163). The publish turn records that grouping as a `## Milestones` table
+in the same summary comment as the coverage table — one row per group, naming
+the milestone, the file area and the group's sub-issues:
 
 ```markdown
 ## Milestones
 
-| Milestone | File area | Sub-issues |
-| --- | --- | --- |
-| infra: options trading | infra/ | #101, #102 |
+| Milestone                | File area       | Sub-issues |
+| ------------------------ | --------------- | ---------- |
+| infra: options trading   | infra/          | #101, #102 |
 | backend: options trading | backend/lambdas | #103, #104 |
-| — | docs/ | #105 |
+| —                        | docs/           | #105       |
 ```
 
 A `—` in `Milestone` marks a group of one sub-issue that merges **straight to
-the default branch** and gets no milestone at all, exactly as a
-single-sub-issue plan does today.
+the default branch** and gets no milestone at all, exactly as a single-sub-issue
+plan does today.
 
 **The gate.** `worker/deno/lib/plan_milestone_groups.ts` re-reads the parent at
 `closePlanningIssue()` — the same chokepoint as the coverage gate, never a
@@ -614,30 +625,31 @@ column, a file-area column and a sub-issues column), so the adjacent
 `## Plan Coverage` table is skipped rather than parsed as this one. It rules on
 **structure only**:
 
-| Rejected | Never rejected |
-| --- | --- |
-| a published sub-issue in no group, or in two groups | two groups touching the same file area |
-| a group naming no file area | the file areas the planner chose |
-| a fifth group carrying two or more sub-issues | any number of `—` single-sub-issue rows |
+| Rejected                                            | Never rejected                          |
+| --------------------------------------------------- | --------------------------------------- |
+| a published sub-issue in no group, or in two groups | two groups touching the same file area  |
+| a group naming no file area                         | the file areas the planner chose        |
+| a fifth group carrying two or more sub-issues       | any number of `—` single-sub-issue rows |
 
-File overlap is deliberately left to planner judgement: a structural gate
-cannot tell an accepted housekeeping overlap (`deno.json`, a lockfile) from a
-real collision, so it would reject sound plans.
+File overlap is deliberately left to planner judgement: a structural gate cannot
+tell an accepted housekeeping overlap (`deno.json`, a lockfile) from a real
+collision, so it would reject sound plans.
 
 **What happens on each outcome.** A parent with **no** `## Milestones` table
-takes the legacy path — one milestone for the whole plan — and closes exactly
-as before; the prompts teach the table ([#2174](#-grouping-sub-issues-by-file-area-issue-2174))
-but a degraded run or an operator's own planning template may publish none, and
-a missing table must never strand a planning run. A table that is present but
-**structurally broken** escalates through the shared `escalateToHuman()`
-chokepoint (`needs-human` plus a paired comment naming every offending row)
-**and** still creates the legacy single milestone, so overnight delivery
-continues while a human regroups. Both in-code fallback publish prompts
-interpolate the same `MILESTONES_TABLE_REQUIREMENT` constant that lives beside
-the gate, so a degraded run does not publish a table the gate is bound to
-reject. An **accepted** grouping is handed to `maybeCreatePlanningMilestone()`,
-which creates one milestone per group of two or more sub-issues (Issue #2175 —
-see [Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)).
+takes the legacy path — one milestone for the whole plan — and closes exactly as
+before; the prompts teach the table
+([#2174](#-grouping-sub-issues-by-file-area-issue-2174)) but a degraded run or
+an operator's own planning template may publish none, and a missing table must
+never strand a planning run. A table that is present but **structurally broken**
+escalates through the shared `escalateToHuman()` chokepoint (`needs-human` plus
+a paired comment naming every offending row) **and** still creates the legacy
+single milestone, so overnight delivery continues while a human regroups. Both
+in-code fallback publish prompts interpolate the same
+`MILESTONES_TABLE_REQUIREMENT` constant that lives beside the gate, so a
+degraded run does not publish a table the gate is bound to reject. An
+**accepted** grouping is handed to `maybeCreatePlanningMilestone()`, which
+creates one milestone per group of two or more sub-issues (Issue #2175 — see
+[Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)).
 
 ```mermaid
 flowchart TD
@@ -651,30 +663,30 @@ flowchart TD
 
 #### 🔐 Every close-out signal is author-verified (Issue #1244)
 
-Five reads decide whether a planning parent may be closed, and every one of
-them reads text **any GitHub account can write** — once without asking who
-wrote it. The author is the only part of a match GitHub authenticates, so each
-is now filtered through the fleet author check (`selectFleetAuthoredMatches` /
+Five reads decide whether a planning parent may be closed, and every one of them
+reads text **any GitHub account can write** — once without asking who wrote it.
+The author is the only part of a match GitHub authenticates, so each is now
+filtered through the fleet author check (`selectFleetAuthoredMatches` /
 `selectFleetAuthoredComments`) against the fleet identity — this host's login ∪
 `fleet_pr_authors` ∪ `service_accounts`, never `allowed_authors` and never
 `--author @me`, which would break cross-host convergence:
 
-| Read | What it decided | Planted input |
-| --- | --- | --- |
-| `checkSubIssuesOnGitHub()` — `gh search issues --match body "Part of #N"` | skip the planner, close the parent | one issue body saying `Part of #N` |
-| `listSubIssuesViaIssueList()` — `Part of #N` / `Parent: #N` / `Child of #N` in any body | the same close path, and it suppressed the #1219 retry | the same |
-| `fetchNothingToDoSignal()` — `Nothing to do —` in any comment | skip the carrier sub-issue, dropping real work | one comment |
-| `runPlanCoverageGate()` — first comment carrying a coverage table wins | pass the gate before the parent's own failing table is read | one comment with a two-column table |
-| `runMilestoneGroupsGate()` — first comment carrying a `## Milestones` table wins | how the plan's sub-issues are grouped into milestones | one comment with a three-column table |
+| Read                                                                                    | What it decided                                             | Planted input                         |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------- |
+| `checkSubIssuesOnGitHub()` — `gh search issues --match body "Part of #N"`               | skip the planner, close the parent                          | one issue body saying `Part of #N`    |
+| `listSubIssuesViaIssueList()` — `Part of #N` / `Parent: #N` / `Child of #N` in any body | the same close path, and it suppressed the #1219 retry      | the same                              |
+| `fetchNothingToDoSignal()` — `Nothing to do —` in any comment                           | skip the carrier sub-issue, dropping real work              | one comment                           |
+| `runPlanCoverageGate()` — first comment carrying a coverage table wins                  | pass the gate before the parent's own failing table is read | one comment with a two-column table   |
+| `runMilestoneGroupsGate()` — first comment carrying a `## Milestones` table wins        | how the plan's sub-issues are grouped into milestones       | one comment with a three-column table |
 
 **The fail direction is always towards doing the work.** An unattributable match
-— including *every* match when the fleet identity cannot be resolved — is
+— including _every_ match when the fleet identity cannot be resolved — is
 discarded and the discard is logged: the planner runs, the carrier is created,
 and the coverage gate falls through to the parent body and escalates. Two
-signals are deliberately left unfiltered because they are already
-authenticated: the `invalid` / `duplicate` / `wontfix` labels need triage
-permission, and the parent **body** belongs to the issue whose work is being
-planned, not to a third party commenting on it.
+signals are deliberately left unfiltered because they are already authenticated:
+the `invalid` / `duplicate` / `wontfix` labels need triage permission, and the
+parent **body** belongs to the issue whose work is being planned, not to a third
+party commenting on it.
 
 ```mermaid
 flowchart LR
@@ -708,9 +720,8 @@ own `milestone/<name>` feature branch, and the default branch is updated by
 the milestone exists, nothing partial reaches the default branch, so ordering
 partial value inside it delivers nothing the milestone does not already deliver
 as a whole. Where it does not — a single-sub-issue plan, or the best-effort
-milestone creation failing — the plan is one issue or a handful of
-independently merged ones, and an MVP marker over that list says nothing
-either.
+milestone creation failing — the plan is one issue or a handful of independently
+merged ones, and an MVP marker over that list says nothing either.
 
 ```mermaid
 flowchart LR
@@ -722,7 +733,7 @@ flowchart LR
 ```
 
 Coverage (Issue #520) and Failure Detection (Issue #59) are unaffected — they
-check that the plan is *complete*, which milestone-wide merge does not make
+check that the plan is _complete_, which milestone-wide merge does not make
 redundant.
 
 #### 🎯 Auto-milestone for sub-issues (Issue #2863)
@@ -731,19 +742,20 @@ When a planning run breaks an issue into **two or more** sub-issues **and the
 parent issue has no milestone of its own**, the worker auto-creates a GitHub
 milestone named `#<N> <short description>` (from the parent issue) and assigns
 every sub-issue it created to that milestone. This opts the whole batch into the
-existing milestone-branch delivery workflow: each sub-issue PR
-auto-merges into a shared `milestone/<name>` branch, and the default branch is
-only updated via the single final milestone PR once all sub-issues close — the
-"review once, run overnight" model.
+existing milestone-branch delivery workflow: each sub-issue PR auto-merges into
+a shared `milestone/<name>` branch, and the default branch is only updated via
+the single final milestone PR once all sub-issues close — the "review once, run
+overnight" model.
 
 The behaviour is **always on** (no opt-out flag or label) and **idempotent** —
 re-running planning on the same parent never creates a duplicate milestone, and
 a long parent title is shortened to a safe, bounded description (Issue #1690 —
-see [Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)). Two gates keep it out of the way:
+see
+[Auto-milestone for multi-issue plans](#-auto-milestone-for-multi-issue-plans)).
+Two gates keep it out of the way:
 
 - **Parent already has a milestone** → no new milestone; the existing
-  inheritance behaviour assigns sub-issues to the parent's
-  milestone instead.
+  inheritance behaviour assigns sub-issues to the parent's milestone instead.
 - **Fewer than two sub-issues** → no milestone; a single sub-issue is delivered
   directly against the default branch.
 
@@ -751,9 +763,9 @@ If you do not want the milestone in a rare case, detach it manually after the
 run. Milestone creation and assignment are **best-effort** — a GitHub failure is
 logged and never blocks planning closure.
 
-> **Robust sub-issue detection.** The auto-milestone only fires
-> when the worker correctly counts the sub-issues a run created. Two refinements
-> keep that count honest:
+> **Robust sub-issue detection.** The auto-milestone only fires when the worker
+> correctly counts the sub-issues a run created. Two refinements keep that count
+> honest:
 >
 > - **The parent's own URL is excluded.** Claude's output (and its draft) almost
 >   always links the parent planning issue. That self-reference is filtered out
@@ -768,8 +780,8 @@ logged and never blocks planning closure.
 >   body-text list and search remaining as fallbacks.
 >
 > Without these, a real batch of native sub-issues could be missed, no milestone
-> would be created, and the sub-issue PRs would target the default branch instead
-> of the milestone feature branch.
+> would be created, and the sub-issue PRs would target the default branch
+> instead of the milestone feature branch.
 
 #### 🔁 Two-stage self-critique planning
 
@@ -794,19 +806,19 @@ never worse than it was before self-critique existed.
 When a planning run breaks an issue into **2 or more** sub-issues and the parent
 planning issue has **no milestone**, the worker automatically creates a GitHub
 milestone named `#<N> <short description>` (from the parent issue number and
-title) and assigns every sub-issue it created to that milestone. This routes the batch
-through the existing **milestone-branch delivery** model: each sub-issue PR
-auto-merges into a shared `milestone/<name>` branch, and the default branch is
-updated via a **single final PR** once all sub-issues close — the "review once /
-run overnight" workflow (see [milestones.md](milestones.md)).
+title) and assigns every sub-issue it created to that milestone. This routes the
+batch through the existing **milestone-branch delivery** model: each sub-issue
+PR auto-merges into a shared `milestone/<name>` branch, and the default branch
+is updated via a **single final PR** once all sub-issues close — the "review
+once / run overnight" workflow (see [milestones.md](milestones.md)).
 
 - **One milestone per file-area group.** When the publish turn posts a
   `## Milestones` table grouping its sub-issues by file area and that table
   passes the
   [structural gate](#-milestones-table-and-structural-gate-issue-2172), the
   worker creates **one milestone per group** that carries two or more
-  sub-issues, and assigns each sub-issue to its own group's milestone only.
-  Each is titled `#<N> <area>: <short description>` — for example
+  sub-issues, and assigns each sub-issue to its own group's milestone only. Each
+  is titled `#<N> <area>: <short description>` — for example
   `#2163 infra: options trading` — so the fleet can work several milestones in
   parallel instead of serialising a whole plan onto one branch. A group of a
   **single** sub-issue gets no milestone at all: that sub-issue keeps the
@@ -818,15 +830,15 @@ run overnight" workflow (see [milestones.md](milestones.md)).
 - **Single sub-issue → no milestone.** A plan that yields just one sub-issue is
   left as an ordinary default-branch issue.
 - **Parent already has a milestone → unchanged.** The existing inheritance
-  behaviour is preserved — sub-issues inherit the parent's
-  milestone via `--milestone` and no new milestone is created.
+  behaviour is preserved — sub-issues inherit the parent's milestone via
+  `--milestone` and no new milestone is created.
 - **Short, safe titles.** The title is at most **60 characters** including the
-  `#<N> ` prefix and is cut on a word boundary, so a long parent title is
-  never copied verbatim. Quotes are removed, and newlines, control
-  characters, shell metacharacters and glob characters become spaces — only
-  letters, digits, spaces and `- _ . , :` survive — so the title is easy to
-  type, search and slug into `milestone/<name>`. The `#<N>` prefix keeps two similar titles
-  apart. For example, the parent title
+  `#<N>` prefix and is cut on a word boundary, so a long parent title is never
+  copied verbatim. Quotes are removed, and newlines, control characters, shell
+  metacharacters and glob characters become spaces — only letters, digits,
+  spaces and `- _ . , :` survive — so the title is easy to type, search and slug
+  into `milestone/<name>`. The `#<N>` prefix keeps two similar titles apart. For
+  example, the parent title
   `The CLI now says "hit your session limit", which is misleading …` becomes
   `#1653 The CLI now says hit your session limit, which is`.
 - **Idempotent, and never renamed.** Re-running planning on the same parent
@@ -846,7 +858,7 @@ run overnight" workflow (see [milestones.md](milestones.md)).
   milestone, and neither path can pull a differently-scoped group's work onto
   one branch.
 - **Two rows on one file area share one milestone, loudly.** The gate
-  deliberately allows two groups to name the same area, and the area *is* the
+  deliberately allows two groups to name the same area, and the area _is_ the
   milestone's identity — so those rows resolve to a single milestone and a
   single branch. That is reported with a WARNING naming the areas rather than
   passed off as two independent streams.
@@ -876,20 +888,19 @@ flowchart TD
 
 Implementation: `worker/deno/lib/planning_milestone.ts`
 (`buildPlanningMilestoneTitle` for the name, `planningMilestoneMarker` for the
-per-group identity, `ensurePlanningMilestone` for the lookup/reuse), called
-from `closePlanningIssue` in `worker/deno/lib/planning_processor.ts`, which
-passes it the groups `runMilestoneGroupsGate`
-(`worker/deno/lib/plan_milestone_groups.ts`) accepted.
+per-group identity, `ensurePlanningMilestone` for the lookup/reuse), called from
+`closePlanningIssue` in `worker/deno/lib/planning_processor.ts`, which passes it
+the groups `runMilestoneGroupsGate` (`worker/deno/lib/plan_milestone_groups.ts`)
+accepted.
 
 #### 🧩 Grouping sub-issues by file area (Issue #2174)
 
 One milestone for the whole plan serialises delivery. The planning prompts
-therefore group the plan by **file area** — the top-level directory or
-subsystem each sub-issue touches — so groups that cannot collide are delivered
-as parallel milestones. The grouping is **planner judgement**; the structural
-gate above ([Milestones table and structural
-gate](#-milestones-table-and-structural-gate-issue-2172)) only checks the shape
-of what was published.
+therefore group the plan by **file area** — the top-level directory or subsystem
+each sub-issue touches — so groups that cannot collide are delivered as parallel
+milestones. The grouping is **planner judgement**; the structural gate above
+([Milestones table and structural gate](#-milestones-table-and-structural-gate-issue-2172))
+only checks the shape of what was published.
 
 The draft prompt (`prompts/planning/prompt.md`) carries the rule:
 
@@ -909,24 +920,24 @@ The draft prompt (`prompts/planning/prompt.md`) carries the rule:
 - **At most 4 milestones** — a group of one sub-issue takes no milestone
   (written `—`), merges straight to the default branch, and does not count
   towards the cap.
-- **No grouping when the parent owns a milestone** — every sub-issue inherits
-  it via `--milestone`, so there is nothing to group.
+- **No grouping when the parent owns a milestone** — every sub-issue inherits it
+  via `--milestone`, so there is nothing to group.
 
 The critique/publish prompt (`prompts/planning_critique/prompt.md`) attacks the
-grouping (file overlap between groups, a group with no file area, more than
-four milestones) and publishes the surviving grouping as the `## Milestones`
-table, immediately after `## Plan Coverage` in the same summary comment. It
-never passes `--milestone` for a group it names there — milestone creation
-belongs to the worker, and `--milestone` on `gh issue create` stays reserved
-for the inheritance path where the parent already owns one.
+grouping (file overlap between groups, a group with no file area, more than four
+milestones) and publishes the surviving grouping as the `## Milestones` table,
+immediately after `## Plan Coverage` in the same summary comment. It never
+passes `--milestone` for a group it names there — milestone creation belongs to
+the worker, and `--milestone` on `gh issue create` stays reserved for the
+inheritance path where the parent already owns one.
 
 **What the worker does with the table today.** It reads and gates it, and
-nothing more: `closePlanningIssue()` logs a sound grouping and still creates
-the **legacy single milestone** for the whole plan, exactly as the [#2172
-section](#-milestones-table-and-structural-gate-issue-2172) describes. Creating
-one milestone per group — and assigning each group's sub-issues to it — is
-**Issue #2175**. Until that lands, a published grouping is recorded rather than
-acted on, so the prompts teach the grouping ahead of the machinery that
+nothing more: `closePlanningIssue()` logs a sound grouping and still creates the
+**legacy single milestone** for the whole plan, exactly as the
+[#2172 section](#-milestones-table-and-structural-gate-issue-2172) describes.
+Creating one milestone per group — and assigning each group's sub-issues to it —
+is **Issue #2175**. Until that lands, a published grouping is recorded rather
+than acted on, so the prompts teach the grouping ahead of the machinery that
 consumes it.
 
 ```mermaid
@@ -989,8 +1000,8 @@ changes happen on the issue itself.
    describing what changed and why.
 8. **Cleanup** — The `refine-issue` label is **removed**, the `needs-human`
    label is **added** (signalling handoff for human review), and all processed
-   feedback comments receive an eyes (👀) reaction. (retired the
-   legacy `refined` completion label.)
+   feedback comments receive an eyes (👀) reaction. (retired the legacy
+   `refined` completion label.)
 
 #### Completion indicators
 
@@ -1043,12 +1054,12 @@ If the refinement fails (e.g. Claude times out, API errors), the worker:
 
 #### Configuration
 
-| Setting               | Default           | Description                                                                           |
-| --------------------- | ----------------- | ------------------------------------------------------------------------------------- |
-| `refineIssueLabel`    | `refine-issue`    | Label that triggers the refinement workflow                                           |
-| `needsHumanLabel` | `needs-human` | Label added on successful completion to signal handoff for human review |
-| `refinementTimeout`   | `300` (5 minutes) | Maximum time for Claude to process the refinement                                     |
-| `refinementKillAfter` | `10` seconds      | Grace period before forceful termination after timeout                                |
+| Setting               | Default           | Description                                                             |
+| --------------------- | ----------------- | ----------------------------------------------------------------------- |
+| `refineIssueLabel`    | `refine-issue`    | Label that triggers the refinement workflow                             |
+| `needsHumanLabel`     | `needs-human`     | Label added on successful completion to signal handoff for human review |
+| `refinementTimeout`   | `300` (5 minutes) | Maximum time for Claude to process the refinement                       |
+| `refinementKillAfter` | `10` seconds      | Grace period before forceful termination after timeout                  |
 
 ### 💡 Clarification
 
@@ -1197,14 +1208,14 @@ flowchart TD
 
 ## ⏱️ Question timeout behaviour
 
-| Setting            | Default                        | Behaviour                                                   |
-| ------------------ | ------------------------------ | ----------------------------------------------------------- |
+| Setting            | Default             | Behaviour                                                   |
+| ------------------ | ------------------- | ----------------------------------------------------------- |
 | `QUESTION_TIMEOUT` | `600` (10 minutes,) | Hard ceiling — Claude process is killed after this duration |
 
 When a question times out:
 
-1. **Partial output exists** → posted as a partial answer with a
-   disclaimer. The `question` label is removed to prevent retry loops.
+1. **Partial output exists** → posted as a partial answer with a disclaimer. The
+   `question` label is removed to prevent retry loops.
 2. **No useful output** → normal failure handling (comment, `failed-once`
    label).
 
@@ -1217,13 +1228,12 @@ repositories or read large codebases.
 - **Question failure:** Same failure semantics as other work (e.g. track
   failure, optional label); the workflow avoids leaving an issue stuck with
   `question` and no answer indefinitely.
-- **Question clarification:** If Claude determines a question is
-  too broad or ambiguous, it outputs a clarification request instead of a poor
-  answer. This is not a failure — the user responds and re-adds `question` to
-  retry.
-- **Question timeout with partial output:** Partial answers are
-  posted rather than discarded. This gives the user useful content even when
-  Claude could not complete its analysis within the timeout.
+- **Question clarification:** If Claude determines a question is too broad or
+  ambiguous, it outputs a clarification request instead of a poor answer. This
+  is not a failure — the user responds and re-adds `question` to retry.
+- **Question timeout with partial output:** Partial answers are posted rather
+  than discarded. This gives the user useful content even when Claude could not
+  complete its analysis within the timeout.
 - **Planning:** If Claude does not create sub-issues (e.g. output not detected),
   worker may still post a comment and remove label; the workflow is to validate
   sub-issues (e.g. via API) when possible.
@@ -1237,7 +1247,8 @@ repositories or read large codebases.
 
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue
   selection, PR monitoring, milestone/dependency handling.
-- **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),
+- **Implementation details:**
+  [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),
   [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts),
   [worker/deno/lib/claim_issue.ts](../../worker/deno/lib/claim_issue.ts),
   [worker/deno/lib/partial_answer.ts](../../worker/deno/lib/partial_answer.ts),
@@ -1247,8 +1258,7 @@ repositories or read large codebases.
   [worker/deno/lib/planning_run_stats.ts](../../worker/deno/lib/planning_run_stats.ts)
   (stats + degraded verdict),
   [worker/deno/lib/planning_degraded_label.ts](../../worker/deno/lib/planning_degraded_label.ts)
-  (label application),
-  [prompts/planning/](../../prompts/planning/),
+  (label application), [prompts/planning/](../../prompts/planning/),
   [prompts/question/](../../prompts/question/).
 - **Model and caching:** [MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md) —
   planning-run stats and degraded-model detection.
