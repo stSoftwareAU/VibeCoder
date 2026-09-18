@@ -22,6 +22,14 @@ each PR pass's claim point and reports the PR as open, closed/merged, or
 unknown. It is the gate that stops the CI-fix, review-feedback, merge-conflict
 and auto-merge passes writing to a PR closed since the cached listing was taken.
 
+> **Since Issue #2307** the argv is `--json state,mergeable` with no `--jq`, and
+> the JSON payload is parsed by `parsePrLiveFields` (still an allowlist:
+> `OPEN`/`MERGED`/`CLOSED` for the state, `CONFLICTING`/`MERGEABLE` for the
+> verdict, everything else `UNKNOWN`). The findings below are unchanged in
+> substance — `--json` is still a positional constant, an unparseable payload
+> still yields `{ unknown: true }`, and only a parsed state of `OPEN` produces
+> `open: true` — so read "the literal `OPEN`" as "a parsed state of `OPEN`".
+
 Shapes checked (12a's — a module whose arguments reach a subprocess — 12c's
 untrusted GitHub data, and 12e's):
 

@@ -20,6 +20,7 @@ import {
   classifyPrLiveState,
   executePrBranchUpdates,
   makeGhPrStateFetcher,
+  parsePrLiveFields,
   type PrBranchExecutionDeps,
   type PrBranchUpdateAction,
   resetPrConflictWarnings,
@@ -108,18 +109,62 @@ Deno.test("classifyPrLiveState - maps gh state strings onto the three outcomes",
   assertEquals(classifyPrLiveState("SOMETHING_ELSE"), "UNKNOWN");
 });
 
-Deno.test("makeGhPrStateFetcher - asks gh for the PR's state and returns it raw", async () => {
+Deno.test("classifyPrLiveState - reads the state out of the state,mergeable payload", () => {
+  // Issue #2307: the shared argv now asks for both fields, so the branch
+  // update reader parses the object rather than a bare string.
+  assertEquals(
+    classifyPrLiveState('{"mergeable":"CONFLICTING","state":"OPEN"}'),
+    "OPEN",
+  );
+  assertEquals(
+    classifyPrLiveState(' {"mergeable":"UNKNOWN","state":"merged"} \n'),
+    "MERGED",
+  );
+  assertEquals(classifyPrLiveState('{"mergeable":"MERGEABLE"}'), "UNKNOWN");
+  assertEquals(classifyPrLiveState('{"state":"OPEN"'), "UNKNOWN");
+});
+
+Deno.test("parsePrLiveFields - both fields, in either payload shape", () => {
+  assertEquals(
+    parsePrLiveFields('{"mergeable":"CONFLICTING","state":"OPEN"}'),
+    {
+      state: "OPEN",
+      mergeable: "CONFLICTING",
+    },
+  );
+  assertEquals(parsePrLiveFields('{"mergeable":"mergeable","state":"OPEN"}'), {
+    state: "OPEN",
+    mergeable: "MERGEABLE",
+  });
+  assertEquals(parsePrLiveFields('{"mergeable":null,"state":"OPEN"}'), {
+    state: "OPEN",
+    mergeable: "UNKNOWN",
+  });
+  assertEquals(parsePrLiveFields("CLOSED\n"), {
+    state: "CLOSED",
+    mergeable: "UNKNOWN",
+  });
+  assertEquals(parsePrLiveFields("[]"), {
+    state: "UNKNOWN",
+    mergeable: "UNKNOWN",
+  });
+});
+
+Deno.test("makeGhPrStateFetcher - asks gh for state and mergeable, and returns the payload raw", async () => {
   const calls: string[][] = [];
   const fetcher = makeGhPrStateFetcher(async (args: string[]) => {
     calls.push(args);
-    return "MERGED\n";
+    return '{"mergeable":"UNKNOWN","state":"MERGED"}\n';
   });
 
-  assertEquals(await fetcher("org/repo", 381), "MERGED\n");
+  assertEquals(
+    await fetcher("org/repo", 381),
+    '{"mergeable":"UNKNOWN","state":"MERGED"}\n',
+  );
   assertEquals(calls.length, 1);
   assertEquals(calls[0]!.includes("381"), true);
   assertEquals(calls[0]!.includes("org/repo"), true);
-  assertEquals(calls[0]!.includes("state"), true);
+  assertEquals(calls[0]!.includes("state,mergeable"), true);
 });
 
 // =============================================================================

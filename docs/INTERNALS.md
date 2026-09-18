@@ -1708,9 +1708,9 @@ VibeCoder#1732 was closed as superseded and, eight minutes later, the CI-fix
 pass claimed it from the cached listing and started writing to it. All four PR
 passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
 — therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
-before the first write: one `gh pr view --json state`, no cache. The two
-processors call it directly through `guardPrStillOpen`; the drain and the sweep
-take it as a **required** injected seam, wired to the same function in
+before the first write: one `gh pr view --json state,mergeable`, no cache. The
+two processors call it directly through `guardPrStillOpen`; the drain and the
+sweep take it as a **required** injected seam, wired to the same function in
 `run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
 `MERGED` PR is skipped with `skipped: PR closed` / `skipped: PR merged` naming
 the repo and the number, and no push, comment or label follows. An unreadable
@@ -1720,15 +1720,27 @@ attempt is opened and no merge is tried, so the next scan gets the PR back with
 its budget intact. The listing cache is unchanged; the cost is one round trip on
 the path that was about to spend an agent run.
 
+The same round trip carries GitHub's live `mergeable` verdict (Issue #2307), so
+the **merge-conflict drain** also learns that a PR another host or a human
+already merged in is no longer conflicting. A live `MERGEABLE` is skipped as
+`not-conflicting`, and a `mergeable` GitHub is still recomputing is skipped as
+`scan-error` at stage `mergeable-state` — both before the lease, the clone and
+the agent, and both counted in the `merge_conflict_pass=` summary.
+
 ```mermaid
 flowchart LR
-    L["🗂️ Cached listing<br/>(≤10 min old)"] --> V{"🔎 gh pr view<br/>--json state"}
-    V -->|OPEN| W["✍️ Claim: lock, comment,<br/>agent, push"]
+    L["🗂️ Cached listing<br/>(≤10 min old)"] --> V{"🔎 gh pr view<br/>--json state,mergeable"}
+    V -->|OPEN| M{"🔀 mergeable?<br/>(merge-conflict drain)"}
     V -->|CLOSED / MERGED| S["⏭️ skipped: PR closed/merged"]
     V -->|unreadable| U["⚠️ skipped: PR state unknown<br/>(retry next cycle, budget intact)"]
+    M -->|CONFLICTING| W["✍️ Claim: lock, comment,<br/>agent, push"]
+    M -->|MERGEABLE| N["⏭️ skipped: not-conflicting"]
+    M -->|UNKNOWN| E["⚠️ skipped: scan-error<br/>stage=mergeable-state"]
     style W fill:#2d6a4f,stroke:#1b4332,color:#fff
     style S fill:#adb5bd,stroke:#6c757d,color:#000
+    style N fill:#adb5bd,stroke:#6c757d,color:#000
     style U fill:#e9c46a,stroke:#b08968,color:#000
+    style E fill:#e9c46a,stroke:#b08968,color:#000
 ```
 
 ### ⏱️ Timeout wrappers (`worker/deno/lib/gh_wrapper.ts`, `worker/deno/lib/git_timeout.ts`)
