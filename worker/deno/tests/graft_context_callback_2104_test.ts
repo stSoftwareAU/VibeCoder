@@ -104,6 +104,22 @@ Deno.test("#2104 - an `ok` collection publishes the status and all four figures"
   });
 });
 
+Deno.test("#2314 - the query tally rides the block and the environment once recorded", () => {
+  const withQueries: GraftContextResult = { ...OK_COLLECTION, queries: 7 };
+  assertEquals(graftBlock(terminalRun({ graft: withQueries })).queries, 7);
+  assertEquals(
+    hookEnv(terminalRun({ graft: withQueries })).VIBECODER_GRAFT_QUERIES,
+    "7",
+  );
+  // Absent when the tools were never handed over: not exported as empty.
+  assert(!("queries" in graftBlock(terminalRun({ graft: OK_COLLECTION }))));
+  assertEquals(
+    hookEnv(terminalRun({ graft: OK_COLLECTION })).VIBECODER_GRAFT_QUERIES,
+    undefined,
+  );
+  assertEquals(callbackGraftFacts({ ...OK_COLLECTION, queries: 0 }).queries, 0);
+});
+
 Deno.test("#2104 - the bundle text never reaches a hook", () => {
   const block = graftBlock(terminalRun({ graft: OK_COLLECTION }));
   assert(!("bundle" in block), "the bundle rode into the callback document");

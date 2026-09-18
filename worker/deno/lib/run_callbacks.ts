@@ -125,6 +125,11 @@ export interface CallbackGraftContext {
   nodeCount?: number;
   /** Edges in the built graph whose relation is `calls`. */
   callEdgeCount?: number;
+  /**
+   * `graft_*` MCP tool calls the agent made this run (Issue #2314). Present
+   * only when the tools were handed to the agent and a tally came back.
+   */
+  queries?: number;
 }
 
 /**
@@ -167,6 +172,7 @@ export function callbackGraftFacts(
     ...(graft.callEdgeCount !== undefined
       ? { callEdgeCount: graft.callEdgeCount }
       : {}),
+    ...(graft.queries !== undefined ? { queries: graft.queries } : {}),
   };
 }
 
@@ -647,6 +653,7 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_GRAFT_BUNDLE_CHARS", graft.bundleChars);
   put(env, "VIBECODER_GRAFT_NODE_COUNT", graft.nodeCount);
   put(env, "VIBECODER_GRAFT_CALL_EDGE_COUNT", graft.callEdgeCount);
+  put(env, "VIBECODER_GRAFT_QUERIES", graft.queries);
   put(env, "VIBECODER_OUTCOME_KIND", context.outcome?.kind);
   put(env, "VIBECODER_OUTCOME_CATEGORY", context.outcome?.category);
   put(env, "VIBECODER_OUTCOME_PHASE", context.outcome?.phase);

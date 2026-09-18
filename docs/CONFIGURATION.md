@@ -1788,6 +1788,26 @@ static prompt SHA: a bundle that differs on every issue costs no prompt-cache
 hits, and a phase run without one produces byte-identical prompt text to
 before.
 
+**The tools — the pull side (Issue #2314).** The bundle is a bounded
+selection made from the issue text before the run starts. On an `ok`
+collection the run is also handed Graft's own MCP server, `graft mcp
+<checkout>`, registered as `graft` in the per-run `mcpServers` configuration
+beside whatever the run already had (the Playwright browser grant, the
+`codegraph` server), and one line is appended to the built user prompt naming
+the tools — `graft_find_code`, `graft_file_api`, `graft_trace_calls`,
+`graft_find_all`, `graft_repo_map` — so the agent asks the graph instead of
+grepping. The entry and the line are added together or not at all, on the same
+five run kinds. The server is rooted at the checkout the graph was built in,
+named in its arguments rather than a `cwd`, for the same reason CodeGraph's is
+(Issue #2200). A provider with no MCP transport (Gemini) keeps the bundle and
+gets no tools; the run logs `Graft tools: not handed to the agent` and reports
+no query figure at all, so "could not ask" is never read as "never asked". A
+run that names no checkout, or whose provider cannot be resolved, logs one
+`[GRAFT_TOOLS_UNAVAILABLE] <reason>` line and proceeds without the tools. The
+calls the agent made are counted from the run's per-tool tally — both the
+`mcp__graft__<tool>` spelling Claude records and the bare name — and reported
+as `queries` in the run-stats line, the log line and the callback block.
+
 **When Graft is unavailable.** An enabled host that cannot run Graft — the
 clone's `info/exclude` cannot be resolved or appended to, the binary is
 missing, the build or the query fails, the query succeeds but returns an empty
@@ -1804,7 +1824,7 @@ host with the switch off logs neither line.
 [per-issue run-stats comment](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)
 carries the same outcome as one bullet beside the run's costs (Issue #2105) —
 `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714 nodes, 22,908 call
-edges` on a full collection, the figures it reached on a `failed` one
+edges, 12 queries` on a full collection whose tools were handed over, the figures it reached on a `failed` one
 (`- **Graft:** failed — build 300 s`), and `- **Graft:** off` when the host
 switch is off. The line is a bullet of the stats block and never counts toward
 the estimated-cost tally. It rides the comment the issue and question rounds
@@ -3131,7 +3151,8 @@ invocation and removed after it exits:
     "buildSeconds": 12.5,
     "bundleChars": 4096,
     "nodeCount": 820,
-    "callEdgeCount": 1204
+    "callEdgeCount": 1204,
+    "queries": 7
   }
 }
 ```
@@ -3154,7 +3175,7 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_GRAFT_ENABLED`, `VIBECODER_GRAFT_STATUS`,
 `VIBECODER_GRAFT_BUILD_SECONDS`, `VIBECODER_GRAFT_BUNDLE_CHARS`,
 `VIBECODER_GRAFT_NODE_COUNT`, `VIBECODER_GRAFT_CALL_EDGE_COUNT`,
-`VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
+`VIBECODER_GRAFT_QUERIES`, `VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
 `VIBECODER_CODEGRAPH_INDEX_SECONDS`, `VIBECODER_CODEGRAPH_NODE_COUNT`,
 `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT`, `VIBECODER_CODEGRAPH_QUERIES`. A
 cycle hook also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,

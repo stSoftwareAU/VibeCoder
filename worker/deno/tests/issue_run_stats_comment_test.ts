@@ -678,6 +678,18 @@ Deno.test("buildGraftStatsLine - the host switch being off is stated, not omitte
   );
 });
 
+Deno.test("buildGraftStatsLine - the query tally joins the figures once the tools were handed over (Issue #2314)", () => {
+  assertEquals(
+    buildGraftStatsLine({ ...GRAFT_OK, queries: 1234 }),
+    "- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714 nodes, 22,908 call edges, 1,234 queries",
+  );
+  // A tally of none is a measurement, and a run with no tally says nothing.
+  assertEquals(
+    buildGraftStatsLine({ status: "ok", enabled: true, queries: 0 }),
+    "- **Graft:** ok — 0 queries",
+  );
+});
+
 Deno.test("buildGraftStatsLine - renders no line without an outcome", () => {
   assertEquals(buildGraftStatsLine(undefined), "");
 });

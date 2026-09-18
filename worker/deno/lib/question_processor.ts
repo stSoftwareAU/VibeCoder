@@ -38,6 +38,7 @@ import {
 import { buildQuestionPrompt } from "./prompt_builder.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
+import { bindGraftRun } from "./graft_run.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
 import {
   collectGraftContext,
@@ -447,13 +448,15 @@ async function _processQuestionWithHeartbeat(
     prepare: deps.claude.prepareCodegraphContext,
   });
   carrier.codegraphContext = codegraph.result;
+  // Issue #2314: the pull side of Graft, beside CodeGraph's.
+  const graft = bindGraftRun({ result: graftContext, repoDir, logger });
 
   // Execute Claude with question timeout
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/question/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: codegraph.applyPrompt(prompt),
+      prompt: graft.applyPrompt(codegraph.applyPrompt(prompt)),
       systemPrompt,
       timeoutSeconds: config.questionTimeout,
       killAfterSeconds: config.questionKillAfter,
@@ -462,13 +465,14 @@ async function _processQuestionWithHeartbeat(
       logger,
       // Absent unless the index built, so a switched-off run writes no MCP
       // configuration at all — exactly as before.
-      ...codegraph.mcpConfigOption(),
+      ...graft.mcpConfigOption(codegraph.mcpConfig()),
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
+  if (claudeResult.ok) graft.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     // Check for timeout with partial output
