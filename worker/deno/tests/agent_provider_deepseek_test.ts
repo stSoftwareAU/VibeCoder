@@ -59,6 +59,11 @@ import {
   setDeepSeekPhaseModelConfigOverrides,
 } from "../lib/deepseek_executor.ts";
 import { DEEPSEEK_PHASE_MODEL_DEFAULTS } from "../lib/config_defaults.ts";
+import {
+  buildIssueExecutorAgents,
+  ISSUE_EXECUTOR_AGENT_NAME,
+} from "../lib/issue_executor_agents.ts";
+import { capturingWarnings } from "./support/warnings.ts";
 
 /** The DeepSeek descriptor under test. */
 const deepseek = resolveAgentProvider(DEEPSEEK_PROVIDER_ID);
@@ -546,4 +551,57 @@ Deno.test("deepseek provider - the credential preflight checks deepseek/provider
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// `--agents` never reaches the argv either (Issue #2342)
+// ---------------------------------------------------------------------------
+
+Deno.test("agent provider deepseek - sub-agent definitions are dropped from the argv and stated loudly (Issue #2342)", () => {
+  const provider = resolveAgentProvider(DEEPSEEK_PROVIDER_ID);
+
+  let args: string[] = [];
+  const warnings = capturingWarnings(() => {
+    args = provider.buildInvocation({
+      prompt: "PROMPT",
+      phase: "issue",
+      agents: buildIssueExecutorAgents(),
+    });
+  });
+
+  // The Anthropic CLI would accept `--agents` and forward Anthropic tier
+  // aliases to an endpoint that cannot resolve them — the same failure mode
+  // `--effort` has here.
+  assertEquals(
+    args.includes("--agents"),
+    false,
+    `DeepSeek keeps single-model routing: ${args.join(" ")}`,
+  );
+  assertEquals(
+    args.some((arg) => arg.includes(ISSUE_EXECUTOR_AGENT_NAME)),
+    false,
+  );
+  // Dropped, never in silence.
+  const agentsWarning = warnings.find((line) => line.includes("--agents"));
+  assert(
+    agentsWarning,
+    `expected a warning naming --agents, got ${JSON.stringify(warnings)}`,
+  );
+  assertStringIncludes(agentsWarning, "[deepseek]");
+  assertStringIncludes(agentsWarning, "issue");
+});
+
+Deno.test("agent provider deepseek - an invocation without the split warns nothing and is unchanged (Issue #2342)", () => {
+  const provider = resolveAgentProvider(DEEPSEEK_PROVIDER_ID);
+
+  let args: string[] = [];
+  const warnings = capturingWarnings(() => {
+    args = provider.buildInvocation({ prompt: "PROMPT" });
+  });
+
+  assertEquals(args.includes("--agents"), false);
+  assertEquals(
+    warnings.filter((line) => line.includes("--agents")),
+    [],
+  );
 });

@@ -24,6 +24,7 @@ import {
   setActiveRepoDeepSeekModelOverrides,
   setDeepSeekPhaseModelConfigOverrides,
   setUnavailableDeepSeekModels,
+  warnDeepSeekAgentsUnsupported,
   warnDeepSeekEffortUnsupported,
 } from "../lib/deepseek_executor.ts";
 import * as configDefaults from "../lib/config_defaults.ts";
@@ -525,4 +526,24 @@ Deno.test("deepseek adaptation - an outage of the top tier leaves base-tier phas
       clearUnavailableDeepSeekModels();
     }
   });
+});
+
+Deno.test("deepseek agents - unsupported sub-agent definitions warn on every invocation (Issue #2342)", () => {
+  const warnings = captureWarnings(() => {
+    warnDeepSeekAgentsUnsupported("issue");
+    warnDeepSeekAgentsUnsupported("issue");
+    // A phase-less invocation still states its case.
+    warnDeepSeekAgentsUnsupported();
+  });
+
+  // Not deduplicated like the effort warning: a run told it is splitting work
+  // across two tiers and is not must say so on the invocation that did it.
+  assertEquals(warnings.length, 3);
+  assertStringIncludes(warnings[0]!, "[deepseek]");
+  assertStringIncludes(warnings[0]!, "--agents");
+  assertStringIncludes(warnings[0]!, `phase "issue"`);
+  assertStringIncludes(warnings[2]!, "phase-less invocation");
+  for (const warning of warnings) {
+    assertStringIncludes(warning, "claude");
+  }
 });

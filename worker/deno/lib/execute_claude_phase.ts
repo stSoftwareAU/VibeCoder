@@ -33,6 +33,11 @@ import {
   getRepoConfig,
 } from "./repo_config.ts";
 import { buildCiFailureContext, isCiFailureIssue } from "./ci_failure_issue.ts";
+import { isIssueExecutorSplitEnabled } from "./issue_executor_split.ts";
+import {
+  buildIssueExecutorAgents,
+  ISSUE_EXECUTOR_MODEL,
+} from "./issue_executor_agents.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";
 import { resolveVerbosity } from "./verbosity.ts";
 import {
@@ -300,6 +305,17 @@ export interface ExecuteClaudePhaseOptions {
    * from before the trial existed.
    */
   codegraphContextEnabled?: boolean;
+  /**
+   * Whether this host splits issue work between an advisor and Sonnet
+   * executor sub-agents (Issue #2342, part of #2320, default: false).
+   *
+   * Threaded from `config.issueExecutorSplit` by this path's production
+   * wiring site (`commands/execute_claude_phase.ts`); the main-loop issue
+   * phase reads the same key straight off its own `config`. The repository's
+   * own `repo_config` override is layered over it here. Off, the invocation
+   * carries no `--agents` and is byte-for-byte the argv built today.
+   */
+  issueExecutorSplit?: boolean;
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
   /** Warning threshold for the context budget (Issue #1327, default: 50). */
@@ -1368,6 +1384,22 @@ async function executeClaudePhaseBody(
   }
 
   // --- Execute Claude ---
+  // The issue-executor split (Issue #2342): with the key on, the invocation
+  // carries `--agents` definitions so the advisor delegates mechanical edit
+  // work to Sonnet executors. Off — the default — `agents` stays absent and
+  // no argument is emitted, so every sub-agent inherits the phase's model
+  // exactly as it does today.
+  const issueExecutorSplit = isIssueExecutorSplitEnabled(
+    "issue",
+    repoConfig,
+    { issueExecutorSplit: options.issueExecutorSplit === true },
+  );
+  if (issueExecutorSplit) {
+    deps.log(
+      "Issue-executor split is on: the invocation carries " +
+        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
   deps.log("Starting Claude Code to work on the issue...");
   let claudeResult: Result<ClaudeRunResult>;
   try {
@@ -1416,6 +1448,8 @@ async function executeClaudePhaseBody(
         // enabled run whose index built; on every other status this is
         // exactly `screenshotRequired`, as before.
         mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
+        // Issue #2342: only a split run carries sub-agent definitions.
+        ...(issueExecutorSplit ? { agents: buildIssueExecutorAgents() } : {}),
         // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
         ...(options.progressExtension
           ? { progressExtension: options.progressExtension }

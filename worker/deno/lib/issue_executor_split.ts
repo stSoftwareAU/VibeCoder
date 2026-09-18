@@ -2,9 +2,10 @@
  * Resolver for the `issue_executor_split` config key (Issue #2341).
  *
  * The key is host-wide, with a same-named per-repository override under
- * `repo_config`. It is registered and resolvable here; nothing downstream
- * reads it yet, so with the key off — the default — the worker invokes the
- * coding agent exactly as it does today.
+ * `repo_config`. Both `issue`-phase call sites read it (Issue #2342) to decide
+ * whether the invocation carries `--agents` executor definitions; with the key
+ * off — the default — the worker invokes the coding agent exactly as it does
+ * today.
  */
 
 import type { RepoConfig, WorkerConfig } from "../types.ts";
