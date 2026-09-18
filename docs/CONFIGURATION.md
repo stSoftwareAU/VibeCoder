@@ -3272,6 +3272,18 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   exception is a release whose run **preserved WIP** on the issue branch
   (a deadline timeout with a dirty tree): the commit is the durable work and
   the resume file is the pointer to it, so it is kept for the next claim.
+- The **conversation** itself is keyed by stream, not by issue (Issue #2332).
+  Its session id lives in a separate record,
+  `${WORK_DIR}/.claude-sessions/resume/stream-<streamKey>.json`, holding one
+  session per provider — a sub-issue that falls back to another provider opens
+  that provider's own stream session and leaves the others untouched. Because
+  the conversation outlives every issue that runs on it, the stream record has
+  **no 24-hour window**, is **not** deleted at PR creation or claim release,
+  and is never swept with the per-issue files. It is removed only by
+  milestone-close housekeeping, or when a session proves unresumable and the
+  stream is reset. No migration is involved: a pre-existing per-issue record
+  keeps loading exactly as before, and a host with no stream record starts the
+  stream fresh.
 - A branch carrying **only** WIP markers does not become a PR: when a claim
   resumed a checkpoint and added no commit of its own, the completion phase
   refuses to raise a half-done PR from parked work and the issue returns to

@@ -5,11 +5,19 @@
  * lived in the container VM and the uncommitted diff lasted only until
  * the next attempt's repo reset. With `CLAUDE_CONFIG_DIR` on the durable
  * work dir (#4171/#4203) the conversation transcript now survives — this
- * store adds the pointer that lets the *next* attempt find it: session
- * id, phase count, and the issue branch, persisted per issue at
- * `${workDir}/.claude-sessions/resume/<owner>-<repo>-<issue>.json`.
+ * store adds the pointer that lets the *next* attempt find it.
  *
- * Lifecycle:
+ * The store keeps **two** records side by side, because the two things it
+ * remembers have different owners and different lifetimes (Issue #2332):
+ *
+ * - the **per-issue checkpoint**, at
+ *   `${workDir}/.claude-sessions/resume/<owner>-<repo>-<issue>.json` — phase
+ *   count and the issue branch, plus the session id an older host wrote there;
+ * - the **stream session**, at
+ *   `${workDir}/.claude-sessions/resume/stream-<streamKey>.json` — the session
+ *   id of the (repository, stream) conversation, one per provider.
+ *
+ * Per-issue lifecycle:
  *  - written by the execute phase's WIP checkpoints and at each phase
  *    completion;
  *  - read on re-claim — fresh (< 24 h) state primes `--resume` and lets
@@ -17,12 +25,20 @@
  *  - deleted on successful PR creation and on claim release, so a
  *    gracefully finished or failed attempt starts the next one clean.
  *
+ * Stream lifecycle: the conversation outlives every issue that runs on it, so
+ * a stream session has **no freshness window**, is **not** deleted at PR
+ * creation or claim release, and is never touched by the per-issue sweep.
+ * Deleting one is the job of milestone-close housekeeping and of the reset
+ * path when a session proves unresumable. There is no migration: a per-issue
+ * record carrying a session id is read as before for that issue and is never
+ * promoted, and a host with no stream record simply starts the stream fresh.
+ *
  * The store lives under the dot-prefixed `.claude-sessions` directory,
  * which the stale-workdir scanner skips (stale_workdir.ts) and the
  * session sweeper's directory walk ignores (files are not session dirs).
- * Abandoned entries are swept opportunistically on save: any sibling
- * older than the freshness window is deleted, so the directory stays a
- * handful of tiny JSON files.
+ * Abandoned entries are swept opportunistically on save: any **per-issue**
+ * sibling older than the freshness window is deleted, so the directory stays
+ * a handful of tiny JSON files.
  *
  * Every operation is best-effort — resume is an optimisation, never
  * control flow, so a filesystem failure degrades to "no resume" rather
@@ -32,10 +48,25 @@
  */
 
 import { isPersistableSessionId } from "./session_resume.ts";
+import { type StreamId, streamKey } from "./stream_identity.ts";
 import { describesPreservedWip } from "./wip_markers.ts";
 
-/** Resume state older than this is stale — the next attempt starts clean. */
+/**
+ * Per-issue resume state older than this is stale — the next attempt starts
+ * clean. A stream session has no such window (Issue #2332).
+ */
 export const RESUME_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** File-name prefix marking a stream record — never a per-issue record. */
+const STREAM_FILE_PREFIX = "stream-";
+
+/**
+ * A per-issue record's file name: `<repo-slug>-<issue>.json`, where the slug
+ * is `[A-Za-z0-9-]` only. A stream key carries the `__` segment separator, so
+ * a stream record can never match — which is what keeps the per-issue sweep
+ * blind to stream files (Issue #2332).
+ */
+const PER_ISSUE_FILE_PATTERN = /^[A-Za-z0-9-]+-\d+\.json$/u;
 
 /**
  * Prompt paragraph appended to the execute prompt when a re-claim resumed
@@ -192,6 +223,182 @@ export async function deleteResumeState(
   );
 }
 
+/**
+ * One provider's session on a stream (Issue #2332).
+ *
+ * `holderHost` records which fleet host opened it — the transcript itself is
+ * host-local, so a reader on another host knows the id it found is not its own
+ * to replay.
+ */
+export interface PersistedStreamSession {
+  /** CLI session id (Codex stores its thread id here too). */
+  sessionId: string;
+  /** Epoch milliseconds of the last save. Diagnostic — never an expiry. */
+  savedAtEpochMs: number;
+  /** Credential label that opened the session. */
+  credentialScope?: string;
+  /** Fleet host that owns the durable transcript. */
+  holderHost?: string;
+}
+
+/** Path of one stream's session record. Throws when `stream.repo` is not `owner/name`. */
+export function streamSessionPath(workDir: string, stream: StreamId): string {
+  return `${resumeStateDir(workDir)}/${STREAM_FILE_PREFIX}${
+    streamKey(stream)
+  }.json`;
+}
+
+/**
+ * Persist one provider's session for a stream, leaving every other provider's
+ * session in the record untouched — a sub-issue that ran under a fallback
+ * provider starts that provider's own stream session rather than overwriting
+ * the primary's.
+ *
+ * Best-effort: returns false (and writes nothing) on any filesystem failure.
+ * Throws only when `stream.repo` is malformed, which is a caller bug, not a
+ * resume miss.
+ */
+export async function saveStreamSession(
+  workDir: string,
+  stream: StreamId,
+  session: {
+    providerId: string;
+    sessionId: string;
+    credentialScope?: string;
+    holderHost?: string;
+  },
+  nowEpochMs: number = Date.now(),
+): Promise<boolean> {
+  const path = streamSessionPath(workDir, stream);
+  const sessions = await readStreamSessions(path);
+  sessions[session.providerId] = {
+    sessionId: session.sessionId,
+    savedAtEpochMs: nowEpochMs,
+    ...(session.credentialScope !== undefined
+      ? { credentialScope: session.credentialScope }
+      : {}),
+    ...(session.holderHost !== undefined
+      ? { holderHost: session.holderHost }
+      : {}),
+  };
+  return await writeStreamSessions(workDir, path, sessions);
+}
+
+/**
+ * Load one provider's session for a stream. Returns null when the record is
+ * missing, unparseable, holds no session for that provider, or holds an id the
+ * provider's CLI would refuse (#204).
+ *
+ * There is deliberately no clock parameter: a stream session never expires.
+ */
+export async function loadStreamSession(
+  workDir: string,
+  stream: StreamId,
+  providerId: string,
+): Promise<PersistedStreamSession | null> {
+  const sessions = await readStreamSessions(
+    streamSessionPath(workDir, stream),
+  );
+  const session = sessions[providerId];
+  if (session === undefined) return null;
+  return isPersistableSessionId(session.sessionId, providerId) ? session : null;
+}
+
+/**
+ * Remove a stream's session — one provider's when `providerId` is given, the
+ * whole record otherwise. Idempotent; never throws for a missing record.
+ *
+ * Called by milestone-close housekeeping (the whole record) and by the reset
+ * path when one provider's session proves unresumable.
+ */
+export async function deleteStreamSession(
+  workDir: string,
+  stream: StreamId,
+  providerId?: string,
+): Promise<void> {
+  const path = streamSessionPath(workDir, stream);
+  if (providerId === undefined) {
+    await Deno.remove(path).catch(() => undefined);
+    return;
+  }
+  const sessions = await readStreamSessions(path);
+  if (sessions[providerId] === undefined) return;
+  delete sessions[providerId];
+  if (Object.keys(sessions).length === 0) {
+    await Deno.remove(path).catch(() => undefined);
+    return;
+  }
+  await writeStreamSessions(workDir, path, sessions);
+}
+
+/** Read a stream record, degrading a missing or corrupt file to an empty map. */
+async function readStreamSessions(
+  path: string,
+): Promise<Record<string, PersistedStreamSession>> {
+  let raw: string;
+  try {
+    raw = await Deno.readTextFile(path);
+  } catch {
+    return {};
+  }
+  return parseStreamSessions(raw);
+}
+
+/** Write a stream record. Best-effort: false on any filesystem failure. */
+async function writeStreamSessions(
+  workDir: string,
+  path: string,
+  sessions: Record<string, PersistedStreamSession>,
+): Promise<boolean> {
+  try {
+    await Deno.mkdir(resumeStateDir(workDir), { recursive: true });
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({ sessions }, null, 2) + "\n",
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Parse a stream record, keeping only well-formed per-provider entries. */
+function parseStreamSessions(
+  raw: string,
+): Record<string, PersistedStreamSession> {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (typeof value !== "object" || value === null) return {};
+  const sessions = (value as Record<string, unknown>).sessions;
+  if (typeof sessions !== "object" || sessions === null) return {};
+  const parsed: Record<string, PersistedStreamSession> = {};
+  for (const [providerId, entry] of Object.entries(sessions)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (
+      typeof record.sessionId !== "string" || record.sessionId.length === 0 ||
+      typeof record.savedAtEpochMs !== "number"
+    ) {
+      continue;
+    }
+    parsed[providerId] = {
+      sessionId: record.sessionId,
+      savedAtEpochMs: record.savedAtEpochMs,
+      ...(typeof record.credentialScope === "string"
+        ? { credentialScope: record.credentialScope }
+        : {}),
+      ...(typeof record.holderHost === "string"
+        ? { holderHost: record.holderHost }
+        : {}),
+    };
+  }
+  return parsed;
+}
+
 /** Parse and validate a persisted file's contents. */
 function parsePersisted(raw: string): PersistedResumeState | null {
   let value: unknown;
@@ -246,9 +453,12 @@ function parsePersisted(raw: string): PersistedResumeState | null {
 }
 
 /**
- * Delete sibling entries whose recorded save time is outside the
- * freshness window (or that no longer parse). Keeps the directory from
+ * Delete sibling **per-issue** entries whose recorded save time is outside
+ * the freshness window (or that no longer parse). Keeps the directory from
  * accumulating files for issues that were never re-claimed.
+ *
+ * Only files matching the per-issue name shape are considered, so a stream
+ * record — which never expires — is never swept (Issue #2332).
  */
 async function sweepStaleSiblings(
   dir: string,
@@ -256,7 +466,7 @@ async function sweepStaleSiblings(
 ): Promise<void> {
   try {
     for await (const entry of Deno.readDir(dir)) {
-      if (!entry.isFile || !entry.name.endsWith(".json")) continue;
+      if (!entry.isFile || !PER_ISSUE_FILE_PATTERN.test(entry.name)) continue;
       const path = `${dir}/${entry.name}`;
       try {
         const parsed = parsePersisted(await Deno.readTextFile(path));
