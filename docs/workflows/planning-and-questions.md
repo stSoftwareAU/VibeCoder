@@ -561,10 +561,21 @@ candidate is not a candidate that carried no table (Issue #1245). A genuine
 coverage table is a few hundred characters, so the next candidate, or the
 parent body, still decides.
 
-**The outcome — no second escalation path.** An uncovered ask needs a decision
-no self-repair can make (create the missing sub-issue, or accept the ask as out
-of scope), so the gate routes through the existing `escalateToHuman()`
-chokepoint: `needs-human` plus one explanation comment naming every offending
+**Self-repair first.** A failing gate is repaired before anyone is asked
+(`worker/deno/lib/plan_coverage_repair.ts`). The commonest failure is a publish
+turn that created sound sub-issues and never posted the table, and the table is
+derivable from the parent and those sub-issues — so one planning-phase model
+call drafts it, the worker posts **only the table it parsed back out of the
+draft** (never the model's prose), and the real gate is re-run against the
+parent. The repair cannot manufacture a pass: the draft is told to write `None`
+for an ask nothing covers, and that row fails the re-gate like any other. An
+unreadable parent, a failed or timed-out model call, a draft with no table and
+an exhausted handler budget all leave the original verdict standing.
+
+**The outcome — no second escalation path.** What survives the repair is an
+uncovered ask, which needs a decision no draft can make (create the missing
+sub-issue, or accept the ask as out of scope), so the gate routes through the
+existing `escalateToHuman()` chokepoint: `needs-human` plus one explanation comment naming every offending
 ask and why. The parent is left **open** (reopened when the planner closed it
 inline) and the run still completes with `uncoveredAsks` on its result — the
 plan is published and usable, exactly as with a partial Failure-Detection
@@ -579,10 +590,12 @@ run does not publish a plan the gate is bound to reject.
 flowchart TD
     A[Publish turn posts the summary comment<br/>with the ## Plan Coverage table] --> B["closePlanningIssue() reads the parent"]
     B --> C{Table found with rows?}
-    C -->|no| E
+    C -->|no| R
     C -->|yes| D{Every ask covered<br/>or out of scope with a reason?}
     D -->|yes| F[Close the parent as completed]
-    D -->|no| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
+    D -->|no| R["Self-repair: draft the table,<br/>post it, re-run the gate"]
+    R -->|gate now passes| F
+    R -->|still failing or not attempted| E["escalateToHuman() — needs-human<br/>+ comment naming each uncovered ask<br/>parent left open · run succeeds"]
 ```
 
 #### 🗺️ Milestones table and structural gate (Issue #2172)
