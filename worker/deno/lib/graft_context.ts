@@ -169,6 +169,13 @@ export interface GraftContextResult {
   nodeCount?: number;
   /** Edges in the built graph whose relation is `calls`. */
   callEdgeCount?: number;
+  /**
+   * `graft_*` MCP tool calls the agent made this run (Issue #2314), summed
+   * across the run's invocations. Present only once the tools were handed to
+   * the agent and a tally came back; absent on a provider with no MCP
+   * transport, so "could not ask" never reads as "never asked".
+   */
+  queries?: number;
   /** The bundle text itself, present only on `ok`. */
   bundle?: string;
 }
@@ -705,6 +712,7 @@ export function describeGraftContext(result: GraftContextResult): string {
     result.buildSeconds === undefined
       ? undefined
       : `build ${result.buildSeconds}s`,
+    result.queries === undefined ? undefined : `${result.queries} queries`,
   ].filter((entry): entry is string => entry !== undefined);
   const detail = figures.length > 0 ? ` — ${figures.join(", ")}` : "";
   return `Graft context: ${result.status}${detail} (Issue #2060)`;
@@ -795,4 +803,103 @@ function detail(text: string): string {
 /** The message of an unknown thrown value. */
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// ---------------------------------------------------------------------------
+// The pull side: Graft's MCP server and its tools (Issue #2314)
+// ---------------------------------------------------------------------------
+
+/** The `mcpServers` key the Graft server is registered under. */
+export const GRAFT_MCP_SERVER_NAME = "graft";
+
+/**
+ * The tools Graft's MCP server exposes (upstream README, "MCP server").
+ *
+ * Named here so the query tally and the prompt line cannot drift apart: a
+ * tool the line tells the agent to call is one the tally counts.
+ */
+export const GRAFT_MCP_TOOLS: readonly string[] = [
+  "graft_find_code",
+  "graft_file_api",
+  "graft_trace_calls",
+  "graft_find_all",
+  "graft_repo_map",
+  "graft_check_freshness",
+];
+
+/**
+ * The one prompt line that tells the agent the tools exist (Issue #2314).
+ *
+ * Appended to the built user prompt, outside every untrusted fence and
+ * outside the cached static prefix, exactly as the CodeGraph line is. The
+ * injected bundle is a bounded selection made before the run started; these
+ * tools are how the agent follows up on it instead of grepping.
+ */
+export const GRAFT_PROMPT_LINE =
+  "This repository has a Graft code graph and its MCP tools: before grepping " +
+  "or reading files to find code, ask `graft_find_code` (a question → ranked " +
+  "symbols with file:line and their source), `graft_file_api` (a file → every " +
+  "signature, no bodies), `graft_trace_calls` (a symbol → who depends on it, " +
+  "or what it depends on with `direction: out`), `graft_find_all` (a regex → " +
+  "every hit grouped by symbol) or `graft_repo_map` (a first look at the " +
+  "layout) — each answers in one call what several reads would.";
+
+/**
+ * The `graft` entry for the per-run `mcpServers` configuration.
+ *
+ * Only `command`, `args` and `env` are named, because those are the keys
+ * `buildCodexMcpConfigArgs` (`codex_executor.ts`) translates into Codex `-c`
+ * overrides — it ignores `cwd` — so one entry serves Claude and Codex alike.
+ * The checkout is therefore named in the **arguments** (`graft mcp <dir>`):
+ * the agent's own working directory is the parent of the clone on the
+ * planning and question paths, where an unrooted server would refresh and
+ * answer from the wrong tree.
+ *
+ * @param repoDir - Absolute path of the built checkout the server must serve
+ * @returns The server specification, fresh on each call so a caller may mutate it
+ * @throws If `repoDir` is empty — a server rooted nowhere would silently
+ *   resolve the working directory, which is the fault this argument removes
+ */
+export function graftMcpServer(repoDir: string): {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+} {
+  if (repoDir.trim() === "") {
+    throw new Error(
+      "graftMcpServer needs the built checkout to root the MCP server at " +
+        "(Issue #2314)",
+    );
+  }
+  return {
+    command: "graft",
+    args: ["mcp", repoDir],
+    env: { ...GRAFT_ENV },
+  };
+}
+
+/**
+ * Count the Graft tool calls in a run's tool tally.
+ *
+ * Claude names an MCP tool `mcp__<server>__<tool>` while a CLI-shaped tally
+ * records the bare name, so both spellings are summed. A tally that ran other
+ * tools and no Graft query counts `0` — a real figure, and not the same thing
+ * as a run with no tally at all.
+ *
+ * @param counts - Per-tool call counts for the run, or `undefined` when the
+ *   provider's stream exposed none
+ * @returns The query count, or `undefined` when there is no tally
+ */
+export function countGraftQueries(
+  counts?: Record<string, number>,
+): number | undefined {
+  if (!counts) return undefined;
+  let total = 0;
+  for (const [tool, count] of Object.entries(counts)) {
+    const separator = tool.lastIndexOf("__");
+    const bare = separator === -1 ? tool : tool.slice(separator + 2);
+    if (!GRAFT_MCP_TOOLS.includes(bare)) continue;
+    if (typeof count === "number" && Number.isFinite(count)) total += count;
+  }
+  return total;
 }

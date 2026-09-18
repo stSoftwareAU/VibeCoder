@@ -12,13 +12,17 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   collectGraftContext,
+  countGraftQueries,
   describeGraftContext,
   formatGraftContextSection,
   GRAFT_ASK_TIMEOUT_MS,
   GRAFT_BUILD_TIMEOUT_MS,
   GRAFT_EXCLUDE_PATTERN,
   GRAFT_LAYOUT_DIRS,
+  GRAFT_MCP_TOOLS,
+  GRAFT_PROMPT_LINE,
   graftContextFacts,
+  graftMcpServer,
   graftQueryFor,
   graftQueryForPr,
   MAX_GRAFT_QUERY_BYTES,
@@ -1101,5 +1105,78 @@ Deno.test("graftContextFacts - an outcome that never had a bundle is unchanged",
   assertEquals(
     graftContextFacts({ status: "failed", enabled: true, buildSeconds: 300 }),
     { status: "failed", enabled: true, buildSeconds: 300 },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The pull side: MCP server, prompt line and query tally (Issue #2314)
+// ---------------------------------------------------------------------------
+
+Deno.test("graftMcpServer - roots the server at the built checkout in its arguments", () => {
+  const server = graftMcpServer("/work/repo");
+  assertEquals(server.command, "graft");
+  assertEquals(server.args, ["mcp", "/work/repo"]);
+  assertEquals(server.env, { DO_NOT_TRACK: "1" });
+  // Fresh on each call, so a caller mutating one cannot poison the next.
+  server.args.push("--extra");
+  assertEquals(graftMcpServer("/work/repo").args, ["mcp", "/work/repo"]);
+});
+
+Deno.test("graftMcpServer - refuses an empty checkout rather than rooting at the working directory", () => {
+  let threw = false;
+  try {
+    graftMcpServer("  ");
+  } catch (err) {
+    threw = true;
+    assertStringIncludes(String(err), "Issue #2314");
+  }
+  assert(threw, "an empty checkout must throw");
+});
+
+Deno.test("GRAFT_PROMPT_LINE - names the tools the tally counts", () => {
+  for (const tool of GRAFT_MCP_TOOLS) {
+    if (tool === "graft_check_freshness") continue; // housekeeping, not a query
+    assertStringIncludes(GRAFT_PROMPT_LINE, `\`${tool}\``);
+  }
+  assert(
+    !GRAFT_PROMPT_LINE.includes("\n"),
+    "one line, appended below the built prompt",
+  );
+});
+
+Deno.test("countGraftQueries - sums both spellings and ignores every other tool", () => {
+  assertEquals(countGraftQueries(undefined), undefined);
+  assertEquals(countGraftQueries({}), 0);
+  assertEquals(countGraftQueries({ Bash: 5, Read: 2 }), 0);
+  assertEquals(
+    countGraftQueries({
+      mcp__graft__graft_find_code: 3,
+      graft_file_api: 2,
+      mcp__graft__graft_trace_calls: 1,
+      mcp__codegraph__codegraph_explore: 9,
+      Bash: 4,
+    }),
+    6,
+  );
+  assertEquals(
+    countGraftQueries({ graft_find_code: Number.NaN, graft_repo_map: 1 }),
+    1,
+    "an unusable count is skipped, not summed as NaN",
+  );
+});
+
+Deno.test("describeGraftContext - the query tally joins the figures once recorded", () => {
+  assertStringIncludes(
+    describeGraftContext({
+      status: "ok",
+      enabled: true,
+      buildSeconds: 2.2,
+      queries: 6,
+    }),
+    "build 2.2s, 6 queries",
+  );
+  assertEquals(
+    describeGraftContext({ status: "ok", enabled: true }).includes("queries"),
+    false,
   );
 });

@@ -292,6 +292,8 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
       graft.callEdgeCount,
       (n) => `${formatCount(Math.round(n))} call edges`,
     ),
+    // Issue #2314: the `graft_*` tool calls, when the tools were handed over.
+    graftFigure(graft.queries, (n) => `${formatCount(Math.round(n))} queries`),
   ].filter((entry): entry is string => entry !== undefined);
   const detail = figures.length > 0 ? ` — ${figures.join(", ")}` : "";
   return `- **Graft:** ${status}${detail}`;

@@ -18,6 +18,7 @@ import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
+import { bindGraftRun, type GraftRun } from "./graft_run.ts";
 import {
   collectGraftContext,
   describeGraftContext,
@@ -1384,13 +1385,20 @@ async function _processCiWithHeartbeat(
     prepare: deps.claude.prepareCodegraphContext,
   });
   carrier.codegraphContext = codegraph.result;
+  // Issue #2314: the pull side of Graft, beside CodeGraph's, on the first
+  // invocation and the post-quality retry alike.
+  const graft = bindGraftRun({
+    result: graftContext,
+    repoDir: processorDeps.workDir,
+    logger,
+  });
 
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/ci_fix/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: codegraph.applyPrompt(userPrompt),
+      prompt: graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
       systemPrompt,
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
@@ -1399,13 +1407,14 @@ async function _processCiWithHeartbeat(
       logger,
       // Absent unless the index built, so a switched-off run writes no MCP
       // configuration at all — exactly as before.
-      ...codegraph.mcpConfigOption(),
+      ...graft.mcpConfigOption(codegraph.mcpConfig()),
     },
     {
       maxRetries: maxRateLimitRetries,
     },
   );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
+  if (claudeResult.ok) graft.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     const failureMessage =
@@ -1437,6 +1446,7 @@ async function _processCiWithHeartbeat(
     input,
     processorDeps,
     codegraph,
+    graft,
   );
 
   // Always commit and push any pending work (Issue #1643).
@@ -2210,6 +2220,8 @@ async function _runPostClaudeQualityCheck(
   input: CiFixInput,
   processorDeps: CiProcessorDeps,
   codegraph: CodegraphRun,
+  /** The run's Graft tools (Issue #2314), handed to the retry as well. */
+  graft: GraftRun,
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -2284,17 +2296,18 @@ async function _runPostClaudeQualityCheck(
       {
         // The same index the first attempt was handed (Issue #2160) — it is
         // the same checkout, and re-indexing it would spend the budget twice.
-        prompt: codegraph.applyPrompt(retryPrompt),
+        prompt: graft.applyPrompt(codegraph.applyPrompt(retryPrompt)),
         timeoutSeconds: claudeTimeout,
         noOutputTimeout: claudeNoOutputTimeout,
         phase: "ci_fix",
         cwd,
         logger,
-        ...codegraph.mcpConfigOption(),
+        ...graft.mcpConfigOption(codegraph.mcpConfig()),
       },
       { maxRetries: maxRateLimitRetries },
     );
     if (retryResult.ok) codegraph.record(retryResult.value.runStats);
+    if (retryResult.ok) graft.record(retryResult.value.runStats);
     if (!retryResult.ok) {
       logger.warn(
         "Claude quality retry failed — committing any remaining changes anyway",
