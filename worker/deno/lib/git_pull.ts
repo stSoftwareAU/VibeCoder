@@ -40,6 +40,11 @@ import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import {
+  createConflictStageTimer,
+  currentHost,
+  formatStageTimings,
+} from "./conflict_stage_timer.ts";
+import {
   type MilestoneSyncOutcome,
   summariseGateRepair,
 } from "./milestone_sync_conflict.ts";
@@ -734,8 +739,15 @@ export async function syncMilestoneBranchWithDefault(
     }
   }
 
+  // Where this sync's minutes go (Issue #2308). The deepen, the ladder's two
+  // rungs, the verification gate and the push are each timed into it, and the
+  // rendered line rides out with the conflict on the sync report.
+  const timer = createConflictStageTimer();
+
   // Ensure enough history for range/merge ops on a shallow clone (Issue #1502)
+  timer.start("deepen");
   await ensureHistoryDepth(["HEAD", defaultBranch], options);
+  timer.stop();
 
   // Check if merge is needed
   const behindResult = await runGitCommand(
@@ -920,6 +932,7 @@ export async function syncMilestoneBranchWithDefault(
     milestoneBranch,
     defaultBranch,
     agentFn,
+    timer,
     logger,
   });
   const resolved = [...triaged, ...ladder.resolved];
@@ -1134,6 +1147,7 @@ export async function syncMilestoneBranchWithDefault(
   // this branch implements where no hunk overlapped. It goes back to the
   // agent rung with the compiler's own output, not straight to a human, and
   // a repair that works is folded into the merge commit.
+  timer.start("gate");
   const verified = await runGateWithRepair({
     gate: runResolutionGate,
     ...(agentFn ? { agentFn } : {}),
@@ -1146,11 +1160,13 @@ export async function syncMilestoneBranchWithDefault(
     conflictedFiles,
     ...(logger ? { logger } : {}),
   });
+  timer.stop();
   if (verified.amendFailure) {
     return await refuseResolution(verified.amendFailure, true);
   }
   const { gate: finalGate, firstGate, repair } = verified;
 
+  timer.start("push");
   const gatedResolved = await gateThenPushMilestoneBranch(
     milestoneBranch,
     defaultBranch,
@@ -1159,6 +1175,7 @@ export async function syncMilestoneBranchWithDefault(
     () => Promise.resolve(finalGate),
     preMergeSha,
   );
+  timer.stop();
   if (!gatedResolved.ok) {
     // The resolution was made and the verification refused it. The reader
     // gets both halves (Issue #1559) — what the gate said, and the two sides
@@ -1210,6 +1227,17 @@ export async function syncMilestoneBranchWithDefault(
   // A resolution the gate refused and the agent rung then repaired says so
   // wherever it is read (Issue #1965).
   const repaired = repair?.status === "repaired" ? repair.record : undefined;
+  // Where the sync's minutes went (Issue #2308). One call, two sinks — the
+  // structured log record and the sync report comment — so neither can claim
+  // a different breakdown from the other.
+  const host = currentHost();
+  const stageTimings = timer.report();
+  logger?.info("Milestone sync stage timings", {
+    milestoneBranch,
+    defaultBranch,
+    host,
+    timings: stageTimings,
+  });
   return {
     ok: true,
     value: {
@@ -1228,6 +1256,7 @@ export async function syncMilestoneBranchWithDefault(
         // its reply, and this comment is where that record surfaces on the
         // milestone path.
         ...(ladder.agentReply ? { agentReply: ladder.agentReply } : {}),
+        timings: formatStageTimings(stageTimings, host),
       },
     },
   };

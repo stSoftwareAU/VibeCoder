@@ -18,6 +18,7 @@ import {
 } from "../lib/milestone_conflict_ladder.ts";
 import type { FileDecision } from "../lib/milestone_conflict_triage.ts";
 import type { DeterministicConflictReport } from "../lib/dependency_conflict_apply.ts";
+import { createConflictStageTimer } from "../lib/conflict_stage_timer.ts";
 
 const PATH = "lib/rival.ts";
 
@@ -442,6 +443,84 @@ Deno.test(
         outcome.escalations[0]!.reason,
         "ended by the worker",
       );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "climbConflictLadder - times its rules and agent rungs into the sync's timer (Issue #2308)",
+  async () => {
+    const fx = await conflictedClone();
+    try {
+      // An injected clock: the ladder's rungs are driven by test doubles, so
+      // the seconds asserted here are exactly the ticks handed to the timer.
+      let ms = 500_000;
+      const timer = createConflictStageTimer(() => ms);
+
+      const outcome = await climbConflictLadder({
+        escalations: undecided,
+        options: { cwd: fx.dir },
+        milestoneBranch: "milestone/1777",
+        defaultBranch: "main",
+        timer,
+        applyRulesFn: (options) => {
+          ms += 4_000;
+          return rulesDeferEverything(options);
+        },
+        agentFn: async (request: MilestoneConflictAgentRequest) => {
+          ms += 212_000;
+          // Resolve the file for real, so the ladder's own guards pass.
+          await Deno.writeTextFile(
+            `${request.workDir}/${PATH}`,
+            "const impl = 'both';\n",
+          );
+          await git(["add", "--", PATH], request.workDir);
+          return { ok: true, value: { terminated: false } };
+        },
+      });
+
+      assertEquals(outcome.escalations, []);
+      assertEquals(timer.report(), [
+        { stage: "rules", seconds: 4 },
+        { stage: "agent", seconds: 212 },
+      ]);
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "climbConflictLadder - an agent rung that failed still reports the time it cost (Issue #2308)",
+  async () => {
+    const fx = await conflictedClone();
+    try {
+      let ms = 500_000;
+      const timer = createConflictStageTimer(() => ms);
+
+      const outcome = await climbConflictLadder({
+        escalations: undecided,
+        options: { cwd: fx.dir },
+        milestoneBranch: "milestone/1777",
+        defaultBranch: "main",
+        timer,
+        applyRulesFn: rulesDeferEverything,
+        agentFn: () => {
+          ms += 900_000;
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error("the agent never produced a resolution"),
+          });
+        },
+      });
+
+      assertEquals(outcome.escalations.length, 1);
+      // The agent rung did stop — a failed run is still a finished stage; the
+      // point is that both rungs are accounted for rather than dropped.
+      assertEquals(timer.report().map((t) => t.stage), ["rules", "agent"]);
+      assertEquals(timer.report().at(-1)?.seconds, 900);
     } finally {
       await fx.cleanup();
     }

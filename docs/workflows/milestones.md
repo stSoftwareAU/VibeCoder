@@ -379,6 +379,21 @@ pre-merge commit and escalated — with both halves: what the verification said
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
 it is refused the same way.
 
+### Every sync says where its minutes went
+
+The sync merge runs the same ladder the PR path does, and it can take just as
+long. Each conflicting sync records the wall-clock seconds of its stages —
+`deepen`, `rules`, `agent`, `gate`, `push` — and the host it ran on (Issue
+#2308), rendered as one line at the bottom of the sync report comment (both the
+"resolved a conflict automatically" notice and the older
+check-what-was-overwritten report) and emitted as one structured log record
+with the same fields. A stage started and never stopped renders as `unfinished`
+rather than vanishing, so a sync that died inside the agent rung says so:
+
+```text
+Timings (host `mel-01`): deepen 2s · rules 1s · agent 212s · gate 94s · push 5s
+```
+
 ### The sync must record the default branch as an ancestor
 
 A squashed sync applies the default branch's *content* under a single-parent
