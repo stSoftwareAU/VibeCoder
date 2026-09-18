@@ -39,6 +39,7 @@ import { fetchOpenPRsForFleet, getBlockingPRForIssue } from "./issue_query.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { postCooldownComment } from "./shared_cooldown.ts";
+import { checkMilestoneStreamBusy, formatStreamBusy } from "./stream_lock.ts";
 import { getHostname } from "./worker_identity.ts";
 
 /** The claim marker prefix used in issue comments for tie-breaking. */
@@ -140,6 +141,18 @@ export interface ClaimOptions {
    * ever claims on; all eight only ever *apply* it.
    */
   blockingLabels?: readonly string[];
+  /**
+   * Refuse the claim while another open issue of the same milestone stream is
+   * live anywhere in the fleet (Issue #2334). Off unless the caller asks for
+   * it, and off for every caller when `enable_session_resume` is off: with no
+   * shared conversation there is no stream to lock, and the check's one extra
+   * `gh issue list` is not made at all.
+   *
+   * Set by the runs that join a stream — today the standard pipeline's setup
+   * phase. The pre-pipeline routes (idle-task, `add-repo`, `seed-idle-tasks`)
+   * never join one and never set it.
+   */
+  streamLockEnabled?: boolean;
 }
 
 /** Claim comment parsed from the GitHub API. */
@@ -210,6 +223,16 @@ export type ClaimFailureReason =
   | "not_found"
   /** `gh issue comment` failed after assignment succeeded. */
   | "comment_failed"
+  /**
+   * Another open issue of this issue's milestone stream is already being run
+   * somewhere in the fleet (Issue #2334). A stream owns one agent
+   * conversation, so a second run inside it is two runs in one conversation.
+   * Refused before the assignment and the claim comment, and **not** a
+   * failure: no `failed-once` label, no churn record and no cooldown beyond
+   * the normal scan interval — the issue is claimed on a later scan once the
+   * holder's heartbeat goes stale.
+   */
+  | "stream_busy"
   /** Verification re-read of comments failed after the claim was posted. */
   | "verification_failed"
   /** Any other error from `gh` (network, transient 5xx, etc.). */
@@ -259,8 +282,15 @@ export interface ClaimChurnResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/** Maximum age (in milliseconds) for a CLAIM_LOCK comment to be considered recent. */
-const RECENT_CLAIM_WINDOW_MS = 60_000;
+/**
+ * Maximum age (in milliseconds) for a CLAIM_LOCK comment to be considered
+ * recent.
+ *
+ * Exported for the stream lock (Issue #2334), which reads a sibling issue's
+ * claim comments by the same window — a claim younger than this belongs to a
+ * run whose first heartbeat refresh has not landed yet.
+ */
+export const RECENT_CLAIM_WINDOW_MS = 60_000;
 
 /**
  * Minimum age a CLAIM_LOCK comment must reach before the stale-claim
@@ -474,6 +504,12 @@ async function liveHeartbeatWithoutAssigneeCheck(
  * Issue #3664: `claimIssue` now always supplies a non-empty set — the
  * fleet union when known, the claiming account otherwise — see
  * `resolveTrustedClaimAuthors`.
+ *
+ * Issue #2334: Check 3 refuses an issue whose milestone stream another open
+ * sibling is already running. It runs here, before the assignment and before
+ * the claim comment, so a blocked issue costs no assignment churn — and it
+ * runs only when `streamLock` is supplied, so a fleet with session resume off
+ * makes no extra API call.
  */
 async function preClaimFreshnessCheck(
   repo: string,
@@ -481,6 +517,7 @@ async function preClaimFreshnessCheck(
   ghCommandFn: (args: string[]) => Promise<string>,
   allowedAuthors: string[] = [],
   nowSeconds: number = Math.floor(Date.now() / 1000),
+  streamLock?: { milestoneTitle?: string },
 ): Promise<
   {
     shouldBailOut: boolean;
@@ -568,6 +605,36 @@ async function preClaimFreshnessCheck(
     }
   } catch {
     // Fail open — proceed with claim
+  }
+
+  // Check 3 (Issue #2334): one run per milestone stream at a time,
+  // fleet-wide. A sibling open issue of the same milestone with a beating
+  // heartbeat — or a claim posted seconds ago — means a run is already inside
+  // this stream's conversation, so this issue waits for a later scan. Not a
+  // failure: no label, no churn record, no cooldown.
+  if (streamLock !== undefined) {
+    const stream = await checkMilestoneStreamBusy({
+      repo,
+      issueNumber,
+      ghCommandFn,
+      trustedAuthors: allowedAuthors,
+      nowSeconds,
+      ...(streamLock.milestoneTitle
+        ? { milestoneTitle: streamLock.milestoneTitle }
+        : {}),
+    });
+    if (stream.busy) {
+      const detail = formatStreamBusy(stream);
+      console.info(
+        `[claim_issue] repo=${repo} issue=#${issueNumber} ${detail} — ` +
+          `retried on a later scan (Issue #2334)`,
+      );
+      return {
+        shouldBailOut: true,
+        reason: "stream_busy",
+        reasonDetail: detail,
+      };
+    }
   }
 
   return { shouldBailOut: false };
@@ -1078,6 +1145,7 @@ export async function claimIssue(
     cache,
     wasClosedThisRun = defaultWasClosedThisRun,
     blockingLabels = [LABEL_DEFAULTS.needsHumanLabel],
+    streamLockEnabled = false,
   } = options;
 
   // Issue #181: the worker closed this issue earlier in this run, so no
@@ -1167,6 +1235,13 @@ export async function claimIssue(
     issueNumber,
     ghCommandFn,
     trustedClaimAuthors,
+    Math.floor(Date.now() / 1000),
+    // Issue #2334: the milestone stream lock, only for a run that joins a
+    // stream. Omitted here means the check — and its `gh issue list` — never
+    // happens.
+    streamLockEnabled
+      ? { ...(milestoneTitle ? { milestoneTitle } : {}) }
+      : undefined,
   );
   if (freshnessCheck.shouldBailOut) {
     return {

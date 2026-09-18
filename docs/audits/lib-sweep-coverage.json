@@ -1810,6 +1810,18 @@
       "paths": [
         "worker/deno/lib/stream_identity.ts"
       ]
+    },
+    {
+      "issue": 2334,
+      "chunk": "top-up-2334",
+      "title": "top-up: the milestone stream lock",
+      "ledger": "docs/audits/security-sweep-2334-stream-lock.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_lock.ts (#2334)",
+      "status": "swept",
+      "sweptAt": "9a429bee650fc8d5241c6ec367e964a91e0d22db",
+      "paths": [
+        "worker/deno/lib/stream_lock.ts"
+      ]
     }
   ],
   "roots": [
