@@ -497,21 +497,25 @@ async function orderRepoMilestones(
   const measured: MeasuredMilestone[] = [];
   for (const milestone of milestones) {
     let behindBy: number | undefined;
+    /** Says what went wrong and that the order is the poorer for it. */
+    const unmeasured = (reason: string): void =>
+      log(
+        `WARNING: Could not measure how far '${milestone.milestoneBranch}' ` +
+          `in ${repo} is behind '${milestone.defaultBranch}': ${reason} — it ` +
+          `keeps its place in this cycle's order (Issue #2309)`,
+      );
     try {
       const count = await behindCountFn(
         repo,
         milestone.milestoneBranch,
         milestone.defaultBranch,
       );
+      // The measurement reports a failure as a Result; the ref validation
+      // inside a production `behindCountFn` throws, so both are handled.
       if (count.ok) behindBy = count.value;
-      else throw count.error;
+      else unmeasured(count.error.message);
     } catch (err) {
-      log(
-        `Could not measure how far '${milestone.milestoneBranch}' in ${repo} ` +
-          `is behind '${milestone.defaultBranch}': ${
-            err instanceof Error ? err.message : String(err)
-          } — it keeps its place in this cycle's order (Issue #2309)`,
-      );
+      unmeasured(err instanceof Error ? err.message : String(err));
     }
     measured.push({
       milestone,
@@ -1264,11 +1268,20 @@ export async function syncMilestoneBranches(
         startedAt: openedAt,
       });
       const entry = streaks[streakKey];
-      if (posted && streakPath && entry) {
+      if (!posted) return;
+      if (streakPath && entry) {
         streaks[streakKey] = { ...entry, announcedAttemptAt: openedAt };
         streaksDirty = true;
         await persistStreaks();
+        return;
       }
+      // Nowhere durable to record it: this pass will not repeat it, but a
+      // later cycle re-entering the same attempt has nothing to read.
+      log(
+        `The running sync attempt for '${milestone.milestoneBranch}' in ` +
+          `${repo} was announced without a ledger entry to record it, so a ` +
+          `later cycle may announce the same attempt again (Issue #2309)`,
+      );
     } catch (err) {
       log(
         `WARNING: Could not announce the running sync attempt for ` +

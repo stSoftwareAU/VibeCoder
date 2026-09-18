@@ -5211,9 +5211,10 @@ async function syncMilestoneBranchesFn(
   logger: Logger,
   env: EnvLookup,
   /**
-   * The handler's watchdog deadline (Issue #1778). The sweep offers its
-   * single conflict-agent rung only while this covers a whole agent run;
-   * absent, the pass is unbounded and the rung is offered on its own merits.
+   * The handler's watchdog deadline (Issue #1778). The sweep offers a
+   * conflict-agent rung to each behind branch only while this still covers a
+   * whole agent run (Issue #2309); absent, the pass is unbounded and every
+   * rung is offered on its own merits.
    */
   deadlineEpochMs?: number,
 ): Promise<void> {

@@ -3725,7 +3725,7 @@ is the branch's to answer for:
 | Conflicted and every rung left it undecided                     | `failed` — one attempt charged, due again next cycle |
 | The agent ran out **its own** timeout                           | `failed` — the rung was climbed and the conflict beat it (Issue #2305) |
 | The **worker** ended the run at the cycle deadline              | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305) |
-| Conflicted while the cycle's agent rung was already spent       | `not-charged` — `agent deferred: cycle budget` |
+| Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309) |
 | Merge gate refused the merged tree, or refused the resolution    | `not-charged` — the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
 | Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
@@ -3743,9 +3743,9 @@ recorded; on `merged: false` one `needs-human` comment lands on the existing
 escalation target and a second cycle posts nothing. Without a clone git
 runner the default still logs `budget exhausted: roll-back not yet available`.
 
-**Every behind branch is offered the agent rung; the budget decides** (Issue
-#2309). `grantAgentRun` decides it, and it is the merge-conflict drain's rule
-with **both** halves:
+**Every behind branch is offered the agent rung; the budget decides**
+(Issue #2309). `grantAgentRun` decides it, and it is the merge-conflict drain's
+rule with **both** halves:
 
 - **A floor.** A rung is not started at all unless the handler's remaining
   budget, less the `DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS` a resolution spends

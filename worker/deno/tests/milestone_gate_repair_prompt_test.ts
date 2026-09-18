@@ -281,3 +281,57 @@ Deno.test("bindMilestoneConflictAgent - an unbounded pass keeps the configured t
   assertEquals(captured.options[0]!.timeoutSeconds, 1800);
   assertEquals(captured.options[1]!.timeoutSeconds, 1800);
 });
+
+Deno.test("bindMilestoneConflictAgent - entering the rung announces once, and a repair announces nothing (Issue #2309)", async () => {
+  const captured: Captured = { prompts: [], options: [] };
+  let entered = 0;
+  const agentFn = bindMilestoneConflictAgent({
+    repo: "stSoftwareAU/GRQ-AutoTrader",
+    grant: {
+      agentAllowed: true,
+      onAgentRungEntered: () => {
+        entered++;
+        return Promise.resolve();
+      },
+    },
+    config: config(1800),
+    logger: silentLogger(),
+    promptsDir: PROMPTS_DIR,
+    runAgent: makeRunner(captured),
+  })!;
+
+  const request = {
+    conflictedFiles: ["docs/development.md"],
+    milestoneBranch: "milestone/168-execution",
+    defaultBranch: "Develop",
+    workDir: "/tmp/nonexistent-gate-repair",
+  };
+  await agentFn(request);
+  assertEquals(entered, 1, "the rung announces when it is entered");
+
+  // A gate repair is the same attempt continuing, not a second one.
+  await agentFn({
+    ...request,
+    repair: { ...REPAIR, mergedCommitSubjects: [] },
+  });
+  assertEquals(entered, 1);
+});
+
+Deno.test("bindMilestoneConflictAgent - a refused grant binds no rung, so nothing is announced (Issue #2309)", () => {
+  let entered = 0;
+  const agentFn = bindMilestoneConflictAgent({
+    repo: "stSoftwareAU/GRQ-AutoTrader",
+    grant: {
+      agentAllowed: false,
+      onAgentRungEntered: () => {
+        entered++;
+      },
+    },
+    config: config(1800),
+    logger: silentLogger(),
+    promptsDir: PROMPTS_DIR,
+  });
+
+  assertEquals(agentFn, undefined);
+  assertEquals(entered, 0);
+});
