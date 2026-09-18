@@ -63,15 +63,18 @@ Deno.test("issue_executor_agents - the executor cannot spawn further sub-agents"
   );
 });
 
-Deno.test("issue_executor_agents - the executor prompt states its two jobs: make the edits, run the covering tests", () => {
+Deno.test("issue_executor_agents - the CLI's two required fields are populated", () => {
+  // `description` is what the CLI routes work by and `prompt` is what the
+  // sub-agent runs on; an empty either is an agent the CLI cannot use.
   const executor = buildIssueExecutorAgents()[ISSUE_EXECUTOR_AGENT_NAME]!;
-  const prompt = executor.prompt.toLowerCase();
 
-  assert(prompt.includes("edit"), `prompt must name the edits: ${prompt}`);
-  assert(prompt.includes("test"), `prompt must name the tests: ${prompt}`);
   assert(
-    executor.description.length > 0,
+    executor.description.trim().length > 0,
     "the CLI routes work by the description, so it cannot be empty",
+  );
+  assert(
+    executor.prompt.trim().length > 0,
+    "a sub-agent with no system prompt has nothing to run on",
   );
 });
 

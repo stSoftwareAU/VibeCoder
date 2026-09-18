@@ -1810,6 +1810,18 @@
       "paths": [
         "worker/deno/lib/issue_executor_split.ts"
       ]
+    },
+    {
+      "issue": 2342,
+      "chunk": "top-up-2342",
+      "title": "top-up: the issue-executor sub-agent definitions",
+      "ledger": "docs/audits/security-sweep-2342-issue-executor-agents.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_agents.ts (#2342)",
+      "status": "swept",
+      "sweptAt": "4341d040bc3c425135e8068dd17d444b85bf0e14",
+      "paths": [
+        "worker/deno/lib/issue_executor_agents.ts"
+      ]
     }
   ],
   "roots": [

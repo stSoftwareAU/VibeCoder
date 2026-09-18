@@ -309,9 +309,10 @@ export interface ExecuteClaudePhaseOptions {
    * Whether this host splits issue work between an advisor and Sonnet
    * executor sub-agents (Issue #2342, part of #2320, default: false).
    *
-   * Threaded from `config.issueExecutorSplit` by the same production wiring
-   * site that supplies {@link codegraphContextEnabled}; the repository's own
-   * `repo_config` override is layered over it here. Off, the invocation
+   * Threaded from `config.issueExecutorSplit` by this path's production
+   * wiring site (`commands/execute_claude_phase.ts`); the main-loop issue
+   * phase reads the same key straight off its own `config`. The repository's
+   * own `repo_config` override is layered over it here. Off, the invocation
    * carries no `--agents` and is byte-for-byte the argv built today.
    */
   issueExecutorSplit?: boolean;
@@ -1395,8 +1396,8 @@ async function executeClaudePhaseBody(
   );
   if (issueExecutorSplit) {
     deps.log(
-      "Issue-executor split enabled: delegating executor work to " +
-        `${ISSUE_EXECUTOR_MODEL} sub-agents (Issue #2342)`,
+      "Issue-executor split is on: the invocation carries " +
+        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
     );
   }
   deps.log("Starting Claude Code to work on the issue...");

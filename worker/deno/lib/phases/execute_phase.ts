@@ -29,6 +29,11 @@ import {
   graftQueryFor,
 } from "../graft_context.ts";
 import { isGraftContextEnabled } from "../graft_context_config.ts";
+import { isIssueExecutorSplitEnabled } from "../issue_executor_split.ts";
+import {
+  buildIssueExecutorAgents,
+  ISSUE_EXECUTOR_MODEL,
+} from "../issue_executor_agents.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -740,6 +745,24 @@ async function executeClaudeBody(
       })
       : undefined;
 
+  // The issue-executor split (Issue #2342): on, the invocation carries
+  // `--agents` definitions so the advisor delegates mechanical edit work to
+  // Sonnet executors. Off — the default — `agents` stays absent, no argument
+  // is emitted, and every sub-agent inherits the phase's model as before.
+  // Wired here as well as on the standalone command path, or the key would be
+  // inert on exactly the runs the fleet actually makes.
+  const issueExecutorSplit = isIssueExecutorSplitEnabled(
+    "issue",
+    config.repoConfig?.[repo],
+    config,
+  );
+  if (issueExecutorSplit) {
+    logger.info(
+      `Issue-executor split is on for ${repo}: the invocation carries ` +
+        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
+
   // Execute Claude with timeout and retry.
   //
   // One invocation, with the periodic WIP checkpoints (#4170) running for its
@@ -772,6 +795,8 @@ async function executeClaudeBody(
           // Issue #2159 layers the `codegraph` server beside that grant on an
           // enabled run whose index built, and changes nothing otherwise.
           mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
+          // Issue #2342: only a split run carries sub-agent definitions.
+          ...(issueExecutorSplit ? { agents: buildIssueExecutorAgents() } : {}),
           logger,
           sessionResumeState: state.sessionResumeState,
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
