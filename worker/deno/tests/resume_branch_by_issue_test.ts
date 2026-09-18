@@ -49,7 +49,14 @@ function makeContext(
     issueLabels: ["top-priority"],
     issueComments: "",
     githubUser: "vibe-worker",
-    config: { ...buildDefaultWorkerConfig(), workDir },
+    // Session resume is turned OFF deliberately, not inherited (Issue #2339
+    // flipped the shipped default to `true`): these tests exist to prove that
+    // pushed-WIP resume does not depend on the flag, so the flag must be off.
+    config: {
+      ...buildDefaultWorkerConfig(),
+      workDir,
+      enableSessionResume: false,
+    },
     ...overrides,
   };
 }
@@ -107,8 +114,10 @@ Deno.test("setup #220 - a retitled issue resumes the persisted branch, not the n
       deps.git.createBranchName(211, RETITLED) !== ORPHANED_BRANCH,
       "fixture no longer exercises a retitle",
     );
-    // Session resume stays off — pushed WIP must not depend on it.
+    // The fixture turns session resume off explicitly — pushed WIP must not
+    // depend on it — while the shipped default is `true` (Issue #2339).
     assertEquals(ctx.config.enableSessionResume, false);
+    assertEquals(buildDefaultWorkerConfig().enableSessionResume, true);
 
     const result = await workOnIssueSetupBranch(ctx, state, deps);
 

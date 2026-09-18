@@ -1631,21 +1631,49 @@ A `SessionResumeState` object tracks the current phase count:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enable_session_resume` | boolean | `false` | Enable CLI-level session continuity |
+| `enable_session_resume` | boolean | `true` | Per-stream conversations, the stream locks and the per-issue compaction |
 
-Session resume is disabled by default for safe rollout. Enable it in
+Session resume is **enabled by default** (Issue #2339): the stream machinery is
+in place, so a host with no explicit value runs with it on. Turn it off in
 `.config.json`:
 
 ```json
 {
-  "enable_session_resume": true
+  "enable_session_resume": false
 }
 ```
 
 **Benefit:** Preserves conversation context between clarification →
-planning → implementation → quality check phases, reducing redundant
-context rebuilding and improving response quality as later phases can
-reference earlier decisions.
+planning → implementation → quality check phases, and across the successive
+issues of one stream, reducing redundant context rebuilding and improving
+response quality as later phases can reference earlier decisions.
+
+**What it turns on:** one conversation per **stream** — per (repository,
+milestone), plus one blank stream per repository, never shared between
+repositories — joined by implementation and planning runs only; the fleet-wide
+milestone lock and the per-host blank lock; stream affinity with its
+five-minute grace; and the per-issue compaction below. Turning it off returns
+every run to a per-issue session with no stream record, no stream lock and no
+compaction; milestone-close housekeeping still sweeps worktrees and branches
+either way. The full model is in
+[CONFIGURATION.md § Session Resume](CONFIGURATION.md#-session-resume).
+
+#### Compaction behaviour by provider
+
+A resumed stream conversation has carried every issue of that stream so far, so
+it is compacted before each new issue's first phase (Issue #2337). What that
+costs depends on the provider:
+
+| Provider | Behaviour | Logged as |
+|----------|-----------|-----------|
+| `claude`, `deepseek` | One CLI, so one pair of levers: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **measured**. Smaller means it worked. | `compaction: /compact` |
+| `claude`, `deepseek` (unproven) | Anything short of that proof — an unchanged or larger transcript, a non-zero `/compact` run, a transcript that cannot be measured, a spawn that failed — is treated as uncompacted, and every agent run of the issue instead carries `--autocompact 100000`, the smallest window the CLI accepts, so its own compaction happens earliest. | `compaction: autocompact 100000` |
+| `codex`, `gemini` | No compaction control is exposed, so the full transcript is carried. | `compaction unavailable` (naming the provider) |
+
+A `new` or `reset` stream session has no conversation to compact and logs
+`compaction skipped: new stream session` without spending a CLI call. Every run
+logs **exactly one** compaction line, and no compaction outcome can fail an
+issue.
 
 Implementation:
 [`worker/deno/lib/session_resume.ts`](../worker/deno/lib/session_resume.ts)
@@ -2713,7 +2741,7 @@ Model selection and caching behaviour can be customised in `.config.json`:
 | `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while the agent is still producing output — a tool call or a stdout chunk inside the stall window (Issue #767) — and something is progressing — the working tree, or a descendant process doing work (Issue #508) — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
 | `claude_kill_after` | number | `30` | Grace period (seconds) before SIGKILL |
 | `enable_model_fallback` | boolean | `true` | Auto-downgrade model on rate limit |
-| `enable_session_resume` | boolean | `false` | Enable CLI-level session continuity |
+| `enable_session_resume` | boolean | `true` | Per-stream conversations, the stream locks and the per-issue compaction — see [CONFIGURATION.md § Session Resume](CONFIGURATION.md#-session-resume) |
 | `maxSessionSizeBytes` | number | `52428800` (50 MB) | Maximum session store size before compaction |
 | `maxSessionAgeDays` | number | `7` | Maximum session age before cleanup |
 | `contextBudgetWarningPercent` | number | `50` | Context usage warning threshold |

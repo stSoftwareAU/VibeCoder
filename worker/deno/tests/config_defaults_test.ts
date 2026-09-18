@@ -997,3 +997,63 @@ Deno.test("config_defaults - buildDefaultWorkerConfig ships the #4003 cadence po
     "github-actions-audit": { weeklyModel: "sonnet", monthlyModel: "fable" },
   });
 });
+
+// =============================================================================
+// Session resume (Issue #2339)
+// =============================================================================
+
+// The stream machinery (#2333–#2338) ships on by default, so an operator who
+// configures nothing gets per-stream conversations, the stream locks and the
+// per-issue compaction. Pinned in three places — the constant, the built
+// default config and `loadConfig` — so an accidental flip back to `false`
+// fails CI rather than silently reverting every unconfigured host.
+Deno.test("config_defaults - OPERATIONAL_DEFAULTS.enableSessionResume is true (Issue #2339)", () => {
+  assertEquals(OPERATIONAL_DEFAULTS.enableSessionResume, true);
+});
+
+Deno.test("config_defaults - buildDefaultWorkerConfig enables session resume (Issue #2339)", async () => {
+  const { buildDefaultWorkerConfig } = await import(
+    "../lib/config_defaults.ts"
+  );
+  assertEquals(buildDefaultWorkerConfig().enableSessionResume, true);
+});
+
+Deno.test("config_defaults - loadConfig defaults enableSessionResume to true (Issue #2339)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.enableSessionResume, true);
+  });
+});
+
+// An operator who has turned the stream off must keep it off: the default
+// flip must not swallow an explicit `false`.
+Deno.test("config_defaults - loadConfig honours enable_session_resume false (Issue #2339)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    enable_session_resume: false,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.enableSessionResume, false);
+  });
+});
+
+Deno.test("config_defaults - loadConfig honours enable_session_resume true (Issue #2339)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    enable_session_resume: true,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.enableSessionResume, true);
+  });
+});
