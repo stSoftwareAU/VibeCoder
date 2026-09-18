@@ -136,6 +136,13 @@ export interface SyncStreakEntry {
    * mirroring the PR ladder's marker rule (Issues #395 and #1693).
    */
   attemptOpenedAt?: string;
+  /**
+   * The {@link attemptOpenedAt} of the attempt whose agent rung has already
+   * been announced (Issue #2309). One opened attempt is announced once: the
+   * comment names the host and the start time, and a second cycle that
+   * re-enters the same attempt must not repeat it.
+   */
+  announcedAttemptAt?: string;
   /** The most recent concluded attempt, whatever it concluded. */
   lastAttempt?: ConflictAttemptRecord;
   /** Default-branch tip this branch was last synced against. */
@@ -349,6 +356,7 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const attempts = optionalCount(entry.conflictAttempts);
   const rollbacks = optionalCount(entry.rollbacks);
   const openedAt = optionalText(entry.attemptOpenedAt);
+  const announcedAt = optionalText(entry.announcedAttemptAt);
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
   const syncedMilestoneSha = optionalText(entry.lastSyncedMilestoneSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
@@ -357,6 +365,7 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   return {
     ...(attempts !== undefined ? { conflictAttempts: attempts } : {}),
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
+    ...(announcedAt ? { announcedAttemptAt: announcedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
     ...(syncedSha ? { lastSyncedDefaultSha: syncedSha } : {}),
     ...(syncedMilestoneSha
