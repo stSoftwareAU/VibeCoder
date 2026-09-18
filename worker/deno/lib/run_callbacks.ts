@@ -125,6 +125,19 @@ export interface CallbackGraftContext {
   nodeCount?: number;
   /** Edges in the built graph whose relation is `calls`. */
   callEdgeCount?: number;
+  /**
+   * `graft_*` MCP tool calls the agent made this run (Issue #2314). Present
+   * only when the tools were handed to the agent and a tally came back.
+   */
+  queries?: number;
+  /** The summary pass (Issue #2315): `ok`, `failed` or `skipped`; absent when none is configured. */
+  deep?: "ok" | "failed" | "skipped";
+  /** Wall-clock seconds the `--deep` build took, when one was attempted. */
+  deepSeconds?: number;
+  /** Files and symbols the pass summarised this run. */
+  deepSummarised?: number;
+  /** Summaries replayed from Graft's cache this run. */
+  deepCached?: number;
 }
 
 /**
@@ -167,6 +180,15 @@ export function callbackGraftFacts(
     ...(graft.callEdgeCount !== undefined
       ? { callEdgeCount: graft.callEdgeCount }
       : {}),
+    ...(graft.queries !== undefined ? { queries: graft.queries } : {}),
+    ...(graft.deep !== undefined ? { deep: graft.deep } : {}),
+    ...(graft.deepSeconds !== undefined
+      ? { deepSeconds: graft.deepSeconds }
+      : {}),
+    ...(graft.deepSummarised !== undefined
+      ? { deepSummarised: graft.deepSummarised }
+      : {}),
+    ...(graft.deepCached !== undefined ? { deepCached: graft.deepCached } : {}),
   };
 }
 
@@ -647,6 +669,11 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_GRAFT_BUNDLE_CHARS", graft.bundleChars);
   put(env, "VIBECODER_GRAFT_NODE_COUNT", graft.nodeCount);
   put(env, "VIBECODER_GRAFT_CALL_EDGE_COUNT", graft.callEdgeCount);
+  put(env, "VIBECODER_GRAFT_QUERIES", graft.queries);
+  put(env, "VIBECODER_GRAFT_DEEP", graft.deep);
+  put(env, "VIBECODER_GRAFT_DEEP_SECONDS", graft.deepSeconds);
+  put(env, "VIBECODER_GRAFT_DEEP_SUMMARISED", graft.deepSummarised);
+  put(env, "VIBECODER_GRAFT_DEEP_CACHED", graft.deepCached);
   put(env, "VIBECODER_OUTCOME_KIND", context.outcome?.kind);
   put(env, "VIBECODER_OUTCOME_CATEGORY", context.outcome?.category);
   put(env, "VIBECODER_OUTCOME_PHASE", context.outcome?.phase);

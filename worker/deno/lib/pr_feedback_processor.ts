@@ -34,6 +34,8 @@ import {
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
+import type { GraftDeepConfig } from "./graft_context_config.ts";
+import { bindGraftRun } from "./graft_run.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
@@ -222,6 +224,8 @@ export interface PrFeedbackProcessorDeps {
    * exactly as it does today.
    */
   graftContextEnabled?: boolean;
+  /** The Graft summary pass to build with (Issue #2315), when configured. */
+  graftContextDeep?: GraftDeepConfig;
   /**
    * Collect the Graft repo-context bundle (Issue #2103). Optional —
    * {@link collectGraftContext} is used when omitted, and it spawns nothing
@@ -344,6 +348,9 @@ async function collectGraftForFeedback(
     repoDir: processorDeps.workDir,
     query: graftQueryForPr(prTitle, feedbackText),
     enabled,
+    ...(processorDeps.graftContextDeep
+      ? { deep: processorDeps.graftContextDeep }
+      : {}),
     logger,
   });
 }
@@ -668,13 +675,19 @@ async function _processFeedbackWithHeartbeat(
     prepare: deps.claude.prepareCodegraphContext,
   });
   carrier.codegraphContext = codegraph.result;
+  // Issue #2314: the pull side of Graft, beside CodeGraph's.
+  const graft = bindGraftRun({
+    result: graftContext,
+    repoDir: processorDeps.workDir,
+    logger,
+  });
 
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: codegraph.applyPrompt(userPrompt),
+      prompt: graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
       systemPrompt,
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
@@ -683,13 +696,14 @@ async function _processFeedbackWithHeartbeat(
       logger,
       // Absent unless the index built, so a switched-off run writes no MCP
       // configuration at all — exactly as before.
-      ...codegraph.mcpConfigOption(),
+      ...graft.mcpConfigOption(codegraph.mcpConfig()),
     },
     {
       maxRetries: maxRateLimitRetries,
     },
   );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
+  if (claudeResult.ok) graft.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     // Handle failure — report via comment failure handler

@@ -41,7 +41,10 @@ import {
   type ExecuteClaudePhaseResult,
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
-import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
+import {
+  graftDeepConfig,
+  isGraftContextEnabled,
+} from "../lib/graft_context_config.ts";
 import { saveSession } from "../lib/session_manager.ts";
 import { buildProgressExtension } from "../lib/progress_extension_runtime.ts";
 import { resolveRunHardCap } from "../lib/run_hard_cap.ts";
@@ -165,6 +168,10 @@ export const executeClaudePhaseCommand: Command = {
       // The host switch for Graft repo-context injection (Issue #2102);
       // off on every host that has not opted in.
       graftContextEnabled: isGraftContextEnabled(config),
+      // The summary pass, when the host configures one (Issue #2315).
+      ...(graftDeepConfig(config)
+        ? { graftContextDeep: graftDeepConfig(config) }
+        : {}),
       // The CodeGraph repo-context trial switch (Issue #2159, part of #2145).
       codegraphContextEnabled: config.codegraphContext.enabled,
       // Context budget thresholds, including the hard ceiling (Issue #3713)

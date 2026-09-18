@@ -1775,6 +1775,18 @@
       "paths": [
         "worker/deno/lib/conflict_rebase_rung.ts"
       ]
+    },
+    {
+      "issue": 2314,
+      "chunk": "top-up-2314",
+      "title": "top-up: the Graft pull-side wiring",
+      "ledger": "docs/audits/security-sweep-2314-graft-run.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_run.ts (#2314)",
+      "status": "swept",
+      "sweptAt": "f6f972004e37b67fc5e7c51e9667c32052a2eaa8",
+      "paths": [
+        "worker/deno/lib/graft_run.ts"
+      ]
     }
   ],
   "roots": [

@@ -28,7 +28,10 @@ import {
   graftContextFacts,
   graftQueryFor,
 } from "../graft_context.ts";
-import { isGraftContextEnabled } from "../graft_context_config.ts";
+import {
+  graftDeepConfig,
+  isGraftContextEnabled,
+} from "../graft_context_config.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -90,6 +93,7 @@ import { escalateToHuman } from "../needs_human_escalation.ts";
 import { joinRedacted, redactedTail } from "../redacted_text.ts";
 import { reportRunDeadline } from "../slot_context.ts";
 import { prepareCodegraphRun } from "../codegraph_run.ts";
+import { bindGraftRun } from "../graft_run.ts";
 
 /**
  * True when the worker branch has at least one commit ahead of its base
@@ -451,8 +455,16 @@ async function executeClaudeBody(
     repoDir: state.repoPath,
     query: graftQueryFor(issueTitle, issueBody),
     enabled: isGraftContextEnabled(config),
+    ...(graftDeepConfig(config) ? { deep: graftDeepConfig(config) } : {}),
     logger,
   });
+  // The #1550 retry re-enters this body; the earlier attempt's Graft tool
+  // calls were still made (Issue #2314), so they are carried forward exactly
+  // as CodeGraph's queries are below.
+  const priorGraftQueries = state.graftContext?.queries;
+  if (priorGraftQueries !== undefined) {
+    graftContext.queries = (graftContext.queries ?? 0) + priorGraftQueries;
+  }
   state.graftContext = graftContextFacts(graftContext);
   if (graftContext.status !== "off") {
     logger.info(describeGraftContext(graftContext), { repo, issueNumber });
@@ -532,10 +544,24 @@ async function executeClaudeBody(
     codegraph.result.queries = (codegraph.result.queries ?? 0) + priorQueries;
   }
   state.codegraphContext = codegraph.result;
+
+  // Issue #2314: the pull side of Graft — the `graft` MCP server and its
+  // prompt line ride beside CodeGraph's on an `ok` collection, for a provider
+  // with an MCP transport, and change nothing otherwise. The facts on the
+  // phase state are re-published after each tally so the completion phase
+  // reports the run's queries.
+  const graft = bindGraftRun({
+    result: graftContext,
+    repoDir: state.repoPath,
+    logger,
+  });
+  const syncGraftFacts = (): void => {
+    state.graftContext = graftContextFacts(graft.result);
+  };
   // Appended to the built prompt rather than written into the template, for
   // the same reason as the prior-progress note above: it is run-conditional,
   // and appending leaves the cached prefix untouched.
-  const userPrompt = codegraph.applyPrompt(resumedPrompt);
+  const userPrompt = graft.applyPrompt(codegraph.applyPrompt(resumedPrompt));
 
   // --- Context budget hard ceiling (Issue #3713) ---
   // The budget check used to be observational only, so an issue whose prompt
@@ -749,7 +775,7 @@ async function executeClaudeBody(
           // Opt-in browser (Issue #192) — see `screenshotRequired` above.
           // Issue #2159 layers the `codegraph` server beside that grant on an
           // enabled run whose index built, and changes nothing otherwise.
-          mcpConfig: codegraph.mcpConfig(screenshotRequired),
+          mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
           logger,
           sessionResumeState: state.sessionResumeState,
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
@@ -852,6 +878,8 @@ async function executeClaudeBody(
     // Issue #2159: cumulative like the stats above — a credential switch
     // makes a second invocation whose queries belong to the same run.
     codegraph.record(claudeResult.value.runStats);
+    graft.record(claudeResult.value.runStats);
+    syncGraftFacts();
     supersededOutput = state.claudeOutput;
     // Inside the phase deadline: the switched-to invocation gets the budget
     // this phase has left, never a fresh hour on top of the one just spent.
@@ -882,6 +910,8 @@ async function executeClaudeBody(
   recordClaudeRunStats(state, claudeResult.value);
   // Issue #2159: this invocation's `codegraph_explore` tally.
   codegraph.record(claudeResult.value.runStats);
+  graft.record(claudeResult.value.runStats);
+  syncGraftFacts();
 
   // Check for timeout (Issue #1188 — detailed failure messages)
   if (claudeResult.value.timedOut) {

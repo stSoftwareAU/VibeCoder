@@ -441,7 +441,12 @@ invocation (mode `0600`) and removed after it exits:
     "buildSeconds": 12.5,
     "bundleChars": 4096,
     "nodeCount": 820,
-    "callEdgeCount": 1204
+    "callEdgeCount": 1204,
+    "queries": 7,
+    "deep": "ok",
+    "deepSeconds": 118.4,
+    "deepSummarised": 340,
+    "deepCached": 8120
   },
   "codegraph": {
     "enabled": true,
@@ -495,6 +500,11 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_GRAFT_BUNDLE_CHARS`           | `graft.bundleChars`             | no             | Characters of bundle text `graft ask` returned                                                                       |
 | `VIBECODER_GRAFT_NODE_COUNT`             | `graft.nodeCount`               | no             | Nodes in the built graph                                                                                             |
 | `VIBECODER_GRAFT_CALL_EDGE_COUNT`        | `graft.callEdgeCount`           | no             | Edges in the built graph whose relation is `calls`                                                                   |
+| `VIBECODER_GRAFT_QUERIES`                | `graft.queries`                 | no             | `graft_*` MCP tool calls the agent made this run (Issue #2314); absent when the tools were not handed over |
+| `VIBECODER_GRAFT_DEEP`                   | `graft.deep`                    | no             | The summary pass (Issue #2315): `ok`, `failed` (the structural build took over) or `skipped` (no key in the named variable); absent when the host configures none |
+| `VIBECODER_GRAFT_DEEP_SECONDS`           | `graft.deepSeconds`             | no             | Wall-clock seconds `graft build --deep` took, when attempted                                            |
+| `VIBECODER_GRAFT_DEEP_SUMMARISED`        | `graft.deepSummarised`          | no             | Files and symbols the pass summarised this run (Graft's `computed`)                                     |
+| `VIBECODER_GRAFT_DEEP_CACHED`            | `graft.deepCached`              | no             | Summaries replayed from Graft's cache this run rather than paid for again                              |
 | `VIBECODER_CODEGRAPH_ENABLED`            | `codegraph.enabled`             | yes            | Whether the host's CodeGraph switch was on for this run (`true` or `false`)                                          |
 | `VIBECODER_CODEGRAPH_STATUS`             | `codegraph.status`              | yes            | `ok`, `failed`, `unsupported` (no MCP transport on this provider) or `off` (switch off)                              |
 | `VIBECODER_CODEGRAPH_INDEX_SECONDS`      | `codegraph.indexSeconds`        | no             | Wall-clock seconds the index step took, when it was started                                                          |
@@ -552,8 +562,8 @@ is the one optional-looking fact that is present on **every** run context:
   that threw, or one the loop could not complete — the block falls back to
   `{ "enabled": false, "status": "off" }`: the switch was never read, so this
   says only that nothing was recorded.
-- `buildSeconds`, `bundleChars`, `nodeCount` and `callEdgeCount` are present
-  only when the collection actually reached them, and are **omitted** — not
+- `buildSeconds`, `bundleChars`, `nodeCount`, `callEdgeCount`, `queries` and
+  the `deep*` figures are present only when the collection actually reached them, and are **omitted** — not
   emitted as an empty string — when it did not. A figure that really is nought
   is reported as `0`: a graph with no nodes is a measurement, not an absence.
 - The Graft **bundle text** is never published. It is repository source,

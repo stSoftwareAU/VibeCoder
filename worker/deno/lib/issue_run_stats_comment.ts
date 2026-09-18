@@ -232,6 +232,33 @@ export function buildIssueCostTotalLine(tally: IssueCostTally): string {
 /** The three statuses a Graft collection can report. */
 const GRAFT_STATUSES: readonly string[] = ["ok", "failed", "off"];
 
+/** The three outcomes the summary pass can report (Issue #2315). */
+const GRAFT_DEEP_STATUSES: readonly string[] = ["ok", "failed", "skipped"];
+
+/**
+ * The summary pass as one figure — `deep ok 118 s (340 summarised, 8,120
+ * cached)` — or nothing when the host configures none (Issue #2315). The
+ * status goes through an allow-list like the collection's own.
+ */
+function graftDeepFigure(graft: GraftContextResult): string | undefined {
+  if (graft.deep === undefined) return undefined;
+  const status = GRAFT_DEEP_STATUSES.includes(graft.deep)
+    ? graft.deep
+    : "unknown";
+  const seconds = graftFigure(
+    graft.deepSeconds,
+    (s) => ` ${formatGraftSeconds(s)} s`,
+  ) ?? "";
+  const counts = graftFigure(
+    graft.deepSummarised,
+    (n) =>
+      ` (${formatCount(Math.round(n))} summarised, ${
+        formatCount(Math.round(graft.deepCached ?? 0))
+      } cached)`,
+  ) ?? "";
+  return `deep ${status}${seconds}${counts}`;
+}
+
 /**
  * Render one figure, or nothing when the collection never produced it.
  *
@@ -292,6 +319,9 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
       graft.callEdgeCount,
       (n) => `${formatCount(Math.round(n))} call edges`,
     ),
+    // Issue #2314: the `graft_*` tool calls, when the tools were handed over.
+    graftFigure(graft.queries, (n) => `${formatCount(Math.round(n))} queries`),
+    graftDeepFigure(graft),
   ].filter((entry): entry is string => entry !== undefined);
   const detail = figures.length > 0 ? ` — ${figures.join(", ")}` : "";
   return `- **Graft:** ${status}${detail}`;

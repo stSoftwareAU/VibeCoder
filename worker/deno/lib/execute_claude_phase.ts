@@ -64,6 +64,8 @@ import {
   type PrepareCodegraphContextFn,
   prepareCodegraphRun,
 } from "./codegraph_run.ts";
+import { bindGraftRun } from "./graft_run.ts";
+import type { GraftDeepConfig } from "./graft_context_config.ts";
 import type { ProgressExtensionOptions } from "./progress_extension.ts";
 import {
   buildTimeoutFailureReason,
@@ -289,6 +291,12 @@ export interface ExecuteClaudePhaseOptions {
    * exactly as it does today.
    */
   graftContextEnabled?: boolean;
+  /**
+   * The Graft summary pass to build with (Issue #2315), threaded from
+   * `config.graftContext.deep` through `graftDeepConfig()`. Absent, the
+   * collector builds the structural graph exactly as before.
+   */
+  graftContextDeep?: GraftDeepConfig;
   /**
    * Whether to index the checkout with CodeGraph and offer the agent that
    * index (Issue #2159, part of #2145, default: false).
@@ -930,6 +938,7 @@ async function executeClaudePhaseBody(
     includeCodebaseMap = OPERATIONAL_DEFAULTS.includeCodebaseMap,
     codebaseMapCacheDir,
     graftContextEnabled = false,
+    graftContextDeep,
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     sessionResumeState,
     contextBudgetWarningPercent =
@@ -1094,6 +1103,7 @@ async function executeClaudePhaseBody(
     repoDir,
     query: graftQueryFor(issueTitle, issueBody),
     enabled: graftContextEnabled,
+    ...(graftContextDeep ? { deep: graftContextDeep } : {}),
     logger,
   });
   collected.result = graftContext;
@@ -1118,6 +1128,18 @@ async function executeClaudePhaseBody(
       : {}),
   });
   carrier.codegraphContext = codegraph.result;
+
+  // Issue #2314: the pull side of Graft. On an `ok` collection, for a provider
+  // with an MCP transport, the `graft` MCP server and its prompt line ride
+  // beside CodeGraph's; on every other status the run is exactly as before.
+  const graft = bindGraftRun({
+    result: graftContext,
+    repoDir,
+    ...(invocationAgentProvider
+      ? { agentProvider: invocationAgentProvider }
+      : {}),
+    logger,
+  });
 
   // --- Previous security-fix gate verdict (Issue #4057) ---
   // A gate block leaves its verdict in worker run state. Replaying it here is
@@ -1210,7 +1232,7 @@ async function executeClaudePhaseBody(
   // the same reason the codebase map is injected rather than templated. The
   // cached static half is untouched, and the line lands outside every
   // untrusted fence the builder wrote.
-  const userPrompt = codegraph.applyPrompt(builtUserPrompt);
+  const userPrompt = graft.applyPrompt(codegraph.applyPrompt(builtUserPrompt));
 
   // --- Context budget monitoring and hard ceiling (Issues #1327, #3713) ---
   // Estimate token counts for each major prompt component and log the budget
@@ -1402,7 +1424,7 @@ async function executeClaudePhaseBody(
         // Issue #2159 layers the `codegraph` server beside that grant on an
         // enabled run whose index built; on every other status this is
         // exactly `screenshotRequired`, as before.
-        mcpConfig: codegraph.mcpConfig(screenshotRequired),
+        mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
         // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
         ...(options.progressExtension
           ? { progressExtension: options.progressExtension }
@@ -1427,6 +1449,8 @@ async function executeClaudePhaseBody(
   // Issue #2159: the run's `codegraph_explore` tally, read from the per-tool
   // counts the runner collected (Issue #2157).
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
+  // Issue #2314: the run's `graft_*` tally, from the same per-tool counts.
+  if (claudeResult.ok) graft.record(claudeResult.value.runStats);
 
   if (!claudeResult.ok) {
     return {

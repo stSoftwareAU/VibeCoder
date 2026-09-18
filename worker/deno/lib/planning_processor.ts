@@ -54,9 +54,13 @@ import {
   graftQueryFor,
   withGraftContext,
 } from "./graft_context.ts";
-import { isGraftContextEnabled } from "./graft_context_config.ts";
+import {
+  graftDeepConfig,
+  isGraftContextEnabled,
+} from "./graft_context_config.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
+import { bindGraftRun, type GraftRun } from "./graft_run.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
 import {
@@ -1467,6 +1471,7 @@ async function _processPlanningWithHeartbeat(
     repoDir,
     query: graftQueryFor(issueTitle, issueBody),
     enabled: isGraftContextEnabled(config),
+    ...(graftDeepConfig(config) ? { deep: graftDeepConfig(config) } : {}),
     logger,
   });
   graftSlot.result = graftContext;
@@ -1553,15 +1558,18 @@ async function _processPlanningWithHeartbeat(
     prepare: deps.claude.prepareCodegraphContext,
   });
   codegraphCarrier.codegraphContext = codegraph.result;
+  // Issue #2314: the pull side of Graft, beside CodeGraph's on every planning
+  // invocation below — the same MCP entry and prompt line, one tally.
+  const graft = bindGraftRun({ result: graftContext, repoDir, logger });
   /** The `mcpConfig` every planning invocation gets: absent unless indexed. */
-  const codegraphMcpOption = codegraph.mcpConfigOption();
+  const codegraphMcpOption = graft.mcpConfigOption(codegraph.mcpConfig());
 
   // --- Turn 1: draft the plan as text only ---
   const draftResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/planning/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: codegraph.applyPrompt(prompt),
+      prompt: graft.applyPrompt(codegraph.applyPrompt(prompt)),
       systemPrompt,
       timeoutSeconds: config.planningTimeout,
       killAfterSeconds: config.planningKillAfter,
@@ -1593,7 +1601,7 @@ async function _processPlanningWithHeartbeat(
         providerId: draftResult.value.provider,
       });
     }
-    recordInvocation(invocations, draftResult.value, codegraph);
+    recordInvocation(invocations, draftResult.value, codegraph, graft);
     if (draftResult.value.timedOut) {
       logger.warn(
         "Planning draft stage timed out — falling back to single-invocation publish (Issue #2648)",
@@ -1640,6 +1648,7 @@ async function _processPlanningWithHeartbeat(
         ctx.handlerDeadlineEpochMs,
         env,
         codegraph,
+        graft,
       );
     }
   }
@@ -1711,7 +1720,7 @@ async function _processPlanningWithHeartbeat(
 
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt: codegraph.applyPrompt(publishPrompt),
+      prompt: graft.applyPrompt(codegraph.applyPrompt(publishPrompt)),
       systemPrompt: publishSystemPrompt,
       timeoutSeconds: config.planningTimeout,
       killAfterSeconds: config.planningKillAfter,
@@ -1746,7 +1755,7 @@ async function _processPlanningWithHeartbeat(
       ),
     };
   }
-  recordInvocation(invocations, claudeResult.value, codegraph);
+  recordInvocation(invocations, claudeResult.value, codegraph, graft);
 
   const claudeOutput = claudeResult.value.output;
 
@@ -1849,7 +1858,7 @@ async function _processPlanningWithHeartbeat(
 
     const retryResult = await deps.claude.runClaudeWithRetry(
       {
-        prompt: codegraph.applyPrompt(retryPrompt),
+        prompt: graft.applyPrompt(codegraph.applyPrompt(retryPrompt)),
         timeoutSeconds: config.planningTimeout,
         killAfterSeconds: config.planningKillAfter,
         model: config.claudeModel || undefined,
@@ -1864,7 +1873,7 @@ async function _processPlanningWithHeartbeat(
     );
 
     if (retryResult.ok) {
-      recordInvocation(invocations, retryResult.value, codegraph);
+      recordInvocation(invocations, retryResult.value, codegraph, graft);
     }
     if (retryResult.ok && !retryResult.value.timedOut) {
       const retryOutput = retryResult.value.output;
@@ -1944,6 +1953,7 @@ async function _processPlanningWithHeartbeat(
     ctx.handlerDeadlineEpochMs,
     env,
     codegraph,
+    graft,
   );
 }
 
@@ -1971,8 +1981,11 @@ function recordInvocation(
    * across every planning invocation, with no site left out.
    */
   codegraph?: CodegraphRun,
+  /** The run's Graft tools (Issue #2314), folded in the same way. */
+  graft?: GraftRun,
 ): void {
   codegraph?.record(value.runStats);
+  graft?.record(value.runStats);
   invocations.push({
     phase: "planning",
     ...(value.runStats ? { runStats: value.runStats } : {}),
@@ -2109,8 +2122,20 @@ async function closePlanningIssue(
    * recovery paths that close without ever invoking the agent.
    */
   codegraph?: CodegraphRun,
+  /**
+   * The run's Graft tools (Issue #2314), handed to the self-repair invocation
+   * beside CodeGraph's for the same reason. Absent on the same paths.
+   */
+  graft?: GraftRun,
 ): Promise<Result<PlanningResult>> {
-  const codegraphMcpOption = codegraph?.mcpConfigOption() ?? {};
+  const codegraphMcpOption = graft
+    ? graft.mcpConfigOption(codegraph?.mcpConfig())
+    : (codegraph?.mcpConfigOption() ?? {});
+  /** Both repo-context lines, each only when its run was wired. */
+  const applyRepoContext = (prompt: string): string => {
+    const withCodegraph = codegraph ? codegraph.applyPrompt(prompt) : prompt;
+    return graft ? graft.applyPrompt(withCodegraph) : withCodegraph;
+  };
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
   // GitHub sub-issues. Text extraction is fragile — when Claude printed the
@@ -2202,9 +2227,7 @@ async function closePlanningIssue(
         runClaude: (repairPrompt: string) =>
           deps.claude.runClaudeWithRetry(
             {
-              prompt: codegraph
-                ? codegraph.applyPrompt(repairPrompt)
-                : repairPrompt,
+              prompt: applyRepoContext(repairPrompt),
               timeoutSeconds: config.planningTimeout,
               killAfterSeconds: config.planningKillAfter,
               phase: "planning",
@@ -2228,6 +2251,7 @@ async function closePlanningIssue(
       // Issue #2159: the repair's calls belong to the same run's tally.
       for (const invocation of repair.invocations) {
         codegraph?.record(invocation.runStats);
+        graft?.record(invocation.runStats);
       }
 
       if (repair.repaired.length > 0) {
