@@ -866,7 +866,8 @@ the issue at `needs-human` (Issue #2277). Every fallback files one
 whose originating issue cannot be found is closed too, and its flag carries
 `idle-task` and the PR's diff summary so the flag *is* the re-do item
 (Issue #2310). Its preconditions,
-its one-restart-per-issue bound and its exits are in
+its two-restarts-per-issue bound and its exits — including the park that
+follows the second restart (Issue #2312) — are in
 [the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
 
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`

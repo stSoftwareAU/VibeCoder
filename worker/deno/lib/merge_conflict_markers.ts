@@ -206,9 +206,14 @@ export function readParkedBase(
     if (typeof body !== "string") continue;
     const at = body.indexOf(CONFLICT_PARKED_MARKER);
     if (at < 0) continue;
-    const base = /base="([0-9a-fA-F]{7,40})"/.exec(body.slice(at))?.[1];
-    if (base === undefined) continue;
-    found = { base: base.toLowerCase(), index };
+    const written = /base="([^"]*)"/.exec(body.slice(at))?.[1];
+    if (written === undefined) continue;
+    // One rule, checked by the same predicate the writer validates through:
+    // a reader laxer than the writer accepts markers nothing else agrees are
+    // markers.
+    const base = written.trim().toLowerCase();
+    if (!isConflictHeadSha(base)) continue;
+    found = { base, index };
   }
   return found;
 }

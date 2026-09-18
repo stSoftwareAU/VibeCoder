@@ -353,6 +353,12 @@ export function detectConflictQueueStall(
   // deliberately narrow: it holds only while the PR's base is still the sha
   // the marker names, so a park the scan should already have re-attempted is
   // still caught by the ordinary clock.
+  //
+  // A base tip that could not be read therefore resolves the *opposite* way
+  // here to the way it resolves in the scan, and on purpose: each component
+  // fails towards saying something. The scan will not spend an agent run on a
+  // merge it cannot tell has changed, and this watchdog will not go silent on
+  // a PR it cannot tell is still waiting.
   if (
     signals.parkedBase !== undefined &&
     signals.parkedBase === observation.baseRefOid?.trim().toLowerCase()

@@ -112,8 +112,9 @@ import { partitionConflictComments } from "./conflict_marker_trust.ts";
  * beside it are frozen only because they are already in live comment threads;
  * a new marker has no such data to stay compatible with.
  *
- * Its presence is what bounds the rung to one abandon per issue, and what
- * makes two hosts scanning the same exhausted PR produce one abandon.
+ * Its presence is what bounds the rung to {@link MAX_RESTARTS_PER_ISSUE}
+ * abandons per issue, and what makes two hosts scanning the same exhausted PR
+ * produce one abandon.
  */
 export const CONFLICT_RESTART_MARKER = "<!-- vibe-merge-conflict-restart";
 
@@ -1369,7 +1370,7 @@ export async function abandonAndRestart(
   }
   const issueNumber = context.prSide.issue.number;
 
-  // --- Precondition 2: one restart per originating issue. -----------------
+  // --- Precondition 2: MAX_RESTARTS_PER_ISSUE restarts per issue. ---------
   let issueComments: unknown[];
   try {
     issueComments = await fetchIssueCommentPages(repo, issueNumber, gh);

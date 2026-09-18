@@ -35,9 +35,10 @@ gains `idle-task` when it carries none (Issue #2277). Every fallback leaves one
 of this rung is wired to the flag by the next sub-issue under #2298). A PR whose
 originating issue **cannot** be found is closed
 as well, and its flag issue carries `idle-task` and the PR's diff summary, so the
-flag is the re-do item. One restart per originating issue: if the fresh PR
-conflicts irreconcilably too, the bound declines the second restart and the PR is
-left open with the reason recorded. **The merge-conflict scan applies
+flag is the re-do item. Two restarts per originating issue: the third
+exhaustion declines, and the PR is then left open on `merge-conflict` with a
+base-keyed park marker, re-attempted only when its base tip moves
+(Issue #2312). **The merge-conflict scan applies
 `needs-human` for no conflict outcome at all** (Issue #2310) — only for a
 *worker* fault, three attempts disrupted before any conclusion — and a
 hand-applied `needs-human` is still honoured as a veto.
@@ -487,12 +488,14 @@ destroys nothing, but a person's commit graph is theirs to reshape.
   scan reads that marker back and waits at this head; the stall watchdog (Issue
   #569) is the backstop, and a later head or base move restarts the ladder at a
   real merge attempt. The budget-spent caller still escalates on a declined
-  abandon, unchanged: there the PR has failed real merges and has nowhere else
-  to go.
-- **One rung per head, and the abandon once per issue.** The ladder's own
+  abandon — there the PR has failed real merges and has nowhere else to go —
+  with one exception: a decline because the issue has **spent its restarts**
+  asks nobody either, because that PR is parked rather than stuck
+  (Issue #2312).
+- **One rung per head, and two abandons per issue.** The ladder's own
   markers bound each rung to one run at the head they name, and the abandon rung
-  is bounded a second time by the restart marker it leaves on the *issue* — so
-  work is closed and re-raised once, never in a loop.
+  is bounded a second time by the restart markers it leaves on the *issue* — so
+  work is closed and re-raised at most twice, never in a loop.
 - **The head sha and the verdict are read together**, in one
   `gh pr view --json headRefOid,mergeable,author`. The scan's own projection
   carries neither, and a rung decided on a head from one moment and a verdict
@@ -536,8 +539,8 @@ produces is recorded in the pass's own log instead.
   the same PR would destroy its commits and its review history — the same class
   of harm as the side-picking the contract forbids.
 - **Three preconditions run before anything is destroyed**, in this order: the
-  PR's originating issue is resolved; that issue has not already been restarted;
-  and it has no *other* open PR of its own. A failed lookup is never read as
+  PR's originating issue is resolved; that issue has not already been restarted
+  twice; and it has no *other* open PR of its own. A failed lookup is never read as
   an absence. The issue's own labels are then read to decide which pickup label
   the re-queue leaves it on — never whether the abandon happens.
 - **The re-queue keeps the label the issue already carries, and never asks a
@@ -586,7 +589,15 @@ produces is recorded in the pass's own log instead.
   cannot be read is not evidence that it moved, so the PR stays parked and the
   unreadable tip is warned about. The stall watchdog honours the same
   comparison: a parked PR on an unmoved base is not a stall, because the park
-  marker is what *follows* the label rather than the silence after it.
+  marker is what *follows* the label rather than the silence after it — and
+  once the base moves the watchdog measures that PR the ordinary way again, so
+  a park can never buy permanent silence.
+- **A half-done abandon is never parked away.** When the restart claim on the
+  issue names *this* PR, an earlier abandon of it started and stopped part-way,
+  so the issue may never have been re-queued. That is a failure, not a wait:
+  it records `budget-spent` with the route on the WARN line, keeps no park
+  marker, and stays visible to the stall watchdog. Only a genuinely spent
+  restart budget parks.
 - **A part-done abandon is never where this stops.** Every step names itself on
   failure, and the pass records that step at WARN with `route=abandon-failed` —
   "PR closed, issue not re-queued" must be visible, not silent.
@@ -1182,12 +1193,13 @@ branch at the same time. A host that loses the race returns immediately.
   leased force-push, and the squash-of-the-old-tree fallback. Every outcome
   leaves the branch at `OLD` or at a head whose tree equals `OLD`'s.
 - `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
-  its four preconditions, the one-restart-per-issue marker, the comments it
-  posts on the PR and the issue, and `exhaustedEscalationRoute`, which names
-  the route when the rung declines or fails. Both callers use it: the spent
-  attempt budget, which escalates to a human on a decline, and the exhausted
-  stale-verdict ladder, which records the rung as failed and asks nobody
-  (Issue #2280).
+  its four preconditions, the restart marker and the `MAX_RESTARTS_PER_ISSUE`
+  bound it enforces, the comments it posts on the PR and the issue, and
+  `exhaustedEscalationRoute`, which names the route when the rung declines or
+  fails. Both callers use it: the spent attempt budget, which escalates to a
+  human on a decline *other* than a spent restart budget (Issue #2312), and the
+  exhausted stale-verdict ladder, which records the rung as failed and asks
+  nobody (Issue #2280).
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
   a label with no concluded attempt behind it. It files work and applies
   `escalated`; it never applies `needs-human` and never retries.

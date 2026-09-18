@@ -12,6 +12,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildFallbackFlagLinkComment,
+  buildParkedPrComment,
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_PARKED_MARKER,
@@ -1712,6 +1713,118 @@ Deno.test("findConflictingPr - a moved base offers a parked PR again with a fres
   assertEquals(reasonFor(log, 61), "attempted");
   assertEquals(result.value.selected?.prNumber, 61);
   assertEquals(result.value.selected?.attemptCount, 0);
+});
+
+Deno.test("findConflictingPr - a park whose marker cannot be posted is not a park (Issue #2312)", async () => {
+  // The comment is what makes the park real: without it nothing records the
+  // wait, so the pass must fall back rather than report one.
+  const fake = makeFakeGh(restartedState(2, { failOn: "pr comment 61" }));
+
+  const { log } = await scanWith(fake);
+
+  assertEquals(reasonFor(log, 61), "budget-spent");
+  assertNoNeedsHumanWrites(fake);
+});
+
+Deno.test("findConflictingPr - an unreadable base tip leaves a parked PR parked (Issue #2312)", async () => {
+  // A base tip nobody could read is not evidence that it moved, so the PR is
+  // skipped rather than re-attempted against the merge that already failed.
+  const fake = makeFakeGh(restartedState(2, {
+    prs: [{
+      number: 61,
+      headRefName: "issue-16-fix-2",
+      baseRefName: "main",
+      // Neither the listing nor the per-PR read answers with a usable sha.
+      baseRefOid: undefined,
+    }],
+    comments: {
+      61: [
+        ...exhaustedComments(),
+        {
+          body: conflictParkedMarker(BASE_TIP),
+          created_at: "2026-08-20T09:00:00Z",
+        },
+      ],
+      16: [],
+    },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 61), "parked");
+  assertEquals(recordFor(log, 61).context?.base, BASE_TIP);
+});
+
+Deno.test("findConflictingPr - an unreadable base tip cannot park a PR either (Issue #2312)", async () => {
+  // The other half of the same rule: a marker has to name a base a later pass
+  // can compare, so an unreadable tip leaves the PR at `budget-spent` rather
+  // than parking it on a sha nothing will ever match.
+  const fake = makeFakeGh(restartedState(2, {
+    prs: [{
+      number: 61,
+      headRefName: "issue-16-fix-2",
+      baseRefName: "main",
+      baseRefOid: undefined,
+    }],
+  }));
+
+  const { log } = await scanWith(fake);
+
+  assertEquals(reasonFor(log, 61), "budget-spent");
+  assertEquals(
+    fake.commentsPosted.filter((c) => c.body.includes(CONFLICT_PARKED_MARKER))
+      .length,
+    0,
+  );
+  assertNoNeedsHumanWrites(fake);
+});
+
+Deno.test("findConflictingPr - a half-done abandon is not parked away (Issue #2312)", async () => {
+  // A claim naming *this* PR means an earlier abandon of it stopped part-way,
+  // so its issue may never have been re-queued. Parking it would replace the
+  // only record of that failure with a marker saying the fleet is waiting.
+  const fake = makeFakeGh(restartedState(1, {
+    comments: {
+      61: exhaustedComments(),
+      16: [{
+        body: conflictRestartMarker("org/repo", 61),
+        created_at: "2026-08-19T09:00:00Z",
+      }],
+    },
+  }));
+
+  const { log } = await scanWith(fake);
+
+  assertEquals(reasonFor(log, 61), "budget-spent");
+  assertEquals(
+    fake.commentsPosted.filter((c) => c.body.includes(CONFLICT_PARKED_MARKER))
+      .length,
+    0,
+  );
+  assertNoNeedsHumanWrites(fake);
+});
+
+Deno.test("buildParkedPrComment - says so when the flag could not be filed (Issue #2312)", () => {
+  // The park stands either way, but a record that does not exist must not be
+  // referenced as though it does.
+  const filed = buildParkedPrComment({
+    base: BASE_TIP,
+    baseBranch: "main",
+    issueNumber: 16,
+    flagIssueNumber: 900,
+  });
+  assertStringIncludes(filed, "recorded in #900");
+
+  const unfiled = buildParkedPrComment({
+    base: BASE_TIP,
+    baseBranch: "main",
+    issueNumber: 16,
+  });
+  assertStringIncludes(unfiled, "could **not** be filed");
+  assertStringIncludes(unfiled, "the park itself");
+  // Both carry the marker the next pass reads back.
+  assertStringIncludes(unfiled, `base="${BASE_TIP}"`);
 });
 
 Deno.test("findConflictingPr - an outsider's park marker cannot silence a PR (Issue #2312)", async () => {

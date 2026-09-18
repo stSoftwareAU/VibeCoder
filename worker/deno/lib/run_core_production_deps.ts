@@ -2480,9 +2480,8 @@ export async function createProductionRunCoreDeps(
             workerId: getWorkerUniqueId(config.workerName),
             needsHumanLabel: config.needsHumanLabel,
             repoConfigs: config.repoConfig,
-            // Issue #1247: the abandon rung reads its one-restart-per-issue
-            // bound off comment markers, so it needs to know whose markers
-            // count.
+            // Issue #1247: the abandon rung reads its restart bound off comment
+            // markers, so it needs to know whose markers count.
             trustedAuthors,
           });
 

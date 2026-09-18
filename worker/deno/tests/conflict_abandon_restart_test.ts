@@ -8,10 +8,10 @@
  *    the work permanently, with no undo and no human in the loop. The
  *    precondition is asserted as an *ordering* property, not just an outcome:
  *    no `pr close` may be issued at all.
- * 2. **One restart per issue.** Without the bound this closes a PR, raises
- *    another, closes that one, forever. The marker lives on the **issue**
- *    because the PR identity changes each time round — a PR-keyed marker
- *    passes a single-cycle test and loops in production.
+ * 2. **Two restarts per issue** (Issue #2312). Without the bound this closes a
+ *    PR, raises another, closes that one, forever. The marker lives on the
+ *    **issue** because the PR identity changes each time round — a PR-keyed
+ *    marker passes a single-cycle test and loops in production.
  * 3. **Partial abandon.** Every step is failed in turn and the resting state
  *    must name the step that stopped it. "PR closed, issue not re-queued" is
  *    the state this exists to keep out of production.
@@ -876,7 +876,7 @@ Deno.test("abandonAndRestart - an issue with another open PR is left alone", asy
 });
 
 // ---------------------------------------------------------------------------
-// The bound — one restart per originating issue
+// The bound — two restarts per originating issue (Issue #2312)
 // ---------------------------------------------------------------------------
 
 Deno.test("abandonAndRestart - a restarted issue is restarted a second time", async () => {

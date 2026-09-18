@@ -1224,6 +1224,13 @@ export function buildParkedPrComment(args: {
   ].join("\n");
 }
 
+/** What a park attempt did. */
+type ParkOutcome =
+  /** The marker is on the PR. `flagIssueNumber` is absent when none was filed. */
+  | { parked: true; flagIssueNumber?: number }
+  /** The marker could not be posted, so nothing recorded the park. */
+  | { parked: false };
+
 /**
  * Park a PR whose issue has spent its restarts (Issue #2312).
  *
@@ -1234,13 +1241,10 @@ export function buildParkedPrComment(args: {
  * **The comment is what makes the park real**, so a comment that could not be
  * posted is not a park: the caller falls back to `budget-spent` and the next
  * pass tries again, rather than reporting a wait nothing recorded.
- *
- * @returns The flag issue number when one was filed, or `undefined`; `null`
- *   when the park comment itself could not be posted.
  */
 async function parkConflictingPr(
   args: ConflictFlagFilingArgs & { base: string; issueNumber: number },
-): Promise<number | undefined | null> {
+): Promise<ParkOutcome> {
   const { repo, prNumber, ghCommandFn, logger } = args;
 
   const filed = await fileConflictFallbackFlag(args);
@@ -1264,7 +1268,9 @@ async function parkConflictingPr(
       }),
     ]);
   } catch (error) {
-    logger.error(
+    // WARN, not ERROR: the pass handles this and the next one decides the PR
+    // again — the same level every other recoverable `gh` failure here uses.
+    logger.warn(
       `PR #${prNumber}: could not post the merge-conflict park marker, so ` +
         "the park is not recorded and the next pass will decide it again",
       {
@@ -1274,7 +1280,7 @@ async function parkConflictingPr(
         error: error instanceof Error ? error.message : String(error),
       },
     );
-    return null;
+    return { parked: false };
   }
 
   logger.warn(
@@ -1290,7 +1296,10 @@ async function parkConflictingPr(
       ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
     },
   );
-  return flagIssueNumber;
+  return {
+    parked: true,
+    ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
+  };
 }
 
 /**
@@ -1704,9 +1713,17 @@ export async function findConflictingPr(
       // naming the base tip it is waiting on, and is offered again the first
       // pass that tip moves. No `needs-human`, no comment asking anybody for
       // anything: the fleet is waiting on a base branch, not on a person.
+      //
+      // `samePr` is deliberately excluded. There the claim on the issue names
+      // *this* PR, which means an earlier abandon of it started and stopped
+      // part-way — the issue may never have been re-queued. That is a failure,
+      // not a wait, and parking it would replace the only record of it with a
+      // marker saying everything is fine. It falls through to `budget-spent`,
+      // whose WARN names the route, and the stall watchdog still sees it.
       if (
         abandon.outcome === "declined" &&
-        abandon.reason.kind === "already-restarted"
+        abandon.reason.kind === "already-restarted" &&
+        !abandon.reason.samePr
       ) {
         const base = await resolveBaseRefOid(repo, pr, ghCommandFn, logger);
         if (base !== undefined) {
@@ -1731,16 +1748,18 @@ export async function findConflictingPr(
             ghCommandFn,
             logger,
           });
-          // `null` means the marker could not be posted, so nothing records
-          // the park — it falls through to `budget-spent` and the next pass
-          // decides it again, rather than claiming a wait nobody can read.
-          if (parked !== null) {
+          // A marker that could not be posted records no park, so it falls
+          // through to `budget-spent` and the next pass decides the PR again
+          // rather than claiming a wait nobody can read back.
+          if (parked.parked) {
             return {
               outcome: "skipped",
               reason: {
                 kind: "parked",
                 base,
-                ...(parked !== undefined ? { flagIssueNumber: parked } : {}),
+                ...(parked.flagIssueNumber !== undefined
+                  ? { flagIssueNumber: parked.flagIssueNumber }
+                  : {}),
               },
             };
           }
