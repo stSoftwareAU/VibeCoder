@@ -75,6 +75,8 @@ import {
 } from "./git_timeout.ts";
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
 import { appendNoFollow, readTextFileNoFollow } from "./file_utils.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import type { GraftDeepConfig } from "./graft_context_config.ts";
 import {
   codeFenceFor,
   createPromptDelimiters,
@@ -118,6 +120,13 @@ export const GRAFT_LAYOUT_DIRS: readonly string[] = ["graft", ".graph"];
  * repositories, and nothing about them leaves the host.
  */
 const GRAFT_ENV: Record<string, string> = { DO_NOT_TRACK: "1" };
+
+/** The structural build: `--no-gitignore --no-ignore` keep Graft out of the checkout's files. */
+const GRAFT_BUILD_ARGS: readonly string[] = [
+  "build",
+  "--no-gitignore",
+  "--no-ignore",
+];
 
 /** Mode for the exclude file — git's own is world-readable. */
 const EXCLUDE_FILE_MODE = 0o644;
@@ -176,6 +185,19 @@ export interface GraftContextResult {
    * transport, so "could not ask" never reads as "never asked".
    */
   queries?: number;
+  /**
+   * The Tier-2 summary pass (Issue #2315): `ok` when `graft build --deep`
+   * produced the graph, `failed` when it was attempted and the structural
+   * build took over, `skipped` when the host names a key it does not hold.
+   * Absent when the host configures no pass at all.
+   */
+  deep?: "ok" | "failed" | "skipped";
+  /** Wall-clock seconds the `--deep` build took, when one was attempted. */
+  deepSeconds?: number;
+  /** Files and symbols the pass summarised this run (Graft's `computed`). */
+  deepSummarised?: number;
+  /** Summaries replayed from Graft's cache this run rather than paid for again. */
+  deepCached?: number;
   /** The bundle text itself, present only on `ok`. */
   bundle?: string;
 }
@@ -198,7 +220,17 @@ export interface CollectGraftContextOptions {
   buildTimeoutMs?: number;
   /** Ask limit in milliseconds (default: {@link GRAFT_ASK_TIMEOUT_MS}). */
   askTimeoutMs?: number;
+  /** The summary pass to run first (Issue #2315); absent builds structurally. */
+  deep?: GraftDeepConfig;
+  /** Where the pass's key is read from; defaults to the process environment. */
+  env?: EnvLookup;
 }
+
+/** What the summary pass reported, folded into the run's figures. */
+type DeepFigures = Pick<
+  GraftContextResult,
+  "deep" | "deepSeconds" | "deepSummarised" | "deepCached"
+>;
 
 /** Node and `calls`-edge counts read from `wiring.json`. */
 interface GraphFigures {
@@ -228,10 +260,10 @@ export async function collectGraftContext(
     git = runGitCommand,
     buildTimeoutMs = GRAFT_BUILD_TIMEOUT_MS,
     askTimeoutMs = GRAFT_ASK_TIMEOUT_MS,
+    deep,
+    env = processEnvLookup,
   } = options;
-
   if (!enabled) return { status: "off", enabled: false };
-
   const fail = (
     reason: string,
     figures: Omit<GraftContextResult, "status" | "enabled"> = {},
@@ -245,16 +277,33 @@ export async function collectGraftContext(
   const excluded = await ensureGraftExcluded(repoDir, git);
   if (!excluded.ok) return fail(excluded.error.message);
 
-  // 2. Build the graph, timed.
-  const startedAt = performance.now();
-  const build = await runGraft(
-    run,
-    ["build", "--no-gitignore", "--no-ignore"],
-    repoDir,
-    buildTimeoutMs,
-  );
-  const buildSeconds = elapsedSeconds(startedAt);
-  if (!build.ok) return fail(`graft build ${build.reason}`, { buildSeconds });
+  // 2. Build the graph, timed. With a `deep` block (Issue #2315) the summary
+  //    pass runs first under its own limit; a pass that cannot run, fails or
+  //    does not finish hands over to the structural build, so the run still
+  //    gets its bundle and whatever the pass summarised stays cached for the
+  //    next run.
+  let deepFigures: DeepFigures = {};
+  let build: GraftRunOutcome | undefined;
+  let buildSeconds = 0;
+  if (deep) {
+    const attempt = await runDeepBuild(run, repoDir, deep, env, logger);
+    deepFigures = attempt.figures;
+    if (attempt.build) {
+      build = attempt.build;
+      buildSeconds = attempt.figures.deepSeconds ?? 0;
+    }
+  }
+  if (!build) {
+    const startedAt = performance.now();
+    build = await runGraft(run, [...GRAFT_BUILD_ARGS], repoDir, buildTimeoutMs);
+    buildSeconds = elapsedSeconds(startedAt);
+  }
+  if (!build.ok) {
+    return fail(`graft build ${build.reason}`, {
+      buildSeconds,
+      ...deepFigures,
+    });
+  }
 
   // 3. Ask for the bundle. An over-long query is cut rather than failing the
   //    whole `execve`, but a cut query is a degraded ask — said out loud, so a
@@ -287,11 +336,12 @@ export async function collectGraftContext(
     const alsoFigures = figures.ok ? "" : ` (and ${figures.error.message})`;
     return fail(`graft ask ${ask.reason}${alsoFigures}`, {
       buildSeconds,
+      ...deepFigures,
       ...(figures.ok ? figures.value : {}),
     });
   }
   if (!figures.ok) {
-    return fail(figures.error.message, { buildSeconds });
+    return fail(figures.error.message, { buildSeconds, ...deepFigures });
   }
 
   // A zero-exit ask that returned nothing is not a success. Reporting it as
@@ -301,6 +351,7 @@ export async function collectGraftContext(
   if (bundle.trim() === "") {
     return fail("graft ask exited 0 but returned an empty bundle", {
       buildSeconds,
+      ...deepFigures,
       bundleChars: bundle.length,
       ...figures.value,
     });
@@ -310,10 +361,88 @@ export async function collectGraftContext(
     status: "ok",
     enabled: true,
     buildSeconds,
+    ...deepFigures,
     bundleChars: bundle.length,
     ...figures.value,
     bundle,
   };
+}
+
+/**
+ * Run the Tier-2 summary pass, `graft build --deep` (Issue #2315).
+ *
+ * The key is read from the variable the host named, never from the
+ * configuration, and handed to Graft as `GRAFT_API_KEY` for this one
+ * subprocess. A missing key is `skipped` and said out loud; an attempt that
+ * fails or times out is `failed` and said out loud; in both cases the caller
+ * runs the structural build so the run still gets its bundle. `--allow-partial`
+ * keeps a handful of failed summaries from failing the whole pass.
+ *
+ * The seconds and Graft's own `computed`/`cached` counts are the figures. Graft
+ * reports no token totals for the pass, so its spend is **not** in the run's
+ * token figures — the run-stats line says how much was summarised, not what it
+ * cost.
+ */
+async function runDeepBuild(
+  run: GraftRunner,
+  repoDir: string,
+  deep: GraftDeepConfig,
+  env: EnvLookup,
+  logger: GraftContextLogger,
+): Promise<{ build?: GraftRunOutcome; figures: DeepFigures }> {
+  const key = env(deep.apiKeyEnv);
+  if (key === undefined || key.trim() === "") {
+    logger.warn(
+      `[GRAFT_DEEP_UNAVAILABLE] no key in ${deep.apiKeyEnv} for provider ` +
+        `'${deep.provider}'; building the structural graph only (Issue #2315)`,
+    );
+    return { figures: { deep: "skipped" } };
+  }
+  const args = [
+    ...GRAFT_BUILD_ARGS,
+    "--deep",
+    "--allow-partial",
+    ...(deep.concurrency === undefined ? [] : ["-j", String(deep.concurrency)]),
+  ];
+  const extraEnv: Record<string, string> = {
+    GRAFT_PROVIDER: deep.provider,
+    GRAFT_API_KEY: key,
+    ...(deep.model === undefined ? {} : { GRAFT_MODEL: deep.model }),
+    ...(deep.baseUrl === undefined ? {} : { GRAFT_BASE_URL: deep.baseUrl }),
+  };
+  const startedAt = performance.now();
+  const build = await runGraft(
+    run,
+    args,
+    repoDir,
+    deep.timeoutSeconds * 1000,
+    extraEnv,
+  );
+  const deepSeconds = elapsedSeconds(startedAt);
+  if (!build.ok) {
+    logger.warn(
+      `[GRAFT_DEEP_FAILED] graft build --deep ${build.reason}; falling back ` +
+        `to the structural build (Issue #2315)`,
+    );
+    return { figures: { deep: "failed", deepSeconds } };
+  }
+  return {
+    build,
+    figures: { deep: "ok", deepSeconds, ...parseDeepFigures(build.stdout) },
+  };
+}
+
+/**
+ * Graft's own count of what the pass did, from its `meaning:` summary line —
+ * `meaning: 340 computed, 8120 cached, 0 stale, 0 pending`. Absent when the
+ * line is not there, never guessed.
+ */
+export function parseDeepFigures(
+  stdout: string,
+): Pick<GraftContextResult, "deepSummarised" | "deepCached"> {
+  const match = /meaning:\s*(\d+) computed,\s*(\d+) cached/.exec(stdout);
+  if (!match) return {};
+  return { deepSummarised: Number(match[1]), deepCached: Number(match[2]) };
 }
 
 // ---------------------------------------------------------------------------
@@ -336,12 +465,13 @@ async function runGraft(
   args: string[],
   repoDir: string,
   timeoutMs: number,
+  extraEnv: Record<string, string> = {},
 ): Promise<GraftRunOutcome> {
   let result: Result<SubprocessResult>;
   try {
     result = await run("graft", args, {
       cwd: repoDir,
-      env: GRAFT_ENV,
+      env: { ...GRAFT_ENV, ...extraEnv },
       timeoutMs,
     });
   } catch (err) {
@@ -713,9 +843,24 @@ export function describeGraftContext(result: GraftContextResult): string {
       ? undefined
       : `build ${result.buildSeconds}s`,
     result.queries === undefined ? undefined : `${result.queries} queries`,
+    describeDeep(result),
   ].filter((entry): entry is string => entry !== undefined);
   const detail = figures.length > 0 ? ` — ${figures.join(", ")}` : "";
   return `Graft context: ${result.status}${detail} (Issue #2060)`;
+}
+
+/** The summary pass in one figure: `deep ok 118.4s (340 summarised, 8120 cached)`. */
+function describeDeep(result: GraftContextResult): string | undefined {
+  if (result.deep === undefined) return undefined;
+  const seconds = result.deepSeconds === undefined
+    ? ""
+    : ` ${result.deepSeconds}s`;
+  const counts = result.deepSummarised === undefined
+    ? ""
+    : ` (${result.deepSummarised} summarised, ${
+      result.deepCached ?? 0
+    } cached)`;
+  return `deep ${result.deep}${seconds}${counts}`;
 }
 
 // ---------------------------------------------------------------------------

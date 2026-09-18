@@ -26,6 +26,7 @@ import {
   graftQueryFor,
   graftQueryForPr,
   MAX_GRAFT_QUERY_BYTES,
+  parseDeepFigures,
   truncateUtf8,
   utf8Length,
   withGraftContext,
@@ -41,6 +42,7 @@ import {
   ignoredExecutableCleanArgs,
 } from "../lib/ignored_path_clean.ts";
 import type { Result } from "../types.ts";
+import type { GraftDeepConfig } from "../lib/graft_context_config.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 
 // ---------------------------------------------------------------------------
@@ -1178,5 +1180,200 @@ Deno.test("describeGraftContext - the query tally joins the figures once recorde
   assertEquals(
     describeGraftContext({ status: "ok", enabled: true }).includes("queries"),
     false,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The summary pass — `graft build --deep` (Issue #2315)
+// ---------------------------------------------------------------------------
+
+const DEEP: GraftDeepConfig = {
+  provider: "anthropic",
+  model: "claude-sonnet-5",
+  apiKeyEnv: "GRAFT_TEST_KEY",
+  timeoutSeconds: 120,
+  concurrency: 3,
+};
+
+const DEEP_STDOUT = [
+  "✓ concepts: 41 nodes, 60 links from 120 files (12 read, 108 cached)",
+  "✓ wiring: 820 nodes (fn 700, class 120), 1204 edges, 120 cards [typescript]",
+  "  parsed: 3 of 120 files (117 replayed from cache)",
+  "  meaning: 340 computed, 8120 cached, 0 stale, 0 pending",
+].join("\n");
+
+Deno.test("collectGraftContext - the deep pass builds under its own limit with the key in the child env only", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([ok(DEEP_STDOUT), ok("// bundle")]);
+    const git = fakeGit();
+    const { warns, logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "where is the parser",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: git.git,
+      deep: { ...DEEP, baseUrl: "https://example.invalid/v1" },
+      env: (name) =>
+        name === "GRAFT_TEST_KEY" ? "sk-test-0123456789" : undefined,
+    });
+    assertEquals(result.status, "ok");
+    assertEquals(result.deep, "ok");
+    assertEquals(result.deepSummarised, 340);
+    assertEquals(result.deepCached, 8120);
+    assert((result.deepSeconds ?? -1) >= 0, "the pass is timed");
+    assertEquals(
+      result.buildSeconds,
+      result.deepSeconds,
+      "the pass IS the build",
+    );
+    assertEquals(
+      result.nodeCount,
+      3,
+      "the figures still come from wiring.json",
+    );
+
+    // One build — the deep one — then the ask. No structural build ran.
+    assertEquals(runner.calls.length, 2);
+    const build = runner.calls[0]!;
+    assertEquals(build.args, [
+      "build",
+      "--no-gitignore",
+      "--no-ignore",
+      "--deep",
+      "--allow-partial",
+      "-j",
+      "3",
+    ]);
+    assertEquals(build.timeoutMs, 120_000);
+    assertEquals(build.env, {
+      DO_NOT_TRACK: "1",
+      GRAFT_PROVIDER: "anthropic",
+      GRAFT_API_KEY: "sk-test-0123456789",
+      GRAFT_MODEL: "claude-sonnet-5",
+      GRAFT_BASE_URL: "https://example.invalid/v1",
+    });
+    // The ask is untouched by the pass: no key rides it.
+    assertEquals(runner.calls[1]!.args[0], "ask");
+    assertEquals(runner.calls[1]!.env, { DO_NOT_TRACK: "1" });
+    assertEquals(warns, []);
+  });
+});
+
+Deno.test("collectGraftContext - no key in the named variable skips the pass and builds structurally", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([ok(""), ok("// bundle")]);
+    const git = fakeGit();
+    const { warns, logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: git.git,
+      deep: DEEP,
+      env: () => "",
+    });
+    assertEquals(result.status, "ok");
+    assertEquals(result.deep, "skipped");
+    assertEquals(result.deepSeconds, undefined);
+    assertEquals(runner.calls[0]!.args, [
+      "build",
+      "--no-gitignore",
+      "--no-ignore",
+    ]);
+    assertEquals(runner.calls[0]!.env, { DO_NOT_TRACK: "1" });
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_DEEP_UNAVAILABLE]");
+    assertStringIncludes(warns[0]!, "GRAFT_TEST_KEY");
+  });
+});
+
+Deno.test("collectGraftContext - a pass that times out hands over to the structural build, said out loud", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([timedOut(), ok(""), ok("// bundle")]);
+    const git = fakeGit();
+    const { warns, logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: git.git,
+      deep: DEEP,
+      env: () => "sk-test-0123456789",
+    });
+    assertEquals(result.status, "ok", "the run still gets its bundle");
+    assertEquals(result.deep, "failed");
+    assert((result.deepSeconds ?? -1) >= 0);
+    assertEquals(result.deepSummarised, undefined);
+    assertEquals(runner.calls.length, 3);
+    assertEquals(runner.calls[1]!.args, [
+      "build",
+      "--no-gitignore",
+      "--no-ignore",
+    ]);
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_DEEP_FAILED]");
+    assertStringIncludes(warns[0]!, "timed out");
+    assert(
+      !warns.some((w) => w.includes("sk-test-0123456789")),
+      "the key must never reach a log line",
+    );
+  });
+});
+
+Deno.test("collectGraftContext - a failed pass whose fallback also fails reports both", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([
+      nonZero(1, "provider refused"),
+      nonZero(2, "boom"),
+    ]);
+    const git = fakeGit();
+    const { warns, logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: git.git,
+      deep: DEEP,
+      env: () => "sk-test-0123456789",
+    });
+    assertEquals(result.status, "failed");
+    assertEquals(result.deep, "failed");
+    assertEquals(warns.length, 2);
+    assertStringIncludes(warns[0]!, "[GRAFT_DEEP_FAILED]");
+    assertStringIncludes(warns[1]!, "[GRAFT_UNAVAILABLE] graft build exited 2");
+  });
+});
+
+Deno.test("parseDeepFigures - reads Graft's meaning line and guesses nothing without it", () => {
+  assertEquals(parseDeepFigures(DEEP_STDOUT), {
+    deepSummarised: 340,
+    deepCached: 8120,
+  });
+  assertEquals(parseDeepFigures("✓ wiring: 3 nodes"), {});
+});
+
+Deno.test("describeGraftContext - the pass joins the figures", () => {
+  assertStringIncludes(
+    describeGraftContext({
+      status: "ok",
+      enabled: true,
+      deep: "ok",
+      deepSeconds: 118.4,
+      deepSummarised: 340,
+      deepCached: 8120,
+    }),
+    "deep ok 118.4s (340 summarised, 8120 cached)",
+  );
+  assertStringIncludes(
+    describeGraftContext({ status: "ok", enabled: true, deep: "skipped" }),
+    "deep skipped",
   );
 });
