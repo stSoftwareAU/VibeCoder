@@ -1810,6 +1810,18 @@
       "paths": [
         "worker/deno/lib/stream_identity.ts"
       ]
+    },
+    {
+      "issue": 2333,
+      "chunk": "top-up-2333",
+      "title": "top-up: the stream join seam",
+      "ledger": "docs/audits/security-sweep-2333-stream-session.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_session.ts (#2333)",
+      "status": "swept",
+      "sweptAt": "a81b632224f0ad32e9a8481e9708bff37279a13a",
+      "paths": [
+        "worker/deno/lib/stream_session.ts"
+      ]
     }
   ],
   "roots": [

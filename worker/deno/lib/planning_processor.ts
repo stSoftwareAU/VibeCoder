@@ -41,10 +41,10 @@ import {
 } from "./session_resume.ts";
 import {
   anticipatedProviderId,
+  handOnStreamSession,
+  type JoinedStream,
   primeStreamSession,
-  recordStreamSession,
 } from "./stream_session.ts";
-import type { StreamId } from "./stream_identity.ts";
 import {
   buildBoundaryIntegrityInstruction,
   createPromptDelimiters,
@@ -1545,10 +1545,15 @@ async function _processPlanningWithHeartbeat(
   // each new plan continues where the last one left off. The milestone a plan
   // creates is a different stream, which starts fresh at its first sub-issue —
   // nothing forks this conversation into it.
-  let streamSession: { stream: StreamId; providerId: string } | undefined;
+  let streamSession: JoinedStream | undefined;
   let sessionState = createSessionResumeState();
   if (config.enableSessionResume) {
-    const providerId = anticipatedProviderId(config.repoConfig?.[repo]);
+    const providerId = anticipatedProviderId({
+      ...(config.repoConfig?.[repo]
+        ? { repoConfig: config.repoConfig[repo] }
+        : {}),
+      logger,
+    });
     const adoption = await primeStreamSession({
       workDir: config.workDir,
       repo,
@@ -1571,30 +1576,14 @@ async function _processPlanningWithHeartbeat(
    * turn can time out. A stream that is never written is a conversation lost,
    * so the write follows whichever turn actually ran last.
    */
-  const handOnStreamSession = async (
-    state: SessionResumeState,
-  ): Promise<void> => {
-    if (!streamSession) return;
-    const providerId = state.providerId ?? streamSession.providerId;
-    const recorded = await recordStreamSession({
+  const handOnStream = (state: SessionResumeState): Promise<void> =>
+    handOnStreamSession({
       workDir: config.workDir,
-      stream: streamSession.stream,
-      providerId,
-      sessionId: state.sessionId,
-      ...(state.credentialScope !== undefined
-        ? { credentialScope: state.credentialScope }
-        : {}),
+      joined: streamSession,
+      state,
+      logger,
+      logFields: { repo, issueNumber },
     });
-    if (!recorded) {
-      // Loud: the next planning issue starts a new conversation, and nothing
-      // else would say why.
-      logger.warn(
-        "Could not record this planning run's session on the stream — the " +
-          "next planning issue starts a new conversation (Issue #2333)",
-        { repo, issueNumber, providerId },
-      );
-    }
-  };
 
   // Collect stats from every planning Claude invocation in the run (Issue
   // #2649). Designed for a list — draft + critique (#2648), plus the #1219
@@ -1661,7 +1650,7 @@ async function _processPlanningWithHeartbeat(
     }
     // The draft turn can publish sub-issues and return below, so the stream is
     // written here as well as after the publish turn (Issue #2333).
-    await handOnStreamSession(sessionState);
+    await handOnStream(sessionState);
     recordInvocation(invocations, draftResult.value, codegraph, graft);
     if (draftResult.value.timedOut) {
       logger.warn(
@@ -1822,7 +1811,7 @@ async function _processPlanningWithHeartbeat(
   // had the conversation, and the next planning run should continue it rather
   // than start over. Codex names its own thread (#1699), so capture the
   // provider's id first.
-  await handOnStreamSession(
+  await handOnStream(
     claudeResult.value.provider
       ? adoptProviderSession(publishSessionState, {
         sessionId: claudeResult.value.agentOutput?.sessionId,

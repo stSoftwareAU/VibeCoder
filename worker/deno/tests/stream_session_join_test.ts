@@ -14,7 +14,9 @@
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import {
   adoptStreamSession,
+  anticipatedProviderId,
   describeStreamSession,
+  handOnStreamSession,
   joinsStream,
   PER_ISSUE_RUN_KINDS,
   primeStreamSession,
@@ -25,6 +27,7 @@ import {
 } from "../lib/stream_session.ts";
 import {
   loadStreamSession,
+  lookupStreamSession,
   saveStreamSession,
   streamSessionPath,
 } from "../lib/resume_state_store.ts";
@@ -288,5 +291,133 @@ Deno.test("#2333 - a session id the CLI would refuse is never recorded", async (
       false,
     );
     assertEquals(await loadStreamSession(workDir, stream, "claude"), null);
+  });
+});
+
+Deno.test("#2333 - the anticipated provider comes from the repo pin, then the selection", () => {
+  // The repo's own pin wins.
+  assertEquals(
+    anticipatedProviderId({
+      repoConfig: { agentProvider: "codex" },
+      selection: { configured: "claude", env: () => undefined },
+    }),
+    "codex",
+  );
+  // With no pin, the configured value binds.
+  assertEquals(
+    anticipatedProviderId({
+      selection: { configured: "gemini", env: () => undefined },
+    }),
+    "gemini",
+  );
+  // With neither, the default.
+  assertEquals(
+    anticipatedProviderId({ selection: { env: () => undefined } }),
+    "claude",
+  );
+});
+
+Deno.test("#2333 - an unresolvable provider degrades to the default and says so", () => {
+  const warnings: string[] = [];
+  const providerId = anticipatedProviderId({
+    repoConfig: { agentProvider: "not-a-provider" },
+    logger: {
+      info: () => {},
+      warn: (message: string) => warnings.push(message),
+    },
+  });
+  assertEquals(providerId, "claude");
+  // Degrading silently is what the fail-loud rule forbids.
+  assertEquals(warnings.length, 1);
+  assert(warnings[0]?.includes("Could not resolve this run's agent provider"));
+});
+
+Deno.test("#2333 - the stream lookup tells 'none of mine' from 'recorded but unusable'", async () => {
+  await withWorkDir(async (workDir) => {
+    const stream = resolveStreamId(REPO, MILESTONE);
+    // No record at all.
+    assertEquals(
+      (await lookupStreamSession(workDir, stream, "claude")).status,
+      "none",
+    );
+
+    await saveStreamSession(workDir, stream, {
+      providerId: "claude",
+      sessionId: "0199fd1e-2a4b-4c3d-8e5f-6a7b8c9d0e1f",
+    });
+    assertEquals(
+      (await lookupStreamSession(workDir, stream, "claude")).status,
+      "usable",
+    );
+    // A record naming only another provider is still "none" for this one, so a
+    // fallback provider starts beside the primary rather than resetting it.
+    assertEquals(
+      (await lookupStreamSession(workDir, stream, "codex")).status,
+      "none",
+    );
+
+    // An id the Gemini CLI would refuse (#204) is recorded but unusable.
+    await saveStreamSession(workDir, stream, {
+      providerId: "gemini",
+      sessionId: "VibeCoder-2333-1700000000",
+    });
+    const unusable = await lookupStreamSession(workDir, stream, "gemini");
+    assertEquals(unusable.status, "unusable");
+    if (unusable.status === "unusable") {
+      assert(unusable.reason.includes("gemini"));
+    }
+  });
+});
+
+Deno.test("#2333 - handing on reports a write that could not land", async () => {
+  await withWorkDir(async (workDir) => {
+    const warnings: string[] = [];
+    const logger = {
+      info: () => {},
+      warn: (message: string) => warnings.push(message),
+    };
+    const joined = {
+      stream: resolveStreamId(REPO, MILESTONE),
+      providerId: "claude",
+    };
+
+    // A run that joined no stream writes nothing and says nothing.
+    await handOnStreamSession({
+      workDir,
+      joined: undefined,
+      state: {
+        sessionId: "0199fd1e-2a4b-4c3d-8e5f-6a7b8c9d0e1f",
+        phaseCount: 1,
+      },
+      logger,
+    });
+    assertEquals(warnings.length, 0);
+
+    // An id the CLI would refuse cannot be handed on, and that is reported.
+    await handOnStreamSession({
+      workDir,
+      joined,
+      state: { sessionId: "VibeCoder-2333-1700000000", phaseCount: 1 },
+      logger,
+    });
+    assertEquals(warnings.length, 1);
+    assert(warnings[0]?.includes("starts a new conversation"));
+    assertEquals(
+      await loadStreamSession(workDir, joined.stream, "claude"),
+      null,
+    );
+
+    // The provider that served the run owns the slot it is written to.
+    await handOnStreamSession({
+      workDir,
+      joined,
+      state: { sessionId: "codex-thread-2333", phaseCount: 1 },
+      runProviderId: "codex",
+      logger,
+    });
+    assertEquals(
+      (await loadStreamSession(workDir, joined.stream, "codex"))?.sessionId,
+      "codex-thread-2333",
+    );
   });
 });

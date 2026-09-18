@@ -639,7 +639,12 @@ export async function workOnIssueSetupBranch(
   // An idle-task sweep keeps its per-issue session and reads no stream record;
   // `primeStreamSession` returns undefined for it, and for any fault.
   if (config.enableSessionResume && !state.sessionResumeState) {
-    const providerId = anticipatedProviderId(config.repoConfig?.[repo]);
+    const providerId = anticipatedProviderId({
+      ...(config.repoConfig?.[repo]
+        ? { repoConfig: config.repoConfig[repo] }
+        : {}),
+      logger,
+    });
     const adoption = await primeStreamSession({
       workDir: config.workDir,
       repo,

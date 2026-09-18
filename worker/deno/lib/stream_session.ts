@@ -35,6 +35,7 @@
  */
 
 import {
+  type AgentProviderSelection,
   DEFAULT_AGENT_PROVIDER_ID,
   repoPinnedAgentProvider,
   resolveAgentProviderId,
@@ -122,17 +123,29 @@ export function resolveStreamRunKind(
  *
  * Resolution throws on an unsupported id or a provider the running image did
  * not install (#3234); here that is not worth failing an issue over, so it
- * degrades to the default. Picking the wrong provider costs a resume and
- * nothing else: `sessionResumeForProvider` drops a session id that does not
- * belong to the provider that actually ran, and the record written after the
- * run always names the provider that really served it.
+ * degrades to the default and **says so**. Picking the wrong provider costs a
+ * resume and nothing else: `sessionResumeForProvider` drops a session id that
+ * does not belong to the provider that actually ran, and the record written
+ * after the run always names the provider that really served it.
+ *
+ * `selection` is the seam: naming a configured value and an environment lookup
+ * keeps a test off the host's own `VIBE_AGENT_PROVIDER` and off the module
+ * singletons a parallel test file may be mutating.
  */
-export function anticipatedProviderId(
-  repoConfig?: RepoConfig,
-): string {
+export function anticipatedProviderId(options: {
+  repoConfig?: RepoConfig;
+  selection?: AgentProviderSelection;
+  logger?: StreamSessionLogger;
+} = {}): string {
   try {
-    return repoPinnedAgentProvider(repoConfig) ?? resolveAgentProviderId();
-  } catch {
+    return repoPinnedAgentProvider(options.repoConfig) ??
+      resolveAgentProviderId(options.selection ?? {});
+  } catch (error) {
+    options.logger?.warn(
+      `Could not resolve this run's agent provider — assuming ` +
+        `${DEFAULT_AGENT_PROVIDER_ID} for the stream session (Issue #2333)`,
+      { error: error instanceof Error ? error.message : String(error) },
+    );
     return DEFAULT_AGENT_PROVIDER_ID;
   }
 }
@@ -304,4 +317,58 @@ export async function recordStreamSession(options: {
       : {}),
     holderHost: options.holderHost ?? escalationHostId(),
   });
+}
+
+/** The stream a run joined, and the provider slot it took. */
+export interface JoinedStream {
+  stream: StreamId;
+  /** Provider anticipated when the stream was joined. */
+  providerId: string;
+}
+
+/**
+ * Hand this run's conversation on to the stream's next issue.
+ *
+ * A no-op when `joined` is absent — the run kept a per-issue session, so no
+ * stream record is written. The slot is owned by the provider that actually
+ * served the run, so a fallback provider writes its own and leaves the
+ * primary's alone.
+ *
+ * A write that does not land is reported, not swallowed: the next issue of the
+ * stream will start a fresh conversation and nothing else would say why.
+ */
+export async function handOnStreamSession(options: {
+  workDir: string;
+  joined: JoinedStream | undefined;
+  /** The session state the run ended on, after any provider adoption. */
+  state: SessionResumeState;
+  /** The provider that actually served the run, when the runner named one. */
+  runProviderId?: string;
+  logger: StreamSessionLogger;
+  /** Extra fields for the warning — the repo and issue, typically. */
+  logFields?: Record<string, unknown>;
+}): Promise<void> {
+  const { joined, state } = options;
+  if (!joined) return;
+  const providerId = state.providerId ?? options.runProviderId ??
+    joined.providerId;
+  const recorded = await recordStreamSession({
+    workDir: options.workDir,
+    stream: joined.stream,
+    providerId,
+    sessionId: state.sessionId,
+    ...(state.credentialScope !== undefined
+      ? { credentialScope: state.credentialScope }
+      : {}),
+  });
+  if (recorded) return;
+  options.logger.warn(
+    "Could not record this run's session on the stream — the next issue of " +
+      "the stream starts a new conversation (Issue #2333)",
+    {
+      ...options.logFields,
+      stream: streamLabel(joined.stream),
+      providerId,
+    },
+  );
 }

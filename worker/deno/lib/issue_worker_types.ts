@@ -14,7 +14,7 @@ import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
 import type { SessionResumeState } from "./session_resume.ts";
-import type { StreamId } from "./stream_identity.ts";
+import type { JoinedStream } from "./stream_session.ts";
 import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
@@ -190,7 +190,7 @@ export interface PhaseState {
    * per-issue session, or a stream that could not be resolved — no stream
    * record is read or written for this run.
    */
-  streamSession?: { stream: StreamId; providerId: string };
+  streamSession?: JoinedStream;
   /**
    * True when setup resumed the issue branch from a prior attempt's WIP
    * checkpoint (Issue #4170). The execute phase tells the agent prior

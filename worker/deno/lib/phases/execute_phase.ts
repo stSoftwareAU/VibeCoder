@@ -42,8 +42,7 @@ import {
 import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { saveResumeState } from "../resume_state_store.ts";
-import { recordStreamSession } from "../stream_session.ts";
-import { streamLabel } from "../stream_identity.ts";
+import { handOnStreamSession } from "../stream_session.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -1407,37 +1406,19 @@ async function executeClaudeBody(
         ? { credentialScope: state.sessionResumeState.credentialScope }
         : {}),
     });
-    // Hand the conversation on to the stream's next issue (Issue #2333). The
-    // provider that actually served the run owns the id — a fallback provider
-    // writes its own slot and leaves the primary's alone. Set only when this
-    // run joined a stream, so an excluded run kind writes no record.
-    if (state.streamSession) {
-      const providerId = state.sessionResumeState.providerId ??
-        claudeResult.value.provider ?? state.streamSession.providerId;
-      const recorded = await recordStreamSession({
-        workDir: config.workDir,
-        stream: state.streamSession.stream,
-        providerId,
-        sessionId: state.sessionResumeState.sessionId,
-        ...(state.sessionResumeState.credentialScope !== undefined
-          ? { credentialScope: state.sessionResumeState.credentialScope }
-          : {}),
-      });
-      if (!recorded) {
-        // Loud: the stream's next issue will start a fresh conversation
-        // instead of continuing this one, and nothing else would say so.
-        logger.warn(
-          "Could not record this run's session on the stream — the next " +
-            "issue of the stream starts a new conversation (Issue #2333)",
-          {
-            repo,
-            issueNumber,
-            stream: streamLabel(state.streamSession.stream),
-            providerId,
-          },
-        );
-      }
-    }
+    // Hand the conversation on to the stream's next issue (Issue #2333). A
+    // no-op unless setup joined a stream, so an excluded run kind — or one
+    // resuming its own checkpoint — writes no stream record.
+    await handOnStreamSession({
+      workDir: config.workDir,
+      joined: state.streamSession,
+      state: state.sessionResumeState,
+      ...(claudeResult.value.provider
+        ? { runProviderId: claudeResult.value.provider }
+        : {}),
+      logger,
+      logFields: { repo, issueNumber },
+    });
   }
 
   // Detect changes — check for uncommitted changes or new commits
