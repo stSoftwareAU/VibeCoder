@@ -164,6 +164,10 @@ const UNAVAILABLE: ReadonlySet<RouteClaimRefusal> = new Set<
   "fleet_pr_exists",
   "blocking_label",
   "already_closed",
+  // Issue #2334: a sibling issue of the same milestone stream is being run
+  // elsewhere in the fleet. The issue is not this host's to run right now,
+  // and the next scan draws it again once that run's heartbeat goes stale.
+  "stream_busy",
   // Issue #1757: declined by this host on purpose, for this cycle only — the
   // fleet working as designed, not a fault. A skip, so the failure counters
   // and the host health record never see a run that was never started.
@@ -196,6 +200,8 @@ function describeRefusal(reason: RouteClaimRefusal): string {
       return "an open fleet PR already targets this work stream";
     case "heartbeat_active":
       return "another run's heartbeat is still beating on the issue";
+    case "stream_busy":
+      return "another open issue of this milestone stream is being run";
     case "insufficient_runway":
       return "the cycle deadline leaves too little runway for a scan";
     default:
