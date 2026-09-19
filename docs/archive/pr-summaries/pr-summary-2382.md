@@ -22,8 +22,8 @@ sub-issues do that. Closes #2382.
   other. Does not mutate the caller's object.
 - `prepareRtkRun({ enabled, providerId, logger, cwd?, env?, run? })` — the
   decision order, the preflight, and one status line per run.
-- `record()` — re-reads gain and sets `savedTokens = after − baseline`, clamped
-  at zero. A failed second read logs the marker and leaves the figure absent;
+- `record()` — re-reads gain and sets `savedTokens` to the second reading minus
+  the baseline, clamped at zero. A failed second read logs the marker and leaves the figure absent;
   the status stays `ok`, because the hook did run.
 - `describeRtkRun(result)` — the one-line log summary.
 - `docs/audits/security-sweep-2382-rtk-output.md` plus its `top-up-2382` slice
