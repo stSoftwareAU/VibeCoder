@@ -2432,15 +2432,17 @@ Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged 
     // A gate refusal is not a conflict the budget can retry its way out of.
     assertEquals(entry?.conflictAttempts, 0);
     assertEquals(entry?.lastAttempt?.outcome, "not-charged");
-    // Its own dedup key — sharing `gateEscalated` would let the Issue #974
-    // refusal of the merged tree suppress this report, and the reverse.
+    // The wedge is keyed on the conflict itself (Issue #1786), so a default
+    // tip that moves every few minutes is not a new refusal.
     assertEquals(
-      entry?.analysisEscalatedSha,
+      entry?.gateRefusal?.conflictKey,
       conflictEscalationKey({
         milestoneBranch: LEDGER_BRANCH,
         files: ["worker/deno/lib/scan_content.ts"],
       }),
     );
+    // Tracked apart from `gateEscalated`, so the Issue #974 refusal of the
+    // merged tree cannot suppress this one, or the reverse.
     assertEquals(entry?.gateEscalated, false);
 
     // The refusal repeated, so the ledger concludes it (Issue #2388) — which
