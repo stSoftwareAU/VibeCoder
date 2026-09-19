@@ -1491,6 +1491,67 @@ Deno.test("slot pool - a stop line with eligible work never claims there was non
   assertStringIncludes(stops[0]!, "considered=36 eligible=3 skipped=31");
 });
 
+// Live incident (#2403/#2404): every eligible issue was refused in the claim
+// path by stream affinity, the issue went on cooldown, and the next scan found
+// "10 eligible, none claimable" — blaming needs-human and pr-blocked.
+Deno.test("slot pool - the no-work line names the claim refusal that actually emptied the scan (Issue #2404)", async () => {
+  const config = createDefaultRunCoreConfig();
+  const cycleMs = config.runDurationSeconds * 1000;
+  let now = 0;
+  let scans = 0;
+  const logs: string[] = [];
+  const offered = [
+    issue("org/repo", 2346),
+    issue("org/other", 2347),
+  ];
+  const deps = createMockDeps({
+    now: () => now,
+    log: (m) => logs.push(m),
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    findNextIssue: (options) => {
+      const next = offered[scans++];
+      if (next) {
+        return Promise.resolve({
+          ok: true as const,
+          value: next as DiscoveredIssue | null,
+        });
+      }
+      options?.onScanSummary?.({
+        totalConsidered: 45,
+        totalEligible: 10,
+        skippedByReason: { "needs-human": 13, "pr-blocked": 13 },
+        claimRaceWins: 0,
+        claimRaceLosses: 0,
+      });
+      if (scans >= 6) now = cycleMs + 1;
+      return Promise.resolve({ ok: true as const, value: null });
+    },
+    // The setup phase was refused the claim: a skip, nothing held.
+    processIssue: () =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          success: false,
+          skipped: true,
+          claimNotHeld: true,
+          claimRefusal: "stream_affinity",
+        },
+      }),
+  });
+
+  await runOneCycle(deps, 2);
+
+  const stops = logs.filter((m) => m.includes("stop reason=no-work"));
+  assert(
+    stops.length > 0,
+    `the slot must say why it stopped: ${logs.join(" | ")}`,
+  );
+  assertStringIncludes(stops[0]!, "claim-refusals=stream_affinity=2");
+});
+
 Deno.test("slot pool - a slot that loses the acquire race drops that repo's cached issue list before re-scanning (Issue #219)", async () => {
   const config = createDefaultRunCoreConfig();
   const cycleMs = config.runDurationSeconds * 1000;

@@ -5,8 +5,9 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  claimRefusalReason,
   createDiagnostics,
   formatScanOutcome,
   formatScanSummary,
@@ -678,4 +679,107 @@ Deno.test("formatScanOutcome - a single eligible issue reads without a plural mi
 
   assertStringIncludes(line, "1 eligible, none claimable");
   assertEquals(line.includes("no eligible work"), false);
+});
+
+// =============================================================================
+// The no-work sentence names what really refused the eligible issues
+// (Issue #2404)
+//
+// Live incident: for 23 hours every slot logged "10 eligible, none claimable
+// (top-skips names what refused them): … top-skips=needs-human=13,
+// pr-blocked=13,dependency-blocked=8". Those three are why the *other* issues
+// were never eligible. The ten eligible ones were all refused in the claim
+// path by `stream_affinity` (#2403), which the line never mentioned — so a
+// fleet-wide deadlock read as an ordinary quiet queue.
+// =============================================================================
+
+const INCIDENT_SUMMARY = {
+  totalConsidered: 45,
+  totalEligible: 10,
+  skippedByReason: {
+    "needs-human": 13,
+    "pr-blocked": 13,
+    "dependency-blocked": 8,
+  },
+  claimRaceWins: 0,
+  claimRaceLosses: 0,
+};
+
+Deno.test("formatScanOutcome - names the claim path's refusals as what refused the eligible issues (Issue #2404)", () => {
+  const line = formatScanOutcome(INCIDENT_SUMMARY, 3, {
+    stream_affinity: 5,
+    stream_busy: 1,
+  });
+
+  assertStringIncludes(line, "10 eligible, none claimable");
+  assertStringIncludes(line, "claim-refusals=stream_affinity=5,stream_busy=1");
+  // The finder's tally is still reported, but no longer as the explanation.
+  assertStringIncludes(line, "top-skips=needs-human=13");
+  assertEquals(
+    line.includes("top-skips names what refused them"),
+    false,
+    `the finder's skips did not refuse the eligible issues: ${line}`,
+  );
+  assert(
+    line.indexOf("claim-refusals=") < line.indexOf("top-skips="),
+    "the real refusal reads first",
+  );
+});
+
+Deno.test("formatScanOutcome - eligible issues with no recorded refusal say so rather than staying silent (Issue #2404)", () => {
+  for (const refusals of [undefined, {}]) {
+    const line = formatScanOutcome(INCIDENT_SUMMARY, 3, refusals);
+    assertStringIncludes(line, "claim-refusals=(none recorded)");
+  }
+});
+
+Deno.test("formatScanOutcome - a genuinely empty scan carries no claim-refusals field (Issue #2404)", () => {
+  const line = formatScanOutcome(
+    { ...INCIDENT_SUMMARY, totalEligible: 0 },
+    3,
+    { stream_affinity: 5 },
+  );
+  assertStringIncludes(line, "no eligible work");
+  assertEquals(line.includes("claim-refusals"), false);
+});
+
+Deno.test("formatScanOutcome - the busiest refusals first, capped like top-skips (Issue #2404)", () => {
+  const line = formatScanOutcome(INCIDENT_SUMMARY, 2, {
+    recent_claim: 1,
+    stream_affinity: 7,
+    already_assigned: 3,
+  });
+  assertStringIncludes(
+    line,
+    "claim-refusals=stream_affinity=7,already_assigned=3 ",
+  );
+});
+
+Deno.test("claimRefusalReason - reads the reason key out of a setup-phase claim refusal (Issue #2404)", () => {
+  assertEquals(
+    claimRefusalReason(
+      "Issue not available: stream_affinity: stream affinity: deferring org/repo#2320 to vibe-coder-31555 (300s left)",
+    ),
+    "stream_affinity",
+  );
+  assertEquals(
+    claimRefusalReason("Issue not available: stream_busy"),
+    "stream_busy",
+  );
+});
+
+Deno.test("claimRefusalReason - a refusal that names a winner, or nothing parseable, is still counted (Issue #2404)", () => {
+  assertEquals(
+    claimRefusalReason("Issue not available: vibe-coder-1-abc holds it"),
+    "other",
+  );
+  assertEquals(
+    claimRefusalReason("Issue not available: already assigned or closed"),
+    "other",
+  );
+});
+
+Deno.test("claimRefusalReason - anything that is not a claim refusal is not one (Issue #2404)", () => {
+  assertEquals(claimRefusalReason("quality gate failed"), null);
+  assertEquals(claimRefusalReason(""), null);
 });
