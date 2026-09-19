@@ -306,6 +306,34 @@ export function describeAttemptOutcome(
 }
 
 /**
+ * The one line the superseded release pointer repeats (Issue #2388).
+ *
+ * {@link describeAttemptOutcome} is the tally's shorthand, and for the two
+ * outcomes that carry a reason it throws that reason away: a deferral renders
+ * as `no PR expected (phase setup)` and says nothing at all about *why*. That
+ * is what left a milestone deferring on fifteen issues with no visible cause
+ * — the reason was on the first release comment, a week and a dozen comments
+ * up the thread. The shorthand keeps its place and the reason rides with it.
+ *
+ * Always one line, and bounded: the pointer body must stay matchable by
+ * `isHeartbeatOnlyBody`, whose patterns are line-anchored.
+ */
+export function releaseReasonLine(outcome: RunOutcome | undefined): string {
+  const terse = describeAttemptOutcome(outcome);
+  const detail = outcome?.kind === "no_pr_expected"
+    ? outcome.summary
+    : outcome?.kind === "no_pr"
+    ? outcome.message
+    : undefined;
+  const flat = detail?.replace(/\s+/g, " ").trim();
+  if (!flat) return terse;
+  const clipped = flat.length > OUTCOME_DETAIL_MAX_LENGTH
+    ? `${flat.substring(0, OUTCOME_DETAIL_MAX_LENGTH - 1)}…`
+    : flat;
+  return `${terse} — ${clipped}`;
+}
+
+/**
  * Render the attempt block. Empty for a single attempt (today's text is
  * unchanged); otherwise a heading with the total and one line per listed
  * attempt, oldest first, with a "+N earlier" line when the list is capped.
@@ -1911,7 +1939,7 @@ export async function clearHeartbeat(
             existing.commentId,
             renderSupersededReleaseBody(
               markerOptions.machineId,
-              thisAttempt.text,
+              releaseReasonLine(outcome),
             ),
             ghFn,
           );

@@ -24,6 +24,7 @@ import {
   parseReleaseAttemptFromBody,
   releaseClaim,
   renderHeartbeatBody,
+  renderSupersededReleaseBody,
   seedMarkerState,
 } from "../lib/heartbeat_storage.ts";
 import { isHeartbeatOnlyBody } from "../lib/heartbeat_sweep.ts";
@@ -412,5 +413,58 @@ Deno.test("release collapse - listing failure or no fleet comment degrades to to
     }
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The newest release comment says why (Issue #2388)
+// ---------------------------------------------------------------------------
+
+Deno.test("renderSupersededReleaseBody - the pointer repeats this release's reason, not just 'above' (Issue #2388)", () => {
+  const reason = "⚠️ **Vibe Coder released this claim with no PR** — " +
+    "deferred: milestone behind default branch (155 commits) — the merge " +
+    "gate refused the resolution";
+  const body = renderSupersededReleaseBody(HOST_A, reason);
+
+  // The reason a reader landing on the newest comment actually needs.
+  assertStringIncludes(body, "the merge gate refused the resolution");
+  // Still the heartbeat layer's own text, so the sweep still owns it.
+  assertStringIncludes(body, "collapsed into the release summary above");
+  assertEquals(parseHeartbeatMarker(body)?.cleared, true);
+  assertEquals(isHeartbeatOnlyBody(body), true);
+
+  // No reason to report: exactly the old single line, with nothing dangling.
+  const bare = renderSupersededReleaseBody(HOST_A);
+  assertStringIncludes(
+    bare,
+    "✅ **Vibe Coder released this claim** — full history collapsed into " +
+      "the release summary above.",
+  );
+});
+
+Deno.test("clearHeartbeat - the superseded comment carries the deferral reason of this very release (Issue #2388)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2388-release-" });
+  try {
+    const deferred: RunOutcome = {
+      kind: "no_pr_expected",
+      phase: "setup",
+      summary: "deferred: milestone behind default branch (155 commits) — " +
+        "the merge gate refused the resolution",
+    };
+    const gh = fakeIssue();
+    // Two claims on one host: the first release is the canonical comment, and
+    // the second claim's own comment is reduced to the pointer.
+    await claim(gh, dir, HOST_A, 100, T(3, 0));
+    await release(gh, dir, HOST_A, T(3, 26), deferred);
+    await claim(gh, dir, HOST_A, 200, T(3, 40));
+    await release(gh, dir, HOST_A, T(3, 55), deferred);
+
+    const pointer = gh.comments.find((c) => c.id === 200)!;
+    assertStringIncludes(pointer.body, "the merge gate refused the resolution");
+    assertStringIncludes(pointer.body, "collapsed into the release summary above");
+    assertEquals(parseHeartbeatMarker(pointer.body)?.cleared, true);
+    assertEquals(isHeartbeatOnlyBody(pointer.body), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
