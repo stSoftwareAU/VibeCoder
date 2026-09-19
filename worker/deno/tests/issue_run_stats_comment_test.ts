@@ -1154,8 +1154,9 @@ Deno.test("codegraph line - a comment built without the argument is unchanged", 
     runId: "vibe-codegraph-run",
   });
 
-  // Byte-for-byte the comment this function rendered before the trial existed:
-  // the marker, the shared section, then the disclaimer — nothing between.
+  // Byte-for-byte the comment this function renders without the trial: the
+  // marker, the shared section, the implementation run's split line (Issue
+  // #2346 — every implementation comment carries one), then the disclaimer.
   const { section } = buildDegradationReport({
     invocations: claudeResults.flatMap((r) =>
       buildPhaseInvocations("issue", r)
@@ -1166,7 +1167,7 @@ Deno.test("codegraph line - a comment built without the argument is unchanged", 
     body,
     `${
       buildIssueRunStatsMarker("vibe-codegraph-run")
-    }\n${section}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
+    }\n${section}\n- split: off\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
   );
   assertEquals(codegraphLineOf(body), undefined);
   assertEquals(body.includes("CodeGraph"), false);

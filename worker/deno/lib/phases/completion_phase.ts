@@ -76,7 +76,10 @@ import {
 } from "../worker_build_info.ts";
 import { bindIssueRunBehindSync } from "../milestone_presync.ts";
 import { repoDirName } from "../work_volume_tiers.ts";
-import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
+import {
+  IMPLEMENTATION_RUN_STATS_PHASE,
+  postIssueRunStatsComment,
+} from "../issue_run_stats_comment.ts";
 import {
   buildSecurityFixGateMessage,
   evaluateSecurityFixGate,
@@ -130,8 +133,12 @@ import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
  * Drives both the stats heading and the expected-model routing chain.
+ *
+ * Shared with the renderer (Issue #2346): the split figures render only for
+ * this phase, so a local copy drifting from it would silently empty the pilot
+ * metric.
  */
-const WORK_ON_STATS_PHASE = "issue";
+const WORK_ON_STATS_PHASE = IMPLEMENTATION_RUN_STATS_PHASE;
 
 /** What {@link lookupPrState} could read about an existing PR. */
 interface LinkedPrLookup {

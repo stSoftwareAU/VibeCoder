@@ -101,6 +101,101 @@ export function mergeUsageByModel(
   return order.map((model) => ({ model, usage: byModel.get(model)! }));
 }
 
+/** Read a non-negative token counter under any of its accepted spellings. */
+function readCounter(
+  record: Record<string, unknown>,
+  keys: readonly string[],
+): number {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Split a run's total token usage across the models that actually served it
+ * (Issue #2346).
+ *
+ * A split run's advisor (Opus) and its executor sub-agents (Sonnet) share one
+ * CLI invocation, so `RunStats.modelUsage` is the only record of who spent
+ * what. Attributing the whole invocation to its first served model prices the
+ * executors' Sonnet tokens at Opus rates and leaves Sonnet with no cost line at
+ * all.
+ *
+ * Counter keys are read under both spellings — the CLI emits camelCase, the
+ * recorded fixtures snake_case — and models keep their first-seen order. Any
+ * per-bucket shortfall between the run totals and the sum of the breakdown is
+ * appended as a residual entry against `fallbackModel`, so the attributed
+ * entries can never under-report the run's own totals; a shortfall clamps at
+ * zero and an all-zero residual is omitted. When `modelUsage` is absent or
+ * carries nothing usable the whole run is attributed to `fallbackModel`, which
+ * is exactly the pre-#2346 behaviour.
+ *
+ * @param tokenUsage - The invocation's recorded totals
+ * @param modelUsage - Per-model breakdown as recorded on the run stats
+ * @param fallbackModel - Model to attribute unbroken-down usage to
+ * @returns Per-model usage entries in first-seen order
+ */
+export function attributeUsageByModel(
+  tokenUsage: TokenUsage,
+  modelUsage: Record<string, unknown> | undefined,
+  fallbackModel: string,
+): ModelUsageEntry[] {
+  const entries: ModelUsageEntry[] = [];
+
+  for (const [model, raw] of Object.entries(modelUsage ?? {})) {
+    const key = model.trim();
+    if (!key || typeof raw !== "object" || raw === null) continue;
+    const record = raw as Record<string, unknown>;
+    entries.push({
+      model: key,
+      usage: {
+        inputTokens: readCounter(record, ["inputTokens", "input_tokens"]),
+        outputTokens: readCounter(record, ["outputTokens", "output_tokens"]),
+        cacheCreationTokens: readCounter(record, [
+          "cacheCreationInputTokens",
+          "cache_creation_input_tokens",
+          "cacheCreationTokens",
+          "cache_creation_tokens",
+        ]),
+        cacheReadTokens: readCounter(record, [
+          "cacheReadInputTokens",
+          "cache_read_input_tokens",
+          "cacheReadTokens",
+          "cache_read_tokens",
+        ]),
+      },
+    });
+  }
+
+  if (entries.length === 0) return [{ model: fallbackModel, usage: tokenUsage }];
+
+  const residual: TokenUsage = {
+    inputTokens: tokenUsage.inputTokens,
+    outputTokens: tokenUsage.outputTokens,
+    cacheCreationTokens: tokenUsage.cacheCreationTokens,
+    cacheReadTokens: tokenUsage.cacheReadTokens,
+  };
+  for (const { usage } of entries) {
+    residual.inputTokens -= usage.inputTokens;
+    residual.outputTokens -= usage.outputTokens;
+    residual.cacheCreationTokens -= usage.cacheCreationTokens;
+    residual.cacheReadTokens -= usage.cacheReadTokens;
+  }
+  residual.inputTokens = Math.max(0, residual.inputTokens);
+  residual.outputTokens = Math.max(0, residual.outputTokens);
+  residual.cacheCreationTokens = Math.max(0, residual.cacheCreationTokens);
+  residual.cacheReadTokens = Math.max(0, residual.cacheReadTokens);
+
+  if (!usageIsZero(residual)) {
+    entries.push({ model: fallbackModel, usage: residual });
+  }
+  return entries;
+}
+
 /**
  * Estimate the cost of a (possibly mixed-model) run.
  *
