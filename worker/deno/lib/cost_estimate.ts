@@ -102,6 +102,149 @@ export function mergeUsageByModel(
 }
 
 /**
+ * Read a token counter under either accepted spelling.
+ *
+ * An **absent** counter is a genuine zero — the API omits a bucket it never
+ * filled. A counter that is *present* but not a finite non-negative number is
+ * a fault, and reporting it as zero would put a fabricated count where a real
+ * one belongs (the failure Issue #366 established for Gemini usage), so it
+ * returns `undefined` and the caller discards the whole breakdown.
+ *
+ * The two spellings are the two that are actually produced: the Claude CLI's
+ * `modelUsage` entries are camelCase, while the recorded stream fixtures carry
+ * the result line's snake_case. No other alias is invented here.
+ */
+function readCounter(
+  record: Record<string, unknown>,
+  camel: string,
+  snake: string,
+): number | undefined {
+  for (const key of [camel, snake]) {
+    if (!(key in record)) continue;
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+    return undefined;
+  }
+  return 0;
+}
+
+/** Parse one `modelUsage` entry, or `undefined` when it is not usable. */
+function readModelUsageEntry(
+  model: string,
+  raw: unknown,
+): ModelUsageEntry | undefined {
+  const key = model.trim();
+  if (!key || typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const inputTokens = readCounter(record, "inputTokens", "input_tokens");
+  const outputTokens = readCounter(record, "outputTokens", "output_tokens");
+  const cacheCreationTokens = readCounter(
+    record,
+    "cacheCreationInputTokens",
+    "cache_creation_input_tokens",
+  );
+  const cacheReadTokens = readCounter(
+    record,
+    "cacheReadInputTokens",
+    "cache_read_input_tokens",
+  );
+  if (
+    inputTokens === undefined || outputTokens === undefined ||
+    cacheCreationTokens === undefined || cacheReadTokens === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    model: key,
+    usage: {
+      inputTokens,
+      outputTokens,
+      cacheCreationTokens,
+      cacheReadTokens,
+    },
+  };
+}
+
+/**
+ * Split a run's total token usage across the models that actually served it
+ * (Issue #2346).
+ *
+ * A split run's advisor (Opus) and its executor sub-agents (Sonnet) share one
+ * CLI invocation, so `RunStats.modelUsage` is the only record of who spent
+ * what. Attributing the whole invocation to its first served model prices the
+ * executors' Sonnet tokens at Opus rates and leaves Sonnet with no cost line at
+ * all.
+ *
+ * **A breakdown is used only when it reconciles against the run's own totals.**
+ * Models keep their first-seen order, and a per-bucket shortfall between the
+ * totals and the sum of the breakdown is appended as a residual entry against
+ * `fallbackModel`, so the entries never under-report the run. A breakdown that
+ * cannot be reconciled — an entry that is not a usable object, a counter that
+ * is present but not a number, or a sum that *exceeds* the run's totals in any
+ * bucket — is discarded whole rather than trusted in part: the run is then
+ * attributed to `fallbackModel` alone, exactly as before this function
+ * existed. Charging a count nothing recorded would over-report the pilot's
+ * spend and the issue's cumulative total, and the single-entry result is
+ * visible as such — the comment renders no per-model breakdown at all.
+ *
+ * @param tokenUsage - The invocation's recorded totals
+ * @param modelUsage - Per-model breakdown as recorded on the run stats
+ * @param fallbackModel - Model to attribute unbroken-down usage to
+ * @returns Per-model usage entries in first-seen order
+ */
+export function attributeUsageByModel(
+  tokenUsage: TokenUsage,
+  modelUsage: Record<string, unknown> | undefined,
+  fallbackModel: string,
+): ModelUsageEntry[] {
+  const whole: ModelUsageEntry[] = [{
+    model: fallbackModel,
+    usage: tokenUsage,
+  }];
+  const raw = Object.entries(modelUsage ?? {});
+  if (raw.length === 0) return whole;
+
+  const entries: ModelUsageEntry[] = [];
+  for (const [model, value] of raw) {
+    const entry = readModelUsageEntry(model, value);
+    // One unusable entry makes the whole breakdown untrustworthy: its tokens
+    // would otherwise be re-attributed to `fallbackModel` at the wrong rate.
+    if (!entry) return whole;
+    entries.push(entry);
+  }
+
+  const residual: TokenUsage = {
+    inputTokens: tokenUsage.inputTokens,
+    outputTokens: tokenUsage.outputTokens,
+    cacheCreationTokens: tokenUsage.cacheCreationTokens,
+    cacheReadTokens: tokenUsage.cacheReadTokens,
+  };
+  for (const { usage } of entries) {
+    residual.inputTokens -= usage.inputTokens;
+    residual.outputTokens -= usage.outputTokens;
+    residual.cacheCreationTokens -= usage.cacheCreationTokens;
+    residual.cacheReadTokens -= usage.cacheReadTokens;
+  }
+  // A breakdown claiming more than the run recorded does not reconcile, so it
+  // never prices the run.
+  if (
+    residual.inputTokens < 0 || residual.outputTokens < 0 ||
+    residual.cacheCreationTokens < 0 || residual.cacheReadTokens < 0
+  ) {
+    return whole;
+  }
+
+  if (!usageIsZero(residual)) {
+    entries.push({ model: fallbackModel, usage: residual });
+  }
+  return entries;
+}
+
+/**
  * Estimate the cost of a (possibly mixed-model) run.
  *
  * Merges usage by model, prices each via {@link estimateCost}, and sums the

@@ -353,32 +353,53 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
 }
 
 /**
- * Prefix of the advisor/executor split line (Issue #2344).
+ * The phase string every implementation run reports its stats under.
  *
- * Greppable by contract, like the quality-gate line above: a pilot run's
- * violations are read off the issue by matching this prefix, so the wording,
- * the lower case and the ordering must not be re-styled.
+ * Exported so the phases that post implementation run stats share this one
+ * spelling: the split figures below render only for this phase, and a drifting
+ * copy would silently empty the pilot metric.
  */
-const EXECUTOR_SPLIT_STATS_PREFIX = "- executor split:";
+export const IMPLEMENTATION_RUN_STATS_PHASE = "issue";
 
 /**
- * Render the run's advisor/executor split line (Issue #2344).
+ * Prefixes of the advisor/executor split lines (Issues #2344, #2346).
  *
- * One line on a split run, and nothing at all on every other run — a comment
- * from a key-off run is byte-for-byte what it was before this line existed.
- * Reports the advisor edits that got through (the violations), the ones the
- * `PreToolUse` guard denied, the executors dispatched and the re-tasks issued.
- *
- * @param claudeResults - Completed invocations of the run being reported
- * @returns The bullet line, or `""` when no invocation was a split run
+ * Greppable by contract, like the quality-gate line above: a pilot run's
+ * figures are read off the issue by matching these prefixes, so the wording,
+ * the lower case and the ordering must not be re-styled. None of them can match
+ * {@link ESTIMATED_COST_PATTERN}, so the cumulative tally never reads a count as
+ * spend.
  */
-export function buildExecutorSplitStatsLine(
+const SPLIT_STATS_PREFIX = "- split:";
+const EXECUTOR_DISPATCH_STATS_PREFIX = "- executors dispatched:";
+const EXECUTOR_RETASK_STATS_PREFIX = "- re-tasks issued:";
+const ADVISOR_EDIT_STATS_PREFIX = "- advisor edit calls:";
+
+/**
+ * Render the run's advisor/executor split lines (Issues #2344, #2346).
+ *
+ * Every implementation run carries exactly one `split: on`/`split: off` line,
+ * so a pilot run and a control run are separable when the numbers are read
+ * later. A split run adds the executors dispatched, the re-tasks issued and the
+ * advisor edit calls that got through (with the guard's denials in brackets); a
+ * non-split run adds nothing beyond `split: off`. Phases that are not
+ * implementation runs — the planning-shaped ones — render no split line at all,
+ * so their comments stay byte-for-byte what they were.
+ *
+ * @param phase - The phase being reported
+ * @param claudeResults - Completed invocations of the run being reported
+ * @returns The bullet lines, empty for a non-implementation phase
+ */
+export function buildExecutorSplitStatsLines(
+  phase: string,
   claudeResults: readonly PhaseClaudeResult[],
-): string {
+): string[] {
+  if (phase !== IMPLEMENTATION_RUN_STATS_PHASE) return [];
+
   const splits = claudeResults
     .map((result) => result.runStats?.executorSplit)
     .filter((stats): stats is IssueExecutorSplitStats => stats !== undefined);
-  if (splits.length === 0) return "";
+  if (splits.length === 0) return [`${SPLIT_STATS_PREFIX} off`];
 
   const total = splits.reduce((sum, stats) => ({
     advisorEditCalls: sum.advisorEditCalls + stats.advisorEditCalls,
@@ -392,9 +413,12 @@ export function buildExecutorSplitStatsLine(
     executorRetasks: 0,
   });
 
-  return `${EXECUTOR_SPLIT_STATS_PREFIX} ${total.advisorEditCalls} advisor ` +
-    `edit calls, ${total.denials} denied, ${total.executorDispatches} ` +
-    `executors dispatched, ${total.executorRetasks} re-tasks`;
+  return [
+    `${SPLIT_STATS_PREFIX} on`,
+    `${EXECUTOR_DISPATCH_STATS_PREFIX} ${total.executorDispatches}`,
+    `${EXECUTOR_RETASK_STATS_PREFIX} ${total.executorRetasks}`,
+    `${ADVISOR_EDIT_STATS_PREFIX} ${total.advisorEditCalls} (${total.denials} denied)`,
+  ];
 }
 
 /**
@@ -423,6 +447,11 @@ export function buildExecutorSplitStatsLine(
  * @param args.qualityGate - What the run's quality gate did (Issue #2345);
  *   omitted — every phase that runs no gate — renders no such line, so those
  *   comments are byte-for-byte what they were before
+ *
+ * An implementation run also carries the split figures (Issue #2346): one
+ * `split: on`/`split: off` line always, and the executor counts on a split run
+ * — see {@link buildExecutorSplitStatsLines}.
+ *
  * @returns The comment body, or `""` when no invocation produced stats (so
  *   callers post nothing rather than an empty comment)
  */
@@ -459,13 +488,17 @@ export function buildIssueRunStatsComment(args: {
   // Issue #2345: the gate's own outcome, beside the figures of the run it
   // gated and ahead of the cumulative issue total.
   const qualityGateLine = buildQualityGateStatsLine(args.qualityGate);
-  // Issue #2344: what the advisor/executor split did, on a split run only.
-  const splitLine = buildExecutorSplitStatsLine(args.claudeResults);
+  // Issues #2344, #2346: whether the run was split, and what the split did.
+  const splitLines = buildExecutorSplitStatsLines(
+    args.phase,
+    args.claudeResults,
+  );
+  const splitBlock = splitLines.map((line) => `\n${line}`).join("");
   const body = `${marker}\n${section}${
     graftLine ? `\n${graftLine}` : ""
-  }${codegraphLine}${qualityGateLine ? `\n${qualityGateLine}` : ""}${
-    splitLine ? `\n${splitLine}` : ""
-  }`;
+  }${codegraphLine}${
+    qualityGateLine ? `\n${qualityGateLine}` : ""
+  }${splitBlock}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );

@@ -22,7 +22,9 @@ import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import {
+  attributeUsageByModel,
   formatCostEstimateLines,
+  mergeUsageByModel,
   type ModelUsageEntry,
 } from "./cost_estimate.ts";
 import {
@@ -572,9 +574,11 @@ export function buildPlanningStatsSection(args: {
   // Union of served models, preserving first-seen order.
   const served: string[] = [];
   const seen = new Set<string>();
-  // Per-invocation usage attributed to its primary served model, so a mixed
+  // Per-invocation usage attributed to the model that served it, so a mixed
   // run (e.g. Fable→Opus fallback across invocations) is costed per model
-  // (Issue #3557). Falls back to the expected model when the API reported no
+  // (Issue #3557). A single invocation that served two models — an Opus
+  // advisor and its Sonnet executors — is split by its own per-model breakdown
+  // (Issue #2346). Falls back to the expected model when the API reported no
   // served model for the invocation.
   const costEntries: ModelUsageEntry[] = [];
   let effort: string | undefined;
@@ -612,10 +616,13 @@ export function buildPlanningStatsSection(args: {
       outputTokens += stats.tokenUsage.outputTokens;
       cacheCreationTokens += stats.tokenUsage.cacheCreationTokens;
       cacheReadTokens += stats.tokenUsage.cacheReadTokens;
-      costEntries.push({
-        model: stats.servedModels[0] ?? expectedModel,
-        usage: stats.tokenUsage,
-      });
+      costEntries.push(
+        ...attributeUsageByModel(
+          stats.tokenUsage,
+          stats.modelUsage,
+          stats.servedModels[0] ?? expectedModel,
+        ),
+      );
     }
     if (typeof stats.numTurns === "number") {
       haveTurns = true;
@@ -647,6 +654,21 @@ export function buildPlanningStatsSection(args: {
         formatCount(cacheReadTokens)
       }`,
     );
+    // When one run served more than one model — an Opus advisor and its Sonnet
+    // executors (Issue #2346) — each model's own counts sit under the total, so
+    // the cost lines below can be read back to the tokens that produced them.
+    // A single-model run renders exactly what it always did.
+    const perModel = mergeUsageByModel(costEntries);
+    if (perModel.length > 1) {
+      for (const { model, usage } of perModel) {
+        lines.push(
+          `  - \`${model}\`: input ${formatCount(usage.inputTokens)} · output ${
+            formatCount(usage.outputTokens)
+          } · cache write ${formatCount(usage.cacheCreationTokens)} · ` +
+            `cache read ${formatCount(usage.cacheReadTokens)}`,
+        );
+      }
+    }
     // Anthropic prompt-cache effectiveness for the run (Issue #4282). A rate
     // that falls is the visible symptom of a volatile token entering the
     // stable prompt prefix, so it is reported beside the tokens it explains.

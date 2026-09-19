@@ -116,7 +116,12 @@ Deno.test("buildIssueRunStatsComment - renders the shared stats format", () => {
   assertStringIncludes(body, "Estimated cost (USD, estimate only)");
 });
 
-Deno.test("buildIssueRunStatsComment - a split run's counts reach the rendered body (Issue #2344)", () => {
+/** Every rendered line starting with `prefix`, in order. */
+function linesStartingWith(body: string, prefix: string): string[] {
+  return body.split("\n").filter((line) => line.startsWith(prefix));
+}
+
+Deno.test("buildIssueRunStatsComment - a split run's counts reach the rendered body (Issue #2344, #2346)", () => {
   const split = buildIssueRunStatsComment({
     phase: "issue",
     claudeResults: [claudeResult(["claude-opus-4-8"], {
@@ -129,16 +134,74 @@ Deno.test("buildIssueRunStatsComment - a split run's counts reach the rendered b
     })],
   });
 
-  assertStringIncludes(split, "- executor split:");
-  assertStringIncludes(split, "0 advisor edit calls");
-  assertStringIncludes(split, "3 executors dispatched");
+  assertEquals(linesStartingWith(split, "- split:"), ["- split: on"]);
+  assertEquals(linesStartingWith(split, "- executors dispatched:"), [
+    "- executors dispatched: 3",
+  ]);
+  assertEquals(linesStartingWith(split, "- re-tasks issued:"), [
+    "- re-tasks issued: 1",
+  ]);
+  assertEquals(linesStartingWith(split, "- advisor edit calls:"), [
+    "- advisor edit calls: 0 (1 denied)",
+  ]);
+});
 
-  // A run that was not split renders the body it always did.
+Deno.test("buildIssueRunStatsComment - an unsplit run says split: off and nothing more (Issue #2346)", () => {
   const unsplit = buildIssueRunStatsComment({
     phase: "issue",
     claudeResults: [claudeResult(["claude-opus-4-8"])],
   });
-  assertEquals(unsplit.includes("executor split:"), false);
+
+  // Every implementation comment carries the line, so a control run is
+  // separable from a pilot one when the numbers are read.
+  assertEquals(linesStartingWith(unsplit, "- split:"), ["- split: off"]);
+  assertEquals(unsplit.includes("executors dispatched:"), false);
+  assertEquals(unsplit.includes("re-tasks issued:"), false);
+  assertEquals(unsplit.includes("advisor edit calls:"), false);
+});
+
+Deno.test("buildIssueRunStatsComment - many invocations render exactly one split line (Issue #2346)", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [
+      claudeResult(["claude-opus-4-8"], {
+        executorSplit: {
+          advisorEditCalls: 1,
+          deniedAdvisorEdits: ["Write"],
+          executorDispatches: 2,
+          executorRetasks: 1,
+        },
+      }),
+      claudeResult(["claude-opus-4-8"], {
+        executorSplit: {
+          advisorEditCalls: 0,
+          deniedAdvisorEdits: [],
+          executorDispatches: 3,
+          executorRetasks: 0,
+        },
+      }),
+    ],
+  });
+
+  assertEquals(linesStartingWith(body, "- split:"), ["- split: on"]);
+  assertEquals(linesStartingWith(body, "- executors dispatched:"), [
+    "- executors dispatched: 5",
+  ]);
+  assertEquals(linesStartingWith(body, "- re-tasks issued:"), [
+    "- re-tasks issued: 1",
+  ]);
+  assertEquals(linesStartingWith(body, "- advisor edit calls:"), [
+    "- advisor edit calls: 1 (1 denied)",
+  ]);
+});
+
+Deno.test("buildIssueRunStatsComment - a planning-shaped phase carries no split line (Issue #2346)", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "grill_me",
+    claudeResults: [claudeResult(["claude-fable-5"])],
+  });
+
+  assertEquals(linesStartingWith(body, "- split:"), []);
 });
 
 Deno.test("buildIssueRunStatsComment - carries marker and disclaimer", () => {
@@ -211,6 +274,98 @@ Deno.test("buildIssueRunStatsComment - adds the cumulative issue total from the 
   assertEquals(
     tallyIssueCost([earlier, later, third]).total,
     expected + tallyIssueCost([third]).total,
+  );
+});
+
+/**
+ * A split run: the Opus advisor and its Sonnet executors share one CLI
+ * invocation, so the per-model breakdown is the only record of who spent what.
+ * Counter keys are deliberately mixed camelCase/snake_case — the CLI emits the
+ * former, the recorded fixtures the latter, and both must parse.
+ */
+function splitRunResult(): PhaseClaudeResult {
+  return {
+    runStats: {
+      servedModels: ["claude-opus-5", "claude-sonnet-5"],
+      requestedModel: "opus",
+      wallClockMs: 2_000,
+      tokenUsage: {
+        inputTokens: 1_500_000,
+        outputTokens: 300_000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+      modelUsage: {
+        "claude-opus-5": { inputTokens: 1_000_000, outputTokens: 100_000 },
+        "claude-sonnet-5": { input_tokens: 500_000, output_tokens: 200_000 },
+      },
+      executorSplit: {
+        advisorEditCalls: 0,
+        deniedAdvisorEdits: [],
+        executorDispatches: 2,
+        executorRetasks: 0,
+      },
+    },
+  };
+}
+
+// Documented per-Mtok prices (docs/MODEL-AND-CACHING.md): Opus 5 $5 in /
+// $25 out, Sonnet 5 $2 in / $10 out.
+const ADVISOR_COST = 1.0 * 5 + 0.1 * 25; // $7.50
+const EXECUTOR_COST = 0.5 * 2 + 0.2 * 10; // $3.00
+const SPLIT_RUN_COST = ADVISOR_COST + EXECUTOR_COST; // $10.50
+
+Deno.test("buildIssueRunStatsComment - executor Sonnet spend is priced separately from advisor Opus (Issue #2346)", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+  });
+
+  assertStringIncludes(
+    body,
+    "**Served model(s):** `claude-opus-5`, `claude-sonnet-5`",
+  );
+  // Each served model carries its own token counts...
+  assertStringIncludes(
+    body,
+    "- `claude-opus-5`: input 1,000,000 · output 100,000 · cache write 0 · cache read 0",
+  );
+  assertStringIncludes(
+    body,
+    "- `claude-sonnet-5`: input 500,000 · output 200,000 · cache write 0 · cache read 0",
+  );
+  // ...its own cost line...
+  assertStringIncludes(body, `- \`claude-opus-5\`: ${formatUsd(ADVISOR_COST)}`);
+  assertStringIncludes(
+    body,
+    `- \`claude-sonnet-5\`: ${formatUsd(EXECUTOR_COST)}`,
+  );
+  // ...and the run's estimate is their sum, not the advisor's alone.
+  assertStringIncludes(
+    body,
+    `**Estimated cost (USD, estimate only):** ~${formatUsd(SPLIT_RUN_COST)}`,
+  );
+  assertEquals(tallyIssueCost([body]).total, SPLIT_RUN_COST);
+});
+
+Deno.test("buildIssueRunStatsComment - the issue total sums both split runs' executor spend (Issue #2346)", () => {
+  const earlier = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-one",
+  });
+  const later = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-two",
+    priorComments: [earlier],
+  });
+
+  assertStringIncludes(
+    later,
+    `**Issue total across 2 run-stats comments:** ~${
+      formatUsd(SPLIT_RUN_COST * 2)
+    }`,
   );
 });
 
@@ -413,6 +568,44 @@ Deno.test("postIssueRunStatsComment - posts once when the issue has none", async
   assertEquals(result.posted, true);
   assertEquals(gh.posted.length, 1);
   assertStringIncludes(gh.posted[0]!, buildIssueRunStatsMarker("vibe-run-one"));
+});
+
+Deno.test("postIssueRunStatsComment - a split run's posted body carries the split figures and both models' spend (Issue #2346)", async () => {
+  const earlier = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-one",
+  });
+  const gh = makeGitHubDouble([earlier]);
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 42,
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-two",
+    authorOptions: FLEET_OPTIONS,
+    getIssueComments: gh.getIssueComments,
+    postComment: gh.postComment,
+    logger: makeLogger(),
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(gh.posted.length, 1);
+  const body = gh.posted[0]!;
+  assertEquals(linesStartingWith(body, "- split:"), ["- split: on"]);
+  assertEquals(linesStartingWith(body, "- executors dispatched:"), [
+    "- executors dispatched: 2",
+  ]);
+  assertStringIncludes(
+    body,
+    `- \`claude-sonnet-5\`: ${formatUsd(EXECUTOR_COST)}`,
+  );
+  assertStringIncludes(
+    body,
+    `**Issue total across 2 run-stats comments:** ~${
+      formatUsd(SPLIT_RUN_COST * 2)
+    }`,
+  );
 });
 
 Deno.test("postIssueRunStatsComment - skips when this run already posted", async () => {
@@ -961,8 +1154,9 @@ Deno.test("codegraph line - a comment built without the argument is unchanged", 
     runId: "vibe-codegraph-run",
   });
 
-  // Byte-for-byte the comment this function rendered before the trial existed:
-  // the marker, the shared section, then the disclaimer — nothing between.
+  // Byte-for-byte the comment this function renders without the trial: the
+  // marker, the shared section, the implementation run's split line (Issue
+  // #2346 — every implementation comment carries one), then the disclaimer.
   const { section } = buildDegradationReport({
     invocations: claudeResults.flatMap((r) =>
       buildPhaseInvocations("issue", r)
@@ -973,7 +1167,7 @@ Deno.test("codegraph line - a comment built without the argument is unchanged", 
     body,
     `${
       buildIssueRunStatsMarker("vibe-codegraph-run")
-    }\n${section}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
+    }\n${section}\n- split: off\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
   );
   assertEquals(codegraphLineOf(body), undefined);
   assertEquals(body.includes("CodeGraph"), false);

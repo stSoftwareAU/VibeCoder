@@ -18,7 +18,7 @@ import {
   summariseIssueExecutorSplitRun,
 } from "../lib/issue_executor_enforcement.ts";
 import { runIssueEditGuard } from "../lib/issue_edit_guard_cli.ts";
-import { buildExecutorSplitStatsLine } from "../lib/issue_run_stats_comment.ts";
+import { buildExecutorSplitStatsLines } from "../lib/issue_run_stats_comment.ts";
 import {
   DEEPSEEK_PROVIDER_ID,
   resolveAgentProvider,
@@ -349,8 +349,8 @@ Deno.test("split run summary - malformed and empty streams count nothing rather 
   assertEquals(stats.deniedAdvisorEdits, []);
 });
 
-Deno.test("run stats comment - reports the split counts, and nothing at all with the key off (Issue #2344)", () => {
-  const line = buildExecutorSplitStatsLine([
+Deno.test("run stats comment - reports the split counts, and `split: off` with the key off (Issues #2344, #2346)", () => {
+  const lines = buildExecutorSplitStatsLines("issue", [
     {
       runStats: {
         servedModels: ["claude-opus-4"],
@@ -365,14 +365,15 @@ Deno.test("run stats comment - reports the split counts, and nothing at all with
       },
     },
   ]);
-  assertStringIncludes(line, "executor split:");
-  assertStringIncludes(line, "0 advisor edit calls");
-  assertStringIncludes(line, "1 denied");
-  assertStringIncludes(line, "3 executors dispatched");
-  assertStringIncludes(line, "1 re-tasks");
+  assertEquals(lines, [
+    "- split: on",
+    "- executors dispatched: 3",
+    "- re-tasks issued: 1",
+    "- advisor edit calls: 0 (1 denied)",
+  ]);
 
   assertEquals(
-    buildExecutorSplitStatsLine([
+    buildExecutorSplitStatsLines("issue", [
       {
         runStats: {
           servedModels: ["claude-opus-4"],
@@ -381,8 +382,8 @@ Deno.test("run stats comment - reports the split counts, and nothing at all with
         },
       },
     ]),
-    "",
-    "a key-off run renders no split line",
+    ["- split: off"],
+    "a key-off run says so, and says nothing more",
   );
 });
 
