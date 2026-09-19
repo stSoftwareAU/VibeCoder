@@ -1502,6 +1502,10 @@ async function executeClaudePhaseBody(
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   // Issue #2314: the run's `graft_*` tally, from the same per-tool counts.
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
+  // Issue #2383: RTK's figure comes from its own store, not the run stats, so
+  // it is read on every outcome — a run that failed still filtered output.
+  // The result object on the carrier is the one this updates.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     return {
