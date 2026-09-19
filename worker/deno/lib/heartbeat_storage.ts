@@ -306,6 +306,34 @@ export function describeAttemptOutcome(
 }
 
 /**
+ * The one line the superseded release pointer repeats (Issue #2388).
+ *
+ * {@link describeAttemptOutcome} is the tally's shorthand, and for the two
+ * outcomes that carry a reason it throws that reason away: a deferral renders
+ * as `no PR expected (phase setup)` and says nothing at all about *why*. That
+ * is what left a milestone deferring on fifteen issues with no visible cause
+ * — the reason was on the first release comment, a week and a dozen comments
+ * up the thread. The shorthand keeps its place and the reason rides with it.
+ *
+ * Bounded through {@link boundOutcomeText}, like every other free-text splice
+ * in this file: one line, and with `<!--` / `-->` neutralised, because the
+ * pointer body opens with the machine-readable marker comment and
+ * `isHeartbeatOnlyBody` matches it line by line.
+ */
+export function releaseReasonLine(outcome: RunOutcome | undefined): string {
+  const terse = describeAttemptOutcome(outcome);
+  const detail = outcome?.kind === "no_pr_expected"
+    ? outcome.summary
+    : outcome?.kind === "no_pr"
+    ? outcome.message
+    : undefined;
+  const bounded = detail
+    ? boundOutcomeText(detail, OUTCOME_DETAIL_MAX_LENGTH)
+    : "";
+  return bounded ? `${terse} — ${bounded}` : terse;
+}
+
+/**
  * Render the attempt block. Empty for a single attempt (today's text is
  * unchanged); otherwise a heading with the total and one line per listed
  * attempt, oldest first, with a "+N earlier" line when the list is capped.
@@ -1128,11 +1156,25 @@ export async function listFleetMarkerComments(
  * heartbeat layer's own text, so `isHeartbeatOnlyBody` still holds and the
  * existing sweep removes it once past the cleared-marker grace window. It
  * carries the cleared marker so no scanner sees a live claim on it.
+ *
+ * It repeats **this** release's reason (Issue #2388). Pointing "above" was
+ * accurate and useless: the canonical summary can be a week and a dozen
+ * comments up the thread, so the newest comment — the one a reader lands on —
+ * said nothing about why the claim had just been dropped.
+ *
+ * @param machineId - The host whose comment is being superseded
+ * @param reason - This release's one-line outcome, when there is one
  */
-export function renderSupersededReleaseBody(machineId: string): string {
+export function renderSupersededReleaseBody(
+  machineId: string,
+  reason?: string,
+): string {
+  const trimmed = reason?.trim();
+  const why = trimmed ? ` — ${trimmed}` : "";
   return `${formatHeartbeatMarker(machineId, 0)} ` +
     `<!-- cleared: claim released by machine ${machineId} -->\n\n` +
-    `✅ **Vibe Coder released this claim** — collapsed into the release summary above.`;
+    `✅ **Vibe Coder released this claim**${why} — full history collapsed ` +
+    `into the release summary above.`;
 }
 
 /**
@@ -1894,7 +1936,10 @@ export async function clearHeartbeat(
           await patchMarkerComment(
             repo,
             existing.commentId,
-            renderSupersededReleaseBody(markerOptions.machineId),
+            renderSupersededReleaseBody(
+              markerOptions.machineId,
+              releaseReasonLine(outcome),
+            ),
             ghFn,
           );
         } catch (err) {

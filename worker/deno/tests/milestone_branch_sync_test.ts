@@ -27,6 +27,7 @@ import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts
 import { AGENT_RUN_ENDED_BY_WORKER } from "../lib/milestone_conflict_ladder.ts";
 import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
 import { stuckSyncDiagnosticTitle } from "../lib/milestone_sync_diagnostic_closeout.ts";
+import { GATE_WEDGE_DIAGNOSTIC_REPO } from "../lib/milestone_gate_wedge.ts";
 import {
   loadSyncStreaks,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
@@ -2405,12 +2406,16 @@ Deno.test("judgeSyncFailure - an agent timeout is charged, a worker kill is disr
   assertStringIncludes(killed.reason, "ended by the worker");
 });
 
-Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged and still reports both halves (Issue #1778)", async () => {
+Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged and, once it repeats, is reported as a worker diagnostic (Issues #1778, #2388)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-1778-resgate-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
     const calls: string[][] = [];
-    // Two cycles: the report goes out once, not every cycle.
+    // Two cycles. Issue #2388 changed what they produce: the first refusal is
+    // only a verdict and reports nothing, the second is the same verdict on
+    // the same conflict from the same default tip — a wedge — and that is
+    // what is reported, once, as a worker diagnostic in VibeCoder rather than
+    // as a needs-human comment on a sibling issue of the milestone.
     for (let cycle = 0; cycle < 2; cycle++) {
       await syncMilestoneBranches(ledgerDeps(calls, {
         milestones: [{
@@ -2427,25 +2432,44 @@ Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged 
     // A gate refusal is not a conflict the budget can retry its way out of.
     assertEquals(entry?.conflictAttempts, 0);
     assertEquals(entry?.lastAttempt?.outcome, "not-charged");
-    // Its own dedup key — sharing `gateEscalated` would let the Issue #974
-    // refusal of the merged tree suppress this report, and the reverse.
+    // The wedge is keyed on the conflict itself (Issue #1786), so a default
+    // tip that moves every few minutes is not a new refusal.
     assertEquals(
-      entry?.analysisEscalatedSha,
+      entry?.gateRefusal?.conflictKey,
       conflictEscalationKey({
         milestoneBranch: LEDGER_BRANCH,
         files: ["worker/deno/lib/scan_content.ts"],
       }),
     );
+    // Tracked apart from `gateEscalated`, so the Issue #974 refusal of the
+    // merged tree cannot suppress this one, or the reverse.
     assertEquals(entry?.gateEscalated, false);
 
-    const comments = calls.filter((c) =>
-      c[0] === "issue" && c[1] === "comment"
+    // The refusal repeated, so the ledger concludes it (Issue #2388) — which
+    // is what stops the milestone's issues being claimed and dropped.
+    assertEquals(entry?.gateRefusal?.count, 2);
+    assertEquals(entry?.gateRefusal?.reported, true);
+
+    // Nothing is commented on any issue of the monitored repository: a
+    // conflict is the worker's to resolve, never a human's.
+    assertEquals(
+      calls.filter((c) => c[0] === "issue" && c[1] === "comment").length,
+      0,
     );
-    assertEquals(comments.length, 1, "reported once, not every cycle");
-    const body = comments[0]![comments[0]!.length - 1] ?? "";
+    const filed = calls.filter((c) =>
+      c[0] === "issue" && c[1] === "create" &&
+      c[c.indexOf("--repo") + 1] === GATE_WEDGE_DIAGNOSTIC_REPO
+    );
+    assertEquals(filed.length, 1, "reported once, not every cycle");
+    const body = filed[0]![filed[0]!.indexOf("--body") + 1] ?? "";
     // Both halves: what the gate said, and the two sides that produced it.
     assertStringIncludes(body, "TS2304");
     assertStringIncludes(body, "worker/deno/lib/scan_content.ts");
+    // …plus what a gate fixer needs: the repository, the milestone and the
+    // count the diagnostic exists to surface.
+    assertStringIncludes(body, "owner/repo");
+    assertStringIncludes(body, LEDGER_BRANCH);
+    assertStringIncludes(body, "refused the same resolution 2 time(s)");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
