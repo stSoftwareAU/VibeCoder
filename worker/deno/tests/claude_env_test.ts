@@ -60,8 +60,8 @@ Deno.test("buildClaudeChildEnv - honours a custom denylist", () => {
   assertEquals(child.KEEP, "yes");
 });
 
-Deno.test("buildClaudeChildEnv - empty environment yields empty result", () => {
-  assertEquals(buildClaudeChildEnv({}), {});
+Deno.test("buildClaudeChildEnv - an empty environment inherits nothing; the only entry is the audit-journal off switch (Issue #2400)", () => {
+  assertEquals(buildClaudeChildEnv({}), { VIBE_AUDIT_DISABLED: "1" });
 });
 
 Deno.test("CLAUDE_ENV_DENYLIST - includes the GitHub App private key variables", () => {

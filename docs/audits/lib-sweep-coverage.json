@@ -281,6 +281,7 @@
         "worker/deno/lib/milestone_conflict_ladder.ts",
         "worker/deno/lib/milestone_conflict_triage.ts",
         "worker/deno/lib/milestone_escalation_target.ts",
+        "worker/deno/lib/milestone_gate_wedge.ts",
         "worker/deno/lib/milestone_health.ts",
         "worker/deno/lib/milestone_merge_gate.ts",
         "worker/deno/lib/milestone_merge_state.ts",

@@ -884,7 +884,7 @@ What does and does not spend an attempt:
 | -------------------------------------------- | -------- | ----------------------------------------------------------------------------------------- |
 | **Failed** — the merge was judged unmergeable | Yes      | The conflict itself was looked at and beat the worker                                     |
 | **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat, or the worker killing the agent at the cycle deadline; the conflict was never judged (Issues #395, #1693). An agent that runs out **its own** timeout is judged and charged (Issue #2305) |
-| **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch |
+| **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch. Not charged is not *no consequence*: a resolution-gate refusal that repeats unchanged is counted separately as a wedge, which holds the milestone's issues back and files one worker diagnostic in VibeCoder (Issue #2388) |
 
 A disrupted attempt is re-attempted rather than charged, and is bounded
 separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the

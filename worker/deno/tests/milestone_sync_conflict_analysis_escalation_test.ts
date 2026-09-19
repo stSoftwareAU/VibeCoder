@@ -28,6 +28,10 @@ import {
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   milestoneSyncStreakPath,
 } from "../lib/milestone_sync_streak.ts";
+import {
+  GATE_WEDGE_DIAGNOSTIC_REPO,
+  gateWedgeDiagnosticTitle,
+} from "../lib/milestone_gate_wedge.ts";
 
 const MILESTONE_TITLE = "#1559 Rival designs";
 /**
@@ -143,8 +147,19 @@ function deps(
   };
 }
 
+/** Comments posted on an issue of the MONITORED repository. */
 const commentCalls = (calls: string[][]): string[][] =>
-  calls.filter((c) => c[0] === "issue" && c[1] === "comment");
+  calls.filter((c) =>
+    c[0] === "issue" && c[1] === "comment" &&
+    c[c.indexOf("--repo") + 1] !== GATE_WEDGE_DIAGNOSTIC_REPO
+  );
+
+/** Worker diagnostics filed in VibeCoder (Issue #2388). */
+const diagnosticCreates = (calls: string[][]): string[][] =>
+  calls.filter((c) =>
+    c[0] === "issue" && c[1] === "create" &&
+    c[c.indexOf("--repo") + 1] === GATE_WEDGE_DIAGNOSTIC_REPO
+  );
 
 Deno.test(
   "milestone sync - a case-3 conflict posts nothing and charges one attempt (Issue #1778)",
@@ -260,119 +275,89 @@ Deno.test(
 );
 
 Deno.test(
-  "milestone sync - a second host does not repeat an escalation already on the issue (Issue #1786)",
+  "milestone sync - a repeated gate refusal files one worker diagnostic in VibeCoder, not a needs-human comment (Issues #1786, #2388)",
   async () => {
-    // Each host keeps its own streak file, so the local record cannot stop
-    // the repeat — `VibeCoderST` and `stservice` both posted the same
-    // analysis on stSoftwareAU/VibeCoder#1653 ten minutes apart. The marker
-    // on the issue is the shared record both hosts read.
-    const first = await Deno.makeTempDir({ prefix: "issue-1786-host-a-" });
-    const second = await Deno.makeTempDir({ prefix: "issue-1786-host-b-" });
+    // The old cross-host guard was a hidden marker on whichever sibling issue
+    // the escalation happened to land on — where nobody looks, and which each
+    // host had to re-read. The diagnostic now goes to VibeCoder, deduped by an
+    // author-verified title search, which is cross-host by construction.
+    const first = await Deno.makeTempDir({ prefix: "issue-2388-host-a-" });
+    const second = await Deno.makeTempDir({ prefix: "issue-2388-host-b-" });
     try {
       const calls: string[][] = [];
       const options = {
-        milestoneTitle: "#1559 Rival designs",
+        milestoneTitle: MILESTONE_TITLE,
         error: gateRefusal(),
         streakPath: milestoneSyncStreakPath(first),
         defaultSha: DEFAULT_SHA,
       };
 
+      // One refusal is a verdict, not a wedge: nothing is reported yet.
       await syncMilestoneBranches(deps(calls, options));
-      const posted = commentCalls(calls);
-      assertEquals(posted.length, 1, "the first host escalates");
-      const body = posted[0]?.[posted[0]!.length - 1] ?? "";
-      assertStringIncludes(body, "<!-- vibe-milestone-sync-conflict key=");
-
-      // The second host has an empty streak file but reads the same issue.
-      const hostB = deps(calls, {
-        ...options,
-        streakPath: milestoneSyncStreakPath(second),
-      });
-      const inner = hostB.ghCommandFn;
-      hostB.ghCommandFn = (args: string[]): Promise<string> => {
-        if (args[0] === "issue" && args[1] === "view") {
-          calls.push(args);
-          return Promise.resolve(
-            JSON.stringify({
-              comments: [{ author: { login: FLEET }, body }],
-            }),
-          );
-        }
-        return inner(args);
-      };
-
-      await syncMilestoneBranches(hostB);
       assertEquals(
-        commentCalls(calls).length,
-        1,
-        "the second host sees the marker and posts nothing",
+        diagnosticCreates(calls).length,
+        0,
+        "one refusal reports nothing",
       );
-    } finally {
-      await Deno.remove(first, { recursive: true });
-      await Deno.remove(second, { recursive: true });
-    }
-  },
-);
+      assertEquals(commentCalls(calls).length, 0, "and never a sibling issue");
 
-Deno.test(
-  "milestone sync - a second host does not reopen a closed issue only to post nothing (Issues #1786, #1826)",
-  async () => {
-    // The escalation destination is resolved before the comment goes out, and
-    // resolving a CLOSED parent planning issue reopens it. Asking the marker
-    // question first is what stops a human's close being undone with no
-    // comment to explain why.
-    const first = await Deno.makeTempDir({ prefix: "issue-1826-host-a-" });
-    const second = await Deno.makeTempDir({ prefix: "issue-1826-host-b-" });
-    try {
-      const calls: string[][] = [];
-      const options = {
-        milestoneTitle: "#1559 Rival designs",
-        error: gateRefusal(),
-        streakPath: milestoneSyncStreakPath(first),
-        defaultSha: DEFAULT_SHA,
-      };
-
+      // The same refusal again: wedged, and filed once — in VibeCoder.
       await syncMilestoneBranches(deps(calls, options));
-      const posted = commentCalls(calls);
-      assertEquals(posted.length, 1, "the first host escalates");
-      const body = posted[0]?.[posted[0]!.length - 1] ?? "";
+      const filed = diagnosticCreates(calls);
+      assertEquals(filed.length, 1, "the first host files the diagnostic");
+      const body = filed[0]![filed[0]!.indexOf("--body") + 1] ?? "";
+      assertStringIncludes(body, "owner/repo");
+      assertStringIncludes(body, MILESTONE_BRANCH);
+      assertStringIncludes(body, "quality gate refused the resolved tree");
+      assertEquals(
+        body.includes("needs a human"),
+        false,
+        "a conflict is the worker's to resolve",
+      );
+      assertEquals(commentCalls(calls).length, 0, "nothing on the milestone");
 
-      // A human read it and closed the issue. The second host has its own
-      // (empty) streak file, so only the marker can stop it repeating.
-      const hostB = deps(calls, {
-        ...options,
-        streakPath: milestoneSyncStreakPath(second),
-      });
-      const inner = hostB.ghCommandFn;
-      hostB.ghCommandFn = (args: string[]): Promise<string> => {
-        if (args[0] === "issue" && args[1] === "view") {
-          calls.push(args);
-          return Promise.resolve(
-            args.includes("state") ? "CLOSED" : JSON.stringify({
-              comments: [{ author: { login: FLEET }, body }],
-            }),
-          );
-        }
-        return inner(args);
+      // A second host, with its own empty ledger, finds the open diagnostic by
+      // title and appends to it rather than filing a second.
+      const title = gateWedgeDiagnosticTitle("owner/repo", MILESTONE_BRANCH);
+      const hostBCalls: string[][] = [];
+      const makeHostB = () => {
+        const d = deps(hostBCalls, {
+          ...options,
+          streakPath: milestoneSyncStreakPath(second),
+        });
+        const inner = d.ghCommandFn;
+        d.ghCommandFn = (args: string[]): Promise<string> => {
+          if (
+            args[0] === "issue" && args[1] === "list" &&
+            args[args.indexOf("--repo") + 1] === GATE_WEDGE_DIAGNOSTIC_REPO
+          ) {
+            hostBCalls.push(args);
+            return Promise.resolve(
+              JSON.stringify([{
+                number: 4242,
+                title,
+                author: { login: FLEET },
+              }]),
+            );
+          }
+          return inner(args);
+        };
+        return d;
       };
+      await syncMilestoneBranches(makeHostB());
+      await syncMilestoneBranches(makeHostB());
 
-      await syncMilestoneBranches(hostB);
-
       assertEquals(
-        commentCalls(calls).length,
-        1,
-        "the second host posts nothing",
+        diagnosticCreates(hostBCalls).length,
+        0,
+        "the second host files no duplicate",
       );
-      assertEquals(
-        calls.filter((c) => c[0] === "issue" && c[1] === "reopen"),
-        [],
-        "and it does not reopen the issue the human closed",
+      const appended = hostBCalls.filter((c) =>
+        c[0] === "issue" && c[1] === "comment" &&
+        c[c.indexOf("--repo") + 1] === GATE_WEDGE_DIAGNOSTIC_REPO
       );
-      assertEquals(
-        calls.filter((c) => c.includes("--add-label")),
-        [],
-        "nor label it needs-human again",
-      );
+      assertEquals(appended.length, 1, "it appends to the open diagnostic");
+      assertEquals(appended[0]![2], "4242");
     } finally {
       await Deno.remove(first, { recursive: true });
       await Deno.remove(second, { recursive: true });

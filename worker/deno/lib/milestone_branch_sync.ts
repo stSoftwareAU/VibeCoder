@@ -49,18 +49,12 @@ import {
   resolveBranchTips,
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
+import { isConflictEscalation } from "./milestone_conflict_triage.ts";
 import {
-  buildConflictAnalysisComment,
-  type FileAnalysis,
-  type FileDecision,
-  isConflictEscalation,
-} from "./milestone_conflict_triage.ts";
-import {
-  conflictEscalationKey,
-  conflictEscalationMarker,
   conflictEscalationMarkerPrefix,
   hasConflictEscalationComment,
 } from "./milestone_conflict_dedup.ts";
+import { concludeGateRefusal } from "./milestone_gate_wedge.ts";
 import {
   DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
   DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
@@ -74,11 +68,14 @@ import {
 import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeout.ts";
 import { closeLandedMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
 import {
+  clearGateRefusal,
   clearSyncCursor,
   concludeConflictAttempt,
   type ConflictAttemptOutcome,
+  gateWedgeTipsMoved,
   isConflictAttemptDue,
   isConflictBudgetExhausted,
+  isGateWedged,
   loadSyncCursor,
   loadSyncStreaks,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
@@ -1601,6 +1598,33 @@ export async function syncMilestoneBranches(
             streaksDirty = true;
           }
 
+          // A gate that refused this exact resolution twice will refuse it a
+          // third time: same conflict, same verdict, and neither tip has
+          // moved, so the merge and the full verification run would be
+          // rebuilt to reach the answer already on the ledger (Issue #2388).
+          // A moved tip is a different merge and re-arms it here, which is
+          // also what releases the milestone's issues to the claim scan.
+          if (isGateWedged(entry)) {
+            const wedge = entry.gateRefusal;
+            const moved = gateWedgeTipsMoved(entry, {
+              ...(defaultSha ? { defaultSha } : {}),
+              ...(milestoneSha ? { milestoneSha } : {}),
+            });
+            if (!moved) {
+              log(
+                `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                  `the resolution gate refused the same resolution ` +
+                  `${wedge.count} times and neither tip has moved since: ` +
+                  `${wedge.reason} (Issue #2388)`,
+              );
+              skipped++;
+              continue;
+            }
+            entry = clearGateRefusal(entry);
+            streaks[streakKey] = entry;
+            streaksDirty = true;
+          }
+
           // A branch past its budget belongs to the roll-back, not to another
           // merge: without this guard it keeps conflicting every cycle,
           // charging attempt 3, 4, 5… and re-entering the hand-off each time.
@@ -1935,37 +1959,39 @@ export async function syncMilestoneBranches(
             }
           }
 
-          if (conflictError?.gateFailure) {
+          if (conflictError?.gateFailure && entry) {
             // A gate refusal, not a conflict (Issue #1778): the resolution
-            // was made and the verification refused it, so it keeps the
-            // escalation Issue #1559 gave it — what the gate said AND both
-            // sides prepared. Keyed on the conflict itself (Issue #1786),
-            // not the default branch's tip: that tip moves every few
-            // minutes and would re-report the same refusal every cycle.
-            const gateKey = conflictEscalationKey({
-              milestoneBranch: milestone.milestoneBranch,
-              ...(conflictError.milestoneSha
-                ? { milestoneSha: conflictError.milestoneSha }
-                : {}),
-              files: [
-                ...conflictError.analyses.map((a) => a.path),
-                ...conflictError.resolved.map((d) => d.path),
-              ],
-            });
-            if (entry && entry.analysisEscalatedSha !== gateKey) {
-              const escalated = await escalateConflictAnalysis(
+            // was made and the verification refused it. The budget cannot
+            // conclude it — `judgeSyncFailure` charges it nothing, on
+            // purpose — so the ledger counts the refusal instead, and a
+            // refusal that has repeated is reported as a **worker**
+            // diagnostic rather than as a needs-human comment on a sibling
+            // issue: the conflict was resolved, it is the gate that could
+            // not verify it (Issue #2388). The counting, the keying and the
+            // reporting are the pre-cut sync's too, so they live in one
+            // place rather than twice over.
+            const concluded = await concludeGateRefusal(
+              entry,
+              {
                 repo,
-                milestone,
-                conflictError.analyses,
-                conflictError.resolved,
-                conflictError.gateFailure,
-                gateKey,
+                milestoneBranch: milestone.milestoneBranch,
+                defaultBranch: milestone.defaultBranch,
+                milestoneTitle: milestone.milestoneTitle,
+              },
+              conflictError as typeof conflictError & { gateFailure: string },
+              defaultSha,
+              now(),
+              {
                 ghCommandFn,
                 log,
-                deps.dedupAuthors ?? {},
-              );
-              if (escalated) entry.analysisEscalatedSha = gateKey;
-            }
+                ...(deps.dedupAuthors
+                  ? { dedupAuthors: deps.dedupAuthors }
+                  : {}),
+              },
+            );
+            entry = concluded.entry;
+            streaks[streakKey] = entry;
+            streaksDirty = true;
           } else if (conflictError) {
             // Nothing is posted for a conflict every rung left undecided
             // (Issue #1778): the ledger above records why the branch is
@@ -2261,77 +2287,6 @@ async function clearEarlierSyncEscalation(
     );
     return "";
   }
-}
-
-/**
- * Report a resolution the verification refused (Issues #1559 and #1778).
- *
- * The worker made the resolution and the gate said no, so the reader needs
- * both halves: what the gate said, and the two sides that produced it — what
- * each side exports, what each side tests, and which cases exist on one side
- * only. A wall of `TS2304` on its own decides nothing, which is what made
- * #1542 nearly useless.
- *
- * This is the one survivor of the old per-conflict escalation: a conflict no
- * rung could settle is charged to the ledger and reported to nobody while an
- * automatic attempt remains, but a gate refusal is not a conflict the budget
- * can retry its way out of.
- *
- * Best-effort, and returns true only when the report went out, so the caller
- * marks the streak escalated and does not repeat it every cycle.
- */
-async function escalateConflictAnalysis(
-  repo: string,
-  milestone: ActiveMilestone,
-  analyses: FileAnalysis[],
-  resolved: FileDecision[],
-  /** What the verification said — the half a reader cannot reconstruct. */
-  gateFailure: string,
-  /** The conflict's own identity, carried as a marker for cross-host dedup. */
-  conflictKey: string,
-  ghCommandFn: GhCommandFn,
-  log: (message: string) => void,
-  dedupAuthors: AlertDedupAuthorOptions = {},
-): Promise<boolean> {
-  const tips = await resolveBranchTips(
-    repo,
-    [
-      { branch: milestone.defaultBranch },
-      { branch: milestone.milestoneBranch },
-    ],
-    ghCommandFn,
-    log,
-  );
-
-  const marker = conflictEscalationMarker(conflictKey);
-  const body = `${marker}\n${
-    buildConflictAnalysisComment({
-      repo,
-      milestoneBranch: milestone.milestoneBranch,
-      defaultBranch: milestone.defaultBranch,
-      analyses,
-      resolved,
-      gateFailure,
-    })
-  }\n\n${describeBranchTips(tips)}`;
-
-  const what = `a milestone sync resolution the verification refused for ` +
-    `'${milestone.milestoneBranch}' (Issues #1559, #1778)`;
-
-  // Issue #1786: each host keeps its own streak file, so the local record
-  // alone cannot stop a second host reporting a conflict the first already
-  // reported — the marker on the issue is the shared record. It is checked
-  // against whichever existing issue the escalation lands on (Issue #1769).
-  return await escalateToExistingIssue(
-    repo,
-    milestone,
-    body,
-    what,
-    ghCommandFn,
-    log,
-    marker,
-    { dedupAuthors },
-  );
 }
 
 /**

@@ -815,13 +815,13 @@ export function buildConflictAnalysisComment(e: {
       `back. What the verification said:\n\n\`\`\`\n${e.gateFailure}\n\`\`\`\n\n`
     : "";
 
-  return `## Milestone sync conflict needs a human — both sides prepared\n\n` +
+  return `## Milestone sync conflict — both sides prepared\n\n` +
     `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
     `\`${e.repo}\` conflicted in a way no automatic rule can resolve ` +
     `(Issue #1559). Nothing has been pushed and \`${e.milestoneBranch}\` is ` +
     `exactly as it was.\n\n${gateNote}` +
     `${sections}${resolvedNote}\n\n` +
-    `Resolve it on \`${e.milestoneBranch}\` with a real merge. The sync will ` +
-    `keep attempting resolution each cycle and will land on its own once ` +
-    `these files stop being two designs for the same problem.`;
+    `The sync keeps attempting the resolution each cycle and lands on its ` +
+    `own once these files stop being two designs for the same problem — a ` +
+    `conflict is the worker's to resolve, never a human's (Issue #2388).`;
 }

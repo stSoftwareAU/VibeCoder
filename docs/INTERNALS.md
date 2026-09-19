@@ -1609,7 +1609,7 @@ Each candidate issue is checked by functions in
 | **Open PR blocking**             | `get_blocking_pr_for_issue()`                   | issue_query        | Milestone-aware: only blocked by PRs targeting the same milestone branch                                |
 | **Ignore-open-prs bypass**       | `has_ignore_open_prs_label_by_allowed_author()` | issue_query        | Bypass open PR blocking when label added by allowed author                                              |
 | **One issue per repo/milestone** | `is_milestone_occupied`                         | issue_filter       | Only one issue per repo/milestone can be in-progress at a time                                          |
-| **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt (Issue #1780)     |
+| **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt — an open attempt, a wedged resolution gate (Issue #2388) or a spent conflict budget (Issue #1780) |
 | **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open, or is closed in another still-open milestone (Issue #2173) |
 | **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items)                                               |
 | **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
@@ -3457,19 +3457,51 @@ was never attempted. A tree the gate still refuses after the repair escalates
 once, carrying **both** gate outputs — the first failure and the last — so a
 reader can tell a repair that helped nothing from one that made it worse.
 
-A tree the repair could not save is reset to the pre-merge commit and escalated
+A tree the repair could not save is reset to the pre-merge commit and reported
 with **both** halves: what the verification said and both sides prepared — what each side
 exports, what each side tests, and which cases exist on one side only, rather
-than the wall of `TS2304` that made #1542 nearly useless. This is the one
-escalation Issue #1778 kept: a gate refusal is not a conflict the budget can
-retry its way out of, so it is reported once (deduped by `gateEscalated`,
-like the Issue #974 refusal) and charged nothing. A tree with no type
-check or no unit suite verified nothing and is refused the same way — a
-resolution that cannot be verified is not a resolution. What the triage
+than the wall of `TS2304` that made #1542 nearly useless. A gate refusal is not
+a conflict the budget can retry its way out of, so it is charged nothing — and
+that is exactly why it needed its own conclusion (Issue #2388, below). A tree
+with no type check or no unit suite verified nothing and is refused the same
+way — a resolution that cannot be verified is not a resolution. What the triage
 decided, and why, is recorded on the merge commit and reported with the outcome
 ([milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts));
 a resolution the worker made and verified is a report, never a `needs-human`
 issue. A clean merge is pushed without ceremony and raises nothing.
+
+**A gate refusal that cannot change must conclude** (Issue #2388,
+[milestone_gate_wedge.ts](../worker/deno/lib/milestone_gate_wedge.ts)). The
+`not-charged` verdict is right — the conflict is not answerable for a gate that
+cannot verify the tree — but it means nothing is ever spent, so nothing ever
+ends: one milestone was claimed and dropped ~150 times in a day rebuilding the
+same correct resolution for the same refusal, once per issue per hour. Three
+things close that loop, and none of them asks a human:
+
+1. **One attempt per milestone per run.** The setup phase syncs through
+   `presyncMilestoneOnceForArming`, so fifteen issues of one milestone share
+   one merge attempt rather than rebuilding it fifteen times.
+2. **A repeat is a wedge, not a retry.** The ledger counts a refusal by
+   *conflict key + gate verdict + default tip* (`gateRefusal`). The same three
+   twice over means the inputs have not changed, so `milestonePacedUntil`
+   holds the milestone's issues back before a claim is made — until either
+   side's tip moves, which is a different merge and re-arms the ladder. A
+   landed sync clears it outright.
+3. **The gate is what gets reported.** A wedge files **one** worker diagnostic
+   in `stSoftwareAU/VibeCoder` naming the repository, the milestone, the gate's
+   verdict and the count — so the *gate* gets fixed — instead of a
+   "needs a human" comment on an arbitrary sibling issue of the milestone,
+   where nobody looks. A conflict is the worker's to resolve end to end.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Refused: gate refuses the resolution
+    Refused --> Refused: same conflict, verdict and default tip
+    Refused --> Wedged: refused twice — children held back,\none diagnostic filed in VibeCoder
+    Wedged --> Refused: either tip moved — a different merge
+    Wedged --> [*]: sync lands — ledger cleared
+    Refused --> [*]: sync lands — ledger cleared
+```
 
 ```mermaid
 flowchart TD
@@ -3723,7 +3755,10 @@ merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded f
 `timings` and `analysis`), `failedAttempts` (every charged run of the budget
 currently being spent, which is what the `merge-fallback` flag reports),
 `fallbackDefaultSha` (the default tip a roll-back that could not merge already
-answered for), `lastSyncedDefaultSha` and
+answered for), `gateRefusal` (the resolution-gate verdict the branch is
+repeating — `conflictKey`, `reason`, both tips, the consecutive `count` and
+whether the worker diagnostic has been `reported`, Issue #2388),
+`lastSyncedDefaultSha` and
 `rollbacks`. Every field is optional and every malformed field is dropped, so a
 file written before the ledger existed loads as a branch with an unspent budget
 rather than failing the whole load — and a `deferUntil` an older worker wrote
@@ -4633,6 +4668,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)                                   | Climbs the rungs the triage left: the dependency rules, then the resolution agent, naming the rung that settled each file                                        |
 |                             | [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)                                           | Offers a failed verification back to the agent rung — bounded repair rounds on the same clone, carrying the gate's output — before any human sees it (Issue #1965)                     |
 |                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
+|                             | [milestone_gate_wedge.ts](../worker/deno/lib/milestone_gate_wedge.ts)                                             | Concludes a gate refusal no retry can change: counts the repeat, holds the milestone's issues back until either tip moves, and files one worker diagnostic in VibeCoder (Issue #2388)  |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |
 |                             | [milestone_health.ts](../worker/deno/lib/milestone_health.ts)                                                     | Milestone health diagnostics                                                                                                                                                         |
 |                             | [resurrected_file_check.ts](../worker/deno/lib/resurrected_file_check.ts)                                         | Detects files the default branch deleted that a milestone branch still carries, naming the commit that deleted each                                                                  |
