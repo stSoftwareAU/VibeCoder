@@ -3416,8 +3416,11 @@ its unit suite, inside one 15-minute budget so a sync cannot block the event
 loop. Both gates are ecosystem-aware (Issue #2138): a `Cargo.toml` is verified
 with `cargo check --workspace --all-targets` and `cargo test --workspace`,
 `--locked` when a `Cargo.lock` is committed, exactly as a `deno.json(c)` is
-verified with `deno task`; a tree that defines neither is still refused, as
-the next paragraph says.
+verified with `deno task`. A repository whose suite runs through its own
+`quality.sh` rather than a manifest task — `node --test …` behind the script,
+say — is verified with that script (Issue #2388): it is the fleet's own
+quality-gate convention and runs a superset of a unit suite. A tree that
+defines none of the three is still refused, as the next paragraph says.
 
 **A red tree goes back to the agent rung before it goes to a human**
 (Issue #1965, [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)).
