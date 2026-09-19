@@ -378,7 +378,8 @@ loss.
 
 **Every automatic resolution is verified before it is pushed.** The merged tree
 must pass the repository's own Issue #974 type check, its `check:manifests`
-task and its unit suite (`test:unit`, else `test`), inside a single 15-minute
+task and its unit suite (`test:unit`, else `test`, else `cargo test`, else the
+repository's own `./quality.sh` — Issue #2388), inside a single 15-minute
 budget so the sync cannot block the event loop. A red tree is reset to the
 pre-merge commit and escalated — with both halves: what the verification said
 *and* both sides prepared. A tree with no type check or no unit suite is
