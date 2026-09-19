@@ -59,10 +59,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import {
-  type SubprocessResult,
-  runWithTimeout,
-} from "./subprocess_timeout.ts";
+import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
 import { CLAUDE_PROVIDER_ID } from "./agent_provider.ts";
 import type { Result } from "../types.ts";
 
@@ -364,7 +361,10 @@ async function runRtk(
       timeoutMs: RTK_PREFLIGHT_TIMEOUT_MS,
     });
   } catch (err) {
-    return { ok: false, reason: `could not be started: ${detail(message(err))}` };
+    return {
+      ok: false,
+      reason: `could not be started: ${detail(message(err))}`,
+    };
   }
   if (!result.ok) {
     return {
@@ -375,10 +375,16 @@ async function runRtk(
   }
   const output = result.value;
   if (output.timedOut) {
-    return { ok: false, reason: `timed out after ${RTK_PREFLIGHT_TIMEOUT_MS}ms` };
+    return {
+      ok: false,
+      reason: `timed out after ${RTK_PREFLIGHT_TIMEOUT_MS}ms`,
+    };
   }
   if (!output.success || output.code !== 0) {
-    return { ok: false, reason: `exited ${output.code}: ${detail(output.stderr)}` };
+    return {
+      ok: false,
+      reason: `exited ${output.code}: ${detail(output.stderr)}`,
+    };
   }
   return { ok: true, stdout: output.stdout };
 }

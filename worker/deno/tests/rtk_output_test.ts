@@ -62,6 +62,18 @@ function markerLines(logger: { lines: LoggedLine[] }): string[] {
     .map((line) => line.message);
 }
 
+/**
+ * The element at `index`, failing the test loudly when it is absent rather
+ * than letting an assertion read `undefined` and pass for the wrong reason.
+ */
+function at<T>(items: readonly T[], index: number, what: string): T {
+  const item = items[index];
+  if (item === undefined) {
+    throw new Error(`${what}: no element at index ${index} of ${items.length}`);
+  }
+  return item;
+}
+
 /** A subprocess that ran and exited with `code`. */
 function exited(
   code: number,
@@ -206,18 +218,47 @@ Deno.test("prepareRtkRun - an unnamed provider carries no provider field", async
 });
 
 Deno.test("prepareRtkRun - no seam outcome fails the run", async () => {
-  const cases: { name: string; replies: (Result<SubprocessResult> | Error)[] }[] =
-    [
-      { name: "the binary is not installed", replies: [unstartable("No such file or directory (os error 2)")] },
-      { name: "the version probe exits non-zero", replies: [exited(1, "", "rtk: unknown flag")] },
-      { name: "the version probe times out", replies: [timedOut(RTK_PREFLIGHT_TIMEOUT_MS)] },
-      { name: "the seam itself throws", replies: [new Error("spawn refused by the sandbox")] },
-      { name: "the gain read exits non-zero", replies: [version(), exited(2, "", "tracking store is locked")] },
-      { name: "the gain answer is not JSON", replies: [version(), exited(0, "not json at all")] },
-      { name: "the gain answer is a JSON array", replies: [version(), exited(0, "[]")] },
-      { name: "the gain answer carries no summary.total_saved", replies: [version(), exited(0, '{"summary":{}}')] },
-      { name: "the saved total is negative", replies: [version(), exited(0, '{"summary":{"total_saved":-1}}')] },
-    ];
+  const cases: {
+    name: string;
+    replies: (Result<SubprocessResult> | Error)[];
+  }[] = [
+    {
+      name: "the binary is not installed",
+      replies: [unstartable("No such file or directory (os error 2)")],
+    },
+    {
+      name: "the version probe exits non-zero",
+      replies: [exited(1, "", "rtk: unknown flag")],
+    },
+    {
+      name: "the version probe times out",
+      replies: [timedOut(RTK_PREFLIGHT_TIMEOUT_MS)],
+    },
+    {
+      name: "the seam itself throws",
+      replies: [new Error("spawn refused by the sandbox")],
+    },
+    {
+      name: "the gain read exits non-zero",
+      replies: [version(), exited(2, "", "tracking store is locked")],
+    },
+    {
+      name: "the gain answer is not JSON",
+      replies: [version(), exited(0, "not json at all")],
+    },
+    {
+      name: "the gain answer is a JSON array",
+      replies: [version(), exited(0, "[]")],
+    },
+    {
+      name: "the gain answer carries no summary.total_saved",
+      replies: [version(), exited(0, '{"summary":{}}')],
+    },
+    {
+      name: "the saved total is negative",
+      replies: [version(), exited(0, '{"summary":{"total_saved":-1}}')],
+    },
+  ];
 
   for (const testCase of cases) {
     const logger = recordingLogger();
@@ -253,7 +294,11 @@ Deno.test("prepareRtkRun - a failed preparation records nothing", async () => {
 
   assertEquals(run.result.status, "failed");
   assertEquals(run.result.savedTokens, undefined);
-  assertEquals(stub.calls.length, 1, "record() re-reads nothing without a baseline");
+  assertEquals(
+    stub.calls.length,
+    1,
+    "record() re-reads nothing without a baseline",
+  );
 });
 
 Deno.test("prepareRtkRun - a healthy preflight wires the hook and the prompt", async () => {
@@ -268,14 +313,23 @@ Deno.test("prepareRtkRun - a healthy preflight wires the hook and the prompt", a
 
   assertEquals(run.result.status, "ok");
   assertEquals(run.result.enabled, true);
-  assertEquals(run.result.provider, undefined, "provider is set only when unsupported");
+  assertEquals(
+    run.result.provider,
+    undefined,
+    "provider is set only when unsupported",
+  );
   assertEquals(run.hookSettings(), buildRtkHookSettings());
   assertEquals(run.applyPrompt("Prompt."), `Prompt.\n\n${RTK_PROMPT_LINE}`);
   assertEquals(markerLines(logger), []);
 
   assertEquals(stub.calls.map((call) => call.executable), ["rtk", "rtk"]);
-  assertEquals(stub.calls[0].args, ["--version"]);
-  assertEquals(stub.calls[1].args, ["gain", "--all", "--format", "json"]);
+  assertEquals(at(stub.calls, 0, "seam calls").args, ["--version"]);
+  assertEquals(at(stub.calls, 1, "seam calls").args, [
+    "gain",
+    "--all",
+    "--format",
+    "json",
+  ]);
   for (const call of stub.calls) {
     assertEquals(
       call.timeoutMs,
@@ -368,7 +422,11 @@ Deno.test("prepareRtkRun - a failed second read leaves the status ok", async () 
     await run.record();
 
     assertEquals(run.result.status, "ok", "the hook did run");
-    assertEquals(run.result.savedTokens, undefined, "no figure beats a wrong one");
+    assertEquals(
+      run.result.savedTokens,
+      undefined,
+      "no figure beats a wrong one",
+    );
     assertEquals(markerLines(logger).length, 1);
   }
 });
@@ -388,11 +446,23 @@ Deno.test("prepareRtkRun - record() is idempotent across repeated calls", async 
 });
 
 Deno.test("prepareRtkRun - logs exactly one status line per run", async () => {
-  const cases: { replies: (Result<SubprocessResult> | Error)[]; enabled: boolean; providerId: string }[] = [
+  const cases: {
+    replies: (Result<SubprocessResult> | Error)[];
+    enabled: boolean;
+    providerId: string;
+  }[] = [
     { replies: [], enabled: false, providerId: CLAUDE_PROVIDER_ID },
     { replies: [], enabled: true, providerId: CODEX_PROVIDER_ID },
-    { replies: [unstartable("no rtk")], enabled: true, providerId: CLAUDE_PROVIDER_ID },
-    { replies: [version(), gain(12)], enabled: true, providerId: CLAUDE_PROVIDER_ID },
+    {
+      replies: [unstartable("no rtk")],
+      enabled: true,
+      providerId: CLAUDE_PROVIDER_ID,
+    },
+    {
+      replies: [version(), gain(12)],
+      enabled: true,
+      providerId: CLAUDE_PROVIDER_ID,
+    },
   ];
 
   for (const testCase of cases) {
@@ -405,7 +475,10 @@ Deno.test("prepareRtkRun - logs exactly one status line per run", async () => {
     });
     const info = logger.lines.filter((line) => line.level === "info");
     assertEquals(info.length, 1, JSON.stringify(testCase.providerId));
-    assertStringIncludes(info[0].message, "RTK output: status=");
+    assertStringIncludes(
+      at(info, 0, "info lines").message,
+      "RTK output: status=",
+    );
   }
 });
 
@@ -444,13 +517,21 @@ Deno.test("mergePreToolUseSettings - both matchers survive the merge", () => {
   };
   const merged = mergePreToolUseSettings(splitGuard, buildRtkHookSettings());
 
-  const hooks = merged.hooks as Record<string, { matcher: string }[]>;
-  assertEquals(hooks.PreToolUse.map((entry) => entry.matcher), [
+  const hooks = merged.hooks as Record<
+    string,
+    { matcher: string }[] | undefined
+  >;
+  const preToolUse = hooks.PreToolUse ?? [];
+  assertEquals(preToolUse.map((entry) => entry.matcher), [
     "Edit|Write",
     RTK_HOOK_MATCHER,
   ]);
-  assertEquals(merged.permissions, { deny: ["Bash(rm:*)"] }, "other keys survive");
-  assertEquals(hooks.PostToolUse.length, 1, "other hook events survive");
+  assertEquals(
+    merged.permissions,
+    { deny: ["Bash(rm:*)"] },
+    "other keys survive",
+  );
+  assertEquals(hooks.PostToolUse?.length, 1, "other hook events survive");
   assertEquals(
     splitGuard.hooks.PreToolUse.length,
     1,
