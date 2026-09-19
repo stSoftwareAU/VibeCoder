@@ -350,6 +350,7 @@ import {
   clearIdleInversion,
   idleInversionStatePath,
   recordIdleInversion,
+  withClaimRefusals,
 } from "./idle_inversion_streak.ts";
 import {
   describeIdleHooksRefusal,
@@ -396,7 +397,11 @@ import { InFlightRepoRegistry } from "./in_flight_repos.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { setLiveSlotHolds } from "./live_slot_holds.ts";
 import { setScanCacheForCloseInvalidation } from "./issue_close_notifier.ts";
-import { sharedProcessedIssues } from "./processed_issue_registry.ts";
+import {
+  isClaimDeferral,
+  sharedProcessedIssues,
+  withholdsFromIdleDetection,
+} from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import {
@@ -4655,6 +4660,13 @@ export async function createProductionRunCoreDeps(
             // scan, the census and the audit already share, so all four
             // instruments agree.
             const runLocalHold = await loadRunLocalHolds();
+            const idleDetectionHold = (repo: string, issueNumber: number) =>
+              withholdsFromIdleDetection(
+                sharedProcessedIssues(),
+                runLocalHold,
+                repo,
+                issueNumber,
+              );
             await maybeFileIdleTaskCommand.execute(
               {
                 "monitored-repos": repos.join(","),
@@ -4682,7 +4694,9 @@ export async function createProductionRunCoreDeps(
                 // and same fix shape as PR #2016 for the fleet heartbeat.
                 __testDeps: {
                   log: (line: string) => logger.info(line),
-                  runLocalHoldFn: runLocalHold,
+                  // Issue #2405: a hold the claim path made by deferring the issue
+                  // does not hide it — the census draws the same line.
+                  runLocalHoldFn: idleDetectionHold,
                 },
               },
               config,
@@ -4719,6 +4733,13 @@ export async function createProductionRunCoreDeps(
         // own `claimableTotal` suppressing the idle-task filer, for the life
         // of the process.
         const runLocalHold = await loadRunLocalHolds();
+        const idleDetectionHold = (repo: string, issueNumber: number) =>
+          withholdsFromIdleDetection(
+            sharedProcessedIssues(),
+            runLocalHold,
+            repo,
+            issueNumber,
+          );
         // Issue #2085: the repositories this host has backed off for fast
         // failures (Issue #1950), which `findNextIssue` unions into the
         // scan's `excludeRepos`. The scan was never shown them, so it cannot
@@ -4772,7 +4793,9 @@ export async function createProductionRunCoreDeps(
           // Issue #655: this run's persisted retry cooldown and its
           // processed-issue registry, resolved above from the one hold set
           // `findNextIssue` filters its candidates against.
-          runLocalHoldFn: runLocalHold,
+          // Issue #2405: a hold the claim path made by deferring the issue
+          // does not hide it — the census draws the same line.
+          runLocalHoldFn: idleDetectionHold,
           // Issue #479: while a host-level gate is active the scan never ran,
           // so `mis_classification` is guaranteed to fire and says nothing.
           // Read from the same signals the census and the fleet-board note
@@ -4923,6 +4946,20 @@ export async function createProductionRunCoreDeps(
                   .filter((i) => runLocalHold(repo, i.number))
                   .map((i) => i.number),
               ),
+              // Issue #2405: the holds the claim path created by *deferring*
+              // an issue nobody is working. Swallowed into `run_local_hold`
+              // they hid a 23-hour stream-affinity deadlock from the
+              // inversion signal; named here they stay claimable work the
+              // scan refused.
+              deferredHolds: new Set(
+                issues
+                  .filter((i) =>
+                    isClaimDeferral(
+                      sharedProcessedIssues().claimRefusalFor(repo, i.number),
+                    )
+                  )
+                  .map((i) => i.number),
+              ),
             };
           }),
         );
@@ -4990,12 +5027,18 @@ export async function createProductionRunCoreDeps(
                 claimableIssues: snapshot?.claimableIssues ?? [],
                 // Issue #460: the scan's own reason for refusing each issue
                 // the census called claimable — the disagreement, named.
-                scanSkips: lastScanBlockedDetails
-                  .filter((b) =>
-                    b.repo === repo &&
-                    (snapshot?.claimableIssues ?? []).includes(b.issueNumber)
-                  )
-                  .map((b) => ({ issue: b.issueNumber, reason: b.reason })),
+                // Issue #2405: and the claim path's, which the finder never
+                // sees — it passed the issue.
+                scanSkips: withClaimRefusals(
+                  lastScanBlockedDetails
+                    .filter((b) =>
+                      b.repo === repo &&
+                      (snapshot?.claimableIssues ?? []).includes(b.issueNumber)
+                    )
+                    .map((b) => ({ issue: b.issueNumber, reason: b.reason })),
+                  snapshot?.claimableIssues ?? [],
+                  (n) => sharedProcessedIssues().claimRefusalFor(repo, n),
+                ),
                 detail: censusLines.filter((l) => l.includes(repo)).join("\n"),
               },
               ghFn: (args: string[]) => runGhCommand(args),

@@ -221,6 +221,36 @@ export interface IdleInversionReport {
   scanSkips?: readonly { issue: number; reason: string }[];
 }
 
+/**
+ * Add the **claim path's** refusals to the scan's per-issue reasons
+ * (Issue #2405).
+ *
+ * `scanSkips` came only from the finder, which never sees an issue the claim
+ * path refuses — the finder passed it. So the most useful line in the filed
+ * issue was missing in exactly the case that matters: ready work deferred
+ * every scan (stream affinity, #2403). The finder's reason for an issue, where
+ * it has one, is kept: it is the more fundamental gate.
+ *
+ * @param scanSkips - The finder's per-issue reasons.
+ * @param claimableIssues - The issues the census called claimable.
+ * @param claimRefusalFor - The run's recorded claim refusal for an issue.
+ */
+export function withClaimRefusals(
+  scanSkips: readonly { issue: number; reason: string }[],
+  claimableIssues: readonly number[],
+  claimRefusalFor: (issue: number) => string | undefined,
+): { issue: number; reason: string }[] {
+  const named = new Set(scanSkips.map((s) => s.issue));
+  const refused = claimableIssues.flatMap((issue) => {
+    if (named.has(issue)) return [];
+    const refusal = claimRefusalFor(issue);
+    return refusal
+      ? [{ issue, reason: `claim path refused it: ${refusal}` }]
+      : [];
+  });
+  return [...scanSkips, ...refused];
+}
+
 /** Escape so script output cannot close our fence or forge a marker. */
 function bodySafe(text: string): string {
   return text.replace(/<!--/g, "<!- -").replace(/-->/g, "- ->")

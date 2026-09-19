@@ -64,6 +64,7 @@ function repoInput(
     openPRs: partial.openPRs,
     mergedPRs: partial.mergedPRs,
     runLocalHolds: partial.runLocalHolds,
+    deferredHolds: partial.deferredHolds,
   };
 }
 
@@ -1593,4 +1594,119 @@ Deno.test("census - the week-pace gate's tier-3 refusal is modelled, not read as
   assertEquals(gated.perRepo[0]!.lowPrioritySuppressed, 1);
   assertEquals(gated.perRepo[0]!.inversionSignal, false);
   assertEquals(gated.inversionRepos, []);
+});
+
+// =============================================================================
+// A refused claim is not a finished run (Issue #2405)
+//
+// Live incident: for 23 hours stream affinity (#2403) deferred every eligible
+// issue of two repositories. A deferral is a skip, a skip puts the issue on
+// the run-local hold, and the census swallowed held issues whole — so the
+// census line read `work_on=0 … run_local_hold=3 … inversion_signal=false`,
+// the inversion streak never started, and the escalation built for exactly
+// this (#321) filed nothing. "Held because we ran it" and "held because the
+// claim path would not let us run it" need opposite treatment.
+// =============================================================================
+
+Deno.test("census - issues the claim path deferred are claimable work the scan refused, not run-local holds (Issue #2405)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["work-on"]),
+          issue(2, ["work-on"]),
+          issue(3, ["work-on"]),
+        ],
+        // All three went on hold this run …
+        runLocalHolds: new Set([1, 2, 3]),
+        // … because the claim path deferred them: nobody is working them.
+        deferredHolds: new Set([1, 2, 3]),
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.claimRefused, 3);
+  assertEquals(entry.runLocalHold, 0);
+  assertEquals(entry.unblocked.workOn, 3);
+  assert(
+    entry.inversionSignal,
+    "three ready issues nobody is working, refused every scan, is an inversion",
+  );
+  assertEquals(census.escalationRepos, ["org/a"]);
+});
+
+Deno.test("census - the incident's other direction: the same issues held because a run finished on them raise nothing (Issue #2405)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"]), issue(2, ["work-on"])],
+        runLocalHolds: new Set([1, 2]),
+        deferredHolds: new Set(),
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.claimRefused, 0);
+  assertEquals(entry.runLocalHold, 2);
+  assert(!entry.inversionSignal);
+  assertEquals(census.escalationRepos, []);
+});
+
+Deno.test("census - a deferral named for an issue that is not on hold changes nothing (Issue #2405)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"])],
+        runLocalHolds: new Set(),
+        deferredHolds: new Set([1]),
+      }),
+    ],
+  });
+  assertEquals(census.perRepo[0]!.claimRefused, 0);
+});
+
+Deno.test("census - a deferred issue still loses to a more fundamental gate (Issue #2405)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        // `needs-human` refuses it before the hold is ever consulted.
+        issues: [issue(1, ["work-on", "needs-human"])],
+        runLocalHolds: new Set([1]),
+        deferredHolds: new Set([1]),
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.claimRefused, 0);
+  assert(!entry.inversionSignal);
+});
+
+Deno.test("census - the log line carries claim_refused beside run_local_hold (Issue #2405)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [issue(1, ["work-on"]), issue(2, ["work-on"])],
+        runLocalHolds: new Set([1, 2]),
+        deferredHolds: new Set([1]),
+      }),
+    ],
+  });
+  const lines = formatIdleDecisionCensus(census, "host-a").join("\n");
+  assert(lines.includes("run_local_hold=1"), lines);
+  assert(lines.includes("claim_refused=1"), lines);
 });
