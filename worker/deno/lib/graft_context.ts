@@ -315,7 +315,7 @@ export async function collectGraftContext(
   // discards the detail that would tell them apart (Issue #2379).
   if (figures.value.nodeCount === 0) {
     return fail(
-      "graft built a graph with 0 nodes — no file in the checkout matched a " +
+      "graph built with 0 nodes — no file in the checkout matched a " +
         "language graft parses, or the build matched no files",
       { buildSeconds, bundleChars: bundle.length, ...figures.value },
     );

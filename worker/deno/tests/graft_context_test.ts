@@ -36,6 +36,7 @@ import type {
   GraftGitRunner,
   GraftRunner,
 } from "../lib/graft_context.ts";
+import { bindGraftRun } from "../lib/graft_run.ts";
 import {
   EXECUTABLE_IGNORED_DIRS,
   ignoredExecutableCleanArgs,
@@ -489,10 +490,30 @@ Deno.test("collectGraftContext - a graph built with zero nodes fails rather than
     assert(typeof result.buildSeconds === "number");
     assertEquals(warns.length, 1);
     assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
-    assertStringIncludes(warns[0]!, "0 nodes");
+    assertStringIncludes(warns[0]!, "graph built with 0 nodes");
     // The reason names the candidate causes, so an operator can tell "Graft
     // cannot help this repository" from "Graft broke".
     assertStringIncludes(warns[0]!, "language");
+
+    // Composition: the very result the push side just produced must leave the
+    // pull side handing over neither the prompt line nor the query tools.
+    const run = bindGraftRun({
+      result,
+      repoDir,
+      agentProvider: "claude",
+      env: () => undefined,
+      logger: { info: () => {}, warn: () => {} },
+    });
+    assertEquals(run.wired, false);
+    assertEquals(run.applyPrompt("p"), "p");
+    assertEquals(run.mcpConfig(undefined), undefined);
+    assertEquals(run.mcpConfigOption(undefined), {});
+    run.record({ toolCallCounts: { graft_find_code: 3 } });
+    assertEquals(
+      run.result.queries,
+      undefined,
+      "an empty graph was never asked",
+    );
   }, { wiring: JSON.stringify({ nodes: [], edges: [] }) });
 });
 
