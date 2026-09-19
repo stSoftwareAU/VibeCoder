@@ -1138,7 +1138,13 @@ flowchart TD
   charging the whole invocation to the first one (Issue #2346). A run serving
   two or more models therefore lists each model's own token counts and its own
   cost line, and the estimated USD — and so the cumulative issue total — is
-  their sum.
+  their sum. The breakdown prices the run only when it **reconciles** against
+  the run's own recorded totals: an entry that is not a usable object, a
+  counter that is present but not a number, or a sum exceeding the totals in
+  any bucket discards the breakdown whole and charges the run to its primary
+  model, so a malformed breakdown can never over-report the pilot's spend. An
+  under-attributed remainder is charged to the primary model as a residual, so
+  no token is lost either.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
