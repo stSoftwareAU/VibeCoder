@@ -456,6 +456,13 @@ import {
 } from "./work_volume_ratchet.ts";
 
 /**
+ * Open issues listed per repository for the Failure-Detection resume finder
+ * (Issue #2409). The same figure `find_oldest_issue.ts` lists with, so the
+ * finder is served from the scan's cache entry rather than widening it.
+ */
+const RESUME_LISTING_LIMIT = 200;
+
+/**
  * Home directory, in the order `agent_transcript.ts` resolves it.
  *
  * @param env - Reads `HOME` then `USERPROFILE` (Issue #967).
@@ -3102,6 +3109,12 @@ export async function createProductionRunCoreDeps(
           logger,
           needsHumanLabel: config.needsHumanLabel,
           githubUser,
+          // Issue #2409: discovery reads the open-issue listing the scan has
+          // already cached, not one `gh issue list --label` per repository per
+          // cycle. The limit matches the scan's own, so a warm cache serves it.
+          listOpenIssues: (repo: string) =>
+            fetchAllIssues(repo, issueCache, RESUME_LISTING_LIMIT),
+          listingLimit: RESUME_LISTING_LIMIT,
           // Issue #58: the dispatcher's watchdog deadline bounds the repair so
           // offenders it cannot finish are deferred, not killed mid-flight.
           ...(opts?.deadlineEpochMs !== undefined
