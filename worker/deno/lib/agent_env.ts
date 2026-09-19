@@ -22,6 +22,32 @@
  */
 
 /**
+ * The audit journal's off switch, set in every agent child (Issue #2400).
+ *
+ * The journal is the tamper-evident record of the **worker's own** GitHub
+ * mutations. `audit_hook.ts` turns it on wherever `WORK_DIR` is set, and the
+ * child environment is the worker's minus a denylist — so everything the agent
+ * started inherited the switch, the worker id and the run id. The agent runs
+ * the repository's test suite, ~85 files of which drive real `git` against
+ * fixture repositories: their fixture pushes were appended to the production
+ * trail as if the worker had made them, and on 2026-09-19 a test process died
+ * holding the append lock, so a real mutation went unrecorded for 520 s.
+ *
+ * `WORK_DIR` itself stays — the agent's MCP configuration and the DeepSeek
+ * environment read it. Only the journal is switched off.
+ *
+ * Nothing is lost by this. The agent's own `gh`/`git` calls are journalled by
+ * the guard shim, which takes its journal directory, worker id and run id as
+ * **arguments the worker bakes into the wrapper** (`gh_guard_shim.ts`) and
+ * reads no environment at all (`gh_guard_cli.ts` passes `env: () =>
+ * undefined`), so an agent cannot use this variable to silence it either. The
+ * quality gate's own test stage already runs without `WORK_DIR`
+ * (`unit_test_passes.ts`, Issue #1098); this closes the same hole for a suite
+ * the agent starts by hand.
+ */
+export const AUDIT_JOURNAL_OFF_ENV_VAR = "VIBE_AUDIT_DISABLED";
+
+/**
  * Secrets the worker owns and no coding agent ever needs.
  *
  * The GitHub App private-key material (the PEM path and the raw PEM, should a
@@ -143,7 +169,8 @@ export function isDeniedAgentEnvVar(
  *
  * @param parentEnv - The environment to inherit from.
  * @param policy - The provider's denylist and secret allowlist.
- * @returns A new object safe to pass as the child's `env`.
+ * @returns A new object safe to pass as the child's `env`, with the audit
+ *   journal switched off ({@link AUDIT_JOURNAL_OFF_ENV_VAR}).
  */
 export function buildAgentChildEnv(
   parentEnv: Record<string, string>,
@@ -154,5 +181,7 @@ export function buildAgentChildEnv(
     if (isDeniedAgentEnvVar(key, policy)) continue;
     out[key] = value;
   }
+  // Set last, so no inherited value survives it (Issue #2400).
+  out[AUDIT_JOURNAL_OFF_ENV_VAR] = "1";
   return out;
 }

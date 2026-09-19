@@ -200,6 +200,18 @@ the best-effort chokepoint hooks live in
 never throw — a journalling failure can never abort or perturb the
 mutation it is recording.
 
+**The journal is the worker's, never the agent's (Issue #2400).** The hooks
+switch on wherever `WORK_DIR` is set, and the coding agent's environment is
+the worker's minus a denylist — so anything the agent started, including the
+repository's own test suite driving real `git` against fixture repositories,
+used to append to the production trail under the worker's identity, and could
+die holding its append lock. Every agent child is therefore spawned with
+`VIBE_AUDIT_DISABLED=1` (`buildAgentChildEnv` in
+[`worker/deno/lib/agent_env.ts`](../worker/deno/lib/agent_env.ts)); `WORK_DIR`
+itself stays. The agent cannot use that variable to hide its own commands: the
+`gh`/`git` guard shim journals from a directory, worker id and run id the
+**worker** bakes into the wrapper as arguments, and reads no environment.
+
 **Per-entry fields.** Each entry records the ISO 8601 timestamp, the
 run-correlation id (`VIBE_RUN_ID`, joining to), repo, target
 (issue/PR number, branch, or API endpoint), action verb, outcome
