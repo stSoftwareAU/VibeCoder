@@ -188,6 +188,10 @@ COPY tools.json /tmp/toolchain-manifest.json
 # second repo-context candidate, so it exists for the worker's own runs rather
 # than for a monitored repository's gate. Its release ships a bundle with its
 # own node runtime, installed under /opt/codegraph and symlinked onto the PATH.
+#
+# rtk joins it (Issue #2381, parent #2328): the CLI the worker's own RTK trial
+# drives, again not a monitored repository's gate. Its release tarball carries
+# a bare binary, installed straight to /usr/local/bin/rtk.
 
 # No update nag and no telemetry round trip from an unattended container —
 # the same reasoning as SEMGREP_ENABLE_VERSION_CHECK below. Set before the
@@ -195,9 +199,18 @@ COPY tools.json /tmp/toolchain-manifest.json
 ENV POWERSHELL_UPDATECHECK="Off" \
     POWERSHELL_TELEMETRY_OPTOUT="1"
 
+# No telemetry round trip from an unattended container either — RTK does not
+# honour DO_NOT_TRACK, so it needs its own switch. The hook reaches the CLI
+# through --settings rather than ~/.claude/settings.json, so RTK's daily
+# missing-hook warning on stderr is noise. Image-wide, as DO_NOT_TRACK below
+# is, and set before the install so the fragment's own version probe is quiet
+# too.
+ENV RTK_TELEMETRY_DISABLED="1" \
+    RTK_SUPPRESS_HOOK_WARNING="1"
+
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk
 
 # markdownlint-cli2 backs the check-markdownlint gate stage. The release
 # tarball is downloaded and checksum-verified first, then installed from that

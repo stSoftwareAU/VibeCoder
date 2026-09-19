@@ -845,3 +845,130 @@ Deno.test("container/toolchains/codegraph.sh - a tampered download aborts before
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("container/toolchains/rtk.sh - a missing pin aborts before downloading", async () => {
+  // RTK ships one tarball per architecture, so the fragment resolves a
+  // per-architecture digest. Drop both and it must stop at the lookup rather
+  // than fetching bytes it cannot verify.
+  const run = await runFragmentWithBrokenManifest(
+    "rtk.sh",
+    (manifest) => {
+      const rtk = manifest.toolchains.find((t) => t.id === "rtk");
+      assert(rtk !== undefined, "container/tools.json must pin rtk");
+      rtk.sha256 = {};
+    },
+  );
+
+  assert(run.code !== 0, "an unpinned checksum must fail the build");
+  assert(
+    !run.downloaded,
+    "the fragment downloaded before resolving its pin — a missing digest " +
+      "must stop it at the lookup",
+  );
+});
+
+Deno.test("container/toolchains/rtk.sh - an unsupported architecture aborts, naming it", async () => {
+  // Each architecture names a different release triple (musl on x86_64, gnu
+  // on aarch64), so an architecture the release does not publish must fail
+  // loud rather than guessing a URL the manifest pins no digest for.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    await Deno.mkdir(`${dir}/bin`);
+    await Deno.writeTextFile(`${dir}/bin/uname`, `#!/bin/sh\necho mips64\n`);
+    await Deno.chmod(`${dir}/bin/uname`, 0o755);
+    await Deno.writeTextFile(
+      `${dir}/bin/curl`,
+      `#!/bin/sh\necho called >> "${dir}/curl.log"\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/curl`, 0o755);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/rtk.sh`],
+      env: {
+        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        CURL_RETRY: "",
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(
+      result.code !== 0,
+      "an unsupported architecture must fail the build",
+    );
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "Unsupported build architecture: mips64",
+    );
+
+    let downloaded = true;
+    try {
+      await Deno.stat(`${dir}/curl.log`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      downloaded = false;
+    }
+    assert(
+      !downloaded,
+      "the fragment fetched an asset for an architecture " +
+        "the manifest pins no digest for",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/rtk.sh - a tampered download aborts before extracting", async () => {
+  // The digest is what makes fetching by pinned URL safe. The stub curl
+  // writes bytes no manifest digest can match, so the fragment must stop at
+  // `sha256sum -c -` and never unpack them onto the PATH.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    await Deno.mkdir(`${dir}/bin`);
+    await Deno.writeTextFile(
+      `${dir}/bin/curl`,
+      `#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do\n` +
+        `  case "$1" in -o) shift; out="$1" ;; esac\n  shift\ndone\n` +
+        `printf 'tampered\\n' > "\${out}"\n`,
+    );
+    await Deno.chmod(`${dir}/bin/curl`, 0o755);
+    // A stub tar, so a failure reads "the fragment unpacked what it should not
+    // have unpacked", not "the archive was absent".
+    await Deno.writeTextFile(
+      `${dir}/bin/tar`,
+      `#!/bin/sh\necho "$@" >> "${dir}/tar.log"\nexit 0\n`,
+    );
+    await Deno.chmod(`${dir}/bin/tar`, 0o755);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/rtk.sh`],
+      env: {
+        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        CURL_RETRY: "",
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "a checksum mismatch must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "did NOT match",
+    );
+
+    let extracted = true;
+    try {
+      await Deno.stat(`${dir}/tar.log`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      extracted = false;
+    }
+    assert(!extracted, "the fragment unpacked bytes that failed verification");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

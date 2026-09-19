@@ -48,7 +48,7 @@ the largest download, so it sits last and a Rust bump rebuilds only itself.
 
 The fetch-verify-extract toolchains in that block are **fragments**
 (Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
-`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph`
+`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
 blocks. `markdownlint-cli2` and `graft` sit between the two runs, unchanged —
@@ -57,6 +57,13 @@ Node/npm layer they depend on rather than immediately after it, so bumping
 either reuses the provider and fragment layers' cache. The Rust run removes the
 installer and the fragments once it is done, so none of them survive into the
 finished image.
+
+`RTK_TELEMETRY_DISABLED=1` and `RTK_SUPPRESS_HOOK_WARNING=1` are set image-wide
+before that first run (Issue #2381), as `POWERSHELL_TELEMETRY_OPTOUT` is: RTK
+does not honour `DO_NOT_TRACK`, so it needs its own switch, and its daily
+missing-hook warning on stderr is noise in a container where the hook reaches
+the CLI through `--settings` rather than `~/.claude/settings.json`. Setting them
+before the install keeps the fragment's own `rtk --version` probe quiet too.
 
 ## Node and npm
 

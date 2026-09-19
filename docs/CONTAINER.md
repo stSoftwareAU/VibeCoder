@@ -96,12 +96,13 @@ calls it. Its row says so, and it is deliberately absent from
 | `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
 | `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
 | `codegraph` 1.6.0 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
+| `rtk` 0.49.0 (bare binary in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 | `graft` 0.18.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
 `rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
-`bats-core`, `codespell`, `pyyaml` and `codegraph` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`bats-core`, `codespell`, `pyyaml`, `codegraph` and `rtk` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
 SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
@@ -370,8 +371,8 @@ restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
-`codegraph` and `rust` are fragments (Issues #1594, #1595, #1596, #1628
-and #2153) — they are the fetch-verify-extract toolchains, whose `ARG` blocks
+`codegraph`, `rtk` and `rust` are fragments (Issues #1594, #1595, #1596, #1628,
+#2153 and #2381) — they are the fetch-verify-extract toolchains, whose `ARG` blocks
 and `RUN` bodies were the bulk of the Containerfile's size. `node`, `npm`,
 `markdownlint-cli2`, `graft` and `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
 the npm- and pip-installed tools have their own steps.

@@ -95,6 +95,10 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   // (Issue #2153): the one fragment here that exists for the worker's own
   // runs rather than for a monitored repository's gate.
   "container/toolchains/codegraph.sh",
+  // RTK, the CLI the worker's own trial drives (Issue #2381, parent #2328):
+  // the second fragment here that exists for the worker rather than for a
+  // monitored repository's gate.
+  "container/toolchains/rtk.sh",
   "container/toolchains/rust.sh",
   "worker/deno/deno.lock",
 ];
