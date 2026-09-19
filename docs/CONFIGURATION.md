@@ -3243,8 +3243,12 @@ A **stream** is the unit that owns one agent conversation per provider
   disk, so the host that ran a stream last records itself as the holder on the
   milestone's tracking issue. Another host defers that stream's eligible issue
   for `STREAM_AFFINITY_GRACE_SECONDS` (300 s) from its own first sighting; after
-  the grace the first host to scan claims it and becomes the new holder.
-  Affinity is an optimisation, never a lock.
+  the grace the first host to scan claims it and becomes the new holder. The
+  head start also ends `STREAM_HOLDER_HEAD_START_SECONDS` (900 s) after the
+  holding run **finished**, by the marker's own stamp — the one clock an hourly
+  relaunch does not reset. Hosts are told apart by the persisted install id,
+  not the per-launch container hostname. Affinity is an optimisation, never a
+  lock.
 - **Compaction before each new issue.** A resumed conversation has carried every
   issue of the stream so far, so it is compacted before the issue's first phase
   — see [Compaction behaviour by provider](MODEL-AND-CACHING.md#compaction-behaviour-by-provider).
@@ -3462,7 +3466,17 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   measured from its own first sighting of the issue, and logs the countdown
   once as `stream affinity: deferring <stream> to <host> (<n>s left)`. After
   the grace the first other host to scan claims it, logs
-  `stream session reset: affinity grace expired` and becomes the new holder. As
+  `stream session reset: affinity grace expired` and becomes the new holder.
+  The first-sighting clock is per process, and a deferral puts the issue on
+  cooldown for the rest of that process, so on a fleet that relaunches hourly
+  it can never run out by itself: every host logged `300s left` for 23 hours
+  on 2026-09-18/19 and no milestone issue was claimed. The head start therefore
+  **also** ends `STREAM_HOLDER_HEAD_START_SECONDS` (900 s) after the holder's
+  run finished, read from the marker's `at=` stamp, which no restart resets; a
+  stamp in the future is clock skew and shortens nothing. "This host" means the
+  same **install** — the uuid persisted beside the transcript in the work
+  directory (`machine_id.ts`) — not the container hostname, which is
+  `vibe-coder-<random>` and new on every launch. As
   with the stream lock this is a **skip, not a failure** (`stream_affinity`),
   and it never applies where there is nothing to hold: no marker recorded, the
   holder being this host, a milestone with no resolvable tracking issue, or a

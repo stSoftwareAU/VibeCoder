@@ -21,6 +21,7 @@ import {
   recordStreamHolderForRun,
   resetStreamAffinityState,
   STREAM_AFFINITY_GRACE_SECONDS,
+  STREAM_HOLDER_HEAD_START_SECONDS,
   streamTrackingIssue,
   writeStreamHolder,
 } from "../lib/stream_holder.ts";
@@ -299,9 +300,10 @@ Deno.test("readStreamHolder - no marker means no holder", async () => {
 Deno.test("decideStreamAffinity - the holder host never defers to itself", () => {
   const decision = decideStreamAffinity({
     holder: { host: HOLDER, atEpoch: NOW - 60 },
-    // A second slot on the same host resolves to the same machine, so the
-    // conversation on that disk is reachable and there is nothing to wait for.
-    thisHost: "GRQ-23-aaaaaaaa-1111-2222-3333-444455556666",
+    // A second slot on the same host shares the work directory, and with it
+    // the persisted install uuid (`machine_id.ts`) — so the conversation on
+    // that disk is reachable and there is nothing to wait for.
+    thisHost: HOLDER,
     eligibleSinceSeconds: NOW,
     nowSeconds: NOW,
   });
@@ -352,6 +354,89 @@ Deno.test("decideStreamAffinity - the grace expires exactly at the boundary", ()
   assertEquals(expired.defer, false);
   assertEquals(expired.graceExpired, true);
   assertEquals(expired.holderHost, "GRQ-23");
+});
+
+// ---------------------------------------------------------------------------
+// The fleet-wide deadlock of 2026-09-18/19
+//
+// Every ready issue in two repositories sat in a milestone stream, and for 23
+// hours every host logged "stream affinity: deferring … to vibe-coder-31555
+// (300s left)" and claimed nothing. Two defects, either of which is fatal:
+//
+//  - the worker's hostname is the container's, `vibe-coder-<random>`, new on
+//    every hourly launch, and hosts were compared on it — so the holder never
+//    recognised itself again, and deferred to its own past name;
+//  - the grace counted from this *process's* first sighting, a deferral puts
+//    the issue on cooldown for the rest of the process, and the next launch
+//    starts the count again — so "300s left" was the only value ever logged.
+// ---------------------------------------------------------------------------
+
+const INSTALL = "1079448c-0b73-4259-ad4e-e2f5dd922657";
+
+Deno.test("decideStreamAffinity - the holder recognises itself after a relaunch gave it a new hostname", () => {
+  const decision = decideStreamAffinity({
+    holder: { host: `vibe-coder-31555-${INSTALL}`, atEpoch: NOW - 60 },
+    thisHost: `vibe-coder-9190-${INSTALL}`,
+    eligibleSinceSeconds: NOW,
+    nowSeconds: NOW,
+  });
+  assertEquals(decision.defer, false);
+  assertEquals(decision.graceExpired, undefined);
+});
+
+Deno.test("decideStreamAffinity - a caller with only a bare host id still recognises its own hostname", () => {
+  const decision = decideStreamAffinity({
+    holder: { host: HOLDER, atEpoch: NOW - 60 },
+    thisHost: "GRQ-23",
+    eligibleSinceSeconds: NOW,
+    nowSeconds: NOW,
+  });
+  assertEquals(decision.defer, false);
+});
+
+Deno.test("decideStreamAffinity - the same hostname on a different install is a different host", () => {
+  const decision = decideStreamAffinity({
+    holder: { host: `vibe-coder-31555-${INSTALL}`, atEpoch: NOW - 60 },
+    thisHost: "vibe-coder-31555-ffffffff-0000-1111-2222-333344445555",
+    eligibleSinceSeconds: NOW,
+    nowSeconds: NOW,
+  });
+  assertEquals(decision.defer, true);
+});
+
+Deno.test("decideStreamAffinity - a holder that finished long ago has had its head start, even on this process's first sighting", () => {
+  const decision = decideStreamAffinity({
+    holder: { host: HOLDER, atEpoch: NOW - 23 * 3600 },
+    thisHost: OTHER,
+    // A freshly launched process: it has never seen the issue before.
+    eligibleSinceSeconds: NOW,
+    nowSeconds: NOW,
+  });
+  assertEquals(decision.defer, false);
+  assertEquals(decision.graceExpired, true);
+});
+
+Deno.test("decideStreamAffinity - the head start by the marker's clock ends exactly at its bound, and not a second before", () => {
+  const at = (age: number) =>
+    decideStreamAffinity({
+      holder: { host: HOLDER, atEpoch: NOW - age },
+      thisHost: OTHER,
+      eligibleSinceSeconds: NOW,
+      nowSeconds: NOW,
+    });
+  assertEquals(at(STREAM_HOLDER_HEAD_START_SECONDS - 1).defer, true);
+  assertEquals(at(STREAM_HOLDER_HEAD_START_SECONDS).graceExpired, true);
+});
+
+Deno.test("decideStreamAffinity - a marker from the future (clock skew) never shortens the local grace", () => {
+  const decision = decideStreamAffinity({
+    holder: { host: HOLDER, atEpoch: NOW + 3600 },
+    thisHost: OTHER,
+    eligibleSinceSeconds: NOW,
+    nowSeconds: NOW,
+  });
+  assertEquals(decision.defer, true);
+  assertEquals(decision.secondsLeft, STREAM_AFFINITY_GRACE_SECONDS);
 });
 
 Deno.test("formatStreamAffinityDeferral - names the stream, the host and the countdown", () => {
