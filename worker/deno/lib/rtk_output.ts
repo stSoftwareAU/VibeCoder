@@ -229,10 +229,9 @@ export async function prepareRtkRun(
   if (!enabled) {
     result = RTK_OFF;
   } else if (providerId !== CLAUDE_PROVIDER_ID) {
-    // Only Claude Code takes per-spawn `PreToolUse` settings. Codex, Gemini
-    // and DeepSeek get an unchanged prompt and no hook — DeepSeek's runner
-    // strips `settingsJson` outright — and the run says so rather than
-    // reporting a filtering that never happened.
+    // Only Claude Code takes per-spawn `PreToolUse` settings. Every other
+    // provider gets an unchanged prompt and no hook, and the run says so
+    // rather than reporting a filtering that never happened.
     result = {
       enabled: true,
       status: "unsupported",
