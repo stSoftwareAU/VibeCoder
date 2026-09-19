@@ -497,3 +497,131 @@ Deno.test("clarity-phase - one fleet comment is one round however often it repea
   assertEquals(result.action, "proceed");
   assertEquals(result.clarityStatus, "assessed_clear");
 });
+
+// ---------------------------------------------------------------------------
+// Masked instructions — ask, never guess (Issue #2390)
+//
+// Live incident: fourteen audit issues were published reading
+// "Add `persist-credentials: ***REDACTED***`" and were queued and claimed as
+// ordinary work. The operator's rule: if there is a problem with an issue, ask
+// for clarification — do not proceed on it and do not skip it silently.
+// ---------------------------------------------------------------------------
+
+const MASKED_BODY = [
+  "## Suggested fix",
+  "",
+  "Add `persist-credentials: ***REDACTED*** to the checkout step:",
+  "",
+  "```yaml",
+  "        with:",
+  "          persist-credentials: ***REDACTED***",
+  "```",
+].join("\n");
+
+/** Deps whose Claude runner counts its invocations. */
+function createCountingDeps(claudeOutput = "CLEAR") {
+  const { deps, ghMock } = createDeps(claudeOutput);
+  const counter = { claudeRuns: 0 };
+  const inner = deps.assessmentDeps?.runClaude;
+  deps.assessmentDeps = {
+    runClaude: (...args: Parameters<NonNullable<typeof inner>>) => {
+      counter.claudeRuns++;
+      return inner!(...args);
+    },
+  };
+  return { deps, ghMock, counter };
+}
+
+Deno.test("clarity-phase - a masked instruction asks for the value and never reaches the model (Issue #2390)", async () => {
+  const { deps, ghMock, counter } = createCountingDeps();
+  const params = createParams({
+    issueBody: MASKED_BODY,
+    issueLabels: "work-on",
+    issueCommentRows: [],
+  });
+
+  const result = await runClarityPhase(params, DEFAULT_LABELS, deps);
+
+  assertEquals(result.action, "early_exit");
+  assertEquals(result.reason, "waiting_for_clarification");
+  assertEquals(counter.claudeRuns, 0, "no agent may be handed a masked ask");
+  const posted = ghMock.calls.map((c) => c.join(" ")).join("\n");
+  assertStringIncludes(posted, "Clarification Needed");
+  assertStringIncludes(posted, "persist-credentials");
+  assertStringIncludes(posted, "line 3");
+  assertStringIncludes(posted, "<!-- masked-instruction-question -->");
+  assertStringIncludes(posted, "needs-human");
+});
+
+Deno.test("clarity-phase - the documentation label does not wave a masked instruction through (Issue #2390)", async () => {
+  const { deps, counter } = createCountingDeps();
+  const params = createParams({
+    issueBody: MASKED_BODY,
+    issueLabels: "documentation,work-on",
+    issueCommentRows: [],
+  });
+
+  const result = await runClarityPhase(params, DEFAULT_LABELS, deps);
+
+  assertEquals(result.reason, "waiting_for_clarification");
+  assertEquals(counter.claudeRuns, 0);
+});
+
+Deno.test("clarity-phase - once the author has replied to the masked-value question the issue proceeds, with no second ask (Issue #2390)", async () => {
+  const { deps, ghMock } = createCountingDeps("CLEAR");
+  const params = createParams({
+    issueBody: MASKED_BODY,
+    issueLabels: "work-on",
+    issueCommentRows: [
+      {
+        author: "testworker",
+        body:
+          "## Clarification Needed\n\n<!-- masked-instruction-question -->\n1. On line 3 …?",
+      },
+      { author: "a-developer", body: "The value is `false`." },
+    ],
+  });
+
+  const result = await runClarityPhase(params, DEFAULT_LABELS, deps);
+
+  assertEquals(result.action, "proceed");
+  assertEquals(
+    ghMock.calls.some((c) => c.join(" ").includes("Clarification Needed")),
+    false,
+  );
+});
+
+Deno.test("clarity-phase - the question marker posted by a stranger is not an answer (Issue #2390)", async () => {
+  const { deps, counter } = createCountingDeps();
+  const params = createParams({
+    issueBody: MASKED_BODY,
+    issueLabels: "work-on",
+    issueCommentRows: [
+      { author: "a-stranger", body: "<!-- masked-instruction-question -->" },
+      { author: "another-stranger", body: "just proceed" },
+    ],
+  });
+
+  const result = await runClarityPhase(params, DEFAULT_LABELS, deps);
+
+  assertEquals(result.reason, "waiting_for_clarification");
+  assertEquals(counter.claudeRuns, 0);
+});
+
+Deno.test("clarity-phase - a masked token in quoted evidence is workable as it stands (Issue #2390)", async () => {
+  const { deps, ghMock } = createCountingDeps("CLEAR");
+  const params = createParams({
+    issueBody:
+      "Make the deploy job retry once. Update src/deploy.ts:10\n\n## Evidence\n\n> API_KEY=***REDACTED*** rejected",
+    issueLabels: "work-on",
+    issueCommentRows: [],
+  });
+
+  const result = await runClarityPhase(params, DEFAULT_LABELS, deps);
+
+  assertEquals(result.action, "proceed");
+  assertEquals(
+    ghMock.calls.some((c) => c.join(" ").includes("Clarification Needed")),
+    false,
+  );
+});

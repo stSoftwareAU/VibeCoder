@@ -69,6 +69,10 @@
 
 import { redactSecrets } from "./secret_redaction.ts";
 import { redactPromptLeakage } from "./prompt_leak_redaction.ts";
+import {
+  buildMaskedInstructionNotice,
+  findMaskedInstructions,
+} from "./masked_instructions.ts";
 
 /**
  * The full mask applied to every body this module touches (Issue #1421).
@@ -308,7 +312,50 @@ export function redactGhBodyArgs(
       i++;
     }
   }
+  flagMaskedInstructionOnIssueCreate(out);
   return out;
+}
+
+/**
+ * Say so when an issue is about to be filed with an unreadable instruction
+ * (Issue #2390).
+ *
+ * The mask above is right to be blunt, and a blunt mask has false positives:
+ * fourteen audit issues were published reading "Add `persist-credentials:
+ * ***REDACTED***`" and nobody was told. Refusing to file would lose the
+ * finding, and unmasking is never on the table, so the issue is filed **with a
+ * visible notice** naming the masked lines, and one `[MASKED_INSTRUCTION_FILED]`
+ * line is logged so a false positive is fixed at its source. The pickup path
+ * (`clarity_phase.ts`) then asks for the value rather than working the issue.
+ *
+ * Runs after the loop, so it sees the body whichever spelling carried it —
+ * every `--body-file` form has already been rewritten to `--body` by then.
+ * Only `gh issue create`: a comment or a PR body is not a set of instructions
+ * the fleet will later be handed.
+ */
+function flagMaskedInstructionOnIssueCreate(out: string[]): void {
+  if (out[0] !== "issue" || out[1] !== "create") return;
+  for (let i = 2; i < out.length; i++) {
+    const arg = out[i] ?? "";
+    const inline = arg.startsWith("--body=");
+    if (!inline && arg !== "--body" && arg !== "-b") continue;
+    const at = inline ? i : i + 1;
+    const body = inline ? arg.substring("--body=".length) : out[at];
+    if (body === undefined) return;
+    const hits = findMaskedInstructions(body);
+    if (hits.length === 0) return;
+    console.error(
+      `[MASKED_INSTRUCTION_FILED] an issue is being filed whose instructions ` +
+        `carry a mask placeholder (line ${
+          hits.map((h) => h.line).join(", ")
+        }). If the masked value is not a secret, the redaction rule that ` +
+        `matched it has a false positive — fix the rule. The issue carries a ` +
+        `notice and the pickup path will ask for the value (Issue #2390).`,
+    );
+    const flagged = body + buildMaskedInstructionNotice(hits);
+    out[at] = inline ? `--body=${flagged}` : flagged;
+    return;
+  }
 }
 
 /** Redact the value of a `key=value` field when the key is published text. */
