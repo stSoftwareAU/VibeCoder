@@ -40,9 +40,12 @@
  * logged before the claim proceeds.
  *
  * Grace is measured from this host's **own first sighting** of the issue in
- * this process, not from the marker's timestamp, so a holder that is simply
- * slow cannot be robbed by a host whose clock disagrees. A restart resets that
- * clock, which at worst costs one extra grace period.
+ * this process, so a holder that is simply slow cannot be robbed by a host
+ * whose clock disagrees. A restart resets that clock — and because a deferral
+ * also puts the issue on cooldown for the rest of the process, that clock
+ * alone never expires on a fleet that relaunches hourly. So the marker's own
+ * stamp is the backstop: {@link STREAM_HOLDER_HEAD_START_SECONDS} after the
+ * holding run finished, the head start is over whoever is asking.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -72,6 +75,24 @@ import {
  * gone away costs the milestone five minutes and not a cycle.
  */
 export const STREAM_AFFINITY_GRACE_SECONDS = 300;
+
+/**
+ * How long after the holder's run **finished** its head start lasts, by the
+ * marker's own clock.
+ *
+ * The local grace above counts from this *process's* first sighting, and that
+ * alone can never expire: a deferral puts the issue on cooldown for the rest
+ * of the process, and the next hourly launch starts the count again — so for
+ * 23 hours on 2026-09-18/19 every host logged "300s left" and claimed nothing.
+ * The marker records when the holding run finished, which no restart resets.
+ *
+ * Three times the grace, so ordinary clock disagreement between two hosts
+ * (seconds, under NTP) can never rob a holder that is merely slow — the
+ * concern the local clock was chosen for. A marker stamped in the future is
+ * skew by definition and never shortens anything.
+ */
+export const STREAM_HOLDER_HEAD_START_SECONDS = STREAM_AFFINITY_GRACE_SECONDS *
+  3;
 
 /**
  * Marker name, and the `--jq test()` pattern the comment read filters on.
@@ -399,8 +420,10 @@ export interface StreamAffinityDecision {
  * Decide whether this host waits for the recorded holder.
  *
  * Pure — the clock, the holder and this host's first sighting are all inputs.
- * Hosts are compared on the **host** part of the machine id, so two slots on
- * one machine share its transcript rather than deferring to each other.
+ * Hosts are compared on the **install** part of the machine id — the
+ * persisted uuid, not the per-launch container hostname — so two slots on one
+ * machine, and the same machine after a relaunch, share its transcript rather
+ * than deferring to each other.
  */
 export function decideStreamAffinity(options: {
   holder: StreamHolder | null;
@@ -414,12 +437,52 @@ export function decideStreamAffinity(options: {
   if (holder === null) return { defer: false };
 
   const holderHost = hostFromMachineId(holder.host);
-  if (holderHost === hostFromMachineId(thisHost)) return { defer: false };
+  if (sameInstall(holder.host, thisHost)) return { defer: false };
+
+  // The holder's head start is over once EITHER clock says so: this process
+  // has waited out the grace, or the holding run finished long enough ago by
+  // the marker's own stamp. The second is what survives a restart.
+  const holderAge = nowSeconds - holder.atEpoch;
+  if (holderAge >= STREAM_HOLDER_HEAD_START_SECONDS) {
+    return { defer: false, holderHost, graceExpired: true };
+  }
 
   const elapsed = Math.max(0, nowSeconds - eligibleSinceSeconds);
   const secondsLeft = STREAM_AFFINITY_GRACE_SECONDS - elapsed;
   if (secondsLeft <= 0) return { defer: false, holderHost, graceExpired: true };
   return { defer: true, holderHost, secondsLeft };
+}
+
+// The per-install UUID a machine id ends with (`machine_id.ts`).
+const INSTALL_UUID_RE =
+  /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+/**
+ * The part of a machine id that identifies the **install**, not the launch.
+ *
+ * A machine id is `{hostname}-{uuid}`. The uuid is persisted in the work
+ * directory and "survives hostname changes"; the hostname is the container's
+ * — `vibe-coder-<random>`, new on every hourly launch. Comparing on the
+ * hostname meant a holder never recognised itself after its next launch and
+ * deferred to its own past name. Null when the id carries no uuid.
+ */
+function installFromMachineId(machineId: string): string | null {
+  return INSTALL_UUID_RE.exec(machineId)?.[1]?.toLowerCase() ?? null;
+}
+
+/**
+ * Are these two ids the same install?
+ *
+ * On the install uuid when **both** carry one — the production case, where
+ * both sides are full machine ids. A caller that only has a bare host id
+ * carries no uuid to compare, so that pair falls back to the hostname, as the
+ * comparison always did.
+ */
+function sameInstall(a: string, b: string): boolean {
+  const installA = installFromMachineId(a);
+  const installB = installFromMachineId(b);
+  if (installA !== null && installB !== null) return installA === installB;
+  return hostFromMachineId(a) === hostFromMachineId(b);
 }
 
 /**
