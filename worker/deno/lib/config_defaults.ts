@@ -424,6 +424,12 @@ export const OPERATIONAL_DEFAULTS = {
    */
   codegraphContext: { enabled: false },
   /**
+   * The RTK output switch (Issue #2380, part of #2328). Off by default:
+   * turning it on adds a `PreToolUse` Bash rewrite hook and a prompt line to
+   * every Claude spawn, so a host opts in rather than inherits it.
+   */
+  rtkOutput: { enabled: false },
+  /**
    * TTL in seconds for the issue-timeline cache used by label-author
    * checks (Issue #1673). Defaults to 5 minutes — shorter than the
    * 10-minute issues TTL because timelines mutate when labels are
@@ -1527,6 +1533,7 @@ export function buildDefaultWorkerConfig(
     codegraphContext: {
       enabled: OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     },
+    rtkOutput: { enabled: OPERATIONAL_DEFAULTS.rtkOutput.enabled },
     timelineCacheTtlSeconds: OPERATIONAL_DEFAULTS.timelineCacheTtlSeconds,
     enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
     verbosity: DEFAULT_VERBOSITY,

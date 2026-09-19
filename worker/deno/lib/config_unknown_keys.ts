@@ -9,6 +9,7 @@
  */
 
 import { CODEGRAPH_CONTEXT_KEYS } from "./codegraph_context_config.ts";
+import { RTK_OUTPUT_KEYS } from "./rtk_output_config.ts";
 
 /**
  * Warning about an unknown configuration key.
@@ -187,6 +188,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // CodeGraph repo context (Issue #2154, part of #2145)
   "codegraph_context",
 
+  // RTK output (Issue #2380, part of #2328)
+  "rtk_output",
+
   // Verbosity settings (Issue #1330)
   "verbosity",
 
@@ -257,6 +261,7 @@ export function knownNestedConfigKeys(): ReadonlyMap<
 > {
   return new Map([
     ["codegraph_context", CODEGRAPH_CONTEXT_KEYS],
+    ["rtk_output", RTK_OUTPUT_KEYS],
   ]);
 }
 
