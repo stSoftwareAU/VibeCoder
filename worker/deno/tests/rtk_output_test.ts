@@ -573,3 +573,43 @@ Deno.test("describeRtkRun - names the status and whatever figures there are", ()
   assertEquals(plain.includes("savedTokens"), false);
   assertStringIncludes(plain, "#2382");
 });
+
+Deno.test("prepareRtkRun - a torrent of stderr is flattened and bounded", async () => {
+  const logger = recordingLogger();
+  const noisy = `${"x".repeat(400)}\n\n   TAIL_OF_THE_TORRENT   `;
+  await prepareRtkRun({
+    enabled: true,
+    providerId: CLAUDE_PROVIDER_ID,
+    logger,
+    run: stubRunner([exited(1, "", noisy)]).run,
+  });
+
+  const line = at(markerLines(logger), 0, "the marker line");
+  assertEquals(line.includes("\n"), false, "the diagnostic stays on one line");
+  assertEquals(
+    line.includes("TAIL_OF_THE_TORRENT"),
+    false,
+    "everything past the cap is dropped",
+  );
+  assertStringIncludes(line, `${"x".repeat(299)}…`);
+  assert(
+    line.length < noisy.length,
+    "hostile subprocess output cannot grow the log line without bound",
+  );
+});
+
+Deno.test("prepareRtkRun - a silent failure still says something", async () => {
+  const logger = recordingLogger();
+  const run = await prepareRtkRun({
+    enabled: true,
+    providerId: CLAUDE_PROVIDER_ID,
+    logger,
+    run: stubRunner([exited(1, "", "   \n\t ")]).run,
+  });
+
+  assertEquals(run.result.status, "failed");
+  assertStringIncludes(
+    at(markerLines(logger), 0, "the marker line"),
+    "exited 1: (no output)",
+  );
+});

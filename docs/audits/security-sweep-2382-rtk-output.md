@@ -41,7 +41,7 @@ Untrusted inputs, and how each reaches the output:
 | network | none |
 | regex safety | one regex, `/\s+/g` in `detail()` — a single character class with no nested quantifier and no alternation, so it cannot backtrack catastrophically on hostile subprocess output |
 | secret surface | nothing secret is read. Subprocess stderr could in principle carry a path, so it is bounded and flattened by `detail()` before it reaches a log; no environment value, token or config value is ever logged |
-| resource bounds | every invocation is capped by `RTK_PREFLIGHT_TIMEOUT_MS` (10s) inside `runWithTimeout`; at most three invocations per run (one preflight, two gain reads); `JSON.parse` runs on already-bounded subprocess output and its failure is caught; every diagnostic is truncated at `MAX_REASON_DETAIL_CHARS` |
+| resource bounds | every invocation is capped by `RTK_PREFLIGHT_TIMEOUT_MS` (10s) inside `runWithTimeout`; preparation spawns at most two (one preflight, one gain read) and each `record()` call one more, so the count is the caller's — `record()` is not guarded against being called twice; `JSON.parse` runs on already-bounded subprocess output and its failure is caught; every diagnostic is truncated at `MAX_REASON_DETAIL_CHARS` |
 | fail direction | fail-loud but never fatal: every seam outcome — a spawn failure, a timeout, a non-zero exit, unparseable JSON, a missing figure — logs exactly one `[RTK_UNAVAILABLE] <reason>` warning and records `failed`. `prepareRtkRun` never rejects, so an accelerator that is missing or broken degrades the run rather than failing it, and a `failed` or `unsupported` preparation returns no hook settings and an unchanged prompt |
 
 No finding. Three deliberate decisions are worth recording:
