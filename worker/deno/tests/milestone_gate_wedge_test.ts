@@ -409,7 +409,7 @@ Deno.test("presyncMilestoneBranch - the second identical refusal wedges it and t
   }
 });
 
-Deno.test("presyncMilestoneBranch - a moved default tip lifts the wedge and the ladder tries again", async () => {
+Deno.test("presyncMilestoneBranch - a moved default tip lifts the hold and the ladder tries again", async () => {
   const fx = await ledger();
   try {
     let merges = 0;
@@ -440,13 +440,21 @@ Deno.test("presyncMilestoneBranch - a moved default tip lifts the wedge and the 
     await run(NOW + 1000, DEFAULT_SHA);
     assertEquals(merges, 2);
 
-    // The default branch moved on: a different merge, so it is tried.
+    // The default branch moved on: a different merge, so the hold lifts and
+    // the ladder is offered the same two goes against the new tip.
     const moved = "9".repeat(40);
     await run(NOW + 2000, moved);
     assertEquals(merges, 3);
-    const entry = (await loadSyncStreaks(fx.path))[`${REPO}|${MILESTONE}`];
-    assertEquals(entry?.gateRefusal?.count, 1);
-    assertEquals(entry?.gateRefusal?.defaultSha, moved);
+    const first = (await loadSyncStreaks(fx.path))[`${REPO}|${MILESTONE}`];
+    assertEquals(first?.gateRefusal?.count, 1, "the new tip starts afresh");
+    assertEquals(first?.gateRefusal?.defaultSha, moved);
+
+    // Refused twice against the new tip as well: wedged again, and the run
+    // after it rebuilds nothing.
+    await run(NOW + 3000, moved);
+    assertEquals(merges, 4);
+    await run(NOW + 4000, moved);
+    assertEquals(merges, 4, "two goes per tip movement, then the hold");
   } finally {
     await fx.cleanup();
   }
@@ -615,4 +623,49 @@ Deno.test("reportGateWedge - a refused write reports not-filed so the next cycle
     dedupAuthors: { fleetAuthors: ["vibe-coder"] },
   });
   assertEquals(filed, false);
+});
+
+Deno.test("presyncMilestoneBranch - a wedge reached only through a child run still files the diagnostic", async () => {
+  // The sweep does not visit every milestone every cycle, and the incident
+  // path was the child run's pre-cut sync — a wedge nobody filed is a gate
+  // nobody fixes, so this path reports it too.
+  const fx = await ledger();
+  try {
+    const d = deps({
+      syncBranch: () =>
+        Promise.resolve({ ok: false as const, error: gateRefusal() }),
+    });
+    const run = (nowMs: number) =>
+      presyncMilestoneBranch({
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs,
+      }, d);
+
+    await run(NOW);
+    assertEquals(
+      d.filings.filter((a) => a[1] === "create").length,
+      0,
+      "one refusal reports nothing",
+    );
+
+    await run(NOW + 1000);
+    const created = d.filings.filter((a) => a[1] === "create");
+    assertEquals(created.length, 1);
+    assertEquals(
+      created[0]![created[0]!.indexOf("--repo") + 1],
+      GATE_WEDGE_DIAGNOSTIC_REPO,
+    );
+    const entry = (await loadSyncStreaks(fx.path))[`${REPO}|${MILESTONE}`];
+    assertEquals(entry?.gateRefusal?.reported, true);
+
+    // Still wedged on the next run, and not filed a second time.
+    await run(NOW + 2000);
+    assertEquals(d.filings.filter((a) => a[1] === "create").length, 1);
+  } finally {
+    await fx.cleanup();
+  }
 });

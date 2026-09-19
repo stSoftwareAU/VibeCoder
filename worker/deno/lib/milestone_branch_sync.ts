@@ -68,10 +68,10 @@ import {
 import { closeResolvedSyncDiagnostics } from "./milestone_sync_diagnostic_closeout.ts";
 import { closeLandedMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
 import {
+  clearGateRefusal,
   clearSyncCursor,
   concludeConflictAttempt,
   type ConflictAttemptOutcome,
-  clearGateRefusal,
   gateWedgeTipsMoved,
   isConflictAttemptDue,
   isConflictBudgetExhausted,
