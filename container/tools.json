@@ -322,6 +322,20 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "The code-structure indexer trialled as a second repo-context candidate (Issue #2153, parent #2145). Unlike every other entry here this toolchain exists for the worker's own trial, not for a monitored repository's quality gate — nothing in the fleet's gates invokes it, so it is absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS; `repos` names this repository because parseContainerManifest rejects an empty list, not because a gate here needs the binary. Both digests are the release's own codegraph-linux-x64/arm64.tar.gz entries from its SHA256SUMS, copied rather than computed from a download. The release is not a bare binary: each tarball extracts a codegraph-linux-<asset arch>/ bundle carrying bin/codegraph (a POSIX shell launcher), its own node runtime and lib/, so the fragment installs the whole bundle under /opt/codegraph and symlinks /usr/local/bin/codegraph at it — the launcher resolves symlinks to find its own bundle directory, which is what makes the symlink work. `codegraph --version` prints the bare version, so the manifest needs no versionArgs and the start-up self-check probes it unchanged. Two consequences of the shape: the bundle is about 62 MB downloaded and 280 MB unpacked per architecture, well above every other fragment here bar rust and semgrep; and naming this repository in `repos` makes bakedToolsForRepo treat `codegraph` as baked for it, so a gate-skip finding for that command here would be suppressed — a no-op today, because no gate invokes it."
+    },
+    {
+      "id": "rtk",
+      "version": "0.49.0",
+      "fragment": "toolchains/rtk.sh",
+      "commands": ["rtk"],
+      "versionCommand": "rtk",
+      "source": "https://github.com/rtk-ai/rtk/releases",
+      "sha256": {
+        "amd64": "7278231dfd7e6a730a4ab7f847b195bcf02289c2d57622b0dab75a6411100c8f",
+        "arm64": "c8ea4b6560841e73157c134fd4a3293914c6ede42e786ee985cf491fde691ba7"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "The RTK CLI trialled by the worker itself (Issue #2381, parent #2328). Like codegraph — and unlike every other entry here — this toolchain exists for the worker's own trial, not for a monitored repository's quality gate: nothing in the fleet's gates invokes it, so it is absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS; `repos` names this repository because parseContainerManifest rejects an empty list, not because a gate here needs the binary. Both digests are the v0.49.0 release's own checksums.txt entries for rtk-x86_64-unknown-linux-musl.tar.gz and rtk-aarch64-unknown-linux-gnu.tar.gz, copied rather than computed from a download; the stable release is pinned, never a daily pre-release, and never built with cargo install. Each tarball carries a bare rtk binary at its top level, so the fragment installs it straight to /usr/local/bin/rtk and aborts if that layout ever changes. `rtk --version` prints \"rtk <version>\", so the manifest needs no versionArgs and the start-up self-check probes it unchanged. The image also sets RTK_TELEMETRY_DISABLED and RTK_SUPPRESS_HOOK_WARNING: RTK does not honour DO_NOT_TRACK, so telemetry needs its own switch, which the binary honours. The second asks for RTK's daily missing-hook warning to stay off stderr — noise where the hook reaches the agent CLI through an explicit --settings path rather than the CLI's own user settings file — but v0.49.0 reads no such variable (the warning is throttled by a stamp file under RTK's data dir), so it is declared and inert until a release honours it."
     }
   ],
   "tools": [

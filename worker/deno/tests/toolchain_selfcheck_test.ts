@@ -301,6 +301,10 @@ const REAL_IMAGE_OUTPUT: Record<
   // architecture the image builds for: the toolchain is new (Issue #2153) and
   // the image above predates it, so there is no in-image capture to quote yet.
   codegraph: { command: "1.6.0\n" },
+  // Captured by running the very tarball this manifest checksums, on the
+  // architecture the image builds for (Issue #2381): the toolchain is new and
+  // the image above predates it, so there is no in-image capture to quote yet.
+  rtk: { command: "rtk 0.49.0\n" },
 };
 
 Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {
