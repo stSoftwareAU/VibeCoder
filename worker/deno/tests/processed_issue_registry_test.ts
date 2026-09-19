@@ -6,9 +6,11 @@
 
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
+  isClaimDeferral,
   ProcessedIssueRegistry,
   resetSharedProcessedIssues,
   sharedProcessedIssues,
+  withholdsFromIdleDetection,
 } from "../lib/processed_issue_registry.ts";
 
 Deno.test("processed registry - records and recalls an issue", () => {
@@ -84,4 +86,64 @@ Deno.test("processed registry - shared instance is process-wide and resettable",
 
   resetSharedProcessedIssues();
   assertFalse(sharedProcessedIssues().has("o/r", 99));
+});
+
+// =============================================================================
+// Why a hold exists (Issue #2405)
+//
+// A skip puts an issue on hold for the rest of the run. "We ran it" and "the
+// claim path would not let us run it" were the same record, so the idle census
+// could not tell a finished run from a day of stream-affinity deferrals.
+// =============================================================================
+
+Deno.test("ProcessedIssueRegistry - a skip remembers the claim refusal that caused it (Issue #2405)", () => {
+  const registry = new ProcessedIssueRegistry();
+  registry.record("org/repo", 1, "skip", { claimRefusal: "stream_affinity" });
+  registry.record("org/repo", 2, "skip");
+  registry.record("org/repo", 3, "success");
+
+  assertEquals(registry.claimRefusalFor("org/repo", 1), "stream_affinity");
+  assertEquals(registry.claimRefusalFor("org/repo", 2), undefined);
+  assertEquals(registry.claimRefusalFor("org/repo", 3), undefined);
+  assertEquals(registry.claimRefusalFor("org/repo", 99), undefined);
+});
+
+Deno.test("ProcessedIssueRegistry - a later outcome replaces the refusal; it is not a permanent mark (Issue #2405)", () => {
+  const registry = new ProcessedIssueRegistry();
+  registry.record("org/repo", 1, "skip", { claimRefusal: "stream_affinity" });
+  registry.record("org/repo", 1, "success");
+  assertEquals(registry.claimRefusalFor("org/repo", 1), undefined);
+});
+
+Deno.test("isClaimDeferral - only a refusal that leaves the issue with nobody working it (Issue #2405)", () => {
+  assertEquals(isClaimDeferral("stream_affinity"), true);
+  // Someone else IS working these: a healthy fleet, never an inversion.
+  for (
+    const reason of ["already_assigned", "stream_busy", "recent_claim", "other"]
+  ) {
+    assertEquals(isClaimDeferral(reason), false, reason);
+  }
+  assertEquals(isClaimDeferral(undefined), false);
+});
+
+Deno.test("withholdsFromIdleDetection - a hold hides an issue from the idle detectors unless the claim path deferred it (Issue #2405)", () => {
+  const registry = new ProcessedIssueRegistry();
+  registry.record("org/repo", 1, "skip", { claimRefusal: "stream_affinity" });
+  registry.record("org/repo", 2, "skip", { claimRefusal: "stream_busy" });
+  registry.record("org/repo", 3, "failure");
+  const held = () => true;
+
+  // Deferred: nobody is working it, so the detectors must go on seeing it.
+  assertEquals(
+    withholdsFromIdleDetection(registry, held, "org/repo", 1),
+    false,
+  );
+  // A sibling holds the stream, and a run that failed: legitimate holds.
+  assertEquals(withholdsFromIdleDetection(registry, held, "org/repo", 2), true);
+  assertEquals(withholdsFromIdleDetection(registry, held, "org/repo", 3), true);
+  // Not held at all is not withheld, whatever the registry says.
+  assertEquals(
+    withholdsFromIdleDetection(registry, () => false, "org/repo", 2),
+    false,
+  );
 });
