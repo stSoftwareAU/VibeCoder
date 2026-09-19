@@ -11,8 +11,8 @@
  */
 
 import {
-  type PrepareRtkRunOptions,
   prepareRtkRun,
+  type PrepareRtkRunOptions,
   type RtkRun,
 } from "../../lib/rtk_output.ts";
 import type { SubprocessResult } from "../../lib/subprocess_timeout.ts";

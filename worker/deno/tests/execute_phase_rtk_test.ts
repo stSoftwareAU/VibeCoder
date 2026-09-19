@@ -33,6 +33,7 @@ import type {
   PhaseState,
 } from "../lib/issue_worker_types.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
+import { AGENT_PROVIDER_ENV } from "../lib/agent_provider.ts";
 import {
   RTK_HOOK_COMMAND,
   RTK_HOOK_MATCHER,
@@ -97,8 +98,17 @@ async function runPhase(enabled: boolean, seam: RtkSeam): Promise<Observed> {
     },
   });
 
-  const result = await workOnIssueExecuteClaude(ctx, state, deps);
-  return { runOptions, state, result };
+  // The phase reads the run's *active* provider, which honours
+  // `VIBE_AGENT_PROVIDER`; neutralise it so a host that exported a non-Claude
+  // id cannot turn these runs into `unsupported` ones.
+  const exported = Deno.env.get(AGENT_PROVIDER_ENV);
+  Deno.env.delete(AGENT_PROVIDER_ENV);
+  try {
+    const result = await workOnIssueExecuteClaude(ctx, state, deps);
+    return { runOptions, state, result };
+  } finally {
+    if (exported !== undefined) Deno.env.set(AGENT_PROVIDER_ENV, exported);
+  }
 }
 
 /** The `PreToolUse` entries carried by a run's `--settings` payload. */
