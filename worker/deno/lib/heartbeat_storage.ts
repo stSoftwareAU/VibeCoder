@@ -1128,11 +1128,26 @@ export async function listFleetMarkerComments(
  * heartbeat layer's own text, so `isHeartbeatOnlyBody` still holds and the
  * existing sweep removes it once past the cleared-marker grace window. It
  * carries the cleared marker so no scanner sees a live claim on it.
+ *
+ * It repeats **this** release's reason (Issue #2388). Pointing "above" was
+ * accurate and useless: the canonical summary can be a week and a dozen
+ * comments up the thread, so the newest comment — the one a reader lands on —
+ * said nothing about why the claim had just been dropped. A milestone that
+ * deferred ~150 times looked reasonless on every issue it touched.
+ *
+ * @param machineId - The host whose comment is being superseded
+ * @param reason - This release's one-line outcome, when there is one
  */
-export function renderSupersededReleaseBody(machineId: string): string {
+export function renderSupersededReleaseBody(
+  machineId: string,
+  reason?: string,
+): string {
+  const trimmed = reason?.trim();
+  const why = trimmed ? ` — ${trimmed}` : "";
   return `${formatHeartbeatMarker(machineId, 0)} ` +
     `<!-- cleared: claim released by machine ${machineId} -->\n\n` +
-    `✅ **Vibe Coder released this claim** — collapsed into the release summary above.`;
+    `✅ **Vibe Coder released this claim**${why} — full history collapsed ` +
+    `into the release summary above.`;
 }
 
 /**
@@ -1894,7 +1909,10 @@ export async function clearHeartbeat(
           await patchMarkerComment(
             repo,
             existing.commentId,
-            renderSupersededReleaseBody(markerOptions.machineId),
+            renderSupersededReleaseBody(
+              markerOptions.machineId,
+              thisAttempt.text,
+            ),
             ghFn,
           );
         } catch (err) {

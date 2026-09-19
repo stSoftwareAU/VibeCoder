@@ -71,6 +71,50 @@ export interface ConflictAttemptRecord {
   timings?: string;
 }
 
+/**
+ * Concluded refusals of the *same* resolution before the gate is treated as a
+ * wedge rather than something a retry could clear (Issue #2388).
+ *
+ * Two, because one refusal proves nothing: the first is the gate's verdict on
+ * a resolution it has just seen, and a second identical verdict on an
+ * identical conflict against an unmoved default branch is the same
+ * computation run twice. A milestone whose gate refusal was never charged was
+ * rebuilt and refused ~150 times in a day — the budget could not conclude it,
+ * because a gate refusal is deliberately `not-charged`.
+ */
+export const GATE_REFUSAL_WEDGE_THRESHOLD = 2;
+
+/**
+ * A resolution the verification gate refused, and how often that exact
+ * refusal has repeated (Issue #2388).
+ *
+ * `not-charged` is the right verdict for a gate refusal — the conflict is not
+ * answerable for a gate that cannot verify the tree — but it means the
+ * branch's conflict budget is never spent, so nothing concludes. This record
+ * is what concludes it: the same verdict, on the same conflict, from the same
+ * default tip, is a wedge.
+ */
+export interface GateRefusalRecord {
+  /**
+   * The conflict's own identity as `conflictEscalationKey` spells it — the
+   * milestone tip and the conflicted paths, so a moved milestone branch or a
+   * different file set is a different conflict.
+   */
+  conflictKey: string;
+  /** The gate's own verdict, which is what must not have changed. */
+  reason: string;
+  /** The default-branch tip the refused merge was made from. */
+  defaultSha?: string;
+  /** The milestone branch's tip at the refused merge. */
+  milestoneSha?: string;
+  /** Consecutive concluded refusals of this exact resolution. */
+  count: number;
+  /** ISO timestamp of the most recent refusal. */
+  at: string;
+  /** True once the worker diagnostic for this wedge has been filed. */
+  reported?: boolean;
+}
+
 /** One branch's streak state. */
 export interface SyncStreakEntry {
   /** Consecutive failed sync cycles for this branch. */
@@ -127,6 +171,12 @@ export interface SyncStreakEntry {
   announcedAttemptAt?: string;
   /** The most recent concluded attempt, whatever it concluded. */
   lastAttempt?: ConflictAttemptRecord;
+  /**
+   * The gate refusal this branch is repeating, when it is repeating one
+   * (Issue #2388). Cleared by a landed sync, and replaced the moment either
+   * side's tip moves — a different merge is a different question.
+   */
+  gateRefusal?: GateRefusalRecord;
   /**
    * Every charged failure of the budget currently being spent
    * (Issue #2311) — the runs the `merge-fallback` flag reports.
@@ -354,6 +404,30 @@ function readLastAttempt(value: unknown): ConflictAttemptRecord | undefined {
   };
 }
 
+/**
+ * The repeated gate refusal, or undefined when it is missing or malformed
+ * (Issue #2388). A ledger written before this change simply has none.
+ */
+function readGateRefusal(value: unknown): GateRefusalRecord | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Partial<GateRefusalRecord>;
+  const conflictKey = optionalText(record.conflictKey);
+  const at = optionalText(record.at);
+  const count = optionalCount(record.count);
+  if (conflictKey === undefined || at === undefined || !count) return undefined;
+  const defaultSha = optionalText(record.defaultSha);
+  const milestoneSha = optionalText(record.milestoneSha);
+  return {
+    conflictKey,
+    reason: typeof record.reason === "string" ? record.reason : "",
+    count,
+    at,
+    ...(defaultSha ? { defaultSha } : {}),
+    ...(milestoneSha ? { milestoneSha } : {}),
+    ...(record.reported === true ? { reported: true } : {}),
+  };
+}
+
 /** The charged failures of the current budget, dropping malformed rows. */
 function readFailedAttempts(
   value: unknown,
@@ -380,6 +454,7 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
   const syncedSha = optionalText(entry.lastSyncedDefaultSha);
   const syncedMilestoneSha = optionalText(entry.lastSyncedMilestoneSha);
   const lastAttempt = readLastAttempt(entry.lastAttempt);
+  const gateRefusal = readGateRefusal(entry.gateRefusal);
   const failedAttempts = readFailedAttempts(entry.failedAttempts);
   const fallbackSha = optionalText(entry.fallbackDefaultSha);
   const revertedPrs = readPositiveInts(entry.revertedPrs);
@@ -389,6 +464,7 @@ function readConflictLedger(entry: SyncStreakEntry): Partial<SyncStreakEntry> {
     ...(openedAt ? { attemptOpenedAt: openedAt } : {}),
     ...(announcedAt ? { announcedAttemptAt: announcedAt } : {}),
     ...(lastAttempt ? { lastAttempt } : {}),
+    ...(gateRefusal ? { gateRefusal } : {}),
     ...(failedAttempts !== undefined ? { failedAttempts } : {}),
     ...(fallbackSha ? { fallbackDefaultSha: fallbackSha } : {}),
     ...(syncedSha ? { lastSyncedDefaultSha: syncedSha } : {}),
@@ -550,9 +626,109 @@ export function resetConflictLedgerOnSuccess(
     attemptOpenedAt: _opened,
     failedAttempts: _spent,
     fallbackDefaultSha: _flagged,
+    // A landed sync is the proof the gate is no longer refusing anything
+    // (Issue #2388) — the wedge goes with the conflict it described.
+    gateRefusal: _wedged,
     ...rest
   } = entry;
   return { ...rest, conflictAttempts: 0 };
+}
+
+/**
+ * What identifies one gate refusal, for the "has this repeated?" comparison
+ * (Issue #2388).
+ *
+ * Three things must all be unchanged for a refusal to be the same refusal:
+ * the conflict (which carries the milestone tip and the conflicted paths),
+ * the gate's verdict, and the default-branch tip the merge was made from. Any
+ * one of them moving is a different merge, so the ladder is due another go.
+ */
+export function isSameGateRefusal(
+  a: GateRefusalRecord | undefined,
+  b: Omit<GateRefusalRecord, "count" | "at" | "reported">,
+): boolean {
+  return a !== undefined && a.conflictKey === b.conflictKey &&
+    a.reason === b.reason && a.defaultSha === b.defaultSha;
+}
+
+/**
+ * Count one concluded gate refusal (Issue #2388).
+ *
+ * A refusal identical to the one already recorded increments the count and
+ * keeps the `reported` flag, so the worker diagnostic is filed once rather
+ * than every cycle. Anything else replaces the record and starts at one — a
+ * moved tip, a different conflict or a different verdict is a fresh question
+ * the ladder has not yet answered twice.
+ *
+ * @param entry - The branch's streak entry
+ * @param refusal - The conflict, the verdict and both tips
+ * @param nowMs - Conclusion time in epoch milliseconds
+ */
+export function recordGateRefusal(
+  entry: SyncStreakEntry,
+  refusal: Omit<GateRefusalRecord, "count" | "at" | "reported">,
+  nowMs: number = Date.now(),
+): SyncStreakEntry {
+  const previous = entry.gateRefusal;
+  const repeated = isSameGateRefusal(previous, refusal);
+  return {
+    ...entry,
+    gateRefusal: {
+      ...refusal,
+      count: repeated ? previous!.count + 1 : 1,
+      at: new Date(nowMs).toISOString(),
+      ...(repeated && previous!.reported ? { reported: true } : {}),
+    },
+  };
+}
+
+/**
+ * Whether the gate has refused the same resolution often enough that another
+ * attempt cannot change anything (Issue #2388).
+ */
+export function isGateWedged(
+  entry: SyncStreakEntry,
+  threshold: number = GATE_REFUSAL_WEDGE_THRESHOLD,
+): boolean {
+  return (entry.gateRefusal?.count ?? 0) >= threshold;
+}
+
+/**
+ * Whether either side's tip has moved since the wedged refusal was recorded
+ * (Issue #2388) — the one thing that makes the merge a different question.
+ *
+ * A tip that could not be read counts as **unmoved**: the wedge exists to stop
+ * a resolution being rebuilt and refused every cycle, and "we could not tell"
+ * is not evidence that anything changed. The sweep still attempts the merge
+ * regardless, so a branch is never stranded on an unreadable ref.
+ *
+ * @param entry - The branch's streak entry
+ * @param tips - The tips as they stand right now
+ */
+export function gateWedgeTipsMoved(
+  entry: SyncStreakEntry,
+  tips: { defaultSha?: string; milestoneSha?: string },
+): boolean {
+  const wedge = entry.gateRefusal;
+  if (!wedge) return true;
+  const moved = (recorded?: string, current?: string) =>
+    current !== undefined && recorded !== undefined && current !== recorded;
+  return moved(wedge.defaultSha, tips.defaultSha) ||
+    moved(wedge.milestoneSha, tips.milestoneSha);
+}
+
+/** Drop the wedge — the merge it described is no longer the merge in hand. */
+export function clearGateRefusal(entry: SyncStreakEntry): SyncStreakEntry {
+  const { gateRefusal: _wedged, ...rest } = entry;
+  return rest;
+}
+
+/** Remember that this wedge's worker diagnostic has been filed. */
+export function markGateRefusalReported(
+  entry: SyncStreakEntry,
+): SyncStreakEntry {
+  if (!entry.gateRefusal) return entry;
+  return { ...entry, gateRefusal: { ...entry.gateRefusal, reported: true } };
 }
 
 /**

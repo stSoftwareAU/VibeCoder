@@ -32,7 +32,7 @@ import {
 import { runPreSetupCommand } from "../repo_config.ts";
 import {
   MILESTONE_BEHIND_DEFER_REASON,
-  presyncMilestoneBranchForIssueRun,
+  presyncMilestoneOnceForArming,
 } from "../milestone_presync.ts";
 import { expectedNoPrOutcome } from "../run_outcome.ts";
 import { repoDirName } from "../work_volume_tiers.ts";
@@ -456,7 +456,13 @@ export async function workOnIssueSetupBranch(
     // charged to the branch's own conflict ledger, in the shared clone the
     // periodic sweep uses — never in this lane's worktree, whose checkout of
     // the milestone branch would then be refused to every other lane.
-    const presync = await presyncMilestoneBranchForIssueRun({
+    //
+    // Through the per-cycle memo (Issue #2388): a milestone gets ONE sync
+    // attempt per run, not one per issue. A branch this cycle cannot bring
+    // level answers all fifteen of its issues from that single attempt —
+    // before, each issue rebuilt the same merge and the same refusal, which
+    // is how one milestone was claimed and dropped ~150 times in a day.
+    const presync = await presyncMilestoneOnceForArming({
       repo,
       milestoneTitle,
       milestoneBranch: state.milestoneBranch,
