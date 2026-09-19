@@ -64,13 +64,15 @@ Backend/CLI change with no web interface to screenshot.
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — `container/toolchains/rtk.sh` run against a manifest with the `rtk`
-  pin removed exits non-zero without a network call — evidence:
+  pin removed exits non-zero *naming the missing pin*, without a network call.
+  `manifest_field()` wraps each `jq -er` lookup so a dropped pin reports
+  `[rtk] the version pin is missing from <manifest>` (or `the sha256 pin for
+  <arch>`) on stderr rather than aborting on a bare exit code — evidence:
   `worker/deno/tests/install_toolchains_test.ts::container/toolchains/rtk.sh - a missing pin aborts before downloading`
-  — reviewer: partial — reason: the reviewer is right that `jq -er` aborts
-  silently, so nothing *names* the missing pin; that is the shape
-  `container/toolchains/codegraph.sh` and every other fragment here uses, and
-  changing it is a cross-fragment change this issue did not ask for. The
-  exit-non-zero, no-network half is implemented and tested.
+  and
+  `worker/deno/tests/install_toolchains_test.ts::container/toolchains/rtk.sh - a missing version pin aborts, naming it`,
+  which assert on the stderr text and on the stubbed `curl` never being called
+  — reviewer: met
 - **met** — an unsupported `uname -m` value exits non-zero naming the
   architecture — evidence:
   `worker/deno/tests/install_toolchains_test.ts::container/toolchains/rtk.sh - an unsupported architecture aborts, naming it`
@@ -139,6 +141,14 @@ Backend/CLI change with no web interface to screenshot.
   versus `codegraph.sh`, had no test — evidence:
   `container/toolchains/rtk.sh:70` — reason: fixed here by
   `install_toolchains_test.ts::container/toolchains/rtk.sh - an archive without rtk at its top level aborts`.
+- **violation** — a dropped pin failed silently as far as the operator was
+  concerned: `jq -er` exits non-zero but prints nothing, so the build aborted on
+  a bare exit code while the issue requires the missing pin to be *named* —
+  evidence: `container/toolchains/rtk.sh:41` — reason: fixed here by
+  `manifest_field()`, which reports
+  `[rtk] <what is missing> is missing from <manifest>` on stderr before exiting
+  1; both lookups (version, per-architecture sha256) go through it and both are
+  covered by tests asserting on the message.
 - **violation** — the Containerfile comment named a provider-specific path
   (`~/.claude/settings.json`), which
   `agent_provider_test.ts::the generic worker path names no specific provider`
@@ -158,6 +168,7 @@ Added to `worker/deno/tests/install_toolchains_test.ts` — each runs the real
 fragment and asserts on its exit code, stderr and side effects:
 
 - `container/toolchains/rtk.sh - a missing pin aborts before downloading`
+- `container/toolchains/rtk.sh - a missing version pin aborts, naming it`
 - `container/toolchains/rtk.sh - an unsupported architecture aborts, naming it`
 - `container/toolchains/rtk.sh - a tampered download aborts before extracting`
 - `container/toolchains/rtk.sh - an archive without rtk at its top level aborts`

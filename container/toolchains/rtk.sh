@@ -35,8 +35,22 @@ if [[ ! -f "${MANIFEST}" ]]; then
     exit 1
 fi
 
-version="$(jq -er --arg id "${TOOLCHAIN_ID}" \
-    '.toolchains[] | select(.id == $id) | .version' "${MANIFEST}")"
+# jq -er exits non-zero on an absent or null field but says nothing useful, so
+# a dropped pin would abort the build with a bare exit code. Name what is
+# missing instead.
+manifest_field() {
+    local filter="$1" description="$2" value
+    if ! value="$(jq -er --arg id "${TOOLCHAIN_ID}" \
+        --arg arch "${manifest_arch:-}" "${filter}" "${MANIFEST}")"; then
+        echo "[${TOOLCHAIN_ID}] ${description} is missing from ${MANIFEST}" >&2
+        exit 1
+    fi
+    printf '%s\n' "${value}"
+}
+
+# shellcheck disable=SC2016  # jq filter literal; $id is a jq variable.
+version="$(manifest_field \
+    '.toolchains[] | select(.id == $id) | .version' "the version pin")"
 
 arch="$(uname -m)"
 case "${arch}" in
@@ -48,8 +62,10 @@ case "${arch}" in
         ;;
 esac
 
-checksum="$(jq -er --arg id "${TOOLCHAIN_ID}" --arg arch "${manifest_arch}" \
-    '.toolchains[] | select(.id == $id) | .sha256[$arch]' "${MANIFEST}")"
+# shellcheck disable=SC2016  # jq filter literal; $id/$arch are jq variables.
+checksum="$(manifest_field \
+    '.toolchains[] | select(.id == $id) | .sha256[$arch]' \
+    "the sha256 pin for ${manifest_arch}")"
 
 echo "[${TOOLCHAIN_ID}] Installing ${version} for ${manifest_arch}"
 

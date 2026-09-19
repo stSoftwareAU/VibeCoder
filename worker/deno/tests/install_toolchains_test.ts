@@ -860,10 +860,28 @@ Deno.test("container/toolchains/rtk.sh - a missing pin aborts before downloading
   );
 
   assert(run.code !== 0, "an unpinned checksum must fail the build");
+  assertStringIncludes(run.stderr, "the sha256 pin for");
   assert(
     !run.downloaded,
     "the fragment downloaded before resolving its pin — a missing digest " +
       "must stop it at the lookup",
+  );
+});
+
+Deno.test("container/toolchains/rtk.sh - a missing version pin aborts, naming it", async () => {
+  // The version resolves before the architecture does, so its own absence has
+  // to be reported by name rather than by a bare jq exit code.
+  const run = await runFragmentWithBrokenManifest("rtk.sh", (manifest) => {
+    const rtk = manifest.toolchains.find((t) => t.id === "rtk");
+    assert(rtk !== undefined, "container/tools.json must pin rtk");
+    delete rtk.version;
+  });
+
+  assert(run.code !== 0, "an unpinned version must fail the build");
+  assertStringIncludes(run.stderr, "the version pin is missing from");
+  assert(
+    !run.downloaded,
+    "the fragment downloaded before resolving its version",
   );
 });
 
