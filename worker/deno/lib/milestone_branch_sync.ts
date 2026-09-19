@@ -49,16 +49,12 @@ import {
   resolveBranchTips,
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
+import { isConflictEscalation } from "./milestone_conflict_triage.ts";
 import {
-  buildConflictAnalysisComment,
-  isConflictEscalation,
-} from "./milestone_conflict_triage.ts";
-import {
-  conflictEscalationKey,
   conflictEscalationMarkerPrefix,
   hasConflictEscalationComment,
 } from "./milestone_conflict_dedup.ts";
-import { reportGateWedge } from "./milestone_gate_wedge.ts";
+import { concludeGateRefusal } from "./milestone_gate_wedge.ts";
 import {
   DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
   DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
@@ -75,17 +71,17 @@ import {
   clearSyncCursor,
   concludeConflictAttempt,
   type ConflictAttemptOutcome,
+  clearGateRefusal,
+  gateWedgeTipsMoved,
   isConflictAttemptDue,
   isConflictBudgetExhausted,
   isGateWedged,
   loadSyncCursor,
   loadSyncStreaks,
-  markGateRefusalReported,
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   openConflictAttempt,
   recordDefaultSha,
-  recordGateRefusal,
   resetConflictLedgerOnSuccess,
   saveSyncCursor,
   saveSyncStreaks,
@@ -1602,6 +1598,33 @@ export async function syncMilestoneBranches(
             streaksDirty = true;
           }
 
+          // A gate that refused this exact resolution twice will refuse it a
+          // third time: same conflict, same verdict, and neither tip has
+          // moved, so the merge and the full verification run would be
+          // rebuilt to reach the answer already on the ledger (Issue #2388).
+          // A moved tip is a different merge and re-arms it here, which is
+          // also what releases the milestone's issues to the claim scan.
+          if (isGateWedged(entry)) {
+            const wedge = entry.gateRefusal;
+            const moved = gateWedgeTipsMoved(entry, {
+              ...(defaultSha ? { defaultSha } : {}),
+              ...(milestoneSha ? { milestoneSha } : {}),
+            });
+            if (!moved) {
+              log(
+                `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                  `the resolution gate refused the same resolution ` +
+                  `${wedge.count} times and neither tip has moved since: ` +
+                  `${wedge.reason} (Issue #2388)`,
+              );
+              skipped++;
+              continue;
+            }
+            entry = clearGateRefusal(entry);
+            streaks[streakKey] = entry;
+            streaksDirty = true;
+          }
+
           // A branch past its budget belongs to the roll-back, not to another
           // merge: without this guard it keeps conflicting every cycle,
           // charging attempt 3, 4, 5… and re-entering the hand-off each time.
@@ -1936,69 +1959,39 @@ export async function syncMilestoneBranches(
             }
           }
 
-          if (conflictError?.gateFailure) {
+          if (conflictError?.gateFailure && entry) {
             // A gate refusal, not a conflict (Issue #1778): the resolution
-            // was made and the verification refused it, so it keeps the
-            // escalation Issue #1559 gave it — what the gate said AND both
-            // sides prepared. Keyed on the conflict itself (Issue #1786),
-            // not the default branch's tip: that tip moves every few
-            // minutes and would re-report the same refusal every cycle.
-            const gateKey = conflictEscalationKey({
-              milestoneBranch: milestone.milestoneBranch,
-              ...(conflictError.milestoneSha
-                ? { milestoneSha: conflictError.milestoneSha }
-                : {}),
-              files: [
-                ...conflictError.analyses.map((a) => a.path),
-                ...conflictError.resolved.map((d) => d.path),
-              ],
-            });
-            if (entry) {
-              // Issue #2388: count the refusal. A gate refusal is
-              // `not-charged` on purpose, so the budget can never conclude
-              // it — this record is what does. The same verdict, the same
-              // conflict and the same default tip twice over is a wedge, and
-              // a wedge is reported as a **worker** diagnostic rather than as
-              // a needs-human comment on a sibling issue: the conflict was
-              // resolved, it is the gate that could not verify it.
-              entry = recordGateRefusal(entry, {
-                conflictKey: gateKey,
-                reason: conflictError.gateFailure,
-                ...(defaultSha ? { defaultSha } : {}),
-                ...(conflictError.milestoneSha
-                  ? { milestoneSha: conflictError.milestoneSha }
+            // was made and the verification refused it. The budget cannot
+            // conclude it — `judgeSyncFailure` charges it nothing, on
+            // purpose — so the ledger counts the refusal instead, and a
+            // refusal that has repeated is reported as a **worker**
+            // diagnostic rather than as a needs-human comment on a sibling
+            // issue: the conflict was resolved, it is the gate that could
+            // not verify it (Issue #2388). The counting, the keying and the
+            // reporting are the pre-cut sync's too, so they live in one
+            // place rather than twice over.
+            const concluded = await concludeGateRefusal(
+              entry,
+              {
+                repo,
+                milestoneBranch: milestone.milestoneBranch,
+                defaultBranch: milestone.defaultBranch,
+                milestoneTitle: milestone.milestoneTitle,
+              },
+              conflictError as typeof conflictError & { gateFailure: string },
+              defaultSha,
+              now(),
+              {
+                ghCommandFn,
+                log,
+                ...(deps.dedupAuthors
+                  ? { dedupAuthors: deps.dedupAuthors }
                   : {}),
-              }, now());
-              streaks[streakKey] = entry;
-              streaksDirty = true;
-              if (isGateWedged(entry) && !entry.gateRefusal!.reported) {
-                const reported = await reportGateWedge({
-                  repo,
-                  milestoneBranch: milestone.milestoneBranch,
-                  defaultBranch: milestone.defaultBranch,
-                  milestoneTitle: milestone.milestoneTitle,
-                  refusal: entry.gateRefusal!,
-                  analysis: buildConflictAnalysisComment({
-                    repo,
-                    milestoneBranch: milestone.milestoneBranch,
-                    defaultBranch: milestone.defaultBranch,
-                    analyses: conflictError.analyses,
-                    resolved: conflictError.resolved,
-                  }),
-                }, {
-                  ghCommandFn,
-                  log,
-                  ...(deps.dedupAuthors
-                    ? { dedupAuthors: deps.dedupAuthors }
-                    : {}),
-                });
-                if (reported) {
-                  entry = markGateRefusalReported(entry);
-                  entry.analysisEscalatedSha = gateKey;
-                  streaks[streakKey] = entry;
-                }
-              }
-            }
+              },
+            );
+            entry = concluded.entry;
+            streaks[streakKey] = entry;
+            streaksDirty = true;
           } else if (conflictError) {
             // Nothing is posted for a conflict every rung left undecided
             // (Issue #1778): the ledger above records why the branch is

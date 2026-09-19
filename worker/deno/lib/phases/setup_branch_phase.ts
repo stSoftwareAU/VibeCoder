@@ -458,10 +458,8 @@ export async function workOnIssueSetupBranch(
     // the milestone branch would then be refused to every other lane.
     //
     // Through the per-cycle memo (Issue #2388): a milestone gets ONE sync
-    // attempt per run, not one per issue. A branch this cycle cannot bring
-    // level answers all fifteen of its issues from that single attempt —
-    // before, each issue rebuilt the same merge and the same refusal, which
-    // is how one milestone was claimed and dropped ~150 times in a day.
+    // attempt per run, not one per issue, so every issue of a branch this
+    // cycle cannot bring level is answered from that single attempt.
     const presync = await presyncMilestoneOnceForArming({
       repo,
       milestoneTitle,

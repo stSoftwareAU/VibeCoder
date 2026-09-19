@@ -315,8 +315,10 @@ export function describeAttemptOutcome(
  * — the reason was on the first release comment, a week and a dozen comments
  * up the thread. The shorthand keeps its place and the reason rides with it.
  *
- * Always one line, and bounded: the pointer body must stay matchable by
- * `isHeartbeatOnlyBody`, whose patterns are line-anchored.
+ * Bounded through {@link boundOutcomeText}, like every other free-text splice
+ * in this file: one line, and with `<!--` / `-->` neutralised, because the
+ * pointer body opens with the machine-readable marker comment and
+ * `isHeartbeatOnlyBody` matches it line by line.
  */
 export function releaseReasonLine(outcome: RunOutcome | undefined): string {
   const terse = describeAttemptOutcome(outcome);
@@ -325,12 +327,10 @@ export function releaseReasonLine(outcome: RunOutcome | undefined): string {
     : outcome?.kind === "no_pr"
     ? outcome.message
     : undefined;
-  const flat = detail?.replace(/\s+/g, " ").trim();
-  if (!flat) return terse;
-  const clipped = flat.length > OUTCOME_DETAIL_MAX_LENGTH
-    ? `${flat.substring(0, OUTCOME_DETAIL_MAX_LENGTH - 1)}…`
-    : flat;
-  return `${terse} — ${clipped}`;
+  const bounded = detail
+    ? boundOutcomeText(detail, OUTCOME_DETAIL_MAX_LENGTH)
+    : "";
+  return bounded ? `${terse} — ${bounded}` : terse;
 }
 
 /**
@@ -1160,8 +1160,7 @@ export async function listFleetMarkerComments(
  * It repeats **this** release's reason (Issue #2388). Pointing "above" was
  * accurate and useless: the canonical summary can be a week and a dozen
  * comments up the thread, so the newest comment — the one a reader lands on —
- * said nothing about why the claim had just been dropped. A milestone that
- * deferred ~150 times looked reasonless on every issue it touched.
+ * said nothing about why the claim had just been dropped.
  *
  * @param machineId - The host whose comment is being superseded
  * @param reason - This release's one-line outcome, when there is one

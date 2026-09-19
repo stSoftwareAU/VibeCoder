@@ -31,7 +31,14 @@ import {
   type MilestoneSyncOutcome,
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
-import { isConflictEscalation } from "./milestone_conflict_triage.ts";
+import {
+  isConflictEscalation,
+  type MilestoneConflictEscalation,
+} from "./milestone_conflict_triage.ts";
+import {
+  concludeGateRefusal,
+  type GateRefusalConclusion,
+} from "./milestone_gate_wedge.ts";
 import { currentHost } from "./conflict_stage_timer.ts";
 import { describeConflictAnalyses } from "./milestone_fallback_flag.ts";
 import {
@@ -53,13 +60,11 @@ import {
   MILESTONE_CONFLICT_ATTEMPT_BUDGET,
   milestoneSyncStreakPath,
   openConflictAttempt,
-  recordGateRefusal,
   saveSyncStreaks,
   type SyncStreakEntry,
   syncStreakKey,
   type SyncStreaks,
 } from "./milestone_sync_streak.ts";
-import { conflictEscalationKey } from "./milestone_conflict_dedup.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { readLocalDefaultTip } from "./milestone_default_tip.ts";
 import { countCommitsAhead } from "./git_issue_branches.ts";
@@ -144,6 +149,16 @@ export interface MilestonePresyncDeps {
    * nobody chose must never pass in silence — but nothing is posted.
    */
   reportConflict?: (conflict: MilestoneSyncConflict) => Promise<boolean>;
+  /**
+   * Count a gate refusal and, once it repeats, file the worker diagnostic
+   * (Issue #2388). Bound to `concludeGateRefusal`; absent leaves the refusal
+   * in the log only, which is only ever right for a caller with no `gh`.
+   */
+  reportGateWedge?: (
+    entry: SyncStreakEntry,
+    conflict: MilestoneConflictEscalation & { gateFailure: string },
+    defaultSha: string | undefined,
+  ) => Promise<GateRefusalConclusion>;
   log: (message: string) => void;
 }
 
@@ -331,7 +346,7 @@ export async function presyncMilestoneBranch(
   // branch waits for one of the two tips to move instead. Reading the
   // milestone tip is one `rev-parse`, and only on the behind-and-wedged path.
   if (isGateWedged(entry)) {
-    const wedge = entry.gateRefusal!;
+    const wedge = entry.gateRefusal;
     const tip = await deps.milestoneTipSha();
     if (!tip.ok) {
       deps.log(
@@ -346,6 +361,12 @@ export async function presyncMilestoneBranch(
       ...(tip.ok ? { milestoneSha: tip.value } : {}),
     });
     if (!moved) {
+      // Persist before returning, exactly as every other exit does: the
+      // `disrupted` conclusion recorded above cleared an attempt marker, and
+      // a marker left on disk would have the next cycle report "an attempt is
+      // still open" instead of the wedge — the wrong reason on the very
+      // release comment Issue #2388 set out to make truthful.
+      await persist("the wedged gate refusal");
       return deferral(
         `the resolution gate refused the same resolution ${wedge.count} ` +
           `times and neither '${defaultBranch}' nor '${milestoneBranch}' has ` +
@@ -443,26 +464,18 @@ export async function presyncMilestoneBranch(
     },
   );
   // Issue #2388: a gate refusal concludes `not-charged`, so the budget never
-  // spends it. Counting the refusal itself is what lets an unchangeable
-  // refusal conclude — the sweep files the worker diagnostic once it wedges.
-  if (conflict?.gateFailure) {
-    entry = recordGateRefusal(entry, {
-      conflictKey: conflictEscalationKey({
-        milestoneBranch,
-        ...(conflict.milestoneSha
-          ? { milestoneSha: conflict.milestoneSha }
-          : {}),
-        files: [
-          ...conflict.analyses.map((a) => a.path),
-          ...conflict.resolved.map((d) => d.path),
-        ],
-      }),
-      reason: conflict.gateFailure,
-      ...(conflict.defaultSha ?? defaultSha
-        ? { defaultSha: conflict.defaultSha ?? defaultSha }
-        : {}),
-      ...(conflict.milestoneSha ? { milestoneSha: conflict.milestoneSha } : {}),
-    }, nowMs);
+  // spends it. Counting the refusal is what lets an unchangeable refusal
+  // conclude, and a refusal that has repeated files the worker diagnostic —
+  // through the sweep's own `concludeGateRefusal`, so the two paths key and
+  // report it identically. The child run does it as well as the sweep
+  // because the sweep does not reach every milestone every cycle, and a
+  // wedge nobody filed is a gate nobody fixes.
+  if (conflict?.gateFailure !== undefined && deps.reportGateWedge) {
+    entry = (await deps.reportGateWedge(
+      entry,
+      conflict as typeof conflict & { gateFailure: string },
+      defaultSha,
+    )).entry;
   }
   await persist(`the ${verdict.outcome} conclusion`);
   if (verdict.outcome === "failed") {
@@ -724,6 +737,15 @@ export async function presyncMilestoneBranchForIssueRun(
               conflict,
               ghFn,
               (message: string) => logger.info(message),
+            ),
+          reportGateWedge: (entry, conflict, tipSha) =>
+            concludeGateRefusal(
+              entry,
+              { repo, milestoneTitle, milestoneBranch, defaultBranch },
+              conflict,
+              tipSha,
+              nowMs,
+              { ghCommandFn: ghFn, log: (m: string) => logger.info(m) },
             ),
         }
         : {}),

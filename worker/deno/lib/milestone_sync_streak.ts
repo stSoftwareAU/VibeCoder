@@ -76,11 +76,9 @@ export interface ConflictAttemptRecord {
  * wedge rather than something a retry could clear (Issue #2388).
  *
  * Two, because one refusal proves nothing: the first is the gate's verdict on
- * a resolution it has just seen, and a second identical verdict on an
- * identical conflict against an unmoved default branch is the same
- * computation run twice. A milestone whose gate refusal was never charged was
- * rebuilt and refused ~150 times in a day — the budget could not conclude it,
- * because a gate refusal is deliberately `not-charged`.
+ * a resolution it has just seen, and a second identical verdict on the same
+ * conflict is the same computation run twice. See `docs/INTERNALS.md`,
+ * "A gate refusal that cannot change must conclude".
  */
 export const GATE_REFUSAL_WEDGE_THRESHOLD = 2;
 
@@ -638,18 +636,30 @@ export function resetConflictLedgerOnSuccess(
  * What identifies one gate refusal, for the "has this repeated?" comparison
  * (Issue #2388).
  *
- * Three things must all be unchanged for a refusal to be the same refusal:
- * the conflict (which carries the milestone tip and the conflicted paths),
- * the gate's verdict, and the default-branch tip the merge was made from. Any
- * one of them moving is a different merge, so the ladder is due another go.
+ * The conflict and the gate's verdict, and nothing else. The conflict key is
+ * `conflictEscalationKey`: the milestone tip and the conflicted paths, so a
+ * moved milestone branch or a different file set is already a different
+ * refusal.
+ *
+ * The **default** tip is deliberately *not* part of the identity, though it is
+ * recorded beside it. It moves every few minutes on a busy repository, and
+ * folding it in here would reset the count on every one of those moves — the
+ * wedge would never latch on exactly the repositories it exists for.
+ * "Until either side's tip moves" is a separate question, asked separately by
+ * {@link gateWedgeTipsMoved} against the tips as they stand right now.
  */
 export function isSameGateRefusal(
   a: GateRefusalRecord | undefined,
   b: Omit<GateRefusalRecord, "count" | "at" | "reported">,
 ): boolean {
   return a !== undefined && a.conflictKey === b.conflictKey &&
-    a.reason === b.reason && a.defaultSha === b.defaultSha;
+    a.reason === b.reason;
 }
+
+/** An entry whose wedge record is known to be present. */
+export type WedgedStreakEntry = SyncStreakEntry & {
+  gateRefusal: GateRefusalRecord;
+};
 
 /**
  * Count one concluded gate refusal (Issue #2388).
@@ -689,7 +699,7 @@ export function recordGateRefusal(
 export function isGateWedged(
   entry: SyncStreakEntry,
   threshold: number = GATE_REFUSAL_WEDGE_THRESHOLD,
-): boolean {
+): entry is WedgedStreakEntry {
   return (entry.gateRefusal?.count ?? 0) >= threshold;
 }
 

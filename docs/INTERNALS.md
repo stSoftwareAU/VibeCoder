@@ -3755,7 +3755,10 @@ merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded f
 `timings` and `analysis`), `failedAttempts` (every charged run of the budget
 currently being spent, which is what the `merge-fallback` flag reports),
 `fallbackDefaultSha` (the default tip a roll-back that could not merge already
-answered for), `lastSyncedDefaultSha` and
+answered for), `gateRefusal` (the resolution-gate verdict the branch is
+repeating — `conflictKey`, `reason`, both tips, the consecutive `count` and
+whether the worker diagnostic has been `reported`, Issue #2388),
+`lastSyncedDefaultSha` and
 `rollbacks`. Every field is optional and every malformed field is dropped, so a
 file written before the ledger existed loads as a branch with an unspent budget
 rather than failing the whole load — and a `deferUntil` an older worker wrote

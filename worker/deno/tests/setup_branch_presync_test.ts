@@ -139,9 +139,7 @@ function unresolvedConflict(): MilestoneConflictEscalation {
 }
 
 Deno.test("#1780 - a behind milestone branch is synced before the child branch is cut", async () => {
-  // The arming sync is memoised per cycle (Issue #2388); each test is its
-  // own cycle.
-  resetMilestoneArmSyncMemo();
+  resetMilestoneArmSyncMemo(); // each test is its own cycle (Issue #2388)
   const workDir = await Deno.makeTempDir({ prefix: "issue1780-setup-" });
   try {
     const syncCalls: SyncCall[] = [];
@@ -171,9 +169,7 @@ Deno.test("#1780 - a behind milestone branch is synced before the child branch i
 });
 
 Deno.test("#1780 - a level milestone branch is not merged into", async () => {
-  // The arming sync is memoised per cycle (Issue #2388); each test is its
-  // own cycle.
-  resetMilestoneArmSyncMemo();
+  resetMilestoneArmSyncMemo(); // each test is its own cycle (Issue #2388)
   const workDir = await Deno.makeTempDir({ prefix: "issue1780-setup-" });
   try {
     const syncCalls: SyncCall[] = [];
@@ -198,9 +194,7 @@ Deno.test("#1780 - a level milestone branch is not merged into", async () => {
 });
 
 Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cuts no branch", async () => {
-  // The arming sync is memoised per cycle (Issue #2388); each test is its
-  // own cycle.
-  resetMilestoneArmSyncMemo();
+  resetMilestoneArmSyncMemo(); // each test is its own cycle (Issue #2388)
   const workDir = await Deno.makeTempDir({ prefix: "issue1780-setup-" });
   try {
     const syncCalls: SyncCall[] = [];
@@ -258,9 +252,7 @@ Deno.test("#1780 - a failed sync defers the run, charges the ledger once and cut
 });
 
 Deno.test("#2305 - a milestone branch whose budget is spent defers without attempting a merge", async () => {
-  // The arming sync is memoised per cycle (Issue #2388); each test is its
-  // own cycle.
-  resetMilestoneArmSyncMemo();
+  resetMilestoneArmSyncMemo(); // each test is its own cycle (Issue #2388)
   const workDir = await Deno.makeTempDir({ prefix: "issue2305-setup-" });
   try {
     await saveSyncStreaks(milestoneSyncStreakPath(workDir), {
@@ -307,9 +299,7 @@ Deno.test("#2305 - a milestone branch whose budget is spent defers without attem
 });
 
 Deno.test("#1780 - an issue with no milestone never reaches the pre-cut sync", async () => {
-  // The arming sync is memoised per cycle (Issue #2388); each test is its
-  // own cycle.
-  resetMilestoneArmSyncMemo();
+  resetMilestoneArmSyncMemo(); // each test is its own cycle (Issue #2388)
   const workDir = await Deno.makeTempDir({ prefix: "issue1780-setup-" });
   try {
     const syncCalls: SyncCall[] = [];

@@ -41,6 +41,7 @@ import type { Logger } from "../types.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import {
   buildGateWedgeDiagnosticBody,
+  concludeGateRefusal,
   GATE_WEDGE_DIAGNOSTIC_REPO,
   gateWedgeDiagnosticTitle,
   reportGateWedge,
@@ -97,15 +98,35 @@ Deno.test("recordGateRefusal - the same refusal twice wedges the branch", () => 
   assertEquals(twice.gateRefusal?.at, new Date(NOW + 3_600_000).toISOString());
 });
 
-Deno.test("recordGateRefusal - a moved default tip is a different merge, so the count restarts", () => {
+Deno.test("recordGateRefusal - a moved default tip still counts: it is the same unchangeable refusal", () => {
+  // The default branch moves every few minutes on a busy repository. If that
+  // reset the count, the wedge would never latch on exactly the repositories
+  // it exists for. Whether the tips have moved is asked separately, by
+  // gateWedgeTipsMoved, against the tips as they stand right now.
   const once = recordGateRefusal(EMPTY, REFUSAL, NOW);
   const moved = recordGateRefusal(
     once,
     { ...REFUSAL, defaultSha: "e".repeat(40) },
     NOW + 1,
   );
-  assertEquals(moved.gateRefusal?.count, 1);
-  assertEquals(isGateWedged(moved), false);
+  assertEquals(moved.gateRefusal?.count, 2);
+  assertEquals(isGateWedged(moved), true);
+  assertEquals(
+    moved.gateRefusal?.defaultSha,
+    "e".repeat(40),
+    "the tip recorded is the one the hold is measured against",
+  );
+});
+
+Deno.test("recordGateRefusal - a different conflict restarts the count", () => {
+  const once = recordGateRefusal(EMPTY, REFUSAL, NOW);
+  const other = recordGateRefusal(
+    once,
+    { ...REFUSAL, conflictKey: `${MILESTONE}@abcdef123456:lib/bar_test.ts` },
+    NOW + 1,
+  );
+  assertEquals(other.gateRefusal?.count, 1);
+  assertEquals(isGateWedged(other), false);
 });
 
 Deno.test("recordGateRefusal - a different gate verdict restarts the count", () => {
@@ -128,10 +149,12 @@ Deno.test("recordGateRefusal - a repeat keeps the reported flag so one diagnosti
   assertEquals(again.gateRefusal?.reported, true);
 });
 
-Deno.test("isSameGateRefusal - all three of conflict, verdict and default tip must match", () => {
+Deno.test("isSameGateRefusal - the conflict and the verdict decide it, not the default tip", () => {
   const record = recordGateRefusal(EMPTY, REFUSAL, NOW).gateRefusal!;
   assert(isSameGateRefusal(record, REFUSAL));
+  assert(isSameGateRefusal(record, { ...REFUSAL, defaultSha: "e".repeat(40) }));
   assert(!isSameGateRefusal(record, { ...REFUSAL, conflictKey: "other" }));
+  assert(!isSameGateRefusal(record, { ...REFUSAL, reason: "exit 1" }));
   assert(!isSameGateRefusal(undefined, REFUSAL));
 });
 
@@ -239,10 +262,12 @@ Deno.test("milestonePacedUntil - a wedged gate holds the milestone's issues back
 /** Injected git work for the pre-cut sync. */
 function deps(
   overrides: Partial<MilestonePresyncDeps> & { behindBy?: number } = {},
-): MilestonePresyncDeps & { logs: string[] } {
+): MilestonePresyncDeps & { logs: string[]; filings: string[][] } {
   const logs: string[] = [];
+  const filings: string[][] = [];
   return {
     logs,
+    filings,
     countBehind: overrides.countBehind ??
       (() => Promise.resolve({ ok: true as const, value: 155 })),
     defaultTipSha: overrides.defaultTipSha ??
@@ -252,6 +277,30 @@ function deps(
     syncBranch: overrides.syncBranch ??
       (() =>
         Promise.resolve({ ok: true as const, value: { message: "merged" } })),
+    // Bound exactly as production binds it, over a `gh` that files nothing
+    // it cannot: the point is the ledger transition, and the diagnostic's own
+    // filing is asserted separately below.
+    reportGateWedge: overrides.reportGateWedge ??
+      ((entry, conflict, tipSha) =>
+        concludeGateRefusal(
+          entry,
+          {
+            repo: REPO,
+            milestoneBranch: MILESTONE,
+            defaultBranch: DEFAULT_BRANCH,
+            milestoneTitle: MILESTONE_TITLE,
+          },
+          conflict,
+          tipSha,
+          NOW,
+          {
+            ghCommandFn: (args) => {
+              filings.push(args);
+              return Promise.resolve(args[1] === "list" ? "[]" : "");
+            },
+            log: (message: string) => logs.push(message),
+          },
+        )),
     log: (message: string) => logs.push(message),
   };
 }

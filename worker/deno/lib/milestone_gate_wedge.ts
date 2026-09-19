@@ -20,7 +20,19 @@
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import { findFleetAuthoredIssuesTitled } from "./idle_task_wrapper_dedup.ts";
-import type { GateRefusalRecord } from "./milestone_sync_streak.ts";
+import { conflictEscalationKey } from "./milestone_conflict_dedup.ts";
+import {
+  buildConflictAnalysisComment,
+  type MilestoneConflictEscalation,
+} from "./milestone_conflict_triage.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+import {
+  type GateRefusalRecord,
+  isGateWedged,
+  markGateRefusalReported,
+  recordGateRefusal,
+  type SyncStreakEntry,
+} from "./milestone_sync_streak.ts";
 
 /** Callsite recorded in the label guard's audit line. */
 const CALLER = "worker/deno/lib/milestone_gate_wedge.ts";
@@ -125,7 +137,9 @@ export async function reportGateWedge(
 ): Promise<boolean> {
   const target = deps.targetRepo ?? GATE_WEDGE_DIAGNOSTIC_REPO;
   const title = gateWedgeDiagnosticTitle(report.repo, report.milestoneBranch);
-  const body = buildGateWedgeDiagnosticBody(report);
+  // Redacted on the way out, as every outbound sink must be: the body carries
+  // raw gate output, which is whatever the repository's own tooling printed.
+  const body = redactSecrets(buildGateWedgeDiagnosticBody(report));
 
   let existing: number | undefined;
   try {
@@ -134,7 +148,6 @@ export async function reportGateWedge(
       title,
       context: `milestone sync gate wedge for ${report.milestoneBranch}`,
       ghCommand: deps.ghCommandFn,
-      searchExpression: `"${title}" in:title`,
       limit: 10,
       log: deps.log,
       ...(deps.dedupAuthors ?? {}),
@@ -162,6 +175,9 @@ export async function reportGateWedge(
         "--body",
         body,
       ]);
+      // The append is how a *second* host reports the same wedge: each host
+      // keeps its own ledger, so the `reported` flag on this one says nothing
+      // about what the others have seen — the open issue is the shared record.
       deps.log(
         `Appended the milestone sync gate wedge for ` +
           `'${report.milestoneBranch}' in ${report.repo} to ` +
@@ -195,4 +211,90 @@ export async function reportGateWedge(
     );
     return false;
   }
+}
+
+/** The branch a gate refusal was made against. */
+export interface GateWedgeBranch {
+  repo: string;
+  milestoneBranch: string;
+  defaultBranch: string;
+  milestoneTitle: string;
+}
+
+/** What {@link concludeGateRefusal} decided. */
+export interface GateRefusalConclusion {
+  /** The entry with the refusal counted, and marked reported if it was. */
+  entry: SyncStreakEntry;
+  /** True once this refusal has repeated — the branch is wedged. */
+  wedged: boolean;
+}
+
+/**
+ * Count a gate refusal and, once it has repeated, report it — the single
+ * implementation both the periodic sweep and a child run's pre-cut sync use
+ * (Issue #2388).
+ *
+ * One function rather than two copies because the two halves must agree
+ * byte for byte: the conflict key is what `isSameGateRefusal` compares, so a
+ * key built differently in either caller would silently stop matching and the
+ * wedge would never latch. It is also what stops the report depending on
+ * which path happened to hit the refusal — the sweep does not visit every
+ * milestone every cycle, and a wedge nobody filed is a gate nobody fixes.
+ *
+ * @param entry - The branch's streak entry
+ * @param branch - Repository, branches and milestone title
+ * @param conflict - The escalation carrying the gate's verdict
+ * @param defaultSha - The default tip the refused merge was made from
+ * @param nowMs - Conclusion time in epoch milliseconds
+ * @param deps - The `gh` runner, log sink and fleet identity
+ */
+export async function concludeGateRefusal(
+  entry: SyncStreakEntry,
+  branch: GateWedgeBranch,
+  conflict: MilestoneConflictEscalation & { gateFailure: string },
+  defaultSha: string | undefined,
+  nowMs: number,
+  deps: GateWedgeDiagnosticDeps,
+): Promise<GateRefusalConclusion> {
+  const conflictKey = conflictEscalationKey({
+    milestoneBranch: branch.milestoneBranch,
+    ...(conflict.milestoneSha ? { milestoneSha: conflict.milestoneSha } : {}),
+    files: [
+      ...conflict.analyses.map((a) => a.path),
+      ...conflict.resolved.map((d) => d.path),
+    ],
+  });
+
+  let next = recordGateRefusal(entry, {
+    conflictKey,
+    reason: conflict.gateFailure,
+    ...(defaultSha ? { defaultSha } : {}),
+    ...(conflict.milestoneSha ? { milestoneSha: conflict.milestoneSha } : {}),
+  }, nowMs);
+
+  const wedge = next.gateRefusal!;
+  if (!isGateWedged(next) || wedge.reported) {
+    return { entry: next, wedged: isGateWedged(next) };
+  }
+
+  const reported = await reportGateWedge({
+    repo: branch.repo,
+    milestoneBranch: branch.milestoneBranch,
+    defaultBranch: branch.defaultBranch,
+    milestoneTitle: branch.milestoneTitle,
+    refusal: wedge,
+    // The both-sides preparation the deleted needs-human escalation carried:
+    // it is the half a reader cannot reconstruct later, and a gate fixer
+    // needs to see what the refused resolution actually was.
+    analysis: buildConflictAnalysisComment({
+      repo: branch.repo,
+      milestoneBranch: branch.milestoneBranch,
+      defaultBranch: branch.defaultBranch,
+      analyses: conflict.analyses,
+      resolved: conflict.resolved,
+    }),
+  }, deps);
+  // Only a report that went out is remembered; one that failed is retried.
+  if (reported) next = markGateRefusalReported(next);
+  return { entry: next, wedged: true };
 }
