@@ -1811,7 +1811,9 @@ as `queries` in the run-stats line, the log line and the callback block.
 **When Graft is unavailable.** An enabled host that cannot run Graft — the
 clone's `info/exclude` cannot be resolved or appended to, the binary is
 missing, the build or the query fails, the query succeeds but returns an empty
-bundle, or the graph index cannot be read — logs one
+bundle, the build produces a graph with 0 nodes (no file matched a language
+Graft parses, or the build matched no files), or the graph index cannot be
+read — logs one
 `[GRAFT_UNAVAILABLE] <reason>` line at `warn` and records a `failed` Graft
 status. The run itself continues, without the bundle: the bundle is an
 accelerator, so a run never fails because Graft did.

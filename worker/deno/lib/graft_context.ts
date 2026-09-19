@@ -17,13 +17,15 @@
  * ## The bundle is an accelerator, so nothing here fails a run
  *
  * Every failure mode — a non-zero exit, a timeout, a missing binary, a
- * `wiring.json` that is absent or unparseable, and an ask that exits 0 having
- * returned nothing — logs exactly one
+ * `wiring.json` that is absent or unparseable, an ask that exits 0 having
+ * returned nothing, and a build that produced a graph of 0 nodes — logs
+ * exactly one
  * `[GRAFT_UNAVAILABLE] <reason>` line at `warn`, returns `status: "failed"`
  * with whatever figures were gathered, and never throws. The status is
  * reported rather than swallowed: `failed` is a recorded outcome, not a
  * silently clean run — and `ok` therefore always carries a non-empty bundle
- * with both figures, never a clean-looking run that delivered nothing. The
+ * and a graph with at least one node, never a clean-looking run that delivered
+ * nothing to query. The
  * one non-fatal degradation — a query cut to
  * {@link MAX_GRAFT_QUERY_BYTES} — is announced the same way, on its own
  * `[GRAFT_QUERY_TRUNCATED]` line, so a thin bundle is never mistaken for a
@@ -304,6 +306,19 @@ export async function collectGraftContext(
       bundleChars: bundle.length,
       ...figures.value,
     });
+  }
+
+  // An empty graph is the same trap wearing a bundle: every figure is present,
+  // the exit codes are all 0, and the run reads as a working Graft run that
+  // simply found a very small repository. It cannot answer a single query, so
+  // it is a failure — named with both candidate causes, because the build
+  // discards the detail that would tell them apart (Issue #2379).
+  if (figures.value.nodeCount === 0) {
+    return fail(
+      "graft built a graph with 0 nodes — no file in the checkout matched a " +
+        "language graft parses, or the build matched no files",
+      { buildSeconds, bundleChars: bundle.length, ...figures.value },
+    );
   }
 
   return {

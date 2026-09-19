@@ -463,6 +463,61 @@ Deno.test("collectGraftContext - a zero-exit ask returning an empty bundle fails
   });
 });
 
+Deno.test("collectGraftContext - a graph built with zero nodes fails rather than reporting ok", async () => {
+  await withRepo(async (repoDir) => {
+    // Everything exits 0: the build succeeds, the index parses, and the ask
+    // returns text. The graph is simply empty, which is the one shape that
+    // looks identical to a working run in the stats (Issue #2379).
+    const runner = fakeRunner([ok(""), ok("// nothing much\n")]);
+    const { warns, logger } = recordingLogger();
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(result.bundle, undefined);
+    // The figures are still carried, so the fault stays diagnosable.
+    assertEquals(result.nodeCount, 0);
+    assertEquals(result.callEdgeCount, 0);
+    assertEquals(result.bundleChars, "// nothing much\n".length);
+    assert(typeof result.buildSeconds === "number");
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
+    assertStringIncludes(warns[0]!, "0 nodes");
+    // The reason names the candidate causes, so an operator can tell "Graft
+    // cannot help this repository" from "Graft broke".
+    assertStringIncludes(warns[0]!, "language");
+  }, { wiring: JSON.stringify({ nodes: [], edges: [] }) });
+});
+
+Deno.test("collectGraftContext - a single node is a graph, and still reports ok", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([ok(""), ok("fn main() {}")]);
+    const { warns, logger } = recordingLogger();
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "ok");
+    assertEquals(result.nodeCount, 1);
+    assertEquals(result.callEdgeCount, 0);
+    assertEquals(result.bundle, "fn main() {}");
+    assertEquals(warns.length, 0);
+  }, { wiring: JSON.stringify({ nodes: [{ id: "a" }], edges: [] }) });
+});
+
 Deno.test("collectGraftContext - missing wiring.json fails", async () => {
   await withRepo(async (repoDir) => {
     const runner = fakeRunner([ok(""), ok("bundle")]);

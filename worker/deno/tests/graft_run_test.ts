@@ -146,6 +146,34 @@ Deno.test("bindGraftRun - every status short of ok adds neither half", () => {
   }
 });
 
+Deno.test("bindGraftRun - a zero-node collection hands over neither tools nor prompt line", () => {
+  // The push side rejects an empty graph as `failed` (Issue #2379); the pull
+  // side must not hand the agent query tools backed by nothing to query.
+  const logger = recordingLogger();
+  const run = bindGraftRun({
+    result: {
+      status: "failed",
+      enabled: true,
+      buildSeconds: 0.1,
+      bundleChars: 1400,
+      nodeCount: 0,
+      callEdgeCount: 0,
+    },
+    repoDir: "/tmp/checkout",
+    ...CLAUDE,
+    logger,
+  });
+
+  assertEquals(run.wired, false);
+  assertEquals(run.applyPrompt("p"), "p");
+  const prior = { playwright: false, servers: {} };
+  assertEquals(run.mcpConfig(prior), prior);
+  assertEquals(run.mcpConfig(undefined), undefined);
+  assertEquals(run.mcpConfigOption(undefined), {});
+  run.record({ toolCallCounts: { graft_find_code: 3 } });
+  assertEquals(run.result.queries, undefined, "an empty graph was never asked");
+});
+
 Deno.test("bindGraftRun - a Gemini-routed run keeps the bundle and gets no tools", () => {
   const logger = recordingLogger();
   const run = bindGraftRun({
