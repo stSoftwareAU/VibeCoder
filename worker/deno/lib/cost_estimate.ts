@@ -171,7 +171,9 @@ export function attributeUsageByModel(
     });
   }
 
-  if (entries.length === 0) return [{ model: fallbackModel, usage: tokenUsage }];
+  if (entries.length === 0) {
+    return [{ model: fallbackModel, usage: tokenUsage }];
+  }
 
   const residual: TokenUsage = {
     inputTokens: tokenUsage.inputTokens,
