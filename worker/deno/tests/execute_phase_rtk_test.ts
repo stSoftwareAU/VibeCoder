@@ -55,7 +55,12 @@ interface Observed {
   result: PhaseResult;
 }
 
-async function runPhase(enabled: boolean, seam: RtkSeam): Promise<Observed> {
+async function runPhase(
+  enabled: boolean,
+  seam: RtkSeam,
+  /** The run's active provider; absent leaves the default (Claude). */
+  activeProvider?: string,
+): Promise<Observed> {
   const config = buildDefaultWorkerConfig();
   config.rtkOutput = { enabled };
   const ctx: IssueContext = {
@@ -103,10 +108,14 @@ async function runPhase(enabled: boolean, seam: RtkSeam): Promise<Observed> {
   // id cannot turn these runs into `unsupported` ones.
   const exported = Deno.env.get(AGENT_PROVIDER_ENV);
   Deno.env.delete(AGENT_PROVIDER_ENV);
+  if (activeProvider !== undefined) {
+    Deno.env.set(AGENT_PROVIDER_ENV, activeProvider);
+  }
   try {
     const result = await workOnIssueExecuteClaude(ctx, state, deps);
     return { runOptions, state, result };
   } finally {
+    Deno.env.delete(AGENT_PROVIDER_ENV);
     if (exported !== undefined) Deno.env.set(AGENT_PROVIDER_ENV, exported);
   }
 }
@@ -180,4 +189,22 @@ Deno.test("execute_phase - a host without rtk runs unfiltered rather than failin
     "losing RTK must not fail a run",
   );
   assert(observed.runOptions.length >= 1, "the agent must still be invoked");
+});
+
+// The issue names this case for both phases; the issue-phase test had it and
+// the main loop did not. A run routed to a provider whose CLI takes no hooks
+// must say `unsupported` — never install a hook the CLI ignores, and never
+// tell the agent its output is filtered when it is not.
+Deno.test("execute_phase - a provider that takes no hooks is reported, not filtered (Issue #2383)", async () => {
+  const seam = rtkSeam([]);
+  const observed = await runPhase(true, seam, "gemini");
+
+  assertEquals(seam.calls.length, 0, "an unsupported provider spawns no rtk");
+  assertEquals(observed.runOptions[0]?.settingsJson, undefined);
+  assertEquals(
+    observed.runOptions[0]?.prompt?.includes(RTK_PROMPT_LINE),
+    false,
+  );
+  assertEquals(observed.state.rtkOutput?.status, "unsupported");
+  assert(observed.result.status !== "failure");
 });
