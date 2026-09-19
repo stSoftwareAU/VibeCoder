@@ -27,6 +27,7 @@ import {
   isIdleInversionIssue,
   loadIdleInversionStreaks,
   recordIdleInversion,
+  withClaimRefusals,
 } from "../lib/idle_inversion_streak.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
@@ -522,4 +523,33 @@ Deno.test("#1277 - filing records an attestation carrying the posted body", asyn
       "and the title, so a rename does not slip past it",
     );
   });
+});
+
+// =============================================================================
+// The filed issue names the claim path's refusal (Issue #2405)
+// =============================================================================
+
+Deno.test("withClaimRefusals - an issue the claim path deferred is listed with that reason (Issue #2405)", () => {
+  const skips = withClaimRefusals(
+    [],
+    [2346, 2347],
+    (n) => (n === 2346 ? "stream_affinity" : undefined),
+  );
+  assertEquals(skips, [
+    { issue: 2346, reason: "claim path refused it: stream_affinity" },
+  ]);
+});
+
+Deno.test("withClaimRefusals - the finder's own reason for an issue is kept, not overwritten (Issue #2405)", () => {
+  const skips = withClaimRefusals(
+    [{ issue: 2346, reason: "milestone-occupied" }],
+    [2346],
+    () => "stream_affinity",
+  );
+  assertEquals(skips, [{ issue: 2346, reason: "milestone-occupied" }]);
+});
+
+Deno.test("withClaimRefusals - nothing refused means the list is returned as it was (Issue #2405)", () => {
+  const finder = [{ issue: 1, reason: "needs-human" }];
+  assertEquals(withClaimRefusals(finder, [1, 2], () => undefined), finder);
 });

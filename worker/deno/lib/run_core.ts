@@ -2293,8 +2293,19 @@ function noteIssueProcessed(
   reason: ProcessedIssueReason,
   /** Failing phase, or `timeout` — the fleet failure class (Issue #855). */
   failureClass?: string,
+  /**
+   * The claim path's reason, when this skip was a refused claim (Issue
+   * #2405). The idle census reads it back to tell a deferral from a finished
+   * run — a bare `skip` hid a 23-hour fleet deadlock behind `run_local_hold`.
+   */
+  claimRefusal?: string,
 ): void {
-  deps.processedIssues?.record(issue.repo, issue.issueNumber, reason);
+  deps.processedIssues?.record(
+    issue.repo,
+    issue.issueNumber,
+    reason,
+    claimRefusal ? { claimRefusal } : {},
+  );
   // Issue #855: the single seam every terminal outcome passes through in
   // both the serial loop and the slot pool, so the fleet success rate is
   // counted once and cannot drift from the registry.
@@ -2747,7 +2758,13 @@ async function runIssueScanLoop(
     // don't track as a failure (no circuit breaker / repo failure impact).
     const skipped = processResult.ok && processResult.value.skipped;
     if (skipped) {
-      noteIssueProcessed(deps, issue, "skip");
+      noteIssueProcessed(
+        deps,
+        issue,
+        "skip",
+        undefined,
+        processResult.ok ? processResult.value.claimRefusal : undefined,
+      );
       await deps.recordIssueCooldown(issue.repo, issue.issueNumber);
       // Issue #2670: release any claim taken before the skip — unless this
       // run never held one (Issue #1139), in which case the assignment on
@@ -4459,7 +4476,13 @@ async function runSlotIssue(
         processResult.value.claimRefusal,
       );
     }
-    noteIssueProcessed(deps, issue, "skip");
+    noteIssueProcessed(
+      deps,
+      issue,
+      "skip",
+      undefined,
+      processResult.ok ? processResult.value.claimRefusal : undefined,
+    );
     await deps.recordIssueCooldown(issue.repo, issue.issueNumber);
     await releaseIssueClaim(
       deps,

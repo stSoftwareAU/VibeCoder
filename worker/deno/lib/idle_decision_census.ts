@@ -543,6 +543,25 @@ export interface RepoCensusInput {
    * `openPRs` does.
    */
   runLocalHolds?: ReadonlySet<number>;
+  /**
+   * The subset of {@link runLocalHolds} that is on hold because the **claim
+   * path deferred it** — refused an eligible issue that nobody is working
+   * (today: stream affinity) — rather than because a run finished on it
+   * (Issue #2405).
+   *
+   * The two need opposite treatment. A finished run is a legitimate hold and
+   * stays `run_local_hold`. A deferral is work the scan refused, so it is
+   * counted as `claim_refused` and is **not** swallowed: it goes on to the
+   * priority tallies, and so to the inversion signal and its streak. For 23
+   * hours on 2026-09-18/19 every ready issue of two repositories was deferred
+   * each scan and the census read `work_on=0 … run_local_hold=3
+   * inversion_signal=false`; the escalation built for this filed nothing.
+   *
+   * A refusal that means *someone else is working it* (`already_assigned`,
+   * `stream_busy`, a claim lost to a winner) is healthy and must not be listed
+   * here. Omitted → no hold is a deferral, exactly the pre-#2405 behaviour.
+   */
+  deferredHolds?: ReadonlySet<number>;
 }
 
 /** Per-priority unblocked counts for a repo. */
@@ -606,6 +625,13 @@ export interface RepoCensusEntry {
    * stays observable in the `[idle-census]` line.
    */
   runLocalHold: number;
+  /**
+   * Count of issues on the run-local hold because the claim path **deferred**
+   * them (Issue #2405) — see {@link RepoCensusInput.deferredHolds}. Not part
+   * of {@link runLocalHold}: these also appear in `unblocked`, because they
+   * are ready work nobody is doing.
+   */
+  claimRefused: number;
   /**
    * Count of `low-priority` issues that passed every per-issue gate but are
    * not claimable this cycle because tier 3 itself is suppressed — either the
@@ -928,6 +954,7 @@ function countUnblocked(
   runLocalHolds: ReadonlySet<number>,
   pushCapableAuthors: readonly string[] = [],
   weekPaceEngaged = false,
+  deferredHolds: ReadonlySet<number> = new Set<number>(),
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
@@ -935,6 +962,7 @@ function countUnblocked(
   mergedPrBlocked: number;
   dependencyBlocked: number;
   runLocalHold: number;
+  claimRefused: number;
   lowPrioritySuppressed: number;
   claimableIssues: number[];
 } {
@@ -968,6 +996,7 @@ function countUnblocked(
   let mergedPrBlocked = 0;
   let dependencyBlocked = 0;
   let runLocalHold = 0;
+  let claimRefused = 0;
   let lowPrioritySuppressed = 0;
   for (const issue of issues) {
     // Idle-task claiming is gated by repo busyness, not by
@@ -1014,8 +1043,15 @@ function countUnblocked(
     // cooldown filter runs on the candidates the collectors already passed,
     // so an issue refused for a more fundamental reason keeps that reason.
     if (runLocalHolds.has(issue.number)) {
-      runLocalHold += 1;
-      continue;
+      // Issue #2405: a hold the claim path created by *deferring* the issue is
+      // not a finished run. It is counted, and then falls through to the
+      // priority tallies like any other ready issue — that is what lets the
+      // inversion signal see it.
+      if (!deferredHolds.has(issue.number)) {
+        runLocalHold += 1;
+        continue;
+      }
+      claimRefused += 1;
     }
     const isTopPriority = isUnblockedFor(
       issue,
@@ -1045,6 +1081,7 @@ function countUnblocked(
     mergedPrBlocked,
     dependencyBlocked,
     runLocalHold,
+    claimRefused,
     lowPrioritySuppressed,
     claimableIssues,
   };
@@ -1130,6 +1167,7 @@ export function buildIdleDecisionCensus(opts: {
       mergedPrBlocked,
       dependencyBlocked,
       runLocalHold,
+      claimRefused,
       lowPrioritySuppressed,
       claimableIssues,
     } = countUnblocked(
@@ -1141,6 +1179,7 @@ export function buildIdleDecisionCensus(opts: {
       input.runLocalHolds ?? new Set<number>(),
       opts.pushCapableAuthors ?? [],
       opts.weekPaceEngaged ?? false,
+      input.deferredHolds ?? new Set<number>(),
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,
@@ -1164,6 +1203,7 @@ export function buildIdleDecisionCensus(opts: {
       mergedPrBlocked,
       dependencyBlocked,
       runLocalHold,
+      claimRefused,
       lowPrioritySuppressed,
       claimableIssues,
       inversionSignal,
@@ -1270,6 +1310,7 @@ export function formatIdleDecisionCensus(
         `merged_pr_blocked=${r.mergedPrBlocked} ` +
         `dependency_blocked=${r.dependencyBlocked} ` +
         `run_local_hold=${r.runLocalHold} ` +
+        `claim_refused=${r.claimRefused} ` +
         `low_priority_suppressed=${r.lowPrioritySuppressed} ` +
         `inversion_signal=${r.inversionSignal}`,
     );
