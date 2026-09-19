@@ -1997,6 +1997,26 @@ Deno.test("config - a non-object codegraph_context block fails the load (Issue #
   });
 });
 
+Deno.test("config - an unknown key inside codegraph_context warns (Issue #2154)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    codegraph_context: { enabled: true, enabeld: true },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    let loaded = false;
+    const errors = await capturingConfigErrors(async () => {
+      const config = await loadConfig(configPath);
+      loaded = config.codegraphContext.enabled;
+    });
+    assertEquals(loaded, true, "An unknown nested key warns, it does not fail");
+    assertEquals(errors.length, 1, "Expected one warning block");
+    assertStringIncludes(errors[0]!, "codegraph_context.enabeld");
+    assertStringIncludes(errors[0]!, "enabled");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // RTK output switch (Issue #2380, part of #2328)
 // ---------------------------------------------------------------------------
@@ -2039,25 +2059,5 @@ Deno.test("config - a non-boolean rtk_output.enabled fails the load (Issue #2380
       Error,
     );
     assertStringIncludes(error.message, "rtk_output.enabled");
-  });
-});
-
-Deno.test("config - an unknown key inside codegraph_context warns (Issue #2154)", async () => {
-  const testConfig: ConfigFile = {
-    allowed_authors: ["testuser"],
-    repos: ["org/repo1"],
-    codegraph_context: { enabled: true, enabeld: true },
-  };
-
-  await withTempConfig(testConfig, async (configPath) => {
-    let loaded = false;
-    const errors = await capturingConfigErrors(async () => {
-      const config = await loadConfig(configPath);
-      loaded = config.codegraphContext.enabled;
-    });
-    assertEquals(loaded, true, "An unknown nested key warns, it does not fail");
-    assertEquals(errors.length, 1, "Expected one warning block");
-    assertStringIncludes(errors[0]!, "codegraph_context.enabeld");
-    assertStringIncludes(errors[0]!, "enabled");
   });
 });

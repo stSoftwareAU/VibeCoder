@@ -1909,6 +1909,18 @@
       "paths": [
         "worker/deno/lib/milestone_close_housekeeping.ts"
       ]
+    },
+    {
+      "issue": 2380,
+      "chunk": "top-up-2380",
+      "title": "top-up: the RTK output switch",
+      "ledger": "docs/audits/security-sweep-2380-rtk-output-config.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: rtk_output_config.ts (#2380)",
+      "status": "swept",
+      "sweptAt": "cb740b0bb39e13940947a66334aca213fdd4dbec",
+      "paths": [
+        "worker/deno/lib/rtk_output_config.ts"
+      ]
     }
   ],
   "roots": [
