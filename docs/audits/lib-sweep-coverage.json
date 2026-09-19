@@ -1911,6 +1911,18 @@
       ]
     },
     {
+      "issue": 2390,
+      "chunk": "top-up-2390",
+      "title": "top-up: the masked-instruction detector",
+      "ledger": "docs/audits/security-sweep-2390-masked-instructions.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: masked_instructions.ts (#2390)",
+      "status": "swept",
+      "sweptAt": "4cd5254ff6ee6870bc021e3dd250af3e0e74b55d",
+      "paths": [
+        "worker/deno/lib/masked_instructions.ts"
+      ]
+    },
+    {
       "issue": 2341,
       "chunk": "top-up-2341",
       "title": "top-up: the issue-executor split resolver",

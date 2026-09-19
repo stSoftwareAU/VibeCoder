@@ -299,3 +299,107 @@ Deno.test("verifyResolvedTree - a Cargo tree whose tests fail is refused with th
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// A repository whose suite runs through `quality.sh` (Issue #2388)
+//
+// Live incident: a monitored repository's tests run through `./quality.sh`
+// (`node --test …` then `deno test …`) and its `deno.json` names no test task.
+// The gate reported `skipped`, the sync treated that as a refusal it does not
+// charge to the branch, and every issue of the milestone was claimed and
+// dropped once an hour — ~150 times in a day — over a conflict the worker had
+// already resolved correctly.
+// ---------------------------------------------------------------------------
+
+/** A tree with a `deno.json` and, optionally, a `quality.sh` beside it. */
+async function gateWithQualityScript(
+  tasks: Record<string, string>,
+  runner: (task: ResolutionTask) => Promise<{ code: number; output: string }>,
+  withScript = true,
+): Promise<MergeGateOutcome> {
+  const dir = await tree(tasks);
+  try {
+    if (withScript) {
+      await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\nexit 0\n");
+    }
+    return await verifyResolvedTree(dir, runner, passingTypeCheck);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("verifyResolvedTree - no test task but a quality.sh: the script is the unit suite and the tree passes (Issue #2388)", async () => {
+  const ran: ResolutionTask[] = [];
+  const outcome = await gateWithQualityScript(
+    { check: "deno check", lint: "deno lint" },
+    (task) => {
+      ran.push(task);
+      return Promise.resolve({ code: 0, output: "" });
+    },
+  );
+
+  assertEquals(outcome.status, "passed");
+  assertEquals(ran.map((t) => t.kind), ["script"]);
+  assertEquals(ran[0]?.args, ["quality.sh"]);
+  assertStringIncludes(outcome.detail, "quality.sh");
+});
+
+Deno.test("verifyResolvedTree - a failing quality.sh refuses the resolution with its output (Issue #2388)", async () => {
+  const outcome = await gateWithQualityScript(
+    { check: "deno check" },
+    () => Promise.resolve({ code: 1, output: "not ok 3 - dropped case" }),
+  );
+
+  assertEquals(outcome.status, "failed");
+  assertStringIncludes(outcome.detail, "quality.sh");
+  assertStringIncludes(outcome.output, "dropped case");
+});
+
+Deno.test("verifyResolvedTree - a repository with a test task runs the task, not quality.sh as well (Issue #2388)", async () => {
+  const ran: ResolutionTask[] = [];
+  const outcome = await gateWithQualityScript(
+    { check: "deno check", test: "deno test" },
+    (task) => {
+      ran.push(task);
+      return Promise.resolve({ code: 0, output: "" });
+    },
+  );
+
+  assertEquals(outcome.status, "passed");
+  assertEquals(ran.map((t) => t.kind), ["deno"]);
+});
+
+Deno.test("verifyResolvedTree - no test task and no quality.sh is still skipped (Issue #2388)", async () => {
+  const outcome = await gateWithQualityScript(
+    { check: "deno check" },
+    () => Promise.resolve({ code: 0, output: "" }),
+    false,
+  );
+
+  assertEquals(outcome.status, "skipped");
+  assertStringIncludes(outcome.detail, "quality.sh");
+});
+
+Deno.test("verifyResolvedTree - quality.sh gets only the budget that is left; none left fails, never passes (Issue #2388)", async () => {
+  const dir = await tree({ check: "deno check" });
+  try {
+    await Deno.writeTextFile(`${dir}/quality.sh`, "#!/bin/bash\nexit 0\n");
+    let ticks = 0;
+    // The clock is read once for the deadline, then jumps past it.
+    const clock = () => (ticks++ === 0 ? 0 : RESOLUTION_GATE_BUDGET_MS + 1);
+    let called = false;
+    const outcome = await verifyResolvedTree(
+      dir,
+      () => {
+        called = true;
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      passingTypeCheck,
+      clock,
+    );
+    assertEquals(outcome.status, "failed");
+    assertEquals(called, false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

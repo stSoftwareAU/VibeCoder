@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!(?:true|false|null|none|yes|no|on|off)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -516,6 +516,17 @@ const RULES: readonly RedactionRule[] = [
   // substitution: Markdown structure is never a credential, and a value the
   // separator reached across a line break must look like one. An inline
   // assignment is unaffected, so the label side stays as blunt as it was.
+  //
+  // A bare switch is configuration, not a credential. The
+  // `github-actions-audit` idle task filed fourteen issues whose whole
+  // instruction was "add `persist-credentials: false`": the key contains
+  // CREDENTIAL, so the setting was published as the placeholder, and the
+  // bare-value branch took the closing backtick and the full stop with it.
+  // `true`, `false`, `null`, `none`, `yes`, `no`, `on` and `off` standing
+  // alone as the value are left alone; the inner lookahead requires the word
+  // to end there, so `PASSWORD=false-Flag-9f8e` and `API_KEY=no1Secret` are
+  // still masked. Both lookaheads are fixed-width alternations — constant
+  // work per candidate (the Issue #3942 linearity rule).
   //
   // JSON structure survives the mask (Issue #4169's transcript tee is the
   // sink that showed it). Every stream-json line the agent emits carries a
