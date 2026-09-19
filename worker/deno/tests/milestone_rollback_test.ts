@@ -177,6 +177,18 @@ async function runGit(args: string[], cwd: string): Promise<GitResult> {
       GIT_COMMITTER_EMAIL: "test@example.com",
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
+      // Every `git commit`, `merge`, `fetch` and `push` ends by spawning
+      // `git maintenance run --auto --detach`, a process that outlives the
+      // command we awaited and keeps writing inside `.git`. When the test
+      // then removes the fixture, that detached child can create an entry in
+      // a directory the removal has already walked, and the clean-up dies
+      // with `Directory not empty (os error 39)`. Turning auto-maintenance
+      // off means no git command here leaves anything running behind it.
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "gc.auto",
+      GIT_CONFIG_VALUE_0: "0",
+      GIT_CONFIG_KEY_1: "maintenance.auto",
+      GIT_CONFIG_VALUE_1: "false",
     },
   });
   const output = await command.output();
