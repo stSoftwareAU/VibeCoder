@@ -193,6 +193,21 @@ To skip clarification, add the `documentation` label. The worker limits
 clarification to 3 rounds (configurable) before proceeding with reasonable
 assumptions.
 
+**A masked instruction is always asked about (Issue #2390).** The worker masks
+anything secret-shaped before it publishes text, and a mask can land on the one
+value an instruction needs — `Add persist-credentials: ***REDACTED***` tells
+nobody what to set. When an issue's instructions carry a mask placeholder as
+the value of a setting, the worker does not guess and does not invoke the
+agent: it posts a `## Clarification Needed` comment naming each line and waits.
+Edit the issue to restore the value (or reply, if you would rather not edit) —
+and if the value really is a secret, describe the change without it. The
+`documentation` label does not skip this check. A secret masked in a quoted
+log, an `## Evidence` section or running prose is left alone: that is the mask
+doing its job. When the worker itself files an issue whose instructions were
+masked, the issue carries a visible notice saying so and the log carries a
+`[MASKED_INSTRUCTION_FILED]` line, so a false positive in the filter gets
+fixed at its source.
+
 For the full clarification workflow, including decision diagrams and
 configuration, see
 [Planning, Questions, Refinement, and Clarification](workflows/planning-and-questions.md).
