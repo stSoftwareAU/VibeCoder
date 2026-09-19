@@ -40,6 +40,11 @@ import { getRunId } from "./run_id.ts";
 import { releaseClaim, unassignerFromGhCommand } from "./claim_release.ts";
 import { defaultLogger } from "./logger.ts";
 import { reportPhaseDegradation } from "./phase_run_stats.ts";
+import {
+  buildMaskedInstructionQuestions,
+  findMaskedInstructions,
+  MASKED_INSTRUCTION_QUESTION_MARKER,
+} from "./masked_instructions.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -292,6 +297,68 @@ export async function runClarityPhase(
   }
 
   // -----------------------------------------------------------------------
+  // 2a. Masked instructions — ask, never guess (Issue #2390)
+  // -----------------------------------------------------------------------
+  //
+  // A body whose instruction carries a mask placeholder cannot be followed:
+  // fourteen audit issues read "Add `persist-credentials: ***REDACTED***`" and
+  // were queued as ordinary work. An agent handed that can only guess, so the
+  // value is asked for — deterministically, before any model is invoked, and
+  // through the same `## Clarification Needed` route a model's own questions
+  // take. The `documentation` bypass does not apply: that label waives a
+  // judgement of clarity, and this is not a judgement. The round cap does, so
+  // an issue released three times unanswered is not asked a fourth.
+  const maskedInstructions = findMaskedInstructions(params.issueBody);
+  if (
+    maskedInstructions.length > 0 &&
+    clarificationRound < maxClarificationRounds &&
+    !maskedQuestionAnswered(commentRows, params.githubUser)
+  ) {
+    defaultLogger.warn(
+      "[clarity-phase] [MASKED_INSTRUCTION] the issue's instructions carry a " +
+        "mask placeholder — asking for the value instead of invoking the agent",
+      {
+        repo: params.repo,
+        issueNumber: params.issueNumber,
+        lines: maskedInstructions.map((h) => h.line).join(","),
+      },
+    );
+    const postResult = await postClarifyingQuestions(
+      {
+        repo: params.repo,
+        issueNumber: params.issueNumber,
+        githubUser: params.githubUser,
+        clarifyingQuestions: `${MASKED_INSTRUCTION_QUESTION_MARKER}\n` +
+          buildMaskedInstructionQuestions(maskedInstructions),
+        workerFooter: buildWorkerFooter({
+          workerName: params.workerName ?? "",
+          githubUser: params.githubUser,
+          runId: getRunId(),
+        }),
+      },
+      deps.labelManagerDeps ?? { ghCommandFn },
+    );
+    if (postResult.ok) {
+      return {
+        action: "early_exit",
+        reason: "waiting_for_clarification",
+        clarityStatus: "not_assessed",
+        shouldUnassign: false, // postClarifyingQuestions already unassigns
+        shouldCleanupBranch: true,
+      };
+    }
+    // Could not ask. Guessing is the one outcome this gate exists to stop, so
+    // the run fails loudly rather than proceeding on a masked instruction.
+    return {
+      action: "failure",
+      reason: `masked_instruction_question_failed: ${postResult.error.message}`,
+      clarityStatus: "not_assessed",
+      shouldUnassign: true,
+      shouldCleanupBranch: true,
+    };
+  }
+
+  // -----------------------------------------------------------------------
   // 3. Complexity pre-check (Issue #557)
   // -----------------------------------------------------------------------
 
@@ -466,6 +533,30 @@ export async function runClarityPhase(
 // ---------------------------------------------------------------------------
 // Helper Functions
 // ---------------------------------------------------------------------------
+
+/**
+ * Has anyone replied since the worker last asked for a masked value?
+ *
+ * Only a question **this worker's account** posted counts — the marker is
+ * text anyone can write, the author is not (the Issue #1263 rule). A reply is
+ * any later comment from a different account: the agent reads the comments,
+ * so the answer reaches it whether or not the body was also edited.
+ */
+function maskedQuestionAnswered(
+  comments: readonly IssueComment[],
+  githubUser: string,
+): boolean {
+  let asked = -1;
+  for (let i = 0; i < comments.length; i++) {
+    const comment = comments[i];
+    if (
+      comment?.author === githubUser &&
+      comment.body.includes(MASKED_INSTRUCTION_QUESTION_MARKER)
+    ) asked = i;
+  }
+  if (asked < 0) return false;
+  return comments.slice(asked + 1).some((c) => c.author !== githubUser);
+}
 
 /**
  * Remove a label from an issue (best-effort, non-fatal).
