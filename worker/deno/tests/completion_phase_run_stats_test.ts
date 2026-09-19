@@ -20,6 +20,11 @@ import {
   buildIssueRunStatsMarker,
   ISSUE_RUN_STATS_MARKER,
 } from "../lib/issue_run_stats_comment.ts";
+import {
+  getFleetTelemetry,
+  resetFleetTelemetry,
+} from "../lib/fleet_telemetry.ts";
+import { formatUsd } from "../lib/cost_estimate.ts";
 import { getRunId } from "../lib/run_id.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 
@@ -392,4 +397,85 @@ Deno.test("completion - a run with no CodeGraph step mentions none (Issue #2161)
     !stats.body.includes("CodeGraph"),
     `a run without the step must not mention it: ${stats.body}`,
   );
+});
+
+// --- fleet telemetry (Issue #2347) -------------------------------------
+
+/** The cost line's figure, as the comment renders it. */
+function renderedCost(body: string): string | undefined {
+  return body.match(/Estimated cost \(USD, estimate only\):\*\*\s*~(\$[\d.,]+)/)
+    ?.[1];
+}
+
+Deno.test("completion - records the run in fleet telemetry with the figures the comment reports (Issue #2347)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [{
+      runStats: {
+        ...claudeRun(["claude-opus-4-8"]).runStats!,
+        durationMs: 930_000,
+        executorSplit: {
+          advisorEditCalls: 0,
+          deniedAdvisorEdits: [],
+          executorDispatches: 3,
+          executorRetasks: 1,
+        },
+      },
+    }],
+    qualityGateOutcome: { status: "passed", attempt: 1 },
+  });
+  const comments: RecordedComment[] = [];
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  const snapshot = getFleetTelemetry();
+  assertEquals(snapshot.issuePhaseRuns, 1);
+  assertEquals(snapshot.issuePhaseSplitRuns, 1);
+  assertEquals(snapshot.issuePhaseFirstAttemptGatePasses, 1);
+  assertEquals(snapshot.issuePhaseDurationSeconds, 930);
+  // The recorded spend is the figure the comment itself reports, not a second
+  // estimate that could drift from it.
+  assertEquals(formatUsd(snapshot.issuePhaseUsd), renderedCost(stats.body));
+});
+
+Deno.test("completion - a gate that passed on attempt 2 counts a run but no first-attempt pass (Issue #2347)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    qualityGateOutcome: { status: "passed", attempt: 2 },
+  });
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, makeDeps([]));
+
+  const snapshot = getFleetTelemetry();
+  assertEquals(snapshot.issuePhaseRuns, 1);
+  assertEquals(snapshot.issuePhaseFirstAttemptGatePasses, 0);
+  // An unsplit run is recorded as a control run, never as a pilot one.
+  assertEquals(snapshot.issuePhaseSplitRuns, 0);
+});
+
+Deno.test("completion - a run already counted is not counted twice (Issue #2347)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const deps = makeDeps([], [
+    `${buildIssueRunStatsMarker(getRunId())}\n## Issue run model stats`,
+  ]);
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(getFleetTelemetry().issuePhaseRuns, 0);
+});
+
+Deno.test("completion - a run where Claude never ran records no issue-phase run (Issue #2347)", async () => {
+  const ctx = makeContext();
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, makeState(), makeDeps([]));
+
+  assertEquals(getFleetTelemetry().issuePhaseRuns, 0);
 });

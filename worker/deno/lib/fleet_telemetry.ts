@@ -84,8 +84,56 @@ export type FleetBlockKind = "rate_limited" | "usage_blocked";
 /** Terminal outcome of one claimed issue. */
 export type FleetRunOutcome = "success" | "failure" | "skip";
 
+/**
+ * Per-host `issue`-phase counters (Issue #2347, part of #2320).
+ *
+ * The advisor/executor pilot compares one host against the control hosts, and
+ * `successes` / `failures` / `successRate` carry no cost and no quality signal
+ * — so the comparison had no per-host source short of reading every run-stats
+ * comment on every issue the fleet touched. These five counters are the same
+ * figures that comment renders, accumulated per host:
+ *
+ *   - the implementation runs this host completed,
+ *   - what they cost (estimated USD, summed),
+ *   - how many passed the quality gate on the **first** attempt — so the
+ *     first-attempt pass rate is a division of two recorded numbers rather
+ *     than a grep,
+ *   - how long they took, reported beside the cost and gating nothing, and
+ *   - how many of them had the executor split on, so a half-configured host
+ *     is visible instead of silently averaging pilot and control runs.
+ */
+export interface IssuePhaseCounters {
+  /** Completed `issue`-phase runs recorded on this host. */
+  issuePhaseRuns: number;
+  /** Summed estimated spend, in USD, across those runs. */
+  issuePhaseUsd: number;
+  /** Those runs whose quality gate passed on attempt 1. */
+  issuePhaseFirstAttemptGatePasses: number;
+  /** Summed duration, in seconds, across those runs. Gates nothing. */
+  issuePhaseDurationSeconds: number;
+  /** Those runs that had the advisor/executor split on. */
+  issuePhaseSplitRuns: number;
+}
+
+/** One completed `issue`-phase run, as {@link recordIssuePhaseRun} takes it. */
+export interface IssuePhaseRun {
+  /** Estimated spend for the run, in USD. Absent contributes nothing. */
+  usd?: number;
+  /**
+   * Which of the quality gate's bounded attempts passed. Only `1` counts
+   * towards {@link IssuePhaseCounters.issuePhaseFirstAttemptGatePasses}, so
+   * the recorded count can never diverge from the recorded attempt. Absent —
+   * a run that never reached the gate, or never passed it — counts nothing.
+   */
+  gatePassedOnAttempt?: number;
+  /** Run duration in seconds. Absent contributes nothing. */
+  durationSeconds?: number;
+  /** Whether the advisor/executor split was on for the run. */
+  split?: boolean;
+}
+
 /** Additive totals — the fields that can be summed across runs. */
-export interface FleetTelemetryTotals {
+export interface FleetTelemetryTotals extends IssuePhaseCounters {
   /** Wall seconds observed. */
   wallSeconds: number;
   /** Seconds with no issue being worked. */
@@ -124,6 +172,17 @@ export interface FleetTelemetryTotals {
   /** Failures by class — the failing phase, or `timeout`. */
   failuresByClass: Record<string, number>;
 }
+
+/**
+ * Totals as a **prior** sidecar carries them (Issue #2347).
+ *
+ * A snapshot written before the issue-phase counters existed carries none of
+ * them, so they are optional here and read as zero — an older file loads and
+ * merges instead of poisoning every cumulative total with `NaN`.
+ */
+export type PriorFleetTelemetryTotals =
+  & Omit<FleetTelemetryTotals, keyof IssuePhaseCounters>
+  & Partial<IssuePhaseCounters>;
 
 /** Totals plus the derived rates. */
 export interface FleetTelemetrySnapshot extends FleetTelemetryTotals {
@@ -195,6 +254,19 @@ interface FleetState {
   skips: number;
   failuresByClass: Map<string, number>;
   hookFailures: number;
+  /** Issue #2347 — the per-host `issue`-phase pilot counters. */
+  issuePhase: IssuePhaseCounters;
+}
+
+/** Zeroed {@link IssuePhaseCounters} — the start of every window. */
+function zeroIssuePhaseCounters(): IssuePhaseCounters {
+  return {
+    issuePhaseRuns: 0,
+    issuePhaseUsd: 0,
+    issuePhaseFirstAttemptGatePasses: 0,
+    issuePhaseDurationSeconds: 0,
+    issuePhaseSplitRuns: 0,
+  };
 }
 
 function emptyState(runToken: number): FleetState {
@@ -217,6 +289,7 @@ function emptyState(runToken: number): FleetState {
     skips: 0,
     failuresByClass: new Map(),
     hookFailures: 0,
+    issuePhase: zeroIssuePhaseCounters(),
   };
 }
 
@@ -402,6 +475,41 @@ export function recordOutcome(
   );
 }
 
+/**
+ * A recorded figure, or 0 when the caller had none to give.
+ *
+ * Negative and non-finite values contribute nothing rather than propagating a
+ * `NaN` through every subsequent total — one unparseable duration would
+ * otherwise make the whole host's telemetry unreadable, which is the opposite
+ * of surfacing it.
+ */
+function contribution(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : 0;
+}
+
+/**
+ * Record one completed `issue`-phase run (Issue #2347, part of #2320).
+ *
+ * Called once per run from the completion path that posts the run-stats
+ * comment, with the same figures that comment renders — so a pilot host's
+ * spend, first-attempt gate pass rate and duration are comparable with the
+ * control hosts' straight off the fleet summary.
+ *
+ * @param run - The run's cost, gate attempt, duration and split state
+ */
+export function recordIssuePhaseRun(run: IssuePhaseRun): void {
+  const counters = state.issuePhase;
+  counters.issuePhaseRuns += 1;
+  counters.issuePhaseUsd += contribution(run.usd);
+  counters.issuePhaseDurationSeconds += contribution(run.durationSeconds);
+  if (run.gatePassedOnAttempt === 1) {
+    counters.issuePhaseFirstAttemptGatePasses += 1;
+  }
+  if (run.split === true) counters.issuePhaseSplitRuns += 1;
+}
+
 function secondsFrom(ms: number): number {
   return Math.round(ms / 1000);
 }
@@ -456,6 +564,9 @@ export function getFleetTelemetry(
     skips: state.skips,
     failuresByClass: Object.fromEntries(state.failuresByClass),
     hookFailures: state.hookFailures,
+    // Issue #2347 — spread copies the counters, so a later record cannot
+    // mutate a snapshot a caller already holds (the sidecar serialises one).
+    ...state.issuePhase,
     successRate: completed > 0 ? state.successes / completed : null,
     utilisation,
   };
@@ -514,6 +625,17 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     // a clean `successes=2 failures=0`.
     `hook_failures=${s.hookFailures}`,
     `success_rate=${s.successRate === null ? "n/a" : s.successRate.toFixed(2)}`,
+    // Issue #2347: the pilot's per-host `issue`-phase counters. `issue_usd`
+    // carries four decimals because a cheap run's spend is cents, and
+    // `issue_duration` is reported beside the cost with no threshold of its
+    // own — it describes the runs, it does not gate them. None of these keys
+    // trips the secret redactor's `key=value` rule (see `usage_blocked`
+    // above); `fleet_telemetry_redaction_test.ts` is what holds that.
+    `issue_runs=${s.issuePhaseRuns}`,
+    `issue_split_runs=${s.issuePhaseSplitRuns}`,
+    `issue_usd=${s.issuePhaseUsd.toFixed(4)}`,
+    `issue_gate_first_attempt_passes=${s.issuePhaseFirstAttemptGatePasses}`,
+    `issue_duration=${s.issuePhaseDurationSeconds}s`,
     `idle_by_reason=${joinCounts(s.idleByReason, "s")}`,
     `failures_by_class=${joinCounts(s.failuresByClass, "")}`,
     `utilisation=${utilisation.length > 0 ? utilisation.join(",") : "none"}`,

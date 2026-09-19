@@ -26,6 +26,8 @@ import {
   type FleetTelemetrySnapshot,
   type FleetTelemetryTotals,
   getFleetTelemetry,
+  type IssuePhaseCounters,
+  type PriorFleetTelemetryTotals,
 } from "./fleet_telemetry.ts";
 import { getHostname } from "./worker_identity.ts";
 
@@ -92,6 +94,43 @@ export function emptyTotals(): FleetTelemetryTotals {
     failures: 0,
     skips: 0,
     failuresByClass: {},
+    // Issue #2347 — the per-host `issue`-phase pilot counters.
+    issuePhaseRuns: 0,
+    issuePhaseUsd: 0,
+    issuePhaseFirstAttemptGatePasses: 0,
+    issuePhaseDurationSeconds: 0,
+    issuePhaseSplitRuns: 0,
+  };
+}
+
+/** A persisted counter, or 0 when the file did not carry a usable one. */
+function counterFrom(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Fill the issue-phase counters a sidecar written before they existed does not
+ * carry (Issue #2347).
+ *
+ * A missing — or unusable — counter reads as zero, so the host's accumulated
+ * history survives the upgrade instead of the merge producing `NaN` totals.
+ * The schema version deliberately does **not** move for this: the addition is
+ * purely additive, every prior file still loads, and bumping it would make an
+ * older worker treat the new file as `future-schema` and drop the very history
+ * this preserves.
+ */
+function withIssuePhaseCounters<T extends PriorFleetTelemetryTotals>(
+  totals: T,
+): T & IssuePhaseCounters {
+  return {
+    ...totals,
+    issuePhaseRuns: counterFrom(totals.issuePhaseRuns),
+    issuePhaseUsd: counterFrom(totals.issuePhaseUsd),
+    issuePhaseFirstAttemptGatePasses: counterFrom(
+      totals.issuePhaseFirstAttemptGatePasses,
+    ),
+    issuePhaseDurationSeconds: counterFrom(totals.issuePhaseDurationSeconds),
+    issuePhaseSplitRuns: counterFrom(totals.issuePhaseSplitRuns),
   };
 }
 
@@ -106,11 +145,18 @@ function addMaps(
   return merged;
 }
 
-/** Add a run's totals to the prior cumulative totals. */
+/**
+ * Add a run's totals to the prior cumulative totals.
+ *
+ * `prior` is typed {@link PriorFleetTelemetryTotals} because it comes off disk:
+ * a file written before the issue-phase counters existed carries none, and they
+ * must read as zero rather than sum to `NaN` (Issue #2347).
+ */
 export function mergeCumulative(
-  prior: FleetTelemetryTotals,
+  prior: PriorFleetTelemetryTotals,
   run: FleetTelemetryTotals,
 ): FleetTelemetryTotals {
+  const priorIssuePhase = withIssuePhaseCounters(prior);
   return {
     wallSeconds: prior.wallSeconds + run.wallSeconds,
     idleSeconds: prior.idleSeconds + run.idleSeconds,
@@ -127,6 +173,16 @@ export function mergeCumulative(
     failures: prior.failures + run.failures,
     skips: prior.skips + run.skips,
     failuresByClass: addMaps(prior.failuresByClass, run.failuresByClass),
+    // Issue #2347 — the per-host `issue`-phase pilot counters.
+    issuePhaseRuns: priorIssuePhase.issuePhaseRuns + run.issuePhaseRuns,
+    issuePhaseUsd: priorIssuePhase.issuePhaseUsd + run.issuePhaseUsd,
+    issuePhaseFirstAttemptGatePasses:
+      priorIssuePhase.issuePhaseFirstAttemptGatePasses +
+      run.issuePhaseFirstAttemptGatePasses,
+    issuePhaseDurationSeconds: priorIssuePhase.issuePhaseDurationSeconds +
+      run.issuePhaseDurationSeconds,
+    issuePhaseSplitRuns: priorIssuePhase.issuePhaseSplitRuns +
+      run.issuePhaseSplitRuns,
   };
 }
 
@@ -162,14 +218,24 @@ export async function readFleetTelemetryFile(
   }
   if (
     typeof parsed?.schema !== "number" ||
-    typeof parsed?.cumulative?.idleSeconds !== "number"
+    typeof parsed?.cumulative?.idleSeconds !== "number" ||
+    // A file with no run object cannot be normalised into one, and inventing
+    // an empty run would report a host's history as a clean start.
+    typeof parsed?.run !== "object" || parsed.run === null
   ) {
     return "unparseable";
   }
   // A file written by a newer worker is not ours to merge as if it were
   // schema 1 — that would silently mix incompatible totals.
   if (parsed.schema > FLEET_TELEMETRY_SCHEMA) return "future-schema";
-  return parsed;
+  // Issue #2347: a file written before the issue-phase counters existed loads
+  // with them at zero, so every reader sees numbers rather than `undefined`
+  // typed as a number.
+  return {
+    ...parsed,
+    run: withIssuePhaseCounters(parsed.run),
+    cumulative: withIssuePhaseCounters(parsed.cumulative),
+  };
 }
 
 /** Narrow a {@link readFleetTelemetryFile} result to a usable file. */

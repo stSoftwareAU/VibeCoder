@@ -4,7 +4,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertAlmostEquals,
+  assertEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   FLEET_TELEMETRY_SCHEMA,
   fleetTelemetryPath,
@@ -20,6 +24,7 @@ import {
   recordBlockedSeconds,
   recordClaim,
   recordCycleIdle,
+  recordIssuePhaseRun,
   recordOutcome,
   resetFleetTelemetry,
   startFleetCycle,
@@ -219,6 +224,148 @@ Deno.test("fleet_telemetry_sidecar - an unwritable directory fails loudly", asyn
   if (!result.ok) {
     assertStringIncludes(result.error.message, "fleet telemetry");
   }
+});
+
+// --- issue-phase counters (Issue #2347) -------------------------------
+
+Deno.test("fleet_telemetry_sidecar - issue-phase counters persist and accumulate across runs", async () => {
+  await withTempDir(async (dir) => {
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordIssuePhaseRun({
+      usd: 1.25,
+      gatePassedOnAttempt: 1,
+      durationSeconds: 900,
+      split: true,
+    });
+    await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
+
+    // A second run on the same host adds to the host's accumulated totals.
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordIssuePhaseRun({
+      usd: 0.75,
+      gatePassedOnAttempt: 2,
+      durationSeconds: 600,
+      split: false,
+    });
+    await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
+
+    const read = await readUsable(dir, "host-1");
+    assertEquals(read?.run.issuePhaseRuns, 1);
+    assertEquals(read?.run.issuePhaseSplitRuns, 0);
+    assertEquals(read?.cumulative.issuePhaseRuns, 2);
+    assertEquals(read?.cumulative.issuePhaseSplitRuns, 1);
+    assertEquals(read?.cumulative.issuePhaseFirstAttemptGatePasses, 1);
+    assertEquals(read?.cumulative.issuePhaseDurationSeconds, 1_500);
+    assertAlmostEquals(read?.cumulative.issuePhaseUsd ?? -1, 2.0, 1e-9);
+  });
+});
+
+Deno.test("fleet_telemetry_sidecar - a snapshot written before the counters existed still loads", async () => {
+  await withTempDir(async (dir) => {
+    // Exactly the shape a pre-#2347 worker wrote: schema 1, no issue-phase
+    // counters anywhere.
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        run: { idleSeconds: 30, successes: 1 },
+        cumulative: {
+          wallSeconds: 100,
+          idleSeconds: 90,
+          idleByReason: { served: 90 },
+          occupiedSeconds: 10,
+          busySeconds: 10,
+          busyByStream: { serial: 10 },
+          tokenBlockedSeconds: 0,
+          rateLimitedSeconds: 0,
+          rateLimitWaits: 0,
+          tokenBlockedWaits: 0,
+          claims: 2,
+          successes: 2,
+          failures: 0,
+          skips: 0,
+          failuresByClass: {},
+        },
+      }),
+    );
+
+    const prior = await readUsable(dir, "host-1");
+    // The missing counters read as zero, not undefined-typed-as-number.
+    assertEquals(prior?.cumulative.issuePhaseRuns, 0);
+    assertEquals(prior?.cumulative.issuePhaseUsd, 0);
+    assertEquals(prior?.cumulative.issuePhaseFirstAttemptGatePasses, 0);
+    assertEquals(prior?.cumulative.issuePhaseDurationSeconds, 0);
+    assertEquals(prior?.cumulative.issuePhaseSplitRuns, 0);
+    assertEquals(prior?.run.issuePhaseRuns, 0);
+
+    // …and this run merges onto it without poisoning any total with NaN.
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordIssuePhaseRun({
+      usd: 1.5,
+      gatePassedOnAttempt: 1,
+      durationSeconds: 300,
+      split: true,
+    });
+    const written = await writeFleetTelemetryFile(dir, {
+      hostname: "host-1",
+      nowMs: 60_000,
+    });
+    assertEquals(written.ok, true);
+
+    const merged = await readUsable(dir, "host-1");
+    assertEquals(merged?.cumulative.issuePhaseRuns, 1);
+    assertEquals(merged?.cumulative.issuePhaseSplitRuns, 1);
+    assertEquals(merged?.cumulative.issuePhaseFirstAttemptGatePasses, 1);
+    assertEquals(merged?.cumulative.issuePhaseDurationSeconds, 300);
+    assertAlmostEquals(merged?.cumulative.issuePhaseUsd ?? -1, 1.5, 1e-9);
+    // The pre-existing history is preserved, not restarted.
+    assertEquals(merged?.cumulative.successes, 2);
+  });
+});
+
+Deno.test("mergeCumulative - a prior without the issue-phase counters reads them as zero", () => {
+  resetFleetTelemetry();
+  startFleetTelemetry(0);
+  startFleetCycle(0);
+  recordIssuePhaseRun({
+    usd: 2,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 120,
+    split: true,
+  });
+  const run = getFleetTelemetry(1_000);
+
+  const merged = mergeCumulative({
+    wallSeconds: 0,
+    idleSeconds: 0,
+    idleByReason: {},
+    occupiedSeconds: 0,
+    busySeconds: 0,
+    busyByStream: {},
+    tokenBlockedSeconds: 0,
+    rateLimitedSeconds: 0,
+    rateLimitWaits: 0,
+    tokenBlockedWaits: 0,
+    claims: 0,
+    successes: 0,
+    failures: 0,
+    skips: 0,
+    failuresByClass: {},
+  }, run);
+
+  assertEquals(merged.issuePhaseRuns, 1);
+  assertEquals(merged.issuePhaseSplitRuns, 1);
+  assertEquals(merged.issuePhaseFirstAttemptGatePasses, 1);
+  assertEquals(merged.issuePhaseDurationSeconds, 120);
+  assertAlmostEquals(merged.issuePhaseUsd, 2, 1e-9);
 });
 
 Deno.test("mergeCumulative - adds every additive total", () => {

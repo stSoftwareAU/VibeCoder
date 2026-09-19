@@ -78,8 +78,10 @@ import { bindIssueRunBehindSync } from "../milestone_presync.ts";
 import { repoDirName } from "../work_volume_tiers.ts";
 import {
   IMPLEMENTATION_RUN_STATS_PHASE,
+  measureIssuePhaseRun,
   postIssueRunStatsComment,
 } from "../issue_run_stats_comment.ts";
+import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
 import {
   buildSecurityFixGateMessage,
   evaluateSecurityFixGate,
@@ -734,7 +736,7 @@ async function postWorkOnRunStats(
   if (claudeResults.length === 0) return;
 
   const client = deps.github.createClient(deps.logger);
-  await postIssueRunStatsComment({
+  const posted = await postIssueRunStatsComment({
     repo: ctx.repo,
     issueNumber: ctx.issueNumber,
     phase: WORK_ON_STATS_PHASE,
@@ -761,6 +763,26 @@ async function postWorkOnRunStats(
       ? { qualityGate: state.qualityGateOutcome }
       : {}),
   });
+
+  // Issue #2347: the same figures the comment above renders, recorded once per
+  // completed implementation run so the pilot host's spend, first-attempt gate
+  // pass rate and duration are comparable with the control hosts' straight off
+  // the fleet summary — no reading every run-stats comment.
+  //
+  // `already_posted` is the one skip that must not record: this run is counted
+  // already, and counting it twice would halve its own pass rate. A GitHub
+  // failure still records — the run happened, and losing its figures to a
+  // comment that did not post would understate the host.
+  if (posted.reason !== "already_posted") {
+    const figures = measureIssuePhaseRun({
+      phase: WORK_ON_STATS_PHASE,
+      claudeResults,
+      ...(state.qualityGateOutcome
+        ? { qualityGate: state.qualityGateOutcome }
+        : {}),
+    });
+    if (figures) recordIssuePhaseRun(figures);
+  }
 }
 
 /**

@@ -52,7 +52,13 @@ import {
   buildPhaseInvocations,
   type PhaseClaudeResult,
 } from "./phase_run_stats.ts";
-import { formatUsd } from "./cost_estimate.ts";
+import {
+  attributeUsageByModel,
+  estimateRunCost,
+  formatUsd,
+  type ModelUsageEntry,
+} from "./cost_estimate.ts";
+import type { IssuePhaseRun } from "./fleet_telemetry.ts";
 import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import { getRunId } from "./run_id.ts";
@@ -390,15 +396,22 @@ const ADVISOR_EDIT_STATS_PREFIX = "- advisor edit calls:";
  * @param claudeResults - Completed invocations of the run being reported
  * @returns The bullet lines, empty for a non-implementation phase
  */
+/** The split figures a run recorded — empty when the split was off. */
+function executorSplitStats(
+  claudeResults: readonly PhaseClaudeResult[],
+): IssueExecutorSplitStats[] {
+  return claudeResults
+    .map((result) => result.runStats?.executorSplit)
+    .filter((stats): stats is IssueExecutorSplitStats => stats !== undefined);
+}
+
 export function buildExecutorSplitStatsLines(
   phase: string,
   claudeResults: readonly PhaseClaudeResult[],
 ): string[] {
   if (phase !== IMPLEMENTATION_RUN_STATS_PHASE) return [];
 
-  const splits = claudeResults
-    .map((result) => result.runStats?.executorSplit)
-    .filter((stats): stats is IssueExecutorSplitStats => stats !== undefined);
+  const splits = executorSplitStats(claudeResults);
   if (splits.length === 0) return [`${SPLIT_STATS_PREFIX} off`];
 
   const total = splits.reduce((sum, stats) => ({
@@ -419,6 +432,64 @@ export function buildExecutorSplitStatsLines(
     `${EXECUTOR_RETASK_STATS_PREFIX} ${total.executorRetasks}`,
     `${ADVISOR_EDIT_STATS_PREFIX} ${total.advisorEditCalls} (${total.denials} denied)`,
   ];
+}
+
+/**
+ * Derive the fleet-telemetry figures for one completed implementation run
+ * (Issue #2347, part of #2320).
+ *
+ * The same numbers this module renders on the comment — the estimated spend,
+ * the summed invocation duration, whether the split was on, and the attempt the
+ * quality gate passed on — reduced to what
+ * {@link ../fleet_telemetry.ts recordIssuePhaseRun} accumulates per host. Kept
+ * here rather than at the call site so the figures cannot drift from the
+ * comment: the cost uses the same per-model attribution and the split uses the
+ * same rule as {@link buildExecutorSplitStatsLines}.
+ *
+ * Spend is the estimate the comment reports, so a model with no pricing row
+ * contributes nothing and the sum is a floor — exactly as the comment's own
+ * `(partial — see below)` total says.
+ *
+ * @param args.phase - The phase being reported; only `issue` is measured
+ * @param args.claudeResults - Completed invocations of the run
+ * @param args.qualityGate - What the run's quality gate did, when it ran
+ * @returns The run's figures, or `undefined` for a non-implementation phase
+ */
+export function measureIssuePhaseRun(args: {
+  phase: string;
+  claudeResults: readonly PhaseClaudeResult[];
+  qualityGate?: QualityGateAttemptOutcome;
+}): IssuePhaseRun | undefined {
+  if (args.phase !== IMPLEMENTATION_RUN_STATS_PHASE) return undefined;
+
+  const costEntries: ModelUsageEntry[] = [];
+  let durationMs = 0;
+  for (const result of args.claudeResults) {
+    const stats = result.runStats;
+    if (!stats) continue;
+    if (stats.tokenUsage) {
+      costEntries.push(
+        ...attributeUsageByModel(
+          stats.tokenUsage,
+          stats.modelUsage,
+          // The model that served the invocation, falling back to the one it
+          // requested — never a guess at a price the run did not pay.
+          stats.servedModels[0] ?? stats.requestedModel,
+        ),
+      );
+    }
+    if (typeof stats.durationMs === "number" && stats.durationMs > 0) {
+      durationMs += stats.durationMs;
+    }
+  }
+
+  const gate = args.qualityGate;
+  return {
+    usd: estimateRunCost(costEntries).totalCost,
+    durationSeconds: Math.round(durationMs / 1000),
+    split: executorSplitStats(args.claudeResults).length > 0,
+    ...(gate?.status === "passed" ? { gatePassedOnAttempt: gate.attempt } : {}),
+  };
 }
 
 /**
