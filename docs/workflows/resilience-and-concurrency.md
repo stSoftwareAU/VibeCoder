@@ -220,9 +220,16 @@ the log could not say so. Three behaviours close that hole:
 
 **The sentence agrees with its counters (Issue #1573).** Only a scan with
 `eligible=0` reads `no eligible work:`. A scan that found work no slot could
-claim reads `N eligible, none claimable (top-skips names what refused them):`
+claim reads `N eligible, none claimable: claim-refusals=<reason>=<n>,… |`
 instead — *eligible* means "passed the per-issue filter", while the stop means
-"nothing claimable now". Asserting both at once reads as a self-contradiction
+"nothing claimable now". What refused an eligible issue is the **claim path**
+(`already_assigned`, `recent_claim`, `stream_busy`, `stream_affinity`, …), so
+that is the tally the sentence leads with (Issue #2404); `top-skips` follows
+and is the *finder's* tally — why the other issues were never eligible. The
+line used to say "top-skips names what refused them", which was false, and for
+23 hours it attributed a fleet-wide `stream_affinity` deadlock to
+`needs-human` and `pr-blocked`. Eligible issues with no recorded refusal read
+`claim-refusals=(none recorded)` rather than nothing. Asserting both at once reads as a self-contradiction
 and costs a human an investigation before they can establish it was benign.
 Every such line closes with the note that `considered` and `eligible` count
 issues while `skipped` counts skip decisions, repo-level ones included, so the
@@ -239,7 +246,7 @@ flowchart TD
   Race -->|Yes| Work["Claim and process"]
   Race -->|"No — sibling won"| Drop["Drop that repo's cached<br/>issue list, scan again"]
   Drop --> Scan
-  Found -->|No| Log["Log: 'no eligible work' when eligible=0,<br/>else 'N eligible, none claimable'<br/>+ considered / eligible / skipped<br/>+ top skip reasons"]
+  Found -->|No| Log["Log: 'no eligible work' when eligible=0,<br/>else 'N eligible, none claimable'<br/>+ claim-refusals by reason<br/>+ considered / eligible / skipped<br/>+ top skip reasons"]
   Log --> Sibling{"Any sibling slot<br/>still working?"}
   Sibling -->|Yes| Wait["Sleep sleep_interval,<br/>re-scan"]
   Wait --> Scan
