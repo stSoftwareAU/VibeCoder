@@ -90,6 +90,7 @@ import type {
   BlockedCandidateInfo,
   DiagnosticSummary,
 } from "./issue_finder_logger.ts";
+import { claimRefusalReason } from "./issue_finder_logger.ts";
 import {
   fetchAllOpenPRs,
   fetchOpenPRsForFleet,
@@ -3933,6 +3934,11 @@ export async function createProductionRunCoreDeps(
         value: {
           success: result.success,
           skipped: isExpectedSkip,
+          // Issue #2404: which claim-path check refused it, so the no-work
+          // line names what really made an eligible issue unclaimable.
+          ...(isExpectedSkip && claimRefusalReason(result.reason)
+            ? { claimRefusal: claimRefusalReason(result.reason)! }
+            : {}),
           // Issue #2100: which workflow this run served. Reported for a skip
           // too — it costs nothing and the callbacks ignore skips anyway.
           ...(mode ? { mode } : {}),

@@ -394,9 +394,12 @@ export const SCAN_COUNT_POPULATIONS =
  * while the slot stopped because nothing was **claimable** (the streams
  * holding that work were occupied by another slot).
  *
- * So a scan that found eligible-but-unclaimable work says exactly that,
- * and points at `top-skips` for what refused it. Only a genuinely empty
- * scan reads "no eligible work".
+ * So a scan that found eligible-but-unclaimable work says exactly that, and
+ * names what refused it: the **claim path's** refusals (`claim-refusals`,
+ * Issue #2404). It used to point at `top-skips`, which tallies the finder's
+ * skips of the issues that were *never* eligible — so a fleet-wide
+ * `stream_affinity` deadlock read as `needs-human=13,pr-blocked=13`. Only a
+ * genuinely empty scan reads "no eligible work".
  *
  * @param summary - Counts collected during the scan.
  * @param topReasons - How many skip reasons to name, busiest first.
@@ -405,14 +408,61 @@ export const SCAN_COUNT_POPULATIONS =
 export function formatScanOutcome(
   summary: DiagnosticSummary,
   topReasons = 3,
+  /**
+   * Why the claim path refused the eligible issues, by reason (Issue #2404).
+   * `top-skips` cannot answer that: it tallies the *finder's* skips, taken
+   * before an issue is eligible.
+   */
+  claimRefusals?: Readonly<Record<string, number>>,
 ): string {
-  const lead = summary.totalEligible > 0
-    ? `${summary.totalEligible} eligible, none claimable ` +
-      "(top-skips names what refused them)"
-    : "no eligible work";
-  return `${lead}: ${
+  const counters = `${
     formatScanSummary(summary, topReasons)
   } ${SCAN_COUNT_POPULATIONS}`;
+  if (summary.totalEligible <= 0) return `no eligible work: ${counters}`;
+  return `${summary.totalEligible} eligible, none claimable: ` +
+    `claim-refusals=${formatClaimRefusals(claimRefusals, topReasons)} ` +
+    `| ${counters}`;
+}
+
+/** The claim-refusal tally, busiest first; never an empty field. */
+function formatClaimRefusals(
+  claimRefusals: Readonly<Record<string, number>> | undefined,
+  topReasons: number,
+): string {
+  const top = Object.entries(claimRefusals ?? {})
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, Math.max(0, topReasons))
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(",");
+  // Eligible issues nobody recorded a refusal for is itself worth seeing: it
+  // means a refusing path is not tallied, or a sibling slot holds the stream.
+  return top || "(none recorded)";
+}
+
+/** How a setup-phase claim refusal opens its reason (`setup_branch_phase.ts`). */
+const CLAIM_REFUSAL_PREFIX = "Issue not available:";
+
+/** A refusal reason key, as `claim_issue.ts` spells them. */
+const CLAIM_REFUSAL_KEY_RE = /^[a-z][a-z_]{1,39}$/;
+
+/**
+ * The reason key of a claim the worker was refused (Issue #2404).
+ *
+ * The setup phase reports a refused claim as `Issue not available: <reason>`
+ * or `Issue not available: <reason>: <detail>`; a claim lost to a named winner
+ * carries free text instead. Every refusal is counted — one that names no
+ * recognisable key is `other`, never dropped, because an untallied refusal is
+ * what hid the 2026-09-18 affinity deadlock.
+ *
+ * @param reason - A failed run's `reason`.
+ * @returns The reason key, `other`, or `null` when this is not a claim refusal.
+ */
+export function claimRefusalReason(reason: string): string | null {
+  if (!reason.startsWith(CLAIM_REFUSAL_PREFIX)) return null;
+  const rest = reason.slice(CLAIM_REFUSAL_PREFIX.length).trim();
+  const key = rest.split(":", 1)[0]?.trim() ?? "";
+  return CLAIM_REFUSAL_KEY_RE.test(key) ? key : "other";
 }
 
 /**
