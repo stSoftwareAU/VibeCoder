@@ -11,7 +11,9 @@
  *
  * So a resolved tree runs more of the repository's own tasks — its `check`,
  * its `check:manifests` and its unit suite — and only a tree that passes all
- * of them is pushed. A tree that defines none of them is reported `skipped`,
+ * of them is pushed. A repository whose suite runs through its own
+ * `quality.sh` rather than a manifest task is verified with that script
+ * (Issue #2388). A tree that defines none of them is reported `skipped`,
  * and the sync treats that as a refusal: a resolution that cannot be verified
  * is not a resolution.
  *
@@ -53,6 +55,26 @@ export const RESOLUTION_GATE_TASKS = [
   "test",
 ] as const;
 
+/**
+ * The repository's own quality gate, run as the unit suite when the tree
+ * defines no unit-suite task and no Cargo workspace (Issue #2388).
+ *
+ * `quality.sh` is the fleet's convention for "everything this repository
+ * checks before a PR" — `codebase_map.ts` tells every agent to run it, and the
+ * CI-fix path runs it. A repository whose suite is `node --test …` behind that
+ * script has no `deno task test` to find, and the gate used to call that
+ * "nothing to verify with": a conflict the worker had already resolved
+ * correctly was refused, uncharged, for every issue of its milestone, every
+ * hour. The script runs a superset of a unit suite, which is more
+ * verification than the gate asks for, never less.
+ *
+ * Run through `bash` rather than executed directly so a script committed
+ * without its executable bit still verifies. It is the merged tree of two of
+ * the repository's own protected branches — the same trust the `deno task`
+ * and `cargo test` branches above already extend.
+ */
+export const QUALITY_SCRIPT = "quality.sh";
+
 /** The unit-suite task names, most specific first. */
 const UNIT_SUITE_TASKS = ["test:unit", "test"] as const;
 
@@ -60,8 +82,11 @@ const UNIT_SUITE_TASKS = ["test:unit", "test"] as const;
 export interface ResolutionTask {
   /** Directory the task runs in. */
   dir: string;
-  /** `deno task <task>`, or `cargo <args>` for a Cargo workspace (#2138). */
-  kind: ProjectKind;
+  /**
+   * `deno task <task>`, `cargo <args>` for a Cargo workspace (#2138), or
+   * `script` for the repository's own `quality.sh` (Issue #2388).
+   */
+  kind: ProjectKind | "script";
   /** The manifest task name, e.g. `check:manifests`; `test` for cargo. */
   task: string;
   /** The argv after the executable. */
@@ -72,6 +97,7 @@ export interface ResolutionTask {
 
 /** How a task is spelled in a log line or an escalation. */
 export function describeTask(task: ResolutionTask): string {
+  if (task.kind === "script") return `./${task.args.join(" ")}`;
   return task.kind === "cargo"
     ? `cargo ${task.args.join(" ")}`
     : `deno task ${task.task}`;
@@ -121,6 +147,15 @@ export function resolutionTasksFor(defined: string[]): string[] {
   return tasks;
 }
 
+/** Whether the tree carries the repository's own quality gate. */
+async function hasQualityScript(repoDir: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(`${repoDir}/${QUALITY_SCRIPT}`)).isFile;
+  } catch {
+    return false;
+  }
+}
+
 /** Whether a task name is the unit suite (the one the issue requires). */
 function isUnitSuite(task: string): boolean {
   return (UNIT_SUITE_TASKS as readonly string[]).includes(task);
@@ -129,7 +164,11 @@ function isUnitSuite(task: string): boolean {
 /** Spawn one of the repository's own tasks within the remaining budget. */
 const spawnTask: ResolutionTaskRunner = async (task) => {
   const result = await runWithTimeout(
-    task.kind === "cargo" ? "cargo" : Deno.execPath(),
+    task.kind === "script"
+      ? "bash"
+      : task.kind === "cargo"
+      ? "cargo"
+      : Deno.execPath(),
     task.args,
     {
       cwd: task.dir,
@@ -263,14 +302,56 @@ export async function verifyResolvedTree(
     }
   }
 
+  if (!unitSuiteRan && await hasQualityScript(repoDir)) {
+    // Issue #2388: no manifest names a unit suite, but the repository has its
+    // own quality gate — run that, inside whatever budget is left.
+    const step: ResolutionTask = {
+      dir: repoDir,
+      kind: "script",
+      task: QUALITY_SCRIPT,
+      args: [QUALITY_SCRIPT],
+      timeoutMs: 0,
+    };
+    const where = `${describeTask(step)} in ${repoDir}`;
+    const timeoutMs = deadline - now();
+    if (timeoutMs <= 0) {
+      return {
+        status: "failed",
+        detail: `${where} was not reached within the ` +
+          `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
+          `resolution is unverified, so it is not pushed`,
+        output: "",
+      };
+    }
+    let result: { code: number; output: string };
+    try {
+      result = await runner({ ...step, timeoutMs });
+    } catch (err) {
+      return {
+        status: "failed",
+        detail: `${where} could not be run`,
+        output: tail(err instanceof Error ? err.message : String(err)),
+      };
+    }
+    if (result.code !== 0) {
+      return {
+        status: "failed",
+        detail: `${where} failed (exit ${result.code})`,
+        output: tail(result.output),
+      };
+    }
+    ran.push(where);
+    unitSuiteRan = true;
+  }
+
   if (!unitSuiteRan) {
     // Choosing a side compiles perfectly while dropping the other side's
     // behaviour, so the type check alone does not verify a resolution.
     return {
       status: "skipped",
-      detail: `no ${UNIT_SUITE_TASKS.join("/")} task or Cargo.toml under ` +
-        `'${repoDir}' — nothing ran the cases that would show a dropped ` +
-        "implementation",
+      detail: `no ${UNIT_SUITE_TASKS.join("/")} task, Cargo.toml or ` +
+        `${QUALITY_SCRIPT} under '${repoDir}' — nothing ran the cases that ` +
+        "would show a dropped implementation",
       output: "",
     };
   }
