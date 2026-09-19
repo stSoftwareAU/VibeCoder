@@ -848,7 +848,9 @@ flowchart LR
     M -- no --> D{Names an open<br/>dependency?}
     D -- yes --> DB["dependency_blocked+1"]
     D -- no --> R{This run already<br/>holding it back?}
-    R -- yes --> RH["run_local_hold+1"]
+    R -- yes --> RD{Held because the claim<br/>path deferred it?}
+    RD -- no --> RH["run_local_hold+1"]
+    RD -- "yes: claim_refused+1" --> T
     R -- no --> T{"low-priority, and the repo<br/>holds a suppressing work-on issue?"}
     T -- yes --> TS["low_priority_suppressed+1"]
     T -- no --> U["unblocked+1<br/>→ inversion signal"]
@@ -917,6 +919,25 @@ hands the same set to all three readers, and excluded issues are reported as
 `run_local_hold=<n>`. The per-cycle adaptive-floor deferral (Issue #245) is the
 one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
 streak open the way the registry did.
+
+**A refused claim is not a finished run (Issue #2405).** The hold records that
+an issue is held, and until #2405 not *why*. A claim the claim path **deferred**
+— refused although nobody is working the issue (today: stream affinity) — is a
+skip, a skip goes on the hold, and the census swallowed it with the rest. For
+23 hours on 2026-09-18/19 stream affinity (#2403) deferred every ready issue of
+two repositories, the census read `work_on=0 … run_local_hold=3
+inversion_signal=false`, and the idle-inversion escalation — built for exactly
+this — filed nothing. The registry now keeps the claim path's reason on a skip
+(`claimRefusalFor`), and a hold whose reason is a deferral
+(`CLAIM_DEFERRAL_REASONS` in `processed_issue_registry.ts`) is reported as
+`claim_refused=<n>` and **stays claimable** in the census, so it reaches the
+inversion signal, its per-repo streak and the filed issue, whose "what the
+claim scan did with them" section names it (`claim path refused it:
+stream_affinity`). A refusal that means someone else holds the issue —
+`already_assigned`, `stream_busy`, `recent_claim` — is a healthy fleet and
+remains an ordinary `run_local_hold`. `idle_detect_diagnostics.ts` is given the
+same answer through `withholdsFromIdleDetection`, so the two detectors cannot
+disagree about the gate.
 
 The **work-stream occupancy** gate (Issue #1050) is the fifth instance, and the
 first to be found in the audit rather than the census. `isMilestoneOccupied`

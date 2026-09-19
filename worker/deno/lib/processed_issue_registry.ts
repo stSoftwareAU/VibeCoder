@@ -42,6 +42,32 @@ export interface ProcessedIssueEntry {
   issueNumber: number;
   /** Why it is finished for this run. */
   reason: ProcessedIssueReason;
+  /**
+   * For a `skip` that was a refused claim: the claim path's reason key
+   * (Issue #2405), e.g. `stream_affinity`. Absent on every other record.
+   */
+  claimRefusal?: string;
+}
+
+/**
+ * Claim refusals that **defer** an issue — leave it with nobody working it.
+ *
+ * Every other refusal means someone else holds the issue (`already_assigned`,
+ * `stream_busy`, `recent_claim`, a claim lost to a named winner): a healthy
+ * fleet, and a legitimate hold. A deferral is the claim path declining ready
+ * work on its own judgement, so the idle census must go on seeing the issue as
+ * claimable — that is what lets a deferral that never ends raise the
+ * idle-inversion escalation instead of hiding behind the run-local hold, as
+ * stream affinity did for 23 hours (Issue #2403).
+ *
+ * A new deferring check in `claim_issue.ts` belongs on this list.
+ */
+export const CLAIM_DEFERRAL_REASONS: readonly string[] = ["stream_affinity"];
+
+/** Is this claim refusal a deferral? See {@link CLAIM_DEFERRAL_REASONS}. */
+export function isClaimDeferral(claimRefusal: string | undefined): boolean {
+  return claimRefusal !== undefined &&
+    CLAIM_DEFERRAL_REASONS.includes(claimRefusal);
 }
 
 /**
@@ -51,6 +77,28 @@ export interface ProcessedIssueEntry {
  */
 function keyOf(repo: string, issueNumber: number): string {
   return `${repo.toLowerCase()}|${issueNumber}`;
+}
+
+/**
+ * Should this run-local hold hide the issue from the idle detectors
+ * (Issue #2405)?
+ *
+ * `idle_detect_diagnostics.ts` takes one yes/no per issue, so the distinction
+ * the census draws with `deferredHolds` is made here for it: a hold the claim
+ * path created by deferring the issue does **not** hide it. Both detectors
+ * model the same gate; they must agree about it.
+ *
+ * @param registry - This run's processed issues.
+ * @param isHeld - The run-local hold (cooldown + registry) for an issue.
+ */
+export function withholdsFromIdleDetection(
+  registry: ProcessedIssueRegistry,
+  isHeld: (repo: string, issueNumber: number) => boolean,
+  repo: string,
+  issueNumber: number,
+): boolean {
+  if (!isHeld(repo, issueNumber)) return false;
+  return !isClaimDeferral(registry.claimRefusalFor(repo, issueNumber));
 }
 
 /** Issues finished during one run. */
@@ -68,11 +116,25 @@ export class ProcessedIssueRegistry {
     repo: string,
     issueNumber: number,
     reason: ProcessedIssueReason,
+    detail: { claimRefusal?: string } = {},
   ): void {
     const key = keyOf(repo, issueNumber);
     const existing = this.entries.get(key);
     if (existing?.reason === "closed" && reason !== "closed") return;
-    this.entries.set(key, { repo, issueNumber, reason });
+    this.entries.set(key, {
+      repo,
+      issueNumber,
+      reason,
+      // Only a skip can be a refused claim; any later outcome replaces it.
+      ...(reason === "skip" && detail.claimRefusal
+        ? { claimRefusal: detail.claimRefusal }
+        : {}),
+    });
+  }
+
+  /** The claim refusal behind this issue's hold, when that is what it is. */
+  claimRefusalFor(repo: string, issueNumber: number): string | undefined {
+    return this.entries.get(keyOf(repo, issueNumber))?.claimRefusal;
   }
 
   /** True when this issue has already been finished during this run. */

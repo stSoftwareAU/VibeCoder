@@ -308,3 +308,60 @@ Deno.test("processed exclusion - two slots, one bouncing issue: the pool advance
     "the sibling slot advanced to other claimable issues",
   );
 });
+
+// =============================================================================
+// The hold remembers why (Issue #2405)
+//
+// For 23 hours stream affinity deferred every eligible issue. Each deferral
+// was recorded as a bare `skip`, so the idle census could not tell it from a
+// run that had finished, and the idle-inversion escalation never fired. Both
+// loops must hand the claim path's reason to the registry.
+// =============================================================================
+
+for (const slots of [1, 2]) {
+  Deno.test(`processed registry - a refused claim is recorded with its reason (${slots} slot${slots > 1 ? "s" : ""}) (Issue #2405)`, async () => {
+    const registry = new ProcessedIssueRegistry();
+    const processed: string[] = [];
+    let now = 0;
+    const config = createDefaultRunCoreConfig();
+    const deps = createMockDeps({
+      now: () => now,
+      sleep: (ms?: number) => {
+        now += ms ?? 30_000;
+        return Promise.resolve();
+      },
+      processedIssues: registry,
+      findNextIssue: staleQueue(registry, [
+        issue("o/a", 31),
+        issue("o/b", 32),
+      ]),
+      processIssue: (i) => {
+        processed.push(`${i.repo}#${i.issueNumber}`);
+        now += config.runDurationSeconds * 400;
+        if (processed.length >= PROCESS_CAP) {
+          now = config.runDurationSeconds * 1000 + 1;
+        }
+        // #31 is deferred by the claim path; #32 bounces for another reason.
+        return Promise.resolve(
+          i.issueNumber === 31
+            ? {
+              ok: true,
+              value: {
+                success: false,
+                skipped: true,
+                claimNotHeld: true,
+                claimRefusal: "stream_affinity",
+              },
+            }
+            : { ok: true, value: { success: false, skipped: true } },
+        );
+      },
+    });
+
+    await runOneCycle(deps, slots);
+
+    assertEquals(registry.claimRefusalFor("o/a", 31), "stream_affinity");
+    assertEquals(registry.reasonFor("o/b", 32), "skip");
+    assertEquals(registry.claimRefusalFor("o/b", 32), undefined);
+  });
+}
