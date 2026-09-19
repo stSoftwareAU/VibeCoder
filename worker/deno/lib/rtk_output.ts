@@ -43,7 +43,7 @@
  * preparation time rather than reading one number at the end. The store behind
  * it is `$XDG_DATA_HOME/rtk/tracking.db` (`src/core/tracking.rs`), and
  * `container/entrypoint.sh` points `XDG_DATA_HOME` at the *durable* state root
- * under `VIBE_WORK_ROOT`, which is deliberately group-shared and setgid. There
+ * under the work root, which is deliberately group-shared and setgid. There
  * is one such root per volume rather than one per lane, so a sibling container
  * running concurrently writes the same store: `savedTokens` is RTK's own
  * indicative figure and may be inflated by a neighbour. The trial bar is read
