@@ -788,6 +788,13 @@ export interface RunCoreDeps {
       success: boolean;
       skipped?: boolean;
       /**
+       * Why the claim path refused this issue (Issue #2404) — the reason key
+       * `claim_issue.ts` bailed out on, e.g. `stream_affinity`. Present only on
+       * a skip that was a refused claim. The no-work line tallies these: they,
+       * not the finder's skips, are what refused an *eligible* issue.
+       */
+      claimRefusal?: string;
+      /**
        * The run never held the claim (Issue #1139) — it stood down because
        * a sibling host holds the issue. There is nothing to release, and
        * releasing anyway would strip the **winner's** assignee and clear its
@@ -2262,6 +2269,17 @@ function dispatchCycleCallback(
   });
 }
 
+/** Count the pool's remembered claim refusals by reason (Issue #2404). */
+function tallyClaimRefusals(
+  refusals: ReadonlyMap<string, string>,
+): Record<string, number> {
+  const tally: Record<string, number> = {};
+  for (const reason of refusals.values()) {
+    tally[reason] = (tally[reason] ?? 0) + 1;
+  }
+  return tally;
+}
+
 /**
  * Mark an issue as finished for the rest of this run (Issue #181).
  *
@@ -3238,6 +3256,13 @@ interface SlotPoolState {
    * a shutdown or a drain leaves this `false` — it refused nothing, so the
    * idle-inversion escalation has no evidence to escalate.
    */
+  /**
+   * The claim path's latest refusal of each issue this run, by `repo#n`
+   * (Issue #2404). Keyed by issue, not counted per decision: a refused issue
+   * is on cooldown for the rest of the run, so this is the set the no-work
+   * line's "eligible, none claimable" is talking about.
+   */
+  claimRefusals: Map<string, string>;
   eligibilityScanCompleted: boolean;
   /**
    * The cycle's exactly-once post-run callback guard (Issue #806), shared by
@@ -3347,6 +3372,7 @@ async function runIssueScanPool(
     shouldShutdown,
     claimFloor: poolRunwayFloor,
     deferredClaims: new Set<string>(),
+    claimRefusals: new Map(),
     eligibilityScanCompleted: false,
     // Issue #806: the cycle's exactly-once post-run callback guard, shared
     // by every slot, the slot-level catch and the shutdown drain. Restored
@@ -3736,7 +3762,11 @@ async function runSlot(
         // and gets investigated by a human who cannot yet know it is
         // benign.
         const detail = scanSummary
-          ? formatScanOutcome(scanSummary)
+          ? formatScanOutcome(
+            scanSummary,
+            undefined,
+            tallyClaimRefusals(pool.claimRefusals),
+          )
           : "no eligible work: scan summary unavailable";
         // Sibling *slots* only (Issue #213): a maintenance pass running beside
         // the pool is not a reason for an idle slot to keep re-scanning for an
@@ -4420,6 +4450,15 @@ async function runSlotIssue(
 
   const skipped = processResult.ok && processResult.value.skipped;
   if (skipped) {
+    // Issue #2404: a refused claim is what makes an eligible issue
+    // unclaimable, so the no-work line can only explain itself if the
+    // refusal is remembered here.
+    if (processResult.ok && processResult.value.claimRefusal) {
+      pool.claimRefusals.set(
+        `${issue.repo}#${issue.issueNumber}`,
+        processResult.value.claimRefusal,
+      );
+    }
     noteIssueProcessed(deps, issue, "skip");
     await deps.recordIssueCooldown(issue.repo, issue.issueNumber);
     await releaseIssueClaim(
