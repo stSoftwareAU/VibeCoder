@@ -59,11 +59,15 @@ installer and the fragments once it is done, so none of them survive into the
 finished image.
 
 `RTK_TELEMETRY_DISABLED=1` and `RTK_SUPPRESS_HOOK_WARNING=1` are set image-wide
-before that first run (Issue #2381), as `POWERSHELL_TELEMETRY_OPTOUT` is: RTK
-does not honour `DO_NOT_TRACK`, so it needs its own switch, and its daily
-missing-hook warning on stderr is noise in a container where the hook reaches
-the CLI through `--settings` rather than `~/.claude/settings.json`. Setting them
-before the install keeps the fragment's own `rtk --version` probe quiet too.
+before that first run (Issue #2381), as `POWERSHELL_TELEMETRY_OPTOUT` is. RTK
+does not honour `DO_NOT_TRACK`, so telemetry needs its own switch, and the
+binary honours that one. The second asks for RTK's daily missing-hook warning
+to stay off stderr — noise in a container where the hook reaches the agent CLI
+through an explicit `--settings` path rather than the CLI's own user settings
+file — but v0.49.0 reads no such variable: the warning is throttled by a stamp
+file under RTK's data dir, so the setting is declared and inert until a release
+honours it. Setting both before the install keeps the fragment's own
+`rtk --version` probe quiet too.
 
 ## Node and npm
 

@@ -200,11 +200,14 @@ ENV POWERSHELL_UPDATECHECK="Off" \
     POWERSHELL_TELEMETRY_OPTOUT="1"
 
 # No telemetry round trip from an unattended container either — RTK does not
-# honour DO_NOT_TRACK, so it needs its own switch. The hook reaches the CLI
-# through --settings rather than ~/.claude/settings.json, so RTK's daily
-# missing-hook warning on stderr is noise. Image-wide, as DO_NOT_TRACK below
-# is, and set before the install so the fragment's own version probe is quiet
-# too.
+# honour DO_NOT_TRACK, so RTK_TELEMETRY_DISABLED is its own switch and the
+# binary honours it. RTK_SUPPRESS_HOOK_WARNING asks for the daily missing-hook
+# warning to stay off stderr — noise here, where the hook reaches the agent CLI
+# through an explicit --settings path rather than the CLI's own user settings
+# file — but v0.49.0 reads no such variable (the warning is throttled by a
+# stamp file under its data dir), so it is declared and inert until a release
+# honours it. Image-wide, as DO_NOT_TRACK below is, and set before the install
+# so the fragment's own version probe is quiet too.
 ENV RTK_TELEMETRY_DISABLED="1" \
     RTK_SUPPRESS_HOOK_WARNING="1"
 

@@ -972,3 +972,64 @@ Deno.test("container/toolchains/rtk.sh - a tampered download aborts before extra
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("container/toolchains/rtk.sh - an archive without rtk at its top level aborts", async () => {
+  // The RTK-specific risk: the release carries a bare binary rather than
+  // codegraph's bundle, so a layout that changes upstream must abort rather
+  // than install whatever else the archive happened to hold. Verified bytes
+  // are stubbed past so the check under test is the layout one.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    await Deno.mkdir(`${dir}/bin`);
+    await Deno.writeTextFile(
+      `${dir}/bin/curl`,
+      `#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do\n` +
+        `  case "$1" in -o) shift; out="$1" ;; esac\n  shift\ndone\n` +
+        `printf 'archive\\n' > "\${out}"\n`,
+    );
+    await Deno.writeTextFile(`${dir}/bin/sha256sum`, `#!/bin/sh\nexit 0\n`);
+    // An archive whose top level is a directory rather than the bare binary.
+    await Deno.writeTextFile(
+      `${dir}/bin/tar`,
+      `#!/bin/sh\ndest=""\nwhile [ $# -gt 0 ]; do\n` +
+        `  case "$1" in -C) shift; dest="$1" ;; esac\n  shift\ndone\n` +
+        `mkdir -p "\${dest}/rtk-bundle"\n`,
+    );
+    await Deno.writeTextFile(
+      `${dir}/bin/install`,
+      `#!/bin/sh\necho called >> "${dir}/install.log"\nexit 0\n`,
+    );
+    for (const stub of ["curl", "sha256sum", "tar", "install"]) {
+      await Deno.chmod(`${dir}/bin/${stub}`, 0o755);
+    }
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/rtk.sh`],
+      env: {
+        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        CURL_RETRY: "",
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "an unexpected layout must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "Archive does not carry rtk at its top level",
+    );
+
+    let installed = true;
+    try {
+      await Deno.stat(`${dir}/install.log`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      installed = false;
+    }
+    assert(!installed, "the fragment installed from an unexpected layout");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

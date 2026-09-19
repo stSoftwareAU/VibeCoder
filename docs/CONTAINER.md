@@ -371,8 +371,8 @@ restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
-`codegraph`, `rtk` and `rust` are fragments (Issues #1594, #1595, #1596, #1628,
-#2153 and #2381) — they are the fetch-verify-extract toolchains, whose `ARG` blocks
+`codegraph`, `rtk` and `rust` are fragments (Issues #1594, #1595, #1596,
+#1628, #2153 and #2381) — they are the fetch-verify-extract toolchains, whose `ARG` blocks
 and `RUN` bodies were the bulk of the Containerfile's size. `node`, `npm`,
 `markdownlint-cli2`, `graft` and `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
 the npm- and pip-installed tools have their own steps.

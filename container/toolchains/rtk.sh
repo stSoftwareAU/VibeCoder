@@ -18,7 +18,7 @@
 # aarch64 — so the asset architecture and the manifest key are resolved
 # separately.
 #
-# Fails loud (Issue #3234): an unknown architecture, a missing pin, a failed
+# Fails loud: an unknown architecture, a missing pin, a failed
 # download, a checksum mismatch, an archive without `rtk` at its top level, or
 # a binary that reports the wrong version aborts the build.
 #
