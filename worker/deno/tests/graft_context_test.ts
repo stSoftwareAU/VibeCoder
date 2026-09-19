@@ -36,6 +36,7 @@ import type {
   GraftGitRunner,
   GraftRunner,
 } from "../lib/graft_context.ts";
+import { bindGraftRun } from "../lib/graft_run.ts";
 import {
   EXECUTABLE_IGNORED_DIRS,
   ignoredExecutableCleanArgs,
@@ -461,6 +462,81 @@ Deno.test("collectGraftContext - a zero-exit ask returning an empty bundle fails
     assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
     assertStringIncludes(warns[0]!, "empty bundle");
   });
+});
+
+Deno.test("collectGraftContext - a graph built with zero nodes fails rather than reporting ok", async () => {
+  await withRepo(async (repoDir) => {
+    // Everything exits 0: the build succeeds, the index parses, and the ask
+    // returns text. The graph is simply empty, which is the one shape that
+    // looks identical to a working run in the stats (Issue #2379).
+    const runner = fakeRunner([ok(""), ok("// nothing much\n")]);
+    const { warns, logger } = recordingLogger();
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "failed");
+    assertEquals(result.bundle, undefined);
+    // The figures are still carried, so the fault stays diagnosable.
+    assertEquals(result.nodeCount, 0);
+    assertEquals(result.callEdgeCount, 0);
+    assertEquals(result.bundleChars, "// nothing much\n".length);
+    assert(typeof result.buildSeconds === "number");
+    assertEquals(warns.length, 1);
+    assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
+    assertStringIncludes(warns[0]!, "graph built with 0 nodes");
+    // The reason names the candidate causes, so an operator can tell "Graft
+    // cannot help this repository" from "Graft broke".
+    assertStringIncludes(warns[0]!, "language");
+
+    // Composition: the very result the push side just produced must leave the
+    // pull side handing over neither the prompt line nor the query tools.
+    const run = bindGraftRun({
+      result,
+      repoDir,
+      agentProvider: "claude",
+      env: () => undefined,
+      logger: { info: () => {}, warn: () => {} },
+    });
+    assertEquals(run.wired, false);
+    assertEquals(run.applyPrompt("p"), "p");
+    assertEquals(run.mcpConfig(undefined), undefined);
+    assertEquals(run.mcpConfigOption(undefined), {});
+    run.record({ toolCallCounts: { graft_find_code: 3 } });
+    assertEquals(
+      run.result.queries,
+      undefined,
+      "an empty graph was never asked",
+    );
+  }, { wiring: JSON.stringify({ nodes: [], edges: [] }) });
+});
+
+Deno.test("collectGraftContext - a single node is a graph, and still reports ok", async () => {
+  await withRepo(async (repoDir) => {
+    const runner = fakeRunner([ok(""), ok("fn main() {}")]);
+    const { warns, logger } = recordingLogger();
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: fakeGit().git,
+    });
+
+    assertEquals(result.status, "ok");
+    assertEquals(result.nodeCount, 1);
+    assertEquals(result.callEdgeCount, 0);
+    assertEquals(result.bundle, "fn main() {}");
+    assertEquals(warns.length, 0);
+  }, { wiring: JSON.stringify({ nodes: [{ id: "a" }], edges: [] }) });
 });
 
 Deno.test("collectGraftContext - missing wiring.json fails", async () => {
