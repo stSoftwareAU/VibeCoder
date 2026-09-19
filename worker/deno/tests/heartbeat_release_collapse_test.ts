@@ -461,7 +461,10 @@ Deno.test("clearHeartbeat - the superseded comment carries the deferral reason o
 
     const pointer = gh.comments.find((c) => c.id === 200)!;
     assertStringIncludes(pointer.body, "the merge gate refused the resolution");
-    assertStringIncludes(pointer.body, "collapsed into the release summary above");
+    assertStringIncludes(
+      pointer.body,
+      "collapsed into the release summary above",
+    );
     assertEquals(parseHeartbeatMarker(pointer.body)?.cleared, true);
     assertEquals(isHeartbeatOnlyBody(pointer.body), true);
   } finally {

@@ -290,17 +290,20 @@ async function ledger(entries: SyncStreaks = {}) {
 Deno.test("presyncMilestoneBranch - a gate refusal is counted on the ledger", async () => {
   const fx = await ledger();
   try {
-    const result = await presyncMilestoneBranch({
-      repo: REPO,
-      milestoneBranch: MILESTONE,
-      defaultBranch: DEFAULT_BRANCH,
-      streakPath: fx.path,
-      grant: { agentAllowed: true },
-      nowMs: NOW,
-    }, deps({
-      syncBranch: () =>
-        Promise.resolve({ ok: false as const, error: gateRefusal() }),
-    }));
+    const result = await presyncMilestoneBranch(
+      {
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs: NOW,
+      },
+      deps({
+        syncBranch: () =>
+          Promise.resolve({ ok: false as const, error: gateRefusal() }),
+      }),
+    );
 
     assertEquals(result.status, "deferred");
     const entry = (await loadSyncStreaks(fx.path))[`${REPO}|${MILESTONE}`];
@@ -320,19 +323,25 @@ Deno.test("presyncMilestoneBranch - the second identical refusal wedges it and t
   try {
     let merges = 0;
     const run = (nowMs: number) =>
-      presyncMilestoneBranch({
-        repo: REPO,
-        milestoneBranch: MILESTONE,
-        defaultBranch: DEFAULT_BRANCH,
-        streakPath: fx.path,
-        grant: { agentAllowed: true },
-        nowMs,
-      }, deps({
-        syncBranch: () => {
-          merges++;
-          return Promise.resolve({ ok: false as const, error: gateRefusal() });
+      presyncMilestoneBranch(
+        {
+          repo: REPO,
+          milestoneBranch: MILESTONE,
+          defaultBranch: DEFAULT_BRANCH,
+          streakPath: fx.path,
+          grant: { agentAllowed: true },
+          nowMs,
         },
-      }));
+        deps({
+          syncBranch: () => {
+            merges++;
+            return Promise.resolve({
+              ok: false as const,
+              error: gateRefusal(),
+            });
+          },
+        }),
+      );
 
     await run(NOW);
     await run(NOW + 3_600_000);
@@ -356,24 +365,27 @@ Deno.test("presyncMilestoneBranch - a moved default tip lifts the wedge and the 
   try {
     let merges = 0;
     const run = (nowMs: number, defaultSha: string) =>
-      presyncMilestoneBranch({
-        repo: REPO,
-        milestoneBranch: MILESTONE,
-        defaultBranch: DEFAULT_BRANCH,
-        streakPath: fx.path,
-        grant: { agentAllowed: true },
-        nowMs,
-      }, deps({
-        defaultTipSha: () =>
-          Promise.resolve({ ok: true as const, value: defaultSha }),
-        syncBranch: () => {
-          merges++;
-          return Promise.resolve({
-            ok: false as const,
-            error: gateRefusal(defaultSha),
-          });
+      presyncMilestoneBranch(
+        {
+          repo: REPO,
+          milestoneBranch: MILESTONE,
+          defaultBranch: DEFAULT_BRANCH,
+          streakPath: fx.path,
+          grant: { agentAllowed: true },
+          nowMs,
         },
-      }));
+        deps({
+          defaultTipSha: () =>
+            Promise.resolve({ ok: true as const, value: defaultSha }),
+          syncBranch: () => {
+            merges++;
+            return Promise.resolve({
+              ok: false as const,
+              error: gateRefusal(defaultSha),
+            });
+          },
+        }),
+      );
 
     await run(NOW, DEFAULT_SHA);
     await run(NOW + 1000, DEFAULT_SHA);
@@ -400,17 +412,20 @@ Deno.test("presyncMilestoneBranch - a landed sync clears the wedge", async () =>
   const fx = await ledger({ [`${REPO}|${MILESTONE}`]: wedged });
   try {
     // A moved milestone tip lifts the hold; this attempt then lands.
-    const result = await presyncMilestoneBranch({
-      repo: REPO,
-      milestoneBranch: MILESTONE,
-      defaultBranch: DEFAULT_BRANCH,
-      streakPath: fx.path,
-      grant: { agentAllowed: true },
-      nowMs: NOW + 2,
-    }, deps({
-      milestoneTipSha: () =>
-        Promise.resolve({ ok: true as const, value: "7".repeat(40) }),
-    }));
+    const result = await presyncMilestoneBranch(
+      {
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs: NOW + 2,
+      },
+      deps({
+        milestoneTipSha: () =>
+          Promise.resolve({ ok: true as const, value: "7".repeat(40) }),
+      }),
+    );
 
     assertEquals(result.status, "synced");
     const entry = (await loadSyncStreaks(fx.path))[`${REPO}|${MILESTONE}`];
@@ -504,7 +519,10 @@ Deno.test("reportGateWedge - files one diagnostic in VibeCoder when none is open
   assertEquals(filed, true);
   const create = calls.find((a) => a[0] === "issue" && a[1] === "create")!;
   assert(create !== undefined, "the diagnostic is created");
-  assertEquals(create[create.indexOf("--repo") + 1], GATE_WEDGE_DIAGNOSTIC_REPO);
+  assertEquals(
+    create[create.indexOf("--repo") + 1],
+    GATE_WEDGE_DIAGNOSTIC_REPO,
+  );
   assertEquals(
     create[create.indexOf("--title") + 1],
     gateWedgeDiagnosticTitle(REPO, MILESTONE),
