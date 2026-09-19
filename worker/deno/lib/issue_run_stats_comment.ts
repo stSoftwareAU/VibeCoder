@@ -447,6 +447,11 @@ export function buildExecutorSplitStatsLines(
  * @param args.qualityGate - What the run's quality gate did (Issue #2345);
  *   omitted — every phase that runs no gate — renders no such line, so those
  *   comments are byte-for-byte what they were before
+ *
+ * An implementation run also carries the split figures (Issue #2346): one
+ * `split: on`/`split: off` line always, and the executor counts on a split run
+ * — see {@link buildExecutorSplitStatsLines}.
+ *
  * @returns The comment body, or `""` when no invocation produced stats (so
  *   callers post nothing rather than an empty comment)
  */
