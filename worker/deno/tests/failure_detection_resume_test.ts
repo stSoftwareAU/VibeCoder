@@ -597,3 +597,35 @@ Deno.test("runFailureDetectionResumePass - no labelled parents is a clean no-op"
   assertEquals(result.outcomes, []);
   assertEquals(recorder.comments, []);
 });
+
+// Issue #2409: the pass hands the scan's listing to its finder, so an idle
+// cycle with nothing to resume costs no `gh issue list` at all.
+Deno.test("resume pass - reads the scan's listing, so a cycle with nothing to resume lists nothing (Issue #2409)", async () => {
+  const recorder: ClientRecorder = {
+    comments: [],
+    labelsAdded: [],
+    labelsRemoved: [],
+  };
+  const listed: string[] = [];
+  const ghCalls: string[][] = [];
+
+  const result = await runFailureDetectionResumePass({
+    repos: ["owner/alpha", "owner/beta"],
+    ghClient: fakeClient(recorder),
+    ghCommandFn: (args) => {
+      ghCalls.push(args);
+      return Promise.resolve("[]");
+    },
+    runClaude: forbiddenClaude({ calls: 0 }),
+    logger: silentLogger(),
+    needsHumanLabel: "needs-human",
+    listOpenIssues: (repo) => {
+      listed.push(repo);
+      return Promise.resolve([{ number: 1, title: "t", labels: ["work-on"] }]);
+    },
+  });
+
+  assertEquals(result.parentsFound, 0);
+  assertEquals(listed, ["owner/alpha", "owner/beta"]);
+  assertEquals(ghCalls, []);
+});
