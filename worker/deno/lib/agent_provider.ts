@@ -353,6 +353,16 @@ export interface AgentInvocationRequest {
    */
   mcpConfigPath?: string;
   /**
+   * Claude Code settings for this one spawn, already serialised (Issue #2383).
+   * Claude takes it as `--settings`, which is how a run installs hooks —
+   * RTK's `PreToolUse` Bash entry, the split guard's `Edit|Write` entry —
+   * without writing anything to `~/.claude/settings.json`, so the image stays
+   * hook-free. Absent or empty → no flag, and the argv is the one every host
+   * spawned before. DeepSeek shares the CLI but its endpoint implements no
+   * hooks, so that descriptor strips the field.
+   */
+  settingsJson?: string;
+  /**
    * The prompt will be written to the child's stdin (Issue #4385): build
    * the argv so the CLI reads it from there, and put no prompt text in
    * argv. Only meaningful for a provider whose `promptTransport` is
@@ -558,6 +568,13 @@ function buildClaudeCliArgs(
   // directory the agent never runs from.
   if (request.mcpConfigPath) {
     args.push("--mcp-config", request.mcpConfigPath);
+  }
+
+  // This spawn's hooks, carried on the command line (Issue #2383) rather than
+  // written to `~/.claude/settings.json`: a run that installs none emits no
+  // flag and spawns the argv it always did.
+  if (request.settingsJson) {
+    args.push("--settings", request.settingsJson);
   }
 
   // Static content passed separately so the CLI caches it (Issue #1262).
@@ -1036,6 +1053,10 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
           request.sessionResumeState,
           this.id,
         ),
+        // Hooks are an Anthropic-endpoint feature (Issue #2383): the shared
+        // binary would forward `--settings` to an endpoint that runs nothing,
+        // so the payload is dropped here rather than in the caller.
+        settingsJson: undefined,
       },
       { model: routing.model },
     );
