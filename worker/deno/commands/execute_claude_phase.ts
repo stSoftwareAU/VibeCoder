@@ -167,6 +167,7 @@ export const executeClaudePhaseCommand: Command = {
       graftContextEnabled: isGraftContextEnabled(config),
       // The CodeGraph repo-context trial switch (Issue #2159, part of #2145).
       codegraphContextEnabled: config.codegraphContext.enabled,
+      rtkOutputEnabled: config.rtkOutput.enabled,
       // Context budget thresholds, including the hard ceiling (Issue #3713)
       contextBudgetWarningPercent: config.contextBudgetWarningPercent,
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,

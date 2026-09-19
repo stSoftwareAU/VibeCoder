@@ -113,6 +113,7 @@ import { checkCiStatus, directMergePr } from "./direct_merge.ts";
 // Claude operations
 import { checkClaudeHealth, runClaudeWithRetry } from "./claude_runner.ts";
 import { prepareCodegraphContext } from "./codegraph_context.ts";
+import { prepareRtkRun } from "./rtk_output.ts";
 import { buildClaudeModelArgs } from "./claude_executor.ts";
 import { isClaudeAuthError } from "./claude_auth.ts";
 import { activeAgentProvider } from "./agent_provider.ts";
@@ -311,6 +312,15 @@ export interface ClaudeDeps {
    * back. A test injects a fake preparer so no suite spawns `codegraph`.
    */
   prepareCodegraphContext: typeof prepareCodegraphContext;
+  /**
+   * Prepare this run's RTK shell-output filter (Issue #2383, part of #2328).
+   *
+   * Sits beside the agent invocation for the same reason as CodeGraph above:
+   * it hands the spawn its `PreToolUse` hook and the one prompt line that
+   * goes with it, and reads the saved-token figure back. A test injects a
+   * scripted preparer so no suite spawns `rtk`.
+   */
+  prepareRtkRun: typeof prepareRtkRun;
   runHealthCheck: typeof checkClaudeHealth;
   isClaudeAuthError: typeof isClaudeAuthError;
   buildClaudeModelArgs: typeof buildClaudeModelArgs;
@@ -616,6 +626,7 @@ export function createDefaultDeps(
     claude: {
       runClaudeWithRetry,
       prepareCodegraphContext,
+      prepareRtkRun,
       runHealthCheck: checkClaudeHealth,
       // Provider-auth classification goes through the seam (Issue #4067),
       // so a different provider classifies its own auth failures.
@@ -1085,6 +1096,12 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     // gets the switched-off behaviour and spawns nothing.
     prepareCodegraphContext: mockFn<ClaudeDeps["prepareCodegraphContext"]>(() =>
       Promise.resolve({ status: "off", enabled: false })
+    ),
+    // Off by default (Issue #2383): the real preparer, forced switched-off, so
+    // a test that says nothing about RTK gets a genuine `off` run — the same
+    // prompt and argv it always had — and spawns nothing.
+    prepareRtkRun: mockFn<ClaudeDeps["prepareRtkRun"]>((options) =>
+      prepareRtkRun({ ...options, enabled: false })
     ),
     runHealthCheck: mockFn<ClaudeDeps["runHealthCheck"]>(() =>
       Promise.resolve({ healthy: true, exitCode: 0, message: "OK" })
