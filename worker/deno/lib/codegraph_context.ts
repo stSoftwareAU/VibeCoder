@@ -354,6 +354,7 @@ export function codegraphMcpServer(repoDir: string): {
   command: string;
   args: string[];
   env: Record<string, string>;
+  alwaysLoad: true;
 } {
   if (repoDir.trim() === "") {
     throw new Error(
@@ -365,6 +366,8 @@ export function codegraphMcpServer(repoDir: string): {
     command: "codegraph",
     args: ["serve", "--mcp", CODEGRAPH_ROOT_FLAG, repoDir],
     env: { ...CODEGRAPH_ENV },
+    // Issue #2435: in context from the first turn, not behind a tool search.
+    alwaysLoad: true,
   };
 }
 

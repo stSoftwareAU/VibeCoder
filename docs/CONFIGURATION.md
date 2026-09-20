@@ -1802,7 +1802,12 @@ the tools — `graft_find_code`, `graft_file_api`, `graft_trace_calls`,
 reading is still right. It leads rather than trails because, as one sentence
 appended after the issue and the bundle, it was ignored: 25 of 29 `Graft: ok`
 runs reported `0 queries` (Issue #2435). The entry and the rule are added
-together or not at all, on the same five run kinds. The server is rooted at the checkout the graph was built in,
+together or not at all, on the same five run kinds. The entry carries
+`alwaysLoad: true`, which exempts the server from the Claude CLI's tool-search
+deferral: deferred, a Graft tool is a name the agent must spend a call loading
+before it can use it, and it greps instead (Issue #2435). The exemption is per
+server, so nothing else the run carries is loaded up front, and Codex — which
+reads only `command`, `args` and `env` — never sees it. The server is rooted at the checkout the graph was built in,
 named in its arguments rather than a `cwd`, for the same reason CodeGraph's is
 (Issue #2200). A provider with no MCP transport (Gemini) keeps the bundle and
 gets no tools; the run logs `Graft tools: not handed to the agent` and reports
