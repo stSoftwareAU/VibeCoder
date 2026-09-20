@@ -25,7 +25,7 @@ import type {
   TerminalScanCycle,
 } from "./run_callbacks.ts";
 import { callbackGraftFacts } from "./run_callbacks.ts";
-import { CODEGRAPH_OFF } from "./run_callbacks.ts";
+import { CODEGRAPH_OFF, RTK_OFF } from "./run_callbacks.ts";
 import { classifyRunFailure } from "./run_outcome_classifier.ts";
 import {
   agentTranscriptDir,
@@ -221,6 +221,9 @@ export function buildIssueRunCallbackContext(
     // Issue #2162: stated on every run, so a host without the switch is
     // explicitly comparable with the hosts that have it.
     codegraph: run.codegraph ?? CODEGRAPH_OFF,
+    // Issue #2386: likewise stated on every run, `off` when the run reported
+    // no RTK preparation.
+    rtk: run.rtk ?? RTK_OFF,
   };
 }
 
