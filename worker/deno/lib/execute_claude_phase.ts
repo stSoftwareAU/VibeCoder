@@ -65,6 +65,12 @@ import {
   prepareCodegraphRun,
 } from "./codegraph_run.ts";
 import { bindGraftRun } from "./graft_run.ts";
+import {
+  prepareRtkRun,
+  type RtkOutputResult,
+  rtkProviderId,
+  settingsJsonOption,
+} from "./rtk_output.ts";
 import type { ProgressExtensionOptions } from "./progress_extension.ts";
 import {
   buildTimeoutFailureReason,
@@ -206,6 +212,15 @@ export interface ExecuteClaudePhaseResult {
    * `failed` otherwise, carrying `queries` once the run's tool tally was read.
    */
   codegraphContext?: CodegraphContextResult;
+  /**
+   * What this run's RTK output filtering did (Issue #2383, part of #2328).
+   *
+   * Present on every outcome reached after the preparation — `off` on a host
+   * whose switch is down, `unsupported` on a run routed to a provider that
+   * takes no hooks, and `ok` or `failed` otherwise, carrying `savedTokens`
+   * once the store was read again after the invocation.
+   */
+  rtkOutput?: RtkOutputResult;
 }
 
 /** Options for the execute-claude phase. */
@@ -300,6 +315,15 @@ export interface ExecuteClaudePhaseOptions {
    * from before the trial existed.
    */
   codegraphContextEnabled?: boolean;
+  /**
+   * Whether to filter this run's shell output through RTK (Issue #2383, part
+   * of #2328, default: false).
+   *
+   * Threaded from `config.rtkOutput.enabled` by the same production wiring
+   * site that supplies {@link codegraphContextEnabled}. Off, the run spawns
+   * nothing, carries no `--settings` flag and sends the prompt it always sent.
+   */
+  rtkOutputEnabled?: boolean;
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
   /** Warning threshold for the context budget (Issue #1327, default: 50). */
@@ -343,6 +367,14 @@ export interface ExecuteClaudePhaseDeps {
    * suite spawns `codegraph`.
    */
   prepareCodegraphContext?: PrepareCodegraphContextFn;
+  /**
+   * Prepare this run's RTK output filtering (Issue #2383).
+   *
+   * Optional for the same reason as {@link prepareCodegraphContext}: existing
+   * doubles need no change, and a test injects a scripted preparer so no suite
+   * spawns `rtk`.
+   */
+  prepareRtkRun?: typeof prepareRtkRun;
   /** Build the issue prompt with SHA-based cache integration (Issue #1273). */
   buildCachedIssuePrompt: (
     options: CachedIssuePromptOptions,
@@ -879,14 +911,19 @@ export async function runExecuteClaudePhase(
   const withGraft = collected.result
     ? { ...body, graftContext: graftContextFacts(collected.result) }
     : body;
-  return carrier.codegraphContext
+  const withCodegraph = carrier.codegraphContext
     ? { ...withGraft, codegraphContext: carrier.codegraphContext }
     : withGraft;
+  return carrier.rtkOutput
+    ? { ...withCodegraph, rtkOutput: carrier.rtkOutput }
+    : withCodegraph;
 }
 
-/** Where the phase body leaves its CodeGraph outcome (Issue #2159). */
+/** Where the phase body leaves its CodeGraph and RTK outcomes (Issue #2159). */
 interface CodegraphCarrier {
   codegraphContext?: CodegraphContextResult;
+  /** This run's RTK outcome (Issue #2383) — same carrier, same reason. */
+  rtkOutput?: RtkOutputResult;
 }
 
 /** Single-pass phase body — see {@link runExecuteClaudePhase}. */
@@ -932,6 +969,7 @@ async function executeClaudePhaseBody(
     codebaseMapCacheDir,
     graftContextEnabled = false,
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
+    rtkOutputEnabled = OPERATIONAL_DEFAULTS.rtkOutput.enabled,
     sessionResumeState,
     contextBudgetWarningPercent =
       OPERATIONAL_DEFAULTS.contextBudgetWarningPercent,
@@ -1120,6 +1158,19 @@ async function executeClaudePhaseBody(
   });
   carrier.codegraphContext = codegraph.result;
 
+  // --- RTK shell-output filtering (Issue #2383, part of #2328) ---
+  // Installed per spawn, so nothing is written to `~/.claude/settings.json`.
+  // Off — or on a provider that takes no hooks — this spawns nothing and the
+  // argv and prompt below are the ones they always were. The hook and its
+  // prompt line travel together, and losing RTK never fails the run.
+  const rtk = await (deps.prepareRtkRun ?? prepareRtkRun)({
+    enabled: rtkOutputEnabled,
+    providerId: rtkProviderId(invocationAgentProvider, logger),
+    logger,
+    cwd: repoDir,
+  });
+  carrier.rtkOutput = rtk.result;
+
   // Issue #2314: the pull side of Graft. On an `ok` collection, for a provider
   // with an MCP transport, the `graft` MCP server and its prompt line ride
   // beside CodeGraph's; on every other status the run is exactly as before.
@@ -1223,7 +1274,11 @@ async function executeClaudePhaseBody(
   // the same reason the codebase map is injected rather than templated. The
   // cached static half is untouched, and the line lands outside every
   // untrusted fence the builder wrote.
-  const userPrompt = graft.applyPrompt(codegraph.applyPrompt(builtUserPrompt));
+  // Issue #2383 appends its recall line the same way, and only on a run whose
+  // hook is actually installed — the other half of the indivisible pair.
+  const userPrompt = rtk.applyPrompt(
+    graft.applyPrompt(codegraph.applyPrompt(builtUserPrompt)),
+  );
 
   // --- Context budget monitoring and hard ceiling (Issues #1327, #3713) ---
   // Estimate token counts for each major prompt component and log the budget
@@ -1416,6 +1471,11 @@ async function executeClaudePhaseBody(
         // enabled run whose index built; on every other status this is
         // exactly `screenshotRequired`, as before.
         mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
+        // This spawn's hooks (Issue #2383), carried on the command line. A run
+        // that installs none leaves the key absent, so the argv is the one it
+        // always spawned; when the split-executor guard lands on this path its
+        // entry merges into the same object rather than replacing this one.
+        ...settingsJsonOption(undefined, rtk.hookSettings()),
         // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
         ...(options.progressExtension
           ? { progressExtension: options.progressExtension }
@@ -1442,6 +1502,10 @@ async function executeClaudePhaseBody(
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   // Issue #2314: the run's `graft_*` tally, from the same per-tool counts.
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
+  // Issue #2383: RTK's figure comes from its own store, not the run stats, so
+  // it is read on every outcome — a run that failed still filtered output.
+  // The result object on the carrier is the one this updates.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     return {

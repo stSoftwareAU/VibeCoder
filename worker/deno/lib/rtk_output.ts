@@ -60,7 +60,11 @@
  */
 
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
-import { CLAUDE_PROVIDER_ID } from "./agent_provider.ts";
+import {
+  type AgentProviderSelector,
+  CLAUDE_PROVIDER_ID,
+  selectAgentProvider,
+} from "./agent_provider.ts";
 import type { Result } from "../types.ts";
 
 /**
@@ -320,6 +324,69 @@ export function mergePreToolUseSettings(
   };
 }
 
+/**
+ * Name the provider this invocation selected, without ever throwing.
+ *
+ * `prepareRtkRun` needs the provider id to decide whether the hook applies, and
+ * resolution can fail — an unregistered selector, a provider missing from the
+ * image. That is a reason to skip the accelerator, never a reason to take the
+ * run down, so the fault logs one marker line and yields an empty id, which
+ * `prepareRtkRun` reads as `unsupported`.
+ *
+ * @param selector - The invocation's provider selector, or `undefined` for the run's active provider
+ * @param logger - Where the one marker line goes when resolution fails
+ * @returns The provider id, or `""` when it could not be resolved
+ */
+export function rtkProviderId(
+  selector: AgentProviderSelector | undefined,
+  logger: RtkOutputLogger,
+): string {
+  try {
+    return selectAgentProvider(selector).id;
+  } catch (err) {
+    logger.warn(
+      `${RTK_UNAVAILABLE_MARKER} the run's agent provider could not be resolved: ${
+        message(err)
+      }`,
+    );
+    return "";
+  }
+}
+
+/**
+ * The `settingsJson` option for a spawn, or an empty object when it installs
+ * no hooks at all.
+ *
+ * Returning the option rather than a string lets a caller spread it — the
+ * repo's idiom for "absent key, not present-and-undefined" — so a host with
+ * every accelerator off spawns the argv it always did. Empty settings on either
+ * side count as nothing to install: an object carrying no entries would still
+ * emit a `--settings` flag that changes every spawn for no gain.
+ *
+ * @param base - The run's own settings, typically the split guard's, or `undefined`
+ * @param extra - RTK's hook settings, or `undefined` when RTK is not wired in
+ * @returns `{ settingsJson }` when there is something to install, `{}` otherwise
+ */
+export function settingsJsonOption(
+  base: Record<string, unknown> | undefined,
+  extra: Record<string, unknown> | undefined,
+): { settingsJson?: string } {
+  const baseSettings = withEntries(base);
+  const extraSettings = withEntries(extra);
+
+  if (extraSettings === undefined) {
+    return baseSettings === undefined
+      ? {}
+      : { settingsJson: JSON.stringify(baseSettings) };
+  }
+
+  return {
+    settingsJson: JSON.stringify(
+      mergePreToolUseSettings(baseSettings, extraSettings),
+    ),
+  };
+}
+
 /** The one status line a run logs, naming the status and whatever figures. */
 export function describeRtkRun(result: RtkOutputResult): string {
   const figures = [
@@ -468,6 +535,15 @@ function buildRun(
 function preToolUseEntries(hooks: Record<string, unknown>): unknown[] {
   const entries = hooks.PreToolUse;
   return Array.isArray(entries) ? entries : [];
+}
+
+/** The settings when they carry something, `undefined` when empty. */
+function withEntries(
+  settings: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  return settings === undefined || Object.keys(settings).length === 0
+    ? undefined
+    : settings;
 }
 
 /** A value read as an object, or an empty one when it is anything else. */

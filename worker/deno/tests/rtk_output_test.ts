@@ -34,7 +34,9 @@ import {
   RTK_PROMPT_LINE,
   RTK_UNAVAILABLE_MARKER,
   type RtkOutputLogger,
+  rtkProviderId,
   type RtkRunner,
+  settingsJsonOption,
 } from "../lib/rtk_output.ts";
 
 /** One line a stub logger kept, so a test can read the marker back. */
@@ -612,4 +614,109 @@ Deno.test("prepareRtkRun - a silent failure still says something", async () => {
     at(markerLines(logger), 0, "the marker line"),
     "exited 1: (no output)",
   );
+});
+
+/** The `PreToolUse` entries a serialised settings payload carries. */
+function preToolUseOf(settingsJson: string): { matcher?: string }[] {
+  const parsed = JSON.parse(settingsJson) as {
+    hooks?: { PreToolUse?: { matcher?: string }[] };
+  };
+  return parsed.hooks?.PreToolUse ?? [];
+}
+
+/** A split-guard-shaped entry: the other hook a run can already install. */
+const GUARD_SETTINGS: Record<string, unknown> = {
+  hooks: {
+    PreToolUse: [
+      {
+        matcher: "Edit|Write",
+        hooks: [{ type: "command", command: "guard hook" }],
+      },
+    ],
+  },
+};
+
+Deno.test("rtkProviderId - names the provider this invocation selected", () => {
+  const logger = recordingLogger();
+
+  // Claude is the one provider RTK's hook applies to, and the only id every
+  // image installs — naming a provider the running image left out is the
+  // reported-not-thrown case below, not this one.
+  assertEquals(rtkProviderId(CLAUDE_PROVIDER_ID, logger), CLAUDE_PROVIDER_ID);
+  assertEquals(markerLines(logger), []);
+});
+
+Deno.test("rtkProviderId - no selector falls back to the run's active provider", () => {
+  const logger = recordingLogger();
+  const id = rtkProviderId(undefined, logger);
+
+  assert(id.length > 0, "expected the active provider to have an id");
+  assertEquals(markerLines(logger), []);
+});
+
+Deno.test("rtkProviderId - an unresolvable provider is reported, never thrown", () => {
+  const logger = recordingLogger();
+
+  // A provider that is not registered: `selectAgentProvider` throws, and this
+  // accelerator must answer rather than take the run down with it.
+  assertEquals(rtkProviderId("not-a-registered-provider", logger), "");
+  assertStringIncludes(
+    at(markerLines(logger), 0, "the marker line"),
+    "agent provider could not be resolved",
+  );
+});
+
+Deno.test("rtkProviderId - an unresolved provider leaves the run unsupported and unnamed", async () => {
+  const logger = recordingLogger();
+  const run = await prepareRtkRun({
+    enabled: true,
+    providerId: rtkProviderId("not-a-registered-provider", logger),
+    logger,
+    run: stubRunner([]).run,
+  });
+
+  assertEquals(run.result.status, "unsupported");
+  assertEquals(run.result.provider, undefined);
+  assertEquals(run.hookSettings(), undefined);
+  assertEquals(run.applyPrompt("P"), "P");
+});
+
+Deno.test("settingsJsonOption - nothing to install is an absent key, not an empty payload", () => {
+  // Three spellings of "this run installs no hooks" — a host with every
+  // accelerator off must spawn the argv it always did.
+  assertEquals(settingsJsonOption(undefined, undefined), {});
+  assertEquals(settingsJsonOption(undefined, {}), {});
+  assertEquals(settingsJsonOption({}, undefined), {});
+  assertEquals(Object.keys(settingsJsonOption(undefined, undefined)).length, 0);
+});
+
+Deno.test("settingsJsonOption - RTK's hook alone travels as the whole payload", () => {
+  const option = settingsJsonOption(undefined, buildRtkHookSettings());
+  const settingsJson = option.settingsJson;
+  assert(settingsJson !== undefined, "expected a settings payload");
+
+  const entries = preToolUseOf(settingsJson);
+  assertEquals(entries.length, 1);
+  assertEquals(at(entries, 0, "the RTK entry").matcher, RTK_HOOK_MATCHER);
+  assertStringIncludes(settingsJson, RTK_HOOK_COMMAND);
+});
+
+Deno.test("settingsJsonOption - another hook and RTK's travel in one object", () => {
+  const option = settingsJsonOption(GUARD_SETTINGS, buildRtkHookSettings());
+  const settingsJson = option.settingsJson;
+  assert(settingsJson !== undefined, "expected a settings payload");
+
+  // Claude takes one `--settings` payload per spawn, so a run that installs
+  // two hooks has to hand both over together or lose one of them.
+  const matchers = preToolUseOf(settingsJson).map((entry) => entry.matcher);
+  assertEquals(matchers, ["Edit|Write", RTK_HOOK_MATCHER]);
+});
+
+Deno.test("settingsJsonOption - another hook still travels when RTK is off", () => {
+  const option = settingsJsonOption(GUARD_SETTINGS, undefined);
+  const settingsJson = option.settingsJson;
+  assert(settingsJson !== undefined, "expected a settings payload");
+
+  const matchers = preToolUseOf(settingsJson).map((entry) => entry.matcher);
+  assertEquals(matchers, ["Edit|Write"]);
 });

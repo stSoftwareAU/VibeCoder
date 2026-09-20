@@ -604,6 +604,14 @@ export interface RunClaudeOptions {
    * window stands.
    */
   autocompactTokens?: number;
+  /**
+   * Claude Code settings for this one spawn, already serialised (Issue #2383).
+   *
+   * Forwarded unchanged as `--settings`, which is how a run installs its hooks
+   * without writing to `~/.claude/settings.json`. Omitted, no flag is emitted
+   * and the argv is the one every host spawned before.
+   */
+  settingsJson?: string;
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
@@ -1103,6 +1111,9 @@ export async function runClaudeWithTimeout(
       ? { autocompactTokens: options.autocompactTokens }
       : {}),
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
+    // This spawn's hooks (Issue #2383). A run that installs none keeps the key
+    // absent, so the argv is byte-identical to the one it always spawned.
+    ...(options.settingsJson ? { settingsJson: options.settingsJson } : {}),
   };
   const args = provider.buildInvocation({
     ...invocationRequest,
