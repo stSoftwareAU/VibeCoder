@@ -94,7 +94,7 @@ import { joinRedacted, redactedTail } from "../redacted_text.ts";
 import { reportRunDeadline } from "../slot_context.ts";
 import { prepareCodegraphRun } from "../codegraph_run.ts";
 import { bindGraftRun } from "../graft_run.ts";
-import { rtkProviderId, settingsJsonOption } from "../rtk_output.ts";
+import { settingsJsonOption } from "../rtk_output.ts";
 
 /**
  * True when the worker branch has at least one commit ahead of its base
@@ -566,7 +566,7 @@ async function executeClaudeBody(
   // run. The hook and its one prompt line travel together or not at all.
   const rtk = await deps.claude.prepareRtkRun({
     enabled: config.rtkOutput.enabled,
-    providerId: rtkProviderId(undefined, logger),
+    providerId: deps.claude.rtkProviderId(undefined, logger),
     logger,
     cwd: state.repoPath,
   });

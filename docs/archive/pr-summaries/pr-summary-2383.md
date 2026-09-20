@@ -32,7 +32,8 @@ written to `~/.claude/settings.json` and the image stays hook-free. Closes
   output goes in that argument and both entries land in one object. That merge
   is already pinned by test (below).
 - `worker/deno/lib/issue_worker_wiring.ts`, `issue_worker_types.ts` —
-  production and mock deps for `prepareRtkRun`, and `PhaseState.rtkOutput`.
+  production and mock deps for `prepareRtkRun` and `rtkProviderId`, and
+  `PhaseState.rtkOutput`.
 - `docs/CONFIGURATION.md` — the RTK row no longer says "no spawn path calls the
   module yet": the issue path does; #2384–#2386 are named as what remains.
 
@@ -61,7 +62,17 @@ that branch rather than restarted. What was added on top:
   was added, and shown to have teeth by hard-wiring the provider to `claude`:
   that one test failed and the other three passed; restored, all four pass;
 - the `docs/CONFIGURATION.md` correction above;
-- this summary.
+- this summary;
+- **a provider seam, after CI's parallel-safety cap (Issue #880) refused the
+  main-loop test.** That test reached the run's *active* provider through
+  `VIBE_AGENT_PROVIDER` — the inherited version deleted the variable, and the
+  added case set it — and `Deno.env` is shared by every parallel test worker.
+  Rather than add the file to the unsafe list, `ClaudeDeps` gained
+  `rtkProviderId` beside `prepareRtkRun`; the phase calls
+  `deps.claude.rtkProviderId(undefined, logger)`, production wires the real
+  resolver, and the test injects the id. The file no longer touches
+  `Deno.env`, and the mutation check above was repeated through the seam with
+  the same result.
 
 ## Tests
 

@@ -33,7 +33,7 @@ import type {
   PhaseState,
 } from "../lib/issue_worker_types.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
-import { AGENT_PROVIDER_ENV } from "../lib/agent_provider.ts";
+import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import {
   RTK_HOOK_COMMAND,
   RTK_HOOK_MATCHER,
@@ -96,6 +96,11 @@ async function runPhase(
         });
       }) as never,
       prepareRtkRun: seam.prepare as never,
+      // The run's active provider, injected. Production reads it from
+      // `VIBE_AGENT_PROVIDER`; setting that here would mutate state every
+      // parallel test worker shares (Issue #880), and reading it would let a
+      // host that exported a non-Claude id turn these runs `unsupported`.
+      rtkProviderId: (() => activeProvider ?? CLAUDE_PROVIDER_ID) as never,
     },
     pr: {
       findExistingPrForIssue: (() =>
@@ -103,21 +108,8 @@ async function runPhase(
     },
   });
 
-  // The phase reads the run's *active* provider, which honours
-  // `VIBE_AGENT_PROVIDER`; neutralise it so a host that exported a non-Claude
-  // id cannot turn these runs into `unsupported` ones.
-  const exported = Deno.env.get(AGENT_PROVIDER_ENV);
-  Deno.env.delete(AGENT_PROVIDER_ENV);
-  if (activeProvider !== undefined) {
-    Deno.env.set(AGENT_PROVIDER_ENV, activeProvider);
-  }
-  try {
-    const result = await workOnIssueExecuteClaude(ctx, state, deps);
-    return { runOptions, state, result };
-  } finally {
-    Deno.env.delete(AGENT_PROVIDER_ENV);
-    if (exported !== undefined) Deno.env.set(AGENT_PROVIDER_ENV, exported);
-  }
+  const result = await workOnIssueExecuteClaude(ctx, state, deps);
+  return { runOptions, state, result };
 }
 
 /** The `PreToolUse` entries carried by a run's `--settings` payload. */

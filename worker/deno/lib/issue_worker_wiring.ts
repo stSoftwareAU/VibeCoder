@@ -113,7 +113,7 @@ import { checkCiStatus, directMergePr } from "./direct_merge.ts";
 // Claude operations
 import { checkClaudeHealth, runClaudeWithRetry } from "./claude_runner.ts";
 import { prepareCodegraphContext } from "./codegraph_context.ts";
-import { prepareRtkRun } from "./rtk_output.ts";
+import { prepareRtkRun, rtkProviderId } from "./rtk_output.ts";
 import { buildClaudeModelArgs } from "./claude_executor.ts";
 import { isClaudeAuthError } from "./claude_auth.ts";
 import { activeAgentProvider } from "./agent_provider.ts";
@@ -321,6 +321,16 @@ export interface ClaudeDeps {
    * scripted preparer so no suite spawns `rtk`.
    */
   prepareRtkRun: typeof prepareRtkRun;
+  /**
+   * Name the provider an invocation will run under, for RTK (Issue #2383).
+   *
+   * A seam rather than a direct call because the run's *active* provider is
+   * read from the process environment (`VIBE_AGENT_PROVIDER`). A test that had
+   * to set that variable to reach the `unsupported` branch mutates state every
+   * parallel test worker shares — the race Issue #880 caps — so a test injects
+   * the id instead.
+   */
+  rtkProviderId: typeof rtkProviderId;
   runHealthCheck: typeof checkClaudeHealth;
   isClaudeAuthError: typeof isClaudeAuthError;
   buildClaudeModelArgs: typeof buildClaudeModelArgs;
@@ -627,6 +637,7 @@ export function createDefaultDeps(
       runClaudeWithRetry,
       prepareCodegraphContext,
       prepareRtkRun,
+      rtkProviderId,
       runHealthCheck: checkClaudeHealth,
       // Provider-auth classification goes through the seam (Issue #4067),
       // so a different provider classifies its own auth failures.
@@ -1103,6 +1114,10 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     prepareRtkRun: mockFn<ClaudeDeps["prepareRtkRun"]>((options) =>
       prepareRtkRun({ ...options, enabled: false })
     ),
+    // The real resolver: it only *reads* the environment, and the preparer
+    // above is forced off, so the id it names decides nothing in a test that
+    // says nothing about RTK.
+    rtkProviderId: mockFn<ClaudeDeps["rtkProviderId"]>(rtkProviderId),
     runHealthCheck: mockFn<ClaudeDeps["runHealthCheck"]>(() =>
       Promise.resolve({ healthy: true, exitCode: 0, message: "OK" })
     ),
