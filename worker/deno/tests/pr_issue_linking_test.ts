@@ -1309,7 +1309,9 @@ Deno.test("pr_issue_linking - closeIssuesForMergedPrs reuses prs_merged cache ac
     let mergedListCalls = 0;
     const fn = async (args: string[]): Promise<string> => {
       if (args[0] === "pr" && args[1] === "list") {
-        mergedListCalls++;
+        // Issue #2409: the merged listing also notes the author's open PRs —
+        // one cheap, cached lookup — so count the listing this test is about.
+        if (args.includes("merged")) mergedListCalls++;
         return JSON.stringify([]);
       }
       return "";
