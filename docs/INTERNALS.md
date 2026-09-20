@@ -891,6 +891,8 @@ fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
   busy=52920s usage_blocked=0s usage_blocked_waits=0 rate_limited=0s
   rate_limit_waits=0 claims=32 successes=17 failures=13 skips=2
   hook_failures=0 success_rate=0.57
+  issue_runs=12 issue_split_runs=12 issue_usd=3.9120
+  issue_gate_first_attempt_passes=9 issue_duration=18400s
   idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
   failures_by_class=execute=9,timeout=3,setup=1 utilisation=serial=0.57
 ```
@@ -935,6 +937,19 @@ flowchart LR
   streak behind the number, and where it is published for host-side health
   reporting to read, is in
   [docs/CALLBACKS.md](CALLBACKS.md#what-the-host-can-read-issue-2297).
+- **The `issue_*` counters** are the per-host `issue`-phase figures the
+  advisor/executor pilot is compared on (Issue #2347). One completed
+  implementation run is recorded from the same completion path that posts the
+  run-stats comment, with the same figures that comment renders:
+  `issue_runs` counts those runs, `issue_split_runs` how many had the executor
+  split on (so a half-configured host is visible rather than averaged away),
+  `issue_usd` their summed estimated spend, and
+  `issue_gate_first_attempt_passes` those whose quality gate passed on attempt
+  1 — so the first-attempt pass rate is a division of two recorded numbers
+  rather than a grep over every issue's comments. `issue_duration` is reported
+  beside the cost and gates nothing. The counters accumulate into the same
+  sidecar as the rest; a sidecar written before they existed loads with them at
+  zero.
 - **A block inside a run** — the agent's own retry ladder sleeps in-process —
   counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and
