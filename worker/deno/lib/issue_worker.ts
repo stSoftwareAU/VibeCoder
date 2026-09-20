@@ -225,6 +225,8 @@ export async function workOnIssue(
       // execute phase so the `codegraph_explore` tally the invocation folded
       // in afterwards is the one the callbacks report.
       ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
+      // Issue #2386: the RTK outcome, for the same callbacks.
+      ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
     };
   } catch (err) {
     outcome = withRunOutcomeNotes(
