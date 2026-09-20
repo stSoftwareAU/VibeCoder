@@ -19,6 +19,10 @@
 
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
+import {
+  clearMilestoneReviewRequests,
+  reviewersForBase,
+} from "./milestone_pr_reviewers.ts";
 
 /** What to open the pull request with. */
 export interface RestPrCreateOptions {
