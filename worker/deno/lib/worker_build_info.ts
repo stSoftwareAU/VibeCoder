@@ -121,6 +121,75 @@ export function resolveWorkerBuildInfo(): WorkerBuildInfo {
   return getWorkerBuildInfo(readWorkerVersion());
 }
 
+/** Process-wide memo so a build identity is resolved once, never per run. */
+let cachedBuildInfo: WorkerBuildInfo | undefined;
+
+/**
+ * Resolve the worker's build identity once per process (Issue #2444).
+ *
+ * A run record needs to say which worker code produced it, but nothing about
+ * that identity changes between runs in the same process, so re-resolving it
+ * per run would be pure waste (and, for a git-backed resolver, a spawn per
+ * run). Subsequent calls return the memoised value regardless of `resolve`.
+ *
+ * @param resolve - Resolver used only on the first call; defaults to
+ *   {@link resolveWorkerBuildInfo}.
+ * @returns The memoised {@link WorkerBuildInfo}.
+ */
+export function workerBuildInfoOnce(
+  resolve: () => WorkerBuildInfo = resolveWorkerBuildInfo,
+): WorkerBuildInfo {
+  return cachedBuildInfo ??= resolve();
+}
+
+/** Clears the memo — test-only, so each test starts from a known state. */
+export function resetWorkerBuildInfoOnce(): void {
+  cachedBuildInfo = undefined;
+}
+
+/** The `unknown` sentinel a stamp degrades to when it was never set. */
+const UNKNOWN_BUILD = "unknown";
+
+/** The two build facts a callback context may carry (Issue #2444). */
+export interface WorkerBuildFacts {
+  /** The release tag the running commit carries, when it carries one. */
+  version?: string;
+  /** The commit the running worker was started from. */
+  commit?: string;
+}
+
+/** A value worth reporting: not blank, not the `unknown` sentinel. */
+function readable(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed === UNKNOWN_BUILD) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+/**
+ * Derive the callback-facing build facts from a {@link WorkerBuildInfo}
+ * (Issue #2444).
+ *
+ * A value that cannot be read is omitted entirely rather than written as an
+ * empty string or guessed — each field degrades independently, so a build
+ * with a known commit but no release tag still reports its commit.
+ *
+ * @param info - The build identity to derive facts from; defaults to the
+ *   process-wide memo via {@link workerBuildInfoOnce} (no per-run resolve).
+ * @returns Only the fields that were actually readable.
+ */
+export function workerBuildFacts(
+  info: WorkerBuildInfo = workerBuildInfoOnce(),
+): WorkerBuildFacts {
+  const version = readable(info.version);
+  const commit = readable(info.commit);
+  return {
+    ...(version ? { version } : {}),
+    ...(commit ? { commit } : {}),
+  };
+}
+
 /** Runs git for {@link resolveBuildCommit}; injectable for tests. */
 export type BuildCommitGitRunner = (
   args: string[],
