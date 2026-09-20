@@ -185,6 +185,13 @@ async function runFleet(opts: {
   let now = 0;
   const config = createDefaultRunCoreConfig();
   config.maxConcurrentIssues = opts.slots;
+  // The re-scan cadence is pinned rather than inherited from the production
+  // default (Issue #2446 raised it to 120 s): every injected `sleep` advances
+  // the injected clock, so the default sets how many empty scans fit inside
+  // `runDurationSeconds` before the cycle deadline. This scenario is about
+  // idle accounting, not about the shipped cadence, so it states the cadence
+  // it needs and is immune to the default moving again.
+  config.sleepInterval = 30;
   config.runDurationSeconds = 600;
   const endTime = config.runDurationSeconds * 1000;
   const busy = gate();
@@ -199,6 +206,12 @@ async function runFleet(opts: {
     now: () => now,
     sleep: (ms?: number) => {
       now += ms ?? 30_000;
+      // Fail loud, never hang: past the cycle deadline no slot scans again,
+      // so if the expected empty scans were not reached the busy slot would
+      // park in `processIssue` for ever and the test would wedge rather than
+      // fail. Releasing here lets the run end and the assertions report the
+      // shortfall.
+      if (now >= endTime) busy.open();
       return Promise.resolve();
     },
     log: (m: string) => logs.push(m),
