@@ -480,12 +480,15 @@ its routing does not.
 #### Bounded reversal of the delegation negative result
 
 The split **lifts the delegation cap**, and it does so for the `issue` phase
-only, while `issue_executor_split` is on. The baseline *Cap delegation* bullet
-in [`prompts/coding_guidelines/prompt.md`](../prompts/coding_guidelines/prompt.md)
-tells a run to prefer doing the work itself; the split prompt in
+only, while `issue_executor_split` is on. The baseline tells a run to prefer
+doing the work itself — the *Cap delegation* bullet in
+[`prompts/coding_guidelines/prompt.md`](../prompts/coding_guidelines/prompt.md)
+and the *Delegate sparingly* bullet in
+[`prompts/issue/prompt.md`](../prompts/issue/prompt.md). The split prompt in
 [`worker/deno/lib/issue_executor_split_prompt.ts`](../worker/deno/lib/issue_executor_split_prompt.ts)
-states that it governs delegation for that run and wins where the two differ,
-and it puts no cap on how many executors run concurrently.
+states that it governs delegation for that run and wins where it and the
+*Delegate sparingly* bullet differ, and it puts no cap on how many executors run
+concurrently.
 
 That is a deliberate, **bounded** reversal of the durable negative result
 recorded under
@@ -529,7 +532,7 @@ comes first.
 | --- | --- |
 | Success rate | Fleet telemetry's per-host `successes` and `failures` in [`worker/deno/lib/fleet_telemetry.ts`](../worker/deno/lib/fleet_telemetry.ts) — `successRate` is `successes / (successes + failures)`, and `null` until a run has ended. |
 | Estimated USD per implementation run | The per-host `issue`-phase counters: `issuePhaseUsd` divided by `issuePhaseRuns`. |
-| First-attempt quality-gate pass rate | `issuePhaseFirstAttemptGatePasses` divided by `issuePhaseRuns`. The per-run record behind the counter is the `quality gate: passed on attempt N` line each run-stats comment carries ([`worker/deno/lib/issue_run_stats_comment.ts`](../worker/deno/lib/issue_run_stats_comment.ts)), so a disputed figure can be audited run by run. |
+| First-attempt quality-gate pass rate | `issuePhaseFirstAttemptGatePasses` divided by `issuePhaseRuns`. The per-run record behind the counter is the `quality gate: passed on attempt N` line a run-stats comment carries when a gate outcome exists ([`worker/deno/lib/issue_run_stats_comment.ts`](../worker/deno/lib/issue_run_stats_comment.ts)), so a disputed figure can be audited run by run. |
 | Standards-reviewer `violation` lines per PR | Counted from the `## Standards Review` block of each pilot PR body. The block's shape — every entry carrying `violation` or `clean`, every `violation` naming its evidence and a reason — is enforced by [`worker/deno/lib/independent_review_gate.ts`](../worker/deno/lib/independent_review_gate.ts), so the count is well defined rather than a reading of free prose. |
 | Run duration | `issuePhaseDurationSeconds` divided by `issuePhaseRuns`. |
 
@@ -541,9 +544,10 @@ arm.
 **What no number measures.** Unit-test *quality* has no metric of its own here —
 none of the five distinguishes a meaningful regression test from one that
 asserts nothing. The control for it is the existing review path rather than a
-new counter: the Spec reviewer's per-criterion evidence must name a test, and
-the quality gate runs it. That path applies identically to both arms, so it does
-not favour either.
+new counter: the Spec reviewer must name evidence for each criterion — the file,
+the test, or the test identifier — and where that evidence is a test, the
+quality gate runs it. That path applies identically to both arms, so it does not
+favour either.
 
 #### Default-on decision criteria
 
@@ -2529,7 +2533,10 @@ The delegation line is a deliberate **reversal**: the Opus 4.8-era tuning
 once Opus 5 served the `opus` phases. Recorded here as a durable negative
 result — do **not** re-add the 4.8-era delegation encouragement or the
 self-verification checkpoint while Opus 5 (or a later generation with the same
-behaviours) serves those phases.
+behaviours) serves those phases. The one bounded exception — the `issue` phase
+while `issue_executor_split` is on, where the sub-agents run on a cheaper tier —
+is described in
+[Bounded reversal of the delegation negative result](#bounded-reversal-of-the-delegation-negative-result).
 
 ##### Where the framing lives
 
