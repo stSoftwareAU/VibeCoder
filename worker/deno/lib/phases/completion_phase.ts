@@ -112,6 +112,10 @@ import {
 } from "../run_outcome.ts";
 import { createPrWithSecondaryLimitBackoff } from "../pr_creation_retry.ts";
 import {
+  clearMilestoneReviewRequests,
+  reviewersForBase,
+} from "../milestone_pr_reviewers.ts";
+import {
   deferPrCreation,
   prCreationDeadlineMs,
   recordPrCreationRefusal,
@@ -1998,11 +2002,13 @@ async function completionBody(
     repo,
   ];
 
-  // Add reviewers if configured
-  if (config.prReviewers.length > 0) {
-    for (const reviewer of config.prReviewers) {
-      createPrArgs.push("--reviewer", reviewer);
-    }
+  // Add reviewers if configured. Issue #2438: a PR into a milestone branch
+  // asks for none — nothing waits on that review, because the `milestone/**`
+  // ruleset requires status checks only and the review that matters sits on
+  // the milestone → default-branch PR.
+  const prReviewers = reviewersForBase(baseBranch, config.prReviewers);
+  for (const reviewer of prReviewers) {
+    createPrArgs.push("--reviewer", reviewer);
   }
 
   // Issue #1951: GitHub's *secondary* (content-creation) rate limit refuses
@@ -2024,11 +2030,15 @@ async function completionBody(
       title: prTitle,
       body: prBody,
       base: baseBranch,
-      reviewers: config.prReviewers,
+      reviewers: prReviewers,
     });
   }
 
   let prUrl: string;
+  // The REST path clears its own milestone review requests (Issue #2438), so
+  // the clear below runs only for a PR `gh pr create` opened — exactly once
+  // either way.
+  let clearedDuringCreate = false;
   try {
     if (attempt.kind === "failed") throw attempt.error;
     prUrl = attempt.prUrl;
@@ -2057,6 +2067,7 @@ async function completionBody(
       : null;
     if (restUrl !== null) {
       prUrl = restUrl;
+      clearedDuringCreate = true;
     } else {
       // Self-healing: detect existing PR after creation failure (Issue #386, #1189)
       const existingPrFromError = await deps.pr.findExistingPrForIssue(
@@ -2094,7 +2105,7 @@ async function completionBody(
             title: prTitle,
             body: prBody,
             base: baseBranch,
-            reviewers: config.prReviewers,
+            reviewers: prReviewers,
           },
         );
       } else {
@@ -2109,6 +2120,17 @@ async function completionBody(
   // The run outcome names this PR at claim release (Issue #4325).
   state.prUrl = prUrl;
   state.prNumber = prNumber;
+
+  // Issue #2438: CODEOWNERS auto-requests a review the moment the PR opens,
+  // and nothing acts on it when the base is a milestone branch. Remove it
+  // once, here, right after creation — a no-op for every other base.
+  if (!clearedDuringCreate) {
+    await clearMilestoneReviewRequests({ repo, prNumber, base: baseBranch }, {
+      ghCommandFn: deps.github.runGhCommand,
+      log: (message: string) => logger.info(message),
+      warn: (message: string) => logger.warn(message),
+    });
+  }
 
   // Post-PR finalisation
   try {
