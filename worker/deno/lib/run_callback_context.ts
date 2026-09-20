@@ -33,6 +33,10 @@ import {
   agentTranscriptPath,
   peekTranscriptAbsence,
 } from "./agent_transcript.ts";
+import {
+  type WorkerBuildFacts,
+  workerBuildFacts,
+} from "./worker_build_info.ts";
 
 /** Host-side facts the loop cannot supply on its own. */
 export interface CallbackIdentity {
@@ -78,6 +82,11 @@ export interface CallbackContextSeams {
   transcriptAbsenceReason?: (
     issueNumber: number,
   ) => SessionLogAbsentReason | undefined;
+  /**
+   * Worker build identity for this run (Issue #2444). Defaults to the
+   * process-wide memo, so a caller never resolves it per run.
+   */
+  buildFacts?: () => WorkerBuildFacts;
 }
 
 /**
@@ -181,6 +190,7 @@ export function buildIssueRunCallbackContext(
     seams,
   );
   const outcome = callbackOutcomeFromRun(run);
+  const facts = (seams.buildFacts ?? (() => workerBuildFacts()))();
   return {
     runId: identity.runId,
     result: run.result,
@@ -190,6 +200,10 @@ export function buildIssueRunCallbackContext(
     ...(present(identity.workerName)
       ? { workerName: present(identity.workerName)! }
       : {}),
+    // Issue #2444: omitted rather than guessed when the build could not be
+    // read; resolved once per process, never per run.
+    ...(facts.version ? { workerVersion: facts.version } : {}),
+    ...(facts.commit ? { workerCommit: facts.commit } : {}),
     // Issue #2100: the workflow label the dispatch matched, so an archive can
     // compare implementation runs only. Absent when the loop named none.
     ...(present(run.mode) ? { mode: present(run.mode)! } : {}),
