@@ -1523,9 +1523,9 @@ export interface RunCoreDeps {
  * and one idle-task-activity probe per monitored repo), so invoking it every
  * cycle would multiply the loop's `gh` cost — the exact unbounded-`gh`
  * failure mode the Issue #2106 short-circuit guards against. At the default
- * ~30s cycle this cadence runs the guard about once every ten minutes, which
- * is far finer than the 8-hour stall threshold it watches for, so detection
- * latency is unaffected. The guard fires on the first cycle (`tick === 1`)
+ * ~120s cycle (Issue #2446) this cadence runs the guard roughly every forty
+ * minutes, still far finer than the 8-hour stall threshold it watches for, so
+ * detection latency is unaffected. The guard fires on the first cycle (`tick === 1`)
  * and every `LIVENESS_CHECK_CADENCE` cycles thereafter.
  */
 export const LIVENESS_CHECK_CADENCE = 20;

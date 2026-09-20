@@ -41,7 +41,10 @@ import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
 import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
-import { buildDefaultWorkerConfig } from "./config_defaults.ts";
+import {
+  buildDefaultWorkerConfig,
+  OPERATIONAL_DEFAULTS,
+} from "./config_defaults.ts";
 import {
   setSuppressionAuthorAllowlist,
   setSuppressionFleetLogins,
@@ -1198,7 +1201,7 @@ export async function createProductionRunCoreDeps(
   const circuitBreakerConfig: CircuitBreakerConfig = {
     workDir,
     threshold: 5,
-    sleepInterval: config.sleepInterval ?? 30,
+    sleepInterval: config.sleepInterval ?? OPERATIONAL_DEFAULTS.sleepInterval,
     creditWaitInterval: config.creditWaitInterval ?? 300,
     stateExpirySeconds: 3600,
     operationBackoffThreshold: 3,
