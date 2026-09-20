@@ -79,6 +79,15 @@ green `deno check` and the 42-test run that exercises that exact chain confirm i
 resolves at runtime. Duplicating `isMilestoneBranch()` would break DRY and
 relocating it would be scope creep, so the cycle stays.
 
+### Sweep-coverage registration
+
+A new module under `worker/deno/lib/` must be claimed by a sweep slice
+(Issue #1609), so `docs/audits/lib-sweep-coverage.json` gains a `top-up-2438`
+slice claiming `milestone_pr_reviewers.ts`, backed by a real reading of it in
+`docs/audits/security-sweep-2438-milestone-pr-reviewers.md` — the ledger tests
+require the record to exist *and* to name every module its slice claims, which
+is what stops a path being appended without the sweep behind it.
+
 ## Evidence
 
 Targeted runs from `worker/deno`:
@@ -94,8 +103,26 @@ $ deno test -A tests/completion_phase_rest_pr_fallback_test.ts \
 ok | 23 passed | 0 failed (377ms)
 ```
 
-`deno fmt`, `deno check` and `deno lint` are clean on every touched file, and the
-full `./quality.sh` passes.
+The full gate from the repository root:
+
+```
+$ ./quality.sh < /dev/null
+  completeness checks            PASSED
+  deno tests                     PASSED
+  deno lint                      PASSED
+  deno type check                PASSED
+  deno fmt                       PASSED
+
+Result: PASSED (with skipped checks)
+```
+
+(`config integration` is the skipped check — it needs a configured live repo.)
+
+An earlier run of the same gate failed one test,
+`launcher_parity_test.ts` → "run.sh and run.ps1 - hand the runtime the same
+invocation". That test spawns launcher processes and races under `--parallel`;
+it passes standalone (`ok | 24 passed | 0 failed`) and passed on the gate re-run.
+It touches no code in this change.
 
 This change has no visual surface — it alters which REST calls accompany a PR
 creation — so there is no screenshot to capture.
