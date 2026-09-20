@@ -612,7 +612,7 @@ the contract moved: `schemaVersion` stays at 2, and a hook that knows nothing
 about RTK ignores the block.
 
 `workerVersion` and `workerCommit` are **additive** scalars (Issue #2444, part of
-#2327) that identify the worker binary and its source that produced this run.
+\#2327) that identify the worker binary and its source that produced this run.
 Each is **omitted** — never blank, never a placeholder — when the worker's own
 build metadata could not be read at invocation time. When present:
 
