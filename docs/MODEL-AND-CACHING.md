@@ -12,6 +12,7 @@ the worker.
 - [Model Selection](#model-selection)
   - [Phase-Specific Defaults](#phase-specific-defaults)
   - [Model/effort precedence chain](#-modeleffort-precedence-chain)
+  - [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase)
   - [Codex per-phase routing](#-codex-per-phase-routing)
   - [Gemini per-phase routing](#-gemini-per-phase-routing)
   - [DeepSeek per-phase routing](#-deepseek-per-phase-routing)
@@ -98,6 +99,7 @@ a section without a marker, fails `deno test`.
 | [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first) | ✅ | ⚠️ | ❌ | ❌ | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone |
 | [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
 | [Model/effort precedence chain](#-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
+| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
@@ -430,6 +432,152 @@ records the model and effort actually resolved per run (the
 [Credit Logging](#credit-logging) `model`/`effort` fields), so a per-repo
 override is visible in the cost logs. The resolution logic lives in
 [`worker/deno/lib/claude_executor.ts`](../worker/deno/lib/claude_executor.ts).
+
+### Advisor and executor split (issue phase)
+
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns.
+
+The `issue_executor_split` configuration key
+([CONFIGURATION.md](CONFIGURATION.md)) changes **who** does the work on an
+`issue`-phase run without changing what the phase itself is routed to. It is
+**off by default**; the [pilot method](#pilot-method) below is how that default
+gets revisited.
+
+- **Advisor** — the main session. It keeps the phase's own model and effort,
+  which for `issue` is Opus at `high`
+  ([Phase-Specific Defaults](#phase-specific-defaults)). It reads, plans,
+  dispatches and reviews, and a `PreToolUse` hook denies it `Edit` and `Write`
+  so the plan cannot quietly become the implementation.
+- **Executors** — Claude CLI sub-agents pinned to a cheaper tier: `sonnet` at
+  `medium` effort, fixed as `ISSUE_EXECUTOR_MODEL` and `ISSUE_EXECUTOR_EFFORT`
+  in
+  [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts).
+  Each gets exactly the tools it needs to edit files and run the tests —
+  `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash` — and **no `Agent` tool**, so
+  the topology is one level deep by construction and an executor cannot fan out
+  further.
+
+```mermaid
+flowchart TD
+    A["🧠 Advisor — main session<br/>Opus · high<br/>Edit/Write denied by hook"]
+    A -->|dispatch| E1["🛠️ Executor<br/>Sonnet · medium"]
+    A -->|dispatch| E2["🛠️ Executor<br/>Sonnet · medium"]
+    A -->|dispatch| E3["🛠️ Executor<br/>Sonnet · medium"]
+    E1 -->|diff + result| A
+    E2 -->|diff + result| A
+    E3 -->|diff + result| A
+    A -->|re-task on a shortfall| E1
+    style A fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style E1 fill:#adb5bd,stroke:#6c757d,color:#000
+    style E2 fill:#adb5bd,stroke:#6c757d,color:#000
+    style E3 fill:#adb5bd,stroke:#6c757d,color:#000
+```
+
+Because the expensive tier only advises, the cheap tier does the editing, and
+executors cannot recurse, the cost shape of an `issue` run changes even though
+its routing does not.
+
+#### Bounded reversal of the delegation negative result
+
+The split **lifts the delegation cap**, and it does so for the `issue` phase
+only, while `issue_executor_split` is on. The baseline *Cap delegation* bullet
+in [`prompts/coding_guidelines/prompt.md`](../prompts/coding_guidelines/prompt.md)
+tells a run to prefer doing the work itself; the split prompt in
+[`worker/deno/lib/issue_executor_split_prompt.ts`](../worker/deno/lib/issue_executor_split_prompt.ts)
+states that it governs delegation for that run and wins where the two differ,
+and it puts no cap on how many executors run concurrently.
+
+That is a deliberate, **bounded** reversal of the durable negative result
+recorded under
+[Model-generation prompt tuning](#model-generation-prompt-tuning): the
+Opus 4.8-era tuning *encouraged* subagent delegation, and that encouragement
+was measured as harmful once Opus 5 served the `opus` phases. The measurement
+was taken with sub-agents running on the **same tier as their parent**, which
+is the condition the split removes — executors here are a cheaper tier with a
+narrower tool set and no ability to fan out.
+
+The reversal is scoped to exactly that: the `issue` phase, with
+`issue_executor_split` on, with Sonnet executors. **Everywhere else the
+negative result stands unchanged** — on every non-split run, and on every other
+phase whether or not the key is on, delegation stays capped and the 4.8-era
+delegation encouragement must not be re-added.
+
+#### Pilot method
+
+The key is off by default and is being measured before that changes. The pilot
+compares split runs against ordinary ones over a fixed window and reports five
+numbers.
+
+**Groups**
+
+- **Pilot** — one or two Vibe Coder hosts with `issue_executor_split` on
+  host-wide, so every repository they serve is in the pilot. Turning it on for
+  a subset of a host's repos would mix both arms into the same per-host
+  counters and make the host's numbers unreadable.
+- **Control** — every non-pilot host's `issue`-phase runs on Claude in the same
+  window.
+- **Excluded from both sides** — runs on any other provider. The key does
+  nothing under `codex` or `gemini` and is stripped under `deepseek`, so those
+  runs would dilute both arms without testing anything.
+
+**Window** — 30 implementation runs on the pilot hosts, or 4 weeks, whichever
+comes first.
+
+**Where each reported number comes from**
+
+| Reported number | Source |
+| --- | --- |
+| Success rate | Fleet telemetry's per-host `successes` and `failures` in [`worker/deno/lib/fleet_telemetry.ts`](../worker/deno/lib/fleet_telemetry.ts) — `successRate` is `successes / (successes + failures)`, and `null` until a run has ended. |
+| Estimated USD per implementation run | The per-host `issue`-phase counters: `issuePhaseUsd` divided by `issuePhaseRuns`. |
+| First-attempt quality-gate pass rate | `issuePhaseFirstAttemptGatePasses` divided by `issuePhaseRuns`. The per-run record behind the counter is the `quality gate: passed on attempt N` line each run-stats comment carries ([`worker/deno/lib/issue_run_stats_comment.ts`](../worker/deno/lib/issue_run_stats_comment.ts)), so a disputed figure can be audited run by run. |
+| Standards-reviewer `violation` lines per PR | Counted from the `## Standards Review` block of each pilot PR body. The block's shape — every entry carrying `violation` or `clean`, every `violation` naming its evidence and a reason — is enforced by [`worker/deno/lib/independent_review_gate.ts`](../worker/deno/lib/independent_review_gate.ts), so the count is well defined rather than a reading of free prose. |
+| Run duration | `issuePhaseDurationSeconds` divided by `issuePhaseRuns`. |
+
+`issuePhaseSplitRuns` is not one of the five, but read it first: on a pilot host
+it should equal `issuePhaseRuns`, and on a control host it should be zero. Any
+other reading means a host is half-configured and its numbers belong to neither
+arm.
+
+**What no number measures.** Unit-test *quality* has no metric of its own here —
+none of the five distinguishes a meaningful regression test from one that
+asserts nothing. The control for it is the existing review path rather than a
+new counter: the Spec reviewer's per-criterion evidence must name a test, and
+the quality gate runs it. That path applies identically to both arms, so it does
+not favour either.
+
+#### Default-on decision criteria
+
+Enable the split by default **only if all four of these hold**. They are
+conjunctive — three out of four is not a pass.
+
+| # | Condition | Threshold |
+| --- | --- | --- |
+| 1 | Pilot success rate vs control | **≥** control |
+| 2 | Pilot first-attempt quality-gate pass rate vs control | **≥** control |
+| 3 | Average Standards-reviewer `violation` lines per pilot PR vs control | **≤** control |
+| 4 | Estimated USD per implementation run vs control | at least **15%** lower |
+
+**Quality is a gate, not a tie-break. A cheaper run that produces worse code is
+a false saving and does not qualify.** Any regression in conditions 1, 2 or 3
+vetoes default-on however large the saving in condition 4 — there is no cost
+figure that buys its way past a quality regression.
+
+**Duration is reported, not gated.** It is published beside the cost so the
+trade-off is visible, and a slower pilot does not by itself block default-on.
+
+```mermaid
+flowchart TD
+    Q{"Quality: success rate ≥ control<br/>AND first-attempt gate ≥ control<br/>AND violations/PR ≤ control"}
+    Q -->|no| V["❌ Veto — stays off<br/>(no saving overrides this)"]
+    Q -->|yes| C{"Cost: ≥ 15% cheaper<br/>per implementation run?"}
+    C -->|no| S["❌ Stays off — saving too small"]
+    C -->|yes| E["✅ Enable by default"]
+    D["⏱️ Duration — reported only"] -.-> E
+    style E fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style V fill:#9d0208,stroke:#6a040f,color:#fff
+    style S fill:#9d0208,stroke:#6a040f,color:#fff
+    style D fill:#adb5bd,stroke:#6c757d,color:#000
+```
 
 ### 🤖 Codex per-phase routing
 
