@@ -843,21 +843,53 @@ export const GRAFT_MCP_TOOLS: readonly string[] = [
 ];
 
 /**
- * The one prompt line that tells the agent the tools exist (Issue #2314).
+ * The rule that tells the agent to query the graph before it greps
+ * (Issue #2314, rewritten by Issue #2435).
  *
- * Appended to the built user prompt, outside every untrusted fence and
- * outside the cached static prefix, exactly as the CodeGraph line is. The
- * injected bundle is a bounded selection made before the run started; these
- * tools are how the agent follows up on it instead of grepping.
+ * It **leads** the built user prompt — outside every untrusted fence, and
+ * constant, so it does not disturb the cached prefix. As one sentence appended
+ * after the issue, the repo documents and the bundle it was ignored: 25 of 29
+ * `Graft: ok` runs reported `0 queries`, and one run with the server connected
+ * made 78 `grep`/`sed`/`cat`/`ls` calls and no Graft call. A run's input is
+ * almost entirely its context re-read on every turn, so the saving Graft
+ * offers is *fewer exploration turns* — which only exists if the agent asks
+ * the graph where its habit is to grep.
+ *
+ * So it is written as a rule, with the reason, mapped to the habits it
+ * replaces, and with the cases where reading is still right: an absolute ban
+ * is disobeyed the first time the graph has no answer. It names no provider
+ * and no provider's tool, because one text serves every MCP transport.
  */
-export const GRAFT_PROMPT_LINE =
-  "This repository has a Graft code graph and its MCP tools: before grepping " +
-  "or reading files to find code, ask `graft_find_code` (a question → ranked " +
-  "symbols with file:line and their source), `graft_file_api` (a file → every " +
-  "signature, no bodies), `graft_trace_calls` (a symbol → who depends on it, " +
-  "or what it depends on with `direction: out`), `graft_find_all` (a regex → " +
-  "every hit grouped by symbol) or `graft_repo_map` (a first look at the " +
-  "layout) — each answers in one call what several reads would.";
+export const GRAFT_PROMPT_LINE = [
+  "## Finding code: ask the Graft code graph first",
+  "",
+  "This checkout has a Graft code graph, built moments ago from this exact " +
+  "branch, and its tools are available to you now. Every tool result stays " +
+  "in your context and is re-read on every later turn, so each exploratory " +
+  "`grep`, `cat`, `sed -n`, `find` or `ls` is paid for again and again. One " +
+  "Graft call returns ranked, symbol-level answers that would otherwise take " +
+  "several of those. Use Graft as your first move whenever you are locating " +
+  "or understanding code:",
+  "",
+  "- Where is the code that does X? → `graft_find_code` (a question → ranked " +
+  "symbols with file:line and their source). Not `grep -rn`.",
+  "- Every use of a name or pattern → `graft_find_all` (a regex → every hit, " +
+  "grouped by symbol). Not `grep -rn` across the tree.",
+  "- What does this file export? → `graft_file_api` (a file → every " +
+  "signature, no bodies). Not `cat` or `sed -n` over the whole file.",
+  "- Who calls this, or what does it depend on? → `graft_trace_calls` (a " +
+  "symbol; `direction: out` for its dependencies). Not a chain of greps.",
+  "- First look at an unfamiliar area → `graft_repo_map`. Not `ls` and `find`.",
+  "- After you have edited files, `graft_check_freshness` says whether the " +
+  "graph still matches them.",
+  "",
+  "Reading is still right once Graft has told you where to look — open that " +
+  "file at that line — and for an exact string in a file you have already " +
+  "identified, or for files Graft does not index (Markdown, configuration, " +
+  "logs). If the Graft tools are listed by name only, load them with your " +
+  "tool-search step before the first call. If a Graft call fails or returns " +
+  "nothing useful, say so in one line and fall back to searching.",
+].join("\n");
 
 /**
  * The `graft` entry for the per-run `mcpServers` configuration.

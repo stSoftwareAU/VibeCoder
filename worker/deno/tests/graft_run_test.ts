@@ -60,7 +60,16 @@ Deno.test("bindGraftRun - an ok collection on Claude gains the line and the serv
 
   const prompt = run.applyPrompt("user prompt");
   assertStringIncludes(prompt, GRAFT_PROMPT_LINE);
-  assert(prompt.startsWith("user prompt\n\n"), "appended, never injected");
+  // Issue #2435: read first, not last. As a trailing sentence after the issue,
+  // the repo documents and the bundle it was ignored on 25 of 29 runs.
+  assert(
+    prompt.startsWith(GRAFT_PROMPT_LINE),
+    "the rule leads the prompt, ahead of the task",
+  );
+  assert(
+    prompt.endsWith("\n\nuser prompt"),
+    "the task text follows whole and unaltered — led, never injected",
+  );
   for (const tool of GRAFT_MCP_TOOLS) {
     if (tool === "graft_check_freshness") continue;
     assertStringIncludes(GRAFT_PROMPT_LINE, tool);
@@ -260,4 +269,31 @@ Deno.test("bindGraftRun - a provider that differs is reported, not corrected", (
     ),
     "the drift must be reported",
   );
+});
+
+Deno.test("GRAFT_PROMPT_LINE - a rule with its reason, not a note (Issue #2435)", () => {
+  // Every query tool the server offers is named, so the agent is never told
+  // about a tool that is not there, nor left to discover one that is.
+  for (const tool of GRAFT_MCP_TOOLS) {
+    assertStringIncludes(GRAFT_PROMPT_LINE, tool);
+  }
+  // Each Bash habit it replaces is named beside its replacement; a rule that
+  // does not say what to stop doing changes nothing.
+  for (const habit of ["grep", "cat", "sed"]) {
+    assertStringIncludes(GRAFT_PROMPT_LINE, habit);
+  }
+  // It says why, and it says when the old way is still right — an absolute
+  // ban would be disobeyed the first time Graft has no answer.
+  assertStringIncludes(GRAFT_PROMPT_LINE, "context");
+  assertStringIncludes(GRAFT_PROMPT_LINE.toLowerCase(), "still");
+});
+
+Deno.test("GRAFT_PROMPT_LINE - names no provider and no provider-only tool (Issue #2435)", () => {
+  // One text serves every provider with an MCP transport.
+  for (const word of ["Claude", "Codex", "DeepSeek", "ToolSearch", "mcp__"]) {
+    assert(
+      !GRAFT_PROMPT_LINE.includes(word),
+      `the rule must stay provider-neutral, found ${word}`,
+    );
+  }
 });
