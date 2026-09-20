@@ -3,10 +3,10 @@
 | | |
 | - | - |
 | **Trial host** | **GRQ-25** — one host, one candidate, one window |
-| **Switch** | `rtk_output.enabled` in that host's `.config.json`, default `false` |
+| **Switch** | `rtk_output.enabled` in a host's `.config.json`, default `true` since [#2432](https://github.com/stSoftwareAU/VibeCoder/issues/2432) |
 | **Bar** | ≥ 10% lower tokens **or** cost per completed Claude implementation run, no worse success rate |
 | **First judged** | after **2 days** or **20** completed RTK-enabled runs, whichever is later |
-| **Status** | 🟡 protocol recorded, window not yet opened |
+| **Status** | ⚪ superseded before a verdict — made the default on 20 September 2026 by the owner's decision, on function; the bar below was **not measured** (§8, §9) |
 
 This page is the protocol the RTK trial is judged by. It is a sibling of the
 [Repo-context Trial](REPO-CONTEXT-TRIAL.md), which judges Graft and CodeGraph by
@@ -22,7 +22,8 @@ part an agent needs, and prints an id the agent can pass to `rtk recall <id>` to
 read the full, unfiltered output when a command fails. The wager is that a
 Bash-heavy run spends a large share of its context on output nobody reads.
 
-The switch is `rtk_output.enabled` — one boolean, per host, default `false`,
+The switch is `rtk_output.enabled` — one boolean, per host, default `true`
+(`false` until [#2432](https://github.com/stSoftwareAU/VibeCoder/issues/2432)),
 parsed by [#2380](https://github.com/stSoftwareAU/VibeCoder/issues/2380), turned
 into a hook run by
 [#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382), wired
@@ -220,7 +221,19 @@ The residual risk this leaves is recorded in the
 
 ## 8. 📊 Results — the RTK window
 
-> Filled in when the window closes. Every cell is read from the surfaces in §6.
+> **No window was judged.** On 20 September 2026 the owner made RTK the fleet
+> default ([#2432](https://github.com/stSoftwareAU/VibeCoder/issues/2432))
+> before the window in §4 opened, so the table below stays empty and no margin
+> against §3 exists. With every host on, no control population remains to take
+> one against; a host that opts out with `enabled: false` would supply control
+> runs under §5 if a verdict is wanted later.
+>
+> What was checked is that RTK **functions**, on one host, in one live run: the
+> launch preflight passed, the agent was spawned with the `PreToolUse` hook, the
+> hook rewrote plain and compound commands (`cd x && git status | head` →
+> `… rtk git status …`), the run logged `RTK output: status=ok`, and RTK's own
+> counter showed output being condensed. That host also had Graft on, so even
+> its figures could not have been read as a saving under §5.
 
 | Measure | RTK-enabled | Control | Delta |
 | ------- | ----------- | ------- | ----- |
@@ -236,6 +249,11 @@ The residual risk this leaves is recorded in the
 - **Judged on:** — by —
 
 ## 9. 🔀 What the verdict changes
+
+> **What happened instead:** the default was flipped to `true` by
+> [#2432](https://github.com/stSoftwareAU/VibeCoder/issues/2432) on the owner's
+> decision, without a recorded margin. The two outcomes below are kept as the
+> protocol that was written, not as a description of what was done.
 
 **If RTK clears the bar**, a follow-up PR flips the shipped default to `true`,
 with a per-host `false` opt-out for any host that wants the raw output back.

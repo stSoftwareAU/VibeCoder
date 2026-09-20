@@ -34,12 +34,12 @@ function valueOf(raw: unknown): { enabled: boolean } {
   return result.value;
 }
 
-Deno.test("parseRtkOutput - an absent block is off", () => {
-  assertEquals(valueOf(undefined), { enabled: false });
+Deno.test("parseRtkOutput - an absent block is on (Issue #2432)", () => {
+  assertEquals(valueOf(undefined), { enabled: true });
 });
 
-Deno.test("parseRtkOutput - an empty block is off", () => {
-  assertEquals(valueOf({}), { enabled: false });
+Deno.test("parseRtkOutput - an empty block is on (Issue #2432)", () => {
+  assertEquals(valueOf({}), { enabled: true });
 });
 
 Deno.test("parseRtkOutput - enabled true and false round-trip", () => {
@@ -80,13 +80,13 @@ Deno.test("defaultRtkOutput - follows OPERATIONAL_DEFAULTS and is never shared",
     defaultRtkOutput().enabled,
     OPERATIONAL_DEFAULTS.rtkOutput.enabled,
   );
-  assertEquals(defaultRtkOutput().enabled, false);
+  assertEquals(defaultRtkOutput().enabled, true);
 
   const first = defaultRtkOutput();
-  first.enabled = true;
+  first.enabled = false;
   assertEquals(
     defaultRtkOutput().enabled,
-    false,
+    true,
     "Each call must return a fresh object",
   );
 });
