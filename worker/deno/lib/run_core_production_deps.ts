@@ -145,7 +145,10 @@ import {
   type ConflictPrDecision,
   findConflictingPr,
 } from "./pr_merge_conflict_scan.ts";
-import { scanConflictQueueStalls } from "./merge_conflict_stall_watchdog.ts";
+import {
+  listedOpenPrs,
+  scanConflictQueueStalls,
+} from "./merge_conflict_stall_watchdog.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -462,6 +465,13 @@ import {
  * finder is served from the scan's cache entry rather than widening it.
  */
 const RESUME_LISTING_LIMIT = 200;
+
+/**
+ * Open PRs listed per repository for the merge-conflict stall watchdog's gate
+ * (Issue #2409) — `fetchAllOpenPRs`'s own default, so the watchdog reads the
+ * cache entry the other passes already filled rather than widening it.
+ */
+const STALL_OPEN_PR_LIMIT = 50;
 
 /**
  * Home directory, in the order `agent_transcript.ts` resolves it.
@@ -2568,6 +2578,15 @@ export async function createProductionRunCoreDeps(
           timelineCache,
           needsHumanLabel: config.needsHumanLabel,
           decisions: [...scanDecisions, ...drain.decisions],
+          // Issue #2409: gate the per-repository label listing on the
+          // open-PR listing the scan has already cached (same limit, so a
+          // warm cache serves it). `listedOpenPrs` refuses a cache entry
+          // written before that listing carried labels.
+          listOpenPrLabels: async (repo: string) =>
+            listedOpenPrs(
+              await fetchAllOpenPRs(repo, issueCache, STALL_OPEN_PR_LIMIT),
+            ),
+          openPrListingLimit: STALL_OPEN_PR_LIMIT,
         });
       }
 

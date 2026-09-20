@@ -714,6 +714,52 @@ Deno.test("issue_query - fetchAllOpenPRs - cache miss fetches and parses JSON", 
   }
 });
 
+// Issue #2409: the merge-conflict stall watchdog gates its per-repository
+// label listing on this cached listing, so the listing has to carry labels.
+Deno.test("issue_query - fetchAllOpenPRs - asks for labels and carries them on each row (Issue #2409)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const calls: string[][] = [];
+    const mockGh = (args: string[]): Promise<string> => {
+      calls.push(args);
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 5,
+          title: "labelled",
+          baseRefName: "main",
+          headRefName: "issue-5",
+          body: "",
+          url: "",
+          labels: [{ name: "merge-conflict" }, { name: "enhancement" }],
+        },
+        // A row `gh` returned with no labels field at all, and one with junk.
+        { number: 6, title: "bare", baseRefName: "main", headRefName: "h" },
+        {
+          number: 7,
+          title: "junk",
+          baseRefName: "main",
+          headRefName: "h",
+          labels: [{ name: 3 }, "x", null],
+        },
+      ]));
+    };
+    const prs = await fetchAllOpenPRs("o/r", cache, 50, mockGh);
+
+    const fields = calls[0]?.[calls[0].indexOf("--json") + 1] ?? "";
+    assert(fields.split(",").includes("labels"), `fields: ${fields}`);
+    assertEquals(prs[0]?.labels, ["merge-conflict", "enhancement"]);
+    assertEquals(prs[1]?.labels, []);
+    assertEquals(prs[2]?.labels, []);
+
+    // And they survive the cache round-trip the watchdog actually reads.
+    const again = await fetchAllOpenPRs("o/r", cache, 50, mockGh);
+    assertEquals(calls.length, 1);
+    assertEquals(again[0]?.labels, ["merge-conflict", "enhancement"]);
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchAllOpenPRs - cache hit avoids gh call", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {
@@ -1245,9 +1291,12 @@ Deno.test("issue_query - fetchMergedPRsByUser - cache miss fetches and parses JS
     assertEquals(prs.length, 1);
     assertEquals(prs[0]?.number, 11);
     assertEquals(prs[0]?.headRefName, "issue-42");
-    assertEquals(calls.length, 1);
+    // Issue #2409: the listing also notes this author's open PRs (one cheap,
+    // cached lookup), so it is the *merged* listing that is counted.
+    const merged = calls.filter((c) => c.includes("merged"));
+    assertEquals(merged.length, 1);
     // Verify --author flag was included.
-    const sent = calls[0]!.join(" ");
+    const sent = merged[0]!.join(" ");
     assertEquals(sent.includes("--author bot"), true);
     assertEquals(sent.includes("--state merged"), true);
   } finally {
@@ -1277,14 +1326,20 @@ Deno.test("issue_query - fetchMergedPRsByUser - reads the body's closing referen
     const prs = await fetchMergedPRsByUser("o/r", "bot", cache, 30, mockGh);
     assertEquals(prs[0]?.closingRefs, [1264]);
     assertEquals(prs[1]?.closingRefs, []);
-    assertEquals(calls[0]!.join(" ").includes("mergedAt,body"), true);
-    // The cached entry carries the references and nothing of the prose.
-    const cached = await cache.read<Array<Record<string, unknown>>>(
-      "o/r",
-      "prs_merged_bot",
+    assertEquals(
+      calls.find((c) => c.includes("merged"))!.join(" ").includes(
+        "mergedAt,body",
+      ),
+      true,
     );
-    assertEquals(cached?.[0]?.closingRefs, [1264]);
-    assertEquals(cached?.[0]?.body, undefined);
+    // The cached entry carries the references and nothing of the prose. Since
+    // Issue #2409 the rows sit under `prs`, beside the open PRs seen.
+    const cached = await cache.read<
+      { prs: Array<Record<string, unknown>> }
+    >("o/r", "prs_merged_bot");
+    assertEquals(cached?.prs[0]?.closingRefs, [1264]);
+    assertEquals(cached?.prs[0]?.body, undefined);
+    assertEquals(JSON.stringify(cached).includes("Closes"), false);
   } finally {
     await cleanup();
   }
@@ -1294,8 +1349,9 @@ Deno.test("issue_query - fetchMergedPRsByUser - cache hit avoids gh call", async
   const { cache, cleanup } = await makeTempCache();
   try {
     let callCount = 0;
-    const mockGh = async (_args: string[]): Promise<string> => {
-      callCount++;
+    const mockGh = async (args: string[]): Promise<string> => {
+      // Issue #2409: count the merged listing, not the open-set lookup.
+      if (args.includes("merged")) callCount++;
       return JSON.stringify([
         { number: 1, title: "T", headRefName: "h" },
       ]);
@@ -1312,8 +1368,9 @@ Deno.test("issue_query - fetchMergedPRsByUser - cache invalidation forces refetc
   const { cache, cleanup } = await makeTempCache();
   try {
     let callCount = 0;
-    const mockGh = async (_args: string[]): Promise<string> => {
-      callCount++;
+    const mockGh = async (args: string[]): Promise<string> => {
+      // Issue #2409: count the merged listing, not the open-set lookup.
+      if (args.includes("merged")) callCount++;
       return "[]";
     };
     await fetchMergedPRsByUser("o/r", "bot", cache, 30, mockGh);

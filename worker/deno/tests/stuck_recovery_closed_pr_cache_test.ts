@@ -65,10 +65,13 @@ Deno.test("fetchClosedPRsByUser - cold cache issues one gh call", async () => {
     const cache = new IssueCache(cacheDir);
     let calls = 0;
     const ghFn = async (args: string[]): Promise<string> => {
-      calls++;
       assertEquals(args[0], "pr");
       assertEquals(args[1], "list");
       assertEquals(args.includes("--state"), true);
+      // Issue #2409: the listing also notes this author's open PRs — one
+      // cheap, cached lookup — so it is the closed listing that is counted.
+      if (args.includes("open")) return "[]";
+      calls++;
       assertEquals(args.includes("closed"), true);
       assertEquals(args.includes("--author"), true);
       assertEquals(args.includes("--search"), false);

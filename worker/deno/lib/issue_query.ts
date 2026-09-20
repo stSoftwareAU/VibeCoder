@@ -80,6 +80,13 @@ export interface OpenPRWithBody extends OpenPR {
   body: string;
   url: string;
   /**
+   * The PR's label names (Issue #2409). Carried by {@link fetchAllOpenPRs}
+   * only, so a pass that would otherwise ask each repository "which open PRs
+   * carry label X?" every cycle can read the answer off the listing the scan
+   * already holds. Absent on rows from a listing that did not ask for labels.
+   */
+  labels?: string[];
+  /**
    * The listing author's login, when `gh` reported one (Issue #1846).
    *
    * Named apart from {@link OpenPR.author} deliberately: that field carries
@@ -875,6 +882,13 @@ const OPEN_PR_LIST_FIELDS =
   "isCrossRepository,headRefOid,autoMergeRequest,mergeable";
 
 /**
+ * {@link OPEN_PR_LIST_FIELDS} plus `labels`, for the one all-authors listing
+ * (Issue #2409). Kept off the per-author listings deliberately: nothing reads
+ * labels there, and their field list is shared with the cross-repo prefetch.
+ */
+const ALL_OPEN_PR_LIST_FIELDS = `${OPEN_PR_LIST_FIELDS},labels`;
+
+/**
  * Fetch all open PRs for a repo, regardless of author (Issue #1787).
  *
  * Used by helpers that need to look up PRs by head branch or by issue
@@ -903,7 +917,7 @@ export async function fetchAllOpenPRs(
     "--state",
     "open",
     "--json",
-    OPEN_PR_LIST_FIELDS,
+    ALL_OPEN_PR_LIST_FIELDS,
     "--limit",
     String(limit),
   ]);
@@ -955,11 +969,148 @@ export async function fetchAllOpenPRs(
         mergeMethod: typeof method === "string" ? method : "",
       };
     }
+    // Issue #2409: label names, tolerating a row with none or with junk.
+    pr.labels = Array.isArray(item.labels)
+      ? item.labels.flatMap((label) =>
+        isRecord(label) && typeof label.name === "string" ? [label.name] : []
+      )
+      : [];
     prs.push(pr);
   }
 
   if (cache) await cache.write(repo, cacheKey, prs);
   return prs;
+}
+
+// ---------------------------------------------------------------------------
+// Settled PR listings (Issue #2409)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a merged/closed per-author listing may be served while nothing
+ * observable could have changed it (Issue #2409).
+ */
+export const SETTLED_PR_LISTING_MAX_AGE_SECONDS = 3600;
+
+/** Inside this age a settled listing is served as it always was. */
+const SETTLED_PR_LISTING_FRESH_SECONDS = 600;
+
+/** `fetchOpenPRsByUser` lists at most this many; a full listing is truncated. */
+const OPEN_PR_BY_USER_LIMIT = 10;
+
+/** A merged/closed listing, with the open PRs seen while it has been cached. */
+interface SettledListing<T> {
+  v: 1;
+  prs: T[];
+  /** Epoch seconds the listing was fetched — not refreshed by bookkeeping. */
+  cachedAt: number;
+  /** Every open PR of this author seen since; one going missing invalidates. */
+  openSeen: number[];
+}
+
+function isSettledListing<T>(value: unknown): value is SettledListing<T> {
+  return isRecord(value) && value.v === 1 && Array.isArray(value.prs) &&
+    typeof value.cachedAt === "number" && Array.isArray(value.openSeen);
+}
+
+/**
+ * This author's open PR numbers in the repository, or `null` when they cannot
+ * be known — the listing failed, or came back full and is therefore truncated.
+ */
+async function openPrNumbersByUser(
+  repo: string,
+  githubUser: string,
+  cache: IssueCache,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<number[] | null> {
+  try {
+    const open = await fetchOpenPRsByUser(repo, githubUser, cache, ghCommandFn);
+    if (open.length >= OPEN_PR_BY_USER_LIMIT) return null;
+    return open.map((pr) => pr.number);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read a merged/closed per-author listing that is still known to be current.
+ *
+ * Such a listing changes only when one of that author's **open** PRs in the
+ * repository stops being open, and the open set is already known cheaply (the
+ * cross-repo prefetch, Issue #1486). So the listing is served for up to
+ * {@link SETTLED_PR_LISTING_MAX_AGE_SECONDS} *while every open PR seen since it
+ * was cached is still open*, and is a miss the moment one is gone — at any
+ * age, the first ten minutes included. Re-fetching it every ten minutes cost
+ * `20 repos × authors × 2 states` GraphQL calls per host per ten minutes, the
+ * largest single consumer of a quota the fleet was exhausting ~25 minutes into
+ * every hour.
+ *
+ * Open PRs are remembered as they are seen, so one opened after the listing
+ * was cached invalidates it when it goes. Only a PR that opens **and** closes
+ * between two consecutive reads is missed, for at most the maximum age — and a
+ * stale answer cannot cause duplicate work, because the pickup pre-check looks
+ * for an existing PR live (`merged_pr_precheck_phase.ts`).
+ *
+ * Fails towards asking: an open set that cannot be known serves the listing
+ * only inside the old ten-minute window.
+ */
+async function readSettledListing<T>(
+  repo: string,
+  githubUser: string,
+  cacheKey: string,
+  cache: IssueCache,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  nowSeconds: number,
+): Promise<T[] | null> {
+  // An entry written before Issue #2409 is a bare array with no record of the
+  // open PRs seen. It is served exactly as it always was — inside the cache's
+  // own TTL — so an upgrade throws nothing away; it cannot be extended.
+  const legacy = await cache.read<unknown>(repo, cacheKey);
+  if (Array.isArray(legacy)) return legacy as T[];
+
+  const entry = await cache.read<unknown>(repo, cacheKey, {
+    ttlSeconds: SETTLED_PR_LISTING_MAX_AGE_SECONDS,
+  });
+  if (!isSettledListing<T>(entry)) return null;
+  const age = nowSeconds - entry.cachedAt;
+  if (age < 0 || age >= SETTLED_PR_LISTING_MAX_AGE_SECONDS) return null;
+
+  const open = await openPrNumbersByUser(repo, githubUser, cache, ghCommandFn);
+  if (open === null) {
+    return age < SETTLED_PR_LISTING_FRESH_SECONDS ? entry.prs : null;
+  }
+  const openNow = new Set(open);
+  if (entry.openSeen.some((number) => !openNow.has(number))) return null;
+
+  const seen = new Set(entry.openSeen);
+  const unseen = open.filter((number) => !seen.has(number));
+  if (unseen.length > 0) {
+    await cache.write(repo, cacheKey, {
+      ...entry,
+      openSeen: [...entry.openSeen, ...unseen],
+    });
+  }
+  return entry.prs;
+}
+
+/** Cache a freshly fetched merged/closed listing beside the open set. */
+async function writeSettledListing<T>(
+  repo: string,
+  githubUser: string,
+  cacheKey: string,
+  prs: T[],
+  cache: IssueCache,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  nowSeconds: number,
+): Promise<void> {
+  const open = await openPrNumbersByUser(repo, githubUser, cache, ghCommandFn);
+  const entry: SettledListing<T> = {
+    v: 1,
+    prs,
+    cachedAt: nowSeconds,
+    openSeen: open ?? [],
+  };
+  await cache.write(repo, cacheKey, entry);
 }
 
 /**
@@ -1550,11 +1701,21 @@ export async function fetchMergedPRsByUser(
   cache?: IssueCache,
   limit = 30,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  /** Clock override, epoch seconds (tests). */
+  nowSeconds: () => number = () => Math.floor(Date.now() / 1000),
 ): Promise<MergedPR[]> {
   const cacheKey = `prs_merged_${githubUser}`;
 
   if (cache) {
-    const cached = await cache.read<MergedPR[]>(repo, cacheKey);
+    // Issue #2409: served while no open PR of this author has gone.
+    const cached = await readSettledListing<MergedPR>(
+      repo,
+      githubUser,
+      cacheKey,
+      cache,
+      ghCommandFn,
+      nowSeconds(),
+    );
     if (cached) return cached;
   }
 
@@ -1602,7 +1763,17 @@ export async function fetchMergedPRsByUser(
     });
   }
 
-  if (cache) await cache.write(repo, cacheKey, prs);
+  if (cache) {
+    await writeSettledListing(
+      repo,
+      githubUser,
+      cacheKey,
+      prs,
+      cache,
+      ghCommandFn,
+      nowSeconds(),
+    );
+  }
   return prs;
 }
 
@@ -2384,11 +2555,21 @@ export async function fetchClosedPRsByUser(
   limit = 100,
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  /** Clock override, epoch seconds (tests). */
+  nowSeconds: () => number = () => Math.floor(Date.now() / 1000),
 ): Promise<ClosedPRWithMerge[]> {
   const cacheKey = `prs_closed_${githubUser}`;
 
   if (cache) {
-    const cached = await cache.read<ClosedPRWithMerge[]>(repo, cacheKey);
+    // Issue #2409: served while no open PR of this author has gone.
+    const cached = await readSettledListing<ClosedPRWithMerge>(
+      repo,
+      githubUser,
+      cacheKey,
+      cache,
+      ghCommandFn,
+      nowSeconds(),
+    );
     if (cached) return cached;
   }
 
@@ -2431,7 +2612,17 @@ export async function fetchClosedPRsByUser(
     });
   }
 
-  if (cache) await cache.write(repo, cacheKey, prs);
+  if (cache) {
+    await writeSettledListing(
+      repo,
+      githubUser,
+      cacheKey,
+      prs,
+      cache,
+      ghCommandFn,
+      nowSeconds(),
+    );
+  }
   return prs;
 }
 
