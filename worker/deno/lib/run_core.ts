@@ -42,6 +42,7 @@ import {
 } from "./fault_tolerance_counters.ts";
 import {
   formatGhCallsByPrioritySummary,
+  formatGhCallShapesSummary,
   formatGhCallSummary,
   formatGraphQLSummary,
   resetGhCallMetrics,
@@ -5057,6 +5058,9 @@ async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
   deps.log(formatCycleTimingsSummary(deps.now()));
   deps.log(formatGhCallsByPrioritySummary());
   deps.log(formatGraphQLSummary());
+  // Issue #2409: which call shapes spent it — `pr list` by author, by head, a
+  // label listing — so the largest consumer is read off the log, not guessed.
+  deps.log(formatGhCallShapesSummary());
   if (deps.describeGraphqlQuota) {
     try {
       const quotaLine = await deps.describeGraphqlQuota();
