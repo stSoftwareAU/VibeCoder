@@ -31,6 +31,7 @@ import type {
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
 import type { Logger } from "../types.ts";
 import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
+import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 import { CODEGRAPH_PROMPT_LINE } from "../lib/codegraph_context.ts";
 import type { RtkOutputResult } from "../lib/rtk_output.ts";
 import { openPrGh } from "./support/pr_live_state_stub.ts";
@@ -207,14 +208,17 @@ Deno.test("pr_ci_processor - the RTK switch off spawns no rtk, no settings and a
   assertEquals(observed.rtkOutput, { enabled: false, status: "off" });
 });
 
-Deno.test("pr_ci_processor - a caller that never names the RTK switch gets it off (Issue #2384)", async () => {
-  const seam = rtkSeam([]);
+Deno.test("pr_ci_processor - a caller that never names the RTK switch gets the shipped default (Issue #2432)", async () => {
+  const seam = healthyRtkSeam(100, 140);
   const observed = await runCiFix({ seam });
 
-  assertEquals(seam.prepared[0]?.enabled, false);
-  assertEquals(seam.calls.length, 0);
-  assertNoRtkHook(observed.runOptions[0]);
-  assertEquals(observed.rtkOutput, { enabled: false, status: "off" });
+  // The fallback is the one written in OPERATIONAL_DEFAULTS, never a second
+  // literal here: a processor that kept its own `false` would leave a path
+  // unfiltered on a host whose config says nothing.
+  assertEquals(OPERATIONAL_DEFAULTS.rtkOutput.enabled, true);
+  assertEquals(seam.prepared[0]?.enabled, true);
+  assertCarriesRtkHook(observed.runOptions[0]);
+  assertEquals(observed.rtkOutput?.status, "ok");
 });
 
 Deno.test("pr_ci_processor - the RTK switch on installs the hook and the prompt line together (Issue #2384)", async () => {
