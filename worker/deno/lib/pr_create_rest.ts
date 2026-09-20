@@ -19,6 +19,10 @@
 
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
+import {
+  clearMilestoneReviewRequests,
+  reviewersForBase,
+} from "./milestone_pr_reviewers.ts";
 
 /** What to open the pull request with. */
 export interface RestPrCreateOptions {
@@ -320,13 +324,21 @@ export async function createPullRequestViaRest(
     };
   }
 
+  // Issue #2438: a PR into a milestone branch asks for no reviewer of its own,
+  // and any CODEOWNERS auto-request on it is removed once, straight after
+  // creation. Both are no-ops for every other base.
+  const prNumber = prNumberFromUrl(url);
   await requestReviewersViaRest(
     repo,
-    prNumberFromUrl(url),
-    options.reviewers ?? [],
+    prNumber,
+    reviewersForBase(base, options.reviewers ?? []),
     ghCommandFn,
     deps.log,
   );
+  await clearMilestoneReviewRequests({ repo, prNumber, base }, {
+    ghCommandFn,
+    ...(deps.log ? { log: deps.log, warn: deps.log } : {}),
+  });
 
   return { ok: true, value: url };
 }
