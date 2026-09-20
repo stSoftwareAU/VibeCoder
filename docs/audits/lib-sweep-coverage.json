@@ -1995,6 +1995,18 @@
         "worker/deno/lib/issue_edit_guard_cli.ts",
         "worker/deno/lib/issue_executor_enforcement.ts"
       ]
+    },
+    {
+      "issue": 2438,
+      "chunk": "top-up-2438",
+      "title": "top-up: the milestone PR reviewer clear",
+      "ledger": "docs/audits/security-sweep-2438-milestone-pr-reviewers.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_pr_reviewers.ts (#2438)",
+      "status": "swept",
+      "sweptAt": "bf351a3217a3d86d44c7fba7c29e0ed5f76e94ec",
+      "paths": [
+        "worker/deno/lib/milestone_pr_reviewers.ts"
+      ]
     }
   ],
   "roots": [
