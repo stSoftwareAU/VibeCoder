@@ -17,6 +17,7 @@ import {
   hasRunStatsCommentForRun,
   ISSUE_RUN_STATS_DISCLAIMER,
   ISSUE_RUN_STATS_MARKER,
+  measureIssuePhaseRun,
   postIssueRunStatsComment,
   sanitiseStatsRunId,
   tallyIssueCost,
@@ -1372,4 +1373,113 @@ Deno.test("postIssueRunStatsComment - a gate outcome alone is not something to r
 
   assertEquals(result, { posted: false, reason: "no_stats" });
   assertEquals(github.posted.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// measureIssuePhaseRun (Issue #2347)
+// ---------------------------------------------------------------------------
+
+/** The estimated-cost figure the rendered comment reports, as a number. */
+function renderedCostUsd(body: string): number {
+  const match = body.match(
+    /\*\*Estimated cost \(USD, estimate only\):\*\* ~\$([0-9.]+)/,
+  );
+  assert(match, `no estimated cost line in:\n${body}`);
+  return Number(match[1]);
+}
+
+Deno.test("measureIssuePhaseRun - a non-implementation phase is not measured", () => {
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "grill_me",
+      claudeResults: [claudeResult(["claude-opus-5"])],
+    }),
+    undefined,
+  );
+});
+
+Deno.test("measureIssuePhaseRun - a run no invocation produced stats for is not measured", () => {
+  // The same runs `postIssueRunStatsComment` answers `no_stats` for: there is
+  // no comment, so there are no figures to record and no run to count.
+  assertEquals(
+    measureIssuePhaseRun({ phase: "issue", claudeResults: [{}] }),
+    undefined,
+  );
+  assertEquals(
+    measureIssuePhaseRun({ phase: "issue", claudeResults: [] }),
+    undefined,
+  );
+});
+
+Deno.test("measureIssuePhaseRun - the spend is the figure the comment renders", () => {
+  const claudeResults = [claudeResult(["claude-opus-5"])];
+  const figures = measureIssuePhaseRun({ phase: "issue", claudeResults });
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults,
+    runId: "vibe-measure-1",
+  });
+
+  assert(figures);
+  assertEquals(formatUsd(figures.usd ?? -1), formatUsd(renderedCostUsd(body)));
+});
+
+Deno.test("measureIssuePhaseRun - an invocation with no served model is priced as the comment prices it", () => {
+  // The divergent case: with no served model both the comment and the recorder
+  // must fall back to the *expected* model of the phase's routing chain. The
+  // requested model here is deliberately a different, cheaper tier, so pricing
+  // off it instead would report a figure the comment never showed — on exactly
+  // the runs whose price is least certain.
+  const claudeResults = [claudeResult([], { requestedModel: "haiku" })];
+  const figures = measureIssuePhaseRun({ phase: "issue", claudeResults });
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults,
+    runId: "vibe-measure-2",
+  });
+
+  assert(figures);
+  assertEquals(formatUsd(figures.usd ?? -1), formatUsd(renderedCostUsd(body)));
+});
+
+Deno.test("measureIssuePhaseRun - duration sums the invocations and the split is the comment's own rule", () => {
+  const figures = measureIssuePhaseRun({
+    phase: "issue",
+    claudeResults: [
+      claudeResult(["claude-opus-5"], { durationMs: 90_000 }),
+      claudeResult(["claude-opus-5"], { durationMs: 30_000 }),
+    ],
+  });
+
+  assert(figures);
+  assertEquals(figures.durationSeconds, 120);
+  // No invocation recorded an executor split, so the comment renders
+  // `split: off` and the recorder reports the same.
+  assertEquals(figures.split, false);
+});
+
+Deno.test("measureIssuePhaseRun - only a gate that passed carries its attempt", () => {
+  const claudeResults = [claudeResult(["claude-opus-5"])];
+
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults,
+      qualityGate: { status: "passed", attempt: 2 },
+    })?.gatePassedOnAttempt,
+    2,
+  );
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults,
+      qualityGate: { status: "failed" },
+    })?.gatePassedOnAttempt,
+    undefined,
+  );
+  assertEquals(
+    measureIssuePhaseRun({ phase: "issue", claudeResults })
+      ?.gatePassedOnAttempt,
+    undefined,
+  );
 });

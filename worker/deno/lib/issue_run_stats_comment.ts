@@ -381,6 +381,15 @@ const EXECUTOR_DISPATCH_STATS_PREFIX = "- executors dispatched:";
 const EXECUTOR_RETASK_STATS_PREFIX = "- re-tasks issued:";
 const ADVISOR_EDIT_STATS_PREFIX = "- advisor edit calls:";
 
+/** The split figures a run recorded — empty when the split was off. */
+function executorSplitStats(
+  claudeResults: readonly PhaseClaudeResult[],
+): IssueExecutorSplitStats[] {
+  return claudeResults
+    .map((result) => result.runStats?.executorSplit)
+    .filter((stats): stats is IssueExecutorSplitStats => stats !== undefined);
+}
+
 /**
  * Render the run's advisor/executor split lines (Issues #2344, #2346).
  *
@@ -396,15 +405,6 @@ const ADVISOR_EDIT_STATS_PREFIX = "- advisor edit calls:";
  * @param claudeResults - Completed invocations of the run being reported
  * @returns The bullet lines, empty for a non-implementation phase
  */
-/** The split figures a run recorded — empty when the split was off. */
-function executorSplitStats(
-  claudeResults: readonly PhaseClaudeResult[],
-): IssueExecutorSplitStats[] {
-  return claudeResults
-    .map((result) => result.runStats?.executorSplit)
-    .filter((stats): stats is IssueExecutorSplitStats => stats !== undefined);
-}
-
 export function buildExecutorSplitStatsLines(
   phase: string,
   claudeResults: readonly PhaseClaudeResult[],
@@ -443,8 +443,14 @@ export function buildExecutorSplitStatsLines(
  * quality gate passed on — reduced to what
  * {@link ../fleet_telemetry.ts recordIssuePhaseRun} accumulates per host. Kept
  * here rather than at the call site so the figures cannot drift from the
- * comment: the cost uses the same per-model attribution and the split uses the
- * same rule as {@link buildExecutorSplitStatsLines}.
+ * comment: the invocations, the expected model the cost falls back to and the
+ * split rule are all the ones {@link buildIssueRunStatsComment} renders with.
+ *
+ * The expected model matters because it is what an invocation the API reported
+ * no served model for is priced at. Taking the requested model instead would
+ * make this figure and the comment's disagree on exactly the runs where the
+ * price is least certain, so it is resolved through the same
+ * {@link buildDegradationReport} call the comment uses.
  *
  * Spend is the estimate the comment reports, so a model with no pricing row
  * contributes nothing and the sum is a floor — exactly as the comment's own
@@ -452,42 +458,59 @@ export function buildExecutorSplitStatsLines(
  *
  * @param args.phase - The phase being reported; only `issue` is measured
  * @param args.claudeResults - Completed invocations of the run
+ * @param args.configuredBestModel - Pinned best model, when the phase has one;
+ *   part of the expected-model routing chain, so it is passed exactly as the
+ *   comment passes it
  * @param args.qualityGate - What the run's quality gate did, when it ran
- * @returns The run's figures, or `undefined` for a non-implementation phase
+ * @returns The run's figures, or `undefined` for a non-implementation phase or
+ *   a run no invocation produced stats for — neither is a measurable run
  */
 export function measureIssuePhaseRun(args: {
   phase: string;
   claudeResults: readonly PhaseClaudeResult[];
+  configuredBestModel?: string;
   qualityGate?: QualityGateAttemptOutcome;
 }): IssuePhaseRun | undefined {
   if (args.phase !== IMPLEMENTATION_RUN_STATS_PHASE) return undefined;
 
+  const measured = args.claudeResults.filter((result) => result.runStats);
+  // A run with invocations but no stats renders no comment at all, so there is
+  // nothing to record and no figures to record it with. Counting it would add
+  // a $0 run to the denominator of the pilot's first-attempt pass rate — the
+  // one number this feature exists to produce.
+  if (measured.length === 0) return undefined;
+
+  const { expectedModel } = buildDegradationReport({
+    invocations: measured.flatMap((result) =>
+      buildPhaseInvocations(args.phase, result)
+    ),
+    phase: args.phase,
+    ...(args.configuredBestModel
+      ? { configuredBestModel: args.configuredBestModel }
+      : {}),
+  });
+
   const costEntries: ModelUsageEntry[] = [];
   let durationMs = 0;
-  for (const result of args.claudeResults) {
-    const stats = result.runStats;
-    if (!stats) continue;
+  for (const result of measured) {
+    const stats = result.runStats!;
     if (stats.tokenUsage) {
       costEntries.push(
         ...attributeUsageByModel(
           stats.tokenUsage,
           stats.modelUsage,
-          // The model that served the invocation, falling back to the one it
-          // requested — never a guess at a price the run did not pay.
-          stats.servedModels[0] ?? stats.requestedModel,
+          stats.servedModels[0] ?? expectedModel,
         ),
       );
     }
-    if (typeof stats.durationMs === "number" && stats.durationMs > 0) {
-      durationMs += stats.durationMs;
-    }
+    if (typeof stats.durationMs === "number") durationMs += stats.durationMs;
   }
 
   const gate = args.qualityGate;
   return {
     usd: estimateRunCost(costEntries).totalCost,
     durationSeconds: Math.round(durationMs / 1000),
-    split: executorSplitStats(args.claudeResults).length > 0,
+    split: executorSplitStats(measured).length > 0,
     ...(gate?.status === "passed" ? { gatePassedOnAttempt: gate.attempt } : {}),
   };
 }

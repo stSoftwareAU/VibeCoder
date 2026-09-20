@@ -772,7 +772,9 @@ async function postWorkOnRunStats(
   // `already_posted` is the one skip that must not record: this run is counted
   // already, and counting it twice would halve its own pass rate. A GitHub
   // failure still records — the run happened, and losing its figures to a
-  // comment that did not post would understate the host.
+  // comment that did not post would understate the host. `no_stats` needs no
+  // guard here: a run no invocation produced stats for renders no comment, and
+  // `measureIssuePhaseRun` measures nothing for it either.
   if (posted.reason !== "already_posted") {
     const figures = measureIssuePhaseRun({
       phase: WORK_ON_STATS_PHASE,

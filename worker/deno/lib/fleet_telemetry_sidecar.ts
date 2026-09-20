@@ -218,10 +218,7 @@ export async function readFleetTelemetryFile(
   }
   if (
     typeof parsed?.schema !== "number" ||
-    typeof parsed?.cumulative?.idleSeconds !== "number" ||
-    // A file with no run object cannot be normalised into one, and inventing
-    // an empty run would report a host's history as a clean start.
-    typeof parsed?.run !== "object" || parsed.run === null
+    typeof parsed?.cumulative?.idleSeconds !== "number"
   ) {
     return "unparseable";
   }
@@ -230,10 +227,12 @@ export async function readFleetTelemetryFile(
   if (parsed.schema > FLEET_TELEMETRY_SCHEMA) return "future-schema";
   // Issue #2347: a file written before the issue-phase counters existed loads
   // with them at zero, so every reader sees numbers rather than `undefined`
-  // typed as a number.
+  // typed as a number. `run` is normalised only when the file carries one —
+  // the cumulative totals are what a later run merges onto, and rejecting a
+  // file for a missing `run` would throw away the very history this preserves.
   return {
     ...parsed,
-    run: withIssuePhaseCounters(parsed.run),
+    ...(parsed.run ? { run: withIssuePhaseCounters(parsed.run) } : {}),
     cumulative: withIssuePhaseCounters(parsed.cumulative),
   };
 }
