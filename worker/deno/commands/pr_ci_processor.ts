@@ -186,6 +186,9 @@ export const prCiProcessorCommand: Command = {
           // Issue #2160: the trial switch, so a single-shot CI fix on an
           // enabled host is offered the same repo-context index.
           codegraphContextEnabled: config.codegraphContext.enabled,
+          // Issue #2384: the RTK switch rides beside it, so this path condenses
+          // its Bash output on the same enabled host the issue runs do.
+          rtkOutputEnabled: config.rtkOutput.enabled,
           // Pass repo-specific config so the post-Claude quality check picks
           // up per-repo Docker images and timeouts (Issue #1456).
           repoConfigs: config.repoConfig,
