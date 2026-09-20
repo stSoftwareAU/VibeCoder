@@ -12,7 +12,12 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import type { Logger, Result } from "../types.ts";
 import {
   buildConflictStallComment,
@@ -21,6 +26,7 @@ import {
   DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS,
   detectConflictQueueStall,
   escalateConflictQueueStall,
+  listedOpenPrs,
   scanConflictQueueStalls,
 } from "../lib/merge_conflict_stall_watchdog.ts";
 import {
@@ -775,4 +781,119 @@ Deno.test("scanConflictQueueStalls - an ordinary listing failure is still report
   assertEquals(listed, ["org/a", "org/b"], "every repository is still visited");
   assertEquals(captured.warnings.length, 2);
   assertStringIncludes(captured.warnings[0]!, "failed to list labelled PRs");
+});
+
+// =============================================================================
+// The label listing is gated on the listing the scan already holds (#2409)
+//
+// Live measurement, 2026-09-20: `graphql-shapes:` showed
+// `20×[pr list --json --label --repo --state]` on every cycle — this watchdog
+// asking each of 20 repositories for its open PRs carrying `merge-conflict`,
+// every ~3 minutes, almost always to learn "none". The fleet was exhausting
+// its GraphQL quota ~25 minutes into every hour. A stall is eight hours long;
+// learning that a PR gained the label ten minutes late costs nothing.
+// =============================================================================
+
+const prListCalls = (calls: readonly string[][]) =>
+  calls.filter((c) => c[0] === "pr" && c[1] === "list").length;
+
+Deno.test("scanConflictQueueStalls - a complete cached listing with no labelled PR means no live listing (Issue #2409)", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    listOpenPrLabels: () =>
+      Promise.resolve([
+        { number: 1, labels: ["enhancement"] },
+        { number: 2, labels: [] },
+      ]),
+  });
+
+  assertEquals(scan, []);
+  assertEquals(prListCalls(github.calls), 0, "the cached listing proved none");
+});
+
+Deno.test("scanConflictQueueStalls - a cached listing that shows the label still takes the LIVE listing, for the live merge state (Issue #2409)", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    listOpenPrLabels: () =>
+      Promise.resolve([{ number: PR, labels: [MERGE_CONFLICT_LABEL] }]),
+  });
+
+  assertEquals(prListCalls(github.calls), 1);
+  assertEquals(scan.length, 1, "the stall is found exactly as before");
+});
+
+Deno.test("scanConflictQueueStalls - a full cached listing cannot prove absence, so the repository is asked (Issue #2409)", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    listOpenPrLabels: () =>
+      Promise.resolve([{ number: 1, labels: [] }, { number: 2, labels: [] }]),
+    // The listing came back full: a labelled PR may sit beyond it.
+    openPrListingLimit: 2,
+  });
+
+  assertEquals(prListCalls(github.calls), 1);
+  assertEquals(scan.length, 1);
+});
+
+Deno.test("scanConflictQueueStalls - a cached listing that cannot be read falls back to the live listing (Issue #2409)", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    listOpenPrLabels: () => Promise.reject(new Error("cache unreadable")),
+  });
+
+  assertEquals(prListCalls(github.calls), 1);
+  assertEquals(scan.length, 1);
+});
+
+Deno.test("scanConflictQueueStalls - without a cached listing it lists every repository, exactly as before (Issue #2409)", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+  await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    repos: [REPO, "org/other"],
+  });
+  assertEquals(prListCalls(github.calls), 2);
+});
+
+Deno.test("listedOpenPrs - a row with no labels field is a listing that cannot answer, never 'no labels' (Issue #2409)", () => {
+  // A cache entry written before the listing asked for labels.
+  assertThrows(
+    () => listedOpenPrs([{ number: 1, labels: [] }, { number: 2 }]),
+    Error,
+    "labels",
+  );
+  assertEquals(
+    listedOpenPrs([{ number: 1, labels: ["merge-conflict"] }, {
+      number: 2,
+      labels: [],
+    }]),
+    [{ number: 1, labels: ["merge-conflict"] }, { number: 2, labels: [] }],
+  );
+  assertEquals(listedOpenPrs([]), []);
+});
+
+Deno.test("scanConflictQueueStalls - a pre-labels cache entry falls back to the live listing (Issue #2409)", async () => {
+  const github = fakeGitHub();
+  const work = fakeEscalateWork();
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, work),
+    // Exactly how production builds it: the mapper refuses the old row.
+    listOpenPrLabels: () => Promise.resolve(listedOpenPrs([{ number: 1 }])),
+  });
+
+  assertEquals(prListCalls(github.calls), 1);
+  assertEquals(scan.length, 1);
 });
