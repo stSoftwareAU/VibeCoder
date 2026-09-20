@@ -14,4 +14,7 @@
 # 1.7.0 carries the whole RTK Bash-output switch — the `rtk_output.enabled`
 # config block, the pinned RTK toolchain, the five wired paths, the `RTK:`
 # stats line and the `rtk` callback block (milestone #2328).
-1.7.0
+#
+# 1.8.0 turns RTK output filtering on by default (Issue #2432): a host that
+# never wrote `rtk_output` now filters, and `enabled: false` is the opt-out.
+1.8.0
