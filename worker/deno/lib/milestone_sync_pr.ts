@@ -30,6 +30,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
 
 /** Prefix for the branch a sync PR is raised from. No ruleset covers it. */
 export const SYNC_BRANCH_PREFIX = "sync/milestone";
@@ -360,6 +361,18 @@ export async function raiseMilestoneSyncPr(
     const number = created.trim().split("/").pop() ?? "";
     if (number) {
       await armSyncPrAutoMerge(repo, number, branch, deps);
+      // Issue #2438: the sync PR asks for no reviewer of its own, but
+      // CODEOWNERS auto-requests one the moment it opens and nothing acts on
+      // it — the review that matters sits on the milestone → default-branch
+      // PR. Remove it once, here.
+      await clearMilestoneReviewRequests({
+        repo,
+        prNumber: Number(number),
+        base: milestoneBranch,
+      }, {
+        ghCommandFn: deps.gh,
+        ...(deps.log ? { log: deps.log, warn: deps.log } : {}),
+      });
     }
     deps.log?.(
       `milestone sync: raised PR ${created.trim()} to merge ` +

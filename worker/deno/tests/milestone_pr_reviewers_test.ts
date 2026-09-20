@@ -90,7 +90,9 @@ Deno.test("clearMilestoneReviewRequests - no auto-request costs no extra call", 
 Deno.test("clearMilestoneReviewRequests - one DELETE carries both users and teams", async () => {
   const logs: string[] = [];
   const rec = recorder((args) =>
-    args.includes("GET") ? '{"users":[{"login":"alice"}],"teams":[{"slug":"platform"}]}' : "{}"
+    args.includes("GET")
+      ? '{"users":[{"login":"alice"}],"teams":[{"slug":"platform"}]}'
+      : "{}"
   );
 
   const outcome = await clearMilestoneReviewRequests({
@@ -118,7 +120,9 @@ Deno.test("clearMilestoneReviewRequests - one DELETE carries both users and team
 
 Deno.test("clearMilestoneReviewRequests - a CODEOWNERS team alone is cleared", async () => {
   const rec = recorder((args) =>
-    args.includes("GET") ? '{"users":[],"teams":[{"slug":"code-owners"}]}' : "{}"
+    args.includes("GET")
+      ? '{"users":[],"teams":[{"slug":"code-owners"}]}'
+      : "{}"
   );
 
   const outcome = await clearMilestoneReviewRequests({

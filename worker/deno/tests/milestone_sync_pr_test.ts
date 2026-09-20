@@ -195,6 +195,65 @@ Deno.test("raiseMilestoneSyncPr - establishes the lease baseline before pushing 
   );
 });
 
+// ---------------------------------------------------------------------------
+// CODEOWNERS auto-requests on the sync PR (Issue #2438)
+//
+// The sync PR is created with no `--reviewer` of its own, but CODEOWNERS
+// auto-requests one the moment it opens and nothing acts on it — the review
+// that matters sits on the milestone → default-branch PR.
+// ---------------------------------------------------------------------------
+
+Deno.test("raiseMilestoneSyncPr - clears the CODEOWNERS request on the new sync PR (Issue #2438)", async () => {
+  const gh: string[][] = [];
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    git: () => Promise.resolve({ code: 0, stderr: "" }),
+    gh: (args: string[]) => {
+      gh.push(args);
+      if (args[1] === "list") return Promise.resolve("[]");
+      if (args[1] === "create") {
+        return Promise.resolve("https://github.com/org/repo/pull/700\n");
+      }
+      if (args.includes("GET")) {
+        return Promise.resolve('{"users":[],"teams":[{"slug":"code-owners"}]}');
+      }
+      return Promise.resolve("");
+    },
+  });
+
+  assert(result.ok && result.value.opened);
+
+  // The sync PR never asks for a reviewer itself.
+  const create = gh.find((a) => a[1] === "create");
+  assert(create);
+  assertEquals(create.includes("--reviewer"), false, create.join(" "));
+
+  // One DELETE, carrying the team GitHub auto-requested.
+  const deletes = gh.filter((a) =>
+    a.includes("DELETE") &&
+    a.some((v) => v.endsWith("/requested_reviewers"))
+  );
+  assertEquals(deletes.length, 1, JSON.stringify(gh));
+  assertStringIncludes(deletes[0]!.join(" "), "repos/org/repo/pulls/700/");
+  assert(
+    deletes[0]!.includes("team_reviewers[]=code-owners"),
+    deletes[0]!.join(" "),
+  );
+});
+
+Deno.test("raiseMilestoneSyncPr - an existing sync PR is not re-cleared (Issue #2438)", async () => {
+  // The removal runs once, on creation — an update must spend no quota on it
+  // (Issue #2409).
+  const { deps, gh } = fakeDeps(JSON.stringify([{ number: 700 }]));
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(
+    gh.some((a) => a.some((v) => v.endsWith("/requested_reviewers"))),
+    false,
+    JSON.stringify(gh),
+  );
+});
+
 Deno.test("raiseMilestoneSyncPr - a branch absent from the remote still pushes (Issue #1568)", async () => {
   // `git fetch origin <branch>` fails when the branch does not exist yet.
   // That is the ordinary first-run case and must not stop the sync — git
