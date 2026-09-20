@@ -36,6 +36,7 @@ import {
 } from "../lib/claude_executor.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
 import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
+import { RTK_OFF } from "../lib/rtk_output.ts";
 
 /** The four newly-promoted reactive phases plus their expected stats heading. */
 const PROMOTED_PHASES: Array<{ phase: string; heading: string }> = [
@@ -658,5 +659,99 @@ Deno.test("reportPhaseDegradation - a round with no CodeGraph step mentions none
   assert(
     !comments[0]!.body.includes("CodeGraph"),
     `a round without the step must not mention it: ${comments[0]!.body}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// RTK status on the planning-shaped path (Issue #2385)
+// ---------------------------------------------------------------------------
+
+/** The RTK lines a posted comment carries — exactly one is the contract. */
+function rtkLinesOf(body: string): string[] {
+  return body.split("\n").filter((line) => line.startsWith("- **RTK:**"));
+}
+
+Deno.test("reportPhaseDegradation - a healthy round reports the run's RTK status (Issue #2385)", async () => {
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  const verdict = await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2385,
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    listIssueComments: () => Promise.resolve([]),
+    codegraph: INDEXED,
+    rtk: { status: "ok", enabled: true, savedTokens: 12340 },
+  });
+
+  resetModelResolution();
+  assertEquals(verdict.degraded, false);
+  assertEquals(comments.length, 1);
+  assertEquals(rtkLinesOf(comments[0]!.body), [
+    "- **RTK:** ok — 12,340 tokens saved",
+  ]);
+  // Beside the CodeGraph line, not in place of it.
+  assertStringIncludes(comments[0]!.body, "- **CodeGraph:** ok");
+});
+
+Deno.test("reportPhaseDegradation - a degraded round reports it too (Issue #2385)", async () => {
+  // The degraded path builds its own comment, so the status is threaded
+  // separately — a degraded round must not be a hole in the trial's data.
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  const verdict = await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2385,
+    claudeResult: { runStats: runStats(["claude-opus-4-8"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    rtk: RTK_OFF,
+  });
+
+  resetModelResolution();
+  assert(verdict.degraded, "opus when fable expected must be degraded");
+  assertEquals(comments.length, 1);
+  assertEquals(rtkLinesOf(comments[0]!.body), ["- **RTK:** off"]);
+});
+
+Deno.test("reportPhaseDegradation - a round given no RTK status mentions none (Issue #2385)", async () => {
+  pinPhasesToFable();
+  const { ghCommandFn } = fakeGh();
+  const { postComment, comments } = fakePost();
+  const { logger } = recordingLogger();
+
+  await reportPhaseDegradation({
+    phase: "question",
+    repo: "owner/repo",
+    issueNumber: 2385,
+    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    postComment,
+    runGhCommand: ghCommandFn,
+    logger,
+    cacheDir: Deno.makeTempDirSync(),
+    env: emptyEnv,
+    listIssueComments: () => Promise.resolve([]),
+  });
+
+  resetModelResolution();
+  assertEquals(comments.length, 1);
+  assert(
+    !comments[0]!.body.includes("RTK"),
+    `a round given no status must not mention it: ${comments[0]!.body}`,
   );
 });

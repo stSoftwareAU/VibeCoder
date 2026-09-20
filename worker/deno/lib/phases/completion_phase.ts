@@ -747,6 +747,8 @@ async function postWorkOnRunStats(
     // The run's CodeGraph figures, recorded by the execute phase beside the
     // invocations above, ride the same comment (Issue #2161).
     ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
+    // …and so does its RTK status, `off` included (Issue #2385).
+    ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
   });
 }
 
