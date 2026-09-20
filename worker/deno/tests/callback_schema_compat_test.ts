@@ -110,6 +110,15 @@ const GRAFT_FIGURE_ENV = [
   "VIBECODER_GRAFT_CALL_EDGE_COUNT",
 ] as const;
 
+/**
+ * The worker build identity added without a version bump (Issue #2444) —
+ * present only when the running worker's version and commit could be read.
+ */
+const WORKER_BUILD_ENV = [
+  "VIBECODER_WORKER_VERSION",
+  "VIBECODER_WORKER_COMMIT",
+] as const;
+
 /** A run that has every optional fact, so every field is exercised. */
 const FULL_CONTEXT: IssueRunCallbackContext = {
   runId: "vibe-mtk92vcu-ebcc11",
@@ -125,6 +134,8 @@ const FULL_CONTEXT: IssueRunCallbackContext = {
   finishedAt: "2026-09-12T18:31:12.000Z",
   durationSeconds: 1872,
   exitCode: 0,
+  workerVersion: "1.4.2",
+  workerCommit: "0123456789abcdef0123456789abcdef01234567",
   mode: "work-on",
   telemetry: {
     inputTokens: 1200,
@@ -715,6 +726,132 @@ Deno.test(
     ];
     for (const name of earlier) {
       assert(env[name] !== undefined, `${name} is no longer exported`);
+    }
+  },
+);
+
+// --- The additive workerVersion/workerCommit fields (Issue #2444) ---
+
+Deno.test(
+  "callback schema compat — workerVersion and workerCommit are carried in the document and exported as scalars when the build could be read",
+  () => {
+    const document = buildCallbackContextDocument(FULL_CONTEXT, "success");
+
+    assertEquals(document.workerVersion, "1.4.2");
+    assertEquals(
+      document.workerCommit,
+      "0123456789abcdef0123456789abcdef01234567",
+    );
+
+    const env = buildCallbackEnv(
+      FULL_CONTEXT,
+      "success",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(env.VIBECODER_WORKER_VERSION, "1.4.2");
+    assertEquals(
+      env.VIBECODER_WORKER_COMMIT,
+      "0123456789abcdef0123456789abcdef01234567",
+    );
+  },
+);
+
+Deno.test(
+  "callback schema compat — workerVersion and workerCommit are omitted, not blank, when the build could not be read",
+  () => {
+    // Context without worker build fields
+    const contextWithoutBuild = {
+      ...FULL_CONTEXT,
+      workerVersion: undefined,
+      workerCommit: undefined,
+    };
+
+    const document = buildCallbackContextDocument(
+      contextWithoutBuild,
+      "failure",
+    );
+    assert(!("workerVersion" in document), "workerVersion should be omitted");
+    assert(!("workerCommit" in document), "workerCommit should be omitted");
+
+    const env = buildCallbackEnv(
+      contextWithoutBuild,
+      "failure",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(env.VIBECODER_WORKER_VERSION, undefined);
+    assertEquals(env.VIBECODER_WORKER_COMMIT, undefined);
+  },
+);
+
+Deno.test(
+  "#2444 — the addition is additive: schema version, key order and every earlier field and scalar are unaffected",
+  () => {
+    const document = buildCallbackContextDocument(FULL_CONTEXT, "always");
+
+    // Schema version unchanged
+    assertEquals(CALLBACK_SCHEMA_VERSION, 2);
+    assertEquals(document.schemaVersion, 2);
+
+    // Key order: rtk at -1, codegraph at -2, confirming no earlier key moved
+    assertEquals(Object.keys(document).at(-1), "rtk");
+    assertEquals(Object.keys(document).at(-2), "codegraph");
+
+    // Every field from SCHEMA_1_DOCUMENT retains its type
+    for (const [field, type] of Object.entries(SCHEMA_1_DOCUMENT)) {
+      assertEquals(
+        typeof document[field as keyof typeof document],
+        type,
+        `document.${field} is no longer a ${type}`,
+      );
+    }
+
+    // Every pinned scalar is still exported
+    const env = buildCallbackEnv(
+      FULL_CONTEXT,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+
+    // Verify SCHEMA_1 scalars are still there (unconditional)
+    for (const name of SCHEMA_1_ENV) {
+      assert(
+        env[name] !== undefined,
+        `SCHEMA_1 scalar ${name} is no longer exported`,
+      );
+    }
+    // Verify ADDITIVE_ENV scalars are still there (FULL_CONTEXT has these fields)
+    for (const name of ADDITIVE_ENV) {
+      assert(
+        env[name] !== undefined,
+        `ADDITIVE scalar ${name} is no longer exported`,
+      );
+    }
+    // Verify GRAFT_FIGURE_ENV scalars are still there (FULL_CONTEXT has graft)
+    for (const name of GRAFT_FIGURE_ENV) {
+      assert(
+        env[name] !== undefined,
+        `GRAFT scalar ${name} is no longer exported`,
+      );
+    }
+    // Verify graft enabled/status scalars are still there
+    assert(env.VIBECODER_GRAFT_ENABLED !== undefined);
+    assert(env.VIBECODER_GRAFT_STATUS !== undefined);
+    // Verify codegraph scalars are still there
+    assert(env.VIBECODER_CODEGRAPH_ENABLED !== undefined);
+    assert(env.VIBECODER_CODEGRAPH_STATUS !== undefined);
+    assert(env.VIBECODER_CODEGRAPH_INDEX_SECONDS !== undefined);
+    assert(env.VIBECODER_CODEGRAPH_NODE_COUNT !== undefined);
+    assert(env.VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT !== undefined);
+    assert(env.VIBECODER_CODEGRAPH_QUERIES !== undefined);
+    // Verify worker build scalars are there (FULL_CONTEXT has these fields)
+    for (const name of WORKER_BUILD_ENV) {
+      assert(
+        env[name] !== undefined,
+        `WORKER_BUILD scalar ${name} is no longer exported`,
+      );
     }
   },
 );

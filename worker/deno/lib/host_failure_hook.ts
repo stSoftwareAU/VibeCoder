@@ -44,6 +44,10 @@ import {
   type InvokeCallbackSeams,
 } from "./run_callbacks.ts";
 import { parseHostFailureCallback } from "./run_callbacks_config.ts";
+import {
+  type WorkerBuildFacts,
+  workerBuildFacts,
+} from "./worker_build_info.ts";
 
 /** Which host-level path is failing. */
 export type HostFailureCondition = "launcher" | "checkout_update";
@@ -198,6 +202,7 @@ function put(
  */
 export function buildHostFailureDocument(
   payload: HostFailurePayload,
+  facts: WorkerBuildFacts = workerBuildFacts(),
 ): Record<string, unknown> {
   const document: Record<string, unknown> = {
     schemaVersion: CALLBACK_SCHEMA_VERSION,
@@ -219,6 +224,9 @@ export function buildHostFailureDocument(
   if (payload.logTail !== undefined) document.logTail = payload.logTail;
   if (payload.detail !== undefined) document.detail = payload.detail;
   if (payload.checkout !== undefined) document.checkout = payload.checkout;
+  // Issue #2444: additive, omitted rather than guessed when unreadable.
+  if (facts.version !== undefined) document.workerVersion = facts.version;
+  if (facts.commit !== undefined) document.workerCommit = facts.commit;
   return document;
 }
 
@@ -234,6 +242,7 @@ export function buildHostFailureEnv(
   payload: HostFailurePayload,
   contextFilePath: string,
   readEnv: (name: string) => string | undefined = readEnvSafe,
+  facts: WorkerBuildFacts = workerBuildFacts(),
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV_VARS) {
@@ -253,6 +262,9 @@ export function buildHostFailureEnv(
   put(env, "VIBECODER_DELIVERY_KIND", payload.delivery.kind);
   put(env, "VIBECODER_DELIVERY_COUNT", payload.delivery.count);
   put(env, "VIBECODER_ATTEMPT", payload.attempt);
+  // Issue #2444: omitted rather than guessed when the build could not be read.
+  put(env, "VIBECODER_WORKER_VERSION", facts.version);
+  put(env, "VIBECODER_WORKER_COMMIT", facts.commit);
   return env;
 }
 
