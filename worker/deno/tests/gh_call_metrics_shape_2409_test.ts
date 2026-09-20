@@ -7,7 +7,8 @@
  * consumers could only be guessed at from the code. A shape is the
  * sub-command plus its flag **names**: enough to tell the listings apart,
  * and never an argument value, which can be a repository, a search string or
- * a body.
+ * a body. The one exception is the `--json` field list — identifiers the
+ * worker wrote, which tell a state check from a content read.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -20,7 +21,7 @@ import {
   resetGhCallMetrics,
 } from "../lib/gh_call_metrics.ts";
 
-Deno.test("classifyGhShape - the sub-command and its flag names, sorted, with no values (Issue #2409)", () => {
+Deno.test("classifyGhShape - the sub-command and its flag names, sorted, with no subject values (Issue #2409)", () => {
   assertEquals(
     classifyGhShape([
       "pr",
@@ -36,7 +37,7 @@ Deno.test("classifyGhShape - the sub-command and its flag names, sorted, with no
       "--limit",
       "100",
     ]),
-    "pr list --author --json --limit --repo --state",
+    "pr list --author --json=number,title --limit --repo --state",
   );
 });
 
@@ -98,4 +99,71 @@ Deno.test("formatGhCallShapesSummary - the busiest GraphQL shapes first, capped 
 Deno.test("formatGhCallShapesSummary - a cycle with no GraphQL call still logs one well-formed line (Issue #2409)", () => {
   resetGhCallMetrics();
   assertEquals(formatGhCallShapesSummary(), "graphql-shapes: none");
+});
+
+// Part 5: `issue view --json --repo` was the largest steady consumer (38–101 a
+// cycle) and the shape could not say *which* issue view — the dependency
+// check's state read, or the content read — because the field list is a value.
+// Field names are GraphQL identifiers the worker itself writes, so they are
+// safe to show; anything that is not a bare identifier is not shown.
+Deno.test("classifyGhShape - the --json field list tells one listing from another (Issue #2409)", () => {
+  assertEquals(
+    classifyGhShape([
+      "issue",
+      "view",
+      "128",
+      "--repo",
+      "o/r",
+      "--json",
+      "state",
+    ]),
+    "issue view --json=state --repo",
+  );
+  assertEquals(
+    classifyGhShape([
+      "issue",
+      "view",
+      "128",
+      "--repo",
+      "o/r",
+      "--json",
+      "title,body,labels",
+    ]),
+    "issue view --json=title,body,labels --repo",
+  );
+  assertEquals(
+    classifyGhShape(["pr", "list", "--json=number,title", "--repo", "o/r"]),
+    "pr list --json=number,title --repo",
+  );
+});
+
+Deno.test("classifyGhShape - a --json value that is not a list of bare identifiers is never shown (Issue #2409)", () => {
+  for (
+    const value of [
+      "title,TOKEN=hunter2hunter2", // gitleaks:allow fake fixture, not a real key
+      "org/private-repo",
+      "a b",
+      "",
+      "x".repeat(200),
+    ]
+  ) {
+    const shape = classifyGhShape(["issue", "view", "1", "--json", value]);
+    assertEquals(shape, "issue view --json", value.slice(0, 20));
+  }
+});
+
+Deno.test("classifyGhShape - only --json is ever expanded: every other flag's value stays out (Issue #2409)", () => {
+  assertEquals(
+    classifyGhShape([
+      "pr",
+      "list",
+      "--author",
+      "bot",
+      "--search",
+      "in:title secret",
+      "--json",
+      "number",
+    ]),
+    "pr list --author --json=number --search",
+  );
 });
