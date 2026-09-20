@@ -65,6 +65,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // DeepSeek per-phase model overrides (Issue #413). Model only — DeepSeek's
   // Anthropic-compatible endpoint has no effort control to override.
   "deepseek_phase_model_overrides",
+  // Issue-executor split (Issue #2341). Host-wide, with a same-named
+  // per-repository override under `repo_config`.
+  "issue_executor_split",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both

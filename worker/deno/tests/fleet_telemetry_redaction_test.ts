@@ -26,6 +26,7 @@ import {
   formatFleetSummary,
   recordBlockedSeconds,
   recordClaim,
+  recordIssuePhaseRun,
   recordOutcome,
   resetFleetTelemetry,
   startFleetCycle,
@@ -56,6 +57,26 @@ Deno.test("fleet summary - the usage-block metrics keep their values, not just t
   // The values, not just the keys: a masked value is the whole defect.
   assertStringIncludes(redacted, "usage_blocked=3418s");
   assertStringIncludes(redacted, "rate_limited=600s");
+  assertEquals(redacted.includes("***REDACTED***"), false, redacted);
+});
+
+Deno.test("fleet summary - the issue-phase counters keep their values (Issue #2347)", () => {
+  resetFleetTelemetry();
+  startFleetTelemetry(0);
+  startFleetCycle(0);
+  recordIssuePhaseRun({
+    usd: 1.25,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 930,
+    split: true,
+  });
+  const line = formatFleetSummary(100_000);
+
+  const redacted = redactSecrets(line);
+  assertEquals(redacted, line, line);
+  assertStringIncludes(redacted, "issue_runs=1");
+  assertStringIncludes(redacted, "issue_usd=1.2500");
+  assertStringIncludes(redacted, "issue_duration=930s");
   assertEquals(redacted.includes("***REDACTED***"), false, redacted);
 });
 

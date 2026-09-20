@@ -33,6 +33,11 @@ import {
   getRepoConfig,
 } from "./repo_config.ts";
 import { buildCiFailureContext, isCiFailureIssue } from "./ci_failure_issue.ts";
+import { isIssueExecutorSplitEnabled } from "./issue_executor_split.ts";
+import {
+  buildIssueExecutorAgents,
+  ISSUE_EXECUTOR_MODEL,
+} from "./issue_executor_agents.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";
 import { resolveVerbosity } from "./verbosity.ts";
 import {
@@ -315,6 +320,17 @@ export interface ExecuteClaudePhaseOptions {
    * from before the trial existed.
    */
   codegraphContextEnabled?: boolean;
+  /**
+   * Whether this host splits issue work between an advisor and Sonnet
+   * executor sub-agents (Issue #2342, part of #2320, default: false).
+   *
+   * Threaded from `config.issueExecutorSplit` by this path's production
+   * wiring site (`commands/execute_claude_phase.ts`); the main-loop issue
+   * phase reads the same key straight off its own `config`. The repository's
+   * own `repo_config` override is layered over it here. Off, the invocation
+   * carries no `--agents` and is byte-for-byte the argv built today.
+   */
+  issueExecutorSplit?: boolean;
   /**
    * Whether to filter this run's shell output through RTK (Issue #2383, part
    * of #2328, default: false).
@@ -1220,6 +1236,25 @@ async function executeClaudePhaseBody(
     ? new PromptCache({ cacheDir: promptCacheDir })
     : undefined;
 
+  // The issue-executor split (Issue #2342): with the key on, the invocation
+  // carries `--agents` definitions so the advisor delegates mechanical edit
+  // work to Sonnet executors, and the prompt carries the advisor/executor
+  // block that tells it to (Issue #2343). Off — the default — `agents` stays
+  // absent, no argument is emitted, the block renders as nothing, and every
+  // sub-agent inherits the phase's model exactly as it does today. Resolved
+  // before the prompt is built so the prompt and the argv cannot disagree.
+  const issueExecutorSplit = isIssueExecutorSplitEnabled(
+    "issue",
+    repoConfig,
+    { issueExecutorSplit: options.issueExecutorSplit === true },
+  );
+  if (issueExecutorSplit) {
+    deps.log(
+      "Issue-executor split is on: the invocation carries " +
+        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
+
   const promptResult = await deps.buildCachedIssuePrompt({
     repo,
     issueNumber: String(issueNumber),
@@ -1246,6 +1281,8 @@ async function executeClaudePhaseBody(
     // template here too — this phase is a second entry point into the same
     // build, and skipping the overrides would silently run the built-in one.
     ...(promptOverrides ? { promptOverrides } : {}),
+    // Issue #2343: a split run's prompt carries the advisor/executor block.
+    issueExecutorSplit,
   });
 
   if (!promptResult.ok) {
@@ -1471,6 +1508,14 @@ async function executeClaudePhaseBody(
         // enabled run whose index built; on every other status this is
         // exactly `screenshotRequired`, as before.
         mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
+        // Issue #2342: only a split run carries sub-agent definitions, and
+        // only a split run carries the guard that keeps every `Edit`/`Write`
+        // inside one of them (Issue #2344). `claude_runner.ts` merges that
+        // guard's hooks with the ones below rather than one replacing the
+        // other.
+        ...(issueExecutorSplit
+          ? { agents: buildIssueExecutorAgents(), issueExecutorSplit: true }
+          : {}),
         // This spawn's hooks (Issue #2383), carried on the command line. A run
         // that installs none leaves the key absent, so the argv is the one it
         // always spawned; when the split-executor guard lands on this path its

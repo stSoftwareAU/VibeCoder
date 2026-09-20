@@ -11,12 +11,14 @@ import {
   buildIssueCostTotalLine,
   buildIssueRunStatsComment,
   buildIssueRunStatsMarker,
+  buildQualityGateStatsLine,
   buildRtkStatsLine,
   ghIssueCommentLister,
   hasIssueRunStatsComment,
   hasRunStatsCommentForRun,
   ISSUE_RUN_STATS_DISCLAIMER,
   ISSUE_RUN_STATS_MARKER,
+  measureIssuePhaseRun,
   postIssueRunStatsComment,
   RTK_STATS_PREFIX,
   sanitiseStatsRunId,
@@ -24,6 +26,7 @@ import {
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
+import type { QualityGateAttemptOutcome } from "../lib/issue_run_stats_comment.ts";
 import {
   type CodegraphContextResult,
   prepareCodegraphContext,
@@ -117,6 +120,94 @@ Deno.test("buildIssueRunStatsComment - renders the shared stats format", () => {
   assertStringIncludes(body, "Estimated cost (USD, estimate only)");
 });
 
+/** Every rendered line starting with `prefix`, in order. */
+function linesStartingWith(body: string, prefix: string): string[] {
+  return body.split("\n").filter((line) => line.startsWith(prefix));
+}
+
+Deno.test("buildIssueRunStatsComment - a split run's counts reach the rendered body (Issue #2344, #2346)", () => {
+  const split = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"], {
+      executorSplit: {
+        advisorEditCalls: 0,
+        deniedAdvisorEdits: ["Edit"],
+        executorDispatches: 3,
+        executorRetasks: 1,
+      },
+    })],
+  });
+
+  assertEquals(linesStartingWith(split, "- split:"), ["- split: on"]);
+  assertEquals(linesStartingWith(split, "- executors dispatched:"), [
+    "- executors dispatched: 3",
+  ]);
+  assertEquals(linesStartingWith(split, "- re-tasks issued:"), [
+    "- re-tasks issued: 1",
+  ]);
+  assertEquals(linesStartingWith(split, "- advisor edit calls:"), [
+    "- advisor edit calls: 0 (1 denied)",
+  ]);
+});
+
+Deno.test("buildIssueRunStatsComment - an unsplit run says split: off and nothing more (Issue #2346)", () => {
+  const unsplit = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+  });
+
+  // Every implementation comment carries the line, so a control run is
+  // separable from a pilot one when the numbers are read.
+  assertEquals(linesStartingWith(unsplit, "- split:"), ["- split: off"]);
+  assertEquals(unsplit.includes("executors dispatched:"), false);
+  assertEquals(unsplit.includes("re-tasks issued:"), false);
+  assertEquals(unsplit.includes("advisor edit calls:"), false);
+});
+
+Deno.test("buildIssueRunStatsComment - many invocations render exactly one split line (Issue #2346)", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [
+      claudeResult(["claude-opus-4-8"], {
+        executorSplit: {
+          advisorEditCalls: 1,
+          deniedAdvisorEdits: ["Write"],
+          executorDispatches: 2,
+          executorRetasks: 1,
+        },
+      }),
+      claudeResult(["claude-opus-4-8"], {
+        executorSplit: {
+          advisorEditCalls: 0,
+          deniedAdvisorEdits: [],
+          executorDispatches: 3,
+          executorRetasks: 0,
+        },
+      }),
+    ],
+  });
+
+  assertEquals(linesStartingWith(body, "- split:"), ["- split: on"]);
+  assertEquals(linesStartingWith(body, "- executors dispatched:"), [
+    "- executors dispatched: 5",
+  ]);
+  assertEquals(linesStartingWith(body, "- re-tasks issued:"), [
+    "- re-tasks issued: 1",
+  ]);
+  assertEquals(linesStartingWith(body, "- advisor edit calls:"), [
+    "- advisor edit calls: 1 (1 denied)",
+  ]);
+});
+
+Deno.test("buildIssueRunStatsComment - a planning-shaped phase carries no split line (Issue #2346)", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "grill_me",
+    claudeResults: [claudeResult(["claude-fable-5"])],
+  });
+
+  assertEquals(linesStartingWith(body, "- split:"), []);
+});
+
 Deno.test("buildIssueRunStatsComment - carries marker and disclaimer", () => {
   const body = buildIssueRunStatsComment({
     phase: "issue",
@@ -187,6 +278,98 @@ Deno.test("buildIssueRunStatsComment - adds the cumulative issue total from the 
   assertEquals(
     tallyIssueCost([earlier, later, third]).total,
     expected + tallyIssueCost([third]).total,
+  );
+});
+
+/**
+ * A split run: the Opus advisor and its Sonnet executors share one CLI
+ * invocation, so the per-model breakdown is the only record of who spent what.
+ * Counter keys are deliberately mixed camelCase/snake_case — the CLI emits the
+ * former, the recorded fixtures the latter, and both must parse.
+ */
+function splitRunResult(): PhaseClaudeResult {
+  return {
+    runStats: {
+      servedModels: ["claude-opus-5", "claude-sonnet-5"],
+      requestedModel: "opus",
+      wallClockMs: 2_000,
+      tokenUsage: {
+        inputTokens: 1_500_000,
+        outputTokens: 300_000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+      modelUsage: {
+        "claude-opus-5": { inputTokens: 1_000_000, outputTokens: 100_000 },
+        "claude-sonnet-5": { input_tokens: 500_000, output_tokens: 200_000 },
+      },
+      executorSplit: {
+        advisorEditCalls: 0,
+        deniedAdvisorEdits: [],
+        executorDispatches: 2,
+        executorRetasks: 0,
+      },
+    },
+  };
+}
+
+// Documented per-Mtok prices (docs/MODEL-AND-CACHING.md): Opus 5 $5 in /
+// $25 out, Sonnet 5 $2 in / $10 out.
+const ADVISOR_COST = 1.0 * 5 + 0.1 * 25; // $7.50
+const EXECUTOR_COST = 0.5 * 2 + 0.2 * 10; // $3.00
+const SPLIT_RUN_COST = ADVISOR_COST + EXECUTOR_COST; // $10.50
+
+Deno.test("buildIssueRunStatsComment - executor Sonnet spend is priced separately from advisor Opus (Issue #2346)", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+  });
+
+  assertStringIncludes(
+    body,
+    "**Served model(s):** `claude-opus-5`, `claude-sonnet-5`",
+  );
+  // Each served model carries its own token counts...
+  assertStringIncludes(
+    body,
+    "- `claude-opus-5`: input 1,000,000 · output 100,000 · cache write 0 · cache read 0",
+  );
+  assertStringIncludes(
+    body,
+    "- `claude-sonnet-5`: input 500,000 · output 200,000 · cache write 0 · cache read 0",
+  );
+  // ...its own cost line...
+  assertStringIncludes(body, `- \`claude-opus-5\`: ${formatUsd(ADVISOR_COST)}`);
+  assertStringIncludes(
+    body,
+    `- \`claude-sonnet-5\`: ${formatUsd(EXECUTOR_COST)}`,
+  );
+  // ...and the run's estimate is their sum, not the advisor's alone.
+  assertStringIncludes(
+    body,
+    `**Estimated cost (USD, estimate only):** ~${formatUsd(SPLIT_RUN_COST)}`,
+  );
+  assertEquals(tallyIssueCost([body]).total, SPLIT_RUN_COST);
+});
+
+Deno.test("buildIssueRunStatsComment - the issue total sums both split runs' executor spend (Issue #2346)", () => {
+  const earlier = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-one",
+  });
+  const later = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-two",
+    priorComments: [earlier],
+  });
+
+  assertStringIncludes(
+    later,
+    `**Issue total across 2 run-stats comments:** ~${
+      formatUsd(SPLIT_RUN_COST * 2)
+    }`,
   );
 });
 
@@ -389,6 +572,44 @@ Deno.test("postIssueRunStatsComment - posts once when the issue has none", async
   assertEquals(result.posted, true);
   assertEquals(gh.posted.length, 1);
   assertStringIncludes(gh.posted[0]!, buildIssueRunStatsMarker("vibe-run-one"));
+});
+
+Deno.test("postIssueRunStatsComment - a split run's posted body carries the split figures and both models' spend (Issue #2346)", async () => {
+  const earlier = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-one",
+  });
+  const gh = makeGitHubDouble([earlier]);
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 42,
+    phase: "issue",
+    claudeResults: [splitRunResult()],
+    runId: "vibe-run-two",
+    authorOptions: FLEET_OPTIONS,
+    getIssueComments: gh.getIssueComments,
+    postComment: gh.postComment,
+    logger: makeLogger(),
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(gh.posted.length, 1);
+  const body = gh.posted[0]!;
+  assertEquals(linesStartingWith(body, "- split:"), ["- split: on"]);
+  assertEquals(linesStartingWith(body, "- executors dispatched:"), [
+    "- executors dispatched: 2",
+  ]);
+  assertStringIncludes(
+    body,
+    `- \`claude-sonnet-5\`: ${formatUsd(EXECUTOR_COST)}`,
+  );
+  assertStringIncludes(
+    body,
+    `**Issue total across 2 run-stats comments:** ~${
+      formatUsd(SPLIT_RUN_COST * 2)
+    }`,
+  );
 });
 
 Deno.test("postIssueRunStatsComment - skips when this run already posted", async () => {
@@ -937,8 +1158,9 @@ Deno.test("codegraph line - a comment built without the argument is unchanged", 
     runId: "vibe-codegraph-run",
   });
 
-  // Byte-for-byte the comment this function rendered before the trial existed:
-  // the marker, the shared section, then the disclaimer — nothing between.
+  // Byte-for-byte the comment this function renders without the trial: the
+  // marker, the shared section, the implementation run's split line (Issue
+  // #2346 — every implementation comment carries one), then the disclaimer.
   const { section } = buildDegradationReport({
     invocations: claudeResults.flatMap((r) =>
       buildPhaseInvocations("issue", r)
@@ -949,7 +1171,7 @@ Deno.test("codegraph line - a comment built without the argument is unchanged", 
     body,
     `${
       buildIssueRunStatsMarker("vibe-codegraph-run")
-    }\n${section}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
+    }\n${section}\n- split: off\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
   );
   assertEquals(codegraphLineOf(body), undefined);
   assertEquals(body.includes("CodeGraph"), false);
@@ -1015,6 +1237,141 @@ Deno.test("postIssueRunStatsComment - CodeGraph figures alone are not something 
     logger: makeLogger(),
     authorOptions: FLEET_OPTIONS,
     codegraph: { status: "ok", enabled: true, nodeCount: 5, queries: 1 },
+  });
+
+  assertEquals(result, { posted: false, reason: "no_stats" });
+  assertEquals(github.posted.length, 0);
+});
+
+// ============================================================================
+// Quality-gate attempt line (Issue #2345)
+// ============================================================================
+
+/** The comment's quality-gate line, or `undefined` when it carries none. */
+function qualityGateLineOf(body: string): string | undefined {
+  return body.split("\n").find((line) => line.startsWith("- quality gate:"));
+}
+
+/** A stats comment for an implementation run whose gate did `qualityGate`. */
+function commentWithQualityGate(
+  qualityGate: QualityGateAttemptOutcome,
+  phase = "issue",
+): string {
+  return buildIssueRunStatsComment({
+    phase,
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-gate-run",
+    qualityGate,
+  });
+}
+
+Deno.test("quality-gate line - a gate that passed first time reports attempt 1", () => {
+  const body = commentWithQualityGate({ status: "passed", attempt: 1 });
+
+  assertEquals(qualityGateLineOf(body), "- quality gate: passed on attempt 1");
+  assertStringIncludes(body, "quality gate: passed on attempt 1");
+});
+
+Deno.test("quality-gate line - a gate that passed after remediation reports attempt 2", () => {
+  const body = commentWithQualityGate({ status: "passed", attempt: 2 });
+
+  assertEquals(qualityGateLineOf(body), "- quality gate: passed on attempt 2");
+});
+
+Deno.test("quality-gate line - a gate that never passed reads failed", () => {
+  const body = commentWithQualityGate({ status: "failed" });
+
+  assertEquals(qualityGateLineOf(body), "- quality gate: failed");
+  assertEquals(body.includes("passed on attempt"), false);
+});
+
+Deno.test("buildQualityGateStatsLine - renders no line without an outcome", () => {
+  assertEquals(buildQualityGateStatsLine(undefined), "");
+});
+
+Deno.test("quality-gate line - a phase with no quality gate is byte-for-byte unchanged", () => {
+  const claudeResults = [claudeResult(["claude-opus-4-8"])];
+  const body = buildIssueRunStatsComment({
+    phase: "grill_me",
+    claudeResults,
+    runId: "vibe-gate-run",
+  });
+
+  // Exactly the comment this function rendered before the line existed: the
+  // marker, the shared section, then the disclaimer — nothing between.
+  const { section } = buildDegradationReport({
+    invocations: claudeResults.flatMap((r) =>
+      buildPhaseInvocations("grill_me", r)
+    ),
+    phase: "grill_me",
+  });
+  assertEquals(
+    body,
+    `${
+      buildIssueRunStatsMarker("vibe-gate-run")
+    }\n${section}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
+  );
+  assertEquals(qualityGateLineOf(body), undefined);
+  assertEquals(body.includes("quality gate"), false);
+});
+
+Deno.test("quality-gate line - sits inside the stats block, above the disclaimer", () => {
+  const body = commentWithQualityGate({ status: "passed", attempt: 2 });
+
+  const gateAt = body.indexOf("- quality gate:");
+  assert(gateAt > body.indexOf("- **Degraded:**"));
+  assert(gateAt < body.indexOf(ISSUE_RUN_STATS_DISCLAIMER));
+});
+
+Deno.test("quality-gate line - the cost tally and total line ignore it", () => {
+  const withLine = commentWithQualityGate({ status: "passed", attempt: 1 });
+  const without = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-gate-run",
+  });
+
+  assertEquals(tallyIssueCost([withLine]), tallyIssueCost([without]));
+  assertEquals(tallyIssueCost([withLine]).partial, false);
+});
+
+Deno.test("postIssueRunStatsComment - posts the gate outcome with the run's costs", async () => {
+  const github = makeGitHubDouble();
+
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2345,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    qualityGate: { status: "passed", attempt: 2 },
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(
+    qualityGateLineOf(github.posted[0] ?? ""),
+    "- quality gate: passed on attempt 2",
+  );
+});
+
+Deno.test("postIssueRunStatsComment - a gate outcome alone is not something to report", async () => {
+  const github = makeGitHubDouble();
+
+  // No invocation produced stats, so there is no comment to carry the line —
+  // the gate outcome must not manufacture a stats comment of its own.
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2345,
+    phase: "issue",
+    claudeResults: [],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    qualityGate: { status: "passed", attempt: 1 },
   });
 
   assertEquals(result, { posted: false, reason: "no_stats" });
@@ -1152,8 +1509,10 @@ Deno.test("rtk line - sits after the CodeGraph line and before the issue total",
   const rtkAt = lines.findIndex((l) => l.startsWith(RTK_STATS_PREFIX));
   const totalAt = lines.findIndex((l) => l.includes("**Issue total across"));
   assert(codegraphAt >= 0 && rtkAt >= 0 && totalAt >= 0, body);
-  // Directly beneath CodeGraph, directly above the total: nothing between.
-  assertEquals(rtkAt, codegraphAt + 1);
+  // The `issue` phase's always-on split line (Issue #2346) sits between
+  // CodeGraph and RTK; nothing else does, and nothing sits between RTK and
+  // the total.
+  assertEquals(rtkAt, codegraphAt + 2);
   assertEquals(totalAt, rtkAt + 1);
   assert(body.indexOf(RTK_STATS_PREFIX) > body.indexOf("- **Degraded:**"));
   assert(
@@ -1206,7 +1565,9 @@ Deno.test("rtk line - a comment built without the argument is unchanged", () => 
     runId: "vibe-rtk-run",
   });
 
-  // Byte-for-byte the comment this function rendered before the line existed.
+  // Byte-for-byte the comment this function rendered before the RTK line
+  // existed — modulo the `issue` phase's own always-on split line (Issue
+  // #2346), which every implementation run carries regardless of RTK.
   const { section } = buildDegradationReport({
     invocations: claudeResults.flatMap((r) =>
       buildPhaseInvocations("issue", r)
@@ -1217,7 +1578,7 @@ Deno.test("rtk line - a comment built without the argument is unchanged", () => 
     body,
     `${
       buildIssueRunStatsMarker("vibe-rtk-run")
-    }\n${section}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
+    }\n${section}\n- split: off\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
   );
   assertEquals(body.includes("RTK"), false);
 });
@@ -1294,4 +1655,113 @@ Deno.test("postIssueRunStatsComment - an RTK status alone is not something to re
 
   assertEquals(result, { posted: false, reason: "no_stats" });
   assertEquals(github.posted.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// measureIssuePhaseRun (Issue #2347)
+// ---------------------------------------------------------------------------
+
+/** The estimated-cost figure the rendered comment reports, as a number. */
+function renderedCostUsd(body: string): number {
+  const match = body.match(
+    /\*\*Estimated cost \(USD, estimate only\):\*\* ~\$([0-9.]+)/,
+  );
+  assert(match, `no estimated cost line in:\n${body}`);
+  return Number(match[1]);
+}
+
+Deno.test("measureIssuePhaseRun - a non-implementation phase is not measured", () => {
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "grill_me",
+      claudeResults: [claudeResult(["claude-opus-5"])],
+    }),
+    undefined,
+  );
+});
+
+Deno.test("measureIssuePhaseRun - a run no invocation produced stats for is not measured", () => {
+  // The same runs `postIssueRunStatsComment` answers `no_stats` for: there is
+  // no comment, so there are no figures to record and no run to count.
+  assertEquals(
+    measureIssuePhaseRun({ phase: "issue", claudeResults: [{}] }),
+    undefined,
+  );
+  assertEquals(
+    measureIssuePhaseRun({ phase: "issue", claudeResults: [] }),
+    undefined,
+  );
+});
+
+Deno.test("measureIssuePhaseRun - the spend is the figure the comment renders", () => {
+  const claudeResults = [claudeResult(["claude-opus-5"])];
+  const figures = measureIssuePhaseRun({ phase: "issue", claudeResults });
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults,
+    runId: "vibe-measure-1",
+  });
+
+  assert(figures);
+  assertEquals(formatUsd(figures.usd ?? -1), formatUsd(renderedCostUsd(body)));
+});
+
+Deno.test("measureIssuePhaseRun - an invocation with no served model is priced as the comment prices it", () => {
+  // The divergent case: with no served model both the comment and the recorder
+  // must fall back to the *expected* model of the phase's routing chain. The
+  // requested model here is deliberately a different, cheaper tier, so pricing
+  // off it instead would report a figure the comment never showed — on exactly
+  // the runs whose price is least certain.
+  const claudeResults = [claudeResult([], { requestedModel: "haiku" })];
+  const figures = measureIssuePhaseRun({ phase: "issue", claudeResults });
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults,
+    runId: "vibe-measure-2",
+  });
+
+  assert(figures);
+  assertEquals(formatUsd(figures.usd ?? -1), formatUsd(renderedCostUsd(body)));
+});
+
+Deno.test("measureIssuePhaseRun - duration sums the invocations and the split is the comment's own rule", () => {
+  const figures = measureIssuePhaseRun({
+    phase: "issue",
+    claudeResults: [
+      claudeResult(["claude-opus-5"], { durationMs: 90_000 }),
+      claudeResult(["claude-opus-5"], { durationMs: 30_000 }),
+    ],
+  });
+
+  assert(figures);
+  assertEquals(figures.durationSeconds, 120);
+  // No invocation recorded an executor split, so the comment renders
+  // `split: off` and the recorder reports the same.
+  assertEquals(figures.split, false);
+});
+
+Deno.test("measureIssuePhaseRun - only a gate that passed carries its attempt", () => {
+  const claudeResults = [claudeResult(["claude-opus-5"])];
+
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults,
+      qualityGate: { status: "passed", attempt: 2 },
+    })?.gatePassedOnAttempt,
+    2,
+  );
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults,
+      qualityGate: { status: "failed" },
+    })?.gatePassedOnAttempt,
+    undefined,
+  );
+  assertEquals(
+    measureIssuePhaseRun({ phase: "issue", claudeResults })
+      ?.gatePassedOnAttempt,
+    undefined,
+  );
 });

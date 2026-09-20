@@ -1946,6 +1946,55 @@
       "paths": [
         "worker/deno/lib/rtk_output.ts"
       ]
+    },
+    {
+      "issue": 2341,
+      "chunk": "top-up-2341",
+      "title": "top-up: the issue-executor split resolver",
+      "ledger": "docs/audits/security-sweep-2341-issue-executor-split.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_split.ts (#2341)",
+      "status": "swept",
+      "sweptAt": "07c55f785d2e29bd98ec08b682f19ac1d6ba6003",
+      "paths": [
+        "worker/deno/lib/issue_executor_split.ts"
+      ]
+    },
+    {
+      "issue": 2342,
+      "chunk": "top-up-2342",
+      "title": "top-up: the issue-executor sub-agent definitions",
+      "ledger": "docs/audits/security-sweep-2342-issue-executor-agents.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_agents.ts (#2342)",
+      "status": "swept",
+      "sweptAt": "4341d040bc3c425135e8068dd17d444b85bf0e14",
+      "paths": [
+        "worker/deno/lib/issue_executor_agents.ts"
+      ]
+    },
+    {
+      "issue": 2343,
+      "chunk": "top-up-2343",
+      "title": "top-up: the advisor/executor prompt block",
+      "ledger": "docs/audits/security-sweep-2343-issue-executor-split-prompt.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_split_prompt.ts (#2343)",
+      "status": "swept",
+      "sweptAt": "b6e8e363938810614563549eb781801cd7f79f88",
+      "paths": [
+        "worker/deno/lib/issue_executor_split_prompt.ts"
+      ]
+    },
+    {
+      "issue": 2344,
+      "chunk": "top-up-2344",
+      "title": "top-up: the advisor edit guard",
+      "ledger": "docs/audits/security-sweep-2344-issue-executor-enforcement.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_enforcement.ts, issue_edit_guard_cli.ts (#2344)",
+      "status": "swept",
+      "sweptAt": "fe1ca4615c07852220f8c464928f445300efa5ae",
+      "paths": [
+        "worker/deno/lib/issue_edit_guard_cli.ts",
+        "worker/deno/lib/issue_executor_enforcement.ts"
+      ]
     }
   ],
   "roots": [

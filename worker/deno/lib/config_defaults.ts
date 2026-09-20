@@ -447,6 +447,12 @@ export const OPERATIONAL_DEFAULTS = {
    * housekeeping sweep runs either way.
    */
   enableSessionResume: true,
+  /**
+   * Whether `issue`-phase runs use the split executor (Issue #2341).
+   * Off until an operator turns it on, so an unconfigured host invokes the
+   * coding agent exactly as it does today.
+   */
+  issueExecutorSplit: false,
   /** Maximum session store size in bytes before compaction (50 MB) (Issue #1328). */
   maxSessionSizeBytes: 50 * 1024 * 1024,
   /** Maximum session age in days before cleanup (Issue #1328). */
@@ -1521,6 +1527,7 @@ export function buildDefaultWorkerConfig(
     codexPhaseEffortOverrides: {},
     geminiPhaseModelOverrides: {},
     deepseekPhaseModelOverrides: {},
+    issueExecutorSplit: OPERATIONAL_DEFAULTS.issueExecutorSplit,
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
       OPERATIONAL_DEFAULTS.recentActivityMergedPrLimit,

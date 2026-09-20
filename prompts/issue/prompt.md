@@ -126,7 +126,7 @@ reading the files a lint, type or test failure points at. Where one call needs
 an earlier call's output — an issue number, a resolved path — wait for that
 result rather than guessing a parameter to keep the batch together.
 </use_parallel_tool_calls>
-
+{{EXECUTOR_SPLIT_INSTRUCTIONS}}
 ## Long-Horizon Execution
 
 A single issue can outlast one context window. Work so both the task and the

@@ -134,12 +134,25 @@ ${integrity}`;
  * after the retry has been exhausted (or was not applicable), so a
  * transient infrastructure blip on the first attempt does not apply the
  * `failed-once` label.
+ *
+ * Issue #2345: records `state.qualityGateOutcome` **once per run** — the first
+ * call's outcome stands, so a recovery path that re-runs this phase cannot
+ * relabel an implementation gate that needed remediation as a first-attempt
+ * pass. Within one call the infrastructure retry's own gate result is the one
+ * recorded, since that retry replaces the blipped run rather than following it.
  */
 export async function workOnIssueQualityGate(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  // Issue #2345: the gate this phase ran first is the implementation gate the
+  // pilot's pass rate is read from. The in-run recovery paths
+  // (`recoverFromSecurityGateBlock`, `recoverFromSummaryRuleBlock`) call this
+  // phase again before the stats comment is posted, so an already-recorded
+  // outcome is restored below rather than overwritten by a later gate.
+  const recordedOutcome = state.qualityGateOutcome;
+
   let { phaseResult, qualityFailureMessage } = await runQualityGateBody(
     ctx,
     state,
@@ -211,6 +224,7 @@ export async function workOnIssueQualityGate(
     state.failureLadderApplied = true;
   }
 
+  if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
   return phaseResult;
 }
 
@@ -392,6 +406,10 @@ async function resolveBumpCommitSha(
  * itself failed, the raw quality-output failure message for
  * `handleIssueFailure`. Does NOT call `handleIssueFailure` itself; that is
  * the outer wrapper's responsibility (Issue #1550).
+ *
+ * Every exit records `state.qualityGateOutcome` (Issue #2345) — the attempt the
+ * gate passed on, or `failed` — so the completion phase can report it on the
+ * run-stats comment instead of leaving it in the host's private worker log.
  */
 async function runQualityGateBody(
   ctx: IssueContext,
@@ -411,6 +429,12 @@ async function runQualityGateBody(
   // ultimately fails — helps reviewers see what was pre-existing.
   let lastDiffCarryover = 0;
 
+  // Issue #2345: the gate has not passed until it says so. Recorded up front so
+  // every exit below — including one nobody anticipated — reports `failed`
+  // rather than leaving the run-stats comment silent about a gate that ran.
+  // The two passing exits overwrite it with the attempt they passed on.
+  state.qualityGateOutcome = { status: "failed" };
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const qualityResult = await deps.quality.runQualityGate({
       scriptDir: state.repoPath,
@@ -428,6 +452,7 @@ async function runQualityGateBody(
 
     if (qualityResult.value.passed) {
       logger.info("Quality gate passed", { attempt });
+      state.qualityGateOutcome = { status: "passed", attempt };
       return { phaseResult: { status: "continue" } };
     }
 
@@ -469,6 +494,9 @@ async function runQualityGateBody(
           decision.preExisting,
           { logger },
         );
+        // The run proceeds, but the gate never went green: the outcome stays
+        // `failed` (Issue #2345). Reporting a bypass as a pass would inflate
+        // the very first-attempt pass rate the line exists to measure.
         return { phaseResult: { status: "continue" } };
       }
       lastDiffCarryover = decision.preExisting.length;

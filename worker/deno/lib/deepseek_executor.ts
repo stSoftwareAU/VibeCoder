@@ -240,6 +240,28 @@ export function warnDeepSeekEffortUnsupported(
 }
 
 /**
+ * Report sub-agent definitions DeepSeek's endpoint cannot carry (Issue #2342).
+ *
+ * The same fail-loud-but-run treatment {@link warnDeepSeekEffortUnsupported}
+ * gives an unhonourable effort: the executor definitions name Anthropic tier
+ * aliases the endpoint cannot resolve, so DeepSeek keeps single-model routing.
+ * Stated every time rather than once per phase — a run told it is splitting
+ * work across two tiers and is not must say so on the invocation that did it.
+ *
+ * @param phase - The phase the definitions were requested for, when there is one.
+ */
+export function warnDeepSeekAgentsUnsupported(phase?: string): void {
+  const where = phase ? `phase "${phase}"` : "a phase-less invocation";
+  console.warn(
+    `[deepseek] Sub-agent definitions (--agents) were requested for ${where} ` +
+      `but DeepSeek's Anthropic-compatible endpoint cannot resolve the ` +
+      `Anthropic model tiers they name; the run keeps single-model routing. ` +
+      `Run this phase under the claude provider to split advisor and ` +
+      `executor tiers, or clear the split configuration for it.`,
+  );
+}
+
+/**
  * Whether a run served `served` satisfies the expectation `expected`
  * (Issue #2053).
  *

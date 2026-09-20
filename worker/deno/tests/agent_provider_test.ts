@@ -43,6 +43,10 @@ import { buildClaudeEffortArgs } from "../lib/claude_executor.ts";
 import { checkCredentialPreflight } from "../lib/credential_preflight.ts";
 import { loadConfig } from "../lib/config.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  buildIssueExecutorAgents,
+  ISSUE_EXECUTOR_AGENT_NAME,
+} from "../lib/issue_executor_agents.ts";
 
 const repoRoot = new URL("../../../", import.meta.url).pathname;
 
@@ -666,4 +670,98 @@ Deno.test("agent provider - the per-run provider override beats the configured f
 Deno.test("agent provider - an override naming an unregistered id fails loudly (Issue #2062)", () => {
   assertThrows(() => setRunProviderOverride("aider"), Error, "aider");
   setRunProviderOverride(undefined);
+});
+
+// ---------------------------------------------------------------------------
+// `--agents` sub-agent definitions (Issue #2342, part of #2320)
+// ---------------------------------------------------------------------------
+
+Deno.test("agent provider - Claude emits no --agents when the split is off (Issue #2342)", () => {
+  const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
+
+  // The same request as the pre-change invocation test above, asserted
+  // element for element: with no `agents` the argv must be exactly what the
+  // worker built before the flag existed, not merely "close enough".
+  const args = provider.buildInvocation({
+    prompt: "PROMPT",
+    systemPrompt: "SYSTEM",
+    model: "claude-opus-4-1",
+    effort: "high",
+    disallowedTools: ["EnterPlanMode", "ExitPlanMode"],
+    sessionResumeState: { sessionId: "repo-42-7", phaseCount: 1 },
+  });
+
+  assertEquals(args, [
+    "--model",
+    "claude-opus-4-1",
+    "--effort",
+    "high",
+    "--dangerously-skip-permissions",
+    "--disallowed-tools",
+    "EnterPlanMode,ExitPlanMode",
+    "--verbose",
+    "--output-format",
+    "stream-json",
+    "--system-prompt",
+    "SYSTEM",
+    "--resume",
+    "repo-42-7",
+    "-p",
+    "PROMPT",
+  ]);
+});
+
+Deno.test("agent provider - Claude emits --agents carrying the Sonnet executor when the split is on (Issue #2342)", () => {
+  const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
+
+  const args = provider.buildInvocation({
+    prompt: "PROMPT",
+    model: "claude-opus-4-1",
+    effort: "high",
+    agents: buildIssueExecutorAgents(),
+  });
+
+  const idx = args.indexOf("--agents");
+  assert(idx >= 0, `expected --agents in ${args.join(" ")}`);
+  assert(
+    idx < args.lastIndexOf("-p"),
+    "the flag is a static flag, so it precedes the prompt argument",
+  );
+
+  const parsed = JSON.parse(args[idx + 1]!);
+  assertEquals(Object.keys(parsed), [ISSUE_EXECUTOR_AGENT_NAME]);
+  const executor = parsed[ISSUE_EXECUTOR_AGENT_NAME];
+  assertEquals(executor.model, "sonnet");
+  assertEquals(executor.effort, "medium");
+  assertEquals(executor.tools, [
+    "Read",
+    "Grep",
+    "Glob",
+    "Edit",
+    "Write",
+    "Bash",
+  ]);
+  assertEquals(executor.disallowedTools, ["Agent"]);
+});
+
+Deno.test("agent provider - Codex and Gemini emit no --agents from the same request (Issue #2342)", () => {
+  const request = {
+    prompt: "PROMPT",
+    phase: "issue",
+    agents: buildIssueExecutorAgents(),
+  };
+
+  for (const id of [CODEX_PROVIDER_ID, GEMINI_PROVIDER_ID]) {
+    const args = resolveAgentProvider(id).buildInvocation(request);
+    assertEquals(
+      args.includes("--agents"),
+      false,
+      `${id} keeps single-model routing: ${args.join(" ")}`,
+    );
+    assertEquals(
+      args.some((arg) => arg.includes(ISSUE_EXECUTOR_AGENT_NAME)),
+      false,
+      `${id} does not smuggle the definitions into another argument`,
+    );
+  }
 });

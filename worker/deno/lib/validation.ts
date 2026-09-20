@@ -200,6 +200,8 @@ export interface ConfigFileJson {
   codex_phase_effort_overrides?: Record<string, string>;
   gemini_phase_model_overrides?: Record<string, string>;
   deepseek_phase_model_overrides?: Record<string, string>;
+  /** Host-wide issue-executor split (Issue #2341) */
+  issue_executor_split?: boolean;
   enable_session_resume?: boolean;
   /** Global verbosity level override (Issue #1330) */
   verbosity?: string;
@@ -744,6 +746,8 @@ export function validateConfigFileJson(
     "enable_model_fallback",
     "sync_milestone_branches",
     "enable_session_resume",
+    // Host-wide issue-executor split (Issue #2341).
+    "issue_executor_split",
   ] as const;
 
   for (const field of booleanFields) {

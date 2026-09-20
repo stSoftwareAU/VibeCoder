@@ -35,13 +35,22 @@ import {
 import { gateAlreadyResolvedClose } from "../image_conclusion_gate.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
-import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
+import {
+  IMPLEMENTATION_RUN_STATS_PHASE,
+  measureIssuePhaseRun,
+  postIssueRunStatsComment,
+} from "../issue_run_stats_comment.ts";
+import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
  * Drives both the stats heading and the expected-model routing chain.
+ *
+ * Shared with the renderer (Issue #2346): the split figures render only for
+ * this phase, so a local copy drifting from it would silently empty the pilot
+ * metric.
  */
-const WORK_ON_STATS_PHASE = "issue";
+const WORK_ON_STATS_PHASE = IMPLEMENTATION_RUN_STATS_PHASE;
 
 /**
  * Take the publishable tail of Claude's stdout for a public issue comment.
@@ -220,7 +229,7 @@ export async function workOnIssueHandleNoChanges(
       await ghClient.closeIssue(repo, issueNumber, closeComment);
       // Issue #3756 — the worker closed the issue itself, so this is its
       // wrap-up point: post the run's single cost/model stats comment.
-      await postIssueRunStatsComment({
+      const posted = await postIssueRunStatsComment({
         repo,
         issueNumber,
         phase: WORK_ON_STATS_PHASE,
@@ -247,6 +256,19 @@ export async function workOnIssueHandleNoChanges(
         // …and its RTK status, `off` included (Issue #2385).
         ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
       });
+      // Issue #2347: this is the second path that wraps up an `issue`-phase
+      // run, so it records the same figures its comment renders. Leaving it
+      // out would make an already-resolved run a hole in the per-host spend
+      // and duration the pilot is compared on, exactly as it would have been a
+      // hole in the CodeGraph data above. The run passed no quality gate — it
+      // raised no PR — so it counts towards the runs and not the passes.
+      if (posted.reason !== "already_posted") {
+        const figures = measureIssuePhaseRun({
+          phase: WORK_ON_STATS_PHASE,
+          claudeResults: state.claudeRunStats ?? [],
+        });
+        if (figures) recordIssuePhaseRun(figures);
+      }
       // Unassign
       await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
     } catch (err) {

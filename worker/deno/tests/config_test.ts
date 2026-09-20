@@ -1406,6 +1406,28 @@ Deno.test("config - loadConfig normalises per-repo model/effort routing keys (Is
   });
 });
 
+Deno.test("config - loadConfig normalises per-repo issue_executor_split (Issue #2341)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo", "org/split-repo"],
+    issue_executor_split: true,
+    repo_config: {
+      "org/split-repo": {
+        issue_executor_split: false,
+      } as unknown as import("../types.ts").RepoConfig,
+    },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.issueExecutorSplit, true);
+    assertEquals(
+      config.repoConfig?.["org/split-repo"]?.issueExecutorSplit,
+      false,
+    );
+  });
+});
+
 // =============================================================================
 // Issue #1296: repo_config snake_case to camelCase normalisation
 // =============================================================================
