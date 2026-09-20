@@ -41,8 +41,8 @@ import {
 } from "../lib/host_failure_hook.ts";
 import {
   resetWorkerBuildInfoOnce,
-  type WorkerBuildInfo,
   workerBuildFacts,
+  type WorkerBuildInfo,
   workerBuildInfoOnce,
 } from "../lib/worker_build_info.ts";
 

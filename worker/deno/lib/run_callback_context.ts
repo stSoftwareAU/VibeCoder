@@ -33,7 +33,10 @@ import {
   agentTranscriptPath,
   peekTranscriptAbsence,
 } from "./agent_transcript.ts";
-import { type WorkerBuildFacts, workerBuildFacts } from "./worker_build_info.ts";
+import {
+  type WorkerBuildFacts,
+  workerBuildFacts,
+} from "./worker_build_info.ts";
 
 /** Host-side facts the loop cannot supply on its own. */
 export interface CallbackIdentity {

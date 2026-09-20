@@ -738,7 +738,10 @@ Deno.test(
     const document = buildCallbackContextDocument(FULL_CONTEXT, "success");
 
     assertEquals(document.workerVersion, "1.4.2");
-    assertEquals(document.workerCommit, "0123456789abcdef0123456789abcdef01234567");
+    assertEquals(
+      document.workerCommit,
+      "0123456789abcdef0123456789abcdef01234567",
+    );
 
     const env = buildCallbackEnv(
       FULL_CONTEXT,
@@ -747,7 +750,10 @@ Deno.test(
       () => undefined,
     );
     assertEquals(env.VIBECODER_WORKER_VERSION, "1.4.2");
-    assertEquals(env.VIBECODER_WORKER_COMMIT, "0123456789abcdef0123456789abcdef01234567");
+    assertEquals(
+      env.VIBECODER_WORKER_COMMIT,
+      "0123456789abcdef0123456789abcdef01234567",
+    );
   },
 );
 
@@ -761,7 +767,10 @@ Deno.test(
       workerCommit: undefined,
     };
 
-    const document = buildCallbackContextDocument(contextWithoutBuild, "failure");
+    const document = buildCallbackContextDocument(
+      contextWithoutBuild,
+      "failure",
+    );
     assert(!("workerVersion" in document), "workerVersion should be omitted");
     assert(!("workerCommit" in document), "workerCommit should be omitted");
 
@@ -808,15 +817,24 @@ Deno.test(
 
     // Verify SCHEMA_1 scalars are still there (unconditional)
     for (const name of SCHEMA_1_ENV) {
-      assert(env[name] !== undefined, `SCHEMA_1 scalar ${name} is no longer exported`);
+      assert(
+        env[name] !== undefined,
+        `SCHEMA_1 scalar ${name} is no longer exported`,
+      );
     }
     // Verify ADDITIVE_ENV scalars are still there (FULL_CONTEXT has these fields)
     for (const name of ADDITIVE_ENV) {
-      assert(env[name] !== undefined, `ADDITIVE scalar ${name} is no longer exported`);
+      assert(
+        env[name] !== undefined,
+        `ADDITIVE scalar ${name} is no longer exported`,
+      );
     }
     // Verify GRAFT_FIGURE_ENV scalars are still there (FULL_CONTEXT has graft)
     for (const name of GRAFT_FIGURE_ENV) {
-      assert(env[name] !== undefined, `GRAFT scalar ${name} is no longer exported`);
+      assert(
+        env[name] !== undefined,
+        `GRAFT scalar ${name} is no longer exported`,
+      );
     }
     // Verify graft enabled/status scalars are still there
     assert(env.VIBECODER_GRAFT_ENABLED !== undefined);
@@ -828,8 +846,12 @@ Deno.test(
     assert(env.VIBECODER_CODEGRAPH_NODE_COUNT !== undefined);
     assert(env.VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT !== undefined);
     assert(env.VIBECODER_CODEGRAPH_QUERIES !== undefined);
-    // Verify worker build scalars are there (new for #2444)
-    assert(env.VIBECODER_WORKER_VERSION !== undefined);
-    assert(env.VIBECODER_WORKER_COMMIT !== undefined);
+    // Verify worker build scalars are there (FULL_CONTEXT has these fields)
+    for (const name of WORKER_BUILD_ENV) {
+      assert(
+        env[name] !== undefined,
+        `WORKER_BUILD scalar ${name} is no longer exported`,
+      );
+    }
   },
 );

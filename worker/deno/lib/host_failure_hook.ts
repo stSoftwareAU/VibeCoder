@@ -44,7 +44,10 @@ import {
   type InvokeCallbackSeams,
 } from "./run_callbacks.ts";
 import { parseHostFailureCallback } from "./run_callbacks_config.ts";
-import { type WorkerBuildFacts, workerBuildFacts } from "./worker_build_info.ts";
+import {
+  type WorkerBuildFacts,
+  workerBuildFacts,
+} from "./worker_build_info.ts";
 
 /** Which host-level path is failing. */
 export type HostFailureCondition = "launcher" | "checkout_update";

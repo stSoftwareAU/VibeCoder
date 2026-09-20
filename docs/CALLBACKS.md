@@ -456,7 +456,9 @@ invocation (mode `0600`) and removed after it exits:
     "enabled": true,
     "status": "ok",
     "savedTokens": 12840
-  }
+  },
+  "workerVersion": "1.4.2",
+  "workerCommit": "0123456789abcdef0123456789abcdef01234567"
 }
 ```
 
@@ -511,6 +513,8 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_RTK_ENABLED`                  | `rtk.enabled`                   | yes            | Whether the host's RTK output switch was on for this run (`true` or `false`)                                         |
 | `VIBECODER_RTK_STATUS`                   | `rtk.status`                    | yes            | `ok`, `failed`, `unsupported` (this provider takes no hook) or `off` (switch off, or the run ended before RTK ran) |
 | `VIBECODER_RTK_SAVED_TOKENS`             | `rtk.savedTokens`               | no             | RTK's own indicative count of tokens its filtering saved during the run                                              |
+| `VIBECODER_WORKER_VERSION`               | `workerVersion`                 | no             | Worker binary version that produced this run                                                                         |
+| `VIBECODER_WORKER_COMMIT`                | `workerCommit`                  | no             | Git commit SHA of the worker code that produced this run                                                              |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
@@ -606,6 +610,24 @@ and never `0` standing in for "unknown" — unless RTK's gain store was read bot
 before and after the run; a measured `0` is published as `0`. Nothing else in
 the contract moved: `schemaVersion` stays at 2, and a hook that knows nothing
 about RTK ignores the block.
+
+`workerVersion` and `workerCommit` are **additive** scalars (Issue #2444, part of
+#2327) that identify the worker binary and its source that produced this run.
+Each is **omitted** — never blank, never a placeholder — when the worker's own
+build metadata could not be read at invocation time. When present:
+
+- `workerVersion` is the semantic version string of the worker binary (e.g.
+  `"1.4.2"`).
+- `workerCommit` is the 40-character Git commit SHA of the worker source code
+  (e.g. `"0123456789abcdef0123456789abcdef01234567"`), allowing the exact code
+  that produced the run to be traced back to the repository.
+
+These fields enable audit trails that name the worker version responsible for
+each run's outcome — essential for investigating regressions and correlating
+worker changes with productivity or fault rates. The fields are exported to
+`VIBECODER_WORKER_VERSION` and `VIBECODER_WORKER_COMMIT` environment scalars
+respectively. Nothing else in the contract moved: `schemaVersion` stays at 2,
+and a hook that knows nothing about worker identity ignores these fields.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).
