@@ -465,9 +465,15 @@ export function classifyGhShape(args: readonly string[]): string {
     ? [restRoute(ghPositionalArgs(args)[1] ?? "")]
     : [];
   const fields = jsonFieldList(args);
-  const flags = [...new Set(ghFlagNames(args))].sort().map((flag) =>
-    flag === "--json" && fields !== undefined ? `--json=${fields}` : flag
-  );
+  const stateWord = flagValue(args, "--state");
+  const state = stateWord !== undefined && GH_STATE_WORDS.has(stateWord)
+    ? stateWord
+    : undefined;
+  const flags = [...new Set(ghFlagNames(args))].sort().map((flag) => {
+    if (flag === "--json" && fields !== undefined) return `--json=${fields}`;
+    if (flag === "--state" && state !== undefined) return `--state=${state}`;
+    return flag;
+  });
   return [head, ...route, ...flags].join(" ").slice(0, MAX_SHAPE_CHARS);
 }
 
@@ -492,18 +498,33 @@ const JSON_FIELD_LIST = /^[A-Za-z][A-Za-z0-9]*(?:,[A-Za-z][A-Za-z0-9]*)*$/;
  * @returns The field list, or `undefined` when absent or not bare identifiers.
  */
 function jsonFieldList(args: readonly string[]): string | undefined {
+  const value = flagValue(args, "--json");
+  return value !== undefined && value.length <= MAX_JSON_FIELDS_CHARS &&
+      JSON_FIELD_LIST.test(value)
+    ? value
+    : undefined;
+}
+
+// Every word `gh … --state` accepts. A closed set, so the word is part of the
+// call's shape — an open listing must refresh, a merged one need not — and
+// anything outside the set is a caller's value and is never shown.
+const GH_STATE_WORDS: ReadonlySet<string> = new Set([
+  "open",
+  "closed",
+  "merged",
+  "all",
+]);
+
+/** The first value given to `flag`, as `--flag value` or `--flag=value`. */
+function flagValue(
+  args: readonly string[],
+  flag: string,
+): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const token = args[i]!;
     if (token === "--") return undefined;
-    const value = token === "--json"
-      ? args[i + 1]
-      : token.startsWith("--json=")
-      ? token.slice("--json=".length)
-      : undefined;
-    if (value === undefined) continue;
-    return value.length <= MAX_JSON_FIELDS_CHARS && JSON_FIELD_LIST.test(value)
-      ? value
-      : undefined;
+    if (token === flag) return args[i + 1];
+    if (token.startsWith(`${flag}=`)) return token.slice(flag.length + 1);
   }
   return undefined;
 }
