@@ -390,14 +390,19 @@ export interface AgentInvocationRequest {
   mcpConfigPath?: string;
   /**
    * Extra settings for this invocation, as the JSON string `--settings` takes
-   * beside a path (Issue #2344).
+   * beside a path (Issue #2344), already serialised for this one spawn
+   * (Issue #2383).
    *
-   * Carries the split run's `PreToolUse` guard, which denies the advisor's own
-   * `Edit`/`Write` calls while allowing an executor's — a distinction
-   * `disallowedTools` cannot express, because a tool removed from the session
-   * pool is gone for sub-agents too. Absent — every run that has not opted
-   * into the split — emits no argument. Claude-only: no other provider takes
-   * the flag.
+   * Carries hooks a run needs without writing anything to
+   * `~/.claude/settings.json`, so the image stays hook-free: the split run's
+   * `PreToolUse` guard, which denies the advisor's own `Edit`/`Write` calls
+   * while allowing an executor's — a distinction `disallowedTools` cannot
+   * express, because a tool removed from the session pool is gone for
+   * sub-agents too — and RTK's `PreToolUse` Bash entry. Absent or empty —
+   * every run that has not opted into either — emits no argument, and the
+   * argv is the one every host spawned before. Claude-only: DeepSeek shares
+   * the CLI but its endpoint implements no hooks, so that descriptor strips
+   * the field, and no other provider takes the flag.
    */
   settingsJson?: string;
   /**
@@ -619,6 +624,13 @@ function buildClaudeCliArgs(
   // directory the agent never runs from.
   if (request.mcpConfigPath) {
     args.push("--mcp-config", request.mcpConfigPath);
+  }
+
+  // This spawn's hooks, carried on the command line (Issue #2383) rather than
+  // written to `~/.claude/settings.json`: a run that installs none emits no
+  // flag and spawns the argv it always did.
+  if (request.settingsJson) {
+    args.push("--settings", request.settingsJson);
   }
 
   // Static content passed separately so the CLI caches it (Issue #1262).
@@ -1107,6 +1119,10 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
           request.sessionResumeState,
           this.id,
         ),
+        // Hooks are an Anthropic-endpoint feature (Issue #2383): the shared
+        // binary would forward `--settings` to an endpoint that runs nothing,
+        // so the payload is dropped here rather than in the caller.
+        settingsJson: undefined,
       },
       { model: routing.model },
     );

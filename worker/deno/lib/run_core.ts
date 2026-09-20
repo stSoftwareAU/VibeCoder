@@ -42,6 +42,7 @@ import {
 } from "./fault_tolerance_counters.ts";
 import {
   formatGhCallsByPrioritySummary,
+  formatGhCallShapesSummary,
   formatGhCallSummary,
   formatGraphQLSummary,
   resetGhCallMetrics,
@@ -106,6 +107,7 @@ import {
   type RunOutcome,
 } from "./run_outcome.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 import type {
   CallbackGraftContext,
   CallbackRunTelemetry,
@@ -857,6 +859,12 @@ export interface RunCoreDeps {
        * that reported no CodeGraph step at all.
        */
       codegraph?: CodegraphContextResult;
+      /**
+       * What the run's RTK preparation decided (Issue #2386, part of #2328)
+       * — the switch, the status and RTK's own saved-token figure. Absent on
+       * a run that reported no RTK preparation at all.
+       */
+      rtk?: RtkOutputResult;
     }>
   >;
 
@@ -2118,6 +2126,8 @@ interface TerminalRun {
   telemetryAbsentReason?: TelemetryAbsentReason;
   /** What the run's CodeGraph step produced (Issue #2162), when it ran. */
   codegraph?: CodegraphContextResult;
+  /** What the run's RTK preparation decided (Issue #2386), when it ran. */
+  rtk?: RtkOutputResult;
   /**
    * The cycle's exactly-once guard. Every dispatch site for a claim shares
    * one, so a run reported by its own release is not reported again by the
@@ -2127,9 +2137,9 @@ interface TerminalRun {
 }
 
 /**
- * Copy mode / outcome / telemetry / Graft / CodeGraph / phase from a
+ * Copy mode / outcome / telemetry / Graft / CodeGraph / RTK / phase from a
  * processIssue result onto a TerminalRun (`mode` added by Issue #2100,
- * `graft` by Issue #2104, `codegraph` by Issue #2162).
+ * `graft` by Issue #2104, `codegraph` by Issue #2162, `rtk` by Issue #2386).
  */
 function withProcessCallbackFacts(
   ran: TerminalRun,
@@ -2143,6 +2153,7 @@ function withProcessCallbackFacts(
       phase?: string;
       telemetryAbsentReason?: TelemetryAbsentReason;
       codegraph?: CodegraphContextResult;
+      rtk?: RtkOutputResult;
     };
   },
 ): TerminalRun {
@@ -2166,6 +2177,7 @@ function withProcessCallbackFacts(
       ? {}
       : { telemetryAbsentReason: "agent_not_invoked" }),
     ...(value.codegraph ? { codegraph: value.codegraph } : {}),
+    ...(value.rtk ? { rtk: value.rtk } : {}),
   };
 }
 
@@ -2212,6 +2224,7 @@ function dispatchIssueCallbacks(
           ? { telemetryAbsentReason: ran.telemetryAbsentReason }
           : {}),
         ...(ran.codegraph ? { codegraph: ran.codegraph } : {}),
+        ...(ran.rtk ? { rtk: ran.rtk } : {}),
       });
     } catch (error) {
       deps.logError(
@@ -5057,6 +5070,9 @@ async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
   deps.log(formatCycleTimingsSummary(deps.now()));
   deps.log(formatGhCallsByPrioritySummary());
   deps.log(formatGraphQLSummary());
+  // Issue #2409: which call shapes spent it — `pr list` by author, by head, a
+  // label listing — so the largest consumer is read off the log, not guessed.
+  deps.log(formatGhCallShapesSummary());
   if (deps.describeGraphqlQuota) {
     try {
       const quotaLine = await deps.describeGraphqlQuota();

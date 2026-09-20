@@ -191,6 +191,9 @@ export const prFeedbackProcessorCommand: Command = {
           // Issue #2160: the trial switch, so a single-shot feedback run on
           // an enabled host is offered the same repo-context index.
           codegraphContextEnabled: config.codegraphContext.enabled,
+          // Issue #2384: the RTK switch rides beside it, so this path condenses
+          // its Bash output on the same enabled host the issue runs do.
+          rtkOutputEnabled: config.rtkOutput.enabled,
           workerId,
           // Issue #2103: the host switch for the Graft repo-context bundle.
           graftContextEnabled: isGraftContextEnabled(config),

@@ -451,6 +451,11 @@ invocation (mode `0600`) and removed after it exits:
     "nodeCount": 18412,
     "relationshipCount": 51903,
     "queries": 7
+  },
+  "rtk": {
+    "enabled": true,
+    "status": "ok",
+    "savedTokens": 12840
   }
 }
 ```
@@ -503,6 +508,9 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_CODEGRAPH_NODE_COUNT`         | `codegraph.nodeCount`           | no             | Nodes in the index                                                                                                   |
 | `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT` | `codegraph.relationshipCount`   | no             | Relationships (edges) in the index                                                                                   |
 | `VIBECODER_CODEGRAPH_QUERIES`            | `codegraph.queries`             | no             | `codegraph_explore` calls the agent made this run                                                                    |
+| `VIBECODER_RTK_ENABLED`                  | `rtk.enabled`                   | yes            | Whether the host's RTK output switch was on for this run (`true` or `false`)                                         |
+| `VIBECODER_RTK_STATUS`                   | `rtk.status`                    | yes            | `ok`, `failed`, `unsupported` (this provider takes no hook) or `off` (switch off, or the run ended before RTK ran) |
+| `VIBECODER_RTK_SAVED_TOKENS`             | `rtk.savedTokens`               | no             | RTK's own indicative count of tokens its filtering saved during the run                                              |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
@@ -575,6 +583,29 @@ index step reports `"status": "failed"` instead, so it is never counted on the
 switch-off side of the trial. Nothing else in the contract moved:
 `schemaVersion` stays at 2, and a hook that knows nothing about CodeGraph
 ignores the block.
+
+`rtk` is an **additive** block (Issue #2386, part of #2328) carried by every
+run document, so the RTK output trial can tell a run whose Bash output was
+condensed from one whose output was not. **`enabled` is the host's switch,
+stated truthfully whatever became of the run**: an issue run that ended before
+RTK was prepared — a refused claim, an early exit — on a switched-on host
+reports `{ "enabled": true, "status": "off" }`, never a fabricated `false`,
+because the trial separates enabled runs from control runs by this block alone
+(the rule the `graft` block follows, Issue #2104). `status: "off"` beside
+`enabled: false` is a host with the switch off. A run that reaches the
+callbacks carrying no RTK outcome at all — it threw, or the cycle drained first
+— says the same thing (`rtkNotRun`): the host's real switch and
+`"status": "off"`. It does not say `failed`, as the `codegraph` block's
+equivalent does, because for RTK `failed` means the preflight ran and the
+binary was missing — a host fault to act on. `failed` means the switch was on and the run got no
+filtering, and `unsupported` that the provider takes no hook. `savedTokens` is
+RTK's **own indicative figure**, read from a tracking store that concurrent
+lanes share, so a neighbour can inflate it: read the trial from the run's token
+and cost telemetry, never from this number. It is **omitted** — never blank,
+and never `0` standing in for "unknown" — unless RTK's gain store was read both
+before and after the run; a measured `0` is published as `0`. Nothing else in
+the contract moved: `schemaVersion` stays at 2, and a hook that knows nothing
+about RTK ignores the block.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).
@@ -827,6 +858,7 @@ Two differences to plan for:
 | Host-failure payload and invoker    | `worker/deno/lib/host_failure_hook.ts`         |
 | Context assembly and transcript     | `worker/deno/lib/run_callback_context.ts`      |
 | CodeGraph figures the block carries | `worker/deno/lib/codegraph_context.ts`         |
+| RTK outcome the block carries       | `worker/deno/lib/rtk_output.ts`                |
 | Exactly-once guard                  | `worker/deno/lib/issue_callback_guard.ts`      |
 | Conformance fixture                 | `worker/deno/lib/callback_conformance.ts`      |
 | `callback-conformance` command      | `worker/deno/commands/callback_conformance.ts` |

@@ -34,6 +34,7 @@ import {
 import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
 import { parseCodegraphContext } from "./codegraph_context_config.ts";
+import { parseRtkOutput } from "./rtk_output_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
@@ -996,6 +997,17 @@ export async function loadConfig(
   }
   const codegraphContext = parsedCodegraphContext.value;
 
+  // RTK output (Issue #2380, part of #2328). Off unless the host asks for it;
+  // a malformed block fails the load loudly here rather than reading as off
+  // and silently withholding the rewrite hook the operator configured.
+  const parsedRtkOutput = parseRtkOutput(file.rtk_output);
+  if (!parsedRtkOutput.ok) {
+    throw new Error(
+      `Config file ${configPath} is invalid: ${parsedRtkOutput.error}`,
+    );
+  }
+  const rtkOutput = parsedRtkOutput.value;
+
   const config: WorkerConfig = {
     allowedAuthors,
     allowedAuthor,
@@ -1101,6 +1113,7 @@ export async function loadConfig(
     includeRecentActivity,
     includeCodebaseMap,
     codegraphContext,
+    rtkOutput,
     recentActivityMergedPrLimit,
     recentActivityCommitLimit,
     recentActivityMaxTokens,

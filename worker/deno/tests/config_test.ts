@@ -2038,3 +2038,48 @@ Deno.test("config - an unknown key inside codegraph_context warns (Issue #2154)"
     assertStringIncludes(errors[0]!, "enabled");
   });
 });
+
+// ---------------------------------------------------------------------------
+// RTK output switch (Issue #2380, part of #2328)
+// ---------------------------------------------------------------------------
+
+Deno.test("config - rtk_output absent defaults to off (Issue #2380)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.rtkOutput.enabled, false);
+  });
+});
+
+Deno.test("config - rtk_output enabled true loads as on (Issue #2380)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    rtk_output: { enabled: true },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.rtkOutput.enabled, true);
+  });
+});
+
+Deno.test("config - a non-boolean rtk_output.enabled fails the load (Issue #2380)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    rtk_output: { enabled: "yes" },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(error.message, "rtk_output.enabled");
+  });
+});

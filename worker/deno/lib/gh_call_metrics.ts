@@ -13,7 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { ghCallKindOf, ghPositionalArgs } from "./gh_argv.ts";
+import { ghCallKindOf, ghFlagNames, ghPositionalArgs } from "./gh_argv.ts";
 import { isQuotaExemptGhCall } from "./primary_quota_latch.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -82,6 +82,8 @@ const state = {
   graphqlTotal: 0,
   graphqlBySource: new Map<string, number>(),
   graphqlSourceStack: [] as string[],
+  // Issue #2409: GraphQL spend by call shape.
+  graphqlByShape: new Map<string, number>(),
 };
 
 /**
@@ -359,7 +361,111 @@ export function recordGhCall(args: readonly string[]): void {
       src,
       (state.graphqlBySource.get(src) ?? 0) + 1,
     );
+    // Issue #2409: and by shape, so the log names *which* listing is spending
+    // the quota, not only that `pr list` is.
+    const classified = classifyGhShape(args);
+    const shape = state.graphqlByShape.has(classified) ||
+        state.graphqlByShape.size < MAX_TRACKED_SHAPES
+      ? classified
+      : OVERFLOW_SHAPE;
+    state.graphqlByShape.set(shape, (state.graphqlByShape.get(shape) ?? 0) + 1);
   }
+}
+
+/** Distinct shapes tracked per cycle; the worker has a few dozen in all. */
+const MAX_TRACKED_SHAPES = 200;
+
+/** Where calls go once {@link MAX_TRACKED_SHAPES} distinct shapes are held. */
+const OVERFLOW_SHAPE = "(other shapes)";
+
+/** Longest shape recorded — a bound, not a formatting choice. */
+const MAX_SHAPE_CHARS = 160;
+
+// REST path segments that name a route rather than a thing. Anything else in a
+// path — an owner, a repository, a branch, a login — is replaced, so a shape
+// can never carry one.
+const REST_ROUTE_WORDS: ReadonlySet<string> = new Set([
+  "actions",
+  "alerts",
+  "app",
+  "assignees",
+  "branches",
+  "check-runs",
+  "check-suites",
+  "code-scanning",
+  "collaborators",
+  "comments",
+  "commits",
+  "compare",
+  "contents",
+  "dependabot",
+  "events",
+  "git",
+  "graphql",
+  "heads",
+  "installation",
+  "issues",
+  "jobs",
+  "labels",
+  "logs",
+  "merge",
+  "milestones",
+  "orgs",
+  "pulls",
+  "rate_limit",
+  "refs",
+  "releases",
+  "repos",
+  "reviews",
+  "rulesets",
+  "runs",
+  "search",
+  "secret-scanning",
+  "status",
+  "statuses",
+  "sub_issues",
+  "tags",
+  "timeline",
+  "user",
+  "users",
+  "workflows",
+]);
+
+/** Reduce a REST path to its route: `repos/:owner/:repo/issues/:n/timeline`. */
+function restRoute(path: string): string {
+  const segments = path.split("?")[0]!.replace(/^\/+/, "").split("/");
+  return segments.map((segment, index) => {
+    if (segments[0] === "repos" && index === 1) return ":owner";
+    if (segments[0] === "repos" && index === 2) return ":repo";
+    if (/^\d+$/.test(segment)) return ":n";
+    return REST_ROUTE_WORDS.has(segment) ? segment : ":x";
+  }).join("/");
+}
+
+/**
+ * The **shape** of a `gh` call: its sub-command and its flag names, sorted
+ * (Issue #2409).
+ *
+ * The fleet was exhausting its GitHub GraphQL quota ~25 minutes into every
+ * hour. The metrics could say `pr-list=135` a cycle, but not *which* `pr list`
+ * — by author? by head branch? closed? — so the largest consumers could only
+ * be guessed at from the code. Two calls have the same shape when they differ
+ * only in values, which is what makes a shape countable.
+ *
+ * **No argument value ever reaches a shape.** A value can be a private
+ * repository, a search string, a title or a body, and this string is logged.
+ * Flag values are dropped by {@link ghFlagNames}; a REST path is reduced to
+ * its route by an allow-list of route words.
+ *
+ * @param args - Argument list passed to the `gh` binary.
+ */
+export function classifyGhShape(args: readonly string[]): string {
+  const head = classifyGhArgs(args);
+  const route = head === "api"
+    ? [restRoute(ghPositionalArgs(args)[1] ?? "")]
+    : [];
+  const flags = [...new Set(ghFlagNames(args))].sort();
+  return [head, ...route, ...flags].join(" ").slice(0, MAX_SHAPE_CHARS);
 }
 
 /** Record a cache hit (saved one `gh` call). */
@@ -409,6 +515,7 @@ export function resetGhCallMetrics(): void {
   // Issue #1924: reset GraphQL counters and source stack.
   state.graphqlTotal = 0;
   state.graphqlBySource.clear();
+  state.graphqlByShape.clear();
   state.graphqlSourceStack.length = 0;
 }
 
@@ -475,6 +582,26 @@ export function formatGhCallSummary(): string {
   if (buckets) parts.push(buckets);
 
   return `gh-calls: ${parts.join(", ")}`;
+}
+
+/**
+ * The busiest GraphQL call shapes this cycle (Issue #2409).
+ *
+ * GraphQL-backed calls only — REST rides a separate quota. Always one
+ * well-formed line, so a cycle with none reads `graphql-shapes: none`.
+ *
+ * Example:
+ *   `graphql-shapes: 41×[pr list --author --json --limit --repo --state], 20×[issue list --json --label --limit --repo --state]`
+ *
+ * @param topShapes - How many shapes to name, busiest first.
+ */
+export function formatGhCallShapesSummary(topShapes = 8): string {
+  const top = [...state.graphqlByShape.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, Math.max(0, topShapes))
+    .map(([shape, count]) => `${count}×[${shape}]`)
+    .join(", ");
+  return `graphql-shapes: ${top || "none"}`;
 }
 
 /**

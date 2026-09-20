@@ -131,6 +131,37 @@ export function ghPositionalArgs(args: readonly string[]): string[] {
 }
 
 /**
+ * The flag **names** of a `gh` invocation, never their values (Issue #2409).
+ *
+ * Walks the argv exactly as {@link ghPositionalArgs} does, so the same table
+ * decides which tokens are a flag's value and are therefore skipped — a
+ * `--body` whose text contains `--looks-like-a-flag` contributes `--body` and
+ * nothing else. `--flag=value` keeps the name and drops the value.
+ *
+ * @param args - Argument list passed to the `gh` binary.
+ * @returns The flag names in argv order, duplicates included.
+ */
+export function ghFlagNames(args: readonly string[]): string[] {
+  const normalised = normaliseGhArgs(args);
+  const names: string[] = [];
+  for (let i = 0; i < normalised.length; i++) {
+    const token = normalised[i]!;
+    if (token === "--") break;
+    if (token.startsWith("--")) {
+      const eq = token.indexOf("=");
+      names.push(eq < 0 ? token : token.slice(0, eq));
+      if (eq < 0 && VALUE_TAKING_LONG_FLAGS.has(token)) i++;
+      continue;
+    }
+    if (token.startsWith("-") && token !== "-") {
+      names.push(token);
+      if (shorthandTakesNextToken(token)) i++;
+    }
+  }
+  return names;
+}
+
+/**
  * What kind of GitHub API budget a `gh` invocation spends.
  *
  * - `api-graphql` — an explicit `gh api graphql …` call.

@@ -39,6 +39,7 @@
 import type { Logger } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RunStats } from "./run_stats.ts";
@@ -190,6 +191,12 @@ export async function reportPhaseDegradation(args: {
    * reported on every run the phase completes — not only the healthy ones.
    */
   codegraph?: CodegraphContextResult;
+  /**
+   * What this run's RTK preparation produced (Issue #2385). Carried onto both
+   * the healthy and the degraded stats comment, as `codegraph` is, so the
+   * `RTK:` line is on every run the phase completes.
+   */
+  rtk?: RtkOutputResult;
 }): Promise<DegradationVerdict> {
   const {
     phase,
@@ -206,6 +213,7 @@ export async function reportPhaseDegradation(args: {
     ? claudeResult
     : [claudeResult];
   const graft = args.graft ? { graft: args.graft } : {};
+  const rtk = args.rtk ? { rtk: args.rtk } : {};
   const invocations = claudeResults.flatMap((result) =>
     buildPhaseInvocations(phase, result)
   );
@@ -234,6 +242,7 @@ export async function reportPhaseDegradation(args: {
       ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
       ...graft,
       ...(args.codegraph ? { codegraph: args.codegraph } : {}),
+      ...rtk,
     });
     return verdict;
   }
@@ -263,6 +272,7 @@ export async function reportPhaseDegradation(args: {
     claudeResults,
     ...graft,
     ...(args.codegraph ? { codegraph: args.codegraph } : {}),
+    ...rtk,
   });
   if (body) {
     try {

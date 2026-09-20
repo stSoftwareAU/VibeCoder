@@ -762,6 +762,8 @@ async function postWorkOnRunStats(
     ...(state.qualityGateOutcome
       ? { qualityGate: state.qualityGateOutcome }
       : {}),
+    // …and so does its RTK status, `off` included (Issue #2385).
+    ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
   });
 
   // Issue #2347: the same figures the comment above renders, recorded once per

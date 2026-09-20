@@ -167,6 +167,7 @@ export const executeClaudePhaseCommand: Command = {
       graftContextEnabled: isGraftContextEnabled(config),
       // The CodeGraph repo-context trial switch (Issue #2159, part of #2145).
       codegraphContextEnabled: config.codegraphContext.enabled,
+      rtkOutputEnabled: config.rtkOutput.enabled,
       // The advisor/executor split switch (Issue #2342, part of #2320); off
       // on every host that has not opted in.
       issueExecutorSplit: config.issueExecutorSplit,

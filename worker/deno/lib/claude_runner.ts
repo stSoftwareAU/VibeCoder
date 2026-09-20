@@ -106,6 +106,7 @@ import {
   resolveIssueExecutorHookSettings,
   summariseIssueExecutorSplitRun,
 } from "./issue_executor_enforcement.ts";
+import { settingsJsonOption } from "./rtk_output.ts";
 import {
   type AgentActivitySnapshot,
   AgentProgressTracker,
@@ -631,6 +632,14 @@ export interface RunClaudeOptions {
    * window stands.
    */
   autocompactTokens?: number;
+  /**
+   * Claude Code settings for this one spawn, already serialised (Issue #2383).
+   *
+   * Forwarded unchanged as `--settings`, which is how a run installs its hooks
+   * without writing to `~/.claude/settings.json`. Omitted, no flag is emitted
+   * and the argv is the one every host spawned before.
+   */
+  settingsJson?: string;
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
@@ -1126,13 +1135,6 @@ export async function runClaudeWithTimeout(
     // Issue #2342: absent unless the caller resolved the split on, and an
     // absent value emits no `--agents` argument.
     ...(options.agents ? { agents: options.agents } : {}),
-    // Issue #2344: the same run's advisor edit guard, as a `--settings` JSON
-    // string. Claude only — DeepSeek drops the executor definitions, so a
-    // guard there would deny the advisor's edits with no executor to make
-    // them, and the other providers take no such flag.
-    ...(options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
-      ? { settingsJson: JSON.stringify(resolveIssueExecutorHookSettings()) }
-      : {}),
     sessionResumeState: options.sessionResumeState,
     // The pulled-forward autocompaction window (Issue #2337), when the
     // stream's conversation could not be compacted before the issue started.
@@ -1140,6 +1142,18 @@ export async function runClaudeWithTimeout(
       ? { autocompactTokens: options.autocompactTokens }
       : {}),
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
+    // Issue #2344's advisor edit guard, merged with this spawn's own hooks
+    // (Issue #2383's RTK settings) rather than one silently replacing the
+    // other when a run has both on. Claude only — DeepSeek drops the
+    // executor definitions, so a guard there would deny the advisor's edits
+    // with no executor to make them, and the other providers take no such
+    // flag.
+    ...settingsJsonOption(
+      options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
+        ? resolveIssueExecutorHookSettings()
+        : undefined,
+      options.settingsJson ? JSON.parse(options.settingsJson) : undefined,
+    ),
   };
   const args = provider.buildInvocation({
     ...invocationRequest,

@@ -12,6 +12,7 @@ import {
   buildIssueRunStatsComment,
   buildIssueRunStatsMarker,
   buildQualityGateStatsLine,
+  buildRtkStatsLine,
   ghIssueCommentLister,
   hasIssueRunStatsComment,
   hasRunStatsCommentForRun,
@@ -19,6 +20,7 @@ import {
   ISSUE_RUN_STATS_MARKER,
   measureIssuePhaseRun,
   postIssueRunStatsComment,
+  RTK_STATS_PREFIX,
   sanitiseStatsRunId,
   tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
@@ -30,6 +32,7 @@ import {
   prepareCodegraphContext,
 } from "../lib/codegraph_context.ts";
 import { GEMINI_PROVIDER_ID } from "../lib/agent_provider.ts";
+import { RTK_OFF, type RtkOutputResult } from "../lib/rtk_output.ts";
 import { buildDegradationReport } from "../lib/planning_run_stats.ts";
 import { buildPhaseInvocations } from "../lib/phase_run_stats.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
@@ -1369,6 +1372,285 @@ Deno.test("postIssueRunStatsComment - a gate outcome alone is not something to r
     logger: makeLogger(),
     authorOptions: FLEET_OPTIONS,
     qualityGate: { status: "passed", attempt: 1 },
+  });
+
+  assertEquals(result, { posted: false, reason: "no_stats" });
+  assertEquals(github.posted.length, 0);
+});
+
+// ============================================================================
+// RTK line (Issue #2385)
+// ============================================================================
+
+/** Every RTK line the comment carries — exactly one is the contract. */
+function rtkLinesOf(body: string): string[] {
+  return body.split("\n").filter((line) => line.startsWith("- **RTK:**"));
+}
+
+/** A stats comment for a run whose RTK preparation produced `rtk`. */
+function commentWithRtk(
+  rtk: RtkOutputResult,
+  extra?: {
+    priorComments?: readonly string[];
+    codegraph?: CodegraphContextResult;
+  },
+): string {
+  return buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-rtk-run",
+    rtk,
+    ...(extra?.priorComments ? { priorComments: extra.priorComments } : {}),
+    ...(extra?.codegraph ? { codegraph: extra.codegraph } : {}),
+  });
+}
+
+Deno.test("rtk line - the prefix is the fixed `- **RTK:**` bullet", () => {
+  assertEquals(RTK_STATS_PREFIX, "- **RTK:**");
+});
+
+Deno.test("rtk line - ok reports the saved tokens with a thousands separator", () => {
+  const rtk: RtkOutputResult = {
+    status: "ok",
+    enabled: true,
+    savedTokens: 12340,
+  };
+
+  assertEquals(buildRtkStatsLine(rtk), "- **RTK:** ok — 12,340 tokens saved");
+  assertEquals(rtkLinesOf(commentWithRtk(rtk)), [
+    "- **RTK:** ok — 12,340 tokens saved",
+  ]);
+});
+
+Deno.test("rtk line - ok below a thousand carries no separator", () => {
+  assertEquals(
+    buildRtkStatsLine({ status: "ok", enabled: true, savedTokens: 987 }),
+    "- **RTK:** ok — 987 tokens saved",
+  );
+});
+
+Deno.test("rtk line - ok with a zero delta still reports the figure", () => {
+  // Zero is a measurement (the hook ran and saved nothing), not an absence.
+  assertEquals(
+    buildRtkStatsLine({ status: "ok", enabled: true, savedTokens: 0 }),
+    "- **RTK:** ok — 0 tokens saved",
+  );
+});
+
+Deno.test("rtk line - ok with no saved-token figure reports the status alone", () => {
+  const rtk: RtkOutputResult = { status: "ok", enabled: true };
+
+  assertEquals(buildRtkStatsLine(rtk), "- **RTK:** ok");
+  assertEquals(rtkLinesOf(commentWithRtk(rtk)), ["- **RTK:** ok"]);
+});
+
+Deno.test("rtk line - a failed preparation says so", () => {
+  const rtk: RtkOutputResult = { status: "failed", enabled: true };
+
+  assertEquals(buildRtkStatsLine(rtk), "- **RTK:** failed");
+  assertEquals(rtkLinesOf(commentWithRtk(rtk)), ["- **RTK:** failed"]);
+});
+
+Deno.test("rtk line - a host with the switch off says so", () => {
+  assertEquals(buildRtkStatsLine(RTK_OFF), "- **RTK:** off");
+  assertEquals(rtkLinesOf(commentWithRtk(RTK_OFF)), ["- **RTK:** off"]);
+});
+
+Deno.test("rtk line - unsupported names the provider", () => {
+  const rtk: RtkOutputResult = {
+    status: "unsupported",
+    enabled: true,
+    provider: GEMINI_PROVIDER_ID,
+  };
+
+  assertEquals(buildRtkStatsLine(rtk), "- **RTK:** unsupported (gemini)");
+  assertEquals(rtkLinesOf(commentWithRtk(rtk)), [
+    "- **RTK:** unsupported (gemini)",
+  ]);
+  // The name comes from the result, not a constant: another provider reads so.
+  assertEquals(
+    buildRtkStatsLine({ ...rtk, provider: "deepseek" }),
+    "- **RTK:** unsupported (deepseek)",
+  );
+});
+
+Deno.test("rtk line - unsupported with no resolved provider reports the status alone", () => {
+  assertEquals(
+    buildRtkStatsLine({ status: "unsupported", enabled: true }),
+    "- **RTK:** unsupported",
+  );
+});
+
+Deno.test("rtk line - only an ok run reports a saved-token figure", () => {
+  // A figure beside `failed` or `off` would read as a saving the hook never
+  // made; a provider beside anything but `unsupported` names nothing.
+  assertEquals(
+    buildRtkStatsLine({ status: "failed", enabled: true, savedTokens: 50 }),
+    "- **RTK:** failed",
+  );
+  assertEquals(
+    buildRtkStatsLine({ status: "ok", enabled: true, provider: "gemini" }),
+    "- **RTK:** ok",
+  );
+});
+
+Deno.test("rtk line - sits after the CodeGraph line and before the issue total", () => {
+  const prior = commentWithRtk({ status: "ok", enabled: true });
+  const body = commentWithRtk(
+    { status: "ok", enabled: true, savedTokens: 12340 },
+    {
+      priorComments: [prior],
+      codegraph: { status: "ok", enabled: true, indexSeconds: 1.8 },
+    },
+  );
+
+  const lines = body.split("\n");
+  const codegraphAt = lines.findIndex((l) => l.startsWith("- **CodeGraph:**"));
+  const rtkAt = lines.findIndex((l) => l.startsWith(RTK_STATS_PREFIX));
+  const totalAt = lines.findIndex((l) => l.includes("**Issue total across"));
+  assert(codegraphAt >= 0 && rtkAt >= 0 && totalAt >= 0, body);
+  // The `issue` phase's always-on split line (Issue #2346) sits between
+  // CodeGraph and RTK; nothing else does, and nothing sits between RTK and
+  // the total.
+  assertEquals(rtkAt, codegraphAt + 2);
+  assertEquals(totalAt, rtkAt + 1);
+  assert(body.indexOf(RTK_STATS_PREFIX) > body.indexOf("- **Degraded:**"));
+  assert(
+    body.indexOf(RTK_STATS_PREFIX) < body.indexOf(ISSUE_RUN_STATS_DISCLAIMER),
+  );
+});
+
+Deno.test("rtk line - the cost tally and total line ignore it", () => {
+  const rtk: RtkOutputResult = {
+    status: "ok",
+    enabled: true,
+    savedTokens: 12340,
+  };
+  const withLine = commentWithRtk(rtk);
+  const without = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-rtk-run",
+  });
+
+  // Same run, same spend: the saved-token figure must not move the tally.
+  assert(tallyIssueCost([without]).total > 0, "the fixture must carry a cost");
+  assertEquals(tallyIssueCost([withLine]), tallyIssueCost([without]));
+  assertEquals(tallyIssueCost([withLine]).partial, false);
+  // The parser takes the first cost-shaped line, so a run that reported no
+  // cost is where a mis-parsed RTK line would surface: the saved tokens must
+  // read as "no figure" (partial), never as that run's spend.
+  assertEquals(
+    tallyIssueCost([
+      `## Issue run model stats\n${buildRtkStatsLine(rtk)}`,
+    ]),
+    { runs: 1, total: 0, partial: true },
+  );
+
+  // …nor the cumulative total, which is summed from those same tallies.
+  const second = commentWithRtk(rtk, { priorComments: [withLine] });
+  assertStringIncludes(
+    second,
+    `**Issue total across 2 run-stats comments:** ~${
+      formatUsd(tallyIssueCost([without]).total * 2)
+    }`,
+  );
+});
+
+Deno.test("rtk line - a comment built without the argument is unchanged", () => {
+  const claudeResults = [claudeResult(["claude-opus-4-8"])];
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults,
+    runId: "vibe-rtk-run",
+  });
+
+  // Byte-for-byte the comment this function rendered before the RTK line
+  // existed — modulo the `issue` phase's own always-on split line (Issue
+  // #2346), which every implementation run carries regardless of RTK.
+  const { section } = buildDegradationReport({
+    invocations: claudeResults.flatMap((r) =>
+      buildPhaseInvocations("issue", r)
+    ),
+    phase: "issue",
+  });
+  assertEquals(
+    body,
+    `${
+      buildIssueRunStatsMarker("vibe-rtk-run")
+    }\n${section}\n- split: off\n\n${ISSUE_RUN_STATS_DISCLAIMER}`,
+  );
+  assertEquals(body.includes("RTK"), false);
+});
+
+Deno.test("rtk line - adding it changes nothing else in the comment", () => {
+  const withLine = commentWithRtk(RTK_OFF);
+  const without = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-rtk-run",
+  });
+
+  assertEquals(
+    withLine.split("\n").filter((l) => !l.startsWith(RTK_STATS_PREFIX)),
+    without.split("\n"),
+  );
+});
+
+Deno.test("postIssueRunStatsComment - posts exactly one RTK line", async () => {
+  const github = makeGitHubDouble();
+
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2385,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    rtk: { status: "ok", enabled: true, savedTokens: 4321 },
+  });
+
+  assertEquals(result.posted, true);
+  assertEquals(github.posted.length, 1);
+  assertEquals(rtkLinesOf(github.posted[0] ?? ""), [
+    "- **RTK:** ok — 4,321 tokens saved",
+  ]);
+});
+
+Deno.test("postIssueRunStatsComment - posts `off` on a host without the switch", async () => {
+  const github = makeGitHubDouble();
+
+  await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2385,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    rtk: RTK_OFF,
+  });
+
+  assertEquals(rtkLinesOf(github.posted[0] ?? ""), ["- **RTK:** off"]);
+});
+
+Deno.test("postIssueRunStatsComment - an RTK status alone is not something to report", async () => {
+  const github = makeGitHubDouble();
+
+  // No invocation produced stats, so there is no comment to carry the line.
+  const result = await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2385,
+    phase: "issue",
+    claudeResults: [],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    rtk: { status: "ok", enabled: true, savedTokens: 99 },
   });
 
   assertEquals(result, { posted: false, reason: "no_stats" });

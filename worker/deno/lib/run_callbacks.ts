@@ -37,6 +37,7 @@
  */
 
 import type { CodegraphContextResult } from "./codegraph_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 import type { FailureCategory } from "./failure_diagnosis.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import {
@@ -249,6 +250,14 @@ export interface IssueRunCallbackContext {
    * switch is explicitly comparable with one that has it rather than silent.
    */
   codegraph?: CodegraphContextResult;
+  /**
+   * What this run's RTK preparation decided (Issue #2386, part of #2328).
+   *
+   * Absent only on a context a caller assembled without it; the document and
+   * the environment then report {@link RTK_OFF}, for the same reason
+   * `codegraph` does.
+   */
+  rtk?: RtkOutputResult;
 }
 
 /**
@@ -258,6 +267,18 @@ export interface IssueRunCallbackContext {
  * document predates the block" must not look the same in the trial figures.
  */
 export const CODEGRAPH_OFF: CodegraphContextResult = Object.freeze({
+  enabled: false,
+  status: "off",
+});
+
+/**
+ * What a run that reported no RTK preparation reports (Issue #2386).
+ *
+ * Stated rather than omitted, exactly as {@link CODEGRAPH_OFF} is: the trial
+ * compares runs with the hook against runs without it, and an absent key
+ * cannot say which side a run belongs on.
+ */
+export const RTK_OFF: RtkOutputResult = Object.freeze({
   enabled: false,
   status: "off",
 });
@@ -277,6 +298,27 @@ export const CODEGRAPH_OFF: CodegraphContextResult = Object.freeze({
  */
 export function codegraphNotRun(switchedOn: boolean): CodegraphContextResult {
   return switchedOn ? { enabled: true, status: "failed" } : CODEGRAPH_OFF;
+}
+
+/**
+ * What a run that recorded no RTK outcome publishes (Issue #2386).
+ *
+ * `enabled` is the **host's switch**, so a run that reached the callbacks
+ * carrying no outcome — it threw, or the cycle drained before it got there —
+ * must not borrow {@link RTK_OFF}: on a switched-on host that would archive it
+ * as a control run, and the RTK trial separates the two populations by this
+ * block alone. It reports the switch truthfully and `status: "off"`, the same
+ * reading `issue_worker.ts` gives a run that ended before RTK was prepared.
+ *
+ * Unlike {@link codegraphNotRun} it does not say `failed`: for RTK `failed`
+ * means the preflight ran and the binary was missing, which is a host fault
+ * someone should act on, and this run never got as far as asking.
+ *
+ * @param switchedOn - Whether the host's `rtk_output.enabled` is on
+ * @returns The block such a run publishes
+ */
+export function rtkNotRun(switchedOn: boolean): RtkOutputResult {
+  return switchedOn ? { enabled: true, status: "off" } : RTK_OFF;
 }
 
 /**
@@ -413,6 +455,11 @@ export interface TerminalIssueRun {
    * reported one.
    */
   codegraph?: CodegraphContextResult;
+  /**
+   * What this run's RTK preparation decided (Issue #2386), when the run
+   * reported one.
+   */
+  rtk?: RtkOutputResult;
 }
 
 /** What became of one hook invocation. */
@@ -482,7 +529,8 @@ function readEnvSafe(name: string): string | undefined {
  * is a truthful test of "this run had a session". The `codegraph` block
  * (Issue #2162) is the deliberate exception: it is present on every run,
  * because a trial figure the reader has to infer from an absent key is worse
- * than one stated as `off`.
+ * than one stated as `off`. The `rtk` block (Issue #2386) is present on every
+ * run for the same reason.
  */
 export function buildCallbackContextDocument(
   context: IssueRunCallbackContext,
@@ -525,6 +573,9 @@ export function buildCallbackContextDocument(
   // figures, and a host that never ran CodeGraph has to say so rather than
   // leave the reader to infer it from an absent key.
   document.codegraph = codegraphBlock(context.codegraph);
+  // Emitted on every run (Issue #2386), and last, so every key a deployed
+  // hook already reads stays exactly where it was.
+  document.rtk = rtkBlock(context.rtk);
   return document;
 }
 
@@ -552,6 +603,26 @@ function codegraphBlock(
     block.relationshipCount = codegraph.relationshipCount;
   }
   if (codegraph.queries !== undefined) block.queries = codegraph.queries;
+  return block;
+}
+
+/**
+ * The `rtk` block for one run: the switch, the status, and RTK's own figure.
+ *
+ * `savedTokens` is **omitted** when the gain store was never read twice — a
+ * blank or a zero would read as "RTK saved nothing", which is a different
+ * claim. `provider`, the detail an `unsupported` status carries for the
+ * run-stats line, is not part of this block.
+ *
+ * @param rtk - What the run's RTK preparation decided, when it reported one
+ * @returns The block, defaulting to {@link RTK_OFF}
+ */
+function rtkBlock(rtk: RtkOutputResult = RTK_OFF): Record<string, unknown> {
+  const block: Record<string, unknown> = {
+    enabled: rtk.enabled,
+    status: rtk.status,
+  };
+  if (rtk.savedTokens !== undefined) block.savedTokens = rtk.savedTokens;
   return block;
 }
 
@@ -672,6 +743,12 @@ export function buildCallbackEnv(
     codegraph.relationshipCount,
   );
   put(env, "VIBECODER_CODEGRAPH_QUERIES", codegraph.queries);
+  // Issue #2386: the same two scalars on every run, and the saved-token
+  // figure only when the run actually read one.
+  const rtk = context.rtk ?? RTK_OFF;
+  put(env, "VIBECODER_RTK_ENABLED", String(rtk.enabled));
+  put(env, "VIBECODER_RTK_STATUS", rtk.status);
+  put(env, "VIBECODER_RTK_SAVED_TOKENS", rtk.savedTokens);
   return env;
 }
 

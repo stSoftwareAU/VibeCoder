@@ -99,6 +99,7 @@ import { joinRedacted, redactedTail } from "../redacted_text.ts";
 import { reportRunDeadline } from "../slot_context.ts";
 import { prepareCodegraphRun } from "../codegraph_run.ts";
 import { bindGraftRun } from "../graft_run.ts";
+import { settingsJsonOption } from "../rtk_output.ts";
 
 /**
  * True when the worker branch has at least one commit ahead of its base
@@ -585,10 +586,28 @@ async function executeClaudeBody(
   const syncGraftFacts = (): void => {
     state.graftContext = graftContextFacts(graft.result);
   };
+  // --- RTK shell-output filtering (Issue #2383, part of #2328) ---
+  // Installed per spawn, so nothing is written to `~/.claude/settings.json`.
+  // The provider is resolved the way the invocation below resolves it — it
+  // passes no selector, so both name the run's active provider — and a
+  // provider that takes no hooks skips the accelerator rather than failing the
+  // run. The hook and its one prompt line travel together or not at all.
+  const rtk = await deps.claude.prepareRtkRun({
+    enabled: config.rtkOutput.enabled,
+    providerId: deps.claude.rtkProviderId(undefined, logger),
+    logger,
+    cwd: state.repoPath,
+  });
+  // `record()` writes its figure into this same object, so the phase state
+  // reports the saved-token total without a second assignment.
+  state.rtkOutput = rtk.result;
+
   // Appended to the built prompt rather than written into the template, for
   // the same reason as the prior-progress note above: it is run-conditional,
   // and appending leaves the cached prefix untouched.
-  const userPrompt = graft.applyPrompt(codegraph.applyPrompt(resumedPrompt));
+  const userPrompt = rtk.applyPrompt(
+    graft.applyPrompt(codegraph.applyPrompt(resumedPrompt)),
+  );
 
   // --- Context budget hard ceiling (Issue #3713) ---
   // The budget check used to be observational only, so an issue whose prompt
@@ -810,10 +829,18 @@ async function executeClaudeBody(
           mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
           // Issue #2342: only a split run carries sub-agent definitions, and
           // only a split run carries the guard that keeps every `Edit`/`Write`
-          // inside one of them (Issue #2344).
+          // inside one of them (Issue #2344). `claude_runner.ts` merges that
+          // guard's hooks with the ones below rather than one replacing the
+          // other.
           ...(issueExecutorSplit
             ? { agents: buildIssueExecutorAgents(), issueExecutorSplit: true }
             : {}),
+          // This spawn's hooks (Issue #2383), carried on the command line. A
+          // run that installs none leaves the key absent, so the argv is the
+          // one it always spawned; when the split-executor guard reaches this
+          // path its entry merges into the same object rather than replacing
+          // this one.
+          ...settingsJsonOption(undefined, rtk.hookSettings()),
           logger,
           sessionResumeState: state.sessionResumeState,
           // The stream conversation could not be verifiably compacted before
@@ -932,6 +959,11 @@ async function executeClaudeBody(
       remainingInvocationBudget(claudeResult.value),
     );
   }
+
+  // Issue #2383: RTK's figure comes from its own store, not the run stats, so
+  // it is read on every outcome — a run that failed still filtered output.
+  // The result object on the phase state is the one this updates.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     return {
