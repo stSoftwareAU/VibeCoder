@@ -7,8 +7,10 @@
  * consumers could only be guessed at from the code. A shape is the
  * sub-command plus its flag **names**: enough to tell the listings apart,
  * and never an argument value, which can be a repository, a search string or
- * a body. The one exception is the `--json` field list — identifiers the
- * worker wrote, which tell a state check from a content read.
+ * a body. The two exceptions are closed vocabularies: the `--json` field list
+ * — identifiers the worker wrote, which tell a state check from a content
+ * read — and the `--state` word, which tells an open listing from a settled
+ * one.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -37,7 +39,7 @@ Deno.test("classifyGhShape - the sub-command and its flag names, sorted, with no
       "--limit",
       "100",
     ]),
-    "pr list --author --json=number,title --limit --repo --state",
+    "pr list --author --json=number,title --limit --repo --state=closed",
   );
 });
 
@@ -166,4 +168,40 @@ Deno.test("classifyGhShape - only --json is ever expanded: every other flag's va
     ]),
     "pr list --author --json=number --search",
   );
+});
+
+// Part 6: after parts 1–5 the per-author listing still spiked (171 and 101 a
+// cycle on a 20-repository host) and the shape could not say whether those
+// were the open listing, which must refresh, or the merged and closed ones,
+// which part 4 was meant to hold for an hour. `--state` takes a closed set of
+// words, so the word itself is safe to show.
+Deno.test("classifyGhShape - the --state word tells an open listing from a settled one (Issue #2409)", () => {
+  const listing = (state: string) =>
+    classifyGhShape([
+      "pr",
+      "list",
+      "--repo",
+      "o/r",
+      "--author",
+      "bot",
+      "--state",
+      state,
+    ]);
+  assertEquals(listing("open"), "pr list --author --repo --state=open");
+  assertEquals(listing("merged"), "pr list --author --repo --state=merged");
+  assertEquals(listing("closed"), "pr list --author --repo --state=closed");
+  assertEquals(
+    classifyGhShape(["issue", "list", "--state=all", "--repo", "o/r"]),
+    "issue list --repo --state=all",
+  );
+});
+
+Deno.test("classifyGhShape - a --state value outside gh's own words is never shown (Issue #2409)", () => {
+  for (const value of ["org/private-repo", "open closed", "OPEN;rm", ""]) {
+    assertEquals(
+      classifyGhShape(["pr", "list", "--state", value]),
+      "pr list --state",
+      value,
+    );
+  }
 });
