@@ -258,6 +258,16 @@ export interface IssueRunCallbackContext {
    * `codegraph` does.
    */
   rtk?: RtkOutputResult;
+  /**
+   * The release tag the running commit carries, when it carries one
+   * (Issue #2444). Absent rather than guessed when the checkout is untagged.
+   */
+  workerVersion?: string;
+  /**
+   * The commit the running worker was started from (Issue #2444). Read once
+   * at start-up from the host checkout, never per run.
+   */
+  workerCommit?: string;
 }
 
 /**
@@ -566,6 +576,13 @@ export function buildCallbackContextDocument(
     document.telemetryAbsentReason = context.telemetryAbsentReason;
   }
   if (context.outcome !== undefined) document.outcome = context.outcome;
+  // Issue #2444: additive, omitted rather than guessed when unreadable.
+  if (context.workerVersion !== undefined) {
+    document.workerVersion = context.workerVersion;
+  }
+  if (context.workerCommit !== undefined) {
+    document.workerCommit = context.workerCommit;
+  }
   // Issue #2104: emitted on every run, never omitted — see
   // {@link callbackGraftFacts} for why absence is reported as `off`.
   document.graft = callbackGraftFacts(context.graft);
@@ -749,6 +766,9 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_RTK_ENABLED", String(rtk.enabled));
   put(env, "VIBECODER_RTK_STATUS", rtk.status);
   put(env, "VIBECODER_RTK_SAVED_TOKENS", rtk.savedTokens);
+  // Issue #2444: omitted rather than guessed when the build could not be read.
+  put(env, "VIBECODER_WORKER_VERSION", context.workerVersion);
+  put(env, "VIBECODER_WORKER_COMMIT", context.workerCommit);
   return env;
 }
 
