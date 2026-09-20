@@ -29,10 +29,10 @@ import {
   buildCallbackContextDocument,
   buildCallbackEnv,
   CALLBACK_SCHEMA_VERSION,
-  type CallbackEvent,
   type IssueRunCallbackContext,
   type TerminalIssueRun,
 } from "../lib/run_callbacks.ts";
+import { type CallbackEvent } from "../lib/run_callbacks_config.ts";
 import { buildIssueRunCallbackContext } from "../lib/run_callback_context.ts";
 import {
   buildHostFailureDocument,
