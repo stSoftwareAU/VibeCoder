@@ -86,11 +86,17 @@ makes "off is byte-identical to today" an assertion rather than a claim.
   round through all five spawn sites and fails loudly if it stops reaching one;
   every spawn is held to the contract in each of the five cases, and a failure
   names the site.
-- `worker/deno/tests/rtk_switch_threading_2384_test.ts` — every production site
-  that threads the CodeGraph switch into a processor threads the RTK switch
-  beside it. A source-level pin, deliberately: those dispatch closures sit
-  behind real `git` and `gh` and cannot be driven from a unit test, and the
-  option defaults to off, so an unthreaded site would otherwise fail silently.
+- **One hop has no test, deliberately.** PR feedback and CI fix take the switch
+  as an option that defaults to off, threaded at four production sites
+  (`run_core_production_deps.ts` twice, and the two `commands/` entry points)
+  beside the CodeGraph switch. Those dispatch closures sit behind real `git` and
+  `gh` and cannot be driven from a unit test. A first version pinned them by
+  reading the source and counting occurrences; that was removed in review — it
+  tests *how* the code is spelt, breaks on a rename or a reformat, and this
+  repository deletes such tests rather than keeping them. The CodeGraph switch
+  threaded on the same four lines is untested in the same way. An unthreaded
+  site would show up as `RTK: off` on PR-feedback and CI-fix runs of a
+  switched-on host, which #2385/#2386 make visible.
 
 All were seen red before the wiring existed, then checked by mutation —
 dropping `settingsJson`, the line, `record()`, the carrier or the `rtk` argument
@@ -123,9 +129,8 @@ then all killed.
   each of which checks matcher `Bash`, command `rtk hook claude`, a prompt
   ending in `RTK_PROMPT_LINE`, and — through `assertOnlyRtkDiffers` — that the
   off spawn differs from it by nothing else; the off direction by `… the RTK
-  switch off …` in all four files, and the threading by `rtk switch threading -
-  every site that threads the CodeGraph switch threads the RTK switch` —
-  reviewer: met
+  switch off …` in all four files. The threading of the switch into the two
+  reactive processors' production sites has no test (see Tests) — reviewer: met
 - **met** — each path's `RtkOutputResult` reaches its run-stats/callback carrier
   — evidence: the result fields at `worker/deno/lib/question_processor.ts:104`,
   `worker/deno/lib/pr_feedback_processor.ts:133`,
