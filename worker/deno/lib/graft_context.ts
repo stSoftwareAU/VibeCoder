@@ -911,6 +911,7 @@ export function graftMcpServer(repoDir: string): {
   command: string;
   args: string[];
   env: Record<string, string>;
+  alwaysLoad: true;
 } {
   if (repoDir.trim() === "") {
     throw new Error(
@@ -922,6 +923,8 @@ export function graftMcpServer(repoDir: string): {
     command: "graft",
     args: ["mcp", repoDir],
     env: { ...GRAFT_ENV },
+    // Issue #2435: in context from the first turn, not behind a tool search.
+    alwaysLoad: true,
   };
 }
 
