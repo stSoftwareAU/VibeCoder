@@ -997,9 +997,9 @@ export async function loadConfig(
   }
   const codegraphContext = parsedCodegraphContext.value;
 
-  // RTK output (Issue #2380, part of #2328). Off unless the host asks for it;
-  // a malformed block fails the load loudly here rather than reading as off
-  // and silently withholding the rewrite hook the operator configured.
+  // RTK output (Issue #2380, part of #2328). On unless the host opts out
+  // (Issue #2432); a malformed block fails the load loudly here rather than
+  // reading as the default and silently ignoring what the operator wrote.
   const parsedRtkOutput = parseRtkOutput(file.rtk_output);
   if (!parsedRtkOutput.ok) {
     throw new Error(

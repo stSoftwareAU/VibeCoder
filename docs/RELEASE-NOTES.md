@@ -14,6 +14,46 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## 1.8.0 — RTK Bash-output filtering is on by default
+
+**A default changed. Read it if your host never set `rtk_output`: from this
+release its agent runs read RTK-condensed Bash output. Set
+`"rtk_output": {"enabled": false}` to keep the raw output.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| `rtk_output.enabled` defaults to `true` (was `false`). An unset or empty block now installs RTK's `PreToolUse` Bash rewrite hook on the five wired paths — issue, planning, question, PR-feedback and CI-fix — and adds the one prompt line about `rtk recall` | #2432 |
+| `- **RTK:** off` on a run-stats comment, and `rtk.status: off` on a callback, now mean the host **opted out** (or the run ended before RTK ran), no longer that the host said nothing | #2432 |
+
+### Why a minor
+
+Nothing is added or removed, but a host whose `.config.json` did not change
+behaves differently after the upgrade. That is an operator-visible change, so it
+takes a version an operator can point at.
+
+This is the owner's decision on **function** — the hook installs, commands are
+rewritten and a live run reported `ok` — and not a verdict on the trial's token
+bar, which was never measured. [RTK output trial](RTK-OUTPUT-TRIAL.md) §8 records
+that plainly.
+
+### Migration
+
+**None to keep the new default.** The image already carries the pinned `rtk`
+binary. A run whose RTK cannot be prepared logs one `[RTK_UNAVAILABLE]` warning,
+records `failed`, and carries on unfiltered. Runs routed to Codex, Gemini or
+DeepSeek record `unsupported`, as before. A callback hook needs no change: the
+`rtk` block keeps its shape and the callback schema version does not move.
+
+To opt a host out, add `"rtk_output": {"enabled": false}` to its `.config.json`.
+
+### Rollback
+
+Set `rtk_output.enabled` to `false` and restart the worker. The hook and the
+prompt line disappear from the next run; nothing persists on disk that has to be
+cleaned up.
+
 ## 1.7.0 — RTK Bash-output trial behind `rtk_output.enabled`
 
 **New configuration key and two new record surfaces. Read it if you parse a
@@ -41,7 +81,8 @@ switch that is either entirely present or entirely absent, never half of it.
 **None.** A host that does not set `rtk_output` behaves exactly as it did
 before: no hook, no prompt line, and `- **RTK:** off` on the stats line. A host
 that opts in sets `rtk_output.enabled: true` in its own `.config.json` — the
-default stays `false` and no worker flips it. A callback hook needs no change;
+default stays `false` and no worker flips it (the default became `true` in
+1.8.0, above). A callback hook needs no change;
 the `rtk` block is additive and a hook that ignores it is unaffected.
 
 ### Rollback

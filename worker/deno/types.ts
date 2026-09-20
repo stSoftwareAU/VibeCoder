@@ -477,8 +477,8 @@ export interface WorkerConfig {
   /**
    * The RTK output switch, read from the `.config.json` `rtk_output` block
    * (Issue #2380, part of #2328) and validated by `parseRtkOutput()` in
-   * `lib/rtk_output_config.ts`. Off unless the host asks for it, so an
-   * unconfigured host is unchanged.
+   * `lib/rtk_output_config.ts`. On unless the host sets `enabled: false`
+   * (Issue #2432).
    */
   rtkOutput: RtkOutputConfig;
   /**
@@ -658,7 +658,7 @@ export interface CodegraphContextConfig {
  * `lib/rtk_output_config.ts`.
  */
 export interface RtkOutputConfig {
-  /** Whether a run offers the agent RTK output shaping (default: false). */
+  /** Whether a run offers the agent RTK output shaping (default: true). */
   enabled: boolean;
 }
 
