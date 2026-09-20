@@ -23,7 +23,9 @@ read the full, unfiltered output when a command fails. The wager is that a
 Bash-heavy run spends a large share of its context on output nobody reads.
 
 The switch is `rtk_output.enabled` — one boolean, per host, default `false`,
-parsed by [#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382), wired
+parsed by [#2380](https://github.com/stSoftwareAU/VibeCoder/issues/2380), turned
+into a hook run by
+[#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382), wired
 into the five spawn paths by
 [#2383](https://github.com/stSoftwareAU/VibeCoder/issues/2383) and
 [#2384](https://github.com/stSoftwareAU/VibeCoder/issues/2384), and documented

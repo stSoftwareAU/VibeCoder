@@ -87,9 +87,9 @@ PASSED (with skipped checks)   # only `config integration` skipped (no host conf
 
 - **met** — `docs/RTK-OUTPUT-TRIAL.md` exists and is linked from
   `REPO-CONTEXT-TRIAL.md` §9, the README Documentation table and the
-  `rtk_output` CONFIGURATION row — evidence: `docs/RTK-OUTPUT-TRIAL.md:1-276`,
+  `rtk_output` CONFIGURATION row — evidence: `docs/RTK-OUTPUT-TRIAL.md:1-278`,
   `docs/REPO-CONTEXT-TRIAL.md:278`, `README.md:472`,
-  `docs/CONFIGURATION.md:1742`; test `the trial page is linked from every
+  `docs/CONFIGURATION.md:1743`; test `the trial page is linked from every
   surface that names the switch` — reviewer: met
 - **met** — `deno test worker/deno/tests/rtk_output_trial_docs_test.ts` passes
   against the live `rtk_output.ts` exports — evidence: 11 passed / 0 failed in
@@ -108,25 +108,27 @@ PASSED (with skipped checks)   # only `config integration` skipped (no host conf
   `VIBECODER_RTK_*` scalars, migration (none) and rollback (set `false`); both
   in commit `13aa2685` — reviewer: met
 - **met** — the stale-headings follow-up exists and is referenced here —
-  evidence: **#2422** (filed after a dedup search that found no prior issue)
-  covers the two stale `## Unreleased` headings at `docs/RELEASE-NOTES.md:53`
-  and `:146`, shipped as 1.6.41 and 1.6.56; they are deliberately **not** edited
-  in this PR — reviewer: partial (the reviewer ran before this file existed and
-  marked it partial solely because no PR summary yet referenced #2422; that is
-  what this bullet resolves)
+  evidence: **#2422** ("docs/RELEASE-NOTES.md: two stale 'Unreleased' headings
+  that have since shipped", filed from this issue after a dedup search that
+  found no prior open issue) is referenced in the Follow-up section below, and
+  this PR's own diff leaves those headings untouched as the issue required —
+  reviewer: met
 - **met** — markdownlint and the quality gate pass — evidence: markdownlint 0
-  issues / 176 files; `./quality.sh` PASSED with only `config integration`
-  skipped — reviewer: met (partial verification — the reviewer confirmed
-  markdownlint but did not execute the full gate itself; the gate was run in
-  this session, output above)
+  issues / 176 files; `./quality.sh` `Result: PASSED (with skipped checks)`,
+  exit 0, with only `config integration` skipped — reviewer: met (the reviewer
+  executed both itself and reports the same result)
 
-Two deviations the spec reviewer flagged and neither of which changes a stated
-criterion: the `.release-floor` reason runs to three comment lines rather than
-one (the floor carries seven sub-issues and naming them is what makes the floor
-auditable), and the page carries two mermaid diagrams the issue did not ask for
-(the sibling `REPO-CONTEXT-TRIAL.md` carries diagrams too, and
-`CODING-STANDARDS.md` asks for them where they aid understanding). No scope
-creep outside the issue's deliverable list was found.
+The spec reviewer found no scope creep — the diff touches exactly the ten files
+the issue's deliverable list names, with no source or behaviour changes. It
+recorded one factual deviation, now **fixed here**: `docs/RTK-OUTPUT-TRIAL.md:26`
+attributed the config parser to #2382, but the key and its parser are #2380
+(`worker/deno/lib/rtk_output_config.ts:1-2`) and #2382 is the run module, which
+made the trial page contradict `docs/CONFIGURATION.md`. The sentence now credits
+both issues correctly. Two further notes changed no criterion: the
+`.release-floor` reason runs to three comment lines rather than one (the floor
+carries seven sub-issues and naming them is what makes the floor auditable), and
+the drift suite asserts a few surfaces the issue did not enumerate — additive
+coverage consistent with its intent.
 
 ## Standards Review
 
@@ -167,19 +169,27 @@ creep outside the issue's deliverable list was found.
   52 insertions, 100 deletions.
 - **violation** — missing `docs/archive/pr-summaries/pr-summary-2387.md` —
   evidence: `docs/archive/pr-summaries/` — reason: fixed here; this file is it.
-- **violation (minor)** — commit `376e9881` is titled "WIP checkpoint: periodic
+- **violation** — minor: three commits are titled "WIP checkpoint: periodic
   agent progress snapshot (Issue #4170)" while carrying this change set's
-  deliverables; `f1987a8c` repeats the title — evidence: `git log` at
-  `376e9881`, `f1987a8c` — reason: stands. Both are worker-generated automatic
-  checkpoints, not hand-authored commits, and both are already pushed;
-  correcting the titles would mean rewriting published history, which the
-  standards' bound-irreversible-actions rule forbids. The substantive commit
-  `13aa2685` is correctly titled and carries the run-id trailer.
+  deliverables, so `git log` attributes #2387's work to an unrelated issue
+  number — evidence: `git log` at `376e9881`, `f1987a8c` and `a93314db`,
+  against `CODING-STANDARDS.md:648-650` — reason: stands. All three are
+  worker-generated automatic checkpoints rather than hand-authored commits, and
+  all three are already pushed; correcting the titles would mean rewriting
+  published history, which the bound-irreversible-actions rule forbids. The
+  substantive commit `13aa2685` is correctly titled and carries the run-id
+  trailer, and every checkpoint carries a valid trailer too.
 
-One observation recorded without a fix: `.release-floor` is a tracked hidden
-path outside the five-entry allowlist in `CODING-STANDARDS.md`. It is
-pre-existing, and `worker/deno/tests/next_release_tag_test.ts:325-330` requires
-it to be committed — drift in the standards prose, not a fault introduced here.
+Two observations recorded without a fix. First, the five `- **RTK:**` stats-line
+shapes appear in three places — the trial page §6, the `rtk_output` row in
+`docs/CONFIGURATION.md` and the 1.7.0 release-notes entry — but only §6 is
+pinned against `buildRtkStatsLine`, so the other two can drift silently; they
+are pre-existing surfaces from #2380 and #2385 and widening the drift suite to
+cover them is outside this issue's deliverable list. Second, `.release-floor` is
+a tracked hidden path outside the five-entry allowlist in `CODING-STANDARDS.md`;
+it is pre-existing, and `worker/deno/tests/next_release_tag_test.ts:325-330`
+requires it to be committed — drift in the standards prose, not a fault
+introduced here.
 
 Confirmed clean by the standards reviewer: Australian English throughout, no
 silent failures, unit-test shape and speed (11 passed in a few ms, no sleeps or
@@ -213,3 +223,9 @@ untouched by this PR's own diff so the 1.7.0 commit stays scoped to the release
 it cuts. It has since been fixed on `main` by #2424 and closed; that fix reached
 this branch through the `main` merge (`98a0afad`), which is why the branch's
 release notes no longer show either heading.
+
+**#2429** — `CODING-STANDARDS.md:104-107` forbids source-text keyword checks in
+tests, but the repo already relies on 22 `*_docs_test.ts` suites that pin prose
+no module can express, and this PR adds a 23rd. Filed from the standards review
+above after a dedup search found no existing open issue, so the carve-out is
+written once in the standards rather than argued in each new test's header.
