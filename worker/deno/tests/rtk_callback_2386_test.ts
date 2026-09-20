@@ -148,3 +148,48 @@ Deno.test({
     assert(!("VIBECODER_RTK_SAVED_TOKENS" in env));
   },
 });
+
+// The fabricated-`false` trap, which the Graft block already documents and
+// avoids (#2104): the trial separates enabled runs from control runs by this
+// block alone. A run on a switched-ON host that ends before RTK is prepared —
+// a refused claim, an early exit — must not be archived as `enabled: false`,
+// or every such run is counted as a control run and the comparison is wrong.
+for (const enabled of [true, false]) {
+  Deno.test({
+    name:
+      `#2386 - a run that ended before RTK was prepared states the host's real switch (enabled=${enabled})`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      const config = buildDefaultWorkerConfig();
+      config.rtkOutput = { enabled };
+      const deps = createMockDeps({
+        issues: {
+          claimIssue: () =>
+            Promise.resolve({
+              ok: true,
+              value: { claimed: false, reason: "already_assigned" as const },
+            }),
+        },
+      });
+
+      const result = await workOnIssue({
+        repo: "stSoftwareAU/VibeCoder",
+        issueNumber: 2386,
+        issueTitle: "Carry an rtk block on the callback context",
+        issueBody: "The claim was refused, so RTK was never prepared.",
+        issueLabels: [],
+        issueComments: "",
+        githubUser: "testbot",
+        config,
+      }, deps);
+
+      assertEquals(result.rtk, { status: "off", enabled });
+      const { block, env } = published(result);
+      assertEquals(block, { enabled, status: "off" });
+      assertEquals(env.VIBECODER_RTK_ENABLED, String(enabled));
+      assertEquals(env.VIBECODER_RTK_STATUS, "off");
+      assertEquals("VIBECODER_RTK_SAVED_TOKENS" in env, false);
+    },
+  });
+}

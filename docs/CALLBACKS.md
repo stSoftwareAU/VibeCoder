@@ -509,7 +509,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT` | `codegraph.relationshipCount`   | no             | Relationships (edges) in the index                                                                                   |
 | `VIBECODER_CODEGRAPH_QUERIES`            | `codegraph.queries`             | no             | `codegraph_explore` calls the agent made this run                                                                    |
 | `VIBECODER_RTK_ENABLED`                  | `rtk.enabled`                   | yes            | Whether the host's RTK output switch was on for this run (`true` or `false`)                                         |
-| `VIBECODER_RTK_STATUS`                   | `rtk.status`                    | yes            | `ok`, `failed`, `unsupported` (this provider takes no hook) or `off` (switch off, or nothing recorded)               |
+| `VIBECODER_RTK_STATUS`                   | `rtk.status`                    | yes            | `ok`, `failed`, `unsupported` (this provider takes no hook) or `off` (switch off, or the run ended before RTK ran) |
 | `VIBECODER_RTK_SAVED_TOKENS`             | `rtk.savedTokens`               | no             | RTK's own indicative count of tokens its filtering saved during the run                                              |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
@@ -586,11 +586,15 @@ ignores the block.
 
 `rtk` is an **additive** block (Issue #2386, part of #2328) carried by every
 run document, so the RTK output trial can tell a run whose Bash output was
-condensed from one whose output was not. `off` states that the host's
-`rtk_output.enabled` switch was off; a run that recorded no RTK preparation at
-all — it ended first, or its run kind does not prepare RTK yet — falls back to
-the same `{ "enabled": false, "status": "off" }`, which then says only that
-nothing was recorded. `failed` means the switch was on and the run got no
+condensed from one whose output was not. **`enabled` is the host's switch,
+stated truthfully whatever became of the run**: an issue run that ended before
+RTK was prepared — a refused claim, an early exit — on a switched-on host
+reports `{ "enabled": true, "status": "off" }`, never a fabricated `false`,
+because the trial separates enabled runs from control runs by this block alone
+(the rule the `graft` block follows, Issue #2104). `status: "off"` beside
+`enabled: false` is a host with the switch off. A run kind that carries no RTK
+outcome to the callbacks at all falls back to
+`{ "enabled": false, "status": "off" }`. `failed` means the switch was on and the run got no
 filtering, and `unsupported` that the provider takes no hook. `savedTokens` is
 RTK's **own indicative figure**, read from a tracking store that concurrent
 lanes share, so a neighbour can inflate it: read the trial from the run's token

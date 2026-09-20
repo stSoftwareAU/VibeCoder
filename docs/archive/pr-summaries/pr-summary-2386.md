@@ -88,6 +88,19 @@ Not covered by a test: the one-line copy in `run_core_production_deps.ts`
 (`processIssue`), which has no harness — the `codegraph` line beside it is
 likewise untested.
 
+### A run that ends early states the host's real switch
+
+Added in review. As first written, an issue run on a **switched-on** host that
+ended before RTK was prepared (a refused claim, an early exit) published
+`{ enabled: false, status: "off" }`. The trial separates enabled runs from
+control runs by this block alone, so that archived an enabled host's run as a
+control run — the fabricated-`false` trap the `graft` block documents and
+avoids (#2104). `issue_worker.ts` now lifts
+`state.rtkOutput ?? { status: "off", enabled: ctx.config.rtkOutput.enabled }`,
+exactly as it does for Graft. Pinned by `#2386 - a run that ended before RTK
+was prepared states the host's real switch`, for the switch on **and** off,
+through the real `workOnIssue`; both were red first.
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->

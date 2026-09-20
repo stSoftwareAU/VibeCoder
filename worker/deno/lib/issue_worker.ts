@@ -225,8 +225,13 @@ export async function workOnIssue(
       // execute phase so the `codegraph_explore` tally the invocation folded
       // in afterwards is the one the callbacks report.
       ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
-      // Issue #2386: the RTK outcome, for the same callbacks.
-      ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+      // Issue #2386: the RTK outcome, for the same callbacks. Like the Graft
+      // block above, a run that ended before RTK was prepared states the
+      // host's real switch: the trial separates enabled runs from control
+      // runs by this block alone, so a fabricated `enabled: false` would
+      // archive a switched-on host's early exit as a control run.
+      rtk: state.rtkOutput ??
+        { status: "off", enabled: ctx.config.rtkOutput.enabled },
     };
   } catch (err) {
     outcome = withRunOutcomeNotes(
