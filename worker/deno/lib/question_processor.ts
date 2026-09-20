@@ -38,6 +38,7 @@ import {
 import { buildQuestionPrompt } from "./prompt_builder.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
+import { type RtkOutputResult, settingsJsonOption } from "./rtk_output.ts";
 import { bindGraftRun } from "./graft_run.ts";
 import { readRepoContext } from "./repo_context_reader.ts";
 import {
@@ -94,6 +95,13 @@ export interface QuestionResult {
    * `queries` once the run's tool tally was read.
    */
   codegraphContext?: CodegraphContextResult;
+  /**
+   * What this run's RTK output filter did (Issue #2384, part of #2328).
+   *
+   * Present on every outcome reached after the preparation, carrying
+   * `savedTokens` once the gain store was read a second time.
+   */
+  rtkOutput?: RtkOutputResult;
 }
 
 /** Options for the question processor. */
@@ -302,7 +310,8 @@ export async function processIssueQuestion(
   const graftSlot: GraftContextSlot = {};
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every one of them carries it (Issue #2159).
-  const carrier: { codegraphContext?: CodegraphContextResult } = {};
+  // The RTK outcome rides the same carrier (Issue #2384).
+  const carrier: QuestionRunCarrier = {};
   try {
     const result = await _processQuestionWithHeartbeat(
       ctx,
@@ -319,12 +328,15 @@ export async function processIssueQuestion(
     // Issue #2103: the shared carrier — one shape for all four processors;
     // the CodeGraph facts ride the same result (Issue #2159).
     const withGraft = withGraftContext(result, graftSlot);
-    return withGraft.ok && carrier.codegraphContext
+    return withGraft.ok && (carrier.codegraphContext || carrier.rtkOutput)
       ? {
         ok: true,
         value: {
           ...withGraft.value,
-          codegraphContext: carrier.codegraphContext,
+          ...(carrier.codegraphContext
+            ? { codegraphContext: carrier.codegraphContext }
+            : {}),
+          ...(carrier.rtkOutput ? { rtkOutput: carrier.rtkOutput } : {}),
         },
       }
       : withGraft;
@@ -340,6 +352,13 @@ export async function processIssueQuestion(
   }
 }
 
+/** What the body hands back to every one of its return paths. */
+interface QuestionRunCarrier {
+  codegraphContext?: CodegraphContextResult;
+  /** Issue #2384: `record()` writes `savedTokens` into this same object. */
+  rtkOutput?: RtkOutputResult;
+}
+
 /**
  * Inner question processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
@@ -348,7 +367,7 @@ async function _processQuestionWithHeartbeat(
   ctx: IssueContext,
   processorDeps: QuestionProcessorDeps,
   graftSlot: GraftContextSlot,
-  carrier: { codegraphContext?: CodegraphContextResult },
+  carrier: QuestionRunCarrier,
 ): Promise<Result<QuestionResult>> {
   const {
     repo,
@@ -451,12 +470,29 @@ async function _processQuestionWithHeartbeat(
   // Issue #2314: the pull side of Graft, beside CodeGraph's.
   const graft = bindGraftRun({ result: graftContext, repoDir, logger });
 
+  // --- RTK shell-output filtering (Issue #2384, part of #2328) ---
+  // Installed per spawn, so nothing is written to `~/.claude/settings.json`.
+  // The invocation below passes no provider selector, so both name the run's
+  // active provider. Off — or on a provider that takes no hooks — this spawns
+  // nothing and the argv and prompt are the ones they always were; the hook
+  // and its prompt line travel together, and losing RTK never fails the run.
+  const rtk = await deps.claude.prepareRtkRun({
+    enabled: config.rtkOutput.enabled,
+    providerId: deps.claude.rtkProviderId(undefined, logger),
+    logger,
+    cwd: repoDir,
+  });
+  carrier.rtkOutput = rtk.result;
+
   // Execute Claude with question timeout
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/question/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: graft.applyPrompt(codegraph.applyPrompt(prompt)),
+      // RTK's line goes outermost, so it is the last thing the agent reads.
+      prompt: rtk.applyPrompt(
+        graft.applyPrompt(codegraph.applyPrompt(prompt)),
+      ),
       systemPrompt,
       timeoutSeconds: config.questionTimeout,
       killAfterSeconds: config.questionKillAfter,
@@ -466,6 +502,9 @@ async function _processQuestionWithHeartbeat(
       // Absent unless the index built, so a switched-off run writes no MCP
       // configuration at all — exactly as before.
       ...graft.mcpConfigOption(codegraph.mcpConfig()),
+      // Issue #2384: absent unless RTK's hook is installed, so every other
+      // run spawns the argv it always did.
+      ...settingsJsonOption(undefined, rtk.hookSettings()),
     },
     {
       maxRetries: config.maxRateLimitRetries,
@@ -473,6 +512,9 @@ async function _processQuestionWithHeartbeat(
   );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
+  // Issue #2384: the saved-token figure, read whether or not the invocation
+  // succeeded — the hook ran either way. Never throws.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     // Check for timeout with partial output
