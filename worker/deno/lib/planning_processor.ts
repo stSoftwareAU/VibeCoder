@@ -70,6 +70,7 @@ import {
   type RtkRun,
   settingsJsonOption,
 } from "./rtk_output.ts";
+import { buildRtkStatsLine } from "./issue_run_stats_comment.ts";
 import { bindGraftRun, type GraftRun } from "./graft_run.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
@@ -1874,6 +1875,7 @@ async function _processPlanningWithHeartbeat(
       logger,
       ghClient,
       invocations,
+      rtk.result,
     );
     return {
       ok: false,
@@ -1911,6 +1913,7 @@ async function _processPlanningWithHeartbeat(
       logger,
       ghClient,
       invocations,
+      rtk.result,
     );
     return {
       ok: false,
@@ -2185,6 +2188,14 @@ function buildRunStats(
   invocations: PlanningInvocationStats[],
   configuredBestModel?: string,
   gate?: FailureDetectionGateStats,
+  /**
+   * What the round's RTK preparation produced (Issue #2385). Appended to the
+   * section as its own status line — `off` included, so the trial separates
+   * enabled rounds from control rounds by reading the parent alone. A round
+   * with nothing else to report stays silent: the line never makes a
+   * stats-free round worth a comment, the rule the issue path follows.
+   */
+  rtk?: RtkOutputResult,
 ): { verdict: DegradationVerdict; section: string } {
   const report = buildDegradationReport({
     invocations,
@@ -2192,7 +2203,10 @@ function buildRunStats(
     phase: "planning",
     ...(gate ? { gate } : {}),
   });
-  return { verdict: report.verdict, section: report.section };
+  const section = rtk && report.section.trim() !== ""
+    ? `${report.section.trimEnd()}\n${buildRtkStatsLine(rtk)}\n`
+    : report.section;
+  return { verdict: report.verdict, section };
 }
 
 /**
@@ -2681,6 +2695,7 @@ async function closePlanningIssue(
     invocations,
     resolveConfiguredBestPlanningModel(config, repo),
     gateStats,
+    rtk?.result,
   );
 
   // Issue #2995 (part of #2993): carrier safety net. When the run ends with
@@ -3085,6 +3100,8 @@ async function handlePlanningFailure(
   logger: Logger,
   ghClient: PlanningProcessorDeps["ghClient"],
   invocations: PlanningInvocationStats[] = [],
+  /** The round's RTK outcome, for the stats it posts (Issue #2385). */
+  rtk?: RtkOutputResult,
 ): Promise<void> {
   try {
     await deps.github.handleIssueFailure({
@@ -3113,6 +3130,8 @@ async function handlePlanningFailure(
   const { section } = buildRunStats(
     invocations,
     resolveConfiguredBestPlanningModel(config, repo),
+    undefined,
+    rtk,
   );
   await postStatsComment(repo, issueNumber, section, ghClient, logger);
 

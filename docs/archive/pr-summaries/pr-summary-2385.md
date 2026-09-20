@@ -86,6 +86,31 @@ forwarding spreads each failed the test named for it and nothing unexpected.
   wrap-ups report `state.rtkOutput`; a run that never reached the preparation
   mentions none.
 
+### The deferred remainder, completed
+
+The first PR for this issue (#2414) wired the issue path only, because #2384 —
+which carries each processor's RTK result — was being built in parallel. With
+#2384 landed, the remainder is done here:
+
+- **Question** — `question_processor.ts` passes `carrier.rtkOutput` into the
+  same `reportPhaseDegradation` call that already carries the CodeGraph
+  figures. Pinned by `question_processor - the round's run-stats comment carries
+  the RTK line` and its switched-off twin (`RTK: off`, never nothing).
+- **Planning** — planning builds its own stats section, which carried no
+  accelerator line at all, so `buildRunStats` takes the round's result and
+  appends `buildRtkStatsLine`. On the **failure path too**: a publish turn that
+  times out still posts stats, and they carry the line
+  (`planning_processor - a round that fails still reports RTK on the stats it
+  posts`). A round with nothing else to report stays silent — the line never
+  makes a stats-free round worth a comment, the rule the issue path follows.
+- **PR-feedback and CI-fix post no run-stats comment at all**, so there is no
+  call to extend. Their RTK outcome is on the run's result and in the worker
+  log. Adding a stats comment to PR runs is a design decision, not wiring, and
+  is not made here — CodeGraph and Graft are absent from those runs for the same
+  reason.
+
+Each test above was red before its wiring.
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
@@ -102,9 +127,13 @@ forwarding spreads each failed the test named for it and nothing unexpected.
   `postIssueRunStatsComment - posts exactly one RTK line`, `… posts \`off\` on a
   host without the switch`, `completion - a host with RTK off still reports the
   line`, and the two `reportPhaseDegradation` forwarding tests — reviewer:
-  partial — reason: met for issue runs only; the planning, question,
-  PR-feedback and CI-fix processors' stats calls are deliberately deferred
-  until #2384 lands the RTK result on those processors
+  partial — reason: met for every run kind that both is RTK-wired and posts a
+  run-stats comment — issue, question and planning (success and failure
+  paths). PR-feedback and CI-fix are wired but post no run-stats comment. The
+  clarification-family phases (clarity assessment, refinement, revision,
+  grill-me, quorum) post stats comments but are not RTK-wired by this
+  milestone at all, so they have no outcome to report and carry no line;
+  `docs/CONFIGURATION.md` now says so rather than claiming every spawn path
 - **met** — `ok` renders the `rtk gain` delta with a thousands separator when
   present, and the bare status when absent — evidence:
   `worker/deno/lib/issue_run_stats_comment.ts:198-200`; pinned by `rtk line -

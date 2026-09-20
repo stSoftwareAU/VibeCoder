@@ -301,6 +301,27 @@ export function codegraphNotRun(switchedOn: boolean): CodegraphContextResult {
 }
 
 /**
+ * What a run that recorded no RTK outcome publishes (Issue #2386).
+ *
+ * `enabled` is the **host's switch**, so a run that reached the callbacks
+ * carrying no outcome — it threw, or the cycle drained before it got there —
+ * must not borrow {@link RTK_OFF}: on a switched-on host that would archive it
+ * as a control run, and the RTK trial separates the two populations by this
+ * block alone. It reports the switch truthfully and `status: "off"`, the same
+ * reading `issue_worker.ts` gives a run that ended before RTK was prepared.
+ *
+ * Unlike {@link codegraphNotRun} it does not say `failed`: for RTK `failed`
+ * means the preflight ran and the binary was missing, which is a host fault
+ * someone should act on, and this run never got as far as asking.
+ *
+ * @param switchedOn - Whether the host's `rtk_output.enabled` is on
+ * @returns The block such a run publishes
+ */
+export function rtkNotRun(switchedOn: boolean): RtkOutputResult {
+  return switchedOn ? { enabled: true, status: "off" } : RTK_OFF;
+}
+
+/**
  * The structured outcome a fleet archive can count without reading a
  * transcript (Issue #1947).
  */

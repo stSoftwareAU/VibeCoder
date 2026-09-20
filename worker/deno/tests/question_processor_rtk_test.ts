@@ -20,7 +20,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { processIssueQuestion } from "../lib/question_processor.ts";
@@ -28,6 +28,7 @@ import type { IssueContext } from "../lib/issue_worker.ts";
 import type { GitHubClient } from "../types.ts";
 import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { CODEGRAPH_PROMPT_LINE } from "../lib/codegraph_context.ts";
+import { ISSUE_RUN_STATS_MARKER } from "../lib/issue_run_stats_comment.ts";
 import type { RtkOutputResult } from "../lib/rtk_output.ts";
 import {
   healthyRtkSeam,
@@ -44,7 +45,7 @@ import {
 } from "./support/rtk_wiring_asserts.ts";
 
 /** A gh client that answers everything the answer path needs. */
-function stubGhClient(): GitHubClient {
+function stubGhClient(posted: string[] = []): GitHubClient {
   return {
     getIssue: () =>
       Promise.resolve({
@@ -60,7 +61,10 @@ function stubGhClient(): GitHubClient {
     getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
-    postComment: () => Promise.resolve(undefined),
+    postComment: (_r: string, _i: number, body: string) => {
+      posted.push(body);
+      return Promise.resolve(undefined);
+    },
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
     unassignIssue: () => Promise.resolve(),
@@ -76,6 +80,8 @@ const INDEXED_CODEGRAPH =
 interface Observed {
   runOptions: SpawnOptions[];
   rtkOutput?: RtkOutputResult;
+  /** Comment bodies the run posted on the issue. */
+  posted: string[];
 }
 
 async function runQuestion(
@@ -98,7 +104,7 @@ async function runQuestion(
     githubUser: "testbot",
     config,
   };
-  const observed: Observed = { runOptions: [] };
+  const observed: Observed = { runOptions: [], posted: [] };
   const deps = createMockDeps({
     claude: {
       runClaudeWithRetry: ((options: SpawnOptions) => {
@@ -109,6 +115,13 @@ async function runQuestion(
             output: "The retry logic uses exponential backoff.",
             exitCode: 0,
             timedOut: false,
+            // Figures to report, so the round posts a run-stats comment.
+            runStats: {
+              servedModels: [],
+              requestedModel: "opus",
+              wallClockMs: 1,
+              toolCallCounts: { Bash: 3 },
+            },
           },
         });
       }) as never,
@@ -119,7 +132,7 @@ async function runQuestion(
   });
 
   const result = await processIssueQuestion(ctx, {
-    ghClient: stubGhClient(),
+    ghClient: stubGhClient(observed.posted),
     logger: deps.logger,
     deps,
   });
@@ -189,4 +202,20 @@ Deno.test("question_processor - RTK's pair rides outside CodeGraph's when both a
 
   assertRtkOutsideCodegraph(observed.runOptions[0], CODEGRAPH_PROMPT_LINE);
   assertEquals(observed.rtkOutput?.status, "ok");
+});
+
+// Issue #2385 (the remainder it deferred until #2384 carried the result): the
+// question round's run-stats comment reports RTK, as an issue run's does.
+Deno.test("question_processor - the round's run-stats comment carries the RTK line (Issue #2385)", async () => {
+  const observed = await runQuestion(true, healthyRtkSeam(100, 140));
+  const stats = observed.posted.find((b) => b.includes(ISSUE_RUN_STATS_MARKER));
+  assert(stats, "expected the question round's run-stats comment");
+  assertStringIncludes(stats, "- **RTK:** ok — 40 tokens saved");
+});
+
+Deno.test("question_processor - a switched-off host's stats comment says RTK: off, never nothing (Issue #2385)", async () => {
+  const observed = await runQuestion(false, rtkSeam([]));
+  const stats = observed.posted.find((b) => b.includes(ISSUE_RUN_STATS_MARKER));
+  assert(stats, "expected the question round's run-stats comment");
+  assertStringIncludes(stats, "- **RTK:** off");
 });

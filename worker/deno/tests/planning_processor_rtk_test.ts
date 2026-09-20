@@ -18,7 +18,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { processIssuePlanning } from "../lib/planning_processor.ts";
@@ -66,7 +66,7 @@ function spawnKind(prompt: string, turn: number): typeof SPAWNS[number] {
   return turn === 1 ? "publish" : "#1219 retry";
 }
 
-function stubGhClient(): GitHubClient {
+function stubGhClient(posted: string[] = []): GitHubClient {
   return {
     getIssue: () =>
       Promise.resolve({
@@ -82,7 +82,10 @@ function stubGhClient(): GitHubClient {
     getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
-    postComment: () => Promise.resolve(undefined),
+    postComment: (_r: string, _i: number, body: string) => {
+      posted.push(body);
+      return Promise.resolve(undefined);
+    },
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
     unassignIssue: () => Promise.resolve(),
@@ -99,6 +102,8 @@ interface Observed {
   runOptions: SpawnOptions[];
   kinds: string[];
   rtkOutput?: RtkOutputResult;
+  /** Comment bodies the round posted on the parent. */
+  posted: string[];
 }
 
 /**
@@ -114,6 +119,8 @@ async function runPlanning(
   seam: RtkSeam,
   providerId: string = CLAUDE_PROVIDER_ID,
   codegraphToo = false,
+  /** Time the publish turn out, so the round ends on its failure path. */
+  publishTimesOut = false,
 ): Promise<Observed> {
   const config = buildDefaultWorkerConfig();
   config.workDir = "/tmp/rtk-2384-planning-work";
@@ -129,7 +136,7 @@ async function runPlanning(
     githubUser: FLEET_LOGIN,
     config,
   };
-  const observed: Observed = { runOptions: [], kinds: [] };
+  const observed: Observed = { runOptions: [], kinds: [], posted: [] };
 
   const deps = createMockDeps({
     claude: {
@@ -150,7 +157,18 @@ async function runPlanning(
         }[kind];
         return Promise.resolve({
           ok: true,
-          value: { output, exitCode: 0, timedOut: false },
+          value: {
+            output,
+            exitCode: 0,
+            timedOut: publishTimesOut && kind === "publish",
+            // Figures to report, so the round publishes a stats section.
+            runStats: {
+              servedModels: [],
+              requestedModel: "fable",
+              wallClockMs: 1,
+              toolCallCounts: { Bash: 2 },
+            },
+          },
         });
       }) as never,
       prepareRtkRun: seam.prepare,
@@ -185,10 +203,14 @@ async function runPlanning(
 
   const result = await processIssuePlanning(ctx, {
     promptsDir: PROMPTS_DIR,
-    ghClient: stubGhClient(),
+    ghClient: stubGhClient(observed.posted),
     logger: deps.logger,
     deps,
   });
+  if (publishTimesOut) {
+    assert(!result.ok, "a timed-out publish turn fails the round");
+    return observed;
+  }
   assert(result.ok, "losing or lacking RTK must never fail a planning round");
   observed.rtkOutput = result.value.rtkOutput;
   return observed;
@@ -307,4 +329,41 @@ Deno.test("planning_processor - RTK's pair rides outside CodeGraph's on every sp
     }
   }
   assertEquals(observed.rtkOutput?.status, "ok");
+});
+
+// Issue #2385 (the remainder it deferred until #2384 carried the result):
+// planning builds its own stats section, which carried no accelerator line at
+// all — so the RTK status is appended to it.
+Deno.test("planning_processor - the round's published stats carry the RTK line (Issue #2385)", async () => {
+  const observed = await runPlanning(true, growingRtkSeam());
+  const withStats = observed.posted.filter((b) => b.includes("- **RTK:**"));
+  assertEquals(
+    withStats.length,
+    1,
+    `exactly one published body carries the line: ${observed.posted.length} posted`,
+  );
+  assertStringIncludes(withStats[0]!, "- **RTK:** ok");
+});
+
+Deno.test("planning_processor - a switched-off host's stats say RTK: off (Issue #2385)", async () => {
+  const observed = await runPlanning(false, rtkSeam([]));
+  const withStats = observed.posted.filter((b) => b.includes("- **RTK:**"));
+  assertEquals(withStats.length, 1);
+  assertStringIncludes(withStats[0]!, "- **RTK:** off");
+});
+
+Deno.test("planning_processor - a round that fails still reports RTK on the stats it posts (Issue #2385)", async () => {
+  const observed = await runPlanning(
+    true,
+    growingRtkSeam(),
+    CLAUDE_PROVIDER_ID,
+    false,
+    true,
+  );
+  const withStats = observed.posted.filter((b) => b.includes("- **RTK:**"));
+  assertEquals(
+    withStats.length,
+    1,
+    `the failure path's stats comment carries the line: ${observed.posted.length} posted`,
+  );
 });
