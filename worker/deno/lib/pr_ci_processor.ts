@@ -18,6 +18,11 @@ import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
+import {
+  type RtkOutputResult,
+  type RtkRun,
+  settingsJsonOption,
+} from "./rtk_output.ts";
 import { bindGraftRun, type GraftRun } from "./graft_run.ts";
 import {
   collectGraftContext,
@@ -221,6 +226,15 @@ export interface CiFixResult {
    * is where the trial reads a failed run's figure from.
    */
   codegraphContext?: CodegraphContextResult;
+  /**
+   * What this run's RTK output filter did (Issue #2384, part of #2328).
+   *
+   * Present on every **successful** outcome reached after the preparation,
+   * for the same reason as {@link codegraphContext}. `savedTokens` covers the
+   * fix attempt and the post-quality retry together: both are measured from
+   * the one baseline the preparation took.
+   */
+  rtkOutput?: RtkOutputResult;
 }
 
 /** Dependencies specific to the CI fix processor. */
@@ -254,6 +268,16 @@ export interface CiProcessorDeps {
    * byte-identical to a run from before the trial existed.
    */
   codegraphContextEnabled?: boolean;
+  /**
+   * Whether to condense the run's Bash output with RTK (Issue #2384, part of
+   * #2328, default: false).
+   *
+   * Threaded from `config.rtkOutput.enabled` by the same production wiring
+   * site that supplies {@link codegraphContextEnabled}. Off, the run spawns
+   * nothing and its argv and prompt are byte-identical to a run from before
+   * the trial existed.
+   */
+  rtkOutputEnabled?: boolean;
   /** Claude timeout in seconds. */
   claudeTimeout?: number;
   /**
@@ -855,7 +879,8 @@ async function _processCiFailureLocked(
 
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every successful one carries it (Issue #2160).
-  const carrier: { codegraphContext?: CodegraphContextResult } = {};
+  // The RTK outcome rides the same carrier (Issue #2384).
+  const carrier: CiRunCarrier = {};
   try {
     const result = await _processCiWithHeartbeat(
       input,
@@ -871,10 +896,16 @@ async function _processCiFailureLocked(
         ? `Released — ${result.value.summary}`
         : `Released — gave up: ${result.error.message}`,
     );
-    return result.ok && carrier.codegraphContext
+    return result.ok && (carrier.codegraphContext || carrier.rtkOutput)
       ? {
         ok: true,
-        value: { ...result.value, codegraphContext: carrier.codegraphContext },
+        value: {
+          ...result.value,
+          ...(carrier.codegraphContext
+            ? { codegraphContext: carrier.codegraphContext }
+            : {}),
+          ...(carrier.rtkOutput ? { rtkOutput: carrier.rtkOutput } : {}),
+        },
       }
       : result;
   } finally {
@@ -953,6 +984,13 @@ async function _isDownstreamAggregator(
   }
 }
 
+/** What the body hands back to every one of its successful return paths. */
+interface CiRunCarrier {
+  codegraphContext?: CodegraphContextResult;
+  /** Issue #2384: `record()` writes `savedTokens` into this same object. */
+  rtkOutput?: RtkOutputResult;
+}
+
 /**
  * Inner CI fix processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
@@ -962,7 +1000,7 @@ async function _processCiWithHeartbeat(
   processorDeps: CiProcessorDeps,
   newRetryCount: number,
   graftSlot: GraftContextSlot,
-  carrier: { codegraphContext?: CodegraphContextResult },
+  carrier: CiRunCarrier,
 ): Promise<Result<CiFixResult>> {
   const { repo, prNumber, checkRunId, checkName, encodedAnnotations } = input;
   const {
@@ -977,6 +1015,7 @@ async function _processCiWithHeartbeat(
     maxAutoFixAttempts = DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
     stateDir = resolveCiCheckStateDir(),
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
+    rtkOutputEnabled = OPERATIONAL_DEFAULTS.rtkOutput.enabled,
   } = processorDeps;
 
   // Issue #2260: `checkName` stays raw for the lookups that must match what
@@ -1393,12 +1432,33 @@ async function _processCiWithHeartbeat(
     logger,
   });
 
+  // --- RTK shell-output filtering (Issue #2384, part of #2328) ---
+  // Installed per spawn, so nothing is written to `~/.claude/settings.json`.
+  // Neither invocation below passes a provider selector, so all three name
+  // the run's active provider. Unlike the CodeGraph pair above, the hook rides
+  // on the command line and needs no checkout, so an unnamed `workDir` is
+  // simply left out of the probes rather than recorded as a failure. Prepared
+  // once: the post-quality retry carries this same run, so its saving is
+  // measured from the same baseline.
+  const rtk = await deps.claude.prepareRtkRun({
+    enabled: rtkOutputEnabled,
+    providerId: deps.claude.rtkProviderId(undefined, logger),
+    logger,
+    ...(processorDeps.workDir === undefined
+      ? {}
+      : { cwd: processorDeps.workDir }),
+  });
+  carrier.rtkOutput = rtk.result;
+
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/ci_fix/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
+      // RTK's line goes outermost, so it is the last thing the agent reads.
+      prompt: rtk.applyPrompt(
+        graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
+      ),
       systemPrompt,
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
@@ -1408,6 +1468,9 @@ async function _processCiWithHeartbeat(
       // Absent unless the index built, so a switched-off run writes no MCP
       // configuration at all — exactly as before.
       ...graft.mcpConfigOption(codegraph.mcpConfig()),
+      // Issue #2384: absent unless RTK's hook is installed, so every other
+      // run spawns the argv it always did.
+      ...settingsJsonOption(undefined, rtk.hookSettings()),
     },
     {
       maxRetries: maxRateLimitRetries,
@@ -1415,6 +1478,9 @@ async function _processCiWithHeartbeat(
   );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
+  // Issue #2384: the saved-token figure, read whether or not the invocation
+  // succeeded — the hook ran either way. Never throws.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     const failureMessage =
@@ -1447,6 +1513,7 @@ async function _processCiWithHeartbeat(
     processorDeps,
     codegraph,
     graft,
+    rtk,
   );
 
   // Always commit and push any pending work (Issue #1643).
@@ -2222,6 +2289,8 @@ async function _runPostClaudeQualityCheck(
   codegraph: CodegraphRun,
   /** The run's Graft tools (Issue #2314), handed to the retry as well. */
   graft: GraftRun,
+  /** The run's RTK hook (Issue #2384), handed to the retry as well. */
+  rtk: RtkRun,
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -2296,18 +2365,25 @@ async function _runPostClaudeQualityCheck(
       {
         // The same index the first attempt was handed (Issue #2160) — it is
         // the same checkout, and re-indexing it would spend the budget twice.
-        prompt: graft.applyPrompt(codegraph.applyPrompt(retryPrompt)),
+        // The same RTK hook too (Issue #2384): the retry is its own spawn,
+        // and a spawn without `--settings` would run unfiltered.
+        prompt: rtk.applyPrompt(
+          graft.applyPrompt(codegraph.applyPrompt(retryPrompt)),
+        ),
         timeoutSeconds: claudeTimeout,
         noOutputTimeout: claudeNoOutputTimeout,
         phase: "ci_fix",
         cwd,
         logger,
         ...graft.mcpConfigOption(codegraph.mcpConfig()),
+        ...settingsJsonOption(undefined, rtk.hookSettings()),
       },
       { maxRetries: maxRateLimitRetries },
     );
     if (retryResult.ok) codegraph.record(retryResult.value.runStats);
     if (retryResult.ok) graft.record(retryResult.value.runStats);
+    // Re-read against the first baseline, so the figure covers both spawns.
+    await rtk.record();
     if (!retryResult.ok) {
       logger.warn(
         "Claude quality retry failed — committing any remaining changes anyway",

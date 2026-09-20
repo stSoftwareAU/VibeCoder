@@ -20,6 +20,7 @@ import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
@@ -279,6 +280,16 @@ export interface PhaseState {
    */
   codegraphContext?: CodegraphContextResult;
   /**
+   * What this run's RTK shell-output filtering produced (Issue #2383, part of
+   * #2328).
+   *
+   * Set by the execute phase for the same reason as {@link codegraphContext}:
+   * the trial's figures — the switch setting, the status, and the tokens the
+   * filter saved — are read after the run by a reader with no handle on the
+   * phase body.
+   */
+  rtkOutput?: RtkOutputResult;
+  /**
    * The PR this run raised or recovered (Issue #4325): set by the
    * completion phase so the run outcome can name it at claim release.
    */
@@ -456,6 +467,13 @@ export interface WorkOnIssueResult {
    * the query tally is final. Carried to the post-run callback context.
    */
   codegraph?: CodegraphContextResult;
+  /**
+   * What this run's RTK preparation decided (Issue #2386, part of #2328),
+   * read from {@link PhaseState.rtkOutput} once the run is over so the
+   * saved-token figure is the recorded one. Carried to the post-run callback
+   * context; absent on a run that ended before the preparation.
+   */
+  rtk?: RtkOutputResult;
 }
 
 /**

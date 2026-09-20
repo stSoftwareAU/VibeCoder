@@ -324,6 +324,7 @@ import {
   codegraphNotRun,
   invokeCycleCallback,
   invokeRunCallbacks,
+  rtkNotRun,
 } from "./run_callbacks.ts";
 import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
 import {
@@ -1872,6 +1873,10 @@ export async function createProductionRunCoreDeps(
             // Issue #2160: the trial switch, so PR feedback on an enabled
             // host is offered the same repo-context index the issue runs get.
             codegraphContextEnabled: config.codegraphContext.enabled,
+            // Issue #2384: the RTK switch rides beside it, so this path
+            // condenses its Bash output on the same enabled host the issue
+            // runs do.
+            rtkOutputEnabled: config.rtkOutput.enabled,
             workerId,
             // Issue #185: lets the escape-hatch verifier recognise a follow-up
             // the worker filed under its own login as trusted.
@@ -2095,6 +2100,10 @@ export async function createProductionRunCoreDeps(
             // Issue #2160: the trial switch, so a CI fix on an enabled host
             // is offered the same repo-context index the issue runs get.
             codegraphContextEnabled: config.codegraphContext.enabled,
+            // Issue #2384: the RTK switch rides beside it, so this path
+            // condenses its Bash output on the same enabled host the issue
+            // runs do.
+            rtkOutputEnabled: config.rtkOutput.enabled,
             // Issue #3582: cap auto-fix attempts per stable failure signature.
             maxAutoFixAttempts: resolveMaxAutoFixAttempts(config, check.repo),
             // Issue #580: the retry counters live on the work volume, not on
@@ -3994,6 +4003,9 @@ export async function createProductionRunCoreDeps(
           ...(result.codegraph && !isExpectedSkip
             ? { codegraph: result.codegraph }
             : {}),
+          // The RTK outcome for the same callbacks (Issue #2386); a skip
+          // never reached the preparation, so it reports none.
+          ...(result.rtk && !isExpectedSkip ? { rtk: result.rtk } : {}),
         },
       };
     },
@@ -4390,6 +4402,10 @@ export async function createProductionRunCoreDeps(
           ...run,
           codegraph: run.codegraph ??
             codegraphNotRun(config.codegraphContext.enabled),
+          // Issue #2386: and RTK's, for the same reason — a run that carried
+          // no outcome states the host's real switch, never a fabricated
+          // `enabled: false`.
+          rtk: run.rtk ?? rtkNotRun(config.rtkOutput.enabled),
         }, {
           runId: getRunId(),
           host: Deno.hostname(),

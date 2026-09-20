@@ -65,6 +65,12 @@ import {
 import { isGraftContextEnabled } from "./graft_context_config.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { type CodegraphRun, prepareCodegraphRun } from "./codegraph_run.ts";
+import {
+  type RtkOutputResult,
+  type RtkRun,
+  settingsJsonOption,
+} from "./rtk_output.ts";
+import { buildRtkStatsLine } from "./issue_run_stats_comment.ts";
 import { bindGraftRun, type GraftRun } from "./graft_run.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
@@ -172,6 +178,12 @@ export interface PlanningResult {
    * with `queries` summed across every planning invocation the run made.
    */
   codegraphContext?: CodegraphContextResult;
+  /**
+   * What this run's RTK output filter did (Issue #2384, part of #2328), with
+   * `savedTokens` covering every planning invocation the run made: each is
+   * measured from the one baseline the preparation took.
+   */
+  rtkOutput?: RtkOutputResult;
 }
 
 /** Options for the planning processor. */
@@ -1288,7 +1300,8 @@ export async function processIssuePlanning(
   const graftSlot: GraftContextSlot = {};
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every one of them carries it (Issue #2159).
-  const codegraphCarrier: { codegraphContext?: CodegraphContextResult } = {};
+  // The RTK outcome rides the same carrier (Issue #2384).
+  const codegraphCarrier: PlanningRunCarrier = {};
   try {
     const result = await _processPlanningWithHeartbeat(
       ctx,
@@ -1305,12 +1318,18 @@ export async function processIssuePlanning(
     // Issue #2103: the shared carrier — one shape for all four processors;
     // the CodeGraph facts ride the same result (Issue #2159).
     const withGraft = withGraftContext(result, graftSlot);
-    return withGraft.ok && codegraphCarrier.codegraphContext
+    return withGraft.ok &&
+        (codegraphCarrier.codegraphContext || codegraphCarrier.rtkOutput)
       ? {
         ok: true,
         value: {
           ...withGraft.value,
-          codegraphContext: codegraphCarrier.codegraphContext,
+          ...(codegraphCarrier.codegraphContext
+            ? { codegraphContext: codegraphCarrier.codegraphContext }
+            : {}),
+          ...(codegraphCarrier.rtkOutput
+            ? { rtkOutput: codegraphCarrier.rtkOutput }
+            : {}),
         },
       }
       : withGraft;
@@ -1326,6 +1345,13 @@ export async function processIssuePlanning(
   }
 }
 
+/** What the body hands back to every one of its return paths. */
+interface PlanningRunCarrier {
+  codegraphContext?: CodegraphContextResult;
+  /** Issue #2384: `record()` writes `savedTokens` into this same object. */
+  rtkOutput?: RtkOutputResult;
+}
+
 /**
  * Inner planning processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
@@ -1334,7 +1360,7 @@ async function _processPlanningWithHeartbeat(
   ctx: IssueContext,
   processorDeps: PlanningProcessorDeps,
   graftSlot: GraftContextSlot,
-  codegraphCarrier: { codegraphContext?: CodegraphContextResult },
+  codegraphCarrier: PlanningRunCarrier,
 ): Promise<Result<PlanningResult>> {
   const env = processorDeps.env ?? processEnvLookup;
   const {
@@ -1630,12 +1656,34 @@ async function _processPlanningWithHeartbeat(
   /** The `mcpConfig` every planning invocation gets: absent unless indexed. */
   const codegraphMcpOption = graft.mcpConfigOption(codegraph.mcpConfig());
 
+  // --- RTK shell-output filtering (Issue #2384, part of #2328) ---
+  // Installed per spawn, so nothing is written to `~/.claude/settings.json` —
+  // which is also why it has to be handed to EVERY invocation below: each is
+  // its own process with its own argv, and one left out would run unfiltered.
+  // Prepared once for the round, like the index above, so the saved-token
+  // figure is measured from one baseline. No invocation here passes a provider
+  // selector, so all of them name the run's active provider. Off — or on a
+  // provider that takes no hooks — this spawns nothing and every argv and
+  // prompt is the one it always was; losing RTK never fails the round.
+  const rtk = await deps.claude.prepareRtkRun({
+    enabled: config.rtkOutput.enabled,
+    providerId: deps.claude.rtkProviderId(undefined, logger),
+    logger,
+    cwd: repoDir,
+  });
+  codegraphCarrier.rtkOutput = rtk.result;
+  /** The `settingsJson` every planning invocation gets: absent unless wired. */
+  const rtkSettingsOption = settingsJsonOption(undefined, rtk.hookSettings());
+
   // --- Turn 1: draft the plan as text only ---
   const draftResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/planning/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: graft.applyPrompt(codegraph.applyPrompt(prompt)),
+      // RTK's line goes outermost, so it is the last thing the agent reads.
+      prompt: rtk.applyPrompt(
+        graft.applyPrompt(codegraph.applyPrompt(prompt)),
+      ),
       systemPrompt,
       timeoutSeconds: config.planningTimeout,
       killAfterSeconds: config.planningKillAfter,
@@ -1645,11 +1693,15 @@ async function _processPlanningWithHeartbeat(
       sessionResumeState: sessionState,
       ...autocompactOption,
       ...codegraphMcpOption,
+      ...rtkSettingsOption,
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  // Issue #2384: re-read after every invocation, success or not — the hook
+  // ran either way — so the figure covers the whole round. Never throws.
+  await rtk.record();
 
   // Determine whether the draft stage produced a usable draft. A failure,
   // timeout, or empty draft is non-fatal: the publish stage falls back to a
@@ -1719,6 +1771,7 @@ async function _processPlanningWithHeartbeat(
         env,
         codegraph,
         graft,
+        rtk,
       );
     }
   }
@@ -1790,7 +1843,9 @@ async function _processPlanningWithHeartbeat(
 
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt: graft.applyPrompt(codegraph.applyPrompt(publishPrompt)),
+      prompt: rtk.applyPrompt(
+        graft.applyPrompt(codegraph.applyPrompt(publishPrompt)),
+      ),
       systemPrompt: publishSystemPrompt,
       timeoutSeconds: config.planningTimeout,
       killAfterSeconds: config.planningKillAfter,
@@ -1800,11 +1855,13 @@ async function _processPlanningWithHeartbeat(
       sessionResumeState: publishSessionState,
       ...autocompactOption,
       ...codegraphMcpOption,
+      ...rtkSettingsOption,
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  await rtk.record();
 
   if (!claudeResult.ok) {
     // Handle failure — post feedback and manage labels
@@ -1818,6 +1875,7 @@ async function _processPlanningWithHeartbeat(
       logger,
       ghClient,
       invocations,
+      rtk.result,
     );
     return {
       ok: false,
@@ -1855,6 +1913,7 @@ async function _processPlanningWithHeartbeat(
       logger,
       ghClient,
       invocations,
+      rtk.result,
     );
     return {
       ok: false,
@@ -1942,7 +2001,9 @@ async function _processPlanningWithHeartbeat(
 
     const retryResult = await deps.claude.runClaudeWithRetry(
       {
-        prompt: graft.applyPrompt(codegraph.applyPrompt(retryPrompt)),
+        prompt: rtk.applyPrompt(
+          graft.applyPrompt(codegraph.applyPrompt(retryPrompt)),
+        ),
         timeoutSeconds: config.planningTimeout,
         killAfterSeconds: config.planningKillAfter,
         model: config.claudeModel || undefined,
@@ -1950,11 +2011,13 @@ async function _processPlanningWithHeartbeat(
         cwd: config.workDir,
         logger,
         ...codegraphMcpOption,
+        ...rtkSettingsOption,
       },
       {
         maxRetries: config.maxRateLimitRetries,
       },
     );
+    await rtk.record();
 
     if (retryResult.ok) {
       recordInvocation(invocations, retryResult.value, codegraph, graft);
@@ -2038,6 +2101,7 @@ async function _processPlanningWithHeartbeat(
     env,
     codegraph,
     graft,
+    rtk,
   );
 }
 
@@ -2124,6 +2188,14 @@ function buildRunStats(
   invocations: PlanningInvocationStats[],
   configuredBestModel?: string,
   gate?: FailureDetectionGateStats,
+  /**
+   * What the round's RTK preparation produced (Issue #2385). Appended to the
+   * section as its own status line — `off` included, so the trial separates
+   * enabled rounds from control rounds by reading the parent alone. A round
+   * with nothing else to report stays silent: the line never makes a
+   * stats-free round worth a comment, the rule the issue path follows.
+   */
+  rtk?: RtkOutputResult,
 ): { verdict: DegradationVerdict; section: string } {
   const report = buildDegradationReport({
     invocations,
@@ -2131,7 +2203,10 @@ function buildRunStats(
     phase: "planning",
     ...(gate ? { gate } : {}),
   });
-  return { verdict: report.verdict, section: report.section };
+  const section = rtk && report.section.trim() !== ""
+    ? `${report.section.trimEnd()}\n${buildRtkStatsLine(rtk)}\n`
+    : report.section;
+  return { verdict: report.verdict, section };
 }
 
 /**
@@ -2211,14 +2286,41 @@ async function closePlanningIssue(
    * beside CodeGraph's for the same reason. Absent on the same paths.
    */
   graft?: GraftRun,
+  /**
+   * The run's RTK hook (Issue #2384), handed to both self-repair invocations
+   * below for the same reason: each is its own spawn, and one without
+   * `--settings` would run unfiltered. Absent on the same recovery paths.
+   */
+  rtk?: RtkRun,
 ): Promise<Result<PlanningResult>> {
   const codegraphMcpOption = graft
     ? graft.mcpConfigOption(codegraph?.mcpConfig())
     : (codegraph?.mcpConfigOption() ?? {});
-  /** Both repo-context lines, each only when its run was wired. */
+  const rtkSettingsOption = settingsJsonOption(undefined, rtk?.hookSettings());
+  /** Every run-conditional line, each only when its run was wired. */
   const applyRepoContext = (prompt: string): string => {
     const withCodegraph = codegraph ? codegraph.applyPrompt(prompt) : prompt;
-    return graft ? graft.applyPrompt(withCodegraph) : withCodegraph;
+    const withGraft = graft ? graft.applyPrompt(withCodegraph) : withCodegraph;
+    // RTK's line goes outermost, as on every other planning invocation.
+    return rtk ? rtk.applyPrompt(withGraft) : withGraft;
+  };
+  /** One self-repair spawn, with the run's saved-token figure re-read after. */
+  const runRepairClaude = async (repairPrompt: string) => {
+    const repairResult = await deps.claude.runClaudeWithRetry(
+      {
+        prompt: applyRepoContext(repairPrompt),
+        timeoutSeconds: config.planningTimeout,
+        killAfterSeconds: config.planningKillAfter,
+        phase: "planning",
+        cwd: config.workDir,
+        logger,
+        ...codegraphMcpOption,
+        ...rtkSettingsOption,
+      },
+      { maxRetries: config.maxRateLimitRetries },
+    );
+    await rtk?.record();
+    return repairResult;
   };
   // Sub-issue numbers the run created — resolved once and reused below.
   // Issue #2900: union the text-extracted URLs with the parent's *native*
@@ -2308,19 +2410,7 @@ async function closePlanningIssue(
           ? { deadlineMs: handlerDeadlineEpochMs }
           : {}),
         ghCommandFn: deps.github.runGhCommand,
-        runClaude: (repairPrompt: string) =>
-          deps.claude.runClaudeWithRetry(
-            {
-              prompt: applyRepoContext(repairPrompt),
-              timeoutSeconds: config.planningTimeout,
-              killAfterSeconds: config.planningKillAfter,
-              phase: "planning",
-              cwd: config.workDir,
-              logger,
-              ...codegraphMcpOption,
-            },
-            { maxRetries: config.maxRateLimitRetries },
-          ),
+        runClaude: runRepairClaude,
         logger,
       });
       gateStats.repairDurationMs = Date.now() - repairStartedAt;
@@ -2453,19 +2543,7 @@ async function closePlanningIssue(
         subIssueNumbers: textSubIssueNumbers,
         verdict: coverageVerdict,
         ghCommandFn: deps.github.runGhCommand,
-        runClaude: (repairPrompt: string) =>
-          deps.claude.runClaudeWithRetry(
-            {
-              prompt: applyRepoContext(repairPrompt),
-              timeoutSeconds: config.planningTimeout,
-              killAfterSeconds: config.planningKillAfter,
-              phase: "planning",
-              cwd: config.workDir,
-              logger,
-              ...codegraphMcpOption,
-            },
-            { maxRetries: config.maxRateLimitRetries },
-          ),
+        runClaude: runRepairClaude,
         postComment: (body: string) =>
           ghClient.postComment(repo, issueNumber, body),
         logger,
@@ -2617,6 +2695,7 @@ async function closePlanningIssue(
     invocations,
     resolveConfiguredBestPlanningModel(config, repo),
     gateStats,
+    rtk?.result,
   );
 
   // Issue #2995 (part of #2993): carrier safety net. When the run ends with
@@ -3021,6 +3100,8 @@ async function handlePlanningFailure(
   logger: Logger,
   ghClient: PlanningProcessorDeps["ghClient"],
   invocations: PlanningInvocationStats[] = [],
+  /** The round's RTK outcome, for the stats it posts (Issue #2385). */
+  rtk?: RtkOutputResult,
 ): Promise<void> {
   try {
     await deps.github.handleIssueFailure({
@@ -3049,6 +3130,8 @@ async function handlePlanningFailure(
   const { section } = buildRunStats(
     invocations,
     resolveConfiguredBestPlanningModel(config, repo),
+    undefined,
+    rtk,
   );
   await postStatsComment(repo, issueNumber, section, ghClient, logger);
 

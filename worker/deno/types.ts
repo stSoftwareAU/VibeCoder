@@ -469,6 +469,13 @@ export interface WorkerConfig {
    */
   codegraphContext: CodegraphContextConfig;
   /**
+   * The RTK output switch, read from the `.config.json` `rtk_output` block
+   * (Issue #2380, part of #2328) and validated by `parseRtkOutput()` in
+   * `lib/rtk_output_config.ts`. Off unless the host asks for it, so an
+   * unconfigured host is unchanged.
+   */
+  rtkOutput: RtkOutputConfig;
+  /**
    * Cache TTL in seconds for the issue-timeline cache (Issue #1673).
    * Used by label-authorship checks (`wasLabelAddedByAllowedAuthor`,
    * `getLabelLastAddInfo`). Defaults to 300 seconds (5 minutes).
@@ -635,6 +642,17 @@ export interface GitHubComment {
  */
 export interface CodegraphContextConfig {
   /** Whether a run indexes the repository with CodeGraph (default: false). */
+  enabled: boolean;
+}
+
+/**
+ * The RTK output switch as the worker reads it (Issue #2380, part of #2328).
+ *
+ * Parsed from the `.config.json` `rtk_output` block by `parseRtkOutput()` in
+ * `lib/rtk_output_config.ts`.
+ */
+export interface RtkOutputConfig {
+  /** Whether a run offers the agent RTK output shaping (default: false). */
   enabled: boolean;
 }
 
@@ -1344,6 +1362,13 @@ export interface ConfigFile {
    * a {@link CodegraphContextConfig} or fails the config load.
    */
   codegraph_context?: unknown;
+  /**
+   * Raw `rtk_output` block (Issue #2380). Typed `unknown` because it is
+   * operator-written JSON: `parseRtkOutput()` in `lib/rtk_output_config.ts` is
+   * the trust boundary that turns it into a {@link RtkOutputConfig} or fails
+   * the config load.
+   */
+  rtk_output?: unknown;
   /** Cache TTL in seconds for the issue-timeline cache (Issue #1673) */
   timeline_cache_ttl_seconds?: number;
   /** Whether to enable CLI session resume across phases (Issue #1324) */

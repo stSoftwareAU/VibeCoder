@@ -874,3 +874,45 @@ Deno.test("handle_no_changes_phase - the already-resolved close reports the run'
     "- **CodeGraph:** ok — index 3.5 s, 1,200 nodes, 3,400 relationships, 2 queries",
   );
 });
+
+Deno.test("handle_no_changes_phase - the already-resolved close reports the run's RTK status (Issue #2385)", async () => {
+  // The worker closes the issue itself here, so this wrap-up is the run's only
+  // chance to report its RTK status — an early close must not be a hole in the
+  // trial's data.
+  const calls = makeStubGhCalls();
+  const ctx = makeContext({ untrustedImages: [] });
+  const state = makeState({
+    claudeOutput: "A".repeat(200) +
+      "\nThis has already been fixed. No code change was required.\n" +
+      '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+      'verified="read the code on the default branch" -->',
+    claudeRunStats: [{
+      runStats: {
+        servedModels: ["claude-opus-4-8"],
+        requestedModel: "opus",
+        wallClockMs: 5_000,
+        tokenUsage: {
+          inputTokens: 4_000,
+          outputTokens: 8_000,
+          cacheCreationTokens: 500,
+          cacheReadTokens: 250,
+        },
+      },
+    }],
+    rtkOutput: { status: "ok", enabled: true, savedTokens: 2500 },
+  });
+  const deps = createMockDeps({
+    github: { createClient: () => makeStubGhClient(calls) },
+  });
+
+  await workOnIssueHandleNoChanges(ctx, state, deps);
+
+  const stats = calls.postComment.find((c) =>
+    c.body.includes(ISSUE_RUN_STATS_MARKER)
+  );
+  assert(stats, "expected a run-stats comment on the closed issue");
+  assertEquals(
+    stats.body.split("\n").filter((line) => line.startsWith("- **RTK:**")),
+    ["- **RTK:** ok — 2,500 tokens saved"],
+  );
+});

@@ -34,6 +34,7 @@ import {
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
+import { type RtkOutputResult, settingsJsonOption } from "./rtk_output.ts";
 import { bindGraftRun } from "./graft_run.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
@@ -122,6 +123,14 @@ export interface PrFeedbackResult {
    * trial reads a failed run's figure from.
    */
   codegraphContext?: CodegraphContextResult;
+  /**
+   * What this run's RTK output filter did (Issue #2384, part of #2328).
+   *
+   * Present on every **successful** outcome reached after the preparation,
+   * for the same reason as {@link codegraphContext}, carrying `savedTokens`
+   * once the gain store was read a second time.
+   */
+  rtkOutput?: RtkOutputResult;
 }
 
 /** Dependencies specific to the feedback processor. */
@@ -171,6 +180,16 @@ export interface PrFeedbackProcessorDeps {
    * byte-identical to a run from before the trial existed.
    */
   codegraphContextEnabled?: boolean;
+  /**
+   * Whether to condense the run's Bash output with RTK (Issue #2384, part of
+   * #2328, default: false).
+   *
+   * Threaded from `config.rtkOutput.enabled` by the same production wiring
+   * site that supplies {@link codegraphContextEnabled}. Off, the run spawns
+   * nothing and its argv and prompt are byte-identical to a run from before
+   * the trial existed.
+   */
+  rtkOutputEnabled?: boolean;
   /** Maximum token count for comment bodies before summarisation. */
   maxCommentTokens?: number;
   /** Claude timeout in seconds. */
@@ -485,7 +504,8 @@ export async function processPrFeedback(
   const graftSlot: GraftContextSlot = {};
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every successful one carries it (Issue #2160).
-  const carrier: { codegraphContext?: CodegraphContextResult } = {};
+  // The RTK outcome rides the same carrier (Issue #2384).
+  const carrier: FeedbackRunCarrier = {};
   try {
     const result = await _processFeedbackWithHeartbeat(
       input,
@@ -494,18 +514,28 @@ export async function processPrFeedback(
       carrier,
     );
     const withGraft = withGraftContext(result, graftSlot);
-    return withGraft.ok && carrier.codegraphContext
+    return withGraft.ok && (carrier.codegraphContext || carrier.rtkOutput)
       ? {
         ok: true,
         value: {
           ...withGraft.value,
-          codegraphContext: carrier.codegraphContext,
+          ...(carrier.codegraphContext
+            ? { codegraphContext: carrier.codegraphContext }
+            : {}),
+          ...(carrier.rtkOutput ? { rtkOutput: carrier.rtkOutput } : {}),
         },
       }
       : withGraft;
   } finally {
     await stopHeartbeat(heartbeatHandle);
   }
+}
+
+/** What the body hands back to every one of its successful return paths. */
+interface FeedbackRunCarrier {
+  codegraphContext?: CodegraphContextResult;
+  /** Issue #2384: `record()` writes `savedTokens` into this same object. */
+  rtkOutput?: RtkOutputResult;
 }
 
 /**
@@ -516,7 +546,7 @@ async function _processFeedbackWithHeartbeat(
   input: PrFeedbackInput,
   processorDeps: PrFeedbackProcessorDeps,
   graftSlot: GraftContextSlot,
-  carrier: { codegraphContext?: CodegraphContextResult },
+  carrier: FeedbackRunCarrier,
 ): Promise<Result<PrFeedbackResult>> {
   const { repo, prNumber, commentType, commentId, commentBody } = input;
   const {
@@ -530,6 +560,7 @@ async function _processFeedbackWithHeartbeat(
     maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
     trustedReviewBots,
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
+    rtkOutputEnabled = OPERATIONAL_DEFAULTS.rtkOutput.enabled,
   } = processorDeps;
 
   // Summarise large comments
@@ -676,12 +707,29 @@ async function _processFeedbackWithHeartbeat(
     logger,
   });
 
+  // --- RTK shell-output filtering (Issue #2384, part of #2328) ---
+  // Installed per spawn, so nothing is written to `~/.claude/settings.json`.
+  // The invocation below passes no provider selector, so both name the run's
+  // active provider. Off — or on a provider that takes no hooks — this spawns
+  // nothing and the argv and prompt are the ones they always were; the hook
+  // and its prompt line travel together, and losing RTK never fails the run.
+  const rtk = await deps.claude.prepareRtkRun({
+    enabled: rtkOutputEnabled,
+    providerId: deps.claude.rtkProviderId(undefined, logger),
+    logger,
+    cwd: processorDeps.workDir,
+  });
+  carrier.rtkOutput = rtk.result;
+
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
       // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
       // run-conditional, so the template stays the same on every host.
-      prompt: graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
+      // RTK's line goes outermost, so it is the last thing the agent reads.
+      prompt: rtk.applyPrompt(
+        graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
+      ),
       systemPrompt,
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
@@ -691,6 +739,9 @@ async function _processFeedbackWithHeartbeat(
       // Absent unless the index built, so a switched-off run writes no MCP
       // configuration at all — exactly as before.
       ...graft.mcpConfigOption(codegraph.mcpConfig()),
+      // Issue #2384: absent unless RTK's hook is installed, so every other
+      // run spawns the argv it always did.
+      ...settingsJsonOption(undefined, rtk.hookSettings()),
     },
     {
       maxRetries: maxRateLimitRetries,
@@ -698,6 +749,9 @@ async function _processFeedbackWithHeartbeat(
   );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
+  // Issue #2384: the saved-token figure, read whether or not the invocation
+  // succeeded — the hook ran either way. Never throws.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     // Handle failure — report via comment failure handler
