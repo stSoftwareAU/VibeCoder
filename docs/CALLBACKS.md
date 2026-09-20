@@ -592,9 +592,12 @@ RTK was prepared — a refused claim, an early exit — on a switched-on host
 reports `{ "enabled": true, "status": "off" }`, never a fabricated `false`,
 because the trial separates enabled runs from control runs by this block alone
 (the rule the `graft` block follows, Issue #2104). `status: "off"` beside
-`enabled: false` is a host with the switch off. A run kind that carries no RTK
-outcome to the callbacks at all falls back to
-`{ "enabled": false, "status": "off" }`. `failed` means the switch was on and the run got no
+`enabled: false` is a host with the switch off. A run that reaches the
+callbacks carrying no RTK outcome at all — it threw, or the cycle drained first
+— says the same thing (`rtkNotRun`): the host's real switch and
+`"status": "off"`. It does not say `failed`, as the `codegraph` block's
+equivalent does, because for RTK `failed` means the preflight ran and the
+binary was missing — a host fault to act on. `failed` means the switch was on and the run got no
 filtering, and `unsupported` that the provider takes no hook. `savedTokens` is
 RTK's **own indicative figure**, read from a tracking store that concurrent
 lanes share, so a neighbour can inflate it: read the trial from the run's token

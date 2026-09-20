@@ -324,6 +324,7 @@ import {
   codegraphNotRun,
   invokeCycleCallback,
   invokeRunCallbacks,
+  rtkNotRun,
 } from "./run_callbacks.ts";
 import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
 import {
@@ -4388,6 +4389,10 @@ export async function createProductionRunCoreDeps(
           ...run,
           codegraph: run.codegraph ??
             codegraphNotRun(config.codegraphContext.enabled),
+          // Issue #2386: and RTK's, for the same reason — a run that carried
+          // no outcome states the host's real switch, never a fabricated
+          // `enabled: false`.
+          rtk: run.rtk ?? rtkNotRun(config.rtkOutput.enabled),
         }, {
           runId: getRunId(),
           host: Deno.hostname(),

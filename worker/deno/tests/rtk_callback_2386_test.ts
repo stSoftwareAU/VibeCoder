@@ -27,6 +27,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   buildCallbackContextDocument,
   buildCallbackEnv,
+  rtkNotRun,
   type TerminalIssueRun,
 } from "../lib/run_callbacks.ts";
 import { buildIssueRunCallbackContext } from "../lib/run_callback_context.ts";
@@ -193,3 +194,14 @@ for (const enabled of [true, false]) {
     },
   });
 }
+
+// A run that reaches the callbacks carrying no RTK outcome at all — a thrown
+// run, a shutdown drain — used to fall back to `{ enabled: false }` whatever
+// the host's switch. CodeGraph's block already has a truthful fallback at the
+// same site (`codegraphNotRun`, #2162); this is RTK's.
+Deno.test("#2386 - a run that recorded no RTK outcome still states the host's real switch", () => {
+  assertEquals(rtkNotRun(true), { enabled: true, status: "off" });
+  assertEquals(rtkNotRun(false), { enabled: false, status: "off" });
+  // The fallback is only ever a fallback: it carries no figure.
+  assertEquals("savedTokens" in rtkNotRun(true), false);
+});

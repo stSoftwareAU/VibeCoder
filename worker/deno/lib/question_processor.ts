@@ -604,6 +604,10 @@ async function _processQuestionWithHeartbeat(
       ...(carrier.codegraphContext
         ? { codegraph: carrier.codegraphContext }
         : {}),
+      // Issue #2385: and the RTK status, on the same comment. Present on every
+      // round — `off` included — so the trial separates enabled rounds from
+      // control rounds by reading the comment alone.
+      ...(carrier.rtkOutput ? { rtk: carrier.rtkOutput } : {}),
     });
   } catch (err) {
     logger.warn("Question degraded-model detection failed (non-fatal)", {
