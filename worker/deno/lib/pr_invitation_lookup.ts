@@ -200,6 +200,52 @@ async function fetchInvitationListing(
   }
 }
 
+/** Cache key `fetchAllOpenPRs` (`issue_query.ts`) files its listing under. */
+const ALL_OPEN_PRS_CACHE_KEY = "prs_open_all";
+
+/** That listing's default page size: a full page may have been cut short. */
+const ALL_OPEN_PRS_PAGE_SIZE = 50;
+
+/**
+ * The lower-cased logins that author an open PR in `repo`, when the cycle's
+ * cached open-PR listing **proves** the set is complete (Issue #2409).
+ *
+ * One `pr list --author` per trusted human per repository ran on every
+ * cache-expiry cycle — 40 calls on a 20-repository host — to learn, nearly
+ * every time, that the human has no open PR there. The scan has already
+ * listed the repository's open PRs with their authors.
+ *
+ * The set is only ever used to **skip** a listing, so every doubt returns
+ * `null` and the caller asks GitHub as before: no cache, nothing cached, a
+ * value that is not a listing, a row whose author is unknown, or a full page
+ * that may have been truncated. It reads the cache and never fetches, so it
+ * cannot add a call of its own.
+ */
+async function provenOpenPrAuthors(
+  repo: string,
+  cache: IssueCache | undefined,
+): Promise<Set<string> | null> {
+  if (!cache) return null;
+  let rows: unknown;
+  try {
+    rows = await cache.read<unknown[]>(repo, ALL_OPEN_PRS_CACHE_KEY);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(rows) || rows.length >= ALL_OPEN_PRS_PAGE_SIZE) {
+    return null;
+  }
+  const authors = new Set<string>();
+  for (const row of rows) {
+    const login = row !== null && typeof row === "object"
+      ? (row as { authorLogin?: unknown }).authorLogin
+      : undefined;
+    if (typeof login !== "string" || login.trim() === "") return null;
+    authors.add(login.trim().toLowerCase());
+  }
+  return authors;
+}
+
 export async function listInvitedHumanPrs<T extends { number: number }>(
   options: ListInvitedHumanPrsOptions,
 ): Promise<T[]> {
@@ -211,8 +257,14 @@ export async function listInvitedHumanPrs<T extends { number: number }>(
   const fields = mergeFields(options.fields);
   const admitted: T[] = [];
   const seen = new Set<number>();
+  const openAuthors = await provenOpenPrAuthors(repo, options.cache);
 
   for (const author of humans) {
+    // Issue #2409: the cycle's own open-PR listing already says this human
+    // has no open PR here, so there is nothing to ask GitHub about.
+    if (openAuthors !== null && !openAuthors.has(author.toLowerCase())) {
+      continue;
+    }
     // Issue #41: served once per cycle from the cache when one is supplied,
     // fetched with the fixed superset so every scan reads the fields it needs.
     const cacheKey = `prs_invited_${author}`;
