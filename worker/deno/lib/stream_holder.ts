@@ -70,7 +70,8 @@ import {
 /**
  * How long a non-holder waits before claiming a milestone stream's issue.
  *
- * Ten scans at the 30-second default — long enough for a holder finishing one
+ * Between two and three scans at the 120 s default (Issue #2446) — long enough
+ * for a holder finishing one
  * sub-issue to pick up the next, short enough that a host that has genuinely
  * gone away costs the milestone five minutes and not a cycle.
  */

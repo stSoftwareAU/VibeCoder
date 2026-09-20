@@ -404,7 +404,7 @@ export async function findOldestIssue(
   // attempt is skipped whole, every tier alike. A child run cannot cut its
   // branch while the milestone branch is behind the default branch, so
   // claiming one of the milestone's issues would claim it, defer it and
-  // comment on it again on every 30-second cycle. The pacing is read from the
+  // comment on it again on every scan cycle. The pacing is read from the
   // local ledger — no API call.
   const applyMilestonePacing = (
     candidates: IssueCandidate[],

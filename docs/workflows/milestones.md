@@ -226,7 +226,7 @@ Long-running milestones can drift significantly from the default branch, causing
 ### How it works
 
 1. **Milestone detection:** For each configured repo, the worker takes **every open milestone** — except an `idle-task:` one, which never carries a branch (Issue #2125). The closed-issue query that once decided whether work had "started" is gone (Issue #1776): a milestone that has completed nothing still drifts, and it was exactly the branch nobody was watching.
-2. **Cadence guard:** One `git rev-parse origin/<default>` per repo, compared against the tip each branch was last **successfully** synced against (`lastSyncedDefaultSha` in `milestone_sync_failures.json`). A branch already carrying that tip is skipped with `default tip unchanged`; anything else syncs on that cycle, which on a 30-second loop means within 30 seconds of a push to the default branch. A tip git cannot report is logged and synced — never read as "unchanged".
+2. **Cadence guard:** One `git rev-parse origin/<default>` per repo, compared against the tip each branch was last **successfully** synced against (`lastSyncedDefaultSha` in `milestone_sync_failures.json`). A branch already carrying that tip is skipped with `default tip unchanged`; anything else syncs on that cycle, which on the default 120-second loop means within two minutes of a push to the default branch. A tip git cannot report is logged and synced — never read as "unchanged".
 
    ```mermaid
    flowchart TD

@@ -3656,7 +3656,7 @@ export async function createProductionRunCoreDeps(
     // Issue #375: the floor's deferral gets a memory, so a host whose cycle
     // can never satisfy it stops stranding the issue for ever. Counted per
     // *cycle* — `resolveRunId()` is stable for the whole run — because a slot
-    // re-scans every 30 s.
+    // re-scans repeatedly within it.
     recordAdaptiveFloorDeferral: (key: string) =>
       recordAdaptiveFloorDeferral({
         statePath: adaptiveFloorStatePath(workDir),

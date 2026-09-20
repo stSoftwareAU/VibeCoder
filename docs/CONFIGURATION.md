@@ -2003,7 +2003,8 @@ strand that reads as a passing deferral is the same failure shape as
 Issue #319.
 
 So the deferral has a memory. The worker counts the consecutive **cycles**
-(not scans — a slot re-scans every 30 s) that the floor deferred one issue in
+(not scans — a slot re-scans every `sleep_interval`) that the floor deferred one
+issue in
 `adaptive_floor_deferrals.json` under the work directory. On the third it
 yields: the issue is claimed on whatever runway is left, and the hard-cap kill
 commits and pushes its WIP for the next run to resume — the last stage of
@@ -3473,7 +3474,8 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   milestone title's `#<N>` head. The marker is rewritten in place on every run,
   so a stream keeps exactly one live marker however long it lasts. A host that
   is **not** the recorded holder defers that stream's eligible issue for
-  `STREAM_AFFINITY_GRACE_SECONDS` (300 s — ten scans at the 30-second default),
+  `STREAM_AFFINITY_GRACE_SECONDS` (300 s — between two and three scans at the
+  120 s default),
   measured from its own first sighting of the issue, and logs the countdown
   once as `stream affinity: deferring <stream> to <host> (<n>s left)`. After
   the grace the first other host to scan claims it, logs

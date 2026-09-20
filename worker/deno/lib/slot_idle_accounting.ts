@@ -200,7 +200,7 @@ export class SlotIdleLedger {
 
   /**
    * Record what a slot is doing from `nowMs`. Repeating the current
-   * activity is a no-op, so a slot that re-scans every 30 seconds keeps one
+   * activity is a no-op, so a slot that re-scans on every cycle keeps one
    * continuous idle span rather than a hundred fragments.
    */
   setSlotActivity(

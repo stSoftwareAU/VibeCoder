@@ -1036,7 +1036,7 @@ log:
 ```
 
 The line is emitted when the verdict or the figures behind it change, not once
-per 30-second cycle per slot — the state is what an operator needs, and
+per scan cycle per slot — the state is what an operator needs, and
 repeating one sentence thousands of times over an engaged week buries it. A
 probe that fails, or a response carrying no seven-day window, logs one
 `claude-week-pace: unknown` WARNING and leaves **every** tier eligible — a
