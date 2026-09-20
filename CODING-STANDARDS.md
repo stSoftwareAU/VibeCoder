@@ -487,6 +487,20 @@ locally with `deno task test:integration` when your change touches a script
 they drive. A green quality run therefore says nothing about those suites, and
 is not meant to.
 
+**A green gate says nothing; a red one says everything** (Issue #2430). The
+gate runs many times a day and its output is quoted back into review comments
+and agent prompts, so a line per passing test is paid for over and over — one
+green run here printed roughly 23,000 of them. A stage that passes prints at
+most its own summary line, and a stage that fails prints every failure in full:
+the test's name, the assertion message and the stack trace. Pass the runner's
+quiet or failures-only reporter (`deno test --reporter=dot`) rather than
+post-filtering the output, and check what that reporter prints on a failure
+before adopting it — one that also swallows the assertion message trades a
+token bill for a debugging one. Where the quietest reporter the runner accepts
+still marks each passing test, pair the flag with a trim in whatever collects
+the transcript: `unitTestPassTranscript` in `lib/unit_test_passes.ts` keeps a
+failing pass's output and drops a passing one's.
+
 **All quality checks MUST pass before creating a PR.** The worker runs
 `./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
 PR with failing quality checks — fix the failures first.
