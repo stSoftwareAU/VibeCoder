@@ -93,6 +93,7 @@ import type {
 import { claimRefusalReason } from "./issue_finder_logger.ts";
 import {
   fetchAllOpenPRs,
+  fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
@@ -4939,6 +4940,22 @@ export async function createProductionRunCoreDeps(
             } catch {
               mergedPRs = [];
             }
+            // Issue #2455: the repo's open milestones, read through the same
+            // `milestones_open_counts` cache entry the scan's
+            // `createOpenMilestoneLookup` uses — so the census can model the
+            // cross-milestone hold (Issue #2173) that kept refusing
+            // GRQ-AutoTrader#662 while the census called it claimable. Same
+            // best-effort contract as the PR fetches above: on failure the
+            // hold is not modelled, which at worst files an idle-task while
+            // work exists (bounded harm).
+            let openMilestones = new Set<string>();
+            try {
+              openMilestones = new Set(
+                (await fetchOpenMilestoneClosedCounts(repo, issueCache)).keys(),
+              );
+            } catch {
+              openMilestones = new Set<string>();
+            }
             return {
               repo,
               monitored: true,
@@ -5008,6 +5025,7 @@ export async function createProductionRunCoreDeps(
                   )
                   .map((i) => i.number),
               ),
+              openMilestones,
             };
           }),
         );
