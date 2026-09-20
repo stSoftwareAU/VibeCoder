@@ -2043,10 +2043,23 @@ Deno.test("config - an unknown key inside codegraph_context warns (Issue #2154)"
 // RTK output switch (Issue #2380, part of #2328)
 // ---------------------------------------------------------------------------
 
-Deno.test("config - rtk_output absent defaults to off (Issue #2380)", async () => {
+Deno.test("config - rtk_output absent defaults to on (Issue #2432)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.rtkOutput.enabled, true);
+  });
+});
+
+Deno.test("config - rtk_output enabled false is the per-host opt-out (Issue #2432)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    rtk_output: { enabled: false },
   };
 
   await withTempConfig(testConfig, async (configPath) => {

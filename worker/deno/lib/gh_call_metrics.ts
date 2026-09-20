@@ -464,8 +464,48 @@ export function classifyGhShape(args: readonly string[]): string {
   const route = head === "api"
     ? [restRoute(ghPositionalArgs(args)[1] ?? "")]
     : [];
-  const flags = [...new Set(ghFlagNames(args))].sort();
+  const fields = jsonFieldList(args);
+  const flags = [...new Set(ghFlagNames(args))].sort().map((flag) =>
+    flag === "--json" && fields !== undefined ? `--json=${fields}` : flag
+  );
   return [head, ...route, ...flags].join(" ").slice(0, MAX_SHAPE_CHARS);
+}
+
+/** Longest `--json` field list shown; a longer one keeps the bare flag. */
+const MAX_JSON_FIELDS_CHARS = 100;
+
+// A `--json` value the worker wrote itself: GraphQL field names, comma
+// separated. Anything else — a slash, a space, an `=` — is not a field list
+// and is never shown.
+const JSON_FIELD_LIST = /^[A-Za-z][A-Za-z0-9]*(?:,[A-Za-z][A-Za-z0-9]*)*$/;
+
+/**
+ * The `--json` field list of a `gh` invocation, when it is safe to show.
+ *
+ * `--json` is the one flag whose value is part of the call's *shape* rather
+ * than its subject: `issue view --json state` (a dependency check) and
+ * `issue view --json title,body,comments` (a content read) cost differently
+ * and are fixed differently, and with the bare flag the two are one line
+ * (Issue #2409). Every other flag's value stays out.
+ *
+ * @param args - Argument list passed to the `gh` binary.
+ * @returns The field list, or `undefined` when absent or not bare identifiers.
+ */
+function jsonFieldList(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]!;
+    if (token === "--") return undefined;
+    const value = token === "--json"
+      ? args[i + 1]
+      : token.startsWith("--json=")
+      ? token.slice("--json=".length)
+      : undefined;
+    if (value === undefined) continue;
+    return value.length <= MAX_JSON_FIELDS_CHARS && JSON_FIELD_LIST.test(value)
+      ? value
+      : undefined;
+  }
+  return undefined;
 }
 
 /** Record a cache hit (saved one `gh` call). */

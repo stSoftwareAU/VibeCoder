@@ -4,8 +4,8 @@
  *
  * One host-level switch, `rtk_output.enabled`, decides whether a run installs
  * the RTK `PreToolUse` Bash rewrite hook and tells the agent about it. It is
- * off by default, so a host that never mentions the block behaves exactly as
- * it does today.
+ * on by default (Issue #2432): a host that never mentions the block filters,
+ * and a host that wants the raw output back writes `enabled: false`.
  *
  * ## Validation posture — fail loud
  *
