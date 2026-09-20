@@ -394,3 +394,71 @@ Deno.test("run_callback_context - a switched-on host whose run never indexed rep
 Deno.test("run_callback_context - a switched-off host whose run never indexed reports off", () => {
   assertEquals(codegraphNotRun(false), { enabled: false, status: "off" });
 });
+
+// ---------------------------------------------------------------------------
+// The additive `rtk` block (Issue #2386, part of #2328)
+// ---------------------------------------------------------------------------
+
+Deno.test("run_callback_context - the RTK outcome the run reported travels into the context", () => {
+  const context = buildIssueRunCallbackContext(
+    run({ rtk: { enabled: true, status: "ok", savedTokens: 12_840 } }),
+    IDENTITY,
+  );
+  assertEquals(context.rtk, {
+    enabled: true,
+    status: "ok",
+    savedTokens: 12_840,
+  });
+});
+
+Deno.test("run_callback_context - the rtk block is on every context, off when the run supplied nothing", () => {
+  // Every shape a terminal run takes: success, failure, with and without an
+  // agent having run. None of them supplied an RTK outcome.
+  const shapes: Array<Partial<TerminalIssueRun>> = [
+    {},
+    { result: "failure" },
+    { mode: "planning" },
+    { telemetryAbsentReason: "agent_not_invoked" },
+    { codegraph: { enabled: true, status: "ok" } },
+  ];
+  for (const shape of shapes) {
+    const context = buildIssueRunCallbackContext(run(shape), IDENTITY);
+    assertEquals(
+      context.rtk,
+      { enabled: false, status: "off" },
+      `no off block for ${JSON.stringify(shape)}`,
+    );
+  }
+});
+
+Deno.test("run_callback_context - a run with no saved-token figure omits it rather than blanking it", () => {
+  for (const status of ["ok", "failed", "unsupported"] as const) {
+    const context = buildIssueRunCallbackContext(
+      run({ rtk: { enabled: true, status } }),
+      IDENTITY,
+    );
+    assertEquals(context.rtk, { enabled: true, status });
+    assert(
+      !("savedTokens" in context.rtk!),
+      `a ${status} run carries a saved-token key it never read`,
+    );
+  }
+});
+
+Deno.test("run_callback_context - reporting an RTK outcome leaves the CodeGraph block alone, and the reverse", () => {
+  const both = buildIssueRunCallbackContext(
+    run({
+      rtk: { enabled: true, status: "failed" },
+      codegraph: { enabled: true, status: "ok", queries: 2 },
+    }),
+    IDENTITY,
+  );
+  assertEquals(both.rtk, { enabled: true, status: "failed" });
+  assertEquals(both.codegraph, { enabled: true, status: "ok", queries: 2 });
+
+  const rtkOnly = buildIssueRunCallbackContext(
+    run({ rtk: { enabled: true, status: "ok" } }),
+    IDENTITY,
+  );
+  assertEquals(rtkOnly.codegraph, { enabled: false, status: "off" });
+});

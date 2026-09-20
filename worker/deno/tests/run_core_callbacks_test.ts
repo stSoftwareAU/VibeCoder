@@ -655,3 +655,51 @@ Deno.test("run_core callbacks - a run that reported no CodeGraph step carries no
 
   assertEquals(runs[0]?.codegraph, undefined);
 });
+
+Deno.test("run_core callbacks - the terminal run carries the run's RTK outcome (Issue #2386)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: true,
+        value: {
+          success: true,
+          rtk: { enabled: true, status: "ok" as const, savedTokens: 12_840 },
+        },
+      });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.rtk, {
+    enabled: true,
+    status: "ok",
+    savedTokens: 12_840,
+  });
+  // Carrying it disturbs nothing beside it.
+  assertEquals(runs[0]?.codegraph, undefined);
+});
+
+Deno.test("run_core callbacks - a run that reported no RTK outcome carries none (Issue #2386)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({ ok: true, value: { success: true } });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.rtk, undefined);
+});

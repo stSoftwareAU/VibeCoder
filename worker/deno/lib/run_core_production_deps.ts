@@ -3989,6 +3989,9 @@ export async function createProductionRunCoreDeps(
           ...(result.codegraph && !isExpectedSkip
             ? { codegraph: result.codegraph }
             : {}),
+          // The RTK outcome for the same callbacks (Issue #2386); a skip
+          // never reached the preparation, so it reports none.
+          ...(result.rtk && !isExpectedSkip ? { rtk: result.rtk } : {}),
         },
       };
     },

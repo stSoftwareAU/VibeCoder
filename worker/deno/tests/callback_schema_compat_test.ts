@@ -20,6 +20,7 @@ import {
   type IssueRunCallbackContext,
 } from "../lib/run_callbacks.ts";
 import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
+import type { RtkOutputResult } from "../lib/rtk_output.ts";
 
 /** Every scalar schema 1 exported, as documented in docs/CALLBACKS.md at 1.2.0. */
 const SCHEMA_1_ENV = [
@@ -151,6 +152,7 @@ const FULL_CONTEXT: IssueRunCallbackContext = {
     relationshipCount: 51_903,
     queries: 7,
   },
+  rtk: { enabled: true, status: "ok", savedTokens: 12_840 },
 };
 
 /** The same run with every additive field of Issue #2100 unsupplied. */
@@ -546,6 +548,172 @@ Deno.test(
       () => undefined,
     );
     for (const name of SCHEMA_1_ENV) {
+      assert(env[name] !== undefined, `${name} is no longer exported`);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The additive `rtk` block (Issue #2386, part of #2328)
+// ---------------------------------------------------------------------------
+
+/** One run's RTK preparation, as the trial's four statuses report it. */
+const RTK_CASES: Array<
+  { name: string; rtk: RtkOutputResult; expected: Record<string, unknown> }
+> = [
+  {
+    name: "ok",
+    rtk: { enabled: true, status: "ok", savedTokens: 12_840 },
+    expected: { enabled: true, status: "ok", savedTokens: 12_840 },
+  },
+  {
+    // The hook was installed but the second gain read failed: no figure.
+    name: "ok with no gain figure",
+    rtk: { enabled: true, status: "ok" },
+    expected: { enabled: true, status: "ok" },
+  },
+  {
+    name: "failed",
+    rtk: { enabled: true, status: "failed" },
+    expected: { enabled: true, status: "failed" },
+  },
+  {
+    // `provider` is the run-stats line's detail, not part of this block.
+    name: "unsupported",
+    rtk: { enabled: true, status: "unsupported", provider: "codex" },
+    expected: { enabled: true, status: "unsupported" },
+  },
+  {
+    name: "off",
+    rtk: { enabled: false, status: "off" },
+    expected: { enabled: false, status: "off" },
+  },
+  {
+    // A measured zero is a figure; only an unread store is omitted.
+    name: "ok with nothing saved",
+    rtk: { enabled: true, status: "ok", savedTokens: 0 },
+    expected: { enabled: true, status: "ok", savedTokens: 0 },
+  },
+];
+
+Deno.test(
+  "#2386 - the rtk block carries enabled and status for every status, and savedTokens only when read",
+  () => {
+    for (const testCase of RTK_CASES) {
+      const document = buildCallbackContextDocument(
+        { ...FULL_CONTEXT, rtk: testCase.rtk },
+        "always",
+      );
+      assertEquals(
+        document.rtk,
+        testCase.expected,
+        `the ${testCase.name} run published the wrong rtk block`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "#2386 - a run that reported no RTK preparation is explicitly off, never absent",
+  () => {
+    const context: IssueRunCallbackContext = { ...FULL_CONTEXT };
+    delete context.rtk;
+    const document = buildCallbackContextDocument(context, "always");
+    assertEquals(document.rtk, { enabled: false, status: "off" });
+  },
+);
+
+Deno.test(
+  "#2386 - the rtk scalars are exported, the saved-token figure only when the run has it",
+  () => {
+    const full = buildCallbackEnv(
+      FULL_CONTEXT,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(full.VIBECODER_RTK_ENABLED, "true");
+    assertEquals(full.VIBECODER_RTK_STATUS, "ok");
+    assertEquals(full.VIBECODER_RTK_SAVED_TOKENS, "12840");
+
+    // Omitted entirely: not blank, and not a zero standing in for "unknown".
+    for (const testCase of RTK_CASES) {
+      if (testCase.rtk.savedTokens !== undefined) continue;
+      const env = buildCallbackEnv(
+        { ...FULL_CONTEXT, rtk: testCase.rtk },
+        "always",
+        "/tmp/context.json",
+        () => undefined,
+      );
+      assertEquals(env.VIBECODER_RTK_ENABLED, String(testCase.rtk.enabled));
+      assertEquals(env.VIBECODER_RTK_STATUS, testCase.rtk.status);
+      assert(
+        !("VIBECODER_RTK_SAVED_TOKENS" in env),
+        `the ${testCase.name} run exported a saved-token figure it never read`,
+      );
+    }
+
+    // A run that supplied nothing still exports the two constant scalars.
+    const bare: IssueRunCallbackContext = { ...FULL_CONTEXT };
+    delete bare.rtk;
+    const absent = buildCallbackEnv(
+      bare,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(absent.VIBECODER_RTK_ENABLED, "false");
+    assertEquals(absent.VIBECODER_RTK_STATUS, "off");
+    assert(!("VIBECODER_RTK_SAVED_TOKENS" in absent));
+
+    // A measured zero is a real figure and must not be dropped as falsy.
+    const zero = buildCallbackEnv(
+      { ...FULL_CONTEXT, rtk: { enabled: true, status: "ok", savedTokens: 0 } },
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(zero.VIBECODER_RTK_SAVED_TOKENS, "0");
+  },
+);
+
+Deno.test(
+  "#2386 - the block is additive: the schema version and every earlier field and scalar are untouched",
+  () => {
+    assertEquals(CALLBACK_SCHEMA_VERSION, 2);
+    const document = buildCallbackContextDocument(FULL_CONTEXT, "always");
+    assertEquals(document.schemaVersion, 2);
+    for (const [field, type] of Object.entries(SCHEMA_1_DOCUMENT)) {
+      assertEquals(typeof document[field], type, `document.${field} moved`);
+    }
+    // The blocks that landed before this one read exactly as they did.
+    assertEquals(document.graft, FULL_CONTEXT.graft);
+    assertEquals(document.codegraph, FULL_CONTEXT.codegraph);
+    // Appended after every earlier key, so a consumer that reads the document
+    // in order sees nothing it knew move.
+    assertEquals(Object.keys(document).at(-1), "rtk");
+    assertEquals(Object.keys(document).at(-2), "codegraph");
+
+    const env = buildCallbackEnv(
+      FULL_CONTEXT,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    const earlier = [
+      ...SCHEMA_1_ENV,
+      ...ADDITIVE_ENV,
+      ...GRAFT_FIGURE_ENV,
+      "VIBECODER_GRAFT_ENABLED",
+      "VIBECODER_GRAFT_STATUS",
+      "VIBECODER_CODEGRAPH_ENABLED",
+      "VIBECODER_CODEGRAPH_STATUS",
+      "VIBECODER_CODEGRAPH_INDEX_SECONDS",
+      "VIBECODER_CODEGRAPH_NODE_COUNT",
+      "VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT",
+      "VIBECODER_CODEGRAPH_QUERIES",
+    ];
+    for (const name of earlier) {
       assert(env[name] !== undefined, `${name} is no longer exported`);
     }
   },

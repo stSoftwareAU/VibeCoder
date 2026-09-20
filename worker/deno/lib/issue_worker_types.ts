@@ -467,6 +467,13 @@ export interface WorkOnIssueResult {
    * the query tally is final. Carried to the post-run callback context.
    */
   codegraph?: CodegraphContextResult;
+  /**
+   * What this run's RTK preparation decided (Issue #2386, part of #2328),
+   * read from {@link PhaseState.rtkOutput} once the run is over so the
+   * saved-token figure is the recorded one. Carried to the post-run callback
+   * context; absent on a run that ended before the preparation.
+   */
+  rtk?: RtkOutputResult;
 }
 
 /**
