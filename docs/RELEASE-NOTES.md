@@ -14,14 +14,13 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
-## Unreleased — host-level failures report through `callbacks.host_failure`, never a GitHub issue
+## 1.6.41 — host-level failures report through `callbacks.host_failure`, never a GitHub issue
 
 **Contract change. Read it if you relied on the issues a host filed when its
 launcher or its checkout update was stuck: those issues are gone, and the
 replacement is a hook you configure.**
 
-> Not yet tagged. Recorded here so the version that carries it can be named
-> when it is cut.
+> Shipped in **1.6.41**, the release tag cut for the commit that carries it.
 
 ### What changed
 
@@ -105,15 +104,17 @@ a local record.)
 None needed for the worker: the exported fields are unchanged from 1.5.170.
 Schema 2 is a superset of schema 1, so a hook has nothing to roll back to.
 
-The entries under _Unreleased_ below ship in this release as well.
+The entries under _1.5.36 – 1.5.156_ below are part of this release as well;
+each shipped first in its own 1.5.x patch tag.
 
-## Unreleased — derived trust skips unlistable repos and reuses its snapshot
+## 1.5.36 – 1.5.156 — derived trust skips unlistable repos and reuses its snapshot
 
 **Behaviour change to the fail-closed trust rule. Nothing to migrate; read it
 if your worker login is read-only on any monitored repository.**
 
-> Not yet tagged. Recorded here so the version that carries it can be named
-> when it is cut.
+> A running entry. Every merge to the default branch is its own patch release,
+> and each row below shipped in the tag cut for its change: the first in
+> **1.5.36**, the last in **1.5.156**.
 
 ### What changed
 
