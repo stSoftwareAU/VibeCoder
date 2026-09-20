@@ -8,16 +8,17 @@
  * human act after the window closes, so the page is the only place that
  * protocol is written down — these tests keep it honest.
  *
- * Two properties make them drift tests rather than keyword checks:
- *
- *   - the statuses, the rendered `RTK:` shapes, the hook wiring and the
- *     failure marker are taken from the **live** modules (`prepareRtkRun` is
- *     really called, `buildRtkStatsLine` really renders each shape, and
- *     `RTK_OUTPUT_KEYS` is really read), so renaming a status or changing a
- *     rendered line fails here instead of leaving the page quietly wrong; and
- *   - every prose assertion is scoped to the section that must carry it, so
- *     deleting the rule it pins cannot be satisfied by the same words
- *     appearing elsewhere on the page.
+ * Four of them are drift tests in the strict sense: the statuses, the rendered
+ * `RTK:` shapes, the hook wiring and the failure marker are taken from the
+ * **live** modules (`prepareRtkRun` is really called, `buildRtkStatsLine`
+ * really renders each shape, and `RTK_OUTPUT_KEYS` is really read), so
+ * renaming a status or changing a rendered line fails here instead of leaving
+ * the page quietly wrong. The rest pin prose the code cannot express — the
+ * bar, who may open the window, what a verdict changes — and for those the
+ * page is the source of truth, so a keyword check scoped to its own section is
+ * the strongest assertion available. Every assertion is scoped that way, so
+ * deleting the rule it pins cannot be satisfied by the same words appearing
+ * elsewhere on the page.
  *
  * Australian English spelling used throughout.
  */
@@ -25,12 +26,10 @@
 import { assert, assertEquals } from "@std/assert";
 import { parseRtkOutput, RTK_OUTPUT_KEYS } from "../lib/rtk_output_config.ts";
 import {
-  prepareRtkRun,
   RTK_HOOK_COMMAND,
   RTK_HOOK_MATCHER,
   RTK_UNAVAILABLE_MARKER,
   type RtkOutputResult,
-  type RtkRunner,
 } from "../lib/rtk_output.ts";
 import {
   buildRtkStatsLine,
@@ -40,82 +39,36 @@ import {
   CLAUDE_PROVIDER_ID,
   GEMINI_PROVIDER_ID,
 } from "../lib/agent_provider.ts";
-import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
-import type { Result } from "../types.ts";
+import { readRepoDoc, section } from "./support/markdown_docs.ts";
+import { rtkExited, rtkGain, rtkSeam, rtkVersion } from "./support/rtk_seam.ts";
 
 const TRIAL_PAGE = "docs/RTK-OUTPUT-TRIAL.md";
 
-// tests/ → worker/deno/ → worker/ → repo root
-function read(relative: string): string {
-  return Deno.readTextFileSync(
-    new URL(`../../../${relative}`, import.meta.url),
-  );
-}
-
-/**
- * The body of the numbered section whose heading matches `pattern`, up to the
- * next heading of the same level — so a rule deleted from its own section
- * cannot be "found" in a results table or an intro paragraph.
- */
-function section(page: string, pattern: RegExp): string {
-  const headings = [...page.matchAll(/^(#{2,3}) (.*)$/gm)];
-  const index = headings.findIndex((h) => pattern.test(h[2] ?? ""));
-  assert(index >= 0, `${TRIAL_PAGE} has no section matching ${pattern}`);
-  const start = headings[index]!.index! + headings[index]![0].length;
-  const next = headings.slice(index + 1).find((h) =>
-    (h[1] ?? "").length <= (headings[index]![1] ?? "").length
-  );
-  return page.slice(start, next ? next.index! : undefined);
-}
-
-/** A subprocess that ran and exited with `code`. */
-function exited(code: number, stdout = ""): Result<SubprocessResult> {
-  return {
-    ok: true,
-    value: { success: code === 0, code, stdout, stderr: "", timedOut: false },
-  };
-}
-
-/** A seam that answers from a queue, so no real `rtk` binary is needed. */
-function stubRunner(replies: Result<SubprocessResult>[]): RtkRunner {
-  return () => {
-    const reply = replies.shift();
-    assert(reply !== undefined, "the stub seam ran out of replies");
-    return Promise.resolve(reply);
-  };
+/** The trial page, read fresh so an edit between tests cannot be cached. */
+function trialPage(): Promise<string> {
+  return readRepoDoc(TRIAL_PAGE);
 }
 
 const silent = { info: () => {}, warn: () => {} };
 
+/** One prepared run through the live `prepareRtkRun`, via the shared seam. */
+function prepared(
+  enabled: boolean,
+  providerId: string,
+  replies: Parameters<typeof rtkSeam>[0] = [],
+) {
+  return rtkSeam(replies).prepare({ enabled, providerId, logger: silent });
+}
+
 /** Every status the live preparation really produces, keyed by name. */
 async function liveResults(): Promise<Record<string, RtkOutputResult>> {
-  const off = await prepareRtkRun({
-    enabled: false,
-    providerId: CLAUDE_PROVIDER_ID,
-    logger: silent,
-    run: stubRunner([]),
-  });
-  const unsupported = await prepareRtkRun({
-    enabled: true,
-    providerId: GEMINI_PROVIDER_ID,
-    logger: silent,
-    run: stubRunner([]),
-  });
-  const failed = await prepareRtkRun({
-    enabled: true,
-    providerId: CLAUDE_PROVIDER_ID,
-    logger: silent,
-    run: stubRunner([exited(127)]),
-  });
-  const ok = await prepareRtkRun({
-    enabled: true,
-    providerId: CLAUDE_PROVIDER_ID,
-    logger: silent,
-    run: stubRunner([
-      exited(0, "rtk 0.49.0"),
-      exited(0, JSON.stringify({ summary: { total_saved: 0 } })),
-    ]),
-  });
+  const off = await prepared(false, CLAUDE_PROVIDER_ID);
+  const unsupported = await prepared(true, GEMINI_PROVIDER_ID);
+  const failed = await prepared(true, CLAUDE_PROVIDER_ID, [rtkExited(127)]);
+  const ok = await prepared(true, CLAUDE_PROVIDER_ID, [
+    rtkVersion(),
+    rtkGain(0),
+  ]);
 
   const results = {
     off: off.result,
@@ -130,7 +83,7 @@ async function liveResults(): Promise<Record<string, RtkOutputResult>> {
   return results;
 }
 
-Deno.test("the trial page is linked from every surface that names the switch", () => {
+Deno.test("the trial page is linked from every surface that names the switch", async () => {
   // Links are relative to the linking file: repo-root pages carry the `docs/`
   // prefix, pages already inside `docs/` link the sibling directly.
   const sources: Array<[string, string]> = [
@@ -140,21 +93,20 @@ Deno.test("the trial page is linked from every surface that names the switch", (
   ];
   for (const [source, target] of sources) {
     assert(
-      read(source).includes(`](${target})`),
+      (await readRepoDoc(source)).includes(`](${target})`),
       `${source} must link ${target}`,
     );
   }
   // REFERENCES.md records where RTK shows up as a repo-relative path, and its
   // own path-existence test reads that third column.
   assert(
-    read("docs/REFERENCES.md").includes(TRIAL_PAGE),
+    (await readRepoDoc("docs/REFERENCES.md")).includes(TRIAL_PAGE),
     `docs/REFERENCES.md must record ${TRIAL_PAGE} as where RTK shows up`,
   );
 });
 
-Deno.test("the candidate section names the live switch and hook wiring", () => {
-  const page = read(TRIAL_PAGE);
-  const candidate = section(page, /candidate/i);
+Deno.test("the candidate section names the live switch and hook wiring", async () => {
+  const candidate = section(await trialPage(), "The candidate");
 
   for (const key of RTK_OUTPUT_KEYS) {
     assert(
@@ -182,8 +134,8 @@ Deno.test("the candidate section names the live switch and hook wiring", () => {
   );
 });
 
-Deno.test("the motivation section states that its figures are not evidence", () => {
-  const motivation = section(read(TRIAL_PAGE), /motivation/i);
+Deno.test("the motivation section states that its figures are not evidence", async () => {
+  const motivation = section(await trialPage(), "Motivation");
   const lower = motivation.toLowerCase();
   assert(
     lower.includes("not evidence"),
@@ -201,8 +153,8 @@ Deno.test("the motivation section states that its figures are not evidence", () 
   );
 });
 
-Deno.test("the bar section states every clause of the bar", () => {
-  const bar = section(read(TRIAL_PAGE), /the bar/i);
+Deno.test("the bar section states every clause of the bar", async () => {
+  const bar = section(await trialPage(), "The bar");
   const lower = bar.toLowerCase();
   assert(bar.includes("10%"), "the bar's ≥ 10% margin must be stated");
   assert(
@@ -224,8 +176,8 @@ Deno.test("the bar section states every clause of the bar", () => {
   );
 });
 
-Deno.test("the window section describes a human-opened, unscheduled window", () => {
-  const window = section(read(TRIAL_PAGE), /window and the switch/i);
+Deno.test("the window section describes a human-opened, unscheduled window", async () => {
+  const window = section(await trialPage(), "The window and the switch");
   const lower = window.toLowerCase();
   assert(lower.includes("grq-25"), "the window section must name the host");
   assert(lower.includes("1.7.0"), "the window opens on the 1.7.0 deployment");
@@ -245,7 +197,7 @@ Deno.test("the window section describes a human-opened, unscheduled window", () 
 
 Deno.test("the comparison rule pairs the statuses the runner really returns", async () => {
   const results = await liveResults();
-  const comparison = section(read(TRIAL_PAGE), /comparison rule/i);
+  const comparison = section(await trialPage(), "The comparison rule");
 
   for (const status of Object.keys(results)) {
     assert(
@@ -266,7 +218,7 @@ Deno.test("the comparison rule pairs the statuses the runner really returns", as
 
 Deno.test("the figure-sources section quotes the shapes the code really renders", async () => {
   const results = await liveResults();
-  const sources = section(read(TRIAL_PAGE), /figure/i);
+  const sources = section(await trialPage(), "figure is read from");
 
   const shapes = [
     buildRtkStatsLine({ ...results.ok!, savedTokens: 12_340 }),
@@ -295,8 +247,8 @@ Deno.test("the figure-sources section quotes the shapes the code really renders"
   );
 });
 
-Deno.test("the security section states the posture of a binary ahead of every Bash command", () => {
-  const security = section(read(TRIAL_PAGE), /security/i);
+Deno.test("the security section states the posture of a binary ahead of every Bash command", async () => {
+  const security = section(await trialPage(), "Security posture");
   assert(
     security.includes(RTK_UNAVAILABLE_MARKER),
     `the security section must name the live failure marker ${RTK_UNAVAILABLE_MARKER}`,
@@ -317,8 +269,8 @@ Deno.test("the security section states the posture of a binary ahead of every Ba
   );
 });
 
-Deno.test("the results section leaves a table and a verdict to fill in", () => {
-  const results = section(read(TRIAL_PAGE), /results/i);
+Deno.test("the results section leaves a table and a verdict to fill in", async () => {
+  const results = section(await trialPage(), "Results");
   assert(
     results.includes("| ---"),
     "the results section must carry a table to fill in",
@@ -329,8 +281,8 @@ Deno.test("the results section leaves a table and a verdict to fill in", () => {
   );
 });
 
-Deno.test("the page says what a pass changes and what a miss changes", () => {
-  const verdict = section(read(TRIAL_PAGE), /what the verdict changes/i);
+Deno.test("the page says what a pass changes and what a miss changes", async () => {
+  const verdict = section(await trialPage(), "What the verdict changes");
   assert(
     /default[^.]*\btrue\b/i.test(verdict) && /false/.test(verdict),
     "a pass must flip the shipped default to true with a per-host false opt-out",
@@ -345,8 +297,8 @@ Deno.test("the page says what a pass changes and what a miss changes", () => {
   );
 });
 
-Deno.test("the comparable tools are recorded as facts, not as trial candidates", () => {
-  const comparable = section(read(TRIAL_PAGE), /comparable tools/i);
+Deno.test("the comparable tools are recorded as facts, not as trial candidates", async () => {
+  const comparable = section(await trialPage(), "Comparable tools");
   for (const tool of ["headroom", "context-mode", "caveman", "ponytail"]) {
     assert(
       comparable.toLowerCase().includes(tool),
