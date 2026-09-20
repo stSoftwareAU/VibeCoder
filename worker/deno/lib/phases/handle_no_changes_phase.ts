@@ -244,6 +244,8 @@ export async function workOnIssueHandleNoChanges(
         ...(state.codegraphContext
           ? { codegraph: state.codegraphContext }
           : {}),
+        // …and its RTK status, `off` included (Issue #2385).
+        ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
       });
       // Unassign
       await ghClient.unassignIssue(repo, issueNumber, [githubUser]);

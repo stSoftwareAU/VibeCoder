@@ -54,6 +54,7 @@ import {
 } from "./phase_run_stats.ts";
 import { formatUsd } from "./cost_estimate.ts";
 import type { GraftContextResult } from "./graft_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 import { getRunId } from "./run_id.ts";
 
 /**
@@ -162,6 +163,41 @@ function buildCodegraphStatsLine(
   return figures.length > 0
     ? `${CODEGRAPH_STATS_PREFIX} ${status} — ${figures.join(", ")}`
     : `${CODEGRAPH_STATS_PREFIX} ${status}`;
+}
+
+/**
+ * The RTK line's fixed prefix — one line per run, whatever the status.
+ *
+ * A status line, never a cost line: like {@link CODEGRAPH_STATS_PREFIX} it sits
+ * outside the cost lines' shape ({@link ESTIMATED_COST_PATTERN}), so the
+ * saved-token figure can never be mistaken for spend by {@link tallyIssueCost}.
+ */
+export const RTK_STATS_PREFIX = "- **RTK:**";
+
+/**
+ * Render the single RTK line for a run's stats comment (Issue #2385).
+ *
+ * One line on **every** run — `off` included — so the trial can separate the
+ * enabled runs from the control runs by reading the comment alone. Only `ok`
+ * carries a figure, the `rtk gain` delta the run recorded; a run whose delta
+ * could not be read reports the bare status, because no figure beats a wrong
+ * one ({@link RtkOutputResult.savedTokens}).
+ *
+ * `unsupported` names the provider that could not take the hook, when the run
+ * resolved one.
+ *
+ * @param rtk - What this run's RTK preparation produced
+ * @returns The markdown line, ready to append to the stats section
+ */
+export function buildRtkStatsLine(rtk: RtkOutputResult): string {
+  if (rtk.status === "unsupported") {
+    return rtk.provider === undefined
+      ? `${RTK_STATS_PREFIX} unsupported`
+      : `${RTK_STATS_PREFIX} unsupported (${rtk.provider})`;
+  }
+  return rtk.status === "ok" && rtk.savedTokens !== undefined
+    ? `${RTK_STATS_PREFIX} ok — ${formatCount(rtk.savedTokens)} tokens saved`
+    : `${RTK_STATS_PREFIX} ${rtk.status}`;
 }
 
 /**
@@ -322,6 +358,9 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
  * @param args.codegraph - What this run's CodeGraph step produced (Issue
  *   #2161); omitted renders exactly the comment this function rendered before
  *   the trial existed
+ * @param args.rtk - What this run's RTK preparation produced (Issue #2385);
+ *   omitted renders exactly the comment this function rendered before the
+ *   line existed
  * @returns The comment body, or `""` when no invocation produced stats (so
  *   callers post nothing rather than an empty comment)
  */
@@ -333,6 +372,7 @@ export function buildIssueRunStatsComment(args: {
   priorComments?: readonly string[];
   graft?: GraftContextResult;
   codegraph?: CodegraphContextResult;
+  rtk?: RtkOutputResult;
 }): string {
   const invocations = args.claudeResults.flatMap((result) =>
     buildPhaseInvocations(args.phase, result)
@@ -347,16 +387,17 @@ export function buildIssueRunStatsComment(args: {
   if (!section) return "";
 
   const marker = buildIssueRunStatsMarker(args.runId ?? getRunId());
-  // Appended to the stats bullets, so the Graft and CodeGraph figures sit
-  // with the run they describe and ahead of the cumulative issue total
-  // (Issues #2105, #2161).
+  // Appended to the stats bullets, so the Graft and CodeGraph figures and the
+  // RTK status sit with the run they describe and ahead of the cumulative
+  // issue total (Issues #2105, #2161, #2385).
   const graftLine = buildGraftStatsLine(args.graft);
   const codegraphLine = args.codegraph
     ? `\n${buildCodegraphStatsLine(args.codegraph)}`
     : "";
+  const rtkLine = args.rtk ? `\n${buildRtkStatsLine(args.rtk)}` : "";
   const body = `${marker}\n${section}${
     graftLine ? `\n${graftLine}` : ""
-  }${codegraphLine}`;
+  }${codegraphLine}${rtkLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );
@@ -494,6 +535,8 @@ export async function postIssueRunStatsComment(args: {
   graft?: GraftContextResult;
   /** What this run's CodeGraph step produced (Issue #2161). */
   codegraph?: CodegraphContextResult;
+  /** What this run's RTK preparation produced (Issue #2385). */
+  rtk?: RtkOutputResult;
   getIssueComments: (
     repo: string,
     issueNumber: number,
@@ -517,11 +560,13 @@ export async function postIssueRunStatsComment(args: {
     : {};
   const graft = args.graft ? { graft: args.graft } : {};
   const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
+  const rtk = args.rtk ? { rtk: args.rtk } : {};
 
   // Built without the issue's comments first, purely to answer "is there
   // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
-  // CodeGraph figures are left out of this probe deliberately: they never make
-  // a stats-free run worth a comment, so they cannot change the answer.
+  // CodeGraph figures and the RTK status are left out of this probe
+  // deliberately: they never make a stats-free run worth a comment, so they
+  // cannot change the answer.
   if (
     !buildIssueRunStatsComment({
       phase,
@@ -577,6 +622,7 @@ export async function postIssueRunStatsComment(args: {
         ...bestModel,
         ...graft,
         ...codegraph,
+        ...rtk,
       }),
     );
     return { posted: true };
