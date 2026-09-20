@@ -65,6 +65,7 @@ function repoInput(
     mergedPRs: partial.mergedPRs,
     runLocalHolds: partial.runLocalHolds,
     deferredHolds: partial.deferredHolds,
+    openMilestones: partial.openMilestones,
   };
 }
 
@@ -984,6 +985,129 @@ Deno.test("#460 - the census exposes which issues it counted as claimable", () =
     })],
   });
   assertEquals(census.perRepo[0]?.claimableIssues, [10, 12]);
+});
+
+// ===========================================================================
+// Issue #2455 — the census must model the cross-milestone hold (Issue #2173)
+// ===========================================================================
+//
+// `isDependencyBlocked` keeps holding a dependant whose same-repo dependency
+// is *closed* when that dependency sits in another milestone of the repo that
+// is still open: its code has not reached the default branch yet. The census
+// only ever sees open issues, so it read the closed dependency as satisfied
+// and counted the dependant claimable — a permanent `dependency-blocked`
+// refusal against a "claimable" verdict, which is the inversion this alert
+// was built to report. On stSoftwareAU/GRQ-AutoTrader #662 that manufactured
+// `work_on=1 … inversion_signal=true` for three consecutive cycles.
+//
+// The closed dependency's own milestone is not knowable from the open-issue
+// set, so the census models the hold's *precondition*: some milestone other
+// than the candidate's is open, and the hold can therefore fire. That keeps
+// the census on its usual under-counting side.
+
+function milestoneIssue(
+  number: number,
+  labels: string[],
+  milestone: string,
+  body: string,
+): CensusIssue {
+  return { number, labels, assignees: [], milestone, body };
+}
+
+Deno.test("#2455 - a closed dependency still blocks while another milestone is open", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    // #11 is absent from the open-issue list, so it is closed — and the repo
+    // has an open milestone the candidate is not in, so the scan's #2173 hold
+    // can fire on it.
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [milestoneIssue(10, ["work-on"], "", "Depends on #11")],
+      openMilestones: new Set(["gateway-host-retirement"]),
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 0, "the scan refuses it, so must we");
+  assertEquals(entry.dependencyBlocked, 1);
+  assertEquals(entry.inversionSignal, false);
+});
+
+Deno.test("#2455 - no other open milestone means no hold, so detection is preserved", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [milestoneIssue(10, ["work-on"], "", "Depends on #11")],
+      openMilestones: new Set<string>(),
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+  assertEquals(entry.inversionSignal, true, "a real inversion is still seen");
+});
+
+Deno.test("#2455 - the candidate's own milestone cannot hold it", () => {
+  // `isDependencyBlocked` compares the dependency's milestone against the
+  // candidate's and lets an in-scope dependency go on close.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [milestoneIssue(10, ["work-on"], "m1", "Depends on #11")],
+      openMilestones: new Set(["m1"]),
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+});
+
+Deno.test("#2455 - an open dependency keeps blocking without any milestone context", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [
+        milestoneIssue(10, ["work-on"], "", "Depends on #11"),
+        issue(11, []),
+      ],
+    })],
+  });
+  assertEquals(census.perRepo[0]?.dependencyBlocked, 1);
+});
+
+Deno.test("#2455 - a milestone-held work-on issue does not suppress tier 3", () => {
+  // Issue #524: the same refusal drives tier-3 suppression, so both call
+  // sites of the gate must see the milestone context. `dependency-blocked`
+  // clears only by a human closing the dependency (Issue #2610), so it never
+  // parks the lower tiers — where the milestone context is missing the issue
+  // reads as refused by nothing at all and wrongly suppresses them.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [
+        milestoneIssue(10, ["work-on"], "", "Depends on #11"),
+        issue(12, ["low-priority"]),
+      ],
+      openMilestones: new Set(["gateway-host-retirement"]),
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.dependencyBlocked, 1);
+  assertEquals(entry.lowPrioritySuppressed, 0);
+  assertEquals(entry.unblocked.lowPriority, 1, "tier 3 is claimable");
 });
 
 // ===========================================================================
