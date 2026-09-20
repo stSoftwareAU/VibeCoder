@@ -19,6 +19,10 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { ISSUE_RUN_STATS_MARKER } from "../lib/issue_run_stats_comment.ts";
+import {
+  getFleetTelemetry,
+  resetFleetTelemetry,
+} from "../lib/fleet_telemetry.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
 import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 
@@ -567,6 +571,50 @@ Deno.test(
     assert(stats, "expected a run-stats comment on the closed issue");
     assert(stats.body.includes("## Issue run model stats"));
     assert(stats.body.includes("Estimate only"));
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - the already-complete close records the run in fleet telemetry (Issue #2347)",
+  async () => {
+    resetFleetTelemetry();
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-4-8"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          durationMs: 120_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    // This wrap-up posts a run-stats comment, so it is a completed
+    // `issue`-phase run and must not be a hole in the per-host figures.
+    const telemetry = getFleetTelemetry(1_000);
+    assertEquals(telemetry.issuePhaseRuns, 1);
+    assertEquals(telemetry.issuePhaseDurationSeconds, 120);
+    assert(telemetry.issuePhaseUsd > 0, "expected the run's spend recorded");
+    // No PR was raised, so no quality gate ran: the run counts, the pass does
+    // not.
+    assertEquals(telemetry.issuePhaseFirstAttemptGatePasses, 0);
+    resetFleetTelemetry();
   },
 );
 

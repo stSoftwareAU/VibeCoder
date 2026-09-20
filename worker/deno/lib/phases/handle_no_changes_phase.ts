@@ -37,8 +37,10 @@ import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
 import {
   IMPLEMENTATION_RUN_STATS_PHASE,
+  measureIssuePhaseRun,
   postIssueRunStatsComment,
 } from "../issue_run_stats_comment.ts";
+import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
@@ -227,7 +229,7 @@ export async function workOnIssueHandleNoChanges(
       await ghClient.closeIssue(repo, issueNumber, closeComment);
       // Issue #3756 — the worker closed the issue itself, so this is its
       // wrap-up point: post the run's single cost/model stats comment.
-      await postIssueRunStatsComment({
+      const posted = await postIssueRunStatsComment({
         repo,
         issueNumber,
         phase: WORK_ON_STATS_PHASE,
@@ -252,6 +254,19 @@ export async function workOnIssueHandleNoChanges(
           ? { codegraph: state.codegraphContext }
           : {}),
       });
+      // Issue #2347: this is the second path that wraps up an `issue`-phase
+      // run, so it records the same figures its comment renders. Leaving it
+      // out would make an already-resolved run a hole in the per-host spend
+      // and duration the pilot is compared on, exactly as it would have been a
+      // hole in the CodeGraph data above. The run passed no quality gate — it
+      // raised no PR — so it counts towards the runs and not the passes.
+      if (posted.reason !== "already_posted") {
+        const figures = measureIssuePhaseRun({
+          phase: WORK_ON_STATS_PHASE,
+          claudeResults: state.claudeRunStats ?? [],
+        });
+        if (figures) recordIssuePhaseRun(figures);
+      }
       // Unassign
       await ghClient.unassignIssue(repo, issueNumber, [githubUser]);
     } catch (err) {

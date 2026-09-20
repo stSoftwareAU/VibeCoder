@@ -19,6 +19,7 @@ import {
   recordClaim,
   recordCycleIdle,
   recordInRunBlockedSeconds,
+  recordIssuePhaseRun,
   recordOutcome,
   resetFleetTelemetry,
   startFleetCycle,
@@ -327,6 +328,141 @@ Deno.test("fleet_telemetry - reset clears every accumulator", () => {
   assertEquals(snapshot.idleSeconds, 0);
   assertEquals(snapshot.wallSeconds, 0);
   assertEquals(snapshot.idleByReason, {});
+});
+
+// --- issue-phase counters (Issue #2347) -------------------------------
+
+/** The pilot's three-run shape: two split runs and one control run. */
+function threeIssueRuns(): void {
+  recordIssuePhaseRun({
+    usd: 1.25,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 900,
+    split: true,
+  });
+  recordIssuePhaseRun({
+    usd: 0.5,
+    gatePassedOnAttempt: 2,
+    durationSeconds: 1_200,
+    split: true,
+  });
+  recordIssuePhaseRun({
+    usd: 2.25,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 600,
+    split: false,
+  });
+}
+
+Deno.test("fleet_telemetry - issue-phase runs count, with the split runs visible", () => {
+  fresh(0);
+  threeIssueRuns();
+
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.issuePhaseRuns, 3);
+  // A half-configured host is visible: two of the three ran split.
+  assertEquals(snapshot.issuePhaseSplitRuns, 2);
+});
+
+Deno.test("fleet_telemetry - issue-phase spend sums the recorded per-run figures", () => {
+  fresh(0);
+  threeIssueRuns();
+
+  assertAlmostEquals(getFleetTelemetry(1_000).issuePhaseUsd, 4.0, 1e-9);
+});
+
+Deno.test("fleet_telemetry - only a gate that passed on attempt 1 counts as a first-attempt pass", () => {
+  fresh(0);
+  threeIssueRuns();
+
+  const snapshot = getFleetTelemetry(1_000);
+  // The first-attempt pass rate is a division of two recorded numbers: 2/3.
+  assertEquals(snapshot.issuePhaseFirstAttemptGatePasses, 2);
+  assertEquals(snapshot.issuePhaseRuns, 3);
+});
+
+Deno.test("fleet_telemetry - a run that never passed the gate counts no first-attempt pass", () => {
+  fresh(0);
+  recordIssuePhaseRun({ usd: 0.75, durationSeconds: 300, split: true });
+
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.issuePhaseRuns, 1);
+  assertEquals(snapshot.issuePhaseFirstAttemptGatePasses, 0);
+});
+
+Deno.test("fleet_telemetry - issue-phase duration sums the recorded durations and gates nothing", () => {
+  fresh(0);
+  startFleetCycle(0);
+  threeIssueRuns();
+  recordCycleIdle("served", 100_000);
+
+  const snapshot = getFleetTelemetry(100_000);
+  assertEquals(snapshot.issuePhaseDurationSeconds, 2_700);
+  // Reported beside the cost, with no threshold of its own: the duration of
+  // the recorded runs changes neither the idle arithmetic nor any outcome.
+  assertEquals(snapshot.idleSeconds, 100);
+  assertEquals(snapshot.occupiedSeconds, 0);
+  assertEquals(snapshot.successes, 0);
+  assertEquals(snapshot.failures, 0);
+});
+
+Deno.test("fleet_telemetry - a run with no figures still counts as a run", () => {
+  fresh(0);
+  recordIssuePhaseRun({});
+
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.issuePhaseRuns, 1);
+  assertEquals(snapshot.issuePhaseUsd, 0);
+  assertEquals(snapshot.issuePhaseDurationSeconds, 0);
+  assertEquals(snapshot.issuePhaseSplitRuns, 0);
+});
+
+Deno.test("fleet_telemetry - an unusable figure contributes nothing rather than NaN", () => {
+  fresh(0);
+  recordIssuePhaseRun({ usd: Number.NaN, durationSeconds: -30, split: true });
+  recordIssuePhaseRun({ usd: 1.5, durationSeconds: 60, split: true });
+
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.issuePhaseRuns, 2);
+  assertAlmostEquals(snapshot.issuePhaseUsd, 1.5, 1e-9);
+  assertEquals(snapshot.issuePhaseDurationSeconds, 60);
+});
+
+Deno.test("fleet_telemetry - a snapshot is a copy, so a later run cannot mutate it", () => {
+  fresh(0);
+  recordIssuePhaseRun({ usd: 1, durationSeconds: 60, split: true });
+  const snapshot = getFleetTelemetry(1_000);
+  recordIssuePhaseRun({ usd: 1, durationSeconds: 60, split: true });
+
+  assertEquals(snapshot.issuePhaseRuns, 1);
+  assertEquals(getFleetTelemetry(1_000).issuePhaseRuns, 2);
+});
+
+Deno.test("fleet_telemetry - the summary line reports the issue-phase counters", () => {
+  fresh(0);
+  startFleetCycle(0);
+  threeIssueRuns();
+
+  const line = formatFleetSummary(100_000);
+  assertEquals(line.split("\n").length, 1);
+  assertStringIncludes(line, "issue_runs=3");
+  assertStringIncludes(line, "issue_split_runs=2");
+  assertStringIncludes(line, "issue_usd=4.0000");
+  assertStringIncludes(line, "issue_gate_first_attempt_passes=2");
+  assertStringIncludes(line, "issue_duration=2700s");
+});
+
+Deno.test("fleet_telemetry - reset clears the issue-phase counters too", () => {
+  fresh(0);
+  threeIssueRuns();
+
+  resetFleetTelemetry();
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.issuePhaseRuns, 0);
+  assertEquals(snapshot.issuePhaseUsd, 0);
+  assertEquals(snapshot.issuePhaseFirstAttemptGatePasses, 0);
+  assertEquals(snapshot.issuePhaseDurationSeconds, 0);
+  assertEquals(snapshot.issuePhaseSplitRuns, 0);
 });
 
 // --- deriveIdleReason -------------------------------------------------
