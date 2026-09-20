@@ -226,6 +226,10 @@ figures the step reached:
 It is a status line, never a cost line: the issue cost tally parses only the
 `Estimated cost` shape, so these figures never move the published total.
 
+A run that prepared RTK (the separate output trial, Issue #2328) adds one
+`RTK:` status line directly beneath it, still above the cumulative issue total
+(#2385) — see `rtk_output.enabled` in [Configuration](CONFIGURATION.md).
+
 ## 7. 📊 Results — Graft window
 
 _Template — fill in when the Graft window closes._
