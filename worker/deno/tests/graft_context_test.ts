@@ -1214,10 +1214,6 @@ Deno.test("GRAFT_PROMPT_LINE - names the tools the tally counts", () => {
     if (tool === "graft_check_freshness") continue; // housekeeping, not a query
     assertStringIncludes(GRAFT_PROMPT_LINE, `\`${tool}\``);
   }
-  assert(
-    !GRAFT_PROMPT_LINE.includes("\n"),
-    "one line, appended below the built prompt",
-  );
 });
 
 Deno.test("countGraftQueries - sums both spellings and ignores every other tool", () => {

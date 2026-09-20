@@ -1795,11 +1795,14 @@ selection made from the issue text before the run starts. On an `ok`
 collection the run is also handed Graft's own MCP server, `graft mcp
 <checkout>`, registered as `graft` in the per-run `mcpServers` configuration
 beside whatever the run already had (the Playwright browser grant, the
-`codegraph` server), and one line is appended to the built user prompt naming
+`codegraph` server), and a short rule **leads** the built user prompt naming
 the tools — `graft_find_code`, `graft_file_api`, `graft_trace_calls`,
-`graft_find_all`, `graft_repo_map` — so the agent asks the graph instead of
-grepping. The entry and the line are added together or not at all, on the same
-five run kinds. The server is rooted at the checkout the graph was built in,
+`graft_find_all`, `graft_repo_map`, `graft_check_freshness` — each beside the
+`grep`, `cat` or `ls` habit it replaces, with the reason and the cases where
+reading is still right. It leads rather than trails because, as one sentence
+appended after the issue and the bundle, it was ignored: 25 of 29 `Graft: ok`
+runs reported `0 queries` (Issue #2435). The entry and the rule are added
+together or not at all, on the same five run kinds. The server is rooted at the checkout the graph was built in,
 named in its arguments rather than a `cwd`, for the same reason CodeGraph's is
 (Issue #2200). A provider with no MCP transport (Gemini) keeps the bundle and
 gets no tools; the run logs `Graft tools: not handed to the agent` and reports
