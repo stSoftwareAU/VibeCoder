@@ -10,4 +10,8 @@
 # unannounced (callback schema 2, Issues #2039 #2041): the contract is now
 # stated as additive-only, the schema 1 field set is pinned by test, and a
 # callback-failure report closes itself when the hook recovers.
-1.6.0
+#
+# 1.7.0 carries the whole RTK Bash-output switch — the `rtk_output.enabled`
+# config block, the pinned RTK toolchain, the five wired paths, the `RTK:`
+# stats line and the `rtk` callback block (milestone #2328).
+1.7.0

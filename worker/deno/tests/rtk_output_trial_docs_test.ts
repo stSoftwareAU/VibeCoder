@@ -28,9 +28,9 @@ import {
   prepareRtkRun,
   RTK_HOOK_COMMAND,
   RTK_HOOK_MATCHER,
+  RTK_UNAVAILABLE_MARKER,
   type RtkOutputResult,
   type RtkRunner,
-  RTK_UNAVAILABLE_MARKER,
 } from "../lib/rtk_output.ts";
 import {
   buildRtkStatsLine,
@@ -131,15 +131,24 @@ async function liveResults(): Promise<Record<string, RtkOutputResult>> {
 }
 
 Deno.test("the trial page is linked from every surface that names the switch", () => {
-  for (const source of ["README.md", "docs/REPO-CONTEXT-TRIAL.md"]) {
+  // Links are relative to the linking file: repo-root pages carry the `docs/`
+  // prefix, pages already inside `docs/` link the sibling directly.
+  const sources: Array<[string, string]> = [
+    ["README.md", TRIAL_PAGE],
+    ["docs/REPO-CONTEXT-TRIAL.md", "RTK-OUTPUT-TRIAL.md"],
+    ["docs/CONFIGURATION.md", "RTK-OUTPUT-TRIAL.md"],
+  ];
+  for (const [source, target] of sources) {
     assert(
-      read(source).includes(`](${TRIAL_PAGE})`),
-      `${source} must link ${TRIAL_PAGE}`,
+      read(source).includes(`](${target})`),
+      `${source} must link ${target}`,
     );
   }
+  // REFERENCES.md records where RTK shows up as a repo-relative path, and its
+  // own path-existence test reads that third column.
   assert(
-    read("docs/CONFIGURATION.md").includes("](RTK-OUTPUT-TRIAL.md)"),
-    "the rtk_output row in docs/CONFIGURATION.md must link the trial page",
+    read("docs/REFERENCES.md").includes(TRIAL_PAGE),
+    `docs/REFERENCES.md must record ${TRIAL_PAGE} as where RTK shows up`,
   );
 });
 
@@ -245,7 +254,8 @@ Deno.test("the comparison rule pairs the statuses the runner really returns", as
     );
   }
   assert(
-    /1\.7\.0/.test(comparison) && new RegExp(RTK_STATS_PREFIX.replace(/[*]/g, "\\$&")).test(comparison),
+    /1\.7\.0/.test(comparison) &&
+      new RegExp(RTK_STATS_PREFIX.replace(/[*]/g, "\\$&")).test(comparison),
     "the comparison rule must exclude pre-1.7.0 runs, which carry no RTK line",
   );
   assert(

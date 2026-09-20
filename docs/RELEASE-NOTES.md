@@ -14,6 +14,42 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## 1.7.0 — RTK Bash-output trial behind `rtk_output.enabled`
+
+**New configuration key and two new record surfaces. Read it if you parse a
+run-stats comment or consume post-run callbacks; nothing changes on a host that
+leaves the key unset.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| New `.config.json` block `rtk_output.enabled` (default `false`): when a host sets it `true`, RTK's `PreToolUse` Bash rewrite hook is added to every Claude spawn on the issue, planning, question, PR-feedback and CI-fix paths, so the agent reads condensed command output and recovers the full text with `rtk recall` | #2380, #2382, #2383, #2384 |
+| RTK is a **pinned** container toolchain fragment under the supply-chain gate, not a run-time download | #2381 |
+| An issue, question or planning run-stats comment carries one `RTK:` status line — `- **RTK:** ok — 12,340 tokens saved`, the bare `- **RTK:** ok`, `- **RTK:** failed`, `- **RTK:** off`, or `- **RTK:** unsupported (gemini)`. It is a status line, never a cost line, so it never moves the published issue total | #2385 |
+| Post-run callbacks gain the additive `rtk` block and the `VIBECODER_RTK_ENABLED`, `VIBECODER_RTK_STATUS` and `VIBECODER_RTK_SAVED_TOKENS` scalars. Additive, so the callback schema version does not move | #2386 |
+| The trial protocol — the bar, the human-opened window, the comparison rule, the figure sources and the security posture — is recorded as [RTK output trial](RTK-OUTPUT-TRIAL.md) | #2387 |
+
+### Why a minor
+
+The key, the toolchain, the wiring, the stats line and the callback block ship
+together so one tag carries the whole switch: an operator reading 1.7.0 sees a
+switch that is either entirely present or entirely absent, never half of it.
+
+### Migration
+
+**None.** A host that does not set `rtk_output` behaves exactly as it did
+before: no hook, no prompt line, and `- **RTK:** off` on the stats line. A host
+that opts in sets `rtk_output.enabled: true` in its own `.config.json` — the
+default stays `false` and no worker flips it. A callback hook needs no change;
+the `rtk` block is additive and a hook that ignores it is unaffected.
+
+### Rollback
+
+Set `rtk_output.enabled` to `false` (or remove the block) and restart the
+worker. The hook and the prompt line disappear from the next run; nothing
+persists on disk that has to be cleaned up.
+
 ## Unreleased — host-level failures report through `callbacks.host_failure`, never a GitHub issue
 
 **Contract change. Read it if you relied on the issues a host filed when its
