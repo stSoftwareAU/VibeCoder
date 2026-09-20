@@ -176,7 +176,7 @@ import {
 export interface RunCoreConfig {
   /** Total duration to run before planned shutdown (seconds, default: 3600). */
   runDurationSeconds: number;
-  /** Base sleep interval between scan cycles (seconds, default: 30). */
+  /** Base sleep interval between scan cycles (seconds, default: 120). */
   sleepInterval: number;
   /**
    * Concurrent-issue slot count (Issue #4174; default 1). Made available and
@@ -1523,9 +1523,9 @@ export interface RunCoreDeps {
  * and one idle-task-activity probe per monitored repo), so invoking it every
  * cycle would multiply the loop's `gh` cost — the exact unbounded-`gh`
  * failure mode the Issue #2106 short-circuit guards against. At the default
- * ~30s cycle this cadence runs the guard about once every ten minutes, which
- * is far finer than the 8-hour stall threshold it watches for, so detection
- * latency is unaffected. The guard fires on the first cycle (`tick === 1`)
+ * ~120s cycle (Issue #2446) this cadence runs the guard roughly every forty
+ * minutes, still far finer than the 8-hour stall threshold it watches for, so
+ * detection latency is unaffected. The guard fires on the first cycle (`tick === 1`)
  * and every `LIVENESS_CHECK_CADENCE` cycles thereafter.
  */
 export const LIVENESS_CHECK_CADENCE = 20;
@@ -1540,7 +1540,9 @@ export const LIVENESS_CHECK_CADENCE = 20;
 export function createDefaultRunCoreConfig(): RunCoreConfig {
   return {
     runDurationSeconds: 3600,
-    sleepInterval: 30,
+    // Issue #2446: 120 s, sourced from OPERATIONAL_DEFAULTS so the loop
+    // default and the config default cannot drift apart again.
+    sleepInterval: OPERATIONAL_DEFAULTS.sleepInterval,
     maxConcurrentIssues: 1,
     agentProviderFallback: [],
     maxConsecutiveFailures: 10,

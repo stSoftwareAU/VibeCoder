@@ -106,7 +106,7 @@ export interface FindIssuesOptions {
    * before it cuts its issue branch, and it cannot while an attempt is open on
    * this host or the branch's conflict budget is spent. Claiming that
    * milestone's issues meanwhile would claim, defer and comment on one of them
-   * every 30 seconds, so they are skipped here — a local ledger read, no API
+   * on every scan cycle, so they are skipped here — a local ledger read, no API
    * call.
    *
    * Returns a short reason the milestone is paced, or undefined when it is

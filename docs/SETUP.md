@@ -1036,7 +1036,7 @@ log:
 ```
 
 The line is emitted when the verdict or the figures behind it change, not once
-per 30-second cycle per slot — the state is what an operator needs, and
+per scan cycle per slot — the state is what an operator needs, and
 repeating one sentence thousands of times over an engaged week buries it. A
 probe that fails, or a response carrying no seven-day window, logs one
 `claude-week-pace: unknown` WARNING and leaves **every** tier eligible — a
@@ -1368,7 +1368,7 @@ explained beneath the block, never inside it.
   "authorized_commenters": ["myusername"],
   "claude_model": "opus",
   "claude_timeout": 10800,
-  "sleep_interval": 120,
+  "sleep_interval": 60,
   "worker_name": "Worker Alpha"
 }
 ```
@@ -1397,7 +1397,9 @@ explained beneath the block, never inside it.
   [Token scopes for derived trust](#token-scopes-for-derived-trust).
 - `claude_model`, `claude_timeout`, `sleep_interval` — operational overrides.
   Write them only when they must differ from the defaults; the file holds
-  overrides, not a snapshot. Values and defaults are in
+  overrides, not a snapshot. `sleep_interval` defaults to `120` seconds
+  (Issue #2446); the sample above sets `60` purely to show an override, so omit
+  the key unless you want a different cadence. Values and defaults are in
   [Configuration Defaults](CONFIGURATION.md#configuration-defaults).
 - `worker_name` — multi-worker visibility, optional and in the same
   [defaults table](CONFIGURATION.md#configuration-defaults). Host health

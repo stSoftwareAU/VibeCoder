@@ -185,7 +185,7 @@ The verdict itself is the pure
 [`claudeWeekPaceVerdict`](../../worker/deno/lib/claude_week_pace.ts); the gate
 emits one `claude-week-pace:` line when the verdict or its figures change —
 engaged, lifted, or a WARNING while the reading is unknown — rather than
-repeating the same sentence on every 30-second cycle in every slot. It is a
+repeating the same sentence on every scan cycle in every slot. It is a
 **different** quota from the GraphQL window's `graphql-quota:` line — that one
 is GitHub's API budget, this one is the Claude subscription's.
 

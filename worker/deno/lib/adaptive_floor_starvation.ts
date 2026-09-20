@@ -38,7 +38,8 @@
  * pushes its WIP, which the next run resumes. A bounded cap-bound run beats
  * work nobody ever does.
  *
- * **Cycles, not scans.** A slot re-scans every 30 s, so a per-scan count would
+ * **Cycles, not scans.** A slot re-scans every `sleepInterval`, so a per-scan
+ * count would
  * exhaust the limit inside one cycle and defeat the floor entirely. Each entry
  * records the cycle that last incremented it and ignores repeats, exactly as
  * `idle_inversion_streak.ts` does.
@@ -188,7 +189,7 @@ export async function recordAdaptiveFloorDeferral(
         const deferrals = await loadAdaptiveFloorDeferrals(opts.statePath);
         const entry = deferrals[opts.key] ??
           { count: 0, lastCycleId: "", updatedAt: 0 };
-        // Cycles, not scans: a slot re-scans every 30 s within one cycle.
+        // Cycles, not scans: a slot re-scans repeatedly within one cycle.
         if (entry.lastCycleId === opts.cycleId) return entry.count;
         entry.count++;
         entry.lastCycleId = opts.cycleId;

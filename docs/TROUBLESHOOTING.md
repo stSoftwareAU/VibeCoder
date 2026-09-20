@@ -833,8 +833,8 @@ the window cut it off, so a later attempt continues the work rather than
 starting again.
 
 The agent **health check** returns the same classification: a limited probe
-writes the signal instead of the loop re-running a billed probe every 30 s for
-the whole window.
+writes the signal instead of the loop re-running a billed probe every scan
+cycle for the whole window.
 
 Look for `USAGE_LIMIT` / `RATE_LIMIT` security-log lines and `Rate limit signal
 active — pausing until reset …` in the worker log.
@@ -844,8 +844,9 @@ active — pausing until reset …` in the worker log.
 The worker includes a rate-limit circuit breaker that activates
 when all issues across all repos fail consecutively. When active:
 
-- The worker increases its sleep interval exponentially (30s → 60s → 120s → 240s
-  → 300s max)
+- The worker increases its sleep interval exponentially from `sleep_interval`
+  (default `120` s since Issue #2446: 120s → 240s → 300s max, the cap being
+  `credit_wait_interval`)
 - Log messages include `[CIRCUIT_BREAKER]` prefix
 - State persists across restarts via a file at `WORK_DIR/.circuit_breaker_state`
 

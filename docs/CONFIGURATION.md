@@ -1664,7 +1664,7 @@ unless explicitly overridden.
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
-| Sleep interval                 | `sleep_interval`                 | `30`       | Seconds between scans                                                                                                                                                                                |
+| Sleep interval                 | `sleep_interval`                 | `120`      | Seconds between scans. Raised from `30` in Issue #2446: each cycle costs a fixed amount of GraphQL quota, so a longer sleep cuts the per-hour spend without changing any code path. Set it explicitly to scan more often.                                                                                                                                                             |
 | Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
 | Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
 | Refinement timeout             | `refinement_timeout`             | `300`      | Timeout for issue refinement (5 minutes)                                                                                                                                                             |
@@ -2003,7 +2003,8 @@ strand that reads as a passing deferral is the same failure shape as
 Issue #319.
 
 So the deferral has a memory. The worker counts the consecutive **cycles**
-(not scans — a slot re-scans every 30 s) that the floor deferred one issue in
+(not scans — a slot re-scans every `sleep_interval`) that the floor deferred one
+issue in
 `adaptive_floor_deferrals.json` under the work directory. On the third it
 yields: the issue is claimed on whatever runway is left, and the hard-cap kill
 commits and pushes its WIP for the next run to resume — the last stage of
@@ -3473,7 +3474,8 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   milestone title's `#<N>` head. The marker is rewritten in place on every run,
   so a stream keeps exactly one live marker however long it lasts. A host that
   is **not** the recorded holder defers that stream's eligible issue for
-  `STREAM_AFFINITY_GRACE_SECONDS` (300 s — ten scans at the 30-second default),
+  `STREAM_AFFINITY_GRACE_SECONDS` (300 s — between two and three scans at the
+  120 s default),
   measured from its own first sighting of the issue, and logs the countdown
   once as `stream affinity: deferring <stream> to <host> (<n>s left)`. After
   the grace the first other host to scan claims it, logs
