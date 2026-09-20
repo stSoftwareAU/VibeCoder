@@ -338,7 +338,21 @@ for a pattern, e.g. `grep -qE '^foo\(\)' src/foo.sh`, `assert
 file_contains "fn handle" src/lib.rs`. The test verifies nothing
 about behaviour — it only checks that a string appears in the
 source. Any rename, refactor, or rewrite breaks the test without
-indicating a real regression. Flag every grep-as-assertion you find.
+indicating a real regression. Flag every grep-as-assertion over source
+code you find.
+
+**Documentation-drift tests are not a finding — do not flag them.** A
+test that reads a documentation file, narrows it to one named section by
+heading, and asserts that section still states a rule the code cannot
+express — a promise about behaviour no module holds as a value — is the
+only thing that can notice the page and the code disagreeing. It becomes
+a finding when it drops a condition that earns it the exemption: an
+assertion run over a whole file rather than a named section, or a value
+the code does express (a status name, a rendered output line, a config
+key, a marker) retyped into the test instead of imported from the module
+that produces it. The distinguishing question is what is being pinned: a
+rule the source cannot hold is documentation drift; a string the source
+does hold is a grep.
 
 ### 3. Performance / timing assertions inside unit tests
 
