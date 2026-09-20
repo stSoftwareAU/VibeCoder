@@ -148,9 +148,9 @@ export class IssueCache {
   /**
    * Check whether a cache entry is still valid (within TTL).
    */
-  private isValid(entry: CacheEntry): boolean {
+  private isValid(entry: CacheEntry, ttlSeconds = this.ttlSeconds): boolean {
     const now = Math.floor(Date.now() / 1000);
-    return (now - entry.timestamp) < this.ttlSeconds;
+    return (now - entry.timestamp) < ttlSeconds;
   }
 
   /**
@@ -160,7 +160,16 @@ export class IssueCache {
    * @param cacheKey - Cache key string
    * @returns Cached data or null if cache miss/expired
    */
-  async read<T>(repo: string, cacheKey: string): Promise<T | null> {
+  async read<T>(
+    repo: string,
+    cacheKey: string,
+    /**
+     * `ttlSeconds` overrides the instance TTL for this read (Issue #2409), for
+     * an entry whose caller applies its own, stricter freshness rule to the
+     * data — a listing that stays valid until something observable changes.
+     */
+    options: { ttlSeconds?: number } = {},
+  ): Promise<T | null> {
     if (!await this.dirIsUsable()) {
       this.stats.misses++;
       recordCacheMiss();
@@ -172,7 +181,7 @@ export class IssueCache {
       const content = await Deno.readTextFile(filePath);
       const entry = JSON.parse(content) as CacheEntry;
 
-      if (!this.isValid(entry)) {
+      if (!this.isValid(entry, options.ttlSeconds)) {
         this.stats.misses++;
         // Issue #1671: distinguish TTL-expired entries from missing ones.
         recordCacheExpired();
