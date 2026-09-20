@@ -34,6 +34,7 @@ import {
   type UnitTestPass,
   unitTestPasses,
   type UnitTestPassOutcome,
+  unitTestPassTranscript,
   unitTestStageVerdict,
 } from "../lib/unit_test_passes.ts";
 import { CONTAINER_IMAGE_STAMP_ENV } from "../lib/container_stamp.ts";
@@ -215,6 +216,69 @@ Deno.test("unit passes - both carry --no-check and the gate's permission set (Is
     assertEquals(pass.args[0], "/usr/bin/deno");
     assertEquals(pass.args[1], "test");
   }
+});
+
+Deno.test("unit passes - both run the failures-only reporter (Issue #2430)", () => {
+  // The gate runs many times per run and its output is quoted back into
+  // prompts. `pretty` prints a line per passing test — ~23,000 of them on a
+  // green run — while `dot` prints one character per test and still prints a
+  // failure's name, assertion message and stack trace in full.
+  for (const pass of passes()) {
+    assert(
+      pass.args.includes("--reporter=dot"),
+      `${pass.label} lost --reporter=dot`,
+    );
+  }
+});
+
+Deno.test("unit passes - the reporter flag does not displace the extra flags (Issue #2430)", () => {
+  // `--reporter=dot` sits after the permission set, so `--frozen
+  // --lock=deno.lock` still reach `deno test` in the position `test:unit`
+  // expects.
+  const built = unitTestPasses({
+    denoCmd: "deno",
+    env: HOST_ENV,
+    extraArgs: ["--frozen", "--lock=deno.lock"],
+  });
+  for (const pass of built) {
+    assert(pass.args.includes("--reporter=dot"));
+    assertEquals(pass.args.slice(1, 4), [
+      "test",
+      "--frozen",
+      "--lock=deno.lock",
+    ]);
+  }
+});
+
+Deno.test("pass transcript - a green pass contributes nothing (Issue #2430)", () => {
+  // No reporter `deno test` accepts is silent on green: `dot` still prints a
+  // dot per test and an `ok | N passed` line. The stage's own summary already
+  // records that the pass passed and what it cost, so the raw output of a
+  // green pass is pure token burn.
+  assertEquals(
+    unitTestPassTranscript("parallel", 0, ". . .\nok | 3 passed"),
+    [],
+  );
+});
+
+Deno.test("pass transcript - a red pass contributes its output in full (Issue #2430)", () => {
+  // The whole point of quietening a green run is that a red one stays
+  // complete — name, assertion message and stack trace all reach the reader.
+  const output = [
+    "fails B => ./b_test.ts:3:6",
+    "error: AssertionError: Values are not equal: b was wrong",
+    "    at file:///tmp/rt/b_test.ts:3:30",
+  ].join("\n");
+  assertEquals(unitTestPassTranscript("serial", 1, output), [
+    "=== deno tests: serial pass ===",
+    output,
+  ]);
+});
+
+Deno.test("pass transcript - a pass that never ran contributes nothing (Issue #2430)", () => {
+  // A failed pass stops the pair, so the second pass has a null exit code
+  // and no output to report.
+  assertEquals(unitTestPassTranscript("serial", null, ""), []);
 });
 
 Deno.test("unit passes - extra flags land before the permission set (Issue #940)", () => {
