@@ -1112,9 +1112,39 @@ flowchart TD
   ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection)),
   one extra bullet — `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714
   nodes, 22,908 call edges` — is appended to the rendered block (Issue #2105).
-  It is the only addition to the format, carries no cost figure, and is omitted
-  entirely by a caller that has no outcome, so a run without Graft posts exactly
-  the bytes it posted before.
+  It carries no cost figure and is omitted entirely by a caller that has no
+  outcome, so a run without Graft posts exactly the bytes it posted before.
+- **The run's quality-gate attempt.** An implementation run appends one more
+  bullet — `- quality gate: passed on attempt 1`, `passed on attempt 2`, or
+  `- quality gate: failed` — naming which of the gate's two bounded attempts
+  passed (Issue #2345). The wording is **stable and greppable by contract**: the
+  advisor/executor pilot (#2320) counts its first-attempt pass rate off these
+  exact strings, so re-casing or bolding the line empties the metric. A phase
+  that runs no quality gate renders no such line, so its comment is unchanged.
+- **The run's advisor/executor split.** Every implementation run appends a
+  `- split: on` or `- split: off` bullet (Issue #2346), so pilot and control
+  runs are separable when the numbers are read. A `split: on` run appends three
+  more — `- executors dispatched: 3`, `- re-tasks issued: 1` and
+  `- advisor edit calls: 0 (2 denied)` — read off that run's own stream-json
+  (Issue #2344). Advisor edit calls are the violations (the `PreToolUse` guard
+  denies them, so a healthy run reads `0`); denials, dispatches and re-tasks
+  are how the pilot is measured. A `split: off` run carries the `split:` line
+  and nothing else. Stable and greppable by contract, exactly like the
+  quality-gate line above. A phase other than the implementation run renders no
+  such line.
+- **A split run's executor tokens are costed at Sonnet rates.** The advisor
+  (Opus) and its executor sub-agents (Sonnet) share one CLI invocation, so the
+  run's `modelUsage` breakdown is attributed per served model rather than
+  charging the whole invocation to the first one (Issue #2346). A run serving
+  two or more models therefore lists each model's own token counts and its own
+  cost line, and the estimated USD — and so the cumulative issue total — is
+  their sum. The breakdown prices the run only when it **reconciles** against
+  the run's own recorded totals: an entry that is not a usable object, a
+  counter that is present but not a number, or a sum exceeding the totals in
+  any bucket discards the breakdown whole and charges the run to its primary
+  model, so a malformed breakdown can never over-report the pilot's spend. An
+  under-attributed remainder is charged to the primary model as a residual, so
+  no token is lost either.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.

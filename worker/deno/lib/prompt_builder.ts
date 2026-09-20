@@ -61,6 +61,7 @@ import {
   type SecurityFixGateBlock,
 } from "./security_fix_gate_feedback.ts";
 import { WIND_DOWN_PROMPT_SECTION } from "./wind_down_notice.ts";
+import { ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS } from "./issue_executor_split_prompt.ts";
 
 /**
  * Structured prompt parts for Claude prompt caching (Issue #1262).
@@ -568,6 +569,18 @@ export interface IssuePromptOptions {
    * chosen per run by the Issue #848 dispatch, takes precedence.
    */
   promptOverrides?: readonly CustomLabelPromptMapping[];
+  /**
+   * Whether this run splits the work between an advisor and executor
+   * sub-agents (Issue #2343, part of #2320, default: false).
+   *
+   * Resolved by the caller with `isIssueExecutorSplitEnabled()` — the same
+   * boolean that decides whether the invocation carries `--agents`
+   * definitions (Issue #2342), so the prompt and the argv can never disagree
+   * about which shape the run is. True splices the advisor/executor block
+   * into the template; false renders the prompt byte-for-byte as it is
+   * without the key.
+   */
+  issueExecutorSplit?: boolean;
 }
 
 /**
@@ -606,6 +619,7 @@ export async function buildIssuePrompt(
     customPromptPath,
     customPromptLabel,
     promptOverrides,
+    issueExecutorSplit = false,
   } = options;
 
   // Load the issue template. An operator's custom prompt replaces the built-in
@@ -648,9 +662,35 @@ export async function buildIssuePrompt(
     ISSUE_NUMBER: issueNumber,
     QUALITY_INSTRUCTIONS: qualityInstructions,
     VERBOSITY_INSTRUCTIONS: buildVerbosityBlock(verbosityLevel),
+    // The advisor/executor block (Issue #2343). The placeholder sits on its
+    // own line between two sections, so an off run renders the two adjacent
+    // sections exactly as before and an on run splices the block between
+    // them with one blank line either side.
+    EXECUTOR_SPLIT_INSTRUCTIONS: issueExecutorSplit
+      ? `\n${ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS}\n`
+      : "",
   });
   if (!issueSubstitution.ok) return issueSubstitution;
   let issueTemplate = issueSubstitution.value;
+
+  // A template with no `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` placeholder — an
+  // operator's custom prompt, or a `work-on` override — drops the block, and
+  // `substitute` tolerates the unused key by design. On a split run that
+  // leaves the advisor holding executors it was never told to use, which is
+  // the degraded state this block exists to remove, so it is warned about
+  // rather than reached in silence (mirrors the DeepSeek `--agents` strip).
+  if (
+    issueExecutorSplit &&
+    !templateResult.value.content.includes("{{EXECUTOR_SPLIT_INSTRUCTIONS}}")
+  ) {
+    console.warn(
+      `[issue-executor-split] the issue template ` +
+        `${templateResult.value.source} carries no ` +
+        `{{EXECUTOR_SPLIT_INSTRUCTIONS}} placeholder, so this split run's ` +
+        `prompt has no advisor/executor instructions. Add the placeholder to ` +
+        `that template, or turn issue_executor_split off for this repository.`,
+    );
+  }
 
   // Strip screenshot sections for non-UI repos (Issue #377)
   if (skipScreenshotCheck) {

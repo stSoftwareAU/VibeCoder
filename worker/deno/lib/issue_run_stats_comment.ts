@@ -52,10 +52,32 @@ import {
   buildPhaseInvocations,
   type PhaseClaudeResult,
 } from "./phase_run_stats.ts";
-import { formatUsd } from "./cost_estimate.ts";
+import {
+  attributeUsageByModel,
+  estimateRunCost,
+  formatUsd,
+  type ModelUsageEntry,
+} from "./cost_estimate.ts";
+import type { IssuePhaseRun } from "./fleet_telemetry.ts";
+import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
 import { getRunId } from "./run_id.ts";
+
+/**
+ * What the implementation run's quality gate did (Issue #2345, part of #2320).
+ *
+ * The gate is bounded to two attempts — the initial `./quality.sh` run plus one
+ * `quality_fix` remediation and re-run — so `attempt` is its own loop counter:
+ * `1` for a gate that passed outright, `2` for one that passed after
+ * remediation. A gate that never went green carries no attempt; `failed` is the
+ * whole report, which covers a gate bypassed as pre-existing breakage and one
+ * that only passed once the bump audit reverted the dependency bump. Recorded
+ * by `workOnIssueQualityGate` on the phase state and rendered here.
+ */
+export type QualityGateAttemptOutcome =
+  | { readonly status: "passed"; readonly attempt: number }
+  | { readonly status: "failed" };
 
 /**
  * Hidden HTML marker prefix every run-stats comment carries.
@@ -296,6 +318,43 @@ function formatGraftSeconds(seconds: number): string {
 }
 
 /**
+ * The quality-gate line's fixed prefix (Issue #2345, part of #2320).
+ *
+ * **Stable and greppable by contract.** The advisor/executor pilot's
+ * first-attempt quality-gate pass rate is counted by grepping these exact
+ * strings off the issue — `quality gate: passed on attempt 1`,
+ * `quality gate: passed on attempt 2`, `quality gate: failed` — so the wording,
+ * the lower case and the ordering must not be re-styled. Bolding the prefix or
+ * renaming the verb empties the metric silently, with nothing failing to say
+ * so.
+ *
+ * Deliberately outside the cost lines' shape ({@link ESTIMATED_COST_PATTERN}),
+ * so it can never be mistaken for spend by {@link tallyIssueCost}.
+ */
+const QUALITY_GATE_STATS_PREFIX = "- quality gate:";
+
+/**
+ * Render the run's quality-gate line for the stats block (Issue #2345).
+ *
+ * One line on every run that reached the gate: which of the gate's two bounded
+ * attempts it passed on, or `failed` when it never passed. A caller with no
+ * outcome — every phase that runs no quality gate — renders nothing, so those
+ * comments are byte-for-byte what they were before this line existed.
+ *
+ * @param outcome - What the quality gate did, from the phase state
+ * @returns The bullet line, or `""` when the run had no quality gate
+ */
+export function buildQualityGateStatsLine(
+  outcome?: QualityGateAttemptOutcome,
+): string {
+  if (!outcome) return "";
+  if (outcome.status === "failed") {
+    return `${QUALITY_GATE_STATS_PREFIX} failed`;
+  }
+  return `${QUALITY_GATE_STATS_PREFIX} passed on attempt ${outcome.attempt}`;
+}
+
+/**
  * Render the run's Graft line for the stats block (Issue #2105, part of #2060).
  *
  * One line on every run, so the figures are readable on the issue itself
@@ -336,6 +395,163 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
 }
 
 /**
+ * The phase string every implementation run reports its stats under.
+ *
+ * Exported so the phases that post implementation run stats share this one
+ * spelling: the split figures below render only for this phase, and a drifting
+ * copy would silently empty the pilot metric.
+ */
+export const IMPLEMENTATION_RUN_STATS_PHASE = "issue";
+
+/**
+ * Prefixes of the advisor/executor split lines (Issues #2344, #2346).
+ *
+ * Greppable by contract, like the quality-gate line above: a pilot run's
+ * figures are read off the issue by matching these prefixes, so the wording,
+ * the lower case and the ordering must not be re-styled. None of them can match
+ * {@link ESTIMATED_COST_PATTERN}, so the cumulative tally never reads a count as
+ * spend.
+ */
+const SPLIT_STATS_PREFIX = "- split:";
+const EXECUTOR_DISPATCH_STATS_PREFIX = "- executors dispatched:";
+const EXECUTOR_RETASK_STATS_PREFIX = "- re-tasks issued:";
+const ADVISOR_EDIT_STATS_PREFIX = "- advisor edit calls:";
+
+/** The split figures a run recorded — empty when the split was off. */
+function executorSplitStats(
+  claudeResults: readonly PhaseClaudeResult[],
+): IssueExecutorSplitStats[] {
+  return claudeResults
+    .map((result) => result.runStats?.executorSplit)
+    .filter((stats): stats is IssueExecutorSplitStats => stats !== undefined);
+}
+
+/**
+ * Render the run's advisor/executor split lines (Issues #2344, #2346).
+ *
+ * Every implementation run carries exactly one `split: on`/`split: off` line,
+ * so a pilot run and a control run are separable when the numbers are read
+ * later. A split run adds the executors dispatched, the re-tasks issued and the
+ * advisor edit calls that got through (with the guard's denials in brackets); a
+ * non-split run adds nothing beyond `split: off`. Phases that are not
+ * implementation runs — the planning-shaped ones — render no split line at all,
+ * so their comments stay byte-for-byte what they were.
+ *
+ * @param phase - The phase being reported
+ * @param claudeResults - Completed invocations of the run being reported
+ * @returns The bullet lines, empty for a non-implementation phase
+ */
+export function buildExecutorSplitStatsLines(
+  phase: string,
+  claudeResults: readonly PhaseClaudeResult[],
+): string[] {
+  if (phase !== IMPLEMENTATION_RUN_STATS_PHASE) return [];
+
+  const splits = executorSplitStats(claudeResults);
+  if (splits.length === 0) return [`${SPLIT_STATS_PREFIX} off`];
+
+  const total = splits.reduce((sum, stats) => ({
+    advisorEditCalls: sum.advisorEditCalls + stats.advisorEditCalls,
+    denials: sum.denials + stats.deniedAdvisorEdits.length,
+    executorDispatches: sum.executorDispatches + stats.executorDispatches,
+    executorRetasks: sum.executorRetasks + stats.executorRetasks,
+  }), {
+    advisorEditCalls: 0,
+    denials: 0,
+    executorDispatches: 0,
+    executorRetasks: 0,
+  });
+
+  return [
+    `${SPLIT_STATS_PREFIX} on`,
+    `${EXECUTOR_DISPATCH_STATS_PREFIX} ${total.executorDispatches}`,
+    `${EXECUTOR_RETASK_STATS_PREFIX} ${total.executorRetasks}`,
+    `${ADVISOR_EDIT_STATS_PREFIX} ${total.advisorEditCalls} (${total.denials} denied)`,
+  ];
+}
+
+/**
+ * Derive the fleet-telemetry figures for one completed implementation run
+ * (Issue #2347, part of #2320).
+ *
+ * The same numbers this module renders on the comment — the estimated spend,
+ * the summed invocation duration, whether the split was on, and the attempt the
+ * quality gate passed on — reduced to what
+ * {@link ../fleet_telemetry.ts recordIssuePhaseRun} accumulates per host. Kept
+ * here rather than at the call site so the figures cannot drift from the
+ * comment: the invocations, the expected model the cost falls back to and the
+ * split rule are all the ones {@link buildIssueRunStatsComment} renders with.
+ *
+ * The expected model matters because it is what an invocation the API reported
+ * no served model for is priced at. Taking the requested model instead would
+ * make this figure and the comment's disagree on exactly the runs where the
+ * price is least certain, so it is resolved through the same
+ * {@link buildDegradationReport} call the comment uses.
+ *
+ * Spend is the estimate the comment reports, so a model with no pricing row
+ * contributes nothing and the sum is a floor — exactly as the comment's own
+ * `(partial — see below)` total says.
+ *
+ * @param args.phase - The phase being reported; only `issue` is measured
+ * @param args.claudeResults - Completed invocations of the run
+ * @param args.configuredBestModel - Pinned best model, when the phase has one;
+ *   part of the expected-model routing chain, so it is passed exactly as the
+ *   comment passes it
+ * @param args.qualityGate - What the run's quality gate did, when it ran
+ * @returns The run's figures, or `undefined` for a non-implementation phase or
+ *   a run no invocation produced stats for — neither is a measurable run
+ */
+export function measureIssuePhaseRun(args: {
+  phase: string;
+  claudeResults: readonly PhaseClaudeResult[];
+  configuredBestModel?: string;
+  qualityGate?: QualityGateAttemptOutcome;
+}): IssuePhaseRun | undefined {
+  if (args.phase !== IMPLEMENTATION_RUN_STATS_PHASE) return undefined;
+
+  const measured = args.claudeResults.filter((result) => result.runStats);
+  // A run with invocations but no stats renders no comment at all, so there is
+  // nothing to record and no figures to record it with. Counting it would add
+  // a $0 run to the denominator of the pilot's first-attempt pass rate — the
+  // one number this feature exists to produce.
+  if (measured.length === 0) return undefined;
+
+  const { expectedModel } = buildDegradationReport({
+    invocations: measured.flatMap((result) =>
+      buildPhaseInvocations(args.phase, result)
+    ),
+    phase: args.phase,
+    ...(args.configuredBestModel
+      ? { configuredBestModel: args.configuredBestModel }
+      : {}),
+  });
+
+  const costEntries: ModelUsageEntry[] = [];
+  let durationMs = 0;
+  for (const result of measured) {
+    const stats = result.runStats!;
+    if (stats.tokenUsage) {
+      costEntries.push(
+        ...attributeUsageByModel(
+          stats.tokenUsage,
+          stats.modelUsage,
+          stats.servedModels[0] ?? expectedModel,
+        ),
+      );
+    }
+    if (typeof stats.durationMs === "number") durationMs += stats.durationMs;
+  }
+
+  const gate = args.qualityGate;
+  return {
+    usd: estimateRunCost(costEntries).totalCost,
+    durationSeconds: Math.round(durationMs / 1000),
+    split: executorSplitStats(measured).length > 0,
+    ...(gate?.status === "passed" ? { gatePassedOnAttempt: gate.attempt } : {}),
+  };
+}
+
+/**
  * Build the wrap-up run-stats comment body for an issue.
  *
  * The stats block itself is rendered by the shared
@@ -358,9 +574,17 @@ export function buildGraftStatsLine(graft?: GraftContextResult): string {
  * @param args.codegraph - What this run's CodeGraph step produced (Issue
  *   #2161); omitted renders exactly the comment this function rendered before
  *   the trial existed
+ * @param args.qualityGate - What the run's quality gate did (Issue #2345);
+ *   omitted — every phase that runs no gate — renders no such line, so those
+ *   comments are byte-for-byte what they were before
  * @param args.rtk - What this run's RTK preparation produced (Issue #2385);
  *   omitted renders exactly the comment this function rendered before the
  *   line existed
+ *
+ * An implementation run also carries the split figures (Issue #2346): one
+ * `split: on`/`split: off` line always, and the executor counts on a split run
+ * — see {@link buildExecutorSplitStatsLines}.
+ *
  * @returns The comment body, or `""` when no invocation produced stats (so
  *   callers post nothing rather than an empty comment)
  */
@@ -372,6 +596,7 @@ export function buildIssueRunStatsComment(args: {
   priorComments?: readonly string[];
   graft?: GraftContextResult;
   codegraph?: CodegraphContextResult;
+  qualityGate?: QualityGateAttemptOutcome;
   rtk?: RtkOutputResult;
 }): string {
   const invocations = args.claudeResults.flatMap((result) =>
@@ -394,10 +619,21 @@ export function buildIssueRunStatsComment(args: {
   const codegraphLine = args.codegraph
     ? `\n${buildCodegraphStatsLine(args.codegraph)}`
     : "";
+  // Issue #2345: the gate's own outcome, beside the figures of the run it
+  // gated and ahead of the cumulative issue total.
+  const qualityGateLine = buildQualityGateStatsLine(args.qualityGate);
+  // Issues #2344, #2346: whether the run was split, and what the split did.
+  const splitLines = buildExecutorSplitStatsLines(
+    args.phase,
+    args.claudeResults,
+  );
+  const splitBlock = splitLines.map((line) => `\n${line}`).join("");
   const rtkLine = args.rtk ? `\n${buildRtkStatsLine(args.rtk)}` : "";
   const body = `${marker}\n${section}${
     graftLine ? `\n${graftLine}` : ""
-  }${codegraphLine}${rtkLine}`;
+  }${codegraphLine}${
+    qualityGateLine ? `\n${qualityGateLine}` : ""
+  }${splitBlock}${rtkLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );
@@ -535,6 +771,8 @@ export async function postIssueRunStatsComment(args: {
   graft?: GraftContextResult;
   /** What this run's CodeGraph step produced (Issue #2161). */
   codegraph?: CodegraphContextResult;
+  /** What this run's quality gate did (Issue #2345); omitted renders no line. */
+  qualityGate?: QualityGateAttemptOutcome;
   /** What this run's RTK preparation produced (Issue #2385). */
   rtk?: RtkOutputResult;
   getIssueComments: (
@@ -560,13 +798,14 @@ export async function postIssueRunStatsComment(args: {
     : {};
   const graft = args.graft ? { graft: args.graft } : {};
   const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
+  const qualityGate = args.qualityGate ? { qualityGate: args.qualityGate } : {};
   const rtk = args.rtk ? { rtk: args.rtk } : {};
 
   // Built without the issue's comments first, purely to answer "is there
   // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
-  // CodeGraph figures and the RTK status are left out of this probe
-  // deliberately: they never make a stats-free run worth a comment, so they
-  // cannot change the answer.
+  // CodeGraph figures, the quality-gate outcome and the RTK status are left
+  // out of this probe deliberately: none of them makes a stats-free run
+  // worth a comment, so none of them can change the answer.
   if (
     !buildIssueRunStatsComment({
       phase,
@@ -622,6 +861,7 @@ export async function postIssueRunStatsComment(args: {
         ...bestModel,
         ...graft,
         ...codegraph,
+        ...qualityGate,
         ...rtk,
       }),
     );

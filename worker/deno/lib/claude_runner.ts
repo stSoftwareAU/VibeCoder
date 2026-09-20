@@ -102,6 +102,12 @@ import {
 } from "./prompt_cache_telemetry.ts";
 import { buildRunStats, type RunStats } from "./run_stats.ts";
 import {
+  formatIssueEditDenialLog,
+  resolveIssueExecutorHookSettings,
+  summariseIssueExecutorSplitRun,
+} from "./issue_executor_enforcement.ts";
+import { settingsJsonOption } from "./rtk_output.ts";
+import {
   type AgentActivitySnapshot,
   AgentProgressTracker,
 } from "./agent_progress.ts";
@@ -145,6 +151,7 @@ import { selectModelForLargeInput } from "./phase_model_escalation.ts";
 import type { SessionResumeState } from "./session_resume.ts";
 import {
   activeAgentProvider,
+  type AgentDefinition,
   type AgentProviderSelector,
   CLAUDE_PROVIDER_ID,
   selectAgentProvider,
@@ -521,6 +528,27 @@ export interface RunClaudeOptions {
   logger?: Logger;
   /** Disallowed tools (default: ["EnterPlanMode", "ExitPlanMode"]). */
   disallowedTools?: string[];
+  /**
+   * Sub-agent definitions for this run (Issue #2342), handed to the Claude
+   * CLI as `--agents`.
+   *
+   * Absent — every run that has not opted into the issue-executor split —
+   * emits no argument, so each sub-agent inherits the phase's model exactly
+   * as it does today. No fallback: a CLI that rejects the flag fails the run
+   * with its own error rather than being re-invoked without it.
+   */
+  agents?: Readonly<Record<string, AgentDefinition>>;
+  /**
+   * This is a split `issue` run (Issue #2344), so keep every `Edit`/`Write`
+   * inside an executor.
+   *
+   * Set `true` and the Claude invocation carries the `PreToolUse` guard that
+   * denies the advisor's own edits and allows an executor's, and the run's
+   * stream is summarised into {@link RunStats.executorSplit}. Absent — every
+   * run that has not opted into the split — configures no hook, parses
+   * nothing, and carries no such field.
+   */
+  issueExecutorSplit?: boolean;
   /**
    * Hand the agent the Playwright MCP server for this run (Issue #4355),
    * narrowed to an explicit need signal by Issue #192.
@@ -1104,6 +1132,9 @@ export async function runClaudeWithTimeout(
     ...(options.env ? { env: options.env } : {}),
     effort: options.effort,
     disallowedTools,
+    // Issue #2342: absent unless the caller resolved the split on, and an
+    // absent value emits no `--agents` argument.
+    ...(options.agents ? { agents: options.agents } : {}),
     sessionResumeState: options.sessionResumeState,
     // The pulled-forward autocompaction window (Issue #2337), when the
     // stream's conversation could not be compacted before the issue started.
@@ -1111,9 +1142,18 @@ export async function runClaudeWithTimeout(
       ? { autocompactTokens: options.autocompactTokens }
       : {}),
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
-    // This spawn's hooks (Issue #2383). A run that installs none keeps the key
-    // absent, so the argv is byte-identical to the one it always spawned.
-    ...(options.settingsJson ? { settingsJson: options.settingsJson } : {}),
+    // Issue #2344's advisor edit guard, merged with this spawn's own hooks
+    // (Issue #2383's RTK settings) rather than one silently replacing the
+    // other when a run has both on. Claude only — DeepSeek drops the
+    // executor definitions, so a guard there would deny the advisor's edits
+    // with no executor to make them, and the other providers take no such
+    // flag.
+    ...settingsJsonOption(
+      options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
+        ? resolveIssueExecutorHookSettings()
+        : undefined,
+      options.settingsJson ? JSON.parse(options.settingsJson) : undefined,
+    ),
   };
   const args = provider.buildInvocation({
     ...invocationRequest,
@@ -2227,6 +2267,17 @@ export async function runClaudeWithTimeout(
     // same raw stream-json; the effort string is passed through verbatim so
     // new levels (e.g. xhigh, #2620) flow untouched.
     const { toolCallCounts } = progress.snapshot();
+    // Issue #2344: what the split's enforcement seam saw — the advisor edits
+    // the guard denied, the ones that got through anyway, the executors
+    // dispatched and the re-tasks issued. Computed only for a split run, so a
+    // run with the key off carries no such field at all. Each denial is a
+    // line in this run's log naming the tool, and none of them fails the run.
+    const executorSplit = options.issueExecutorSplit
+      ? summariseIssueExecutorSplitRun(rawOutput)
+      : undefined;
+    for (const tool of executorSplit?.deniedAdvisorEdits ?? []) {
+      logger?.info(formatIssueEditDenialLog(tool));
+    }
     const runStats = {
       ...buildRunStats(rawOutput, {
         requestedModel: resolvedModel,
@@ -2241,6 +2292,9 @@ export async function runClaudeWithTimeout(
       // Codex tool items alike. Omitted when the run made no tool call, so
       // the field's absence never masquerades as a zeroed tally.
       ...(Object.keys(toolCallCounts).length > 0 ? { toolCallCounts } : {}),
+      // Issue #2344: present only on a split run, so its absence reads as
+      // "this run was not split" rather than "the split recorded nothing".
+      ...(executorSplit ? { executorSplit } : {}),
     };
 
     // Anthropic prompt-cache effectiveness for this invocation (Issue #4282).

@@ -33,6 +33,10 @@ import {
 import type { ClaudeExecutionResult } from "../lib/claude_executor.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
+import {
+  buildIssueExecutorAgents,
+  ISSUE_EXECUTOR_AGENT_NAME,
+} from "../lib/issue_executor_agents.ts";
 import type { Result } from "../types.ts";
 import { getDailySummary } from "../lib/credit_tracker.ts";
 import {
@@ -1019,6 +1023,117 @@ Deno.test({
           "--mcp-config",
         ),
         false,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// `agents` — the issue-executor split's sub-agent definitions (Issue #2342)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - forwards agents as --agents, and emits nothing when absent (Issue #2342)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const workDir = await Deno.makeTempDir({ prefix: "agents-flag-" });
+    const argvFile = `${workDir}/argv.txt`;
+    const recordArgv =
+      `printf '%s\\n' "$@" > "${argvFile}"\nprintf '%s\\n' '{"type":"result","result":"done"}'\nexit 0\n`;
+    const run = (agents: RunClaudeOptions["agents"]) =>
+      withStubClaude(recordArgv, (agentBinaryPath) =>
+        runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "P",
+          model: "m",
+          phase: "issue",
+          agentBinaryPath,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+          ...(agents === undefined ? {} : { agents }),
+        }));
+    try {
+      await run(buildIssueExecutorAgents());
+      const argv = (await Deno.readTextFile(argvFile)).split("\n");
+      const idx = argv.indexOf("--agents");
+      assert(idx >= 0, `expected --agents in ${argv.join(" ")}`);
+      const executor = JSON.parse(argv[idx + 1]!)[ISSUE_EXECUTOR_AGENT_NAME];
+      assertEquals(executor.model, "sonnet");
+      assertEquals(executor.effort, "medium");
+      assertEquals(executor.disallowedTools, ["Agent"]);
+
+      await run(undefined);
+      assertEquals(
+        (await Deno.readTextFile(argvFile)).split("\n").includes("--agents"),
+        false,
+        "a run that did not opt into the split passes no flag",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - a CLI rejecting --agents fails the run with its own message and is not re-invoked (Issue #2342)",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const workDir = await Deno.makeTempDir({ prefix: "agents-reject-" });
+    const argvLog = `${workDir}/argv.log`;
+    // An older binary: it does not know the flag, says so, and exits non-zero
+    // — what a real CLI does with an unknown option. The message goes to both
+    // streams because the runner's captured stdout is the channel the calling
+    // phase reports, and one invocation's whole argv is appended so a second,
+    // flagless invocation would be visible here.
+    const rejectAgents = `printf -- '--RUN--\\n%s\\n' "$*" >> "${argvLog}"\n` +
+      `printf '%s\\n' "error: unknown option '--agents'" | tee /dev/stderr\n` +
+      `exit 1\n`;
+    try {
+      const result = await withStubClaude(
+        rejectAgents,
+        (agentBinaryPath) =>
+          runClaudeWithRetry({
+            clock: fakeClock(),
+            prompt: "P",
+            model: "m",
+            phase: "issue",
+            agentBinaryPath,
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+            agents: buildIssueExecutorAgents(),
+          }, { maxRetries: 0 }),
+      );
+
+      // The run fails, carrying the CLI's own status and message — no silent
+      // fallback to an invocation without the flag.
+      assert(
+        result.ok,
+        `expected a completed run, got ${JSON.stringify(result)}`,
+      );
+      if (!result.ok) return;
+      assertEquals(
+        result.value.exitCode,
+        1,
+        "the CLI's own exit status stands",
+      );
+      assertStringIncludes(result.value.output, "unknown option '--agents'");
+
+      const runs = (await Deno.readTextFile(argvLog)).split("--RUN--").filter(
+        (entry) => entry.trim().length > 0,
+      );
+      assertEquals(
+        runs.length,
+        1,
+        `the rejected flag is never retried without it: ${runs.join(" | ")}`,
+      );
+      assertStringIncludes(
+        runs[0]!,
+        "--agents",
+        "the single invocation is the one that carried the flag",
       );
     } finally {
       await Deno.remove(workDir, { recursive: true });

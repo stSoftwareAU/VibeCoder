@@ -10,6 +10,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  attributeUsageByModel,
   estimateRunCost,
   formatCostEstimateLines,
   formatUsd,
@@ -239,4 +240,124 @@ Deno.test("cost_estimate - estimateRunCost reports the basis of each matched row
   assertEquals(result.perModel[1]!.apiEquivalent, true);
   // An unpriced id has no row, so it has no basis to claim either.
   assertEquals(result.perModel[2]!.apiEquivalent, false);
+});
+
+// =============================================================================
+// attributeUsageByModel (Issue #2346)
+// =============================================================================
+
+Deno.test("cost_estimate - attributeUsageByModel falls back to one entry without a breakdown", () => {
+  assertEquals(
+    attributeUsageByModel(usage(1_000, 500), undefined, "claude-opus-5"),
+    [{ model: "claude-opus-5", usage: usage(1_000, 500) }],
+  );
+  // An unusable breakdown is not a silent zero — the whole run still prices.
+  assertEquals(
+    attributeUsageByModel(usage(1_000, 500), { "claude-opus-5": 7 }, "opus"),
+    [{ model: "opus", usage: usage(1_000, 500) }],
+  );
+});
+
+Deno.test("cost_estimate - attributeUsageByModel reads camelCase and snake_case counters", () => {
+  const entries = attributeUsageByModel(
+    usage(1_500_000, 300_000),
+    {
+      "claude-opus-5": { inputTokens: 1_000_000, outputTokens: 100_000 },
+      "claude-sonnet-5": { input_tokens: 500_000, output_tokens: 200_000 },
+    },
+    "claude-opus-5",
+  );
+
+  assertEquals(entries, [
+    { model: "claude-opus-5", usage: usage(1_000_000, 100_000) },
+    { model: "claude-sonnet-5", usage: usage(500_000, 200_000) },
+  ]);
+});
+
+Deno.test("cost_estimate - attributeUsageByModel attributes any shortfall rather than losing it", () => {
+  const entries = attributeUsageByModel(
+    usage(1_000, 400, 60, 20),
+    { "claude-sonnet-5": { input_tokens: 600, output_tokens: 400 } },
+    "claude-opus-5",
+  );
+
+  // The un-attributed remainder lands on the fallback model, so the summed
+  // entries can never under-report the run's own totals.
+  assertEquals(entries, [
+    { model: "claude-sonnet-5", usage: usage(600, 400) },
+    { model: "claude-opus-5", usage: usage(400, 0, 60, 20) },
+  ]);
+});
+
+Deno.test("cost_estimate - attributeUsageByModel omits an all-zero residual", () => {
+  const entries = attributeUsageByModel(
+    usage(1_000, 400),
+    {
+      "claude-opus-5": { input_tokens: 400, output_tokens: 400 },
+      "claude-sonnet-5": { input_tokens: 600 },
+    },
+    "claude-opus-5",
+  );
+  // Fully attributed, so no residual entry is appended.
+  assertEquals(entries, [
+    { model: "claude-opus-5", usage: usage(400, 400) },
+    { model: "claude-sonnet-5", usage: usage(600, 0) },
+  ]);
+});
+
+Deno.test("cost_estimate - attributeUsageByModel discards a breakdown claiming more than the run recorded", () => {
+  // Trusting it would charge 999 input tokens against a 100-token run, and
+  // over-report the pilot's spend and the issue's cumulative total with it.
+  assertEquals(
+    attributeUsageByModel(
+      usage(100, 0),
+      { "claude-sonnet-5": { input_tokens: 999 } },
+      "claude-opus-5",
+    ),
+    [{ model: "claude-opus-5", usage: usage(100, 0) }],
+  );
+});
+
+Deno.test("cost_estimate - attributeUsageByModel never fabricates a zero for an unusable counter", () => {
+  // A counter that is present but not a number is a fault, not a zero: the
+  // breakdown is discarded whole rather than silently pricing 0 output tokens.
+  assertEquals(
+    attributeUsageByModel(
+      usage(1_000, 500),
+      { "claude-sonnet-5": { input_tokens: 1_000, output_tokens: "500" } },
+      "claude-opus-5",
+    ),
+    [{ model: "claude-opus-5", usage: usage(1_000, 500) }],
+  );
+  // A negative count is equally a fault.
+  assertEquals(
+    attributeUsageByModel(
+      usage(1_000, 500),
+      { "claude-sonnet-5": { input_tokens: -1 } },
+      "claude-opus-5",
+    ),
+    [{ model: "claude-opus-5", usage: usage(1_000, 500) }],
+  );
+  // One unusable entry condemns the breakdown — its siblings' tokens must not
+  // be re-attributed to the fallback model at the wrong rate.
+  assertEquals(
+    attributeUsageByModel(
+      usage(1_000, 500),
+      {
+        "claude-opus-5": { input_tokens: 400, output_tokens: 500 },
+        "claude-sonnet-5": 7,
+      },
+      "claude-opus-5",
+    ),
+    [{ model: "claude-opus-5", usage: usage(1_000, 500) }],
+  );
+  // An omitted counter, by contrast, is a genuine zero.
+  assertEquals(
+    attributeUsageByModel(
+      usage(600, 0),
+      { "claude-sonnet-5": { input_tokens: 600 } },
+      "claude-opus-5",
+    ),
+    [{ model: "claude-sonnet-5", usage: usage(600, 0) }],
+  );
 });

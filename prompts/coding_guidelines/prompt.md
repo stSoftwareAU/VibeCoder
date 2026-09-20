@@ -32,7 +32,9 @@ Four standing directives govern how much work a task gets:
   subagent only when the task genuinely needs isolated parallel exploration that
   will not fit this context — not for routine edits, searches, or single-file
   changes you can do yourself. A few well-scoped subagents beat many shallow
-  ones.
+  ones. This is the default for every run; the one exception is an
+  `issue`-phase run whose prompt carries an **Advisor and Executors** section,
+  where that section's delegation rules replace this cap for that run alone.
 - **Keep deliverables tight.** Match response, comment, and file length to the
   work. A focused function beats a sprawling one; a three-line PR note beats
   three paragraphs. Do not pad prose, restate the code in comments, or split one

@@ -711,6 +711,64 @@ Deno.test("buildPlanningStatsSection - renders model, tokens, turns, invocations
   assertStringIncludes(section, "Degraded:** no");
 });
 
+Deno.test("buildPlanningStatsSection - one invocation serving two models lists each model's own tokens (Issue #2346)", () => {
+  // An advisor/executor split run: Opus and Sonnet share one invocation, so
+  // the per-model breakdown is the only record of who spent what.
+  const invocations: PlanningInvocationStats[] = [
+    planningInvocation(["claude-opus-5", "claude-sonnet-5"], {
+      tokenUsage: {
+        inputTokens: 1_500_000,
+        outputTokens: 300_000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+      modelUsage: {
+        "claude-opus-5": { inputTokens: 1_000_000, outputTokens: 100_000 },
+        "claude-sonnet-5": { input_tokens: 500_000, output_tokens: 200_000 },
+      },
+    }),
+  ];
+  const section = buildPlanningStatsSection({
+    invocations,
+    expectedModel: "opus",
+    verdict: assessDegradation(invocations, "opus"),
+  });
+
+  // The run total stays what it always was...
+  assertStringIncludes(section, "input 1,500,000");
+  // ...with each served model's own counts beneath it.
+  assertStringIncludes(
+    section,
+    "- `claude-opus-5`: input 1,000,000 · output 100,000 · cache write 0 · cache read 0",
+  );
+  assertStringIncludes(
+    section,
+    "- `claude-sonnet-5`: input 500,000 · output 200,000 · cache write 0 · cache read 0",
+  );
+});
+
+Deno.test("buildPlanningStatsSection - a single-model run renders no per-model breakdown (Issue #2346)", () => {
+  const invocations: PlanningInvocationStats[] = [
+    planningInvocation(["claude-fable-5"], {
+      tokenUsage: {
+        inputTokens: 1_000,
+        outputTokens: 500,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+      modelUsage: { "claude-fable-5": { inputTokens: 1_000 } },
+    }),
+  ];
+  const section = buildPlanningStatsSection({
+    invocations,
+    expectedModel: "fable",
+    verdict: assessDegradation(invocations, "fable"),
+  });
+
+  // Nothing new on an unsplit run: the sub-bullet would repeat the total.
+  assertEquals(section.includes("- `claude-fable-5`: input"), false);
+});
+
 Deno.test("buildPlanningStatsSection - appends an estimate-only cost block (Issue #3557)", () => {
   const invocations: PlanningInvocationStats[] = [
     planningInvocation(["claude-opus-4-8"], {

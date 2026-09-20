@@ -29,6 +29,11 @@ import {
   graftQueryFor,
 } from "../graft_context.ts";
 import { isGraftContextEnabled } from "../graft_context_config.ts";
+import { isIssueExecutorSplitEnabled } from "../issue_executor_split.ts";
+import {
+  buildIssueExecutorAgents,
+  ISSUE_EXECUTOR_MODEL,
+} from "../issue_executor_agents.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -470,6 +475,27 @@ async function executeClaudeBody(
     logger.info(describeGraftContext(graftContext), { repo, issueNumber });
   }
 
+  // The issue-executor split (Issue #2342): on, the invocation carries
+  // `--agents` definitions so the advisor delegates mechanical edit work to
+  // Sonnet executors, and the prompt carries the advisor/executor block that
+  // tells it to (Issue #2343). Off — the default — `agents` stays absent, no
+  // argument is emitted, the block renders as nothing, and every sub-agent
+  // inherits the phase's model as before. Resolved once, before the prompt is
+  // built, so the prompt and the argv cannot disagree. Wired here as well as
+  // on the standalone command path, or the key would be inert on exactly the
+  // runs the fleet actually makes.
+  const issueExecutorSplit = isIssueExecutorSplitEnabled(
+    "issue",
+    config.repoConfig?.[repo],
+    config,
+  );
+  if (issueExecutorSplit) {
+    logger.info(
+      `Issue-executor split is on for ${repo}: the invocation carries ` +
+        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
+
   const promptResult = await deps.infrastructure.buildPrompt({
     repo,
     issueNumber: String(issueNumber),
@@ -498,6 +524,8 @@ async function executeClaudeBody(
     // for every implementation run (Issue #849); the per-run custom prompt
     // above still wins when this run was dispatched by a custom label.
     promptOverrides: promptOverrideMappings(config),
+    // Issue #2343: a split run's prompt carries the advisor/executor block.
+    issueExecutorSplit,
   });
   if (!promptResult.ok) {
     return {
@@ -799,6 +827,14 @@ async function executeClaudeBody(
           // Issue #2159 layers the `codegraph` server beside that grant on an
           // enabled run whose index built, and changes nothing otherwise.
           mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
+          // Issue #2342: only a split run carries sub-agent definitions, and
+          // only a split run carries the guard that keeps every `Edit`/`Write`
+          // inside one of them (Issue #2344). `claude_runner.ts` merges that
+          // guard's hooks with the ones below rather than one replacing the
+          // other.
+          ...(issueExecutorSplit
+            ? { agents: buildIssueExecutorAgents(), issueExecutorSplit: true }
+            : {}),
           // This spawn's hooks (Issue #2383), carried on the command line. A
           // run that installs none leaves the key absent, so the argv is the
           // one it always spawned; when the split-executor guard reaches this

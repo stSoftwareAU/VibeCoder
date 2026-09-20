@@ -206,6 +206,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   best_planning_model: "bestPlanningModel",
   phase_model_overrides: "phaseModelOverrides",
   phase_effort_overrides: "phaseEffortOverrides",
+  // Per-repo issue-executor split override (Issue #2341).
+  issue_executor_split: "issueExecutorSplit",
   // Per-repo Codex model/effort routing (Issue #363).
   codex_model: "codexModel",
   codex_phase_model_overrides: "codexPhaseModelOverrides",
@@ -865,6 +867,11 @@ export async function loadConfig(
   const deepseekPhaseModelOverrides: Record<string, string> =
     file.deepseek_phase_model_overrides ?? {};
 
+  // Issue-executor split, host-wide (Issue #2341). A `repo_config` entry of
+  // the same name overrides it per repository.
+  const issueExecutorSplit = file.issue_executor_split ??
+    OPERATIONAL_DEFAULTS.issueExecutorSplit;
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -1102,6 +1109,7 @@ export async function loadConfig(
     codexPhaseEffortOverrides,
     geminiPhaseModelOverrides,
     deepseekPhaseModelOverrides,
+    issueExecutorSplit,
     includeRecentActivity,
     includeCodebaseMap,
     codegraphContext,

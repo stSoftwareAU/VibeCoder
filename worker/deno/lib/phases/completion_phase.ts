@@ -76,7 +76,12 @@ import {
 } from "../worker_build_info.ts";
 import { bindIssueRunBehindSync } from "../milestone_presync.ts";
 import { repoDirName } from "../work_volume_tiers.ts";
-import { postIssueRunStatsComment } from "../issue_run_stats_comment.ts";
+import {
+  IMPLEMENTATION_RUN_STATS_PHASE,
+  measureIssuePhaseRun,
+  postIssueRunStatsComment,
+} from "../issue_run_stats_comment.ts";
+import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
 import {
   buildSecurityFixGateMessage,
   evaluateSecurityFixGate,
@@ -130,8 +135,12 @@ import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
  * Drives both the stats heading and the expected-model routing chain.
+ *
+ * Shared with the renderer (Issue #2346): the split figures render only for
+ * this phase, so a local copy drifting from it would silently empty the pilot
+ * metric.
  */
-const WORK_ON_STATS_PHASE = "issue";
+const WORK_ON_STATS_PHASE = IMPLEMENTATION_RUN_STATS_PHASE;
 
 /** What {@link lookupPrState} could read about an existing PR. */
 interface LinkedPrLookup {
@@ -727,7 +736,7 @@ async function postWorkOnRunStats(
   if (claudeResults.length === 0) return;
 
   const client = deps.github.createClient(deps.logger);
-  await postIssueRunStatsComment({
+  const posted = await postIssueRunStatsComment({
     repo: ctx.repo,
     issueNumber: ctx.issueNumber,
     phase: WORK_ON_STATS_PHASE,
@@ -747,9 +756,37 @@ async function postWorkOnRunStats(
     // The run's CodeGraph figures, recorded by the execute phase beside the
     // invocations above, ride the same comment (Issue #2161).
     ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
+    // Which attempt the quality gate passed on, from the slot the gate phase
+    // filled (Issue #2345). Absent when the run never reached the gate, which
+    // renders no line at all.
+    ...(state.qualityGateOutcome
+      ? { qualityGate: state.qualityGateOutcome }
+      : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
   });
+
+  // Issue #2347: the same figures the comment above renders, recorded once per
+  // completed implementation run so the pilot host's spend, first-attempt gate
+  // pass rate and duration are comparable with the control hosts' straight off
+  // the fleet summary — no reading every run-stats comment.
+  //
+  // `already_posted` is the one skip that must not record: this run is counted
+  // already, and counting it twice would halve its own pass rate. A GitHub
+  // failure still records — the run happened, and losing its figures to a
+  // comment that did not post would understate the host. `no_stats` needs no
+  // guard here: a run no invocation produced stats for renders no comment, and
+  // `measureIssuePhaseRun` measures nothing for it either.
+  if (posted.reason !== "already_posted") {
+    const figures = measureIssuePhaseRun({
+      phase: WORK_ON_STATS_PHASE,
+      claudeResults,
+      ...(state.qualityGateOutcome
+        ? { qualityGate: state.qualityGateOutcome }
+        : {}),
+    });
+    if (figures) recordIssuePhaseRun(figures);
+  }
 }
 
 /**

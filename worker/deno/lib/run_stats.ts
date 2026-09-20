@@ -17,6 +17,7 @@
  */
 
 import { extractTokenUsage, type TokenUsage } from "./token_usage.ts";
+import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import {
   type CacheHitRate,
   computeCacheHitRate,
@@ -93,6 +94,15 @@ export interface RunStats {
    * Optional for stats built before the per-invocation seam existed.
    */
   provider?: string;
+  /**
+   * What the issue-executor split's enforcement seam saw (Issue #2344).
+   *
+   * Present only on a run the split key enabled: the advisor `Edit`/`Write`
+   * calls that got through, the ones the `PreToolUse` guard denied, the
+   * executors dispatched and the re-tasks issued. Absent everywhere else, so
+   * a reader can tell an unsplit run from a split run that counted nothing.
+   */
+  executorSplit?: IssueExecutorSplitStats;
 }
 
 // ---------------------------------------------------------------------------
