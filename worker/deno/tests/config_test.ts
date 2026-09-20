@@ -1174,7 +1174,8 @@ Deno.test("config - loadConfig uses default operational values when not in confi
     assertEquals(config.claudeTimeout, 3600);
     assertEquals(config.claudeKillAfter, 30);
     assertEquals(config.maxClarificationRounds, 3);
-    assertEquals(config.sleepInterval, 30);
+    // Issue #2446: default sleep interval raised from 30 s to 120 s.
+    assertEquals(config.sleepInterval, 120);
     assertEquals(config.creditWaitInterval, 300);
     assertEquals(config.refinementTimeout, 300);
     assertEquals(config.refinementKillAfter, 10);

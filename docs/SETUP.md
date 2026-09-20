@@ -1397,7 +1397,9 @@ explained beneath the block, never inside it.
   [Token scopes for derived trust](#token-scopes-for-derived-trust).
 - `claude_model`, `claude_timeout`, `sleep_interval` — operational overrides.
   Write them only when they must differ from the defaults; the file holds
-  overrides, not a snapshot. Values and defaults are in
+  overrides, not a snapshot. `sleep_interval` defaults to `120` seconds
+  (Issue #2446), so the sample above only restates the shipped value — drop the
+  key unless you want a different cadence. Values and defaults are in
   [Configuration Defaults](CONFIGURATION.md#configuration-defaults).
 - `worker_name` — multi-worker visibility, optional and in the same
   [defaults table](CONFIGURATION.md#configuration-defaults). Host health

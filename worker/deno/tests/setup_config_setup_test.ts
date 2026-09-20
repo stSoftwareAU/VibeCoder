@@ -659,9 +659,10 @@ Deno.test("buildOverridesOnly - includes sleep_interval when different from defa
   assertEquals(result.sleep_interval, 60);
 });
 
-Deno.test("buildOverridesOnly - omits sleep_interval when matching default (30)", () => {
+Deno.test("buildOverridesOnly - omits sleep_interval when matching default (120)", () => {
   const config: SetupConfig = {
-    sleep_interval: 30,
+    // Issue #2446: the shipped default is 120 s.
+    sleep_interval: 120,
   };
   const result = buildOverridesOnly(config);
   assertEquals(result.sleep_interval, undefined);

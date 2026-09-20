@@ -200,7 +200,8 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
 Deno.test("run_core - createDefaultRunCoreConfig returns valid defaults", () => {
   const config = createDefaultRunCoreConfig();
   assertEquals(config.runDurationSeconds, 3600);
-  assertEquals(config.sleepInterval, 30);
+  // Issue #2446: default sleep interval raised from 30 s to 120 s.
+  assertEquals(config.sleepInterval, 120);
   assertEquals(typeof config.maxConsecutiveFailures, "number");
   assertEquals(config.maxConsecutiveFailures > 0, true);
 });

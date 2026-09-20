@@ -176,7 +176,7 @@ import {
 export interface RunCoreConfig {
   /** Total duration to run before planned shutdown (seconds, default: 3600). */
   runDurationSeconds: number;
-  /** Base sleep interval between scan cycles (seconds, default: 30). */
+  /** Base sleep interval between scan cycles (seconds, default: 120). */
   sleepInterval: number;
   /**
    * Concurrent-issue slot count (Issue #4174; default 1). Made available and
@@ -1540,7 +1540,9 @@ export const LIVENESS_CHECK_CADENCE = 20;
 export function createDefaultRunCoreConfig(): RunCoreConfig {
   return {
     runDurationSeconds: 3600,
-    sleepInterval: 30,
+    // Issue #2446: 120 s, sourced from OPERATIONAL_DEFAULTS so the loop
+    // default and the config default cannot drift apart again.
+    sleepInterval: OPERATIONAL_DEFAULTS.sleepInterval,
     maxConcurrentIssues: 1,
     agentProviderFallback: [],
     maxConsecutiveFailures: 10,
