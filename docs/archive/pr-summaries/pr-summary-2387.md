@@ -132,15 +132,26 @@ creep outside the issue's deliverable list was found.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — documentation keyword checks presented as drift tests; the
-  file header overclaimed how much of the suite is driven by live code —
-  evidence: `worker/deno/tests/rtk_output_trial_docs_test.ts:133,185,204,227,320,332,348`
-  (pre-refactor line numbers) — reason: fixed here. The header now states
-  plainly that four tests are drift tests in the strict sense and the rest pin
-  prose the code cannot express, for which the page is the source of truth and
-  a section-scoped keyword check is the strongest assertion available
-  (`:11-21`). Every assertion is scoped to its own section, so deleting a rule
-  cannot be satisfied by the same words elsewhere on the page.
+- **violation** — documentation keyword checks in the drift suite: seven of the
+  eleven cases assert that particular words appear in prose rather than on any
+  code behaviour — evidence:
+  `worker/deno/tests/rtk_output_trial_docs_test.ts:159` (`"10%"`), `:164`
+  (`"2 days"`), `:182-195` (`grq-25`, `/no code schedules it/i`,
+  `/no worker flips it/i`), `:236-247`, `:274-281`
+  (`/clears \/ does not clear/i`), `:287-297` (`/#2348/`), `:302-312`
+  (`/not trialled/i`), against `CODING-STANDARDS.md:104-107` — reason: stands,
+  and is now recorded rather than argued. The four cases the code *can* express
+  do drive live modules (`prepareRtkRun` `:64-84`, `buildRtkStatsLine`
+  `:223-235`, `parseRtkOutput`/`RTK_OUTPUT_KEYS` `:111-121`, the imported
+  matcher/command/marker constants); the other seven pin rules — the bar, the
+  human-opened window, "no worker flips it" — that no module can express, and
+  acceptance criterion 2 asks for exactly that guard. The reviewer is right that
+  the repo's 22 sibling `*_docs_test.ts` suites are precedent, not a documented
+  exemption, and that the carve-out belongs in `CODING-STANDARDS.md` rather than
+  in each new test's header; that is a repo-wide decision, so it is filed as
+  **#2429** instead of being settled inside this PR. Every assertion is scoped
+  to its own section, so deleting a rule cannot be satisfied by the same words
+  elsewhere on the page.
 - **violation** — duplicated markdown helpers: a third hand-rolled copy of the
   `readRepoDoc`/`section` pair, and not fence-aware — evidence:
   `worker/deno/tests/rtk_output_trial_docs_test.ts:46-69` (pre-refactor) —
@@ -195,7 +206,10 @@ its link to the page.
 
 ## Follow-up
 
-**#2422** — `docs/RELEASE-NOTES.md` carries two stale `## Unreleased` headings
-(`:53` and `:146`) for content that actually shipped as 1.6.41 and 1.6.56.
-Filed after a dedup search found no existing open issue; deliberately left
-untouched here so the 1.7.0 commit stays scoped to the release it cuts.
+**#2422** — `docs/RELEASE-NOTES.md` carried two stale `## Unreleased` headings
+for content that actually shipped as 1.6.41 and 1.5.36–1.5.156. Filed from this
+issue after a dedup search found no existing open issue, and deliberately left
+untouched by this PR's own diff so the 1.7.0 commit stays scoped to the release
+it cuts. It has since been fixed on `main` by #2424 and closed; that fix reached
+this branch through the `main` merge (`98a0afad`), which is why the branch's
+release notes no longer show either heading.
