@@ -23,8 +23,11 @@ read the full, unfiltered output when a command fails. The wager is that a
 Bash-heavy run spends a large share of its context on output nobody reads.
 
 The switch is `rtk_output.enabled` — one boolean, per host, default `false`,
-wired end to end by [#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382)
-and documented in the [Configuration Reference](CONFIGURATION.md). The binary
+parsed by [#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382), wired
+into the five spawn paths by
+[#2383](https://github.com/stSoftwareAU/VibeCoder/issues/2383) and
+[#2384](https://github.com/stSoftwareAU/VibeCoder/issues/2384), and documented
+in the [Configuration Reference](CONFIGURATION.md). The binary
 itself is a pinned container toolchain fragment
 ([#2381](https://github.com/stSoftwareAU/VibeCoder/issues/2381)), so every host
 running a given image runs the same RTK version.
@@ -200,8 +203,12 @@ trial is run with that stated rather than discovered:
   front of both: the `gh` guard (**C13**) and outbound redaction (**C24**)
   apply to an RTK-wrapped command exactly as they do to a bare one. RTK rewrites
   what the agent *reads*; it does not choose what runs.
-- Its telemetry is disabled image-wide, so no run's command output leaves the
-  container by this path.
+- Its telemetry is disabled image-wide (`RTK_TELEMETRY_DISABLED=1`; RTK does not
+  honour `DO_NOT_TRACK`), so no run's command output leaves the container by
+  this path. `RTK_SUPPRESS_HOOK_WARNING=1` is set beside it to keep the daily
+  missing-hook warning off stderr — v0.49.0 reads no such variable, so it is
+  declared and **inert** until a release honours it, and the warning is
+  cosmetic either way.
 - Nothing here can fail a run. Every failure logs exactly one
   `[RTK_UNAVAILABLE] <reason>` line and records `failed`; the run then proceeds
   with an unchanged prompt and no hook.
