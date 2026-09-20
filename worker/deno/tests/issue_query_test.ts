@@ -714,6 +714,52 @@ Deno.test("issue_query - fetchAllOpenPRs - cache miss fetches and parses JSON", 
   }
 });
 
+// Issue #2409: the merge-conflict stall watchdog gates its per-repository
+// label listing on this cached listing, so the listing has to carry labels.
+Deno.test("issue_query - fetchAllOpenPRs - asks for labels and carries them on each row (Issue #2409)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const calls: string[][] = [];
+    const mockGh = (args: string[]): Promise<string> => {
+      calls.push(args);
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 5,
+          title: "labelled",
+          baseRefName: "main",
+          headRefName: "issue-5",
+          body: "",
+          url: "",
+          labels: [{ name: "merge-conflict" }, { name: "enhancement" }],
+        },
+        // A row `gh` returned with no labels field at all, and one with junk.
+        { number: 6, title: "bare", baseRefName: "main", headRefName: "h" },
+        {
+          number: 7,
+          title: "junk",
+          baseRefName: "main",
+          headRefName: "h",
+          labels: [{ name: 3 }, "x", null],
+        },
+      ]));
+    };
+    const prs = await fetchAllOpenPRs("o/r", cache, 50, mockGh);
+
+    const fields = calls[0]?.[calls[0].indexOf("--json") + 1] ?? "";
+    assert(fields.split(",").includes("labels"), `fields: ${fields}`);
+    assertEquals(prs[0]?.labels, ["merge-conflict", "enhancement"]);
+    assertEquals(prs[1]?.labels, []);
+    assertEquals(prs[2]?.labels, []);
+
+    // And they survive the cache round-trip the watchdog actually reads.
+    const again = await fetchAllOpenPRs("o/r", cache, 50, mockGh);
+    assertEquals(calls.length, 1);
+    assertEquals(again[0]?.labels, ["merge-conflict", "enhancement"]);
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchAllOpenPRs - cache hit avoids gh call", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {

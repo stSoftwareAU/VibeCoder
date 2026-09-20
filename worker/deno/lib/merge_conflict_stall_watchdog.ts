@@ -639,6 +639,92 @@ export interface ConflictStallScanOptions extends ConflictStallEscalationDeps {
   isRepoAllowed?: (repo: string) => boolean;
   /** Shared timeline cache, when the caller keeps one. */
   timelineCache?: TimelineCache;
+  /**
+   * The open-PR listing the scan already holds for a repository, with labels
+   * (Issue #2409).
+   *
+   * Without it this watchdog cost one GraphQL call per monitored repository on
+   * **every cycle** — `20×[pr list --json --label --repo --state]` every ~3
+   * minutes, per host, almost always to learn "none" — and the fleet was
+   * spending its hourly GitHub quota in ~25 minutes. A stall is
+   * {@link DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS} hours long, so learning that
+   * a PR gained the label one cache lifetime late costs nothing.
+   *
+   * It is only a **gate**. When it shows a labelled PR the live listing is
+   * still taken, because the merge state and base tip the watchdog acts on
+   * must be current. And it can only prove absence when it is complete: a
+   * listing that came back full ({@link openPrListingLimit} rows) or cannot be
+   * read falls through to the live listing, so nothing the old path found can
+   * be missed.
+   */
+  listOpenPrLabels?: (repo: string) => Promise<readonly ListedOpenPr[]>;
+  /** Rows at which {@link listOpenPrLabels} is treated as truncated. */
+  openPrListingLimit?: number;
+}
+
+/** One row of the scan's open-PR listing, as far as this watchdog reads it. */
+export interface ListedOpenPr {
+  number: number;
+  labels: readonly string[];
+}
+
+/**
+ * Narrow the scan's open-PR rows to what the gate reads, refusing a listing
+ * that cannot answer (Issue #2409).
+ *
+ * A cache entry written before the listing asked for labels has rows with no
+ * `labels` field. Reading that as "no labels" would let the gate prove an
+ * absence it never looked for, so it throws instead — which the gate treats
+ * like any unreadable listing, and takes the live one.
+ *
+ * @param prs - Rows from `fetchAllOpenPRs`
+ * @throws When any row carries no `labels` field
+ */
+export function listedOpenPrs(
+  prs: readonly { number: number; labels?: readonly string[] }[],
+): ListedOpenPr[] {
+  return prs.map((pr) => {
+    if (pr.labels === undefined) {
+      throw new Error(
+        `open-PR listing row #${pr.number} carries no labels field — the ` +
+          `listing predates Issue #2409 and cannot answer`,
+      );
+    }
+    return { number: pr.number, labels: pr.labels };
+  });
+}
+
+/** The scan lists up to this many open PRs per repository. */
+const DEFAULT_OPEN_PR_LISTING_LIMIT = 50;
+
+/**
+ * Does the scan's own listing prove this repository has no labelled open PR?
+ *
+ * `true` only for a readable, complete listing in which no PR carries the
+ * label. Anything else — none supplied, unreadable, full, or a labelled PR in
+ * it — is `false`, and the caller takes the live listing.
+ */
+async function cachedListingProvesNoneLabelled(
+  repo: string,
+  options: Pick<
+    ConflictStallScanOptions,
+    "listOpenPrLabels" | "openPrListingLimit" | "logger"
+  >,
+): Promise<boolean> {
+  if (!options.listOpenPrLabels) return false;
+  let listed: readonly ListedOpenPr[];
+  try {
+    listed = await options.listOpenPrLabels(repo);
+  } catch (error) {
+    options.logger.warn(
+      "Merge-conflict stall watchdog: the scan's PR listing could not be read — listing live (Issue #2409)",
+      { repo, error: errorMessage(error) },
+    );
+    return false;
+  }
+  const limit = options.openPrListingLimit ?? DEFAULT_OPEN_PR_LISTING_LIMIT;
+  if (listed.length >= limit) return false;
+  return !listed.some((pr) => pr.labels.includes(MERGE_CONFLICT_LABEL));
 }
 
 /** A PR the label listing returned. */
@@ -816,6 +902,11 @@ export async function scanConflictQueueStalls(
   for (const repo of repos) {
     if (quota.latchedBeforeRepo()) break;
     if (isRepoAllowed && !isRepoAllowed(repo)) {
+      quota.repoDone();
+      continue;
+    }
+
+    if (await cachedListingProvesNoneLabelled(repo, options)) {
       quota.repoDone();
       continue;
     }

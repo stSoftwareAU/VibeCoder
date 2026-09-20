@@ -80,6 +80,13 @@ export interface OpenPRWithBody extends OpenPR {
   body: string;
   url: string;
   /**
+   * The PR's label names (Issue #2409). Carried by {@link fetchAllOpenPRs}
+   * only, so a pass that would otherwise ask each repository "which open PRs
+   * carry label X?" every cycle can read the answer off the listing the scan
+   * already holds. Absent on rows from a listing that did not ask for labels.
+   */
+  labels?: string[];
+  /**
    * The listing author's login, when `gh` reported one (Issue #1846).
    *
    * Named apart from {@link OpenPR.author} deliberately: that field carries
@@ -875,6 +882,13 @@ const OPEN_PR_LIST_FIELDS =
   "isCrossRepository,headRefOid,autoMergeRequest,mergeable";
 
 /**
+ * {@link OPEN_PR_LIST_FIELDS} plus `labels`, for the one all-authors listing
+ * (Issue #2409). Kept off the per-author listings deliberately: nothing reads
+ * labels there, and their field list is shared with the cross-repo prefetch.
+ */
+const ALL_OPEN_PR_LIST_FIELDS = `${OPEN_PR_LIST_FIELDS},labels`;
+
+/**
  * Fetch all open PRs for a repo, regardless of author (Issue #1787).
  *
  * Used by helpers that need to look up PRs by head branch or by issue
@@ -903,7 +917,7 @@ export async function fetchAllOpenPRs(
     "--state",
     "open",
     "--json",
-    OPEN_PR_LIST_FIELDS,
+    ALL_OPEN_PR_LIST_FIELDS,
     "--limit",
     String(limit),
   ]);
@@ -955,6 +969,12 @@ export async function fetchAllOpenPRs(
         mergeMethod: typeof method === "string" ? method : "",
       };
     }
+    // Issue #2409: label names, tolerating a row with none or with junk.
+    pr.labels = Array.isArray(item.labels)
+      ? item.labels.flatMap((label) =>
+        isRecord(label) && typeof label.name === "string" ? [label.name] : []
+      )
+      : [];
     prs.push(pr);
   }
 
