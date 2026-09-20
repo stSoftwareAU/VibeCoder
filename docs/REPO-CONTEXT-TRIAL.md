@@ -275,3 +275,5 @@ _Template — fill in when the CodeGraph window closes._
   and where the bundle lands in the image.
 - **[Post-Run Callbacks](CALLBACKS.md)** — the callback context the
   `codegraph`/`graft` blocks are carried on.
+- **[RTK output trial](RTK-OUTPUT-TRIAL.md)** — the sibling protocol for the
+  `rtk_output.enabled` switch: same shape, a different candidate.
