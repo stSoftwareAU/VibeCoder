@@ -114,10 +114,11 @@ export interface GraftRun {
   /**
    * The user prompt this run sends.
    *
-   * The Graft line is appended when wired and the prompt is returned
-   * unchanged otherwise. Appending — rather than injecting into the template
-   * — keeps the prompt cache untouched and puts the line outside the
-   * untrusted fences the builder wrote.
+   * The Graft rule leads the prompt when wired and the prompt is returned
+   * unchanged otherwise (Issue #2435 — as a trailing sentence it was
+   * ignored). Leading — rather than injecting into the template — puts the
+   * rule outside the untrusted fences the builder wrote, and because the
+   * text is constant the prefix a wired run shares with the next is too.
    */
   applyPrompt(prompt: string): string;
   /**
@@ -202,7 +203,7 @@ export function bindGraftRun(options: BindGraftRunOptions): GraftRun {
     result,
     wired,
     applyPrompt: (prompt: string) =>
-      wired ? `${prompt}\n\n${GRAFT_PROMPT_LINE}` : prompt,
+      wired ? `${GRAFT_PROMPT_LINE}\n\n${prompt}` : prompt,
     mcpConfig,
     mcpConfigOption: (prior?: McpConfigRequest) => {
       const request = mcpConfig(prior);

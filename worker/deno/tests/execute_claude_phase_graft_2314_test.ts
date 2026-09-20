@@ -166,9 +166,13 @@ Deno.test("execute_claude_phase - an ok collection gets the line and the server 
     1,
     "the line must appear exactly once",
   );
+  // Outside every untrusted fence: it leads the prompt (Issue #2435), so it
+  // is ahead of the first fence's opening rather than below the last closing.
+  assert(prompt.startsWith(GRAFT_PROMPT_LINE), "the rule leads the prompt");
+  const firstFence = prompt.indexOf("---BEGIN UNTRUSTED");
   assert(
-    prompt.indexOf(GRAFT_PROMPT_LINE) > prompt.indexOf("---END UNTRUSTED---"),
-    "the line must sit outside the untrusted fence",
+    firstFence === -1 || firstFence > GRAFT_PROMPT_LINE.length,
+    "the rule must sit outside the untrusted fence",
   );
 
   const mcp = observed.runOptions?.mcpConfig;
