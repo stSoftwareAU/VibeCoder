@@ -172,6 +172,34 @@ const TEST_PERMISSION_FLAGS: readonly string[] = [
   "--allow-sys=hostname",
 ];
 
+/**
+ * The reporter both passes run with (Issue #2430).
+ *
+ * `deno test --reporter` takes one of `pretty`, `dot`, `junit`, `tap`. None
+ * is silent on a green run, but `dot` is the quietest — one character per
+ * test against `pretty`'s line per test — and it is the only quiet one that
+ * keeps a failure intact.
+ */
+export const TEST_REPORTER_FLAG = "--reporter=dot";
+
+/**
+ * The stage transcript one finished pass contributes.
+ *
+ * Nothing when the pass passed or never ran: `dot` still prints a dot per
+ * test and an `ok | N passed` line, and {@link summariseUnitTestPasses}
+ * already reports the pass's verdict and cost. Everything when it failed —
+ * the failing test's name, its assertion message and its stack trace all
+ * belong in front of the reader.
+ */
+export function unitTestPassTranscript(
+  label: string,
+  exitCode: number | null,
+  output: string,
+): string[] {
+  if (exitCode === 0 || exitCode === null) return [];
+  return [`=== deno tests: ${label} pass ===`, output];
+}
+
 /** One `deno test` invocation, ready to spawn. */
 export interface UnitTestPass {
   /** Short identifier used in the stage's reported output. */
@@ -237,7 +265,18 @@ export function unitTestPasses(
   // TypeScript program (Issue #4347). In parallel mode both used to start
   // together and miss the shared cache — the memory spike quality.sh blames
   // for the in-container SIGKILLs.
-  const common = ["test", ...extraArgs, "--no-check", ...TEST_PERMISSION_FLAGS];
+  // Issue #2430: the gate's output is quoted back into prompts, and `pretty`
+  // spends ~23,000 lines saying that a test passed. `dot` is the quietest
+  // reporter `deno test` accepts that still prints a failure in full — name,
+  // assertion message, diff and stack trace. It follows the permission set so
+  // `extraArgs` keep the position `test:unit` expects.
+  const common = [
+    "test",
+    ...extraArgs,
+    "--no-check",
+    ...TEST_PERMISSION_FLAGS,
+    TEST_REPORTER_FLAG,
+  ];
 
   // Issue #907: the suites that copy the repository's own `.sh`/`.ps1` into
   // a temp tree, stub a PATH and spawn them are integration tests. They cost

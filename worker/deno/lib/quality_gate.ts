@@ -61,6 +61,7 @@ import {
   summariseUnitTestPasses,
   unitTestPasses,
   type UnitTestPassOutcome,
+  unitTestPassTranscript,
   unitTestStageVerdict,
 } from "./unit_test_passes.ts";
 
@@ -1283,8 +1284,11 @@ async function runDenoTests(
       exitCode: result.exitCode,
       durationMs: Date.now() - startedAt,
     });
-    transcript.push(`=== deno tests: ${pass.label} pass ===`);
-    transcript.push(result.output);
+    // Issue #2430: a green pass says nothing beyond its summary line; a red
+    // one reports in full.
+    transcript.push(
+      ...unitTestPassTranscript(pass.label, result.exitCode, result.output),
+    );
   }
 
   const verdict = unitTestStageVerdict(outcomes);
