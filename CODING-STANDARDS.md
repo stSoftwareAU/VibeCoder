@@ -102,9 +102,11 @@ Follow TDD for all changes:
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored.
 5. Do NOT write tests that grep source files for patterns, inspect function
-   bodies, check documentation for keywords, verify line counts, or assert that
-   one function calls another. These are not real tests. If a function requires
-   external services to test, skip it rather than faking a test with grep.
+   bodies, verify line counts, or assert that one function calls another. These
+   are not real tests. If a function requires external services to test, skip it
+   rather than faking a test with grep. Documentation is the one narrow
+   exception, and it carries its own conditions — see **Documentation-drift
+   tests** below.
 
 ### Examples
 
@@ -133,6 +135,39 @@ Deno.test("should have validateConfig function", async () => {
   assertMatch(source, /function validateConfig/);
 });
 ```
+
+### Documentation-drift tests
+
+Rule 5 bans keyword checks over documentation; this subsection is the one
+exception, and the `worker/deno/tests/*_docs_test.ts` suites are what it exists
+for. They are the only guard on a documented rule, switch name or rendered line
+drifting away from the code that produces it, so such a suite stays — but it
+earns its place by meeting all three conditions:
+
+1. **Section-scoped.** Read the page with `readRepoDoc` and narrow it with
+   `section` from `worker/deno/tests/support/markdown_docs.ts`, which masks
+   fenced code and throws when the heading is renamed. A whole-file `includes`
+   is not a documentation-drift test: it still passes on a page that moved the
+   rule into an unrelated section, or deleted the context that gave it meaning.
+2. **What it pins is a rule the code cannot express.** A promise about the
+   worker's behaviour that no module holds as a value — "no worker flips it",
+   "the trial runs for 10% of claims". There is nothing to import, so the prose
+   is the only place the promise exists and drift is silent.
+3. **Every value the code can express is imported from the live module.**
+   Status names, rendered output lines, config keys, markers, defaults and
+   timeouts are imported from the live module that produces them, never retyped.
+   A retyped constant stays green while the page and the test agree with each
+   other and the code has moved on — the very drift the suite was written to
+   catch.
+
+A filesystem-derived invariant is a different species and needs no exemption:
+`worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
+without being listed or a link stops resolving, which is a fact about the tree
+rather than a keyword in prose.
+
+The distinguishing question is what is being pinned: a rule the source cannot
+hold is documentation drift; a string the source does hold is a grep. Cite this
+subsection rather than arguing a fresh exemption in a file header.
 
 ### Fake the external service, do not assert the request
 

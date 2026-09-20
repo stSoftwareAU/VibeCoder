@@ -27,7 +27,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
@@ -127,11 +132,11 @@ Deno.test("documentation drift - the auditor exempts the pattern it still flags 
 
 Deno.test("documentation drift - the pattern the carve-out protects is real (Issue #2429)", async () => {
   // The carve-out is only worth having while the suites it protects exist and
-  // use the mechanism it names.
-  const support = await Deno.readTextFile(`${TESTS_DIR}/${SUPPORT}`);
-  for (const exported of ["readRepoDoc", "section"]) {
-    assertStringIncludes(support, `export function ${exported}`);
-  }
+  // use the mechanism it names — so call it rather than grep for it.
+  assertStringIncludes(
+    await readRepoDoc("CODING-STANDARDS.md"),
+    "## Test-Driven Development (TDD)",
+  );
 
   const docsSuites: string[] = [];
   const callers: string[] = [];
