@@ -61,7 +61,10 @@ import {
   repairFailureDetectionSections,
 } from "./failure_detection_repair.ts";
 import { fetchNativeSubIssueNumbers } from "./native_sub_issues.ts";
-import { findFailureDetectionRepairParents } from "./find_failure_detection_repair_issues.ts";
+import {
+  findFailureDetectionRepairParents,
+  type ListedOpenIssue,
+} from "./find_failure_detection_repair_issues.ts";
 import {
   escalateToHuman,
   type EscalateToHumanDeps,
@@ -597,7 +600,9 @@ export interface FailureDetectionResumePassResult {
 /**
  * Run the resume pass across the configured repositories.
  *
- * Discovery is cheap (one `gh issue list` per repository) and processing is
+ * Discovery reads the scan's cached open-issue listing where the caller
+ * supplies it (Issue #2409; one `gh issue list` per repository otherwise, or
+ * where that listing is truncated or unreadable) and processing is
  * bounded to `maxParentsPerCycle` parents so one cycle cannot spend its whole
  * budget on a backlog of parents — the rest are picked up next cycle.
  */
@@ -618,11 +623,23 @@ export async function runFailureDetectionResumePass(opts: {
    * Omitted reads the configured fleet identity.
    */
   fleetAuthors?: AlertDedupAuthorOptions["fleetAuthors"];
+  /**
+   * The open-issue listing the scan already holds (Issue #2409), so discovery
+   * costs no `gh issue list` on a cycle with nothing to resume. See
+   * `findFailureDetectionRepairParents`.
+   */
+  listOpenIssues?: (repo: string) => Promise<readonly ListedOpenIssue[]>;
+  /** Rows at which that listing is treated as truncated. */
+  listingLimit?: number;
 }): Promise<FailureDetectionResumePassResult> {
   const parents = await findFailureDetectionRepairParents({
     repos: opts.repos,
     ghCommandFn: opts.ghCommandFn,
     logger: opts.logger,
+    ...(opts.listOpenIssues ? { listOpenIssues: opts.listOpenIssues } : {}),
+    ...(opts.listingLimit !== undefined
+      ? { listingLimit: opts.listingLimit }
+      : {}),
   });
 
   if (parents.length === 0) {

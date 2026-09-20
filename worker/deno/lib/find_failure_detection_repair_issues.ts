@@ -59,6 +59,25 @@ export async function findFailureDetectionRepairParents(opts: {
   logger: GateLogger;
   label?: string;
   limit?: number;
+  /**
+   * The open-issue listing the scan already holds for a repository — the
+   * cached `fetchAllIssues` (Issue #2409).
+   *
+   * Without it this finder cost one GraphQL call per monitored repository on
+   * **every cycle** — 20 calls every ~3 minutes, per host, to learn "none" —
+   * while that listing, which carries every label, already held the answer.
+   * The fleet was spending its hourly GitHub quota in ~25 minutes and sitting
+   * locked out for the rest of the hour.
+   *
+   * A listing can only prove a label's absence when it is **complete**: one
+   * that came back full ({@link listingLimit} rows) may have a labelled issue
+   * beyond it, and one that cannot be read proves nothing. Both fall back to
+   * the direct label query for that repository, so the change can miss nothing
+   * the old path found.
+   */
+  listOpenIssues?: (repo: string) => Promise<readonly ListedOpenIssue[]>;
+  /** Rows at which {@link listOpenIssues} is treated as truncated. */
+  listingLimit?: number;
 }): Promise<FailureDetectionRepairParent[]> {
   const label = opts.label ?? FAILURE_DETECTION_REPAIR_LABEL;
   const limit = opts.limit ?? DEFAULT_LIMIT;
@@ -78,6 +97,13 @@ export async function findFailureDetectionRepairParents(opts: {
         "Failure-Detection resume: skipping malformed repository name (Issue #60)",
         { repo },
       );
+      quota.repoDone();
+      continue;
+    }
+
+    const listed = await labelledFromListing(repo, label, opts);
+    if (listed !== null) {
+      parents.push(...listed);
       quota.repoDone();
       continue;
     }
@@ -116,6 +142,50 @@ export async function findFailureDetectionRepairParents(opts: {
   }
 
   return parents;
+}
+
+/** One row of the scan's open-issue listing, as far as this finder reads it. */
+export interface ListedOpenIssue {
+  number: number;
+  title: string;
+  labels: readonly string[];
+}
+
+/** The scan lists up to this many open issues per repository. */
+const DEFAULT_LISTING_LIMIT = 200;
+
+/**
+ * The labelled parents, read from the scan's own listing — or `null` when that
+ * listing cannot answer (none supplied, unreadable, or truncated) and the
+ * caller must ask GitHub directly.
+ */
+async function labelledFromListing(
+  repo: string,
+  label: string,
+  opts: {
+    logger: GateLogger;
+    listOpenIssues?: (repo: string) => Promise<readonly ListedOpenIssue[]>;
+    listingLimit?: number;
+  },
+): Promise<FailureDetectionRepairParent[] | null> {
+  if (!opts.listOpenIssues) return null;
+  let issues: readonly ListedOpenIssue[];
+  try {
+    issues = await opts.listOpenIssues(repo);
+  } catch (err) {
+    opts.logger.warn(
+      "Failure-Detection resume: the scan's issue listing could not be read — asking GitHub directly (Issue #2409)",
+      { repo, error: err instanceof Error ? err.message : String(err) },
+    );
+    return null;
+  }
+  if (issues.length >= (opts.listingLimit ?? DEFAULT_LISTING_LIMIT)) {
+    // Full listing: a labelled issue may sit beyond it. Absence is unproven.
+    return null;
+  }
+  return issues
+    .filter((issue) => issue.labels.includes(label))
+    .map((issue) => ({ repo, number: issue.number, title: issue.title }));
 }
 
 /**

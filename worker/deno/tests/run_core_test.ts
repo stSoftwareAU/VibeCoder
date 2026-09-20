@@ -1956,6 +1956,55 @@ Deno.test("run_core - empty iteration emits graphql-calls: 0 total (Issue #1924)
   assertStringIncludes(graphqlLines[0]!, "0 total");
 });
 
+// Issue #2409: the fleet exhausted its GraphQL quota ~25 minutes into every
+// hour and nothing in the log said which call shapes were spending it.
+Deno.test("run_core - every cycle logs the GraphQL call shapes beside the totals (Issue #2409)", async () => {
+  const { recordGhCall, resetGhCallMetrics } = await import(
+    "../lib/gh_call_metrics.ts"
+  );
+
+  const logLines: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    log: (msg: string) => logLines.push(msg),
+    now: () => nowValue,
+    // A pass that lists closed PRs by author in three repositories.
+    findAndProcessPrFeedback: () => {
+      for (const repo of ["o/a", "o/b", "o/c"]) {
+        recordGhCall(["pr", "list", "--repo", repo, "--author", "bot"]);
+      }
+      return Promise.resolve({
+        ok: true as const,
+        value: { processed: false },
+      });
+    },
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 1) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+  });
+
+  resetGhCallMetrics();
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  await runCoreLoop(config, deps);
+
+  const shapeLines = logLines.filter((l) => l.startsWith("graphql-shapes:"));
+  assertEquals(
+    shapeLines.length >= 1,
+    true,
+    logLines.join(" | ").slice(0, 400),
+  );
+  assertStringIncludes(shapeLines[0]!, "3×[pr list --author --repo]");
+  // Never a value: not the repository, not the author.
+  assertEquals(shapeLines[0]!.includes("o/a"), false);
+  assertEquals(shapeLines[0]!.includes("bot"), false);
+});
+
 // ---------------------------------------------------------------------------
 // Tests — monitored-repo accessibility health gate (Issue #4038)
 // ---------------------------------------------------------------------------
