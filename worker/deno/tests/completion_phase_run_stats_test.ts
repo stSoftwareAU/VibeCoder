@@ -343,3 +343,55 @@ Deno.test("completion - a run with no CodeGraph step mentions none (Issue #2161)
     `a run without the step must not mention it: ${stats.body}`,
   );
 });
+
+Deno.test("completion - reports the run's RTK status in the stats comment (Issue #2385)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    codegraphContext: { status: "failed", enabled: true, indexSeconds: 300 },
+    rtkOutput: { status: "ok", enabled: true, savedTokens: 12340 },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertEquals(
+    stats.body.split("\n").filter((line) => line.startsWith("- **RTK:**")),
+    ["- **RTK:** ok — 12,340 tokens saved"],
+  );
+  // Beside the CodeGraph line, and never counted as spend.
+  assertStringIncludes(stats.body, "- **CodeGraph:** failed — index 300 s");
+  assertStringIncludes(stats.body, "Estimated cost (USD, estimate only)");
+});
+
+Deno.test("completion - a host with RTK off still reports the line (Issue #2385)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    rtkOutput: { status: "off", enabled: false },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(stats.body, "- **RTK:** off");
+});
+
+Deno.test("completion - a run that never reached the RTK preparation mentions none (Issue #2385)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assert(
+    !stats.body.includes("RTK"),
+    `a run without the preparation must not mention it: ${stats.body}`,
+  );
+});
