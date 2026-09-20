@@ -621,14 +621,16 @@ Deno.test("the index survives the cleans a run starts with, where an ignored dep
 // MCP entry, prompt line and the query tally
 // ---------------------------------------------------------------------------
 
-Deno.test("codegraphMcpServer - names only the keys Claude and Codex both translate", () => {
+Deno.test("codegraphMcpServer - the keys both providers translate, plus Claude's deferral exemption", () => {
   const server = codegraphMcpServer("/work/repo");
   assertEquals(server, {
     command: "codegraph",
     args: ["serve", "--mcp", "--path", "/work/repo"],
     env: { CODEGRAPH_NO_DAEMON: "1" },
+    // Issue #2435: Claude-only. That Codex's translation never sees it is
+    // asserted in graft_always_load_2435_test.ts.
+    alwaysLoad: true,
   });
-  assertEquals(Object.keys(server).sort(), ["args", "command", "env"]);
 });
 
 Deno.test("codegraphMcpServer - roots the server at the checkout it is given (Issue #2200)", () => {

@@ -44,6 +44,14 @@ export interface AgentMcpServerSpec {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * Exempt this server's tools from the Claude CLI's tool-search deferral
+   * (Issue #2435). Deferred, a tool is a name the agent must spend a call
+   * loading before it can use it, and it reaches for `grep` instead. Per
+   * server, so nothing else the run carries is loaded up front. Codex's
+   * translation reads `command`, `args` and `env` only, so it never sees this.
+   */
+  alwaysLoad?: boolean;
 }
 
 /**
