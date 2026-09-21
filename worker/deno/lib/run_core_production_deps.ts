@@ -98,6 +98,7 @@ import {
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
@@ -2819,8 +2820,15 @@ export async function createProductionRunCoreDeps(
           ),
         // Issue #1774: a PR closed since the cached listing receives no
         // merge attempt — and an unreadable state is never assumed open.
+        // Issue #2462: the same read carries `autoMergeRequest` and
+        // `mergeStateStatus`, so the sweep can see an armed PR whose head
+        // has fallen behind its base.
         prLiveState: (repo, pr) =>
           readPrLiveState(repo, pr.number, runGhCommand),
+        // Issue #2462: the REST update-branch call the merge ladder already
+        // uses — reused as-is, never re-implemented here.
+        updateBranchFn: (repo, prNumber) =>
+          requestBranchUpdate(repo, prNumber, runGhCommand),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,

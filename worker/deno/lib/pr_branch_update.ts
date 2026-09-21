@@ -112,36 +112,64 @@ export type PrLiveState = "OPEN" | "MERGED" | "CLOSED" | "UNKNOWN";
  */
 export type PrLiveMergeable = "CONFLICTING" | "MERGEABLE" | "UNKNOWN";
 
-/** One `gh pr view --json state,mergeable` payload, parsed (Issue #2307). */
+/** One `gh pr view --json state,mergeable,…` payload, parsed (Issue #2307). */
 export interface PrLiveFields {
   /** The PR's live state. */
   state: PrLiveState;
   /** GitHub's live mergeable verdict. */
   mergeable: PrLiveMergeable;
+  /**
+   * True when `autoMergeRequest` is non-null — the PR has auto-merge armed
+   * (Issue #2462). False when the field is absent: absent knowledge never
+   * arms a write.
+   */
+  armed: boolean;
+  /**
+   * True when `mergeStateStatus` is `BEHIND` — the head has fallen behind
+   * its base (Issue #2462). False for every other status and for an absent
+   * field, so a shape the parser cannot see never triggers a branch update.
+   */
+  behind: boolean;
 }
 
 /**
- * Parse one `gh pr view --json state,mergeable` payload (Issue #2307).
+ * Parse one `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus`
+ * payload (Issue #2307; Issue #2462 added the two auto-merge fields).
  *
  * A bare state string — what the fetcher asked for with `--jq .state` before
  * this issue, and what a `gh` stub still answers — reads as that state with
- * an unknown `mergeable`, so neither reader breaks on the older shape.
- * Anything that is neither reads as `UNKNOWN` on both fields: an unparseable
- * payload never resolves to "open and mergeable".
+ * an unknown `mergeable` and neither `armed` nor `behind`, so neither reader
+ * breaks on the older shape. Anything that is neither reads as `UNKNOWN` on
+ * all fields: an unparseable payload never resolves to "open and mergeable".
  */
 export function parsePrLiveFields(raw: string): PrLiveFields {
   const text = raw.trim();
   if (!text.startsWith("{")) {
-    return { state: classifyState(text), mergeable: "UNKNOWN" };
+    return {
+      state: classifyState(text),
+      mergeable: "UNKNOWN",
+      armed: false,
+      behind: false,
+    };
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { state: "UNKNOWN", mergeable: "UNKNOWN" };
+    return {
+      state: "UNKNOWN",
+      mergeable: "UNKNOWN",
+      armed: false,
+      behind: false,
+    };
   }
   if (typeof parsed !== "object" || parsed === null) {
-    return { state: "UNKNOWN", mergeable: "UNKNOWN" };
+    return {
+      state: "UNKNOWN",
+      mergeable: "UNKNOWN",
+      armed: false,
+      behind: false,
+    };
   }
   const fields = parsed as Record<string, unknown>;
   return {
@@ -151,6 +179,9 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
     mergeable: classifyMergeable(
       typeof fields.mergeable === "string" ? fields.mergeable : "",
     ),
+    armed: fields.autoMergeRequest !== undefined &&
+      fields.autoMergeRequest !== null,
+    behind: fields.mergeStateStatus === "BEHIND",
   };
 }
 
@@ -190,7 +221,10 @@ export function classifyPrLiveState(raw: string): PrLiveState {
  *
  * Issue #2307: `mergeable` rides along with `state`, because the
  * merge-conflict drain must know a PR is *still* conflicting before it spends
- * a clone and an agent on it. One round trip answers both.
+ * a clone and an agent on it. Issue #2462 added `autoMergeRequest` and
+ * `mergeStateStatus` to the same round trip, so the auto-merge sweep can see
+ * an armed PR whose head has fallen behind without a second `gh` call. One
+ * round trip answers all four.
  */
 export function makeGhPrStateFetcher(
   ghFn: (args: string[]) => Promise<string>,
@@ -216,7 +250,8 @@ export function makeGhPrStateFetcher(
  * fixture that answered those with a state payload would be answering
  * questions nobody asked it.
  */
-export const PR_LIVE_STATE_JSON_FIELDS = "state,mergeable";
+export const PR_LIVE_STATE_JSON_FIELDS =
+  "state,mergeable,autoMergeRequest,mergeStateStatus";
 
 /** Overall result of executing PR branch updates (Issue #1233). */
 export interface PrBranchUpdateExecutionResult {
