@@ -5301,17 +5301,9 @@ export async function runCoreLoop(
 
   /**
    * Decide the end-of-cycle sleep for the `scanHadSuccess` branch
-   * (Issue #2447).
-   *
-   * Reads the account's GraphQL quota (the free probe, via the existing
-   * `readGraphqlQuota` dep), computes what the account spent across the cycle
-   * that just finished against the previous cycle's reading, and paces the
-   * sleep when that spend exceeds what the remaining window can afford per
-   * cycle. Returns the sleep to use plus an optional `budget-pacing:` log
-   * line. A missing dep, a null reading (probe unavailable), or a throw all
-   * fall back to the base sleep with no line — today's fixed behaviour,
-   * unchanged. The first cycle has no previous reading, so it also keeps the
-   * base sleep.
+   * (Issue #2447): pace it by what the account spent across the cycle just
+   * finished when that exceeds what the remaining window can afford per cycle.
+   * A missing dep, null reading, or throw keeps today's fixed sleep, silently.
    */
   async function readPacedEndOfCycleSleep(
     cycleStartMs: number,
@@ -5328,9 +5320,8 @@ export async function runCoreLoop(
     if (reading === null) return fallback;
 
     // `graphqlSpendBetween` reads `used` and `reset` only; `used` is the
-    // exact complement of `remaining` (used + remaining = limit), and
-    // `source` is ignored, so a headers-shaped placeholder keeps the call
-    // honest.
+    // exact complement of `remaining`, and `source` is ignored, so a
+    // headers-shaped placeholder keeps the call honest.
     const current: GraphqlQuotaReading = {
       limit: reading.limit,
       remaining: reading.remaining,

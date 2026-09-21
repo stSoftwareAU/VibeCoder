@@ -1,18 +1,9 @@
 /**
  * Pace the end-of-cycle sleep by the GraphQL budget left in the window
- * (Issue #2447).
- *
- * The end-of-cycle sleep used to be a fixed `sleepInterval` no matter how much
- * of the hour's GraphQL quota was left. The only guard against burning the
- * budget was the pre-flight threshold in `github_rate_limit_preflight.ts`,
- * which fires only once the quota is already gone. This module stretches the
- * sleep proportionally when the account-wide spend of the last cycle exceeds
- * what the remaining window can afford, so the hour's quota lasts the hour.
- *
- * Pure by design: every input is a number and every output is derived from
- * them, so the pacing decision is trivially testable and carries no I/O.
- *
- * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ * (Issue #2447). When the account-wide spend of the last cycle exceeds what
+ * the remaining window can afford per cycle, stretch the sleep proportionally
+ * (capped) so the hour's quota lasts the hour. Pure: numbers in, a decision
+ * out, no I/O. Australian English throughout.
  */
 
 /** Fraction of the window's points kept in reserve for issue work. */
@@ -47,23 +38,18 @@ export interface PacedSleepResult {
   reason: string;
   /** Whether the remaining budget is at or below the reserve. */
   inReserve: boolean;
-  /**
-   * The points the window can afford to spend per remaining cycle. Exposed so
-   * the wiring's `budget-pacing:` log line can name it without recomputing
-   * the formula.
-   */
+  /** Affordable spend per remaining cycle, named by the `budget-pacing:` log. */
   affordablePerCycle: number;
 }
 
 /**
  * Decide the end-of-cycle sleep from the budget left in the window.
  *
- * The affordable spend per cycle is
- * `(remaining − limit·reserve) / cyclesLeftInWindow`, where
- * `cyclesLeftInWindow` is the number of cycles that still fit before the
- * window reopens, floored at 1. When the last cycle spent no more than that,
- * the base sleep stands. Otherwise the sleep is stretched by the overspend
- * ratio so the projected spend fits, capped at {@link MAX_PACED_SLEEP_SECONDS}.
+ * Affordable spend per cycle is `(remaining − limit·reserve) /
+ * cyclesLeftInWindow`, where `cyclesLeftInWindow = max(1, (reset − now) /
+ * (cycleSeconds + baseSleepSeconds))`. Spend at or below that keeps the base
+ * sleep; otherwise the sleep is stretched by the overspend ratio, capped at
+ * {@link MAX_PACED_SLEEP_SECONDS} and never below the base.
  */
 export function computePacedSleepSeconds(
   input: PacedSleepInput,
@@ -82,9 +68,8 @@ export function computePacedSleepSeconds(
   const inReserve = remaining <= reserve;
   const base = Math.max(0, baseSleepSeconds);
 
-  // How many cycles still fit before the window reopens. Floored at 1 so a
-  // window about to reset (or a stale/negative `reset − now`) cannot divide by
-  // a fraction of a cycle and blow the affordable spend up.
+  // Floored at 1 so a window about to reset (or a stale/negative reset) cannot
+  // divide by a fraction of a cycle and inflate the affordable spend.
   const secondsToReset = reset - nowSeconds;
   const cyclesLeftInWindow = Math.max(
     1,
@@ -102,16 +87,14 @@ export function computePacedSleepSeconds(
     };
   }
 
-  // Overspend — or no spendable budget left outside the reserve. Stretch the
-  // sleep by the overspend ratio so the projected spend fits, capped at the
-  // pacing ceiling and never below the base.
+  // Overspend — or nothing spendable left outside the reserve — so stretch the
+  // sleep by the overspend ratio, capped and never below the base.
   const ratio = affordablePerCycle > 0
     ? spentLastCycle / affordablePerCycle
     : Number.POSITIVE_INFINITY;
-  const stretched = base * ratio;
   const sleepSeconds = Math.min(
     MAX_PACED_SLEEP_SECONDS,
-    Math.max(base, stretched),
+    Math.max(base, base * ratio),
   );
   const reason = affordablePerCycle <= 0
     ? "remaining budget is at or below the reserve"
