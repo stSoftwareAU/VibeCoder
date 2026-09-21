@@ -15,6 +15,7 @@ import {
   runCoreLoop,
   sleepWithJitter,
 } from "../lib/run_core.ts";
+import { MAX_PACED_SLEEP_SECONDS } from "../lib/budget_pacing.ts";
 import {
   recordRepoProbe,
   resetRepoAccessState,
@@ -1502,17 +1503,20 @@ Deno.test(
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 3600;
 
-    await runCoreLoop(config, deps);
+    const result = await runCoreLoop(config, deps);
+    console.log("DEBUG exitReason=", result.exitReason, "plannedShutdown=", result.plannedShutdown, "fatal=", result.fatalError, "issuesProcessed=", result.issuesProcessed);
 
-    // The paced sleep (from the second cycle) must exceed the fixed
-    // jittered base, and the per-cycle log line must name the reason.
+    // The 1700-point cycle against ~27 affordable points per cycle caps the
+    // paced sleep at 300 s — the second cycle must have slept that, and the
+    // per-cycle log line must name the reason.
     assert(
-      sleeps.some((ms) => ms > config.sleepInterval * 1000),
-      `expected a paced sleep > ${config.sleepInterval}s, got [${sleeps}]`,
+      sleeps.includes(MAX_PACED_SLEEP_SECONDS * 1000),
+      `expected a 300 s paced sleep, got [${sleeps}]`,
     );
     const pacingLine = logs.find((line) => line.startsWith("budget-pacing:"));
     assert(pacingLine, "expected a budget-pacing log line");
     assertStringIncludes(pacingLine, "last cycle's spend exceeds");
+    assertStringIncludes(pacingLine, "sleep=300s");
   },
 );
 
