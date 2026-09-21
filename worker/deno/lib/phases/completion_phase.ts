@@ -271,10 +271,29 @@ async function armAutoMergeAtCreation(
     );
   }
   const workDir = config.workDir;
+  // Issue #2457: one comment seam, shared by `finalisePr`'s own note and the
+  // caller's reason comment, so every PR comment goes through the same
+  // `EnableAutoMergeOptions.commentFn` shape.
+  const commentFn = async (
+    r: string,
+    n: number,
+    body: string,
+  ): Promise<void> => {
+    await deps.github.runGhCommand([
+      "pr",
+      "comment",
+      String(n),
+      "--repo",
+      r,
+      "--body",
+      body,
+    ]);
+  };
   const result = await deps.pr.finalisePr({
     repo,
     prNumber,
     skipAutoMerge,
+    commentFn,
     // Route the milestone gates' warnings into the worker log rather than
     // `console.warn`, which no operator reads.
     log: (message: string) => logger.warn(message, { repo, prNumber }),
@@ -327,15 +346,7 @@ async function armAutoMergeAtCreation(
         prNumber,
       });
       try {
-        await deps.github.runGhCommand([
-          "pr",
-          "comment",
-          String(prNumber),
-          "--repo",
-          repo,
-          "--body",
-          body,
-        ]);
+        await commentFn(repo, prNumber, body);
       } catch (error: unknown) {
         logger.warn(
           `Could not post the auto-merge reason comment on ${repo}#${prNumber}: ${
