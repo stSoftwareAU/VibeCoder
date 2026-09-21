@@ -65,7 +65,11 @@ import {
 import {
   activeAgentProvider,
   type AgentProviderSelector,
+  setConfiguredAgentProviderId,
+  setRunProviderOverride,
 } from "./agent_provider.ts";
+import { classifyProviderBilling } from "./provider_billing.ts";
+import { paceFallbackProviderId } from "./pace_provider_fallback.ts";
 import { checkGhAuth as ghAuthCheck } from "./gh_auth.ts";
 import {
   createSpendCeilingCheck,
@@ -705,6 +709,50 @@ export async function createProductionRunCoreDeps(
     logInfo: (message) => logger.info(message),
     logWarn: (message) => logger.warn(message),
   });
+  // Issue #2470: the guard parks the backlog while the operator's fallback
+  // provider sits idle. Once per run, when the guard engages and the fallback
+  // policy names an alternative, switch the active provider to it — the same
+  // shape as the health gate's switch (Issue #2055, set both records so the
+  // switch survives the in-process config reloads) — and keep the low tiers
+  // eligible, routed to the alternative. The billing mode is stated loudly,
+  // never silently (Issue #1923).
+  let paceFallbackId: string | null = null;
+  async function ensurePaceFallback(): Promise<string | null> {
+    if (paceFallbackId !== null) return paceFallbackId;
+    if (!(await weekPaceGate.isEngaged())) return null;
+    const wanted = paceFallbackProviderId({
+      paceEngaged: true,
+      policy: providerFallback,
+    });
+    if (wanted === null) return null;
+    const billing = classifyProviderBilling(wanted, {
+      workDir: config.workDir || workDir,
+    });
+    if (billing.billingMode !== "fixed-subscription") {
+      const consequence = billing.billingMode === "metered"
+        ? "so work switched to it is billed per token"
+        : "so what work switched to it costs cannot be established from here";
+      logger.warn(
+        `[pace-fallback] ${wanted} billing=${billing.billingMode} ` +
+          `(${billing.reason}) — this configured alternative is not a ` +
+          `proved fixed-price subscription, ${consequence} (Issue #2470)`,
+      );
+    }
+    logger.info(
+      `[pace-fallback] week pace engaged — switching the active provider ` +
+        `to ${wanted} and keeping the low tiers eligible ` +
+        `(billing=${billing.billingMode}, Issue #2470)`,
+    );
+    setConfiguredAgentProviderId(wanted);
+    setRunProviderOverride(wanted);
+    paceFallbackId = wanted;
+    return wanted;
+  }
+  // The adjusted verdict every consumer of the guard must share (Issue
+  // #2470): the tiers drop only while the guard holds AND no fallback took
+  // the backlog. The scan, the census and the filer all read this.
+  const weekPaceTierDrop = () =>
+    weekPaceGate.lastEngaged() && paceFallbackId === null;
 
   // --- Daily spend ceiling (Issue #3684) ---
   // Opt-in: unset or `0` leaves the hook unwired and behaviour unchanged. A
@@ -3407,7 +3455,13 @@ export async function createProductionRunCoreDeps(
       // its window resets, so this scan claims no `low-priority` or
       // `idle-task` issue and the quota left goes to `top-priority` and
       // `work-on` work. An unknown reading never refuses work.
-      const weekPaceEngaged = await weekPaceGate.isEngaged();
+      // Issue #2470: first give the configured fallback provider the chance
+      // to take the backlog; the tiers drop only when no fallback did.
+      await ensurePaceFallback();
+      // Once a fallback took the backlog the probe is pointless — the
+      // tiers stay eligible for the rest of the run either way.
+      const weekPaceEngaged = paceFallbackId === null &&
+        await weekPaceGate.isEngaged();
       // Issue #1950: repositories whose runs keep dying at setup are not
       // claimed again until the window lapses or their diagnostic issue is
       // closed. The probe runs first so a repaired repository is released
@@ -4694,8 +4748,9 @@ export async function createProductionRunCoreDeps(
     // filing is deferred while the pace guard is engaged — an idle-task the
     // filer raises could not be picked up before the weekly window resets,
     // and deciding where to raise it walks every monitored repository.
-    // `lastEngaged` is the recorded verdict: no probe, no request, no line.
-    weekPaceEngaged: () => weekPaceGate.lastEngaged(),
+    // Issue #2470: the adjusted verdict — once a fallback provider took the
+    // backlog, filing is useful again and the deferral must stop with it.
+    weekPaceEngaged: weekPaceTierDrop,
 
     runIdleTaskFiler: async () => {
       try {
@@ -4826,7 +4881,7 @@ export async function createProductionRunCoreDeps(
           // mysteriously passed over — counting GRQ-25's 87 pace-suppressed
           // `low-priority` issues as claimable is what made every cycle a
           // disagreement and drove the idle-task filer through its bound.
-          weekPaceEngaged: weekPaceGate.lastEngaged(),
+          weekPaceEngaged: weekPaceTierDrop(),
           ghCommandFn: auditGh,
           // The audit used to list every repo's open issues itself, uncached,
           // on every idle tick — a full duplicate of the scan's read. Serve it
@@ -5062,7 +5117,7 @@ export async function createProductionRunCoreDeps(
           // Issue #1885: the scan's own verdict, read without a probe or a
           // log line. A tier the pace gate refused is a modelled refusal, not
           // claimable work the scan mysteriously passed over.
-          weekPaceEngaged: weekPaceGate.lastEngaged(),
+          weekPaceEngaged: weekPaceTierDrop(),
         });
         const censusLines = formatIdleDecisionCensus(census, host);
         for (const line of censusLines) {
@@ -5200,7 +5255,7 @@ export async function createProductionRunCoreDeps(
               openIdleTasks,
               // Issue #1915: filing is deferred while the pace guard holds,
               // so an empty idle-task set is the policy, not starvation.
-              weekPaceEngaged: weekPaceGate.lastEngaged(),
+              weekPaceEngaged: weekPaceTierDrop(),
               // Issue #1083: one wrapper is health beside one idle slot and
               // a shortfall beside six.
               expectedIdleTasks: getIdleSlotCapacity(),
@@ -5212,7 +5267,7 @@ export async function createProductionRunCoreDeps(
                   // Issue #1915: the refusal that outranks both — while the
                   // pace guard holds, the filer is deferred whatever the
                   // other two say, so the evidence must name it.
-                  weekPaceEngaged: weekPaceGate.lastEngaged(),
+                  weekPaceEngaged: weekPaceTierDrop(),
                 }),
                 claimableTotal: lastAuditClaimableTotal,
                 censusLines,
