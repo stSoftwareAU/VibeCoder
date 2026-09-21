@@ -223,8 +223,9 @@ async function armSyncPrAutoMerge(
         message.trim(),
     );
     const retryLine = message.includes(PRIMARY_QUOTA_SKIP_PREFIX)
-      ? "The primary GitHub quota is exhausted, so no further `gh` call was " +
-        "made in this run; the Auto-Merge sweep retries once the quota resets."
+      ? "The primary GitHub quota is exhausted, so no further auto-merge " +
+        "attempt was made in this run; the Auto-Merge sweep retries once the " +
+        "quota resets."
       : "The Auto-Merge sweep retries.";
     try {
       await deps.gh([
@@ -237,8 +238,17 @@ async function armSyncPrAutoMerge(
         `Auto-merge was not armed on this sync PR: ${message.trim()}\n\n` +
         retryLine,
       ]);
-    } catch {
-      // The comment is best-effort; the warning above already reported it.
+    } catch (commentError) {
+      // Fail loud: the refusal must never become silent because the comment
+      // could not be posted. The warning above named the reason; this names
+      // the lost comment too.
+      deps.log?.(
+        `WARNING: could not post the auto-merge reason comment on ${repo}#${prNumber}: ${
+          commentError instanceof Error
+            ? commentError.message
+            : String(commentError)
+        }`,
+      );
     }
   };
 

@@ -1125,6 +1125,8 @@ Deno.test("pr_auto_merge - a latched gh refusal never retries and is marked latc
   assertEquals(result.result, AutoMergeResult.Failed);
   assertEquals(result.latched, true);
   assertEquals(mergeCalls, 1, "a latched refusal must not be retried in-run");
+  // The message carries the reset time, which the reason comment surfaces.
+  assertStringIncludes(result.message, "2026-09-21 10:00:00 AEST");
 });
 
 Deno.test("pr_auto_merge - autoMergeOutcomeNeedsComment covers Failed, NotAllowed, and unhandled Deferred (Issue #2457)", () => {
@@ -1201,5 +1203,5 @@ Deno.test("pr_auto_merge - buildArmingReasonComment names the reason and the swe
     latched: true,
     message: "Could not enable auto-merge: gh command skipped: primary quota",
   });
-  assertStringIncludes(latched, "no further `gh` call was made in this run");
+  assertStringIncludes(latched, "no further auto-merge attempt was made");
 });

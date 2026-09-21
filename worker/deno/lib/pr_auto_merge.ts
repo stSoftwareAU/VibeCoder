@@ -222,7 +222,7 @@ export function resetBehindSyncComments(): void {
 }
 
 /** Marker on the creation-arming reason comment (Issue #2457). */
-export const ARMING_REASON_MARKER = "<!-- vibe-auto-merge-not-armed -->";
+const ARMING_REASON_MARKER = "<!-- vibe-auto-merge-not-armed -->";
 
 async function postBehindSyncReason(
   repo: string,
@@ -295,8 +295,8 @@ export function buildArmingReasonComment(
   outcome: EnableAutoMergeResult,
 ): string {
   const retryLine = outcome.latched
-    ? `The primary GitHub quota is exhausted, so no further \`gh\` call was ` +
-      `made in this run; the Auto-Merge sweep retries once the quota resets.`
+    ? `The primary GitHub quota is exhausted, so no further auto-merge attempt ` +
+      `was made in this run; the Auto-Merge sweep retries once the quota resets.`
     : `The Auto-Merge sweep retries.`;
   return [
     ARMING_REASON_MARKER,

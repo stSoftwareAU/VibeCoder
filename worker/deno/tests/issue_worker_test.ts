@@ -2618,7 +2618,7 @@ Deno.test("completion - a latched refusal posts one comment naming the quota (Is
   assertEquals(result.status, "continue");
   const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
   assertEquals(comments.length, 1, JSON.stringify(ghCalls));
-  assertStringIncludes(comments[0]!.join(" "), "no further `gh` call was made");
+  assertStringIncludes(comments[0]!.join(" "), "no further auto-merge attempt");
 });
 
 // Issue #2457: a route-gate deferral nothing else explained gets one comment.
@@ -2656,6 +2656,45 @@ Deno.test("completion - a route-gate Deferred outcome posts one reason comment (
   const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
   assertEquals(comments.length, 1, JSON.stringify(ghCalls));
   assertStringIncludes(comments[0]!.join(" "), "checks pending");
+  assertStringIncludes(comments[0]!.join(" "), "Auto-Merge sweep retries");
+});
+
+// Issue #2457: a NotAllowed refusal is one of the three outcomes that comment.
+Deno.test("completion - a NotAllowed outcome posts one reason comment (Issue #2457)", async () => {
+  const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  const ghCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[1] === "create" || args[1] === "view") {
+          return Promise.resolve("https://github.com/org/repo/pull/5");
+        }
+        return Promise.resolve("");
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            result: AutoMergeResult.NotAllowed,
+            message:
+              "Auto-merge not allowed for PR #5 — target branch likely not protected",
+          },
+        })) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
+  assertEquals(comments.length, 1, JSON.stringify(ghCalls));
+  assertStringIncludes(comments[0]!.join(" "), "not protected");
   assertStringIncludes(comments[0]!.join(" "), "Auto-Merge sweep retries");
 });
 
