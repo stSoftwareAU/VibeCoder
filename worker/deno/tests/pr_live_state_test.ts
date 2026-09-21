@@ -35,7 +35,12 @@ Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdic
     return Promise.resolve('{"mergeable":"CONFLICTING","state":"OPEN"}\n');
   });
 
-  assertEquals(reading, { open: true, mergeable: "CONFLICTING" });
+  assertEquals(reading, {
+    open: true,
+    mergeable: "CONFLICTING",
+    armed: false,
+    behind: false,
+  });
   assertEquals(calls, [[
     "pr",
     "view",
@@ -43,7 +48,7 @@ Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdic
     "--repo",
     "owner/repo",
     "--json",
-    "state,mergeable",
+    "state,mergeable,autoMergeRequest,mergeStateStatus",
   ]]);
 });
 
@@ -54,7 +59,12 @@ Deno.test("readPrLiveState - a PR that merges cleanly reads as open and MERGEABL
       12,
       () => Promise.resolve('{"mergeable":"MERGEABLE","state":"OPEN"}'),
     ),
-    { open: true, mergeable: "MERGEABLE" },
+    {
+      open: true,
+      mergeable: "MERGEABLE",
+      armed: false,
+      behind: false,
+    },
   );
 });
 
@@ -71,7 +81,12 @@ Deno.test("readPrLiveState - an unreadable mergeable is unknown, never mergeable
   ) {
     assertEquals(
       await readPrLiveState("owner/repo", 12, () => Promise.resolve(raw)),
-      { open: true, mergeable: "UNKNOWN" },
+      {
+        open: true,
+        mergeable: "UNKNOWN",
+        armed: false,
+        behind: false,
+      },
       `raw payload ${raw} must read as an unknown mergeable`,
     );
   }
@@ -139,7 +154,15 @@ Deno.test("isPrLiveStateRead - recognises this read's own argv, and nothing else
   // Issue #2307: the field list is the whole point. Five other lookups ask
   // `gh pr view --json state,<something else>`, and a fixture that answered
   // those with a live-state payload would be answering the wrong question.
-  assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state,mergeable"]));
+  assert(
+    isPrLiveStateRead([
+      "pr",
+      "view",
+      "7",
+      "--json",
+      "state,mergeable,autoMergeRequest,mergeStateStatus",
+    ]),
+  );
   assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state"]));
   assert(!isPrLiveStateRead(["pr", "view", "7", "--json", "state,mergedAt"]));
   assert(
@@ -176,7 +199,12 @@ Deno.test("guardPrStillOpen - an open PR is not logged as a skip", async () => {
     logger,
   });
 
-  assertEquals(reading, { open: true, mergeable: "MERGEABLE" });
+  assertEquals(reading, {
+    open: true,
+    mergeable: "MERGEABLE",
+    armed: false,
+    behind: false,
+  });
   assertEquals(infos.length, 0);
   assertEquals(warns.length, 0);
 });
@@ -231,4 +259,78 @@ Deno.test("guardPrStillOpen - an unreadable state warns rather than passing quie
   const unknown = warns[0]!;
   assert(unknown.message.includes("skipped: PR state unknown"));
   assertEquals(unknown.context?.error, "network down");
+});
+
+// ---------------------------------------------------------------------------
+// Armed / behind (Issue #2462)
+// ---------------------------------------------------------------------------
+
+Deno.test("readPrLiveState - an armed, behind PR reads as armed and behind", async () => {
+  const reading = await readPrLiveState("owner/repo", 12, () =>
+    Promise.resolve(
+      JSON.stringify({
+        state: "OPEN",
+        mergeable: "MERGEABLE",
+        autoMergeRequest: { enabledBy: "worker-bot" },
+        mergeStateStatus: "BEHIND",
+      }),
+    ));
+
+  assertEquals(reading, {
+    open: true,
+    mergeable: "MERGEABLE",
+    armed: true,
+    behind: true,
+  });
+});
+
+Deno.test("readPrLiveState - a non-BEHIND mergeStateStatus is never behind", async () => {
+  for (const status of ["CLEAN", "BLOCKED", "DIRTY", "UNKNOWN", "HAS_HOOKS"]) {
+    const reading = await readPrLiveState(
+      "owner/repo",
+      12,
+      () =>
+        Promise.resolve(
+          JSON.stringify({
+            state: "OPEN",
+            mergeable: "MERGEABLE",
+            autoMergeRequest: { enabledBy: "worker-bot" },
+            mergeStateStatus: status,
+          }),
+        ),
+    );
+    assert(reading.open === true, `mergeStateStatus ${status} must read open`);
+    assertEquals(reading.behind, false, `mergeStateStatus ${status}`);
+  }
+});
+
+Deno.test("readPrLiveState - a legacy payload reads unarmed and not behind", async () => {
+  // The pre-#2462 shape: `state,mergeable` only. Absent knowledge must
+  // never arm a write.
+  const reading = await readPrLiveState(
+    "owner/repo",
+    12,
+    () => Promise.resolve('{"state":"OPEN","mergeable":"MERGEABLE"}'),
+  );
+  assertEquals(reading, {
+    open: true,
+    mergeable: "MERGEABLE",
+    armed: false,
+    behind: false,
+  });
+});
+
+Deno.test("readPrLiveState - a null autoMergeRequest reads unarmed even when behind", async () => {
+  // Behind without an arming request is a state, not a write trigger:
+  // the sweep only acts when both are known (Issue #2462).
+  const reading = await readPrLiveState("owner/repo", 12, () =>
+    Promise.resolve(
+      '{"state":"OPEN","mergeable":"MERGEABLE","autoMergeRequest":null,"mergeStateStatus":"BEHIND"}',
+    ));
+  assertEquals(reading, {
+    open: true,
+    mergeable: "MERGEABLE",
+    armed: false,
+    behind: true,
+  });
 });

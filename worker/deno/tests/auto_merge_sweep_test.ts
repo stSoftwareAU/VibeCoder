@@ -18,7 +18,7 @@ import {
 } from "../lib/auto_merge_sweep.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 
 const REPOS = [
   "stSoftwareAU/VibeCoder",
@@ -43,6 +43,8 @@ interface Harness {
   /** PRs whose live state was re-read at the claim point (Issue #1774). */
   stateReads: { repo: string; prNumber: number }[];
   attempted: { repo: string; prNumber: number }[];
+  /** Branch-update requests (Issue #2462). */
+  updated: { repo: string; prNumber: number }[];
   recorded: { repo: string; prNumber: number; result: AutoMergeResult }[];
   invalidated: string[];
 }
@@ -58,6 +60,10 @@ function harness(
       result: AutoMergeResult;
       message: string;
     }>;
+    updateBranchFn?: (
+      repo: string,
+      prNumber: number,
+    ) => Promise<{ ok: true; value: void } | { ok: false; error: Error }>;
     prLiveState?: (
       repo: string,
       pr: SweepablePr,
@@ -68,6 +74,7 @@ function harness(
     listed: [],
     stateReads: [],
     attempted: [],
+    updated: [],
     recorded: [],
     invalidated: [],
   };
@@ -98,6 +105,12 @@ function harness(
           result: AutoMergeResult.MergedDirectly,
           message: `merged #${pr.number}`,
         });
+    },
+    updateBranchFn: (repo: string, prNumber: number): Promise<Result<void>> => {
+      state.updated.push({ repo, prNumber });
+      return overrides.updateBranchFn
+        ? overrides.updateBranchFn(repo, prNumber)
+        : Promise.resolve({ ok: true, value: undefined });
     },
     recordOutcome: (
       repo: string,
@@ -491,4 +504,162 @@ Deno.test("a PR whose draft state is unknown (older cache entry) is attempted as
   const result = await sweepAutoMerge(options);
   assert(result.ok);
   assertEquals(state.attempted.map((a) => a.prNumber), [7]);
+});
+
+// ---------------------------------------------------------------------------
+// Armed-and-behind PRs get a branch update (Issue #2462)
+// ---------------------------------------------------------------------------
+
+Deno.test("an armed, behind PR gets exactly one branch update and no merge attempt", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, [{
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 42,
+  }]);
+  assertEquals(state.attempted, []);
+  assertEquals(state.recorded.map((r) => r.result), [
+    AutoMergeResult.BranchUpdateRequested,
+  ]);
+});
+
+Deno.test("an armed, current PR gets no update call and is merge-attempted as usual", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: false,
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, [{
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 42,
+  }]);
+});
+
+Deno.test("an unarmed, behind PR gets no update call and is merge-attempted as before", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: false,
+        behind: true,
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, [{
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 42,
+  }]);
+});
+
+Deno.test("an armed, behind but conflicting PR gets no update call", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "CONFLICTING",
+        armed: true,
+        behind: true,
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, [{
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 42,
+  }]);
+});
+
+Deno.test("a draft armed, behind PR gets no update call", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42, isDraft: true }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, []);
+});
+
+Deno.test("a failed branch update is recorded and the sweep continues", async () => {
+  warnings.length = 0;
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }, { number: 43 }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+    updateBranchFn: (_repo, prNumber) =>
+      prNumber === 42
+        ? Promise.resolve({
+          ok: false,
+          error: new Error("refused by GitHub"),
+        })
+        : Promise.resolve({ ok: true, value: undefined }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, [
+    { repo: "stSoftwareAU/VibeCoder", prNumber: 42 },
+    { repo: "stSoftwareAU/VibeCoder", prNumber: 43 },
+  ]);
+  // The failure is recorded under the failed outcome; the next PR still
+  // gets its update (Issue #2462: no retry loop, never fatal).
+  assertEquals(state.recorded.map((r) => r.result), [
+    AutoMergeResult.Failed,
+    AutoMergeResult.BranchUpdateRequested,
+  ]);
+  // The warn-on-failure level is `logAutoMergeOutcome`'s contract (the
+  // production wiring); the sweep itself never throws and never retries.
+  assertEquals(warnings.length, 0);
 });
