@@ -224,14 +224,6 @@ export function resetBehindSyncComments(): void {
 /** Marker on the creation-arming reason comment (Issue #2457). */
 export const ARMING_REASON_MARKER = "<!-- vibe-auto-merge-not-armed -->";
 
-/** PRs already told why auto-merge was not armed at creation this run. */
-const postedArmingReason = new Set<string>();
-
-/** Drop the arming-reason comment registry. Tests and process start. */
-export function resetArmingReasonComments(): void {
-  postedArmingReason.clear();
-}
-
 async function postBehindSyncReason(
   repo: string,
   prNumber: number,
@@ -265,20 +257,28 @@ async function postBehindSyncReason(
  * Whether a creation-arming outcome warrants a warn log and a single reason
  * comment on the PR (Issue #2457).
  *
- * Only a genuine refusal to arm needs the comment. Every other outcome is
+ * A genuine refusal to arm needs the comment: `Failed`, `NotAllowed`, and a
+ * `Deferred` that nothing else has already explained. Everything else is
  * either the worker doing what it set out to do (`Enabled`, `Skipped`,
- * `MergedDirectly`) or is already explained on the PR by the path that
- * produced it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
- * `BlockedOpenChildren` (#3909), the route-gate deferrals (#1779/#1967/#477)
- * and the #2005 behind-deferral (its `postBehindSyncReason`), the retarget
- * paths (#4396, #1967) which post their own marker-deduplicated comments, and
- * the #4375 gated direct-merge deferral which is a deliberate hold.
+ * `MergedDirectly`) or already explained on the PR by the path that produced
+ * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
+ * `BlockedOpenChildren` (#3909), the #2005 milestone-behind deferral (its
+ * `postBehindSyncReason`, and the #1779 behind hold that shares its
+ * `milestone-behind` deferral), and the #4375/#1082 gated direct-merge hold
+ * (the deliberate "never `--auto`" path).
  */
 export function autoMergeOutcomeNeedsComment(
   outcome: EnableAutoMergeResult,
 ): boolean {
-  return outcome.result === AutoMergeResult.Failed ||
-    outcome.result === AutoMergeResult.NotAllowed;
+  if (outcome.result === AutoMergeResult.Failed) return true;
+  if (outcome.result === AutoMergeResult.NotAllowed) return true;
+  if (outcome.result !== AutoMergeResult.Deferred) return false;
+  // A deferral needs the comment unless the path that produced it already
+  // holds deliberately: the #4375 gated direct merge, or a milestone-behind
+  // hold (#2005 posts its reason; #1779's is the same silent hold).
+  if (outcome.directMergeDeferred) return false;
+  if (outcome.deferral === "milestone-behind") return false;
+  return true;
 }
 
 /**
@@ -324,6 +324,13 @@ export interface EnableAutoMergeResult {
    * branch is neither armed nor escalated — it is re-read next scan.
    */
   deferral?: "milestone-behind" | "sync-base-unreadable";
+  /**
+   * Whether a `deferred` outcome is the deliberate #4375/#1082 gated
+   * direct-merge hold: an unprotected base has no required checks, so the
+   * worker held the PR instead of ever calling `--auto`. This is a chosen
+   * hold, not a refusal, so it needs no arming-reason comment (Issue #2457).
+   */
+  directMergeDeferred?: boolean;
   /**
    * Whether the `gh pr merge --auto` refusal was the primary-quota latch
    * short-circuiting the call, rather than GitHub answering (Issue #2457).
@@ -854,12 +861,14 @@ export async function enableAutoMerge(
       } else if (merge.value.blocked === "default_branch_unapproved") {
         return {
           result: AutoMergeResult.Deferred,
+          directMergeDeferred: true,
           message:
             `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
         };
       } else {
         return {
           result: AutoMergeResult.Deferred,
+          directMergeDeferred: true,
           message:
             `PR #${prNumber} not merged onto unprotected '${baseRefName}': ${
               merge.value.blocked ?? "gate deferred"

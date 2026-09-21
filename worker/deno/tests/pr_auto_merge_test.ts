@@ -1127,19 +1127,30 @@ Deno.test("pr_auto_merge - a latched gh refusal never retries and is marked latc
   assertEquals(mergeCalls, 1, "a latched refusal must not be retried in-run");
 });
 
-Deno.test("pr_auto_merge - autoMergeOutcomeNeedsComment covers Failed and NotAllowed only (Issue #2457)", () => {
-  const commented = [AutoMergeResult.Failed, AutoMergeResult.NotAllowed];
-  for (const code of commented) {
+Deno.test("pr_auto_merge - autoMergeOutcomeNeedsComment covers Failed, NotAllowed, and unhandled Deferred (Issue #2457)", () => {
+  // A bare refusal or a deferral nothing else explained gets the comment.
+  const commented: Array<[AutoMergeResult, string]> = [
+    [AutoMergeResult.Failed, "failed"],
+    [AutoMergeResult.NotAllowed, "not allowed"],
+  ];
+  for (const [code, msg] of commented) {
     assertEquals(
-      autoMergeOutcomeNeedsComment({ result: code, message: "m" }),
+      autoMergeOutcomeNeedsComment({ result: code, message: msg }),
       true,
     );
   }
+  // A plain Deferred (route-gate #477) has no other explanation posted.
+  assertEquals(
+    autoMergeOutcomeNeedsComment({
+      result: AutoMergeResult.Deferred,
+      message: "left on branch",
+    }),
+    true,
+  );
   const quiet: AutoMergeResult[] = [
     AutoMergeResult.Enabled,
     AutoMergeResult.Skipped,
     AutoMergeResult.MergedDirectly,
-    AutoMergeResult.Deferred,
     AutoMergeResult.Draft,
     AutoMergeResult.NotEnabledOnRepo,
     AutoMergeResult.BlockedOpenChildren,
@@ -1153,6 +1164,27 @@ Deno.test("pr_auto_merge - autoMergeOutcomeNeedsComment covers Failed and NotAll
       code,
     );
   }
+});
+
+Deno.test("pr_auto_merge - deliberate holds stay silent (Issue #2457)", () => {
+  // #4375/#1082 gated direct-merge hold: a chosen hold, never `--auto`.
+  assertEquals(
+    autoMergeOutcomeNeedsComment({
+      result: AutoMergeResult.Deferred,
+      directMergeDeferred: true,
+      message: "held on default branch",
+    }),
+    false,
+  );
+  // #2005 milestone-behind deferral already posts its own reason.
+  assertEquals(
+    autoMergeOutcomeNeedsComment({
+      result: AutoMergeResult.Deferred,
+      deferral: "milestone-behind",
+      message: "milestone behind",
+    }),
+    false,
+  );
 });
 
 Deno.test("pr_auto_merge - buildArmingReasonComment names the reason and the sweep retry (Issue #2457)", () => {
