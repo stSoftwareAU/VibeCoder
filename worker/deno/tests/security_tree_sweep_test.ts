@@ -16,6 +16,7 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import {
   attachClusterSnippets,
@@ -32,9 +33,11 @@ import {
   parseSemgrepJson,
   parseSweepBaseline,
   parseWorkerScanIssues,
+  readChangedFiles,
   renderSweepReport,
   ruleFamily,
   runSecurityTreeSweep,
+  splitByChangedFiles,
   type SweepCommand,
   type SweepDeps,
   type SweepFinding,
@@ -1434,4 +1437,99 @@ Deno.test("command: a well-formed --slug is still accepted (Issue #1271)", async
   // Unbaselined findings, not a slug rejection: the sweep actually ran.
   assertEquals(result.success, false);
   assertStringIncludes(result.message, "Unbaselined");
+});
+
+// ---------------------------------------------------------------------------
+// Changed-files scoping (Issue #2467)
+// ---------------------------------------------------------------------------
+
+Deno.test("sweep: splitByChangedFiles - null set is the strict tree-wide mode", () => {
+  const rows = [
+    { path: "src/app.ts" },
+    { path: "worker/lib/other.ts" },
+  ];
+  const { blockingRows, outOfScopeRows } = splitByChangedFiles(rows, null);
+  assertEquals(blockingRows.length, 2);
+  assertEquals(outOfScopeRows.length, 0);
+});
+
+Deno.test("sweep: splitByChangedFiles - only findings in the changed set block", () => {
+  const rows = [
+    { path: "src/app.ts" },
+    { path: "worker/lib/other.ts" },
+  ];
+  const { blockingRows, outOfScopeRows } = splitByChangedFiles(
+    rows,
+    new Set(["src/app.ts"]),
+  );
+  assertEquals(blockingRows.map((r) => r.path), ["src/app.ts"]);
+  assertEquals(outOfScopeRows.map((r) => r.path), ["worker/lib/other.ts"]);
+});
+
+Deno.test("sweep: splitByChangedFiles - an empty set blocks nothing", () => {
+  const rows = [{ path: "src/app.ts" }];
+  const { blockingRows, outOfScopeRows } = splitByChangedFiles(
+    rows,
+    new Set(),
+  );
+  assertEquals(blockingRows.length, 0);
+  assertEquals(outOfScopeRows.length, 1);
+});
+
+Deno.test("sweep: readChangedFiles - trims lines and drops blanks", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
+  const path = `${dir}/changed.txt`;
+  Deno.writeTextFileSync(path, "  src/app.ts  \n\nworker/lib/x.ts\n");
+  assertEquals(
+    readChangedFiles(path),
+    new Set(["src/app.ts", "worker/lib/x.ts"]),
+  );
+});
+
+Deno.test("sweep: readChangedFiles - an unreadable list fails loud", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
+  assertThrows(
+    () => readChangedFiles(`${dir}/missing.txt`),
+    Error,
+    "cannot read changed-files list",
+  );
+});
+
+Deno.test("sweep: unbaselined findings outside the changed files are reported, not fatal", async () => {
+  const stub = makeStub();
+  const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
+  const changedPath = `${dir}/changed.txt`;
+  // Nothing the stub reports lives in this list — a dependabot pin bump.
+  Deno.writeTextFileSync(changedPath, ".github/workflows/sweep.yml\n");
+  const result = await runWith(stub, EMPTY_BASELINE, {
+    changedFilesPath: changedPath,
+  });
+  assertEquals(result.ok, true);
+  assertEquals(result.newRows.length, 0);
+  assert(result.outOfScopeRows.length > 0, "the findings must still be named");
+  assertStringIncludes(
+    result.report,
+    "## Unbaselined, outside the changed files",
+  );
+  assertStringIncludes(
+    result.summary,
+    "unbaselined outside the changed files (not blocking",
+  );
+});
+
+Deno.test("sweep: an unbaselined finding IN the changed files still fails", async () => {
+  const stub = makeStub();
+  const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
+  const changedPath = `${dir}/changed.txt`;
+  Deno.writeTextFileSync(changedPath, `${PLANTED_PATH}\n`);
+  const result = await runWith(stub, EMPTY_BASELINE, {
+    changedFilesPath: changedPath,
+  });
+  assertEquals(result.ok, false);
+  assert(result.newRows.length > 0, "the planted finding blocks");
+  assertEquals(
+    result.newRows.every((r) => r.path === PLANTED_PATH),
+    true,
+    "only in-set findings block",
+  );
 });

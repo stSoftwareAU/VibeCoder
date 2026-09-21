@@ -253,6 +253,11 @@ export const DEPRECATED_LABELS: readonly string[] = [
 export const PROTECTED_STOCK_LABELS: readonly string[] = [
   "good first issue",
   "help wanted",
+  // `dependencies` is GitHub's stock dependency-PR label and the name
+  // dependabot.yml's `labels:` references. Deleting it (or never having
+  // it) makes every dependabot PR carry a "could not be found" nag, so it
+  // joins the stock set the deprecated-label pass never touches.
+  "dependencies",
 ] as const;
 
 /** True when `name` is one of GitHub's stock labels the fleet must not delete. */
