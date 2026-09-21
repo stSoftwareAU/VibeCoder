@@ -552,6 +552,44 @@ the same token carried `X-Ratelimit-Used: 1104` and a reset eighteen
 minutes away. The headers are the bucket's own accounting; the REST
 document is now only the fallback when the probe cannot run.
 
+### The `budget-pacing:` line — the sleep that stretches to fit the window
+
+The end-of-cycle sleep used to be a fixed `sleepInterval` no matter how
+much of the hour's quota was left, so a busy launch could spend its way
+to the pre-flight threshold long before the window reopened. Since
+Issue #2447 the `scanHadSuccess` branch of the end-of-cycle sleep asks
+the same free probe and, when the account spent more last cycle than the
+remaining window can afford per cycle, stretches the sleep
+proportionally (capped) so the hour's quota lasts the hour:
+
+```
+budget-pacing: remaining=1500 affordable/cycle=31 spent=270 sleep=259s (last cycle's spend exceeds the affordable spend per cycle)
+```
+
+The decision lives in `worker/deno/lib/budget_pacing.ts`
+(`computePacedSleepSeconds`), pure so every input is a number and the
+output is derived from them:
+
+- **`BUDGET_RESERVE_FRACTION = 0.2`** — one fifth of the window
+  (`limit` points, 5,000 for a user token) is kept in reserve for issue
+  work, so pacing never spends the last 1,000 points on idle sleep.
+- **`MAX_PACED_SLEEP_SECONDS = 300`** — the ceiling on the paced sleep,
+  so pacing can slow the worker down but never park it.
+- The **affordable spend per cycle** is
+  `(remaining − limit·reserve) / cyclesLeftInWindow`, where
+  `cyclesLeftInWindow = max(1, (reset − now) / (cycleSeconds + baseSleep))`.
+  When `spentLastCycle` is at or below that, the base sleep stands; when
+  it exceeds it, the sleep is stretched by the overspend ratio
+  (`base × spent / affordable`) and capped at 300 s.
+- `inReserve` is set when `remaining ≤ limit·reserve`; the sleep is
+  never returned below the base.
+
+A missing `readGraphqlQuota` dep, a `null` reading (the probe could not
+run), or a throw all leave today's fixed sleep unchanged — the first
+cycle has no previous reading to diff against, so it also keeps the
+fixed sleep. The circuit-breaker back-off branch is untouched; pacing
+only ever lengthens the successful-cycle settle sleep.
+
 ## Trade-offs
 
 - **TTL vs staleness.** A 10-minute issue-list TTL means the worker

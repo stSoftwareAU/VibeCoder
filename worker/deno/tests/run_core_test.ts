@@ -1461,10 +1461,10 @@ Deno.test(
     const sleeps: number[] = [];
     let nowValue = 1_800_000_000; // epoch ms
 
-    // Two cycles: the first sleeps 120 s and reads 3200 remaining, the second
-    // reads 1500 remaining (spent 2000 - (3200 - 1500) = 300... wait: used
-    // climbs as remaining falls — the account spent 5000-3200 = 1800 by the
-    // first reading and 5000-1500 = 3500 by the second, a 1700-point cycle).
+    // The first cycle reads 3200 remaining, the second 1500: `used` climbs as
+    // remaining falls (5000-3200 = 1800, then 5000-1500 = 3500), so the
+    // account spent 1700 points across the cycle — far past the ~27 points a
+    // remaining window of 40 minutes can afford per cycle.
     let cycle = 0;
     const deps = createMockDeps({
       now: () => nowValue,
@@ -1503,8 +1503,7 @@ Deno.test(
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 3600;
 
-    const result = await runCoreLoop(config, deps);
-    console.log("DEBUG exitReason=", result.exitReason, "plannedShutdown=", result.plannedShutdown, "fatal=", result.fatalError, "issuesProcessed=", result.issuesProcessed);
+    await runCoreLoop(config, deps);
 
     // The 1700-point cycle against ~27 affordable points per cycle caps the
     // paced sleep at 300 s — the second cycle must have slept that, and the
