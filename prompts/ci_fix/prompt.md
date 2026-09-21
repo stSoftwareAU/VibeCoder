@@ -109,6 +109,12 @@ The fix may touch files the bot's own pull request did not — a GitHub Actions 
 
 The audit command is your red-capable command from step 1: run it (`deno audit < /dev/null`, `cargo audit < /dev/null`), watch it name the advisory, apply the bump, then re-run it locally and watch it go green before you push.
 
+### Supply-chain gate failures
+
+When the failing check is **supply-chain-gate** and the only finding is `[inventory-stale]` in `docs/audits/dependency-inventory.md` — the shape of a dependabot pin-bump PR — the fix is mechanical and is NOT a code change: regenerate the inventory and commit it. From `worker/deno` run the same command the check ran, plus the write flag: `deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env mod.ts supply-chain-gate --repo ../.. --write-inventory`. Confirm `docs/audits/dependency-inventory.md` changed to match the tree's new pins, and commit it. Do not hand-edit the inventory — the generated file is the whole fix, and a hand-edited row is exactly the drift the check exists to catch. Re-run the gate locally and watch it go green before you push.
+
+When the failing check is **supply-chain-gate** with any OTHER finding — an unpinned `uses:`, an unfrozen `deno` invocation, a tag-pinned base image — that is a real posture finding: fix the named file and line, not the gate. Never disable or `nosemgrep`-away a supply-chain finding to make the check pass.
+
 ### What you may change
 
 This is someone else's pull request. You may edit files, commit, and push to the PR branch. You may not force-push, amend, rebase, or otherwise rewrite commits you did not author; you may not close, merge, reopen, or retarget the PR; you may not delete branches or re-run destructive workflows. If a fix genuinely requires one of those, stop and say so in `.pr_response_message` instead.

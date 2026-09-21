@@ -109,6 +109,42 @@ Deno.test("formatCiFailureClassification - other categories carry no rebuild ins
 
 // --- Issue #1847: an advisory-clearing bump is exempt from the 24h floor ---
 
+// --- Issue #2467: the supply-chain-gate inventory remedy is mechanical ---
+
+/** Render the CI-fix prompt for a failing `supply-chain-gate` check. */
+async function renderInventoryStaleFailure(): Promise<string> {
+  const annotations: CiAnnotation[] = [
+    {
+      message:
+        "[inventory-stale] dependency inventory is stale — run supply-chain-gate --write-inventory and commit the result",
+      title: "supply-chain-gate",
+      path: "docs/audits/dependency-inventory.md",
+    },
+  ];
+  const result = await buildCiFixPrompt({
+    repo: "owner/repo",
+    prNumber: "45",
+    checkName: "supply-chain-gate",
+    annotationDetails: "inventory-stale in docs/audits/dependency-inventory.md",
+    annotations,
+    promptsDir: PROMPTS_DIR,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("ci_fix prompt failed to build");
+  return result.value.prompt;
+}
+
+Deno.test("ci_fix - an inventory-stale supply-chain-gate failure is fixed by regenerating the inventory (Issue #2467)", async () => {
+  const prompt = (await renderInventoryStaleFailure()).toLowerCase();
+
+  // The remedy: regenerate and commit, never hand-edit.
+  assertStringIncludes(prompt, "supply-chain gate failures");
+  assertStringIncludes(prompt, "--write-inventory");
+  assertStringIncludes(prompt, "do not hand-edit");
+  // Any other supply-chain finding is a real posture issue, never a suppress.
+  assertStringIncludes(prompt, "never disable");
+});
+
 /** Render the CI-fix prompt for a failing `deno audit` check. */
 async function renderAuditFailure(): Promise<string> {
   const annotations: CiAnnotation[] = [

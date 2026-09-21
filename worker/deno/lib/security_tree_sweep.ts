@@ -240,6 +240,15 @@ export interface SweepOptions {
   semgrepConfig?: string;
   /** Trigger a fresh worker scan before harvesting its issues. */
   runWorkerScan?: boolean;
+  /**
+   * A file of repo-relative paths (one per line) naming the files a pull
+   * request changed. When set, unbaselined findings OUTSIDE that set are
+   * reported but do not fail the run — a PR gate fails on findings its
+   * diff introduced, while the tree-wide schedule stays strict. An
+   * unreadable file is fatal: a gate that cannot scope itself has
+   * inspected nothing (Issue #3234).
+   */
+  changedFilesPath?: string;
 }
 
 /** How each source went. */
@@ -272,6 +281,11 @@ export interface SweepRunResult {
   sourceStatus: SourceStatus[];
   rows: SweepRow[];
   newRows: SweepRow[];
+  /**
+   * Unbaselined rows OUTSIDE the changed-files set — reported, not fatal
+   * (only present when {@link SweepOptions.changedFilesPath} is set).
+   */
+  outOfScopeRows: SweepRow[];
   /**
    * Clusters the worker scan alone reported, each mirroring an open
    * `security` issue — already tracked, so not unbaselined (Issue #1518).
@@ -1418,6 +1432,8 @@ export interface RenderSweepReportOptions {
   sourceStatus: readonly SourceStatus[];
   rows: readonly SweepRow[];
   newRows: readonly SweepRow[];
+  /** Unbaselined rows outside the changed-files set — reported, not fatal. */
+  outOfScopeRows?: readonly SweepRow[];
   /** Clusters that mirror an open `security` issue (Issue #1518). */
   trackedRows: readonly SweepRow[];
   alreadyOpen: readonly SweepRow[];
@@ -1461,6 +1477,7 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
     baselinePath,
     scannedAt,
   } = options;
+  const outOfScopeRows = options.outOfScopeRows ?? [];
   const openById = new Map(alreadyOpen.map((r) => [r.id, r]));
   const filedById = new Map(filed.map((f) => [f.id, f]));
   const deferredIds = new Set(deferred.map((r) => r.id));
@@ -1570,6 +1587,24 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
     lines.push("");
   }
 
+  if (outOfScopeRows.length > 0) {
+    lines.push(
+      "## Unbaselined, outside the changed files",
+      "",
+      "These findings sit in files this pull request did not change. They",
+      "do not fail this PR run — the tree-wide scheduled sweep owns them —",
+      "but they are unbaselined and must not be read as clean.",
+      "",
+    );
+    for (const row of outOfScopeRows) {
+      lines.push(
+        `- \`${row.id}\` ${SEVERITY_EMOJI[row.severity]} ${row.family} at ` +
+          `\`${formatLocation(row)}\``,
+      );
+    }
+    lines.push("");
+  }
+
   if (trackedRows.length > 0) {
     lines.push(
       "## Tracked by an open issue",
@@ -1606,6 +1641,11 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
   if (baselineErrors.length === 0 && newRows.length === 0) {
     lines.push(
       "✅ No unbaselined findings." +
+        (outOfScopeRows.length > 0
+          ? ` ${outOfScopeRows.length} finding(s) outside the changed files ` +
+            "are unbaselined and do not block this PR — the scheduled sweep " +
+            "owns them."
+          : "") +
         (trackedRows.length > 0
           ? ` ${trackedRows.length} finding(s) tracked by an open issue.`
           : ""),
@@ -2003,6 +2043,51 @@ async function readBaseline(path: string): Promise<string> {
   }
 }
 
+/**
+ * Split unbaselined rows into the set that blocks a PR run and the set
+ * that is reported only. `changedFiles === null` is the strict,
+ * tree-wide mode (schedule / manual runs): every unbaselined row blocks.
+ * With a changed-files set, only findings inside the PR's own diff block
+ * — findings elsewhere are the scheduled sweep's business (Issue #2467).
+ */
+export function splitByChangedFiles<T extends Pick<SweepRow, "path">>(
+  newRows: readonly T[],
+  changedFiles: ReadonlySet<string> | null,
+): { blockingRows: T[]; outOfScopeRows: T[] } {
+  if (changedFiles === null) {
+    return {
+      blockingRows: [...newRows],
+      outOfScopeRows: [],
+    };
+  }
+  const blockingRows: T[] = [];
+  const outOfScopeRows: T[] = [];
+  for (const row of newRows) {
+    (changedFiles.has(row.path) ? blockingRows : outOfScopeRows).push(row);
+  }
+  return { blockingRows, outOfScopeRows };
+}
+
+/**
+ * Read the changed-files list (one repo-relative path per line) into a
+ * set. Fails loud on an unreadable file — a PR gate that cannot scope
+ * itself would otherwise pass findings it never inspected (Issue #3234).
+ */
+export function readChangedFiles(path: string): ReadonlySet<string> {
+  try {
+    const text = Deno.readTextFileSync(path);
+    return new Set(
+      text.split("\n").map((line) => line.trim()).filter((line) => line !== ""),
+    );
+  } catch (error) {
+    throw new Error(
+      `cannot read changed-files list ${path}: ${(error as Error).message}. ` +
+        "The list is mandatory when passed — an absent file must not be " +
+        "read as 'nothing changed'.",
+    );
+  }
+}
+
 /** Read a pre-produced tool output file, failing loud when it is missing. */
 async function readInput(path: string, what: string): Promise<string> {
   try {
@@ -2209,6 +2294,18 @@ export async function runSecurityTreeSweep(
     baseline,
   );
 
+  // A PR gate fails only on findings its own diff introduced: when a
+  // changed-files list is given, unbaselined rows outside it are reported
+  // but kept out of the exit decision. The tree-wide schedule passes no
+  // list and stays strict (Issue #4409 PR runs, #3234 fail-loud).
+  const changedFiles = options.changedFilesPath === undefined
+    ? null
+    : readChangedFiles(options.changedFilesPath);
+  const { blockingRows, outOfScopeRows } = splitByChangedFiles(
+    newRows,
+    changedFiles,
+  );
+
   // Dedup against the issues already open, whichever mode we are in — the
   // report says "already open" either way, and filing skips them.
   const openIds = await listOpenSweepIssues(options.slug, deps.ghCommandFn);
@@ -2255,7 +2352,10 @@ export async function runSecurityTreeSweep(
     coverage,
     sourceStatus,
     rows,
-    newRows,
+    // The report's "New findings" section and verdict describe the rows
+    // that block THIS run; the out-of-scope set gets its own section.
+    newRows: blockingRows,
+    outOfScopeRows,
     trackedRows,
     alreadyOpen,
     filed,
@@ -2269,11 +2369,12 @@ export async function runSecurityTreeSweep(
     await writeReport(options.reportPath, report);
   }
 
-  const ok = baselineErrors.length === 0 && newRows.length === 0;
+  const ok = baselineErrors.length === 0 && blockingRows.length === 0;
   const summary = buildSummary({
     ok,
     rows: rows.length,
-    newRows: newRows.length,
+    newRows: blockingRows.length,
+    outOfScopeRows: outOfScopeRows.length,
     trackedRows: trackedRows.length,
     alreadyOpen: alreadyOpen.length,
     filed: filed.length,
@@ -2287,7 +2388,8 @@ export async function runSecurityTreeSweep(
     coverage,
     sourceStatus,
     rows,
-    newRows,
+    newRows: blockingRows,
+    outOfScopeRows,
     trackedRows,
     alreadyOpen,
     filed,
@@ -2305,6 +2407,7 @@ function buildSummary(counts: {
   ok: boolean;
   rows: number;
   newRows: number;
+  outOfScopeRows: number;
   trackedRows: number;
   alreadyOpen: number;
   filed: number;
@@ -2321,7 +2424,11 @@ function buildSummary(counts: {
       ? `all baselined or tracked (${counts.trackedRows} tracked by an ` +
         `open issue)`
       : "all baselined";
-    return `✅ Whole-tree security sweep clean: ${scope}, ${triaged}.`;
+    const scopedOut = counts.outOfScopeRows > 0
+      ? `, ${counts.outOfScopeRows} unbaselined outside the changed files ` +
+        `(not blocking — the scheduled sweep owns them)`
+      : "";
+    return `✅ Whole-tree security sweep clean: ${scope}, ${triaged}${scopedOut}.`;
   }
   const problems: string[] = [];
   if (counts.baselineErrors > 0) {
