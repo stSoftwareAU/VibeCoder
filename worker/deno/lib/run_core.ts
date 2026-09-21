@@ -167,6 +167,11 @@ import {
   formatTransientNetworkHalt,
   isTransientNetworkFailure,
 } from "./transient_network_failure.ts";
+import { computePacedSleepSeconds } from "./budget_pacing.ts";
+import {
+  type GraphqlQuotaReading,
+  graphqlSpendBetween,
+} from "./graphql_quota_probe.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -5241,6 +5246,11 @@ export async function runCoreLoop(
   /** Wall-clock the current scan cycle opened (Issue #1955). */
   let cycleStartedAtMs = startTime;
   let cycleFleetStart = getFleetTelemetry(startTime);
+  // Issue #2447: the reading captured at the end of the previous cycle, so
+  // the end-of-cycle sleep can pace itself against how much of the window the
+  // account spent across the cycle that just finished. The first cycle has no
+  // previous reading, so it sleeps the fixed interval.
+  let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 
   const fireCycleCallback = (reason: CycleEndReason): Promise<void> => {
     const finishedAt = deps.now();
@@ -5287,6 +5297,75 @@ export async function runCoreLoop(
         : String(telemetryErr);
       deps.log(`Fleet telemetry write failed (continuing): ${msg}`);
     }
+  }
+
+  /**
+   * Decide the end-of-cycle sleep for the `scanHadSuccess` branch
+   * (Issue #2447).
+   *
+   * Reads the account's GraphQL quota (the free probe, via the existing
+   * `readGraphqlQuota` dep), computes what the account spent across the cycle
+   * that just finished against the previous cycle's reading, and paces the
+   * sleep when that spend exceeds what the remaining window can afford per
+   * cycle. Returns the sleep to use plus an optional `budget-pacing:` log
+   * line. A missing dep, a null reading (probe unavailable), or a throw all
+   * fall back to the base sleep with no line — today's fixed behaviour,
+   * unchanged. The first cycle has no previous reading, so it also keeps the
+   * base sleep.
+   */
+  async function readPacedEndOfCycleSleep(
+    cycleStartMs: number,
+    baseSleepSeconds: number,
+  ): Promise<{ sleepSeconds: number; logLine: string | null }> {
+    const fallback = { sleepSeconds: baseSleepSeconds, logLine: null };
+    if (!deps.readGraphqlQuota) return fallback;
+    let reading: { limit: number; remaining: number; reset: number } | null;
+    try {
+      reading = await deps.readGraphqlQuota();
+    } catch {
+      return fallback;
+    }
+    if (reading === null) return fallback;
+
+    // `graphqlSpendBetween` reads `used` and `reset` only; `used` is the
+    // exact complement of `remaining` (used + remaining = limit), and
+    // `source` is ignored, so a headers-shaped placeholder keeps the call
+    // honest.
+    const current: GraphqlQuotaReading = {
+      limit: reading.limit,
+      remaining: reading.remaining,
+      used: reading.limit - reading.remaining,
+      reset: reading.reset,
+      source: "headers",
+    };
+    const spentLastCycle = lastGraphqlQuotaReading
+      ? graphqlSpendBetween(lastGraphqlQuotaReading, current)
+      : 0;
+    lastGraphqlQuotaReading = current;
+    if (spentLastCycle === 0) return fallback;
+
+    const nowSeconds = Math.floor(deps.now() / 1000);
+    const cycleSeconds = Math.max(1, (deps.now() - cycleStartMs) / 1000);
+    const decision = computePacedSleepSeconds({
+      limit: reading.limit,
+      remaining: reading.remaining,
+      reset: reading.reset,
+      nowSeconds,
+      spentLastCycle,
+      cycleSeconds,
+      baseSleepSeconds,
+    });
+    if (decision.sleepSeconds === baseSleepSeconds) return fallback;
+
+    return {
+      sleepSeconds: decision.sleepSeconds,
+      logLine:
+        `budget-pacing: remaining=${reading.remaining} affordable/cycle=${
+          Math.round(decision.affordablePerCycle)
+        } spent=${spentLastCycle} sleep=${
+          Math.round(decision.sleepSeconds)
+        }s (${decision.reason})`,
+    };
   }
 
   // Build result helper
@@ -6319,7 +6398,17 @@ export async function runCoreLoop(
           if (tracker.scanHadSuccess) {
             await deps.circuitBreakerReset();
             const jitteredSleep = sleepWithJitter(config.sleepInterval);
-            await deps.sleep(jitteredSleep * 1000);
+            // Issue #2447: pace the sleep by the GraphQL budget left in the
+            // window. When the account spent more last cycle than the
+            // remaining window can afford per cycle, stretch the sleep so the
+            // hour's quota lasts the hour; otherwise today's fixed sleep
+            // stands, unchanged.
+            const paced = await readPacedEndOfCycleSleep(
+              cycleStartedAtMs,
+              jitteredSleep,
+            );
+            if (paced.logLine) deps.log(paced.logLine);
+            await deps.sleep(paced.sleepSeconds * 1000);
           } else {
             await deps.circuitBreakerRecordZeroProgress();
             const backoffInterval = await deps.circuitBreakerGetSleepInterval();
