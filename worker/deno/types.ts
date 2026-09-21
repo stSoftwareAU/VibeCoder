@@ -202,7 +202,8 @@ export interface WorkerConfig {
   agentProviderFallback?: string[];
   /**
    * Drain the held Claude token to zero rather than parking the backlog
-   * at the week-pace projection (Issue #2474). Default false.
+   * at the week-pace projection (Issue #2474). Default true — the
+   * projection guard is the opt-in.
    */
   claudeWeekPaceDrain?: boolean;
   /** Claude model ID to use (empty string means CLI default) (Issue #260) */
