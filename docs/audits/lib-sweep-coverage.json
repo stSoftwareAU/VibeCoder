@@ -2007,6 +2007,18 @@
       "paths": [
         "worker/deno/lib/milestone_pr_reviewers.ts"
       ]
+    },
+    {
+      "issue": 2448,
+      "chunk": "top-up-2448",
+      "title": "top-up: the maintenance lease decision module",
+      "ledger": "docs/audits/security-sweep-2448-maintenance-lease.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: maintenance_lease.ts (#2448)",
+      "status": "swept",
+      "sweptAt": "9d7414ff7b93b5895693314b7edc04a77def3a70",
+      "paths": [
+        "worker/deno/lib/maintenance_lease.ts"
+      ]
     }
   ],
   "roots": [
