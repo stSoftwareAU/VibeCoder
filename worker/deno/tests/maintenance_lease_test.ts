@@ -50,6 +50,26 @@ Deno.test("maintenance lease marker - a body with no marker parses to null", () 
   );
 });
 
+Deno.test("maintenance lease marker - clamps a negative epoch to zero and floors a fractional one", () => {
+  assertStringIncludes(formatMaintenanceLeaseMarker(REPO, INSTALL, -5), "at=0");
+  assertStringIncludes(
+    formatMaintenanceLeaseMarker(REPO, INSTALL, NOW + 0.75),
+    `at=${NOW}`,
+  );
+});
+
+Deno.test("maintenance lease marker - sanitises a repository and host with whitespace and unicode", () => {
+  const marker = formatMaintenanceLeaseMarker(
+    "  stSoftwareAU/VibeCoder  ",
+    "host with space \u{1F680}",
+    NOW,
+  );
+  const parsed = parseMaintenanceLeaseMarker(marker);
+  assert(parsed !== null);
+  assertEquals(parsed.repo, REPO);
+  assertEquals(parsed.host, "host-with-space");
+});
+
 Deno.test("maintenance lease marker - a non-numeric at is rejected", () => {
   assertEquals(
     parseMaintenanceLeaseMarker(

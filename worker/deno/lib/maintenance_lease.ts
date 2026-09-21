@@ -80,7 +80,7 @@ function sanitiseField(value: string): string {
 /** Reduce a repository to characters that cannot break the marker (`/` kept). */
 function sanitiseRepo(value: string): string {
   return value.replace(/[^A-Za-z0-9._/-]+/gu, "-")
-    .replace(/^\/+|\/+$/gu, "");
+    .replace(/^[/-]+|[/-]+$/gu, "");
 }
 
 /** Render the lease marker for `repo`. */
@@ -118,7 +118,7 @@ export interface MaintenanceLeaseDecision {
   /** Run the sweeps. */
   run: boolean;
   reason: "no-holder" | "own-lease" | "holder-expired" | "held-elsewhere";
-  /** The holder host, in display form. Present only for a foreign holder. */
+  /** The holder host, as the marker recorded it. Present only for a foreign holder. */
   holderHost?: string;
   /** Whole seconds of lease left. Present only when held elsewhere. */
   secondsLeft?: number;
