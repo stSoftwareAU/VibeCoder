@@ -7,9 +7,12 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   _resetBaseProtectionMemo,
+  autoMergeOutcomeNeedsComment,
   AutoMergeResult,
+  buildArmingReasonComment,
   classifyAutoMergeFailure,
   enableAutoMerge,
+  finalisePr,
   isBasePolicyRefusal,
   isBaseProtected,
   isTransientError,
@@ -1060,4 +1063,111 @@ Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle
   assertEquals(comments.length, 1);
   await enableAutoMerge({ ...opts, prNumber: 45 });
   assertEquals(comments.length, 2, "a sibling PR still gets the reason");
+});
+
+// ---------------------------------------------------------------------------
+// finalisePr returns the real arming outcome, and latch refusals never retry
+// (Issue #2457)
+// ---------------------------------------------------------------------------
+
+Deno.test("pr_auto_merge - finalisePr returns the real outcome, not a constant ok:true (Issue #2457)", async () => {
+  const result = await finalisePr({
+    repo: "owner/repo",
+    prNumber: 1,
+    maxRetries: 1,
+    retryDelay: 0,
+    ghCommandFn: async () => {
+      throw new Error("HTTP 500 Internal Server Error");
+    },
+  });
+  assert(result.ok, "finalisePr still reports ok for a Failed arming");
+  assertEquals(result.value.result, AutoMergeResult.Failed);
+  assertStringIncludes(result.value.message, "Could not enable auto-merge");
+});
+
+Deno.test("pr_auto_merge - finalisePr reports Skipped as a typed outcome (Issue #2457)", async () => {
+  const result = await finalisePr({
+    repo: "owner/repo",
+    prNumber: 1,
+    skipAutoMerge: true,
+    ghCommandFn: async () => "",
+  });
+  assert(result.ok);
+  assertEquals(result.value.result, AutoMergeResult.Skipped);
+});
+
+Deno.test("pr_auto_merge - finalisePr reports Enabled on success (Issue #2457)", async () => {
+  const result = await finalisePr({
+    repo: "owner/repo",
+    prNumber: 1,
+    isBaseProtectedFn: async () => true,
+    ghCommandFn: async () => "Enabled",
+  });
+  assert(result.ok);
+  assertEquals(result.value.result, AutoMergeResult.Enabled);
+});
+
+Deno.test("pr_auto_merge - a latched gh refusal never retries and is marked latched (Issue #2457)", async () => {
+  let mergeCalls = 0;
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1,
+    maxRetries: 3,
+    retryDelay: 60, // A retry would sleep for a minute; the latch must skip it.
+    ghCommandFn: async (args) => {
+      if (args.includes("--auto")) mergeCalls++;
+      throw new Error(
+        "gh command skipped: GraphQL primary quota exhausted (API rate " +
+          "limit already exceeded) — at 2026-09-21 10:00:00 AEST (in 5m 0s)",
+      );
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Failed);
+  assertEquals(result.latched, true);
+  assertEquals(mergeCalls, 1, "a latched refusal must not be retried in-run");
+});
+
+Deno.test("pr_auto_merge - autoMergeOutcomeNeedsComment covers Failed and NotAllowed only (Issue #2457)", () => {
+  const commented = [AutoMergeResult.Failed, AutoMergeResult.NotAllowed];
+  for (const code of commented) {
+    assertEquals(
+      autoMergeOutcomeNeedsComment({ result: code, message: "m" }),
+      true,
+    );
+  }
+  const quiet: AutoMergeResult[] = [
+    AutoMergeResult.Enabled,
+    AutoMergeResult.Skipped,
+    AutoMergeResult.MergedDirectly,
+    AutoMergeResult.Deferred,
+    AutoMergeResult.Draft,
+    AutoMergeResult.NotEnabledOnRepo,
+    AutoMergeResult.BlockedOpenChildren,
+    AutoMergeResult.RetargetedToDefault,
+    AutoMergeResult.ClosedRetargetedSync,
+  ];
+  for (const code of quiet) {
+    assertEquals(
+      autoMergeOutcomeNeedsComment({ result: code, message: "m" }),
+      false,
+      code,
+    );
+  }
+});
+
+Deno.test("pr_auto_merge - buildArmingReasonComment names the reason and the sweep retry (Issue #2457)", () => {
+  const body = buildArmingReasonComment({
+    result: AutoMergeResult.Failed,
+    message: "Could not enable auto-merge: HTTP 500",
+  });
+  assertStringIncludes(body, "Auto-merge was not armed on this PR");
+  assertStringIncludes(body, "HTTP 500");
+  assertStringIncludes(body, "The Auto-Merge sweep retries.");
+
+  const latched = buildArmingReasonComment({
+    result: AutoMergeResult.Failed,
+    latched: true,
+    message: "Could not enable auto-merge: gh command skipped: primary quota",
+  });
+  assertStringIncludes(latched, "no further `gh` call was made in this run");
 });

@@ -10,6 +10,7 @@
 
 import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
 import {
   decideMilestoneBaseMerge,
@@ -220,6 +221,17 @@ export function resetBehindSyncComments(): void {
   postedBehindSyncReason.clear();
 }
 
+/** Marker on the creation-arming reason comment (Issue #2457). */
+export const ARMING_REASON_MARKER = "<!-- vibe-auto-merge-not-armed -->";
+
+/** PRs already told why auto-merge was not armed at creation this run. */
+const postedArmingReason = new Set<string>();
+
+/** Drop the arming-reason comment registry. Tests and process start. */
+export function resetArmingReasonComments(): void {
+  postedArmingReason.clear();
+}
+
 async function postBehindSyncReason(
   repo: string,
   prNumber: number,
@@ -249,6 +261,51 @@ async function postBehindSyncReason(
   }
 }
 
+/**
+ * Whether a creation-arming outcome warrants a warn log and a single reason
+ * comment on the PR (Issue #2457).
+ *
+ * Only a genuine refusal to arm needs the comment. Every other outcome is
+ * either the worker doing what it set out to do (`Enabled`, `Skipped`,
+ * `MergedDirectly`) or is already explained on the PR by the path that
+ * produced it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
+ * `BlockedOpenChildren` (#3909), the route-gate deferrals (#1779/#1967/#477)
+ * and the #2005 behind-deferral (its `postBehindSyncReason`), the retarget
+ * paths (#4396, #1967) which post their own marker-deduplicated comments, and
+ * the #4375 gated direct-merge deferral which is a deliberate hold.
+ */
+export function autoMergeOutcomeNeedsComment(
+  outcome: EnableAutoMergeResult,
+): boolean {
+  return outcome.result === AutoMergeResult.Failed ||
+    outcome.result === AutoMergeResult.NotAllowed;
+}
+
+/**
+ * Build the comment body explaining why auto-merge was not armed at creation
+ * (Issue #2457).
+ *
+ * The comment always says the Auto-Merge sweep retries, because it does: the
+ * periodic sweep re-reads the PR every cycle and arms it the moment the
+ * obstruction clears. A latched refusal names the latch's reset time instead,
+ * because in-run retries are futile — every further `gh` call in the window
+ * fails the same way.
+ */
+export function buildArmingReasonComment(
+  outcome: EnableAutoMergeResult,
+): string {
+  const retryLine = outcome.latched
+    ? `The primary GitHub quota is exhausted, so no further \`gh\` call was ` +
+      `made in this run; the Auto-Merge sweep retries once the quota resets.`
+    : `The Auto-Merge sweep retries.`;
+  return [
+    ARMING_REASON_MARKER,
+    `Auto-merge was not armed on this PR: ${outcome.message}`,
+    "",
+    retryLine,
+  ].join("\n");
+}
+
 /** Result of enabling auto-merge. */
 export interface EnableAutoMergeResult {
   /** Outcome of the attempt */
@@ -267,6 +324,14 @@ export interface EnableAutoMergeResult {
    * branch is neither armed nor escalated — it is re-read next scan.
    */
   deferral?: "milestone-behind" | "sync-base-unreadable";
+  /**
+   * Whether the `gh pr merge --auto` refusal was the primary-quota latch
+   * short-circuiting the call, rather than GitHub answering (Issue #2457).
+   * A latched refusal is deliberately not retried in-run — every further
+   * `gh` call in the window fails the same way, so the Auto-Merge sweep
+   * retries after the reset the comment names.
+   */
+  latched?: boolean;
 }
 
 /**
@@ -847,6 +912,19 @@ export async function enableAutoMerge(
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
 
+      // Issue #2457: a refusal that is really the primary-quota latch must
+      // never be retried in-run — every further `gh` call in the window is
+      // refused the same way before it even spawns. Surface it as a latched
+      // failure so the caller names the reset and leaves the sweep to retry.
+      if (errorMsg.includes(PRIMARY_QUOTA_SKIP_PREFIX)) {
+        return {
+          result: AutoMergeResult.Failed,
+          latched: true,
+          message:
+            `Could not enable auto-merge on PR #${prNumber}: ${errorMsg}`,
+        };
+      }
+
       // A repository that forbids merge commits cannot take the sync as one
       // (Issue #1048). Downgrade to the squash it can take — loudly, naming
       // the setting — rather than leaving the branch to drift unsynced. The
@@ -973,7 +1051,7 @@ async function refuseMilestoneMerge(
 export async function finalisePr(
   options: EnableAutoMergeOptions,
   directMergeFn?: (repo: string, prNumber: number) => Promise<void>,
-): Promise<Result<string, Error>> {
+): Promise<Result<EnableAutoMergeResult, Error>> {
   const result = await enableAutoMerge(options);
 
   if (result.result === AutoMergeResult.NotAllowed && directMergeFn) {
@@ -981,16 +1059,22 @@ export async function finalisePr(
       await directMergeFn(options.repo, options.prNumber);
       return {
         ok: true,
-        value: `Direct merge attempted for PR #${options.prNumber}`,
+        value: {
+          result: AutoMergeResult.MergedDirectly,
+          message: `Direct merge attempted for PR #${options.prNumber}`,
+        },
       };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return {
         ok: true,
-        value: `Auto-merge not available, direct merge also failed: ${msg}`,
+        value: {
+          result: AutoMergeResult.Failed,
+          message: `Auto-merge not available, direct merge also failed: ${msg}`,
+        },
       };
     }
   }
 
-  return { ok: true, value: result.message };
+  return { ok: true, value: result };
 }

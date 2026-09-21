@@ -69,6 +69,10 @@ import { createPullRequestViaRest } from "../pr_create_rest.ts";
 import { ensureBranchCurrent } from "../branch_currency.ts";
 import { rebaseOntoBase } from "../stale_branch_lineage.ts";
 import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
+import {
+  autoMergeOutcomeNeedsComment,
+  buildArmingReasonComment,
+} from "../pr_auto_merge.ts";
 import { buildBumpRejectionComment, buildBumpSkipNote } from "../bump_deps.ts";
 import {
   formatBuildStamp,
@@ -305,10 +309,41 @@ async function armAutoMergeAtCreation(
   });
   if (result.ok) {
     if (!skipAutoMerge) {
-      logger.info(`Auto-merge armed at creation: ${result.value}`, {
+      logger.info(
+        `Auto-merge ${result.value.result} at creation: ${result.value.message}`,
+        { repo, prNumber },
+      );
+    }
+    // Issue #2457: a refusal to arm must carry a reason on the PR, exactly
+    // once per run, naming the reason and stating the sweep retries. Success
+    // and already-explained outcomes stay quiet on the comment channel.
+    if (
+      !skipAutoMerge &&
+      autoMergeOutcomeNeedsComment(result.value)
+    ) {
+      const body = buildArmingReasonComment(result.value);
+      logger.warn(`Auto-merge NOT armed at creation: ${result.value.message}`, {
         repo,
         prNumber,
       });
+      try {
+        await deps.github.runGhCommand([
+          "pr",
+          "comment",
+          String(prNumber),
+          "--repo",
+          repo,
+          "--body",
+          body,
+        ]);
+      } catch (error: unknown) {
+        logger.warn(
+          `Could not post the auto-merge reason comment on ${repo}#${prNumber}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { repo, prNumber },
+        );
+      }
     }
     return;
   }

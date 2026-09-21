@@ -863,7 +863,10 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
     findExistingPrForBranch,
     retargetPrToMilestone: async (repo, prNumber, milestoneBranch) =>
       await retargetPrToMilestone(repo, prNumber, milestoneBranch),
-    finalisePr: async (options) => await finalisePr(options),
+    finalisePr: async (options) => {
+      const result = await finalisePr(options);
+      return result.ok ? { ok: true, value: result.value.message } : result;
+    },
     ensureIssueClosedIfPrMerged: async (
       repo,
       issueNumber,

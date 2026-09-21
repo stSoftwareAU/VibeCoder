@@ -53,6 +53,16 @@ function nowSeconds(): number {
 }
 
 /**
+ * The literal prefix every latched `gh` refusal carries (Issue #2457).
+ *
+ * Only {@link primaryQuotaSkipMessage} produces it, so a caller classifying
+ * an arming refusal can tell "the latch skipped this call — do not retry it"
+ * from a genuine GitHub rate-limit error. Exported so that classification
+ * lives in one place instead of a magic string duplicated across modules.
+ */
+export const PRIMARY_QUOTA_SKIP_PREFIX = "gh command skipped: ";
+
+/**
  * Detect the primary GitHub rate-limit message variants we treat as
  * self-healing (Issue #1523, #1780, #42). Secondary rate limits and 5xx
  * errors continue down the fatal path.
@@ -161,8 +171,8 @@ export function primaryQuotaSkipMessage(now: number = nowSeconds()): string {
     ? "reset time unknown"
     : formatRateLimitReset(until, now);
   return latchKind === "secondary"
-    ? `gh command skipped: GitHub secondary rate limit cool-down (API rate ` +
+    ? `${PRIMARY_QUOTA_SKIP_PREFIX}GitHub secondary rate limit cool-down (API rate ` +
       `limit already exceeded on a burst, hourly quota still available) — ${eta}`
-    : `gh command skipped: GraphQL primary quota exhausted (API rate ` +
+    : `${PRIMARY_QUOTA_SKIP_PREFIX}GraphQL primary quota exhausted (API rate ` +
       `limit already exceeded) — ${eta}`;
 }
