@@ -466,7 +466,7 @@ const INSTALL_UUID_RE =
  * hostname meant a holder never recognised itself after its next launch and
  * deferred to its own past name. Null when the id carries no uuid.
  */
-function installFromMachineId(machineId: string): string | null {
+export function installFromMachineId(machineId: string): string | null {
   return INSTALL_UUID_RE.exec(machineId)?.[1]?.toLowerCase() ?? null;
 }
 
