@@ -106,8 +106,11 @@ export type ClaudeWeekPaceVerdict =
   | {
     readonly state: "off";
     readonly reading: ClaudeWeekPaceReading;
-    /** Why it is off — inside the grace, under the threshold, or rolled over. */
-    readonly reason: "within-grace" | "on-pace" | "window-elapsed";
+    /**
+     * Why it is off — inside the grace, under the threshold, rolled over,
+     * or the operator's drain mode (Issue #2474).
+     */
+    readonly reason: "within-grace" | "on-pace" | "window-elapsed" | "drain";
   }
   /** No seven-day window was reported: every tier runs, with a warning. */
   | { readonly state: "unknown"; readonly reason: string };
@@ -119,11 +122,16 @@ export type ClaudeWeekPaceVerdict =
  * @param nowMs - Current time in epoch milliseconds (a parameter, never a
  *   clock of this function's own, so every rule is deterministically
  *   testable).
+ * @param options - `drain` opts the operator into draining the held token
+ *   to zero: the verdict stays off while any budget remains, whatever the
+ *   projection says, and the pool's token selection plus the run-level
+ *   outage fallback own the switch-over at exhaustion.
  * @returns Whether the backlog tiers should be skipped, and the figures.
  */
 export function claudeWeekPaceVerdict(
   budget: ClaudeTokenBudget,
   nowMs: number,
+  options: { drain?: boolean } = {},
 ): ClaudeWeekPaceVerdict {
   if (!budget.known) {
     return {
@@ -160,6 +168,14 @@ export function claudeWeekPaceVerdict(
   }
   if (elapsedMs < CLAUDE_WEEK_PACE_GRACE_HOURS * HOUR_MS) {
     return { state: "off", reading: reading(null), reason: "within-grace" };
+  }
+
+  // Drain mode (Issue #2474): the operator prefers the held token be used
+  // to zero rather than parked at a projection. Every tier stays eligible
+  // while any budget remains; a spent token is the run-level outage
+  // fallback's business, not this guard's.
+  if (options.drain === true) {
+    return { state: "off", reading: reading(null), reason: "drain" };
   }
 
   const projectedShare = usedShare / elapsedShare;
@@ -260,6 +276,12 @@ export interface ClaudeWeekPaceGateOptions {
   now?: () => number;
   /** Sink for the engaged/lifted lines; defaults to discarding them. */
   logInfo?: (message: string) => void;
+  /**
+   * Drain mode (Issue #2474): never engage while the held token has any
+   * budget. The verdict is off with reason `drain`; the pool's token
+   * selection and the outage fallback own the switch-over at exhaustion.
+   */
+  drain?: boolean;
   /** Sink for the unknown-reading line; defaults to discarding it. */
   logWarn?: (message: string) => void;
   /**
@@ -347,7 +369,9 @@ export function createClaudeWeekPaceGate(
         snapshot = { budget: await readBudget(), observedAtMs: nowMs, token };
       }
 
-      const verdict = claudeWeekPaceVerdict(snapshot.budget, nowMs);
+      const verdict = claudeWeekPaceVerdict(snapshot.budget, nowMs, {
+        drain: options.drain === true,
+      });
       if (verdict.state === "unknown") {
         say(logWarn, formatWeekPaceUnknownLine(verdict.reason));
         return setVerdict(false);

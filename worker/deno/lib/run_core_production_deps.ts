@@ -708,7 +708,18 @@ export async function createProductionRunCoreDeps(
     token: () => env("CLAUDE_CODE_OAUTH_TOKEN") ?? null,
     logInfo: (message) => logger.info(message),
     logWarn: (message) => logger.warn(message),
+    // Issue #2474: the operator's opt-in drain mode — the guard never
+    // engages while the held token has budget, so the pool's selection and
+    // the outage fallback own the switch-over at exhaustion. One line says
+    // the mode is on, so a parked backlog never reads as a projection hold.
+    ...(config.claudeWeekPaceDrain === true ? { drain: true } : {}),
   });
+  if (config.claudeWeekPaceDrain === true) {
+    logger.info(
+      "claude-week-pace: drain mode — the guard stays off while any " +
+        "budget remains on the held token (Issue #2474)",
+    );
+  }
   // Issue #2470: the guard parks the backlog while the operator's fallback
   // provider sits idle. Once per run, when the guard engages and the fallback
   // policy names an alternative, switch the active provider to it — the same
@@ -1271,6 +1282,8 @@ export async function createProductionRunCoreDeps(
     // limited. Already validated against the enabled set at config load.
     agentProviderFallback: config.agentProviderFallback ??
       runCoreConfig.agentProviderFallback,
+    claudeWeekPaceDrain: config.claudeWeekPaceDrain ??
+      runCoreConfig.claudeWeekPaceDrain,
     // Issue #2473: per-handler watchdog bounds (conservative defaults).
     handlerTimeoutSeconds: runCoreConfig.handlerTimeoutSeconds,
     handlerSoftTimeoutSeconds: runCoreConfig.handlerSoftTimeoutSeconds,

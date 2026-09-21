@@ -1295,6 +1295,12 @@ guard (Issue #1885) asks a different question — *will the weekly Claude quota
 last?* — and while it is engaged the scan drops tiers 3 and 4, `low-priority`
 and `idle-task`, from its ladder until the window resets.
 
+An operator can opt a host out of the projection entirely with the
+`claude_week_pace_drain` config key (Issue #2474): the guard stays off while
+the held token has any budget, so the pool's token selection and the run-level
+outage fallback own the switch-over at exhaustion. The projection behaviour
+stays the default until an operator sets the key.
+
 Three correct pieces made one wrong outcome on GRQ-25 (2026-09-10, 0 issues
 processed in 1h 9m). The guard refused every backlog pickup, so the scan
 claimed nothing although 87 issues were eligible. The idle-detect audit did not

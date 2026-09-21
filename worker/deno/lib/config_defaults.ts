@@ -1453,6 +1453,10 @@ export function buildDefaultWorkerConfig(
     // enables more, so an existing deployment mounts exactly what it did.
     enabledAgentProviders: [DEFAULT_AGENT_PROVIDER_ID],
     agentProviderFallback: [],
+    // Issue #2474: drain the held Claude token to zero rather than parking
+    // the backlog at the week-pace projection. Default false — the
+    // projection guard stays the shipped behaviour until an operator opts in.
+    claudeWeekPaceDrain: false,
     claudeModel: "",
     // Issue #2654: configured best planning model for degraded-model detection.
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,
