@@ -87,9 +87,32 @@ Full quality gate, run once in the foreground:
 
 ```
 $ ./quality.sh < /dev/null
+  benchmark audit                PASSED
+  hardcoded branch names         PASSED
+  needs-human chokepoint         PASSED
+  gh spawn chokepoint            PASSED
+  git spawn chokepoint           PASSED
+  redact before truncate         PASSED
+  host work-dir guard            PASSED
+  git ref chokepoint             PASSED
+  tmp state dir chokepoint       PASSED
+  workflow hygiene               PASSED
+  completeness checks            PASSED
+  config integration             SKIPPED
+  source targets                 PASSED
+  mermaid                        PASSED
+  markdownlint                   PASSED
+  semgrep                        PASSED
+  release-tag ruleset            PASSED
+  deno tests                     PASSED
+  deno lint                      PASSED
+  deno type check                PASSED
+  deno fmt                       PASSED
+Result: PASSED (with skipped checks)
 ```
 
-<!-- see Test Plan / Quality gate below for the result -->
+(`config integration` is skipped in this environment, as it is on every run
+without the operator configuration it needs.)
 
 ## Reproduction
 
@@ -227,5 +250,7 @@ Modified:
 
 ### Quality gate
 
-`./quality.sh < /dev/null` — see the Evidence section; the full gate runs once
-in the foreground and its per-check result is recorded there.
+`./quality.sh < /dev/null` — `Result: PASSED (with skipped checks)`. Every check
+green except `config integration`, which is SKIPPED in this environment (no
+operator configuration), as on every run. The full per-check table is in the
+Evidence section.
