@@ -2031,6 +2031,30 @@
    "paths": [
     "worker/deno/lib/dependency_claimability.ts"
    ]
+  },
+  {
+   "issue": 2448,
+   "chunk": "top-up-2448",
+   "title": "top-up: the maintenance lease decision module",
+   "ledger": "docs/audits/security-sweep-2448-maintenance-lease.md",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: maintenance_lease.ts (#2448)",
+   "status": "swept",
+   "sweptAt": "9d7414ff7b93b5895693314b7edc04a77def3a70",
+   "paths": [
+    "worker/deno/lib/maintenance_lease.ts"
+   ]
+  },
+  {
+   "issue": 2450,
+   "chunk": "top-up-2450",
+   "title": "top-up: the maintenance lease store",
+   "ledger": "docs/audits/security-sweep-2450-maintenance-lease-store.md",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: maintenance_lease_store.ts (#2450)",
+   "status": "swept",
+   "sweptAt": "9d7414ff7b93b5895693314b7edc04a77def3a70",
+   "paths": [
+    "worker/deno/lib/maintenance_lease_store.ts"
+   ]
   }
  ],
  "roots": [
