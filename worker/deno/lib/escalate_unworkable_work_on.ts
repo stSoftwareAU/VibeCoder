@@ -108,6 +108,30 @@ export function buildDeadLabelEscalation(
 }
 
 /**
+ * Build the escalation message for an unclaimable blocking dependency
+ * (Issue #2473).
+ *
+ * `blockerNumber` is the issue number of the dependency that is stalled.
+ * `stallDetail` is a human-readable description of why it is stalled
+ * (e.g., "needs-human", "alice", or "merged PR").
+ */
+export function buildDependencyStalledEscalation(
+  issueNumber: number,
+  blockerNumber: number,
+  stallDetail: string,
+): UnworkableEscalation {
+  return {
+    reason:
+      `blocked: dependency #${blockerNumber} is unclaimable (${stallDetail}). ` +
+      `The worker cannot claim this issue whilst its blocker is stalled.`,
+    nextStep:
+      `Fix or close #${blockerNumber} to unblock this issue, or remove ` +
+      "the dependency reference, then remove `needs-human`.",
+    dedupKey: `work-on-dependency-stalled-${issueNumber}-${blockerNumber}`,
+  };
+}
+
+/**
  * Render a cycle path as `#A → #B → #A`, rooted at `issueNumber` and closed
  * back to it so the loop is explicit.
  */

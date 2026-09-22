@@ -44,7 +44,7 @@ import type {
 } from "./issue_finder_logger.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
 import { extractMilestonePriority } from "./milestone_priority.ts";
-import type { IssueFetcher } from "./issue_dependencies.ts";
+import type { DependencyBlocker, IssueFetcher } from "./issue_dependencies.ts";
 import {
   buildWorkOnDependencyGraph,
   detectDependencyCycles,
@@ -53,8 +53,13 @@ import {
 import {
   buildCycleEscalation,
   buildDeadLabelEscalation,
+  buildDependencyStalledEscalation,
   escalateUnworkableWorkOn,
 } from "./escalate_unworkable_work_on.ts";
+import {
+  type DependencyClaimabilityContext,
+  findDependencyStall,
+} from "./dependency_claimability.ts";
 import {
   filterTrustedLabels,
   verifyOperationalLabels,
@@ -558,12 +563,65 @@ export async function collectWorkOnCandidates(
       }
     }
 
-    if (
-      await isDependencyBlocked(repo, issue.number, memoFetcher, openStateMap, {
-        candidateMilestone: milestoneTitle,
-        isMilestoneOpen,
-      })
-    ) {
+    // Issue #2473: collect blockers to classify whether they are stalled
+    // (unclaimable) or ordinary blocks (claimable but busy).
+    const blockers: DependencyBlocker[] = [];
+    await isDependencyBlocked(repo, issue.number, memoFetcher, openStateMap, {
+      candidateMilestone: milestoneTitle,
+      isMilestoneOpen,
+    }, blockers);
+
+    if (blockers.length > 0) {
+      // Issue #2473: check if any blocker is unclaimable (stalled). Build the
+      // claimability context from the current repo snapshot.
+      const repoIssuesMap = new Map(
+        repoAllIssues.map((issue) => [issue.number, issue]),
+      );
+      const isBlockedByMergedPr = (
+        blockerRepo: string,
+        blockerNumber: number,
+      ): boolean => {
+        if (blockerRepo !== repo) return false;
+        const closedPR = isBlockedByRecentlyClosedPR(
+          repoClosedPRs,
+          blockerNumber,
+        );
+        return closedPR !== null && closedPR.merged === true;
+      };
+      const ctx: DependencyClaimabilityContext = {
+        repo,
+        needsHumanLabel: config.needsHumanLabel,
+        fleetAuthors: [
+          ...pushCapableAuthors,
+          ...config.allowedAuthors,
+        ],
+        openIssues: repoIssuesMap,
+        isBlockedByMergedPr,
+      };
+      const stall = findDependencyStall(blockers, ctx);
+
+      if (stall) {
+        // Blocker is unclaimable — escalate and drop from candidates.
+        await escalateUnworkableWorkOn({
+          repo,
+          issueNumber: issue.number,
+          needsHumanLabel: config.needsHumanLabel,
+          escalation: buildDependencyStalledEscalation(
+            issue.number,
+            stall.number,
+            stall.detail,
+          ),
+          githubUser: options.githubUser,
+          ghFn,
+          deps: options.escalateDeps,
+        });
+        noteBlocked(issue.number, milestoneTitle, "dependency-stalled");
+        diag?.logIssueSkipped(repo, issue.number, "dependency-stalled");
+        dependencyBlockedIssues.push(issue.number);
+        continue;
+      }
+
+      // Blocker is claimable but busy — ordinary wait.
       noteBlocked(issue.number, milestoneTitle, "dependency-blocked");
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       dependencyBlockedIssues.push(issue.number);

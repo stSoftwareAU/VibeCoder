@@ -121,6 +121,12 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   "dead-label-tracker-escalated": "human",
   "human-pr-blocked-escalated": "human",
   "self-schedule-escalated": "human",
+  /**
+   * Issue #2473: blocking dependency carries needs-human, is assigned to a
+   * non-fleet author, or is blocked by a merged PR — unclaimable and escalated
+   * so the cycle cannot deadlock against it.
+   */
+  "dependency-stalled": "human",
   // Issue #1475: only an operator granting the `workflow` scope lifts it.
   "workflow-scope-missing": "permanent",
 };
