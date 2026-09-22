@@ -59,13 +59,20 @@ import { collectSelfDiagnosticCandidates } from "./collect_self_diagnostic_candi
 import { getRepoNice } from "./repo_config.ts";
 import {
   compareFleetAuthorSets,
+  resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
 } from "./fleet_authors.ts";
 import { applyChainPromotions } from "./apply_chain_promotions.ts";
-import type {
-  BlockedCandidate,
-  PromotionTier,
+import {
+  type BlockedCandidate,
+  chainIssueKey,
+  type PromotionTier,
 } from "./dependency_chain_promotion.ts";
+import {
+  buildChainRootUnworkableComment,
+  postChainRootUnworkableComment,
+} from "./chain_root_comment.ts";
+import { defaultLogger } from "./logger.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 
 /**
@@ -239,6 +246,17 @@ export async function findOldestIssue(
     githubUser: options.githubUser,
     allowedAuthors: config.allowedAuthors,
     fleetPrAuthors: config.fleetPrAuthors ?? [],
+  });
+
+  // Issue #2496: the accounts the fleet itself runs as — this host, its
+  // siblings and the service accounts, with `allowed_authors` deliberately
+  // left out. Used wherever the question is "does the fleet already have
+  // this?" rather than "does the fleet own this PR?": chain-root
+  // classification, and the authorship of a dedup marker.
+  const chainFleetAuthors = resolveFleetMaintenanceAuthorSet({
+    githubUser: options.githubUser,
+    fleetPrAuthors: config.fleetPrAuthors ?? [],
+    serviceAccounts: config.serviceAccounts ?? [],
   });
 
   // Issue #4024: the PR-maintenance scans resolve their own set from the
@@ -569,7 +587,14 @@ export async function findOldestIssue(
       ),
     ],
     needsHumanLabel: config.needsHumanLabel,
-    fleetAuthors,
+    // Issue #2496: "the fleet" here means the accounts the fleet *operates*,
+    // not the humans trusted to direct it. `fleetAuthors` folds
+    // `allowed_authors` in — it answers "whose PRs does the fleet own" — so
+    // reusing it read a root assigned to a trusted human as one the fleet
+    // already had in hand, reported nothing and left the blocked issue
+    // silent. That is precisely the #2473 trusted-human gap this milestone
+    // closes, so the classifier gets the maintenance set instead.
+    fleetAuthors: chainFleetAuthors,
   });
   filteredLabel = promotion.labelCandidates;
   filteredWorkOn = promotion.workOnCandidates;
@@ -703,6 +728,71 @@ export async function findOldestIssue(
       );
     }
   }
+  // Issue #2496: selection is settled, so the chains it could not move are
+  // now reported on the blocked issues themselves — one plain comment naming
+  // the root and the reason, no labels, at most once per 24 hours. Every
+  // blocked member of a chain gets its own comment on its own thread, because
+  // the resolver reports the root once per blocked candidate that reached it.
+  //
+  // Two gates sit here rather than in the resolver:
+  //   * **tier** — only the two human-scheduled tiers may be commented on.
+  //     `noteChainBlocked` is called from those two collectors alone today,
+  //     but nothing else pins that, and a third caller must not leak comments
+  //     into another tier.
+  //   * **the fleet is on it** — a chain with a fleet-held root says nothing
+  //     at all, even when another branch of the same chain ends unworkable.
+  //     Work is happening; a report would only add noise.
+  // A promoted root needs no gate: it is neither a `fleetWorking` nor an
+  // `unworkableRoots` entry.
+  //
+  // One comment per blocked issue per scan: a blocked issue with two
+  // unworkable roots is told about the first, and about the next one only
+  // once that has been dealt with. The report is best effort — a failure is
+  // logged loudly and discovery carries on, because a missing comment must
+  // never cost the fleet its selection.
+  // GitHub renders the same repo as `Owner/Repo` or `owner/repo`, so every
+  // key here is lower-cased before it is compared, exactly as the resolver
+  // matches repositories.
+  const blockedKeyOf = (ref: { repo: string; number: number }): string =>
+    chainIssueKey(ref.repo.toLowerCase(), ref.number);
+  const commentableBlocked = new Set(
+    chainBlocked
+      .filter((b) => b.tier === "configured-label" || b.tier === "work-on")
+      .map(blockedKeyOf),
+  );
+  const fleetHeldChains = new Set(
+    promotion.fleetWorking.map((w) => blockedKeyOf(w.blocked)),
+  );
+  const reported = new Set<string>();
+  for (const unworkable of promotion.unworkableRoots) {
+    const blockedKey = blockedKeyOf(unworkable.blocked);
+    if (!commentableBlocked.has(blockedKey)) continue;
+    if (fleetHeldChains.has(blockedKey)) continue;
+    if (reported.has(blockedKey)) continue;
+    reported.add(blockedKey);
+    try {
+      await postChainRootUnworkableComment({
+        repo: unworkable.blocked.repo,
+        issueNumber: unworkable.blocked.number,
+        comment: buildChainRootUnworkableComment({
+          blockedNumber: unworkable.blocked.number,
+          root: unworkable.root,
+          reason: unworkable.reason,
+          detail: unworkable.detail,
+        }),
+        ghFn,
+        fleetAuthors: chainFleetAuthors,
+      });
+    } catch (err) {
+      defaultLogger.warn("findOldestIssue: chain-root comment failed", {
+        repo: unworkable.blocked.repo,
+        issue: `#${unworkable.blocked.number}`,
+        root: `${unworkable.root.repo}#${unworkable.root.number}`,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // Issue #219: the counts ride the result so a caller that gets nothing
   // back can say why, whether or not diagnostics are enabled.
   const diagnosticSummary = diag.getSummary();
