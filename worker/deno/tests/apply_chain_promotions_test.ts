@@ -275,3 +275,54 @@ Deno.test("applyChainPromotions - nothing blocked leaves every tier untouched", 
   assertEquals(outcome.promotions, []);
   assertEquals(outcome.unworkableRoots, []);
 });
+
+Deno.test("applyChainPromotions - a dependency in a repo the scan could not read is kept as a blocker", () => {
+  const root = candidate(REPO_A, 200, "low-priority");
+  const outcome = applyChainPromotions(
+    tiers({ lowPriorityCandidates: [root] }),
+    request({
+      blocked: [{
+        repo: REPO_A,
+        number: 100,
+        tier: "configured-label",
+        blockers: [{ repo: REPO_A, number: 200, kind: "depends-on" }],
+      }],
+      // No open-issue list was fetched for owner/repo-b, so #7 cannot be
+      // read — and an unreadable dependency is never assumed closed.
+      issuesByRepo: new Map([[REPO_A, [
+        issue(100, { labels: ["top-priority"], body: "Depends on #200" }),
+        issue(200, { body: `Depends on ${REPO_B}#7` }),
+      ]]]),
+    }),
+  );
+
+  assertEquals(outcome.promotions, []);
+  assertEquals(outcome.lowPriorityCandidates.map((c) => c.number), [200]);
+});
+
+Deno.test("applyChainPromotions - a differently-cased repo reference still finds its snapshot", () => {
+  const root = candidate(REPO_B, 500, "low-priority");
+  const outcome = applyChainPromotions(
+    tiers({ lowPriorityCandidates: [root] }),
+    request({
+      blocked: [{
+        repo: REPO_A,
+        number: 100,
+        tier: "configured-label",
+        // GitHub renders the same repo either way; the snapshot is keyed
+        // on the monitored spelling, so the reference must be matched to it.
+        blockers: [{ repo: "Owner/Repo-B", number: 500, kind: "depends-on" }],
+      }],
+      issuesByRepo: new Map([
+        [REPO_A, [issue(100, {
+          labels: ["top-priority"],
+          body: "Depends on Owner/Repo-B#500",
+        })]],
+        [REPO_B, [issue(500)]],
+      ]),
+    }),
+  );
+
+  assertEquals(outcome.labelCandidates.map((c) => c.number), [500]);
+  assertEquals(outcome.lowPriorityCandidates, []);
+});

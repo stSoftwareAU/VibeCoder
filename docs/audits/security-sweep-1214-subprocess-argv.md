@@ -160,8 +160,8 @@ supplied by the caller is invisible to it. That is stated here rather than left
 implicit — the gate closes the class as written today, not every spelling of it.
 
 **Closed by #1227.** Both checks now also flag a **variable** binary in any
-module that names the guarded binary at the head of an argv literal and does
-not import the chokepoint. Running the extended scan over `worker/deno/lib` and
+module that names the guarded binary at the head of an argv literal and does not
+import the chokepoint. Running the extended scan over `worker/deno/lib` and
 `worker/deno/commands` surfaced five `gh` evasions (`language_detector.ts`,
 `workflow_auditor.ts`, `repo_visibility.ts`, `recent_activity.ts`,
 `software_updates.ts`) and three `git` ones (`benchmark.ts`,
@@ -203,8 +203,8 @@ Named here so a later sweep does not re-litigate them.
 - **`secrets_history_scan.ts`** — `gitleaks`/`trufflehog` argv is worker-owned
   paths and fixed flags only.
 - **`benchmark.ts` (`runBenchmarkCommand`)** — the runner is generic, but every
-  call site passes fixed literals (`deno check`, `git init/add/commit` against
-  a fixture directory the benchmark itself creates). Its `git` half now routes
+  call site passes fixed literals (`deno check`, `git init/add/commit` against a
+  fixture directory the benchmark itself creates). Its `git` half now routes
   through `runGitCommand` (Issue #1396), so the fixture calls carry the
   chokepoint's timeout, audit journal and work-volume fault detection; the
   remaining direct spawn is the `deno check` step, an operator-invoked

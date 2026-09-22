@@ -21,21 +21,21 @@ constants it is built from. It takes **no arguments** and reads no external
 state: it returns a constant object literal describing one Claude CLI sub-agent.
 The caller serialises that object to JSON and passes it as `--agents`.
 
-| Input | Source                        | How it is handled                                |
-| ----- | ----------------------------- | ------------------------------------------------ |
-| none  | the function takes no input   | nothing to validate — the output is a constant   |
+| Input | Source                      | How it is handled                              |
+| ----- | --------------------------- | ---------------------------------------------- |
+| none  | the function takes no input | nothing to validate — the output is a constant |
 
-| Property          | Result                                                                                                                                                                |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| spawn chokepoints | none — no subprocess, no `gh`, no `git`                                                                                                                               |
-| prompt injection  | the prompt it carries is a repository-authored constant. No issue body, comment, label or other untrusted text reaches it, so nothing an attacker writes can alter it |
-| argv injection    | the value reaches the CLI as a single argv element produced by `JSON.stringify`, never through a shell; `Deno.Command` passes argv directly with no shell parsing      |
-| network           | none                                                                                                                                                                  |
-| filesystem        | none                                                                                                                                                                  |
-| regex safety      | no regular expressions                                                                                                                                                |
-| secret surface    | holds no credential and reads no environment variable                                                                                                                 |
-| capability grant  | the definition **narrows** capability: the executor gets exactly `Read, Grep, Glob, Edit, Write, Bash` and is denied `Agent`, so it cannot spawn further sub-agents. It is a subset of what the advisor session already holds, so no new capability enters the run |
-| fail direction    | fail-closed at the call sites: `agents` is set only when `isIssueExecutorSplitEnabled` resolves `true`, and an absent value emits no `--agents` argument at all        |
+| Property          | Result                                                                                                                                                                                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| spawn chokepoints | none — no subprocess, no `gh`, no `git`                                                                                                                                                                                                                              |
+| prompt injection  | the prompt it carries is a repository-authored constant. No issue body, comment, label or other untrusted text reaches it, so nothing an attacker writes can alter it                                                                                                |
+| argv injection    | the value reaches the CLI as a single argv element produced by `JSON.stringify`, never through a shell; `Deno.Command` passes argv directly with no shell parsing                                                                                                    |
+| network           | none                                                                                                                                                                                                                                                                 |
+| filesystem        | none                                                                                                                                                                                                                                                                 |
+| regex safety      | no regular expressions                                                                                                                                                                                                                                               |
+| secret surface    | holds no credential and reads no environment variable                                                                                                                                                                                                                |
+| capability grant  | the definition **narrows** capability: the executor gets exactly `Read, Grep, Glob, Edit, Write, Bash` and is denied `Agent`, so it cannot spawn further sub-agents. It is a subset of what the advisor session already holds, so no new capability enters the run   |
+| fail direction    | fail-closed at the call sites: `agents` is set only when `isIssueExecutorSplitEnabled` resolves `true`, and an absent value emits no `--agents` argument at all                                                                                                      |
 | blast radius      | two `issue`-phase call sites (`lib/execute_claude_phase.ts`, `lib/phases/execute_phase.ts`). A CLI that rejects the flag fails the run with its own error — there is no retry without it, so a rejected flag cannot silently downgrade a run to single-model routing |
 
 ## The one behaviour worth restating

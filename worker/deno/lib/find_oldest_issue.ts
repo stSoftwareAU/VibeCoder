@@ -555,12 +555,18 @@ export async function findOldestIssue(
     issuesByRepo,
     monitoredRepos: config.repos,
     // A root the fleet could never discover is not worth promoting, so the
-    // gate is the same label set the collectors themselves search.
+    // gate is the same label set the collectors themselves search. Deduped
+    // and stripped of blanks the way `collect_self_diagnostic_candidates`
+    // builds it — an unset label key is not a label every issue carries.
     discoveryLabels: [
-      ...config.issueLabels,
-      config.workOnLabel,
-      config.lowPriorityLabel,
-      IDLE_TASK_LABEL,
+      ...new Set(
+        [
+          ...config.issueLabels ?? [],
+          config.workOnLabel,
+          config.lowPriorityLabel,
+          IDLE_TASK_LABEL,
+        ].filter((label) => typeof label === "string" && label !== ""),
+      ),
     ],
     needsHumanLabel: config.needsHumanLabel,
     fleetAuthors,

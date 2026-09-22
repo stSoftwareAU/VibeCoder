@@ -19,27 +19,27 @@ Siblings:
 (chunk 12d),
 [`security-sweep-1218-commands-cli.md`](security-sweep-1218-commands-cli.md)
 (chunk 13) and
-[`security-sweep-1220-setup-cli.md`](security-sweep-1220-setup-cli.md)
-(chunk 14).
+[`security-sweep-1220-setup-cli.md`](security-sweep-1220-setup-cli.md) (chunk
+14).
 
 > **This is not an empty result.** The issue asks that an empty result be stated
 > explicitly; it was not empty. **Five** root causes survived triage: one is
 > fixed in this change and four are filed as `security` issues. Several
-> categories the issue named *were* empty, and each is stated as such below —
-> an empty category is a result, not an omission.
+> categories the issue named _were_ empty, and each is stated as such below — an
+> empty category is a result, not an omission.
 
 ## The line-count correction
 
-The parent issue describes these files as "tens of thousands of lines
-combined". They are not, and the correction is recorded on that issue so the
-next scan does not re-defer the chunk on the same estimate:
+The parent issue describes these files as "tens of thousands of lines combined".
+They are not, and the correction is recorded on that issue so the next scan does
+not re-defer the chunk on the same estimate:
 
-| File | Lines (as read) |
-| ---- | --------------- |
-| `run.sh` | 1,636 |
-| `setup.sh` | 1,412 |
-| `loop.sh` | 475 |
-| **Total** | **3,523** |
+| File       | Lines (as read) |
+| ---------- | --------------- |
+| `run.sh`   | 1,636           |
+| `setup.sh` | 1,412           |
+| `loop.sh`  | 475             |
+| **Total**  | **3,523**       |
 
 Counted at the commit this sweep read — the base of this change, before the 24
 lines it adds to `loop.sh`. That is a single-session exhaustive read, roughly an
@@ -47,19 +47,19 @@ order of magnitude smaller than the estimate the chunk was deferred on.
 
 ## Scope and method
 
-`run.sh`, `setup.sh` and `loop.sh` at the repository root, read end to end at the
-commit this record lands on. Nothing they `source` — they source nothing — and
-nothing under `worker/deno/`, which the sibling chunks above cover.
+`run.sh`, `setup.sh` and `loop.sh` at the repository root, read end to end at
+the commit this record lands on. Nothing they `source` — they source nothing —
+and nothing under `worker/deno/`, which the sibling chunks above cover.
 
 Two passes:
 
-1. **`shellcheck` first**, so the read was not spent on findings a linter already
-   has (below).
+1. **`shellcheck` first**, so the read was not spent on findings a linter
+   already has (below).
 2. **A semantic read** against the categories the issue names, tracing each
    interpolated value to a constant, a validated value, or a named untrusted
    source.
 
-## `shellcheck` triage — and what it did *not* find
+## `shellcheck` triage — and what it did _not_ find
 
 At the level CI enforces, all three files are clean:
 
@@ -75,19 +75,19 @@ quality gate; it is, in `.github/workflows/validate-scripts.yml` — a pinned,
 SHA-256-verified `shellcheck` 0.11.0 binary run over
 `find . -name "*.sh" -type f`, on a `validate` job that is a required status
 check for `Develop`, `main` and `milestone/*`. No new gate was needed, and none
-was added. (The Deno-side `quality.ts` deliberately does *not* re-run
+was added. (The Deno-side `quality.ts` deliberately does _not_ re-run
 `shellcheck` — see `worker/deno/lib/quality_gate.ts:1438-1443`, Issue #3129:
 shell linting is owned by each repo's own CI, so hosts without the binary do not
 fail every `.sh`-containing repo.)
 
 Turning on every optional check surfaces style noise and nothing else:
 
-| Check | run.sh | setup.sh | loop.sh | Triage |
-| ----- | ------ | -------- | ------- | ------ |
-| SC2250 (braces around every variable) | 0 | 205 | 0 | Style. `setup.sh` uses the bare `$var` form throughout; `run.sh` and `loop.sh` use `${var}`. Not a defect in either dialect. |
-| SC2310 (function in a condition disables `set -e`) | 29 | 19 | 0 | Deliberate in every instance: these are the `if ! helper; then <report>` shapes the launcher uses to turn a helper failure into a message rather than an abort. Each was read; none swallows a status it needed. |
-| SC2312 (masked return value in a substitution) | 1 | 3 | 0 | All four feed a value that is then validated or defaulted (`claim_floor_detail`, the credential-table reads). |
-| SC2249 (no default `case` arm) | 0 | 2 | 0 | Both are option parsers where an unmatched argument is legitimately ignored. |
+| Check                                              | run.sh | setup.sh | loop.sh | Triage                                                                                                                                                                                                           |
+| -------------------------------------------------- | ------ | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SC2250 (braces around every variable)              | 0      | 205      | 0       | Style. `setup.sh` uses the bare `$var` form throughout; `run.sh` and `loop.sh` use `${var}`. Not a defect in either dialect.                                                                                     |
+| SC2310 (function in a condition disables `set -e`) | 29     | 19       | 0       | Deliberate in every instance: these are the `if ! helper; then <report>` shapes the launcher uses to turn a helper failure into a message rather than an abort. Each was read; none swallows a status it needed. |
+| SC2312 (masked return value in a substitution)     | 1      | 3        | 0       | All four feed a value that is then validated or defaulted (`claim_floor_detail`, the credential-table reads).                                                                                                    |
+| SC2249 (no default `case` arm)                     | 0      | 2        | 0       | Both are option parsers where an unmatched argument is legitimately ignored.                                                                                                                                     |
 
 ### Cross-reference: the bash-syntax audit (template #12)
 
@@ -107,19 +107,19 @@ contract between a writer and a reader — and none of them has a lint signature
 
 ## Findings
 
-| # | Where | Class | Severity | Status |
-| - | ----- | ----- | -------- | ------ |
-| 1 | `loop.sh` control-plane probe | a guard that cannot run | medium | **Fixed here** |
-| 2 | `setup.sh:1120` | non-atomic write of a credential-bearing file (CWE-755) | medium | [#1298](https://github.com/stSoftwareAU/VibeCoder/issues/1298) |
-| 3 | `run.sh:1536` | incorrect permission on a critical resource (CWE-732) | low | [#1299](https://github.com/stSoftwareAU/VibeCoder/issues/1299) |
-| 4 | `setup.sh:811-833` | incomplete cleanup of a secret temp file (CWE-459) | low | [#1300](https://github.com/stSoftwareAU/VibeCoder/issues/1300) |
-| 5 | `setup.sh:351`, `:784` | code injection via an unquoted assignment (CWE-94) | low | [#1301](https://github.com/stSoftwareAU/VibeCoder/issues/1301) |
+| # | Where                         | Class                                                   | Severity | Status                                                         |
+| - | ----------------------------- | ------------------------------------------------------- | -------- | -------------------------------------------------------------- |
+| 1 | `loop.sh` control-plane probe | a guard that cannot run                                 | medium   | **Fixed here**                                                 |
+| 2 | `setup.sh:1120`               | non-atomic write of a credential-bearing file (CWE-755) | medium   | [#1298](https://github.com/stSoftwareAU/VibeCoder/issues/1298) |
+| 3 | `run.sh:1536`                 | incorrect permission on a critical resource (CWE-732)   | low      | [#1299](https://github.com/stSoftwareAU/VibeCoder/issues/1299) |
+| 4 | `setup.sh:811-833`            | incomplete cleanup of a secret temp file (CWE-459)      | low      | [#1300](https://github.com/stSoftwareAU/VibeCoder/issues/1300) |
+| 5 | `setup.sh:351`, `:784`        | code injection via an unquoted assignment (CWE-94)      | low      | [#1301](https://github.com/stSoftwareAU/VibeCoder/issues/1301) |
 
 ### 1 — the Issue #323 control-plane probe was inert on the platform it was written for (fixed here)
 
-`loop.sh` resolves `gtimeout`/`timeout` once at startup and uses it
-for the recorder and the supervisor deadline — but the control-plane probe and
-its recovery spelled the bound literally:
+`loop.sh` resolves `gtimeout`/`timeout` once at startup and uses it for the
+recorder and the supervisor deadline — but the control-plane probe and its
+recovery spelled the bound literally:
 
 ```bash
 timeout 30 container ls   …   timeout 30 container exec   …   timeout 30 container kill
@@ -180,46 +180,46 @@ unstated empty category is indistinguishable from one that was skipped.
 - **`set -euo pipefail` — present, early, and relaxed only where documented.**
   `run.sh:2` and `setup.sh:2` carry the full triple on line 2. `loop.sh:5` is
   deliberately `set -uo pipefail`: a supervisor that must never exit cannot take
-  `-e`, and the header says so and cites Issue #1836. `-u` is on in all three, so
-  the unset-variable→empty-string→`rm -rf /` path does not exist. The three
+  `-e`, and the header says so and cites Issue #1836. `-u` is on in all three,
+  so the unset-variable→empty-string→`rm -rf /` path does not exist. The three
   `set +e` windows in `run.sh` (`run_build`, `heal_builder`, `wait_for_child`)
   each re-enable it on the next line and read `PIPESTATUS[0]`, not `$?`, so no
   status is lost to a `tee`.
 - **`trap` cleanup handlers — no unset interpolation.** `run.sh`'s `on_exit`
   removes only variables initialised to `""` at `:132-156`, and every removal is
   guarded by `[[ -n … ]]`, so the trap firing before a path is known removes
-  nothing. It also returns immediately when `BASH_SUBSHELL != 0` (`:300-302`), so
-  a background job cannot record a second launcher outcome or delete the evidence
-  the launcher is about to quote. The ordering — record the outcome, *then*
-  remove the logs it quotes — is correct and commented. `loop.sh`'s traps are
-  no-op signal handlers with no cleanup at all.
-- **Destructive `rm` — no unguarded recursive removal.** The only `rm -rf` in the
-  three files is `setup.sh:1173`, and its caller refuses an empty path, `/` and
-  `$HOME` outright (`:1167-1172`) before removing a fixed `.vibe-cache` child.
-  `run.sh`'s volume recreation is destructive but gated on a measured free-disk
-  floor, a minimum volume size, and a once-per-24h state file, and reports
-  `[WORK_VOLUME_UNRECOVERED]` rather than claiming a fix it did not achieve.
+  nothing. It also returns immediately when `BASH_SUBSHELL != 0` (`:300-302`),
+  so a background job cannot record a second launcher outcome or delete the
+  evidence the launcher is about to quote. The ordering — record the outcome,
+  _then_ remove the logs it quotes — is correct and commented. `loop.sh`'s traps
+  are no-op signal handlers with no cleanup at all.
+- **Destructive `rm` — no unguarded recursive removal.** The only `rm -rf` in
+  the three files is `setup.sh:1173`, and its caller refuses an empty path, `/`
+  and `$HOME` outright (`:1167-1172`) before removing a fixed `.vibe-cache`
+  child. `run.sh`'s volume recreation is destructive but gated on a measured
+  free-disk floor, a minimum volume size, and a once-per-24h state file, and
+  reports `[WORK_VOLUME_UNRECOVERED]` rather than claiming a fix it did not
+  achieve.
 - **Secrets on command lines — empty.** No token, key or credential is passed as
   argv anywhere in the three files. `setup.sh` hands `gh` its token through the
   child environment (`GH_TOKEN="$gh_token" gh api user`, `:420`;
   `GH_CONFIG_DIR="$expanded_source" gh auth token`, `:502`), never as a flag.
-  The credential files it writes are created under `umask 077` inside a
-  subshell and `chmod 600`-ed, in a directory `chmod 700`-ed first
-  (`:347-353`, `:429-443`). Nothing is echoed: the paste prompt uses
-  `read -rs`. `run.sh` handles no secret at all — the launch plan is written to
-  a `mktemp` file precisely so credential-shaped mount values never cross
-  stdout (`:660-665`).
-- **`eval` — empty. Dynamic dispatch — present, and closed.** There is no `eval`,
-  no `. "$file"` over a computed path, and no dynamic `source` of anything
-  outside the credential directory in any of the three files. The indirect forms
-  the parent run's literal `eval` grep would have missed do exist, all in
-  `setup.sh`: `${!provision_var}` / `${!candidate}` (`:332-341`),
+  The credential files it writes are created under `umask 077` inside a subshell
+  and `chmod 600`-ed, in a directory `chmod 700`-ed first (`:347-353`,
+  `:429-443`). Nothing is echoed: the paste prompt uses `read -rs`. `run.sh`
+  handles no secret at all — the launch plan is written to a `mktemp` file
+  precisely so credential-shaped mount values never cross stdout (`:660-665`).
+- **`eval` — empty. Dynamic dispatch — present, and closed.** There is no
+  `eval`, no `. "$file"` over a computed path, and no dynamic `source` of
+  anything outside the credential directory in any of the three files. The
+  indirect forms the parent run's literal `eval` grep would have missed do
+  exist, all in `setup.sh`: `${!provision_var}` / `${!candidate}` (`:332-341`),
   `printf -v "$prompt_var"` (`:729`, `:734`) and `unset "$prompt_var"` (`:736`).
-  Every one of those names comes from `vibe_provider_credential_table`, a
-  quoted heredoc literal in the script, or from `provider_prompt_credential_var`,
-  a `case` over a closed set — never from argv, the environment, a config file or
+  Every one of those names comes from `vibe_provider_credential_table`, a quoted
+  heredoc literal in the script, or from `provider_prompt_credential_var`, a
+  `case` over a closed set — never from argv, the environment, a config file or
   GitHub. The one `source` (`:784`, over `provider.env`) is finding 5 above: the
-  path is safe, the *contents* are evaluated when they should be parsed.
+  path is safe, the _contents_ are evaluated when they should be parsed.
 - **Container invocation — nothing constructed here, and #512–#516 hold.**
   `run.sh` builds no mount, flag or network argument of its own. It reads a
   NUL-delimited plan into named arrays (`:702-729`), rejects an unrecognised key
@@ -227,56 +227,57 @@ unstated empty category is indistinguishable from one that was skipped.
   usable watchdog deadline (`:744-748`), and then replays the arrays verbatim.
   The controls the issue asks about are enforced on the Deno side and are still
   in force: `FORBIDDEN_RUN_FLAGS` in `worker/deno/lib/container_launch.ts:487`
-  bars `--privileged` and `--network=host`; `--read-only` is required and refused
-  without its scratch tmpfs (`:774-789`, Issue #516); `/workspace` is mounted
-  read-only (`:26`, Issue #514). `run_sh_launcher_test.ts` asserts the
+  bars `--privileged` and `--network=host`; `--read-only` is required and
+  refused without its scratch tmpfs (`:774-789`, Issue #516); `/workspace` is
+  mounted read-only (`:26`, Issue #514). `run_sh_launcher_test.ts` asserts the
   constructed invocation carries no runtime socket, no `--privileged`, no host
   networking and no published ports, so a future edit that broadens them fails
-  that test. It is *not* a required check: the file is listed in
+  that test. It is _not_ a required check: the file is listed in
   `worker/deno/lib/integration_test_manifest.ts:66`, so it runs in the
   `integration tests (not a required check)` job
   (`.github/workflows/validate-scripts.yml:504-505`) rather than in `validate`.
   The containment assertions are covered, but a red result there does not block
   a merge on its own.
-- **`"$@"` pass-through is not a flag-injection sink.** `run.sh:1547` appends the
-  launcher's own argv to the runtime invocation, but it lands *after* the plan's
-  image and command, so extra arguments become the container's command
+- **`"$@"` pass-through is not a flag-injection sink.** `run.sh:1547` appends
+  the launcher's own argv to the runtime invocation, but it lands _after_ the
+  plan's image and command, so extra arguments become the container's command
   arguments — they cannot become runtime flags. `upgrade` (`:233`) is matched
   before the EXIT trap is installed and takes no operand.
 - **Exit-code propagation — no swallowed guard.** Every pipeline whose left-hand
   side matters reads `PIPESTATUS[0]`: `run_build` (`:880`), the extension build
   (`:995`), `heal_builder` (`:902`) and `loop.sh:464`. The comment at
-  `loop.sh:458-462` is the reason a `|| true` is *absent* there — appending one
+  `loop.sh:458-462` is the reason a `|| true` is _absent_ there — appending one
   would replace `PIPESTATUS` with `true`'s own 0 and report every crash as a
   clean run. `bounded_timed_out` (`run.sh:218-221`) distinguishes a command the
   bound killed from one that ran and failed, and only claims the distinction
   where a bound was actually applied.
 - **Signal handling and the run loop — no unbacked-off spin, no skipped guard.**
   `loop.sh` sleeps between every iteration; the interval comes from the worker's
-  `container-restart-backoff`, which grows across consecutive failures, and falls
-  back **loudly** to `LOOP_SLEEP_SECONDS` when the recorder cannot run or does not
-  answer with a plain integer (`loop.sh:167-199`). A quota pause and an
+  `container-restart-backoff`, which grows across consecutive failures, and
+  falls back **loudly** to `LOOP_SLEEP_SECONDS` when the recorder cannot run or
+  does not answer with a plain integer (`loop.sh:167-199`). A quota pause and an
   already-running-worker exit are distinguished from a crash so neither climbs
   the escalation ladder. The supervisor's own deadline is a `timeout` with
   `--kill-after`, and disabling it (`VIBE_RUN_MAX_SECONDS=0`) is carried through
-  as "disabled" and never as "cap at zero". `run.sh`'s signal path holds a signal
-  that arrives in the window between forking the child and learning its PID and
-  delivers it once the PID is known (`:354-395`), rather than dropping it.
+  as "disabled" and never as "cap at zero". `run.sh`'s signal path holds a
+  signal that arrives in the window between forking the child and learning its
+  PID and delivers it once the PID is known (`:354-395`), rather than dropping
+  it.
 
 ## Observations that are not findings
 
 - **`loop.sh:155` resolves the log directory with a bare `${HOME}`** where the
   rest of the file uses `${HOME:-/tmp}`. Reached only when `LAUNCH_LOG_DIR` and
   `LOG_DIR` are both unset as well. Under `set -u` the unbound expansion kills
-  the command-substitution subshell *before* the stderr message two lines below
+  the command-substitution subshell _before_ the stderr message two lines below
   it, so that message is not what reports the fault; and because the directory
-  is resolved once at startup, the effect is every cycle rather than one.
-  It is still not silent — each cycle then fails to open its launch log and
-  says so on stderr — and `run.sh` refuses to launch on the same unset variable,
-  so it stays an observation rather than a finding.
-- **`run.sh:1032` builds the container-store path from `${HOME:-}`**, which on an
-  unset `HOME` would read `/Library/Application Support/com.apple.container`.
+  is resolved once at startup, the effect is every cycle rather than one. It is
+  still not silent — each cycle then fails to open its launch log and says so on
+  stderr — and `run.sh` refuses to launch on the same unset variable, so it
+  stays an observation rather than a finding.
+- **`run.sh:1032` builds the container-store path from `${HOME:-}`**, which on
+  an unset `HOME` would read `/Library/Application Support/com.apple.container`.
   Unreachable for the same reason.
-- **`setup.sh:1094` reads the config with `config=$(cat "$CONFIG_FILE")`** before
-  the merge. Command substitution strips trailing newlines, which is harmless for
-  JSON, and `run_setup_cli config` has created the file by then.
+- **`setup.sh:1094` reads the config with `config=$(cat "$CONFIG_FILE")`**
+  before the merge. Command substitution strips trailing newlines, which is
+  harmless for JSON, and `run_setup_cli config` has created the file by then.

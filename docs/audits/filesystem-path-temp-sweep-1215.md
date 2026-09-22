@@ -30,9 +30,10 @@ traversal from GitHub-supplied strings; symlink following; TOCTOU between a
 permissions; recursive removal with a computable component; and archive
 extraction (zip-slip).
 
-Triage followed the Phase 3 discipline of [`SECURITY-SCAN.md`](../SECURITY-SCAN.md):
-refute-unless-proven. A candidate that could not be traced from a named
-attacker-controlled input to the filesystem call was dropped rather than filed.
+Triage followed the Phase 3 discipline of
+[`SECURITY-SCAN.md`](../SECURITY-SCAN.md): refute-unless-proven. A candidate
+that could not be traced from a named attacker-controlled input to the
+filesystem call was dropped rather than filed.
 
 ### The trust boundary this sweep assumed
 
@@ -49,13 +50,13 @@ findings died on them:
   and `repo_settings_harden.ts:479-484` genuinely are 0600 as their comments
   claim. A plain `Deno.writeTextFile` to a **new** path is 0644.
 
-What is _not_ hypothetical is a second local principal. `container/Containerfile:379`
-creates an `agent` account (uid 1001), `worker/deno/lib/untrusted_command_env.ts:193`
-runs the repository's own quality command as `sudo -n -u agent`, and
-`container/entrypoint.sh:90-98` makes the work root group-writable and setgid
-with no sticky bit. "Predictable path under a directory the untrusted account
-can write, opened with a symlink-following call" is therefore a real primitive,
-and it is what the findings below turn on.
+What is _not_ hypothetical is a second local principal.
+`container/Containerfile:379` creates an `agent` account (uid 1001),
+`worker/deno/lib/untrusted_command_env.ts:193` runs the repository's own quality
+command as `sudo -n -u agent`, and `container/entrypoint.sh:90-98` makes the
+work root group-writable and setgid with no sticky bit. "Predictable path under
+a directory the untrusted account can write, opened with a symlink-following
+call" is therefore a real primitive, and it is what the findings below turn on.
 
 ```mermaid
 flowchart LR
@@ -82,11 +83,11 @@ every account on the host, so whoever creates it first owns what the worker
 reads back. The control was wired into **one** cache, `timeline_cache.ts`. Three
 siblings — carrying data with more direct reach into the agent — had none:
 
-| Site (pre-fix)                | Path                                   | What a planted entry buys                                                                          |
-| ----------------------------- | -------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `lib/prompt_cache.ts:34`      | `/tmp/vibe-prompt-cache-deno` (literal) | **The sharp one.** Assembled *prompt text* handed to the coding agent — instruction injection, no model compromise needed |
-| `lib/codebase_map_cache.ts:32` | `/tmp/vibe-codebase-map-deno` (literal, passed explicitly) | The codebase map injected into the issue prompt; also persists across runs and repositories        |
-| `lib/issue_cache.ts:53`       | `${TMPDIR}/vibe-issue-cache-deno`       | Attacker JSON read back as a GitHub API response by `find_oldest_issue`, `find_issues_by_label`, the idle-task gate |
+| Site (pre-fix)                 | Path                                                       | What a planted entry buys                                                                                                 |
+| ------------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `lib/prompt_cache.ts:34`       | `/tmp/vibe-prompt-cache-deno` (literal)                    | **The sharp one.** Assembled _prompt text_ handed to the coding agent — instruction injection, no model compromise needed |
+| `lib/codebase_map_cache.ts:32` | `/tmp/vibe-codebase-map-deno` (literal, passed explicitly) | The codebase map injected into the issue prompt; also persists across runs and repositories                               |
+| `lib/issue_cache.ts:53`        | `${TMPDIR}/vibe-issue-cache-deno`                          | Attacker JSON read back as a GitHub API response by `find_oldest_issue`, `find_issues_by_label`, the idle-task gate       |
 
 All three now build the directory through `sharedTmpStateDir()` — the single
 place a shared-tmp name is composed, per-account by construction — create it
@@ -110,13 +111,13 @@ uses.
 
 Five sites still interpolated `TMPDIR`/`/tmp` into a worker state directory by
 hand when this sweep shipped; they were filed as
-[#1242](https://github.com/stSoftwareAU/VibeCoder/issues/1242) rather than
-fixed here. That issue has since landed the durable form it named: every one of
-those directories is composed by `sharedTmpStateDir()` and created through
+[#1242](https://github.com/stSoftwareAU/VibeCoder/issues/1242) rather than fixed
+here. That issue has since landed the durable form it named: every one of those
+directories is composed by `sharedTmpStateDir()` and created through
 `ensureStateDir()`, and the `tmp state dir chokepoint` quality check
 (`worker/deno/lib/tmp_state_dir_check.ts`) now fails the build on a raw
-`${TMPDIR}/vibe-…` interpolation — the idiom `gh_spawn_chokepoint_check.ts`
-uses for `gh`. Two further sites the gate surfaced, `timeline_cache.ts` and the
+`${TMPDIR}/vibe-…` interpolation — the idiom `gh_spawn_chokepoint_check.ts` uses
+for `gh`. Two further sites the gate surfaced, `timeline_cache.ts` and the
 staged `gh` credential directory in `gh_credential_stage.ts`, were converted
 with them. Stating it plainly: this sweep shipped the helper and the three
 consumers that mattered most; #1242 shipped the gate.
@@ -124,45 +125,52 @@ consumers that mattered most; #1242 shipped the gate.
 ## Findings filed, not fixed here
 
 Each is a distinct root cause from SEC-1215-01 and from the others, filed per
-`docs/SECURITY-SCAN.md` Phase 3–4 with its `finding-id` marker and
-`severity:*` / `confidence:*` labels.
+`docs/SECURITY-SCAN.md` Phase 3–4 with its `finding-id` marker and `severity:*`
+/ `confidence:*` labels.
 
-- **SEC-1215-02** ([#1238](https://github.com/stSoftwareAU/VibeCoder/issues/1238))
-  — the GitHub token is staged with a bare `Deno.writeFileSync` that follows a
-  symlink and lands at the umask default, with the directory `chmod`-ed to 0700
-  only **after** the credential is written (`lib/gh_credential_stage.ts:83-85`,
+- **SEC-1215-02**
+  ([#1238](https://github.com/stSoftwareAU/VibeCoder/issues/1238)) — the GitHub
+  token is staged with a bare `Deno.writeFileSync` that follows a symlink and
+  lands at the umask default, with the directory `chmod`-ed to 0700 only
+  **after** the credential is written (`lib/gh_credential_stage.ts:83-85`,
   `:186-198`). The exact sequence `file_utils.ts:76-94` documents as fixed for
   ordinary state files. `severity:high` · `confidence:medium`
-- **SEC-1215-03** ([#1239](https://github.com/stSoftwareAU/VibeCoder/issues/1239))
-  — the credit log is appended at `${workDir}/.credit_log_<date>.json` with a
+- **SEC-1215-03**
+  ([#1239](https://github.com/stSoftwareAU/VibeCoder/issues/1239)) — the credit
+  log is appended at `${workDir}/.credit_log_<date>.json` with a
   symlink-following write (`lib/credit_tracker.ts:310`), and because the work
   root has no sticky bit the untrusted account can delete the day's log
   outright, zeroing the only input the daily spend ceiling reads.
   `severity:medium` · `confidence:medium`
-- **SEC-1215-04** ([#1240](https://github.com/stSoftwareAU/VibeCoder/issues/1240))
-  — the codebase map follows committed symlinks out of the clone
+- **SEC-1215-04**
+  ([#1240](https://github.com/stSoftwareAU/VibeCoder/issues/1240)) — the
+  codebase map follows committed symlinks out of the clone
   (`lib/codebase_map.ts:347`, `:394`, `:406` → `Deno.open` at `:561`) and emits
   a bounded slice of the target into the agent's prompt. The containment check
   it needs already exists at `container_extension_digest.ts:216-247`.
   `severity:medium` · `confidence:medium`
-- **SEC-1215-05** ([#1241](https://github.com/stSoftwareAU/VibeCoder/issues/1241))
-  — `.config.json`, which carries `imgbb_api_key`, is written by
+- **SEC-1215-05**
+  ([#1241](https://github.com/stSoftwareAU/VibeCoder/issues/1241)) —
+  `.config.json`, which carries `imgbb_api_key`, is written by
   `lib/add_repo.ts:148` without the `{ mode: 0o600 }` + explicit `chmod` its own
   canonical writer (`setup/config_setup.ts:443-451`) documents as mandatory.
   `severity:low` · `confidence:high`
-- **SEC-1215-06** ([#1242](https://github.com/stSoftwareAU/VibeCoder/issues/1242))
-  — the residual raw-`TMPDIR` state directories described above. **Fixed** by
-  #1242, together with the quality-gate check that keeps the class closed.
+- **SEC-1215-06**
+  ([#1242](https://github.com/stSoftwareAU/VibeCoder/issues/1242)) — the
+  residual raw-`TMPDIR` state directories described above. **Fixed** by #1242,
+  together with the quality-gate check that keeps the class closed.
   `severity:medium` · `confidence:high`
 
 Filed by an earlier attempt at this same sweep, before its branch was lost —
 listed here so the coverage record is complete and they are not re-filed:
 [#1232](https://github.com/stSoftwareAU/VibeCoder/issues/1232) (forged
-`.heartbeat_*` state), [#1233](https://github.com/stSoftwareAU/VibeCoder/issues/1233)
-(rate-limit flag file — this sweep added the uid-boundary evidence that raises
-it above `severity:low`), [#1234](https://github.com/stSoftwareAU/VibeCoder/issues/1234)
-(`.gitignore` symlink write), [#1235](https://github.com/stSoftwareAU/VibeCoder/issues/1235)
-(Actions allow-list widening).
+`.heartbeat_*` state),
+[#1233](https://github.com/stSoftwareAU/VibeCoder/issues/1233) (rate-limit flag
+file — this sweep added the uid-boundary evidence that raises it above
+`severity:low`), [#1234](https://github.com/stSoftwareAU/VibeCoder/issues/1234)
+(`.gitignore` symlink write),
+[#1235](https://github.com/stSoftwareAU/VibeCoder/issues/1235) (Actions
+allow-list widening).
 
 ## Refuted / no finding
 
@@ -184,11 +192,11 @@ Named here so a later sweep does not re-litigate them.
   `security_fix_gate_feedback.ts:86` (keeps dots but strips `/`, so `..` cannot
   leave its segment).
 - **Recursive removals** — every one in scope removes `${dir}/${entry.name}`
-  from a `Deno.readDir` walk (an entry name cannot contain `/`), a
-  `makeTempDir` result, or a path with a constant suffix that cannot collapse
-  upward: `disk_space.ts:892,944`, `deno_cache_guard.ts:72`,
-  `run_housekeeping.ts:194` (frozen const list), `session_manager.ts`,
-  `session_sweeper.ts:481`, `session_compaction.ts`, `work_volume_prune.ts:255`,
+  from a `Deno.readDir` walk (an entry name cannot contain `/`), a `makeTempDir`
+  result, or a path with a constant suffix that cannot collapse upward:
+  `disk_space.ts:892,944`, `deno_cache_guard.ts:72`, `run_housekeeping.ts:194`
+  (frozen const list), `session_manager.ts`, `session_sweeper.ts:481`,
+  `session_compaction.ts`, `work_volume_prune.ts:255`,
   `work_volume_tiers.ts:401`, `stale_workdir.ts:485`, `temp_utils.ts:188`,
   `object_store_repair.ts:133`, `callback_conformance.ts:715`,
   `worker_log_cleanup.ts:231`.
@@ -228,19 +236,20 @@ Named here so a later sweep does not re-litigate them.
 `file_utils.ts` `atomicWrite`/`atomicWriteSync` is the reference: a
 `crypto.randomUUID()` temp suffix, `Deno.open({ createNew: true, mode })` so a
 pre-positioned symlink fails rather than being followed, mode re-applied against
-the umask, atomic rename, cleanup on every failure path. `health_check_cache.ts`,
-`idle_starvation_escalation.ts`, `launcher_termination.ts`, `quota_pause.ts`,
-`repo_failure_tracker.ts`, `audit_anchor.ts`, `checkout_update.ts` and
-`content_approval_tracker.ts` all route through it. `audit_journal.ts:518` wraps
-journal selection **and** append in `withFileLock`, closing the TOCTOU it
-documents at `:310-317`. `container_extension_digest.ts:216-247` is the model for
-symlink containment.
+the umask, atomic rename, cleanup on every failure path.
+`health_check_cache.ts`, `idle_starvation_escalation.ts`,
+`launcher_termination.ts`, `quota_pause.ts`, `repo_failure_tracker.ts`,
+`audit_anchor.ts`, `checkout_update.ts` and `content_approval_tracker.ts` all
+route through it. `audit_journal.ts:518` wraps journal selection **and** append
+in `withFileLock`, closing the TOCTOU it documents at `:310-317`.
+`container_extension_digest.ts:216-247` is the model for symlink containment.
 
 Two non-security nits, recorded not filed: `atomicWrite` does not `fsync` before
 the rename, so a post-crash zero-length file is possible despite the "atomic"
-contract; and `resume_state_store.ts:105` and `security_fix_gate_feedback.ts:168`
-persist worker state with a bare 0644 `writeTextFile` rather than `atomicWrite`
-(neither holds a secret, but a kill mid-write loses a verdict in the latter).
+contract; and `resume_state_store.ts:105` and
+`security_fix_gate_feedback.ts:168` persist worker state with a bare 0644
+`writeTextFile` rather than `atomicWrite` (neither holds a secret, but a kill
+mid-write loses a verdict in the latter).
 
 ## Swept paths
 

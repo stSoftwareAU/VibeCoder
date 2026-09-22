@@ -1682,3 +1682,58 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "findOldestIssue - a chain root the fleet is already working is logged, not promoted (Issue #2495)",
+  async () => {
+    // #200 unblocks the top-priority #100, but a sibling fleet host already
+    // holds it. There is nothing to promote and nothing to escalate — the
+    // verdict is recorded at debug level rather than dropped. The two sit in
+    // different milestones so the sibling's claim occupies its own work
+    // stream, not the blocked issue's.
+    const config = makeConfig({
+      repos: ["owner/repo-a"],
+      fleetPrAuthors: ["sibling-bot"],
+    });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    blocked.milestone = { title: "v1.0" };
+    const assigned = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    assigned.assignees = [{ login: "sibling-bot" }];
+    assigned.milestone = { title: "v2.0" };
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [blocked, assigned],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const output: string[] = [];
+    const diag = createDiagnostics({
+      enabled: true,
+      write: (msg: string) => output.push(msg),
+    });
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(output.filter((m) => m.includes("promoted-dependency=")), []);
+    const inProgress = output.find((m) => m.includes("chain-root-in-progress"));
+    assert(
+      inProgress !== undefined,
+      `expected the fleet-working chain root to be logged, got: ${
+        output.join("\n")
+      }`,
+    );
+    assertStringIncludes(inProgress, "repo=owner/repo-a issue=#200");
+    assertStringIncludes(inProgress, "assignee=sibling-bot");
+  },
+);

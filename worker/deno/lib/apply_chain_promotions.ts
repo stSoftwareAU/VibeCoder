@@ -88,9 +88,16 @@ function normalise(value: string): string {
  *
  * A snapshot's `blockers` are the issue's own open `Depends on` references
  * (`extractDependencyReferencesDetailed`). A reference whose target is
- * absent from its repo's open list is already closed and is dropped; a
- * reference into a repo the scan holds no list for is *kept*, because a
- * dependency nobody could read must never be assumed closed.
+ * absent from its repo's open list is read as closed; a reference into a
+ * repo the scan holds no list for is *kept*, because a dependency nobody
+ * could read must never be assumed closed.
+ *
+ * The open list is capped (`fetchAllIssues(repo, cache, 200)`), so in a
+ * repo past that cap an open dependency can read as closed here. That
+ * cannot promote blocked work: this snapshot only decides which chain
+ * members the resolver *offers*, and an offer is only acted on when the
+ * issue is already a candidate — which means the collector's own
+ * per-issue `isDependencyBlocked`, the authoritative check, cleared it.
  */
 function buildSnapshots(
   issuesByRepo: ReadonlyMap<string, FilterableIssue[]>,
