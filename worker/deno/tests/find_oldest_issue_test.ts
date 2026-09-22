@@ -2063,3 +2063,82 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "findOldestIssue - a chain the fleet is working stays silent even when another branch is unworkable (Issue #2496)",
+  async () => {
+    // #100 depends on two issues: #200 a sibling host already holds, and #300
+    // a human holds. Work is happening on the chain, so the fleet says
+    // nothing rather than adding noise to the thread.
+    const config = makeConfig({
+      repos: ["owner/repo-a"],
+      fleetPrAuthors: ["sibling-bot"],
+    });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200 and depends on #300",
+    );
+    blocked.milestone = { title: "v1.0" };
+    const fleetHeld = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    fleetHeld.assignees = [{ login: "sibling-bot" }];
+    fleetHeld.milestone = { title: "v2.0" };
+    const humanHeld = chainIssue(300, ["low-priority"], "2024-06-02T00:00:00Z");
+    humanHeld.assignees = [{ login: "carol" }];
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": {
+        issues: [blocked, fleetHeld, humanHeld],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(postedChainComments(calls), []);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a blocked issue with two unworkable roots gets one comment per scan (Issue #2496)",
+  async () => {
+    // Both #200 and #300 are stuck. The blocked issue is told about the first
+    // one; the next scan after it is dealt with reports the other.
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200 and depends on #300",
+    );
+    const assigned = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    assigned.assignees = [{ login: "carol" }];
+    const unlabelled = chainIssue(300, [], "2024-06-02T00:00:00Z");
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": {
+        issues: [blocked, assigned, unlabelled],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertEquals(comments[0]?.target, "repos/owner/repo-a/issues/100/comments");
+  },
+);
