@@ -59,6 +59,7 @@ import { collectSelfDiagnosticCandidates } from "./collect_self_diagnostic_candi
 import { getRepoNice } from "./repo_config.ts";
 import {
   compareFleetAuthorSets,
+  resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
 } from "./fleet_authors.ts";
 import { applyChainPromotions } from "./apply_chain_promotions.ts";
@@ -66,6 +67,11 @@ import type {
   BlockedCandidate,
   PromotionTier,
 } from "./dependency_chain_promotion.ts";
+import {
+  buildChainRootUnworkableComment,
+  postChainRootUnworkableComment,
+} from "./chain_root_comment.ts";
+import { defaultLogger } from "./logger.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 
 /**
@@ -239,6 +245,17 @@ export async function findOldestIssue(
     githubUser: options.githubUser,
     allowedAuthors: config.allowedAuthors,
     fleetPrAuthors: config.fleetPrAuthors ?? [],
+  });
+
+  // Issue #2496: the accounts the fleet itself runs as — this host, its
+  // siblings and the service accounts, with `allowed_authors` deliberately
+  // left out. Used wherever the question is "does the fleet already have
+  // this?" rather than "does the fleet own this PR?": chain-root
+  // classification, and the authorship of a dedup marker.
+  const chainFleetAuthors = resolveFleetMaintenanceAuthorSet({
+    githubUser: options.githubUser,
+    fleetPrAuthors: config.fleetPrAuthors ?? [],
+    serviceAccounts: config.serviceAccounts ?? [],
   });
 
   // Issue #4024: the PR-maintenance scans resolve their own set from the
@@ -569,7 +586,14 @@ export async function findOldestIssue(
       ),
     ],
     needsHumanLabel: config.needsHumanLabel,
-    fleetAuthors,
+    // Issue #2496: "the fleet" here means the accounts the fleet *operates*,
+    // not the humans trusted to direct it. `fleetAuthors` folds
+    // `allowed_authors` in — it answers "whose PRs does the fleet own" — so
+    // reusing it read a root assigned to a trusted human as one the fleet
+    // already had in hand, reported nothing and left the blocked issue
+    // silent. That is precisely the #2473 trusted-human gap this milestone
+    // closes, so the classifier gets the maintenance set instead.
+    fleetAuthors: chainFleetAuthors,
   });
   filteredLabel = promotion.labelCandidates;
   filteredWorkOn = promotion.workOnCandidates;
@@ -703,6 +727,44 @@ export async function findOldestIssue(
       );
     }
   }
+  // Issue #2496: selection is settled, so the chains it could not move are
+  // now reported on the blocked issues themselves — one plain comment naming
+  // the root and the reason, no labels, at most once per 24 hours. Three
+  // properties come from the resolver rather than from a gate here:
+  //   * a root the fleet is already working is a `fleetWorking` entry, never
+  //     an `unworkableRoots` one, so it is silent;
+  //   * a promoted root is likewise absent, so a chain being worked is silent;
+  //   * the root is reported once per blocked candidate that reached it, so
+  //     every blocked member of a chain gets its own comment.
+  // Only the two human-scheduled tiers are ever walked (`PromotionTier` is
+  // exactly `configured-label | work-on`, and `noteChainBlocked` is called
+  // from those two collectors alone), so there is no tier to gate on. The
+  // report is best effort: a failure is logged loudly and discovery carries
+  // on, because a missing comment must never cost the fleet its selection.
+  for (const unworkable of promotion.unworkableRoots) {
+    try {
+      await postChainRootUnworkableComment({
+        repo: unworkable.blocked.repo,
+        issueNumber: unworkable.blocked.number,
+        comment: buildChainRootUnworkableComment({
+          blockedNumber: unworkable.blocked.number,
+          root: unworkable.root,
+          reason: unworkable.reason,
+          detail: unworkable.detail,
+        }),
+        ghFn,
+        fleetAuthors: chainFleetAuthors,
+      });
+    } catch (err) {
+      defaultLogger.warn("findOldestIssue: chain-root comment failed", {
+        repo: unworkable.blocked.repo,
+        issue: `#${unworkable.blocked.number}`,
+        root: `${unworkable.root.repo}#${unworkable.root.number}`,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // Issue #219: the counts ride the result so a caller that gets nothing
   // back can say why, whether or not diagnostics are enabled.
   const diagnosticSummary = diag.getSummary();

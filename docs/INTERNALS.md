@@ -2737,6 +2737,53 @@ flowchart TD
     H -. idempotent re-scan: no-op .-> H
 ```
 
+#### 💬 Reporting a chain root nobody can move
+
+Dependency-chain promotion (Issue #2495) lifts the workable dependency of a
+blocked `top-priority`/`work-on` issue into that issue's own tier. When the
+chain instead ends at a root the fleet **cannot** work, there is nothing to
+promote — and, before Issue #2496, nothing was said either: a human saw an
+urgent label and no activity.
+
+`buildChainRootUnworkableComment` / `postChainRootUnworkableComment`
+([chain_root_comment.ts](../worker/deno/lib/chain_root_comment.ts)) post one
+plain comment on the **blocked** issue naming the root and the reason
+`resolveChainPromotions` classified it with — `assigned` (waiting on
+`@login`), `no-discovery-label`, `needs-human`, or `cross-repo-unmonitored`.
+Deliberately **not** an escalation:
+
+- **No label is applied or removed.** The worker cannot apply `top-priority`,
+  and `needs-human` stays reserved for the `escalateToHuman` chokepoint — a
+  root a human is already working is waited on, not escalated. This is also
+  what closes the trusted-human half of Issue #2473, which `escalateToHuman`
+  could not: a trusted human's dependency now gets a report rather than
+  silence.
+- **At most once per 24 hours**, keyed by blocked issue + root + reason
+  (`fetchMarkerComments` reads the hidden `vibe-chain-root-unworkable` marker
+  across every page). A changed root or reason is news, so it posts again at
+  once.
+- **Silent while the fleet is working the chain** — a fleet-assigned root is a
+  `fleetWorking` entry, never an `unworkableRoots` one.
+- Each blocked member of a shared chain gets its own comment, on its own
+  thread.
+- The report is best effort: a failure is logged and discovery carries on.
+
+"The fleet" here means the accounts the fleet *operates*
+(`resolveFleetMaintenanceAuthorSet` — this host, its siblings, the service
+accounts), **not** `allowed_authors`: the trusted humans who direct the
+worker are exactly the assignees this report exists to name.
+
+```mermaid
+flowchart TD
+    A[blocked top-priority / work-on issue] --> B[walk the dependency chain]
+    B -->|workable root| C[promote into the blocked issue's tier]
+    B -->|fleet already holds the root| D[log chain-root-in-progress, stay silent]
+    B -->|root nobody can move| E{same root + reason<br/>commented < 24h ago?}
+    E -->|yes| F[say nothing]
+    E -->|no| G[post ONE comment — no labels]
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### 🔗 Sub-issue relationship tracking: `worker/deno/lib/planning_processor.ts`
 
 [planning_processor.ts](../worker/deno/lib/planning_processor.ts) tracks
