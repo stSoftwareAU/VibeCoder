@@ -69,7 +69,7 @@ jobs:
 
       - name: Initialise CodeQL (JavaScript/TypeScript, SARIF kept local)
         # github/codeql-action/init@v4.38.0
-        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63
+        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd
         with:
           languages: javascript-typescript
           # The default query pack; the sweep, not CodeQL, decides severity
@@ -78,7 +78,7 @@ jobs:
 
       - name: Analyse with CodeQL
         # github/codeql-action/analyze@v4.38.0
-        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd
         with:
           category: security-tree-sweep
           upload: never
@@ -98,6 +98,21 @@ jobs:
             > "$SEMGREP_JSON"
           echo "semgrep JSON: $(wc -c < "$SEMGREP_JSON") bytes"
 
+      # A pull request gates its OWN diff, not the whole tree. Unbaselined
+      # findings that already sit on the base branch — new code not yet
+      # triaged into the baseline — must not redden a dependabot pin bump,
+      # and no commit on the PR branch could clear them anyway. The base
+      # SHA (not the base ref, which moves) names exactly the PR's change
+      # set; the scheduled sweep stays strict with no list at all.
+      - name: Collect the PR's changed files (pull_request only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"
+
       - name: Sweep — normalise, deduplicate, classify against the baseline
         id: sweep
         run: |
@@ -106,6 +121,10 @@ jobs:
           if [ -z "$sarif" ]; then
             echo "::error::CodeQL produced no SARIF under $SARIF_DIR"
             exit 1
+          fi
+          changed_files_args=()
+          if [ -f "$RUNNER_TEMP/changed-files.txt" ]; then
+            changed_files_args=(--changed-files "$RUNNER_TEMP/changed-files.txt")
           fi
           cd worker/deno
           set +e
@@ -117,7 +136,8 @@ jobs:
             --semgrep-json "$SEMGREP_JSON" \
             --codeql-sarif "$sarif" \
             --report "$REPORT" \
-            --stamp
+            --stamp \
+            ${changed_files_args[@]+"${changed_files_args[@]}"}
           status=$?
           set -e
           echo "status=${status}" >> "$GITHUB_OUTPUT"

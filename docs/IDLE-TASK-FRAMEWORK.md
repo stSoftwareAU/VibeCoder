@@ -845,7 +845,7 @@ flowchart LR
     P -- yes --> PB["pr_blocked+1"]
     P -- no --> M{Named by a<br/>merged fleet PR?}
     M -- yes --> MB["merged_pr_blocked+1"]
-    M -- no --> D{Names an open<br/>dependency?}
+    M -- no --> D{"Names an open dependency,<br/>or a closed one another<br/>open milestone may hold?"}
     D -- yes --> DB["dependency_blocked+1"]
     D -- no --> R{This run already<br/>holding it back?}
     R -- yes --> RD{Held because the claim<br/>path deferred it?}
@@ -898,11 +898,34 @@ model it, so such an issue counted as claimable on every cycle. It is resolved
 against the repo's own open-issue set — which the census already holds — so it
 costs no `gh` call: a same-repo `#N` absent from that set is closed and does not
 block, and a cross-repo `owner/repo#N` cannot be resolved locally, so it blocks,
-matching `isDependencyBlocked`'s fail-safe. The cross-milestone hold
-(Issue #2173) is *not* modelled — it needs the closed dependency's milestone,
-which the open-issue set does not carry — so an issue held only by that rule
-still counts as claimable here: an under-count, the same bounded-harm direction
-as the unmodelled parent/child gate.
+matching `isDependencyBlocked`'s fail-safe.
+
+The **cross-milestone hold** (Issue #2173) inside that same gate was the sixth
+instance, and the one the open-issue set alone cannot answer. A *closed*
+same-repo dependency belonging to a **different, still-open** milestone has not
+reached the default branch yet, so the scan keeps refusing the dependant —
+permanently, as far as any cycle is concerned. The census read the dependency as
+merely closed and counted the dependant as claimable. On 2026-09-20
+`stSoftwareAU/GRQ-AutoTrader` logged
+`work_on=1 dependency_blocked=8 inversion_signal=true` on three consecutive
+cycles and filed VibeCoder#2455 over GRQ-AutoTrader#662, whose two dependencies
+are both closed inside the open `gateway-host-retirement` milestone. The scan
+was right.
+
+The closed dependency's own milestone stays unknowable from a set of open
+issues, so the census models the hold's **precondition** instead: the repo has
+some open milestone other than the candidate's own. `openMilestones` is read in
+`run_core_production_deps.ts` from the same cached
+`fetchOpenMilestoneClosedCounts` entry (`milestones_open_counts`) that the
+scan's `createOpenMilestoneLookup` uses, so it costs no extra `gh` call and
+cannot drift from the scan's view. Where no other milestone is open the hold
+cannot fire and a genuine inversion is still detected; where one is, the census
+defers to the scan rather than escalating against it. Both call sites of the
+gate — the claimable count and the tier-3 `censusVisibleRefusal` — are given the
+milestone context, because a `work-on` issue that reads as refused by *nothing*
+would wrongly suppress the lower tiers (`dependency-blocked` is `human`-clearing
+and never suppresses, Issue #2610). The parent/child gate remains the one
+unmodelled rule here.
 
 The **run-local hold** gate (Issue #655) closes the fourth instance, one step
 later in the pipeline. Every gate above lives in a `collect_*_candidates.ts`;
@@ -1271,6 +1294,13 @@ Every gate above asks *is there work the scan could claim?* The week-pace
 guard (Issue #1885) asks a different question — *will the weekly Claude quota
 last?* — and while it is engaged the scan drops tiers 3 and 4, `low-priority`
 and `idle-task`, from its ladder until the window resets.
+
+Draining is the default (Issue #2474): the guard stays off while the held
+token has any budget, so the pool's token selection, the pool-exhaustion
+switch (Issue #2475) and the run-level outage fallback own the switch-over at
+exhaustion. A host that wants the projection guard back sets
+`claude_week_pace_drain: false` in its config — a single-token host with no
+fallback provider is the shape the guard was written for.
 
 Three correct pieces made one wrong outcome on GRQ-25 (2026-09-10, 0 issues
 processed in 1h 9m). The guard refused every backlog pickup, so the scan

@@ -174,6 +174,7 @@ export function createSecurityTreeSweepCommand(
         const semgrepJsonPath = optionalStringArg(args, "semgrep-json");
         const codeqlSarifPath = optionalStringArg(args, "codeql-sarif");
         const semgrepConfig = optionalStringArg(args, "semgrep-config");
+        const changedFilesPath = optionalStringArg(args, "changed-files");
         result = await runSecurityTreeSweep({
           repoDir,
           slug,
@@ -192,6 +193,7 @@ export function createSecurityTreeSweepCommand(
           ...(semgrepJsonPath !== undefined ? { semgrepJsonPath } : {}),
           ...(codeqlSarifPath !== undefined ? { codeqlSarifPath } : {}),
           ...(semgrepConfig !== undefined ? { semgrepConfig } : {}),
+          ...(changedFilesPath !== undefined ? { changedFilesPath } : {}),
           // The committed report is deterministic; --stamp opts into a
           // timestamp for ad-hoc runs whose output is not committed.
           ...(boolArg(args, "stamp") ? { now: new Date() } : {}),
@@ -211,6 +213,11 @@ export function createSecurityTreeSweepCommand(
         ...result.baselineErrors.map((e) => `Baseline error: ${e}`),
         ...result.newRows.map((r) =>
           `Unbaselined: ${r.id} ${r.severity} ${r.family} ${r.path}` +
+          (r.lineStart !== null ? `:${r.lineStart}` : "")
+        ),
+        ...result.outOfScopeRows.map((r) =>
+          `Unbaselined (outside changed files): ${r.id} ${r.severity} ` +
+          `${r.family} ${r.path}` +
           (r.lineStart !== null ? `:${r.lineStart}` : "")
         ),
         ...result.filed.map((f) => `Filed: #${f.number} ${f.id}`),

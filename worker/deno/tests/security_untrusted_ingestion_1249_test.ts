@@ -246,7 +246,7 @@ Deno.test("1249/3 - a quoted block marker does not suppress the explanation", as
     authorOptions: FLEET_OPTIONS,
   });
 
-  assertEquals(wasPosted, true);
+  assertEquals(wasPosted, "posted");
   assertEquals(posted.length, 1);
 });
 

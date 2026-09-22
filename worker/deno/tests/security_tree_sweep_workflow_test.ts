@@ -51,6 +51,21 @@ Deno.test("sweep workflow - fail loud: the sweep's exit status is the job's, and
   assertStringIncludes(workflow, "workflow_dispatch:");
 });
 
+Deno.test("sweep workflow - a PR passes its own changed files; the schedule stays strict (Issue #2467)", () => {
+  // The base SHA comes from the event payload via env (never interpolated
+  // into the shell), and the diff is exactly base..HEAD.
+  assertStringIncludes(
+    workflow,
+    "github.event.pull_request.base.sha",
+  );
+  assertStringIncludes(workflow, 'git diff --name-only "$BASE_SHA" HEAD');
+  // Only a pull_request run writes the list; the strict mode is the
+  // default when no list exists.
+  assertStringIncludes(workflow, "if: github.event_name == 'pull_request'");
+  assertStringIncludes(workflow, "--changed-files");
+  assertStringIncludes(workflow, "changed_files_args=()");
+});
+
 Deno.test("sweep workflow - the default baseline path is the file the workflow names and it exists", async () => {
   assertStringIncludes(workflow, DEFAULT_BASELINE);
   const stat = await Deno.stat(`${ROOT}${DEFAULT_BASELINE}`);

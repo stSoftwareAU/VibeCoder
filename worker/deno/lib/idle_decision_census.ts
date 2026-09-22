@@ -290,6 +290,10 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "milestone-occupied": "modelled",
     "pr-blocked": "modelled",
     "merged-pr-permanent": "modelled",
+    // Issue #460 modelled the open-dependency half; Issue #2455 added the
+    // cross-milestone hold (Issue #2173) through
+    // {@link RepoCensusInput.openMilestones}, which is what kept refusing
+    // GRQ-AutoTrader#662 while this map already claimed the gate modelled.
     "dependency-blocked": "modelled",
     // Issue #655: the caller hands the census the same run-local hold set
     // `find_oldest_issue.ts` filters candidates against — the persisted retry
@@ -322,6 +326,8 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "dependency-cycle-escalated": "escalated-elsewhere",
     "dead-label-tracker-escalated": "escalated-elsewhere",
     "human-pr-blocked-escalated": "escalated-elsewhere",
+    // Issue #2473: unclaimable blocking dependency escalated.
+    "dependency-stalled": "escalated-elsewhere",
     // Issue #505: a diagnostic nothing can schedule is put in front of a
     // human on the issue itself.
     "self-schedule-escalated": "escalated-elsewhere",
@@ -562,6 +568,22 @@ export interface RepoCensusInput {
    * here. Omitted → no hold is a deferral, exactly the pre-#2405 behaviour.
    */
   deferredHolds?: ReadonlySet<number>;
+  /**
+   * Titles of the repo's currently **open** milestones, as
+   * `createOpenMilestoneLookup` reads them for the scan (Issue #2455).
+   *
+   * They carry the cross-milestone hold (Issue #2173) across to the census: a
+   * *closed* same-repo dependency that belongs to another still-open milestone
+   * has not reached the default branch yet, so the scan keeps refusing the
+   * dependant with a permanent `dependency-blocked`. The census cannot see a
+   * closed issue's milestone, so it models the hold's precondition — some
+   * milestone other than the candidate's own is open — which is the same
+   * under-counting direction this module already prefers.
+   *
+   * Omitted → no cross-milestone hold is applied, preserving the pre-#2455
+   * behaviour exactly as `openPRs` does.
+   */
+  openMilestones?: ReadonlySet<string>;
 }
 
 /** Per-priority unblocked counts for a repo. */
@@ -808,27 +830,43 @@ function isMergedPrBlocked(issue: CensusIssue, mergedPRs: ClosedPR[]): boolean {
  * it needs a per-issue API call the census must not pay for, and it errs in
  * the same under-counting direction.
  *
- * The cross-milestone hold (Issue #2173) is likewise not modelled: it needs
- * the *closed* dependency's milestone, which is absent from the open-issue set
- * this function is given. So an issue whose only blocker is a closed
- * dependency in another still-open milestone counts as claimable here while
- * the scan refuses it — the same under-count as parent/child blocking, in the
- * bounded-harm direction this module prefers.
+ * The cross-milestone hold (Issue #2173) is modelled through `openMilestones`
+ * (Issue #2455). The scan keeps refusing a dependant whose *closed* same-repo
+ * dependency belongs to another milestone of this repo that is still open —
+ * that dependency's code has not reached the default branch yet. The closed
+ * dependency's milestone is not in the open-issue set this function is given,
+ * so the census models the hold's precondition instead: the repo has an open
+ * milestone other than the candidate's own, so the hold can fire. That errs
+ * towards under-counting, the direction this module prefers — where no other
+ * milestone is open the hold cannot fire and the issue stays claimable, so a
+ * genuine inversion is still reported.
+ *
+ * On stSoftwareAU/GRQ-AutoTrader #662 the unmodelled hold manufactured
+ * `work_on=1 … inversion_signal=true` against a scan recording a permanent
+ * `dependency-blocked`, for three consecutive cycles.
  */
 function isDependencyBlockedByOpenIssue(
   issue: CensusIssue,
   repo: string,
   openIssueNumbers: ReadonlySet<number>,
+  openMilestones: ReadonlySet<string> = new Set<string>(),
 ): boolean {
   if (issue.body === undefined) return false;
   const refs = extractDependencyReferencesDetailed(issue.body);
   const lowerRepo = repo.trim().toLowerCase();
+  // The scan compares each dependency's milestone with the candidate's, so a
+  // milestone the candidate is itself in can never hold it.
+  const otherMilestoneOpen = [...openMilestones].some(
+    (title) => title !== issue.milestone,
+  );
   return refs.some((ref) => {
     const sameRepo = ref.repo === undefined ||
       ref.repo.trim().toLowerCase() === lowerRepo;
     // Unresolvable (cross-repo) → blocked, as the scan fails safe.
     if (!sameRepo) return true;
-    return openIssueNumbers.has(ref.number);
+    if (openIssueNumbers.has(ref.number)) return true;
+    // Closed, but the cross-milestone hold (Issue #2173) may still apply.
+    return otherMilestoneOpen;
   });
 }
 
@@ -915,11 +953,18 @@ function hasSuppressingWorkOn(
   mergedPRs: ClosedPR[],
   repo: string,
   openIssueNumbers: ReadonlySet<number>,
+  openMilestones: ReadonlySet<string>,
 ): boolean {
   return issues.some((issue) => {
     if (!isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel)) return false;
     return suppressesLowerTiers(
-      censusVisibleRefusal(issue, mergedPRs, repo, openIssueNumbers),
+      censusVisibleRefusal(
+        issue,
+        mergedPRs,
+        repo,
+        openIssueNumbers,
+        openMilestones,
+      ),
     );
   });
 }
@@ -936,9 +981,17 @@ function censusVisibleRefusal(
   mergedPRs: ClosedPR[],
   repo: string,
   openIssueNumbers: ReadonlySet<number>,
+  openMilestones: ReadonlySet<string>,
 ): SkipReason | undefined {
   if (isMergedPrBlocked(issue, mergedPRs)) return "merged-pr-permanent";
-  if (isDependencyBlockedByOpenIssue(issue, repo, openIssueNumbers)) {
+  if (
+    isDependencyBlockedByOpenIssue(
+      issue,
+      repo,
+      openIssueNumbers,
+      openMilestones,
+    )
+  ) {
     return "dependency-blocked";
   }
   return undefined;
@@ -955,6 +1008,7 @@ function countUnblocked(
   pushCapableAuthors: readonly string[] = [],
   weekPaceEngaged = false,
   deferredHolds: ReadonlySet<number> = new Set<number>(),
+  openMilestones: ReadonlySet<string> = new Set<string>(),
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
@@ -990,6 +1044,7 @@ function countUnblocked(
     mergedPRs,
     repo,
     openIssueNumbers,
+    openMilestones,
   );
   let prBlocked = 0;
   let streamOccupied = 0;
@@ -1035,7 +1090,14 @@ function countUnblocked(
     // refused for a more fundamental reason keeps that reason, so
     // `dependency_blocked` marks only issues that would otherwise be
     // claimable right now.
-    if (isDependencyBlockedByOpenIssue(issue, repo, openIssueNumbers)) {
+    if (
+      isDependencyBlockedByOpenIssue(
+        issue,
+        repo,
+        openIssueNumbers,
+        openMilestones,
+      )
+    ) {
       dependencyBlocked += 1;
       continue;
     }
@@ -1180,6 +1242,7 @@ export function buildIdleDecisionCensus(opts: {
       opts.pushCapableAuthors ?? [],
       opts.weekPaceEngaged ?? false,
       input.deferredHolds ?? new Set<number>(),
+      input.openMilestones ?? new Set<string>(),
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,

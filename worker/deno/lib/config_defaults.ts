@@ -1459,6 +1459,12 @@ export function buildDefaultWorkerConfig(
     // enables more, so an existing deployment mounts exactly what it did.
     enabledAgentProviders: [DEFAULT_AGENT_PROVIDER_ID],
     agentProviderFallback: [],
+    // Issue #2474: drain the held Claude token to zero rather than parking
+    // the backlog at the week-pace projection. The default, because a pool
+    // host has subscriptions to rotate and the outage fallback handles the
+    // token that dies mid-issue — the projection guard's reservation buys
+    // nothing there. `false` opts a host back into the guard.
+    claudeWeekPaceDrain: true,
     claudeModel: "",
     // Issue #2654: configured best planning model for degraded-model detection.
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,

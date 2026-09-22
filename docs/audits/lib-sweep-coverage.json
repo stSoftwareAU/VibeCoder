@@ -2009,6 +2009,30 @@
       ]
     },
     {
+      "issue": 2470,
+      "chunk": "top-up-2470",
+      "title": "top-up: the pace-aware provider fallback",
+      "ledger": "docs/audits/security-sweep-2470-pace-provider-fallback.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pace_provider_fallback.ts (#2470)",
+      "status": "swept",
+      "sweptAt": "eb668d4a4e828d100858e9cfb6d398bd604aa631",
+      "paths": [
+        "worker/deno/lib/pace_provider_fallback.ts"
+      ]
+    },
+    {
+      "issue": 2473,
+      "chunk": "top-up-2473",
+      "title": "top-up: dependency claimability classification",
+      "ledger": "docs/audits/security-sweep-2473-dependency-claimability.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: dependency_claimability.ts (#2473)",
+      "status": "swept",
+      "sweptAt": "1c1ee2b7e6a966069f34a6fa9476bd3a3bc6eaf7",
+      "paths": [
+        "worker/deno/lib/dependency_claimability.ts"
+      ]
+    },
+    {
       "issue": 2447,
       "chunk": "top-up-2447",
       "title": "top-up: the GraphQL budget pacing",
