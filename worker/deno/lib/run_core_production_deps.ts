@@ -542,6 +542,51 @@ export interface ProductionDepsOptions {
    * prefetch, not factory-wide.
    */
   fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * Test seams for the lease-gated maintenance sweeps (Issue #2451).
+   *
+   * Production leaves this unset and gets the real lease store and the real
+   * sweeps. Tests inject stubs because the thing worth asserting is the
+   * *gate*: which repositories each sweep is handed once the lease has been
+   * consulted, and that the lease is refreshed exactly once per leased
+   * repository per cycle. Every one of those sweeps otherwise reaches GitHub,
+   * so a test without these seams would report the host rather than the code.
+   *
+   * Scoped to the four fixed-cost sweeps the lease gates, not factory-wide.
+   */
+  maintenanceSweeps?: MaintenanceSweepSeams;
+}
+
+/**
+ * The lease store and the four sweeps it gates, each overridable on its own
+ * (Issue #2451). Every member is optional; an unset member keeps the
+ * production implementation.
+ */
+export interface MaintenanceSweepSeams {
+  /** Reads the current lease holder for a repository. */
+  readLease?: (
+    repo: string,
+    io: MaintenanceLeaseIo,
+  ) => Promise<MaintenanceLeaseHolder | null>;
+  /** Claims or extends this host's lease on a repository. */
+  refreshLease?: (
+    repo: string,
+    host: string,
+    nowSeconds: number,
+    io: MaintenanceLeaseIo,
+  ) => Promise<boolean>;
+  /** Priority 1.67 — receives the leased repositories, returns the close count. */
+  closeIssuesForMergedPrs?: (repos: string[]) => Promise<number>;
+  /** Priority 1.68 — receives the leased repositories. */
+  recoverAssignedWithClosedPr?: (repos: string[]) => Promise<void>;
+  /** Priority 1.7 — receives the leased repositories. */
+  checkMilestoneCompletions?: (repos: string[]) => Promise<void>;
+  /** Priority 1.81 — receives the leased repositories and the watchdog deadline. */
+  resumeFailureDetectionRepairs?: (
+    repos: string[],
+    deadlineEpochMs: number | undefined,
+  ) => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
