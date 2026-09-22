@@ -65,7 +65,8 @@ legitimate clones while protecting nothing.
 Backend guard change with no web surface, so no screenshot applies — the
 evidence is test output. Run from `worker/deno`.
 
-**The regression tests fail against the unfixed code and pass after the fix.**
+**Each regression test reproduces the flaw: it fails against the unfixed code
+and passes after the fix.**
 
 - CLI route, `lib/gh_guard_decision.ts` reverted to `HEAD`:
   `FAILED | 10 passed | 5 failed (12ms)` — exactly the five new refusal tests.
@@ -82,10 +83,13 @@ evidence is test output. Run from `worker/deno`.
 - In both directions the *permitted* tests passed with the fix reverted as well,
   so the new refusals introduce no false positives.
 
-Regression tests added (both declared in this branch's added lines):
-
-- `worker/deno/tests/label_denylist_union_test.ts::label denylist - gh label create/edit/delete cannot target a reserved label (Issue #2518)`
-- `worker/deno/tests/label_denylist_union_test.ts::label denylist - gh api cannot define, rename or destroy a reserved label (Issue #2518)`
+Added the regression test
+`worker/deno/tests/label_denylist_union_test.ts::"label denylist - gh label create/edit/delete cannot target a reserved label (Issue #2518)"`,
+which reproduces the CLI flaw, fails against the unfixed code and passes after
+the fix; and the regression test
+`worker/deno/tests/label_denylist_union_test.ts::"label denylist - gh api cannot define, rename or destroy a reserved label (Issue #2518)"`,
+which reproduces the REST flaw, fails against the unfixed code and passes after
+the fix. Both are declared in this branch's added lines.
 
 ### The original trigger is closed, with no trivial bypass
 
