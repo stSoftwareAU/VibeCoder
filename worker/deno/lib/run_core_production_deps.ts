@@ -5032,7 +5032,7 @@ export async function createProductionRunCoreDeps(
             // best-effort contract as the PR fetches above: on failure the
             // hold is not modelled, which at worst files an idle-task while
             // work exists (bounded harm).
-            let openMilestones = new Set<string>();
+            let openMilestones: Set<string>;
             try {
               openMilestones = new Set(
                 (await fetchOpenMilestoneClosedCounts(repo, issueCache)).keys(),
