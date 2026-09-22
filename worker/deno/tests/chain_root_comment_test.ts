@@ -13,11 +13,14 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildChainRootUnworkableComment,
+  CHAIN_ROOT_COMMENT_WINDOW_MS,
   CHAIN_ROOT_UNWORKABLE_MARKER,
   postChainRootUnworkableComment,
 } from "../lib/chain_root_comment.ts";
 
 const ROOT = { repo: "owner/repo-b", number: 42 };
+/** The logins the fleet itself posts as — the only markers that may dedup. */
+const FLEET = ["vibe-bot"];
 const NOW = Date.parse("2026-09-22T12:00:00Z");
 
 /** A `gh` stub that answers the marker read and records every call. */
@@ -173,6 +176,40 @@ Deno.test("buildChainRootUnworkableComment - strips markup from an implausible a
   assertEquals(comment.body.split("-->").length, 2);
 });
 
+Deno.test("buildChainRootUnworkableComment - names no mention when the assignee is unusable", () => {
+  const comment = buildChainRootUnworkableComment({
+    blockedNumber: 100,
+    root: ROOT,
+    reason: "assigned",
+    detail: "   ",
+  });
+
+  assertStringIncludes(
+    comment.body,
+    "waiting on an unnamed account, who is assigned to owner/repo-b#42",
+  );
+  assertEquals(comment.body.includes("@,"), false);
+});
+
+Deno.test("buildChainRootUnworkableComment - strips markup from a crafted repository reference", () => {
+  const comment = buildChainRootUnworkableComment({
+    blockedNumber: 100,
+    root: { repo: 'owner/repo" --> <script>', number: 5 },
+    reason: "cross-repo-unmonitored",
+    detail: 'owner/repo" -->',
+  });
+
+  // The reference is parsed out of an attacker-writable issue body and lands
+  // inside the marker's `key="…"` attribute, so it keeps only the characters
+  // a repository name may actually use.
+  assertEquals(
+    comment.dedupKey,
+    "chain-root-unworkable-100-owner/repo--script#5-cross-repo-unmonitored",
+  );
+  assertEquals(comment.body.split("-->").length, 2);
+  assertEquals(comment.body.includes("<script"), false);
+});
+
 // =============================================================================
 // postChainRootUnworkableComment — the 24-hour window
 // =============================================================================
@@ -191,6 +228,7 @@ Deno.test("postChainRootUnworkableComment - posts when the thread carries no mar
     issueNumber: 100,
     comment,
     ghFn,
+    fleetAuthors: FLEET,
     now: () => NOW,
   });
 
@@ -215,7 +253,7 @@ Deno.test("postChainRootUnworkableComment - skips a same-key comment inside 24 h
   });
   const { calls, ghFn } = recordingGh([{
     body: comment.body,
-    createdAt: new Date(NOW - 23 * 60 * 60 * 1000).toISOString(),
+    createdAt: new Date(NOW - CHAIN_ROOT_COMMENT_WINDOW_MS + 1).toISOString(),
   }]);
 
   const posted = await postChainRootUnworkableComment({
@@ -223,6 +261,7 @@ Deno.test("postChainRootUnworkableComment - skips a same-key comment inside 24 h
     issueNumber: 100,
     comment,
     ghFn,
+    fleetAuthors: FLEET,
     now: () => NOW,
   });
 
@@ -239,7 +278,7 @@ Deno.test("postChainRootUnworkableComment - posts again once the window has pass
   });
   const { calls, ghFn } = recordingGh([{
     body: comment.body,
-    createdAt: new Date(NOW - 25 * 60 * 60 * 1000).toISOString(),
+    createdAt: new Date(NOW - CHAIN_ROOT_COMMENT_WINDOW_MS - 1).toISOString(),
   }]);
 
   const posted = await postChainRootUnworkableComment({
@@ -247,6 +286,7 @@ Deno.test("postChainRootUnworkableComment - posts again once the window has pass
     issueNumber: 100,
     comment,
     ghFn,
+    fleetAuthors: FLEET,
     now: () => NOW,
   });
 
@@ -277,6 +317,7 @@ Deno.test("postChainRootUnworkableComment - a changed reason posts inside the wi
     issueNumber: 100,
     comment: now,
     ghFn,
+    fleetAuthors: FLEET,
     now: () => NOW,
   });
 
@@ -307,6 +348,7 @@ Deno.test("postChainRootUnworkableComment - a changed root posts inside the wind
     issueNumber: 100,
     comment: now,
     ghFn,
+    fleetAuthors: FLEET,
     now: () => NOW,
   });
 
@@ -345,6 +387,7 @@ Deno.test("postChainRootUnworkableComment - finds the marker on a later page", a
     issueNumber: 100,
     comment,
     ghFn,
+    fleetAuthors: FLEET,
     now: () => NOW,
   });
 
@@ -382,8 +425,8 @@ Deno.test("postChainRootUnworkableComment - a marker from outside the fleet cann
     issueNumber: 100,
     comment,
     ghFn,
+    fleetAuthors: FLEET,
     now: () => NOW,
-    fleetAuthors: ["vibe-bot"],
   });
 
   assertEquals(posted, true);
@@ -407,8 +450,8 @@ Deno.test("postChainRootUnworkableComment - a fleet-authored marker still suppre
     issueNumber: 100,
     comment,
     ghFn,
-    now: () => NOW,
     fleetAuthors: ["Vibe-Bot"],
+    now: () => NOW,
   });
 
   assertEquals(posted, false);
@@ -432,6 +475,7 @@ Deno.test("postChainRootUnworkableComment - an unreadable thread fails loud", as
       issueNumber: 100,
       comment,
       ghFn,
+      fleetAuthors: FLEET,
       now: () => NOW,
     });
   } catch (err) {

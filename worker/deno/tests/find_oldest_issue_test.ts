@@ -2019,3 +2019,47 @@ Deno.test(
     assertEquals(postedChainComments(calls), []);
   },
 );
+
+Deno.test(
+  "findOldestIssue - a failed chain-root comment never costs the scan its selection (Issue #2496)",
+  async () => {
+    // The report is best effort: a comment read that throws is logged and the
+    // scan still selects. Discovery losing a claim over a comment would be a
+    // far worse failure than a missing comment.
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    root.assignees = [{ login: "carol" }];
+    const backlog = chainIssue(300, ["low-priority"], "2023-01-01T00:00:00Z");
+    const base = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [blocked, root, backlog],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> =>
+      args.some((a) => a.includes("/comments"))
+        ? Promise.reject(new Error("gh: 502 Bad Gateway"))
+        : base(args);
+
+    const { diag } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|300|"),
+      `expected the untouched backlog tier, got: ${result.output}`,
+    );
+  },
+);

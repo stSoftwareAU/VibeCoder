@@ -29,7 +29,9 @@
  * Dedup reads the thread through {@link fetchMarkerComments}, which pages the
  * whole thread — the un-paged read returns the 30 oldest comments and would go
  * blind past page one, which is how two other markers leaked (Issues
- * #2265/#2266).
+ * #2265/#2266) — and only a marker a **fleet account** wrote may suppress a
+ * repeat, because a comment body is text anyone can write and only its author
+ * is authenticated.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -169,20 +171,21 @@ export async function postChainRootUnworkableComment(opts: {
   comment: ChainRootUnworkableComment;
   /** Runs `gh` (injectable for testing). */
   ghFn: GhFn;
+  /**
+   * Fleet logins whose comments may suppress a repeat — required, not
+   * optional.
+   *
+   * An issue comment is text anyone who can comment may write, so a marker
+   * match on its own proves nothing; only the comment *author* is
+   * authenticated. Without this check a marker anybody planted reads as "the
+   * fleet already said this" and silences the report, which is the suppression
+   * `marker_dedup_author_cap_test.ts` caps for every dedup lookup in the tree.
+   * An empty list therefore suppresses nothing and the comment is posted:
+   * fail towards the action that cannot hide a fault.
+   */
+  fleetAuthors: string[];
   /** Override the clock used by the dedup window. Defaults to `Date.now`. */
   now?: () => number;
-  /**
-   * Fleet logins whose comments may suppress a repeat.
-   *
-   * An issue body — and an issue comment — is text anyone who can comment may
-   * write, so a marker match on its own proves nothing; only the comment
-   * *author* is authenticated. Supplying the fleet identity means a marker
-   * forged by an outsider cannot silence the report. Omitted, any marker
-   * dedups, which is the behaviour a caller without a resolved fleet set can
-   * safely have: the failure it allows is a delayed comment, never a hidden
-   * escalation.
-   */
-  fleetAuthors?: string[];
 }): Promise<boolean> {
   const now = opts.now ?? Date.now;
   const existing = await fetchMarkerComments(
@@ -194,13 +197,11 @@ export async function postChainRootUnworkableComment(opts: {
 
   const keyMarker = `key="${opts.comment.dedupKey}"`;
   const cutoff = now() - CHAIN_ROOT_COMMENT_WINDOW_MS;
-  const suppressed = existing.some((c) => {
-    if (!c.body.includes(keyMarker)) return false;
-    if (opts.fleetAuthors && !isFleetAuthor(c.author, opts.fleetAuthors)) {
-      return false;
-    }
-    return Date.parse(c.createdAt) >= cutoff;
-  });
+  const suppressed = existing.some((c) =>
+    c.body.includes(keyMarker) &&
+    isFleetAuthor(c.author, opts.fleetAuthors) &&
+    Date.parse(c.createdAt) >= cutoff
+  );
   if (suppressed) return false;
 
   await opts.ghFn([
