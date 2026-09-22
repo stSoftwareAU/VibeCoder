@@ -103,20 +103,10 @@ file) so re-runs deduplicate.
     `createRoot(container).render(...)` /
     `hydrateRoot(container, ...)`.
 
-## Test output — quiet when green, complete when red
+## Test output
 
-The gate that runs on every change runs many times a day, and its
-output is quoted back into review comments and agent prompts. A line
-per passing test is paid for on every green run, and says nothing.
-
-14. **A green test run prints a line per passing test.** Flag a
-    `vitest run`, `jest` or `react-scripts test` invocation in the
-    quality script, the default `npm test` task, or a CI step that
-    runs on pull requests, where the default per-test reporter is left
-    in place. Cite the `package.json` script or workflow line — never
-    run the suite to measure what it prints. Suggested fix: pass
-    `vitest run --reporter=dot` or `jest --silent`, then confirm on a
-    deliberately failing test that the test name, the assertion
-    message and the stack trace all still appear. `severity:medium`
-    when the invocation is the every-change gate or a per-PR CI step,
-    `severity:low` otherwise.
+14. **A green test run prints a line per passing test.** Folded into
+    `### Cross-bucket: verbose gate output` in the orchestrator
+    prompt, which every scan applies regardless of the drawn bucket —
+    see there for the full contract and the per-ecosystem quiet
+    flags.

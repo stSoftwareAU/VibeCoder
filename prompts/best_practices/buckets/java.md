@@ -138,21 +138,10 @@ file) so re-runs deduplicate.
     `<version>` child. Suggested fix: pin an explicit `<version>` (or
     declare it once in `<pluginManagement>`).
 
-## Test output — quiet when green, complete when red
+## Test output
 
-The gate that runs on every change runs many times a day, and its
-output is quoted back into review comments and agent prompts. A line
-per passing test is paid for on every green run, and says nothing.
-
-13. **A green test run prints a line per passing test.** Flag a
-    `mvn test` / `mvn verify` / `gradle test` invocation in the
-    quality script, the default test task, or a CI step that runs on
-    pull requests, where no quiet or failures-only reporting is
-    configured. Cite the script, task or workflow line — never run the
-    suite to measure what it prints. Suggested fix: pass `mvn -q` (or
-    set Surefire's `<statelessTestsetInfoReporter>` to report failures
-    only); under Gradle, narrow `test { testLogging { events } }` to
-    `"failed"`. Confirm on a deliberately failing test that the test
-    name, the assertion message and the stack trace all still appear.
-    `severity:medium` when the invocation is the every-change gate or
-    a per-PR CI step, `severity:low` otherwise.
+13. **A green test run prints a line per passing test.** Folded into
+    `### Cross-bucket: verbose gate output` in the orchestrator
+    prompt, which every scan applies regardless of the drawn bucket —
+    see there for the full contract and the per-ecosystem quiet
+    flags.
