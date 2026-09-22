@@ -24,6 +24,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { describeRunOutcome } from "../lib/run_outcome.ts";
@@ -233,7 +234,13 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
       },
       finalisePr: () => {
         finaliseCalls++;
-        return Promise.resolve({ ok: true, value: "auto-merge armed" });
+        return Promise.resolve({
+          ok: true,
+          value: {
+            result: AutoMergeResult.Enabled,
+            message: "auto-merge armed",
+          },
+        });
       },
     },
   });

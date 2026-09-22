@@ -10,7 +10,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { GitHubClient, Logger, WorkerConfig } from "../types.ts";
+import type {
+  GitHubClient,
+  Logger,
+  RepoConfig,
+  WorkerConfig,
+} from "../types.ts";
 import {
   isExpectedSkipResult,
   type IssueContext,
@@ -193,6 +198,7 @@ import { getWorkerUniqueId } from "./worker_identity.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
+  getRepoConfig,
   getRepoNice,
 } from "./repo_config.ts";
 import { fetchAllIssues } from "./issue_query.ts";
@@ -3100,6 +3106,8 @@ export async function createProductionRunCoreDeps(
           repos,
           logger,
           config.serviceAccounts ?? [],
+          config.repoConfig,
+          maintenanceAuthors,
           issueCache,
         );
         return { ok: true, value: undefined };
@@ -5024,7 +5032,7 @@ export async function createProductionRunCoreDeps(
             // best-effort contract as the PR fetches above: on failure the
             // hold is not modelled, which at worst files an idle-task while
             // work exists (bounded harm).
-            let openMilestones = new Set<string>();
+            let openMilestones: Set<string>;
             try {
               openMilestones = new Set(
                 (await fetchOpenMilestoneClosedCounts(repo, issueCache)).keys(),
@@ -5647,6 +5655,8 @@ async function checkAndHandleMilestoneCompletionsFn(
   repos: string[],
   logger: Logger,
   serviceAccounts: string[],
+  repoConfigs: Record<string, RepoConfig> | undefined,
+  fleetAuthors: readonly string[],
   cache?: IssueCache,
 ): Promise<void> {
   const { checkAndHandleMilestoneCompletions } = await import(
@@ -5665,6 +5675,14 @@ async function checkAndHandleMilestoneCompletionsFn(
       const r = await getGithubUser();
       return r.ok ? r.value : null;
     },
+    // Issue #2458: the summary PR is armed at creation, so it honours the
+    // same `skip_auto_merge` setting the Auto-Merge sweep honours.
+    skipAutoMerge: (repo: string) =>
+      getRepoConfig(repoConfigs, repo, "skipAutoMerge") === "true",
+    // Issue #1082: the same push-capable fleet logins the Auto-Merge sweep
+    // passes, so the summary PR's gated direct merge on an unprotected
+    // default branch can read a genuine outside approval.
+    fleetAuthors,
     log: (msg: string) => logger.info(msg),
   });
   // Fail loud — never let an identity mismatch (ok: false) be silently
