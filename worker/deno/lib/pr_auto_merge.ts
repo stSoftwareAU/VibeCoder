@@ -90,6 +90,12 @@ export enum AutoMergeResult {
    * the milestone's work. It was closed, never merged.
    */
   ClosedRetargetedSync = "closed_retargeted_sync",
+  /**
+   * The PR was armed and behind, so the sweep asked GitHub to update its
+   * branch through the `update-branch` REST endpoint instead of re-arming
+   * (Issue #2462). The merge attempt itself is next sweep's business.
+   */
+  BranchUpdateRequested = "branch_update_requested",
 }
 
 /**
@@ -99,6 +105,7 @@ export enum AutoMergeResult {
 const SUCCESSFUL_OUTCOMES: ReadonlySet<AutoMergeResult> = new Set([
   AutoMergeResult.Enabled,
   AutoMergeResult.MergedDirectly,
+  AutoMergeResult.BranchUpdateRequested,
   AutoMergeResult.Skipped,
   // Issue #1800: a draft is the author's choice, not a fault of the worker's
   // — logged at info so a long-lived draft is not a warning per cycle.

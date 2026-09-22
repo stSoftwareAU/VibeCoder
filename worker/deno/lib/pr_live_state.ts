@@ -64,9 +64,23 @@ export type PrNotOpenReading =
  * and it is **required** rather than optional — the argv always asks for it,
  * so a construction site that cannot say what GitHub answered is one that
  * should not compile.
+ *
+ * Issue #2462: `armed` and `behind` ride the same round trip. They are
+ * optional on this type because the three passes that pre-date the auto-merge
+ * sweep construct the reading without them; the auto-merge sweep acts on them
+ * only when both are explicitly `true`, so an absent field can never arm a
+ * write. `readPrLiveState` always sets them from the parsed payload.
  */
 export type PrLiveStateReading =
-  | { open: true; mergeable: PrLiveMergeable; unknown?: undefined }
+  | {
+    open: true;
+    mergeable: PrLiveMergeable;
+    /** True when `autoMergeRequest` is non-null (Issue #2462). */
+    armed?: boolean;
+    /** True when `mergeStateStatus === "BEHIND"` (Issue #2462). */
+    behind?: boolean;
+    unknown?: undefined;
+  }
   | PrNotOpenReading;
 
 /** Run a `gh` command and return its stdout. */
@@ -100,7 +114,7 @@ export function isPrLiveStateRead(args: readonly string[]): boolean {
  * the queue says conflicts; the other passes read only the `state` half.
  */
 export const OPEN_CONFLICTING_PR_PAYLOAD =
-  '{"mergeable":"CONFLICTING","state":"OPEN"}';
+  '{"autoMergeRequest":null,"mergeStateStatus":"DIRTY","mergeable":"CONFLICTING","state":"OPEN"}';
 
 /**
  * Read a PR's live state, bypassing every cache.
@@ -127,8 +141,8 @@ export async function readPrLiveState(
     };
   }
 
-  const { state, mergeable } = parsePrLiveFields(raw);
-  if (state === "OPEN") return { open: true, mergeable };
+  const { state, mergeable, armed, behind } = parsePrLiveFields(raw);
+  if (state === "OPEN") return { open: true, mergeable, armed, behind };
   if (state === "CLOSED" || state === "MERGED") return { open: false, state };
   return {
     unknown: true,

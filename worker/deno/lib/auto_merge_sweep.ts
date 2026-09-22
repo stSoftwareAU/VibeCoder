@@ -26,7 +26,10 @@
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
 import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
-import type { EnableAutoMergeResult } from "./pr_auto_merge.ts";
+import {
+  AutoMergeResult,
+  type EnableAutoMergeResult,
+} from "./pr_auto_merge.ts";
 
 /** One open PR the sweep may act on. */
 export interface SweepablePr {
@@ -86,6 +89,12 @@ export interface SweepAutoMergeOptions {
     repo: string,
     pr: SweepablePr,
   ) => Promise<PrLiveStateReading>;
+  /**
+   * Ask GitHub to update an armed PR's branch through the `update-branch`
+   * REST endpoint (Issue #2462). Called once per sweep pass for a PR that
+   * is armed and behind; a failed update is recorded and the sweep moves on.
+   */
+  updateBranchFn: (repo: string, prNumber: number) => Promise<Result<void>>;
   /** Attempt the merge for one PR. */
   attemptMerge: (
     repo: string,
@@ -140,6 +149,7 @@ export async function sweepAutoMerge(
     fleetAuthors,
     listOpenPrs,
     prLiveState,
+    updateBranchFn,
     attemptMerge,
     recordOutcome,
     invalidateOpenPrCache,
@@ -230,6 +240,43 @@ export async function sweepAutoMerge(
         if (!reading.open) {
           summary.prsSkippedNotOpen++;
           logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
+          continue;
+        }
+
+        // Issue #2462: an armed PR whose head falls behind its base stays
+        // open forever under the strict up-to-date policy — GitHub never
+        // updates the branch itself, and re-arming does not either. Ask
+        // once per pass, then leave the merge attempt to the next pass (no
+        // retry loop here — `handleMergeAttempt`'s ladder owns the rest).
+        // This deliberately overlaps the git-based `decidePrUpdateAction`
+        // in pr_branch_update.ts: that pass owns unarmed branch upkeep for
+        // its own candidates, while this one only unblocks an already-armed
+        // merge. A conflicting PR is never updated — GitHub would refuse it.
+        if (
+          reading.armed === true && reading.behind === true &&
+          reading.mergeable !== "CONFLICTING"
+        ) {
+          try {
+            const update = await updateBranchFn(repo, pr.number);
+            recordOutcome(
+              repo,
+              pr.number,
+              update.ok
+                ? {
+                  result: AutoMergeResult.BranchUpdateRequested,
+                  message: "armed PR behind its base — branch update requested",
+                }
+                : {
+                  result: AutoMergeResult.Failed,
+                  message: `branch update failed: ${update.error.message}`,
+                },
+            );
+          } catch (err) {
+            recordOutcome(repo, pr.number, {
+              result: AutoMergeResult.Failed,
+              message: `branch update failed: ${errorMessage(err)}`,
+            });
+          }
           continue;
         }
 

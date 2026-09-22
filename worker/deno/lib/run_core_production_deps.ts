@@ -10,7 +10,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { GitHubClient, Logger, WorkerConfig } from "../types.ts";
+import type {
+  GitHubClient,
+  Logger,
+  RepoConfig,
+  WorkerConfig,
+} from "../types.ts";
 import {
   isExpectedSkipResult,
   type IssueContext,
@@ -65,7 +70,11 @@ import {
 import {
   activeAgentProvider,
   type AgentProviderSelector,
+  setConfiguredAgentProviderId,
+  setRunProviderOverride,
 } from "./agent_provider.ts";
+import { classifyProviderBilling } from "./provider_billing.ts";
+import { paceFallbackProviderId } from "./pace_provider_fallback.ts";
 import { checkGhAuth as ghAuthCheck } from "./gh_auth.ts";
 import {
   createSpendCeilingCheck,
@@ -98,6 +107,7 @@ import {
   fetchRecentlyClosedPRsForFleet,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { TimelineBatchRegistry } from "./timeline_batch_registry.ts";
@@ -188,6 +198,7 @@ import { getWorkerUniqueId } from "./worker_identity.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
+  getRepoConfig,
   getRepoNice,
 } from "./repo_config.ts";
 import { fetchAllIssues } from "./issue_query.ts";
@@ -703,7 +714,62 @@ export async function createProductionRunCoreDeps(
     token: () => env("CLAUDE_CODE_OAUTH_TOKEN") ?? null,
     logInfo: (message) => logger.info(message),
     logWarn: (message) => logger.warn(message),
+    // Issue #2474: the operator's opt-in drain mode — the guard never
+    // engages while the held token has budget, so the pool's selection and
+    // the outage fallback own the switch-over at exhaustion. One line says
+    // the mode is on, so a parked backlog never reads as a projection hold.
+    ...(config.claudeWeekPaceDrain === true ? { drain: true } : {}),
   });
+  if (config.claudeWeekPaceDrain === true) {
+    logger.info(
+      "claude-week-pace: drain mode — the guard stays off while any " +
+        "budget remains on the held token (Issue #2474)",
+    );
+  }
+  // Issue #2470: the guard parks the backlog while the operator's fallback
+  // provider sits idle. Once per run, when the guard engages and the fallback
+  // policy names an alternative, switch the active provider to it — the same
+  // shape as the health gate's switch (Issue #2055, set both records so the
+  // switch survives the in-process config reloads) — and keep the low tiers
+  // eligible, routed to the alternative. The billing mode is stated loudly,
+  // never silently (Issue #1923).
+  let paceFallbackId: string | null = null;
+  async function ensurePaceFallback(): Promise<string | null> {
+    if (paceFallbackId !== null) return paceFallbackId;
+    if (!(await weekPaceGate.isEngaged())) return null;
+    const wanted = paceFallbackProviderId({
+      paceEngaged: true,
+      policy: providerFallback,
+    });
+    if (wanted === null) return null;
+    const billing = classifyProviderBilling(wanted, {
+      workDir: config.workDir || workDir,
+    });
+    if (billing.billingMode !== "fixed-subscription") {
+      const consequence = billing.billingMode === "metered"
+        ? "so work switched to it is billed per token"
+        : "so what work switched to it costs cannot be established from here";
+      logger.warn(
+        `[pace-fallback] ${wanted} billing=${billing.billingMode} ` +
+          `(${billing.reason}) — this configured alternative is not a ` +
+          `proved fixed-price subscription, ${consequence} (Issue #2470)`,
+      );
+    }
+    logger.info(
+      `[pace-fallback] week pace engaged — switching the active provider ` +
+        `to ${wanted} and keeping the low tiers eligible ` +
+        `(billing=${billing.billingMode}, Issue #2470)`,
+    );
+    setConfiguredAgentProviderId(wanted);
+    setRunProviderOverride(wanted);
+    paceFallbackId = wanted;
+    return wanted;
+  }
+  // The adjusted verdict every consumer of the guard must share (Issue
+  // #2470): the tiers drop only while the guard holds AND no fallback took
+  // the backlog. The scan, the census and the filer all read this.
+  const weekPaceTierDrop = () =>
+    weekPaceGate.lastEngaged() && paceFallbackId === null;
 
   // --- Daily spend ceiling (Issue #3684) ---
   // Opt-in: unset or `0` leaves the hook unwired and behaviour unchanged. A
@@ -1222,6 +1288,8 @@ export async function createProductionRunCoreDeps(
     // limited. Already validated against the enabled set at config load.
     agentProviderFallback: config.agentProviderFallback ??
       runCoreConfig.agentProviderFallback,
+    claudeWeekPaceDrain: config.claudeWeekPaceDrain ??
+      runCoreConfig.claudeWeekPaceDrain,
     // Issue #2473: per-handler watchdog bounds (conservative defaults).
     handlerTimeoutSeconds: runCoreConfig.handlerTimeoutSeconds,
     handlerSoftTimeoutSeconds: runCoreConfig.handlerSoftTimeoutSeconds,
@@ -2819,8 +2887,15 @@ export async function createProductionRunCoreDeps(
           ),
         // Issue #1774: a PR closed since the cached listing receives no
         // merge attempt — and an unreadable state is never assumed open.
+        // Issue #2462: the same read carries `autoMergeRequest` and
+        // `mergeStateStatus`, so the sweep can see an armed PR whose head
+        // has fallen behind its base.
         prLiveState: (repo, pr) =>
           readPrLiveState(repo, pr.number, runGhCommand),
+        // Issue #2462: the REST update-branch call the merge ladder already
+        // uses — reused as-is, never re-implemented here.
+        updateBranchFn: (repo, prNumber) =>
+          requestBranchUpdate(repo, prNumber, runGhCommand),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,
@@ -3031,6 +3106,8 @@ export async function createProductionRunCoreDeps(
           repos,
           logger,
           config.serviceAccounts ?? [],
+          config.repoConfig,
+          maintenanceAuthors,
           issueCache,
         );
         return { ok: true, value: undefined };
@@ -3399,7 +3476,13 @@ export async function createProductionRunCoreDeps(
       // its window resets, so this scan claims no `low-priority` or
       // `idle-task` issue and the quota left goes to `top-priority` and
       // `work-on` work. An unknown reading never refuses work.
-      const weekPaceEngaged = await weekPaceGate.isEngaged();
+      // Issue #2470: first give the configured fallback provider the chance
+      // to take the backlog; the tiers drop only when no fallback did.
+      await ensurePaceFallback();
+      // Once a fallback took the backlog the probe is pointless — the
+      // tiers stay eligible for the rest of the run either way.
+      const weekPaceEngaged = paceFallbackId === null &&
+        await weekPaceGate.isEngaged();
       // Issue #1950: repositories whose runs keep dying at setup are not
       // claimed again until the window lapses or their diagnostic issue is
       // closed. The probe runs first so a repaired repository is released
@@ -4686,8 +4769,9 @@ export async function createProductionRunCoreDeps(
     // filing is deferred while the pace guard is engaged — an idle-task the
     // filer raises could not be picked up before the weekly window resets,
     // and deciding where to raise it walks every monitored repository.
-    // `lastEngaged` is the recorded verdict: no probe, no request, no line.
-    weekPaceEngaged: () => weekPaceGate.lastEngaged(),
+    // Issue #2470: the adjusted verdict — once a fallback provider took the
+    // backlog, filing is useful again and the deferral must stop with it.
+    weekPaceEngaged: weekPaceTierDrop,
 
     runIdleTaskFiler: async () => {
       try {
@@ -4818,7 +4902,7 @@ export async function createProductionRunCoreDeps(
           // mysteriously passed over — counting GRQ-25's 87 pace-suppressed
           // `low-priority` issues as claimable is what made every cycle a
           // disagreement and drove the idle-task filer through its bound.
-          weekPaceEngaged: weekPaceGate.lastEngaged(),
+          weekPaceEngaged: weekPaceTierDrop(),
           ghCommandFn: auditGh,
           // The audit used to list every repo's open issues itself, uncached,
           // on every idle tick — a full duplicate of the scan's read. Serve it
@@ -4948,7 +5032,7 @@ export async function createProductionRunCoreDeps(
             // best-effort contract as the PR fetches above: on failure the
             // hold is not modelled, which at worst files an idle-task while
             // work exists (bounded harm).
-            let openMilestones = new Set<string>();
+            let openMilestones: Set<string>;
             try {
               openMilestones = new Set(
                 (await fetchOpenMilestoneClosedCounts(repo, issueCache)).keys(),
@@ -5054,7 +5138,7 @@ export async function createProductionRunCoreDeps(
           // Issue #1885: the scan's own verdict, read without a probe or a
           // log line. A tier the pace gate refused is a modelled refusal, not
           // claimable work the scan mysteriously passed over.
-          weekPaceEngaged: weekPaceGate.lastEngaged(),
+          weekPaceEngaged: weekPaceTierDrop(),
         });
         const censusLines = formatIdleDecisionCensus(census, host);
         for (const line of censusLines) {
@@ -5192,7 +5276,7 @@ export async function createProductionRunCoreDeps(
               openIdleTasks,
               // Issue #1915: filing is deferred while the pace guard holds,
               // so an empty idle-task set is the policy, not starvation.
-              weekPaceEngaged: weekPaceGate.lastEngaged(),
+              weekPaceEngaged: weekPaceTierDrop(),
               // Issue #1083: one wrapper is health beside one idle slot and
               // a shortfall beside six.
               expectedIdleTasks: getIdleSlotCapacity(),
@@ -5204,7 +5288,7 @@ export async function createProductionRunCoreDeps(
                   // Issue #1915: the refusal that outranks both — while the
                   // pace guard holds, the filer is deferred whatever the
                   // other two say, so the evidence must name it.
-                  weekPaceEngaged: weekPaceGate.lastEngaged(),
+                  weekPaceEngaged: weekPaceTierDrop(),
                 }),
                 claimableTotal: lastAuditClaimableTotal,
                 censusLines,
@@ -5571,6 +5655,8 @@ async function checkAndHandleMilestoneCompletionsFn(
   repos: string[],
   logger: Logger,
   serviceAccounts: string[],
+  repoConfigs: Record<string, RepoConfig> | undefined,
+  fleetAuthors: readonly string[],
   cache?: IssueCache,
 ): Promise<void> {
   const { checkAndHandleMilestoneCompletions } = await import(
@@ -5589,6 +5675,14 @@ async function checkAndHandleMilestoneCompletionsFn(
       const r = await getGithubUser();
       return r.ok ? r.value : null;
     },
+    // Issue #2458: the summary PR is armed at creation, so it honours the
+    // same `skip_auto_merge` setting the Auto-Merge sweep honours.
+    skipAutoMerge: (repo: string) =>
+      getRepoConfig(repoConfigs, repo, "skipAutoMerge") === "true",
+    // Issue #1082: the same push-capable fleet logins the Auto-Merge sweep
+    // passes, so the summary PR's gated direct merge on an unprotected
+    // default branch can read a genuine outside approval.
+    fleetAuthors,
     log: (msg: string) => logger.info(msg),
   });
   // Fail loud — never let an identity mismatch (ok: false) be silently

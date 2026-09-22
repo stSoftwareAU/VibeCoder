@@ -195,6 +195,8 @@ export interface RunCoreConfig {
    * config load already validated against the enabled set.
    */
   agentProviderFallback: string[];
+  /** Drain the held Claude token to zero (Issue #2474); default true. */
+  claudeWeekPaceDrain: boolean;
   /**
    * Per-handler hard watchdog timeout (seconds, default: 600 — Issue #2473).
    *
@@ -1543,6 +1545,7 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     sleepInterval: 30,
     maxConcurrentIssues: 1,
     agentProviderFallback: [],
+    claudeWeekPaceDrain: true,
     maxConsecutiveFailures: 10,
     rateLimitBackoff: 300,
     // Issue #2473: conservative per-handler watchdog bounds. A single
