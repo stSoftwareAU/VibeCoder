@@ -506,8 +506,9 @@ log marker rather than withholding the arming.
   `strict_required_status_checks_policy` (Issue #2461). It sits beside the
   other findings that report a `milestone/**` ruleset the fleet cannot rely on
   — `no-required-checks`, `create-blocked` and `unreportable-checks` — and,
-  like them, is surfaced by setup and on the repository's tracking issue. An
-  absent parameter reads as `false`, which is how GitHub evaluates it. The
+  like them, is printed per repository by `setup`'s ruleset pass
+  (`reportMilestoneRuleset`). An absent parameter reads as `false`, which is
+  how GitHub evaluates it. The
   ruleset the fleet writes itself (`buildMilestoneRulesetBody`) sets it, so
   only a hand-written or pre-Issue #2461 ruleset trips this.
 

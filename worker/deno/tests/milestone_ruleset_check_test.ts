@@ -600,10 +600,20 @@ Deno.test("assessMilestoneRuleset - an absent strict policy is reported like an 
   assertEquals(stale.severity, "error");
 });
 
-Deno.test("assessMilestoneRuleset - a strict ruleset raises no staleness finding", () => {
-  // The shared fixture is already the correct shape, which is the point.
+Deno.test("assessMilestoneRuleset - a strict ruleset raises no staleness finding and reports configured", () => {
+  // Spelt out rather than taken from the fixture, so the healthy case is
+  // pinned to the parameter rather than to whatever the fixture happens to
+  // carry.
   const findings = assessMilestoneRuleset(
     [ruleset({
+      rules: [{
+        type: "required_status_checks",
+        parameters: {
+          required_status_checks: [{ context: "semgrep" }],
+          do_not_enforce_on_create: true,
+          strict_required_status_checks_policy: true,
+        },
+      }],
       bypass_actors: [
         { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
       ],
@@ -621,6 +631,7 @@ Deno.test("assessMilestoneRuleset - no required checks means no staleness findin
     [ruleset({ rules: [{ type: "deletion" }] })],
     ACCOUNT,
   );
+  assertEquals(findings.filter((f) => f.code === "non-strict-checks"), []);
   assertEquals(codes(findings), ["no-required-checks"]);
 });
 
@@ -635,7 +646,9 @@ Deno.test("assessMilestoneRuleset - the ruleset this repo writes passes with no 
     ACCOUNT,
     ["gate"],
   );
-  assertEquals(findings.filter((f) => f.severity === "error"), []);
+  // Exactly `configured`, not merely "no errors": a body that stopped
+  // covering `milestone/**` would raise a WARNING and pass a weaker check.
+  assertEquals(codes(findings), ["configured"]);
 });
 
 Deno.test("assessMilestoneRuleset - a ruleset with no required checks raises no create finding", () => {
