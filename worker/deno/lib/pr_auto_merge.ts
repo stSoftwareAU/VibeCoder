@@ -908,6 +908,22 @@ export async function enableAutoMerge(
       baseProtectionMemo.set(memoKey, protectedBase);
     }
     if (protectedBase !== true) {
+      // Issue #2460: arming over a behind base is safe *because* the milestone
+      // ruleset's strict up-to-date policy holds the merge until the branch is
+      // level. An unprotected base has no such policy — `--auto` there merges
+      // immediately whatever CI says (Issue #4375) and the gated direct merge
+      // only checks the head against its own base — so either route would land
+      // the child on a stale tip, the side-pick #1779 exists to prevent. Hold
+      // it for the next scan instead; the periodic sync levels the branch.
+      if (behindDeferral) {
+        return {
+          result: AutoMergeResult.Deferred,
+          deferral: behindDeferral,
+          message:
+            `PR #${prNumber} held: base '${baseRefName}' is behind the default branch and has no required checks, so nothing would hold the merge until it is level (Issue #2460)`,
+        };
+      }
+
       // Issue #1082: an unprotected base is the only place the default-branch
       // guard has no alternative path to offer, so hand the gated merge the
       // fleet logins and let a genuine outside approval stand in for the

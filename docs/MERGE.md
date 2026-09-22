@@ -432,7 +432,9 @@ The same defer-and-retry shape covers the *base* as well as the head
 (Issue #1779). A child PR whose base is a `milestone/*` branch that is behind
 the default branch is **armed anyway** (Issue #2460): the milestone ruleset's
 strict up-to-date policy holds the *merge* until the branch is level, so arming
-early is safe and the child lands the moment the sync catches up.
+early is safe and the child lands the moment the sync catches up. That safety
+comes entirely from the ruleset, so it is conditional on the base **having** one
+— see "A behind base with no required checks" below.
 `decideMilestoneBaseMerge` in
 [`worker/deno/lib/milestone_children_gate.ts`](../worker/deno/lib/milestone_children_gate.ts)
 still returns `defer` / `milestone-behind` — that decision is what triggers the
@@ -460,6 +462,14 @@ log marker rather than withholding the arming.
   names the behind base (`deferral: "milestone-behind"`) for logging, so
   the PR-maintenance scan treats a healthy child as landed rather than
   escalating it to `needs-human`.
+- **A behind base with no required checks is still held.** Arming is only safe
+  while something holds the merge, and on an unprotected base nothing does:
+  `--auto` there merges immediately whatever CI says (Issue #4375), and the
+  gated direct merge only measures the head against its own base, not the base
+  against the default branch. Either route would land the child on a stale tip
+  — the side-pick this section exists to prevent — so a behind *unprotected*
+  base posts its sync reason and then defers to the next scan, once the
+  periodic 1.72 sweep has levelled the branch (Issue #2460).
 - **The milestone sync PR is exempt.** Its base *is* the milestone branch and
   its head is `sync/milestone-*` — it is the PR that clears "behind". Deferring
   it for the state it exists to fix would deadlock the milestone: the sync

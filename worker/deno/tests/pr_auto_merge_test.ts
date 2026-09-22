@@ -1213,6 +1213,48 @@ Deno.test("pr_auto_merge - a conflicting in-cycle sync arms the child anyway and
   );
 });
 
+Deno.test("pr_auto_merge - a behind base with no required checks is held, not armed or side-picked (Issue #2460)", async () => {
+  resetBehindSyncComments();
+  _resetBaseProtectionMemo();
+  const comments: string[] = [];
+  let autoCalls = 0;
+  let directMergeCalls = 0;
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 44,
+    headRefName: "issue-44-child",
+    baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => false,
+    decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "deferred" as const,
+        detail: "unresolved conflict on src/foo.ts",
+      }),
+    directMergeFn: async () => {
+      directMergeCalls++;
+      return { ok: true as const, value: { merged: true } };
+    },
+    commentFn: async (_r, _n, body) => {
+      comments.push(body);
+    },
+    ghCommandFn: async (args) => {
+      if (args.includes("--auto")) autoCalls++;
+      return "";
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertEquals(result.deferral, "milestone-behind");
+  assertEquals(autoCalls, 0, "an unprotected base must not be armed");
+  assertEquals(directMergeCalls, 0, "nor side-picked onto the stale tip");
+  assertEquals(comments.length, 1, "the sync reason is still posted once");
+  assertEquals(
+    autoMergeOutcomeNeedsComment(result),
+    false,
+    "the #2457 reporting adds nothing to the one sync-reason comment",
+  );
+});
+
 Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle (Issue #2005)", async () => {
   resetBehindSyncComments();
   _resetBaseProtectionMemo();
