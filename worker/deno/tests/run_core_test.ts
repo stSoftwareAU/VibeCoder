@@ -1589,6 +1589,21 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "run_core - a throwing quota probe keeps the fixed sleep and says so (Issue #2447)",
+  async () => {
+    const { sleeps, logs } = await runPacedCycle(() =>
+      Promise.reject(new Error("probe exploded"))
+    );
+    assert(sleeps.length >= 1, "expected at least one end-of-cycle sleep");
+    // Fail loud: the probe's failure is reported, not swallowed into a
+    // silently-unchanged sleep.
+    const warned = logs.find((line) => line.includes("budget-pacing:"));
+    assert(warned, `expected the throw to be reported, got [${logs}]`);
+    assertStringIncludes(warned, "probe exploded");
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Tests — Consecutive failure exit
 // ---------------------------------------------------------------------------

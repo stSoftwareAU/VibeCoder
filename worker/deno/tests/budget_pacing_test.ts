@@ -109,6 +109,22 @@ Deno.test("never returns less than the base sleep", () => {
   assert(result.sleepSeconds >= 120);
 });
 
+Deno.test("a base sleep of zero inside the reserve paces to the cap, not NaN", () => {
+  // `0 × Infinity` is NaN, and a NaN sleep would reach `deps.sleep()`; with
+  // nothing affordable the stretch goes straight to the cap instead.
+  const result = computePacedSleepSeconds(input({
+    remaining: 500,
+    spentLastCycle: 200,
+    baseSleepSeconds: 0,
+  }));
+  assert(
+    Number.isFinite(result.sleepSeconds),
+    "the paced sleep must be finite",
+  );
+  assertEquals(result.sleepSeconds, MAX_PACED_SLEEP_SECONDS);
+  assertEquals(result.inReserve, true);
+});
+
 Deno.test("a base sleep of zero stays zero", () => {
   const result = computePacedSleepSeconds(input({
     remaining: 4000,

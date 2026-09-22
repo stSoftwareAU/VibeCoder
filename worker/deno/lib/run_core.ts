@@ -5251,6 +5251,8 @@ export async function runCoreLoop(
   // account spent across the cycle that just finished. The first cycle has no
   // previous reading, so it sleeps the fixed interval.
   let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
+  /** When that reading was taken, so the spend and its span share a window. */
+  let lastGraphqlQuotaReadingAtMs = startTime;
 
   const fireCycleCallback = (reason: CycleEndReason): Promise<void> => {
     const finishedAt = deps.now();
@@ -5300,28 +5302,36 @@ export async function runCoreLoop(
   }
 
   /**
-   * Decide the end-of-cycle sleep for the `scanHadSuccess` branch
-   * (Issue #2447): pace it by what the account spent across the cycle just
-   * finished when that exceeds what the remaining window can afford per cycle.
-   * A missing dep, null reading, or throw keeps today's fixed sleep, silently.
+   * The end-of-cycle sleep for the `scanHadSuccess` branch (Issue #2447):
+   * paced by what the account spent since the previous reading when that
+   * exceeds what the remaining window can afford per cycle. A missing dep or
+   * a `null` reading (the probe could not run) keeps today's fixed sleep; a
+   * probe that throws keeps it too and says so, rather than going quiet.
+   * Emits the one `budget-pacing:` line itself, only when pacing moved the
+   * sleep.
    */
-  async function readPacedEndOfCycleSleep(
-    cycleStartMs: number,
+  async function pacedEndOfCycleSleepSeconds(
     baseSleepSeconds: number,
-  ): Promise<{ sleepSeconds: number; logLine: string | null }> {
-    const fallback = { sleepSeconds: baseSleepSeconds, logLine: null };
-    if (!deps.readGraphqlQuota) return fallback;
+  ): Promise<number> {
+    if (!deps.readGraphqlQuota) return baseSleepSeconds;
     let reading: { limit: number; remaining: number; reset: number } | null;
     try {
       reading = await deps.readGraphqlQuota();
-    } catch {
-      return fallback;
+    } catch (error) {
+      warnOf(deps)(
+        `budget-pacing: the GraphQL quota probe threw, so the fixed ` +
+          `${baseSleepSeconds}s sleep stands — ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      );
+      return baseSleepSeconds;
     }
-    if (reading === null) return fallback;
+    if (reading === null) return baseSleepSeconds;
 
-    // `graphqlSpendBetween` reads `used` and `reset` only; `used` is the
-    // exact complement of `remaining`, and `source` is ignored, so a
-    // headers-shaped placeholder keeps the call honest.
+    // `graphqlSpendBetween` diffs `used`, which this dep does not carry. Both
+    // readings synthesise it the same way, so the difference it takes is the
+    // exact fall in `remaining` — the spend we want — and it still resets the
+    // diff when the window rolls over. `source` is not read.
     const current: GraphqlQuotaReading = {
       limit: reading.limit,
       remaining: reading.remaining,
@@ -5329,34 +5339,42 @@ export async function runCoreLoop(
       reset: reading.reset,
       source: "headers",
     };
-    const spentLastCycle = lastGraphqlQuotaReading
-      ? graphqlSpendBetween(lastGraphqlQuotaReading, current)
-      : 0;
+    const previous = lastGraphqlQuotaReading;
+    const previousAtMs = lastGraphqlQuotaReadingAtMs;
     lastGraphqlQuotaReading = current;
-    if (spentLastCycle === 0) return fallback;
+    lastGraphqlQuotaReadingAtMs = deps.now();
+    // The first reading of the run has nothing to diff against.
+    if (previous === null) return baseSleepSeconds;
 
-    const nowSeconds = Math.floor(deps.now() / 1000);
-    const cycleSeconds = Math.max(1, (deps.now() - cycleStartMs) / 1000);
+    const spentLastCycle = graphqlSpendBetween(previous, current);
+    // The span the spend accrued over is the time since the *previous
+    // reading*, not since this cycle opened: a cycle that left by the
+    // circuit-breaker branch or a rate-limit pause took no reading, so its
+    // spend is still inside this diff. Measuring both over the same span
+    // keeps the spend-per-cycle estimate honest (Issue #2447).
+    const spanSeconds = Math.max(1, (deps.now() - previousAtMs) / 1000);
     const decision = computePacedSleepSeconds({
       limit: reading.limit,
       remaining: reading.remaining,
       reset: reading.reset,
-      nowSeconds,
+      nowSeconds: Math.floor(deps.now() / 1000),
       spentLastCycle,
-      cycleSeconds,
+      cycleSeconds: spanSeconds,
       baseSleepSeconds,
     });
-    if (decision.sleepSeconds === baseSleepSeconds) return fallback;
+    if (decision.sleepSeconds === baseSleepSeconds) return baseSleepSeconds;
 
-    return {
-      sleepSeconds: decision.sleepSeconds,
-      logLine:
-        `budget-pacing: remaining=${reading.remaining} affordable/cycle=${
-          Math.round(decision.affordablePerCycle)
-        } spent=${spentLastCycle} sleep=${
-          Math.round(decision.sleepSeconds)
-        }s (${decision.reason})`,
-    };
+    const logLine = `budget-pacing: remaining=${reading.remaining} ` +
+      `affordable/cycle=${Math.round(decision.affordablePerCycle)} ` +
+      `spent=${spentLastCycle} sleep=${
+        Math.round(decision.sleepSeconds)
+      }s (${decision.reason})`;
+    // Inside the reserve the window is all but spent and the worker is being
+    // throttled — degraded but continuing, so WARNING. An ordinary stretch is
+    // the feature working as designed, so INFO.
+    if (decision.inReserve) warnOf(deps)(logLine);
+    else deps.log(logLine);
+    return decision.sleepSeconds;
   }
 
   // Build result helper
@@ -6394,12 +6412,8 @@ export async function runCoreLoop(
             // remaining window can afford per cycle, stretch the sleep so the
             // hour's quota lasts the hour; otherwise today's fixed sleep
             // stands, unchanged.
-            const paced = await readPacedEndOfCycleSleep(
-              cycleStartedAtMs,
-              jitteredSleep,
-            );
-            if (paced.logLine) deps.log(paced.logLine);
-            await deps.sleep(paced.sleepSeconds * 1000);
+            const pacedSleep = await pacedEndOfCycleSleepSeconds(jitteredSleep);
+            await deps.sleep(pacedSleep * 1000);
           } else {
             await deps.circuitBreakerRecordZeroProgress();
             const backoffInterval = await deps.circuitBreakerGetSleepInterval();

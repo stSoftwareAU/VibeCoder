@@ -88,13 +88,16 @@ export function computePacedSleepSeconds(
   }
 
   // Overspend — or nothing spendable left outside the reserve — so stretch the
-  // sleep by the overspend ratio, capped and never below the base.
-  const ratio = affordablePerCycle > 0
-    ? spentLastCycle / affordablePerCycle
-    : Number.POSITIVE_INFINITY;
+  // sleep by the overspend ratio, capped and never below the base. With
+  // nothing affordable there is no finite ratio, so the stretch goes straight
+  // to the cap; taking that branch explicitly also keeps a zero base out of
+  // `0 × Infinity`, which is `NaN` and would reach `deps.sleep()` as one.
+  const stretched = affordablePerCycle > 0
+    ? base * (spentLastCycle / affordablePerCycle)
+    : MAX_PACED_SLEEP_SECONDS;
   const sleepSeconds = Math.min(
     MAX_PACED_SLEEP_SECONDS,
-    Math.max(base, base * ratio),
+    Math.max(base, stretched),
   );
   const reason = affordablePerCycle <= 0
     ? "remaining budget is at or below the reserve"

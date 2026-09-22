@@ -582,13 +582,27 @@ output is derived from them:
   it exceeds it, the sleep is stretched by the overspend ratio
   (`base × spent / affordable`) and capped at 300 s.
 - `inReserve` is set when `remaining ≤ limit·reserve`; the sleep is
-  never returned below the base.
+  never returned below the base. With nothing affordable left there is
+  no finite overspend ratio, so the stretch goes straight to the cap —
+  which is also what keeps a `sleep_interval` of zero out of
+  `0 × Infinity`. `inReserve` picks the level the line is logged at:
+  INFO for an ordinary stretch (the feature working), WARNING once the
+  window is down to its reserve and the worker is being throttled.
 
-A missing `readGraphqlQuota` dep, a `null` reading (the probe could not
-run), or a throw all leave today's fixed sleep unchanged — the first
-cycle has no previous reading to diff against, so it also keeps the
-fixed sleep. The circuit-breaker back-off branch is untouched; pacing
-only ever lengthens the successful-cycle settle sleep.
+`spentLastCycle` is the spend since the **previous reading**, not since
+this cycle opened: a cycle that left by the circuit-breaker branch or a
+rate-limit pause took no reading, so its spend is still inside the next
+diff. `cycleSeconds` is measured over that same span, so the two always
+agree.
+
+A missing `readGraphqlQuota` dep or a `null` reading (the probe could
+not run) leaves today's fixed sleep unchanged, and so does the first
+cycle, which has no previous reading to diff against. A probe that
+*throws* also keeps the fixed sleep but logs a WARNING naming the
+error — a quota probe failing is not the same as one reporting plenty,
+and it is not allowed to look like it. The circuit-breaker back-off
+branch is untouched; pacing only ever lengthens the successful-cycle
+settle sleep.
 
 ## Trade-offs
 
