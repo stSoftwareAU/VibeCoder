@@ -2042,7 +2042,7 @@
    "sweptAt": "54561e566ad899a385b85bbc24da8db6de0e1810",
    "paths": [
     "worker/deno/lib/dependency_chain_promotion.ts"
-    ]
+   ]
   },
   {
    "issue": 2459,
@@ -2054,6 +2054,18 @@
    "sweptAt": "18a4db8857d38511ceb1ba0b850e3177317af2b3",
    "paths": [
     "worker/deno/lib/branch_conflict_pass.ts"
+   ]
+  },
+  {
+   "issue": 2447,
+   "chunk": "top-up-2447",
+   "title": "top-up: the GraphQL budget pacing",
+   "ledger": "docs/audits/security-sweep-2447-graphql-budget-pacing.md",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: budget_pacing.ts (#2447)",
+   "status": "swept",
+   "sweptAt": "5d657b10f01dbcff4055cb6d1a4d673474cd4b52",
+   "paths": [
+    "worker/deno/lib/budget_pacing.ts"
    ]
   }
  ],

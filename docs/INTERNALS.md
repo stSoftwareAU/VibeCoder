@@ -3354,7 +3354,7 @@ sides have solved the same problem twice. Two behaviours keep the window narrow
 — the cadence below (Issue #1776, which replaced the closure-driven trigger of
 Issue #1558) and the conflict triage after it.
 
-**Cadence.** The sync runs every 30-second cycle at priority 1.72, and syncs
+**Cadence.** The sync runs on every scan cycle at priority 1.72, and syncs
 every open milestone branch on every cycle in which the **default tip moved**
 (Issue #1776). The hourly per-branch cooldown is gone: `main` takes ~27 commits
 a day, so a cooldown left a branch up to an hour behind for no reason other
@@ -4033,7 +4033,7 @@ ledger entry either has an attempt **open on this host** or has **spent its
 conflict budget** (Issue #2305), logging
 `skipped: milestone behind default branch (<reason>)` and recording the
 `milestone-behind` skip reason. Without it a paced milestone was claimed,
-deferred and commented on again every 30-second cycle. A branch with one
+deferred and commented on again on every scan cycle. A branch with one
 charged failure and an attempt still in hand is *not* paced: its children may
 be claimed, and the next child run's own pre-cut sync is what tries again.
 
