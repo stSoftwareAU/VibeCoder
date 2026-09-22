@@ -49,6 +49,38 @@ export type AgentRebaseFn = (
   request: AgentRebaseRequest,
 ) => Promise<Result<unknown>>;
 
+/**
+ * The one prompt the pass sends. Deliberately narrow: rebase this branch onto
+ * this base, resolve the conflicts, stop. The caller re-measures the drift
+ * afterwards, so the agent is never trusted to report its own success.
+ */
+export function buildRebasePassPrompt(request: AgentRebaseRequest): string {
+  const budget = request.budgetSeconds === undefined
+    ? ""
+    : `\nYou have about ${request.budgetSeconds} seconds. If you cannot finish ` +
+      `in that time, run \`git rebase --abort\` and stop.\n`;
+  return [
+    `Rebase the local branch \`${request.branch}\` onto \`${request.baseRef}\` ` +
+    `and resolve the merge conflicts.`,
+    "",
+    `The automatic rebase declined: ${request.detail}`,
+    budget,
+    "Rules:",
+    `- Run \`git rebase ${request.baseRef}\` on \`${request.branch}\`, resolve ` +
+    `each conflict, \`git add\` the resolved files and \`git rebase --continue\`.`,
+    "- Keep both sides' intent. Never discard the base's changes to win a " +
+    "conflict, and never discard this branch's work.",
+    "- Change nothing beyond what resolving the conflicts requires. Do not " +
+    "refactor, reformat or add features.",
+    "- Do not push, do not create or merge a pull request, and do not touch " +
+    "any other branch.",
+    `- If you cannot resolve a conflict correctly, run \`git rebase --abort\` ` +
+    `and stop. A clean stop is better than a wrong resolution.`,
+    "",
+    "Finish with the branch checked out and the working tree clean.",
+  ].join("\n");
+}
+
 export interface DeclinedRebasePassOptions {
   branch: string;
   baseBranch: string;
@@ -87,7 +119,9 @@ export async function runDeclinedRebasePass(
   const log = options.log ?? (() => {});
   const baseRef = `origin/${baseBranch}`;
 
-  const handOff = async (reason: string): Promise<DeclinedRebasePassOutcome> => {
+  const handOff = async (
+    reason: string,
+  ): Promise<DeclinedRebasePassOutcome> => {
     const conflictPaths = await findBothSidesPaths(
       branch,
       baseRef,
@@ -97,7 +131,12 @@ export async function runDeclinedRebasePass(
     return {
       kind: "handed-off",
       detail: reason,
-      comment: buildBranchConflictComment(branch, baseRef, reason, conflictPaths),
+      comment: buildBranchConflictComment(
+        branch,
+        baseRef,
+        reason,
+        conflictPaths,
+      ),
       conflictPaths,
     };
   };
@@ -163,7 +202,8 @@ export async function runDeclinedRebasePass(
   log(`'${branch}' was brought onto '${baseRef}' by one agent rebase pass`);
   return {
     kind: "resolved",
-    detail: `'${branch}' is level with '${baseRef}' after one agent rebase pass`,
+    detail:
+      `'${branch}' is level with '${baseRef}' after one agent rebase pass`,
   };
 }
 

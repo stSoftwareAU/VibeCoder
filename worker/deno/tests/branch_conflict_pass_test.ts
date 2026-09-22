@@ -12,6 +12,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type AgentRebaseRequest,
+  buildRebasePassPrompt,
   type DeclinedRebasePassOptions,
   MIN_REBASE_PASS_RUNWAY_SECONDS,
   postBranchConflictComment,
@@ -62,7 +63,8 @@ function baseOptions(
   return {
     branch: "feature",
     baseBranch: "main",
-    detail: "'feature' is 2 commit(s) behind 'origin/main': cherry-pick conflict",
+    detail:
+      "'feature' is 2 commit(s) behind 'origin/main': cherry-pick conflict",
     runAgentFn: () => Promise.resolve({ ok: true as const, value: {} }),
     ...overrides,
   };
@@ -83,7 +85,11 @@ Deno.test("runDeclinedRebasePass - exactly one agent pass, carrying branch, base
   }));
 
   assertEquals(outcome.kind, "resolved");
-  assertEquals(requests.length, 1, "exactly one agent pass, never a retry loop");
+  assertEquals(
+    requests.length,
+    1,
+    "exactly one agent pass, never a retry loop",
+  );
   assertEquals(requests[0]?.branch, "feature");
   assertEquals(requests[0]?.baseRef, "origin/main");
   assertEquals(requests[0]?.deadlineEpochMs, nowMs + 900_000);
@@ -277,4 +283,29 @@ Deno.test("postBranchConflictComment - a failed post warns and never throws", as
   assertEquals(sent, false);
   assertEquals(warnings.length, 1);
   assertStringIncludes(warnings[0]!, "GitHub said no");
+});
+
+Deno.test("buildRebasePassPrompt - names the branch, the base and the decline", () => {
+  const prompt = buildRebasePassPrompt({
+    branch: "feature",
+    baseRef: "origin/main",
+    detail: "cherry-pick conflict in lib/b.ts",
+    budgetSeconds: 600,
+  });
+  assertStringIncludes(prompt, "`feature`");
+  assertStringIncludes(prompt, "`origin/main`");
+  assertStringIncludes(prompt, "cherry-pick conflict in lib/b.ts");
+  assertStringIncludes(prompt, "600 seconds");
+  // The agent must never push or open a PR — that is the caller's job.
+  assertStringIncludes(prompt, "Do not push");
+});
+
+Deno.test("buildRebasePassPrompt - omits the budget when no deadline is set", () => {
+  const prompt = buildRebasePassPrompt({
+    branch: "feature",
+    baseRef: "origin/main",
+    detail: "conflict",
+  });
+  assertEquals(prompt.includes("seconds"), false);
+  assertStringIncludes(prompt, "git rebase --abort");
 });
