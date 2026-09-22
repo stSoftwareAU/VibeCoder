@@ -292,8 +292,14 @@ Deno.test("label denylist - the needs-human escalation does not extend to defini
   // Applying `needs-human` to the run's own issue is the sanctioned ask for a
   // human; deleting or renaming the label itself removes that escalation
   // route for every later run, so the exemption must not reach this path.
-  assertEquals(mayRun(["label", "delete", "needs-human", "--yes"], CLAIMED), false);
-  assertEquals(mayRun(["label", "edit", "bug", "-n", "needs-human"], CLAIMED), false);
+  assertEquals(
+    mayRun(["label", "delete", "needs-human", "--yes"], CLAIMED),
+    false,
+  );
+  assertEquals(
+    mayRun(["label", "edit", "bug", "-n", "needs-human"], CLAIMED),
+    false,
+  );
   // …while the escalation itself is untouched.
   assertEquals(mayAddLabelTo("needs-human", 42, CLAIMED), true);
 });
@@ -314,6 +320,88 @@ Deno.test("label denylist - ordinary gh label work is still allowed (Issue #2518
       // creates only labels absent from the destination — it can neither
       // rename nor delete a reserved label.
       ["label", "clone", "owner/other-repo"],
+    ]
+  ) {
+    assertEquals(
+      mayRun(args),
+      true,
+      `gh ${args.join(" ")} must stay allowed`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The REST spelling of the same capability (Issue #2518)
+// ---------------------------------------------------------------------------
+
+Deno.test("label denylist - gh api cannot define, rename or destroy a reserved label (Issue #2518)", () => {
+  for (
+    const args of [
+      // Destroy.
+      ["api", "-X", "DELETE", "repos/owner/repo/labels/top-priority"],
+      ["api", "--method", "DELETE", "repos/owner/repo/labels/work-on"],
+      // Percent-encoded, and gh's own `{owner}/{repo}` placeholder form.
+      ["api", "-X", "DELETE", "repos/owner/repo/labels/best%2Dmodel"],
+      ["api", "-X", "DELETE", "repos/{owner}/{repo}/labels/top-priority"],
+      // Define.
+      [
+        "api",
+        "-X",
+        "POST",
+        "repos/owner/repo/labels",
+        "-f",
+        "name=top-priority",
+      ],
+      ["api", "--method=POST", "repos/owner/repo/labels", "-fname=work-on"],
+      // Rename an ordinary label INTO a reserved one.
+      [
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/repo/labels/bug",
+        "-f",
+        "new_name=top-priority",
+      ],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, CTX);
+    assertEquals(
+      decision.allowed,
+      false,
+      `gh ${args.join(" ")} must be refused`,
+    );
+    assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  }
+});
+
+Deno.test("label denylist - ordinary gh api label work is still allowed (Issue #2518)", () => {
+  for (
+    const args of [
+      // Reads are not definitions.
+      ["api", "repos/owner/repo/labels"],
+      ["api", "repos/owner/repo/labels/top-priority"],
+      // Ordinary content labels.
+      ["api", "-X", "POST", "repos/owner/repo/labels", "-f", "name=bug"],
+      ["api", "-X", "DELETE", "repos/owner/repo/labels/stale"],
+      [
+        "api",
+        "-X",
+        "PATCH",
+        "repos/owner/repo/labels/bug",
+        "-f",
+        "color=FF0000",
+      ],
+      // A DIFFERENT endpoint that merely ends in a reserved-looking segment:
+      // applying a label to an issue is the flag path's business, and an
+      // ordinary label there must not be caught by the definition scan.
+      [
+        "api",
+        "-X",
+        "POST",
+        "repos/owner/repo/issues/5/labels",
+        "-f",
+        "labels[]=bug",
+      ],
     ]
   ) {
     assertEquals(

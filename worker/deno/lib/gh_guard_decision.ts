@@ -468,6 +468,118 @@ function labelDefinitionNames(rawArgs: readonly string[]): string[] {
   return names;
 }
 
+/** `gh api` label-endpoint body fields that carry a label NAME. */
+const LABEL_NAME_FIELDS: ReadonlySet<string> = new Set(["name", "new_name"]);
+
+/**
+ * `repos/{owner}/{repo}/labels[/{name}]`, with any origin or leading slash
+ * tolerated — the shape `gh api` accepts.
+ *
+ * Anchored at the end so the issue/PR label *application* sub-resources
+ * (`repos/o/r/issues/5/labels`) do not match: those apply a label and are
+ * already covered by {@link extractLabelValues}. A leading `/` rather than the
+ * string start is accepted so a full URL matches; the cost of that looseness is
+ * at worst a false refusal of a path that merely ends this way.
+ */
+const API_LABEL_ENDPOINT =
+  /(?:^|\/)repos\/[^/]+\/[^/]+\/labels(?:\/([^/?#]*))?\/?$/;
+
+/** REST methods that could define, rename or destroy a label definition. */
+const API_LABEL_WRITE_METHODS: ReadonlySet<string> = new Set([
+  "post",
+  "patch",
+  "put",
+  "delete",
+]);
+
+/**
+ * Values of the named `gh api` body fields (`-f name=x`, `--field=name=x`).
+ *
+ * An `@`-prefixed value on a `-F`/`--field` flag is read from a file by `gh`
+ * and never reaches the argv, so it is skipped here for the same reason
+ * {@link labelsFromField} skips it — the `unreadableBody` backstop refuses that
+ * command rather than this scan pretending to have read it.
+ *
+ * @param rawArgs - Arguments passed to the `gh` binary.
+ * @param keys - Field names to collect, lower-case.
+ * @returns The matching field values, in argv order.
+ */
+function apiFieldValuesFor(
+  rawArgs: readonly string[],
+  keys: ReadonlySet<string>,
+): string[] {
+  const args = normaliseGhArgs(rawArgs);
+  const values: string[] = [];
+  const take = (field: string, expandsAtFile: boolean): void => {
+    const eq = field.indexOf("=");
+    if (eq <= 0) return;
+    if (!keys.has(field.slice(0, eq).trim().toLowerCase())) return;
+    const value = field.slice(eq + 1);
+    if (expandsAtFile && value.startsWith("@")) return;
+    values.push(value);
+  };
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i];
+    if (token === undefined) continue;
+    if (FIELD_FLAGS.has(token)) {
+      const value = args[i + 1];
+      if (value !== undefined) {
+        take(value, FIELD_FILE_FLAGS.has(token));
+        i++;
+      }
+      continue;
+    }
+    const eq = token.indexOf("=");
+    if (eq > 0 && FIELD_FLAGS.has(token.slice(0, eq))) {
+      take(token.slice(eq + 1), FIELD_FILE_FLAGS.has(token.slice(0, eq)));
+    }
+  }
+  return values;
+}
+
+/**
+ * Label names a `gh api` call would define, rename to, or destroy (Issue
+ * #2518).
+ *
+ * The REST spelling is the same capability as `gh label delete top-priority`
+ * with a different argv, and the guard already treats REST spellings as
+ * in-scope elsewhere (`gh api -X PATCH …/issues/N -f state=closed` is refused
+ * as a lifecycle change). Closing only the `gh label` route would leave
+ * `gh api -X DELETE repos/o/r/labels/top-priority` as a one-line rewrite of the
+ * same attack, so both routes share this denylist.
+ *
+ * Three name-bearing positions: the `{name}` path segment a PATCH or DELETE
+ * targets, `name=` on a create, and `new_name=` on a rename. A percent-encoded
+ * segment is decoded, and a malformed encoding is compared raw rather than
+ * throwing — an undecodable name cannot match the denylist, and the endpoint
+ * would not resolve to a reserved label either.
+ *
+ * @param rawArgs - Arguments passed to the `gh` binary.
+ * @param info - Mutation classification for the same argv.
+ * @returns Candidate label names, path segment first.
+ */
+function apiLabelDefinitionNames(
+  rawArgs: readonly string[],
+  info: MutationInfo,
+): string[] {
+  if (!info.verb.startsWith("api-")) return [];
+  if (!API_LABEL_WRITE_METHODS.has(info.verb.slice("api-".length))) return [];
+  const match = (info.target ?? "").match(API_LABEL_ENDPOINT);
+  if (!match) return [];
+
+  const names: string[] = [];
+  const segment = match[1];
+  if (segment !== undefined && segment !== "") {
+    try {
+      names.push(decodeURIComponent(segment));
+    } catch {
+      names.push(segment);
+    }
+  }
+  names.push(...apiFieldValuesFor(rawArgs, LABEL_NAME_FIELDS));
+  return names;
+}
+
 /** Outcome of scanning a `--input` body file for reserved workflow labels. */
 type BodyScan =
   | { kind: "clean" }
@@ -759,13 +871,16 @@ export function evaluateGhCommand(
       };
     }
 
-    // Issue #2518: the same denylist on the label DEFINITION path, where the
-    // name is positional. `isPermittedEscalation` deliberately does not apply
-    // — applying `needs-human` to the run's own issue is the sanctioned ask
-    // for a human, but deleting or renaming the label itself withdraws that
-    // route from every later run.
-    const defined = labelDefinitionNames(args)
-      .find((l) => FORBIDDEN_LABELS.has(normaliseLabelName(l)));
+    // Issue #2518: the same denylist on the label DEFINITION path — the
+    // `gh label` positional and the `gh api …/labels` REST spelling of it.
+    // `isPermittedEscalation` deliberately does not apply: applying
+    // `needs-human` to the run's own issue is the sanctioned ask for a human,
+    // but deleting or renaming the label itself withdraws that route from
+    // every later run.
+    const defined = [
+      ...labelDefinitionNames(args),
+      ...apiLabelDefinitionNames(args, info),
+    ].find((l) => FORBIDDEN_LABELS.has(normaliseLabelName(l)));
     if (defined !== undefined) {
       return {
         allowed: false,
