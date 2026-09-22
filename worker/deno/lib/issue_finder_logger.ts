@@ -139,10 +139,14 @@ export interface BlockedCandidateInfo {
   /** Skip reason that caused the issue to be blocked. */
   reason: SkipReason;
   /**
-   * The dependencies that blocked the issue (Issue #2494), when the skip
-   * reason is a dependency block. Recorded so the chain-promotion resolver
-   * can walk the chain straight from the blocked list instead of re-fetching
-   * each candidate's dependencies. Absent for every other skip reason.
+   * The dependencies that blocked the issue (Issue #2494). Recorded so the
+   * chain-promotion resolver can walk the chain straight from the blocked
+   * list instead of re-fetching each candidate's dependencies.
+   *
+   * Populated by the configured-label and work-on collectors on a
+   * `dependency-blocked` skip. Other writers of that reason — and every
+   * other skip reason — leave it absent, so a consumer must treat
+   * `undefined` as "not recorded", never as "no blockers".
    */
   blockers?: DependencyBlocker[];
 }

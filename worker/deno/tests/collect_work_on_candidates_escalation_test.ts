@@ -10,7 +10,9 @@
  *   - a milestone-tracking issue carrying `work-on` is escalated as a
  *     self-suppressing dead label and dropped;
  *   - re-scanning an already-escalated issue (carrying `needs-human`) posts
- *     no duplicate comment and does not re-apply the label.
+ *     no duplicate comment and does not re-apply the label;
+ *   - an ordinary (claimable) dependency block records the blockers the stall
+ *     check read on the blocked entry (Issue #2494).
  *
  * The GitHub label/comment calls are mocked via an injected recording client
  * and their payloads asserted.

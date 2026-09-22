@@ -7,6 +7,10 @@
  * added by an unauthorised actor is rejected, and content modified after
  * approval by an untrusted author is blocked (TOCTOU). The happy path
  * confirms an authorised label still yields a candidate.
+ *
+ * Issue #2494 adds the dependency-blocker recording cases: a blocked
+ * candidate names every blocker it was held by, and an unreadable body still
+ * blocks on the blockers already found.
  */
 
 import { assertEquals } from "@std/assert";
@@ -606,6 +610,72 @@ Deno.test(
     assertEquals(entry?.blockers, [
       { repo: "owner/repo", number: 7, kind: "child" },
       { repo: "other/repo", number: 9, kind: "depends-on" },
+    ]);
+  },
+);
+
+Deno.test(
+  "collect_label_candidates - an unreadable issue body still blocks on the blockers already found",
+  async () => {
+    // Collecting the blockers suppresses the early return inside
+    // `isDependencyBlocked`, so a failing body read now reaches its outer
+    // catch. The verdict must stay "blocked" — releasing a candidate whose
+    // open child is already known would be a fail-open regression.
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 71,
+          title: "Blocked with an unreadable body",
+          url: "https://github.com/owner/repo/issues/71",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-11T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-11T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Blocked with an unreadable body", body: "" },
+    });
+
+    const fetcher: IssueFetcher = {
+      getSubIssues: (_repo: string, issueNumber: number) =>
+        Promise.resolve(issueNumber === 71 ? [7] : []),
+      getIssueBody: (_repo: string, issueNumber: number) =>
+        issueNumber === 71
+          ? Promise.reject(new Error("gh issue view failed"))
+          : Promise.resolve(""),
+      getIssueState: (_repo: string, issueNumber: number) =>
+        Promise.resolve({
+          number: issueNumber,
+          state: "OPEN" as const,
+          title: `#${issueNumber}`,
+        }),
+    };
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(result.candidates.length, 0);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 71);
+    assertEquals(entry?.reason, "dependency-blocked");
+    assertEquals(entry?.blockers, [
+      { repo: "owner/repo", number: 7, kind: "child" },
     ]);
   },
 );
