@@ -37,8 +37,14 @@ type GhFn = (args: string[]) => Promise<string>;
 
 /** What happened when the worker tried to land a PR. */
 export type MergeAttemptOutcome =
-  /** Merged, or native auto-merge armed — the PR will land unattended. */
-  | { kind: "landed" }
+  /**
+   * Merged, or native auto-merge armed — the PR will land unattended.
+   * `merged` is true only when the PR merged in this attempt (Issue #2502):
+   * that is the moment its linked issue is closed, because GitHub honours
+   * `Closes #N` on the default branch alone and a milestone-branch merge
+   * closes nothing by itself.
+   */
+  | { kind: "landed"; merged?: boolean }
   /** Required checks have not finished. */
   | { kind: "checks_pending" }
   /** At least one required check failed. */

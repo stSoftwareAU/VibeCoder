@@ -2270,3 +2270,114 @@ Deno.test("ensureAutoMergeOnOpenPrs - an already-armed sync PR is not skipped: i
   // skipped exactly as before.
   assertEquals(reached, [1957]);
 });
+
+// ============================================================================
+// Issue #2502 — close the linked issue in the pass that merges its PR
+// ============================================================================
+
+Deno.test("ensureAutoMergeOnOpenPrs - a direct merge that lands closes the linked issue in the same pass (Issue #2502)", async () => {
+  const closed: Array<[string, number, number]> = [];
+  const options: AutoMergeOptions = {
+    ...makeBaseScanOptions({ ghCommandFn: singleOpenPrGh() }),
+    getRepoConfig: () => "",
+    enableAutoMergeFn: () =>
+      Promise.resolve({ result: "not_allowed", message: "not allowed" }),
+    directMergeFn: () =>
+      Promise.resolve({ kind: "landed" } as MergeAttemptOutcome),
+    closeIssueIfMergedFn: (repo, issueNumber, prNumber) => {
+      closed.push([repo, issueNumber, prNumber]);
+      return Promise.resolve();
+    },
+  };
+
+  const result = await ensureAutoMergeOnOpenPrs(options);
+  assertEquals(result.ok, true);
+  assertEquals(closed, [["org/repo", 10, 10]]);
+  if (result.ok) assertEquals(result.value.enabledCount, 1);
+});
+
+Deno.test("ensureAutoMergeOnOpenPrs - arming native auto-merge does not close the issue: nothing has merged yet (Issue #2502)", async () => {
+  let closes = 0;
+  const options: AutoMergeOptions = {
+    ...makeBaseScanOptions({ ghCommandFn: singleOpenPrGh() }),
+    getRepoConfig: () => "",
+    enableAutoMergeFn: () =>
+      Promise.resolve({ result: "enabled", message: "OK" }),
+    closeIssueIfMergedFn: () => {
+      closes++;
+      return Promise.resolve();
+    },
+  };
+
+  const result = await ensureAutoMergeOnOpenPrs(options);
+  assertEquals(result.ok, true);
+  assertEquals(closes, 0);
+  if (result.ok) assertEquals(result.value.enabledCount, 1);
+});
+
+Deno.test("ensureAutoMergeOnOpenPrs - a PR merged directly onto an unprotected milestone base is landed, not a merge error, and closes its issue (Issue #2502)", async () => {
+  const closed: number[] = [];
+  const handled: MergeAttemptOutcome[] = [];
+  const options: AutoMergeOptions = {
+    ...makeBaseScanOptions({ ghCommandFn: singleOpenPrGh() }),
+    getRepoConfig: () => "",
+    // What `enableAutoMerge` returns after its own SHA-pinned direct merge
+    // onto an unprotected base (Issue #4375).
+    enableAutoMergeFn: () =>
+      Promise.resolve({ result: "merged_directly", message: "merged" }),
+    closeIssueIfMergedFn: (_repo, issueNumber) => {
+      closed.push(issueNumber);
+      return Promise.resolve();
+    },
+    handleMergeAttemptFn: (opts) => {
+      handled.push(opts.outcome);
+      return Promise.resolve({
+        disposition: opts.outcome.kind === "landed" ? "landed" : "escalate",
+        branchUpdateRequested: false,
+        escalated: opts.outcome.kind !== "landed",
+      });
+    },
+  };
+
+  const result = await ensureAutoMergeOnOpenPrs(options);
+  assertEquals(result.ok, true);
+  assertEquals(handled.map((h) => h.kind), ["landed"]);
+  assertEquals(closed, [10]);
+  if (result.ok) {
+    assertEquals(result.value.enabledCount, 1);
+    assertEquals(result.value.failedCount, 0);
+  }
+});
+
+Deno.test("ensureAutoMergeOnOpenPrs - the issue number falls back to the PR title when the branch names none (Issue #2502)", async () => {
+  const closed: number[] = [];
+  const ghFn = (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: 77,
+          headRefName: "feature/no-number-here",
+          title: "fix: something (Issue #42)",
+          autoMergeRequest: null,
+        },
+      ]));
+    }
+    return Promise.resolve("[]");
+  };
+  const options: AutoMergeOptions = {
+    ...makeBaseScanOptions({ ghCommandFn: ghFn }),
+    getRepoConfig: () => "",
+    enableAutoMergeFn: () =>
+      Promise.resolve({ result: "not_allowed", message: "not allowed" }),
+    directMergeFn: () =>
+      Promise.resolve({ kind: "landed" } as MergeAttemptOutcome),
+    closeIssueIfMergedFn: (_repo, issueNumber) => {
+      closed.push(issueNumber);
+      return Promise.resolve();
+    },
+  };
+
+  const result = await ensureAutoMergeOnOpenPrs(options);
+  assertEquals(result.ok, true);
+  assertEquals(closed, [42]);
+});
