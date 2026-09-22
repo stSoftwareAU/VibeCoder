@@ -61,6 +61,12 @@ import {
   compareFleetAuthorSets,
   resolveFleetPrAuthorSet,
 } from "./fleet_authors.ts";
+import { applyChainPromotions } from "./apply_chain_promotions.ts";
+import type {
+  BlockedCandidate,
+  PromotionTier,
+} from "./dependency_chain_promotion.ts";
+import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 
 /**
  * Find the oldest eligible issue across all configured repositories.
@@ -189,6 +195,29 @@ export async function findOldestIssue(
   const allBlockedDetails: BlockedCandidateInfo[] = [];
   let configuredLabelConsidered = 0;
 
+  // Issue #2495: the dependency-blocked candidates whose chain should be
+  // walked once every collector has finished. Only the two human-scheduled
+  // tiers promote, and only an entry that recorded its blockers (#2494) can
+  // be walked at all.
+  const chainBlocked: BlockedCandidate[] = [];
+  const noteChainBlocked = (
+    repo: string,
+    details: readonly BlockedCandidateInfo[],
+    tier: PromotionTier,
+  ): void => {
+    for (const detail of details) {
+      if (detail.blockers === undefined || detail.blockers.length === 0) {
+        continue;
+      }
+      chainBlocked.push({
+        repo,
+        number: detail.issueNumber,
+        tier,
+        blockers: detail.blockers,
+      });
+    }
+  };
+
   // Issue #1818: cache-backed, so idle re-scans do not re-view referenced
   // issues the iteration has already read.
   const fetcher = createIssueFetcher(ghFn, cache);
@@ -295,6 +324,7 @@ export async function findOldestIssue(
     allLabelCandidates.push(...labelResult.candidates);
     allBlocked.push(...labelResult.blocked);
     allBlockedDetails.push(...labelResult.blockedDetails);
+    noteChainBlocked(repo, labelResult.blockedDetails, "configured-label");
     configuredLabelConsidered += labelResult.considered;
 
     const workOnResult = await collectWorkOnCandidates(
@@ -310,6 +340,7 @@ export async function findOldestIssue(
     // Issue #460: the work-on collector's per-issue skip reasons join the
     // label collector's, so the result names every gate that refused work.
     allBlockedDetails.push(...workOnResult.blockedDetails);
+    noteChainBlocked(repo, workOnResult.blockedDetails, "work-on");
     // Issue #2610: suppress this repo's low-priority/idle-task tiers only
     // when it has an open work-on issue that is not *solely* dependency-
     // blocked. A repo whose only work-on issues are waiting on open
@@ -508,10 +539,58 @@ export async function findOldestIssue(
     startedKeys,
   );
 
+  // Issue #2495: every candidate list is final, so the chain behind each
+  // dependency-blocked candidate can now be walked. A workable dependency
+  // is moved into the blocked issue's own tier, so the fleet-global ladder
+  // picks it up ahead of unrelated `low-priority`/`idle-task` work instead
+  // of falling through to work the humans did not ask for. The ladder
+  // itself is untouched — nothing promoted means nothing changes.
+  const promotion = applyChainPromotions({
+    labelCandidates: filteredLabel,
+    workOnCandidates: filteredWorkOn,
+    lowPriorityCandidates: filteredLowPriority,
+    idleTaskCandidates: filteredIdleTask,
+  }, {
+    blocked: chainBlocked,
+    issuesByRepo,
+    monitoredRepos: config.repos,
+    // A root the fleet could never discover is not worth promoting, so the
+    // gate is the same label set the collectors themselves search. Deduped
+    // and stripped of blanks the way `collect_self_diagnostic_candidates`
+    // builds it — an unset label key is not a label every issue carries.
+    discoveryLabels: [
+      ...new Set(
+        [
+          ...config.issueLabels ?? [],
+          config.workOnLabel,
+          config.lowPriorityLabel,
+          IDLE_TASK_LABEL,
+        ].filter((label) => typeof label === "string" && label !== ""),
+      ),
+    ],
+    needsHumanLabel: config.needsHumanLabel,
+    fleetAuthors,
+  });
+  filteredLabel = promotion.labelCandidates;
+  filteredWorkOn = promotion.workOnCandidates;
+  filteredLowPriority = promotion.lowPriorityCandidates;
+  filteredIdleTask = promotion.idleTaskCandidates;
+  for (const { candidate, promotedBy } of promotion.promotions) {
+    diag.logDependencyPromoted(candidate.repo, candidate.number, promotedBy);
+  }
+  for (const working of promotion.fleetWorking) {
+    diag.logChainRootFleetWorking(
+      working.root.repo,
+      working.root.number,
+      working.assignee,
+    );
+  }
+
   const selectionResult: SelectionResult = {
     selected: null,
     labelCandidates: filteredLabel,
     workOnCandidates: filteredWorkOn,
+    unworkableChainRoots: promotion.unworkableRoots,
     selfDiagnosticCandidates: filteredSelfDiagnostic,
     blockedEntries: allBlocked,
     lowPriorityCandidates: filteredLowPriority,

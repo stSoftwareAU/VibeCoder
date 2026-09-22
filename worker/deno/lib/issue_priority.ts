@@ -1,5 +1,6 @@
 import { MILESTONE_PRIORITY_VALUES } from "./milestone_priority.ts";
 import { workStreamKey } from "./work_stream.ts";
+import type { UnworkableChainRoot } from "./dependency_chain_promotion.ts";
 
 /**
  * Priority ordering and candidate ranking for issue selection (Issue #910).
@@ -82,6 +83,13 @@ export interface IssueCandidate {
    * Defaults to MILESTONE_PRIORITY_VALUES.normal (2) when absent.
    */
   milestonePriority?: number;
+  /**
+   * The dependency-blocked issue whose chain lifted this candidate into a
+   * higher tier (Issue #2495). Absent for every candidate discovered on its
+   * own label. `source` is deliberately *not* rewritten, so the scan log
+   * still names the label the issue actually carries.
+   */
+  promotedBy?: { repo: string; number: number };
 }
 
 /**
@@ -214,6 +222,13 @@ export interface SelectionResult {
    * absent or empty map leaves today's tier order unchanged.
    */
   closeOutMilestones?: ReadonlyMap<string, MilestoneCloseOut>;
+  /**
+   * Chain roots the fleet cannot work (Issue #2495), as classified by
+   * `resolveChainPromotions`. Selection ignores them — they are carried
+   * here so the caller can report a chain nobody can move. Absent when no
+   * candidate was dependency-blocked this scan.
+   */
+  unworkableChainRoots?: UnworkableChainRoot[];
 }
 
 /**

@@ -406,6 +406,41 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "issue_finder_logger - logDependencyPromoted emits the promotion line unconditionally (Issue #2495)",
+  () => {
+    const { diag, output } = createTestDiagnostics(false);
+
+    diag.logDependencyPromoted("owner/repo-b", 500, {
+      repo: "owner/repo-a",
+      number: 100,
+    });
+
+    assertEquals(output.length, 1);
+    assertStringIncludes(
+      output[0]!,
+      "promoted-dependency=owner/repo-b#500 for #100",
+    );
+  },
+);
+
+Deno.test(
+  "issue_finder_logger - logChainRootFleetWorking stays debug-gated (Issue #2495)",
+  () => {
+    const quiet = createTestDiagnostics(false);
+    quiet.diag.logChainRootFleetWorking("owner/repo-a", 200, "vibe-bot");
+    assertEquals(quiet.output.length, 0);
+
+    const debug = createTestDiagnostics(true);
+    debug.diag.logChainRootFleetWorking("owner/repo-a", 200, "vibe-bot");
+    assertEquals(debug.output.length, 1);
+    assertStringIncludes(
+      debug.output[0]!,
+      "chain-root-in-progress repo=owner/repo-a issue=#200 assignee=vibe-bot",
+    );
+  },
+);
+
 // =============================================================================
 // Log-injection sanitisation tests (Issue #2797)
 // =============================================================================

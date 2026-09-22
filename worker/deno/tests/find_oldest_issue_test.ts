@@ -88,6 +88,19 @@ function createPerRepoMockGh(
       const fixture = fixtures[repo];
       return Promise.resolve(JSON.stringify(fixture?.issues ?? []));
     }
+    // Issue #2495: a per-issue view. The fixture lists only *open* issues,
+    // so a number missing from it is closed — the same answer GitHub gives.
+    if (command.includes("issue view")) {
+      const number = Number(args[args.indexOf("view") + 1]);
+      const issue = fixtures[repo]?.issues.find((i) => i.number === number);
+      return Promise.resolve(JSON.stringify({
+        number,
+        state: issue ? "OPEN" : "CLOSED",
+        title: issue?.title ?? "",
+        body: issue?.body ?? "",
+        milestone: issue?.milestone ?? null,
+      }));
+    }
     if (command.includes("pr list")) {
       return Promise.resolve("[]");
     }
@@ -1436,5 +1449,291 @@ Deno.test(
 
     assertEquals(result.found, true);
     assertEquals(result.output.includes("|11|"), true);
+  },
+);
+
+// =============================================================================
+// Dependency-chain promotion (Issue #2495)
+// =============================================================================
+
+/** A minimal open-issue fixture for the chain-promotion tests. */
+function chainIssue(
+  number: number,
+  labels: string[],
+  createdAt: string,
+  body = "",
+): Record<string, unknown> {
+  return {
+    number,
+    title: `Issue ${number}`,
+    url: `https://github.com/owner/repo/issues/${number}`,
+    assignees: [],
+    labels: labels.map((name) => ({ name })),
+    createdAt,
+    author: ALICE,
+    milestone: null,
+    body,
+  };
+}
+
+/** Label events for every label the chain-promotion fixtures apply. */
+const CHAIN_TIMELINE = [
+  { event: "labeled", label: { name: "top-priority" }, actor: ALICE },
+  { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+  { event: "labeled", label: { name: "work-on" }, actor: ALICE },
+];
+
+Deno.test(
+  "findOldestIssue - promotes the low-priority dependency of a blocked top-priority issue (Issue #2495)",
+  async () => {
+    // #100 is top-priority but blocked on #200, a low-priority issue in the
+    // same repo. Without promotion the scan would take repo-b's older
+    // low-priority #300; with it, the chain behind the blocked top-priority
+    // is worked first.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          chainIssue(
+            100,
+            ["top-priority"],
+            "2024-01-01T00:00:00Z",
+            "Depends on #200",
+          ),
+          chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z"),
+        ],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(300, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|200|"),
+      `expected the promoted dependency, got: ${result.output}`,
+    );
+    const promotedLine = output.find((m) => m.includes("promoted-dependency="));
+    assert(
+      promotedLine !== undefined,
+      `expected a promotion line, got: ${output.join("\n")}`,
+    );
+    assertStringIncludes(
+      promotedLine,
+      "promoted-dependency=owner/repo-a#200 for #100",
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - promotes a dependency in another monitored repo with that repo's nice (Issue #2495)",
+  async () => {
+    // The blocked top-priority #100 depends on a low-priority issue in each
+    // repo. Both are promoted; repo-b's higher `nice` keeps repo-a's #200
+    // ahead of it, so a promoted candidate is ranked by its *own* repo.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          chainIssue(
+            100,
+            ["top-priority"],
+            "2024-01-01T00:00:00Z",
+            "Depends on #200 and depends on owner/repo-b#500",
+          ),
+          chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z"),
+        ],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(500, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: {
+        randomFn: () => 0,
+        randomPoolSize: 1,
+        repoNice: (repo: string) => repo === "owner/repo-b" ? 1 : 0,
+      },
+    });
+
+    assertEquals(result.found, true);
+    const promotions = output.filter((m) => m.includes("promoted-dependency="));
+    assertEquals(promotions.length, 2, promotions.join("\n"));
+    assert(
+      promotions.some((m) =>
+        m.includes("promoted-dependency=owner/repo-b#500 for #100")
+      ),
+      `expected the cross-repo promotion, got: ${promotions.join("\n")}`,
+    );
+    // Both are now tier-1; `nice` decides, and it is read per promoted repo.
+    assert(
+      result.output.includes("|200|"),
+      `expected the lower-nice repo's dependency, got: ${result.output}`,
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a dependency that is itself still blocked is not promoted (Issue #2495)",
+  async () => {
+    // #200 depends on #300, which carries no discovery label. The chain ends
+    // unworkable, so nothing is promoted and the scan falls through to
+    // repo-b's low-priority backlog exactly as it did before.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          chainIssue(
+            100,
+            ["top-priority"],
+            "2024-01-01T00:00:00Z",
+            "Depends on #200",
+          ),
+          chainIssue(
+            200,
+            ["low-priority"],
+            "2024-06-01T00:00:00Z",
+            "Depends on #300",
+          ),
+          chainIssue(300, [], "2024-06-02T00:00:00Z"),
+        ],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(400, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|400|"),
+      `expected the untouched low-priority tier, got: ${result.output}`,
+    );
+    assertEquals(
+      output.filter((m) => m.includes("promoted-dependency=")),
+      [],
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - nothing promoted leaves the lower tiers exactly as they were (Issue #2495)",
+  async () => {
+    // No blocked candidate at all: the ladder still drains low-priority
+    // oldest-first across repos, and no promotion line is emitted.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(300, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|300|"),
+      `expected the oldest low-priority issue, got: ${result.output}`,
+    );
+    assertEquals(
+      output.filter((m) => m.includes("promoted-dependency=")),
+      [],
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a chain root the fleet is already working is logged, not promoted (Issue #2495)",
+  async () => {
+    // #200 unblocks the top-priority #100, but a sibling fleet host already
+    // holds it. There is nothing to promote and nothing to escalate — the
+    // verdict is recorded at debug level rather than dropped. The two sit in
+    // different milestones so the sibling's claim occupies its own work
+    // stream, not the blocked issue's.
+    const config = makeConfig({
+      repos: ["owner/repo-a"],
+      fleetPrAuthors: ["sibling-bot"],
+    });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    blocked.milestone = { title: "v1.0" };
+    const assigned = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    assigned.assignees = [{ login: "sibling-bot" }];
+    assigned.milestone = { title: "v2.0" };
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [blocked, assigned],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const output: string[] = [];
+    const diag = createDiagnostics({
+      enabled: true,
+      write: (msg: string) => output.push(msg),
+    });
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(output.filter((m) => m.includes("promoted-dependency=")), []);
+    const inProgress = output.find((m) => m.includes("chain-root-in-progress"));
+    assert(
+      inProgress !== undefined,
+      `expected the fleet-working chain root to be logged, got: ${
+        output.join("\n")
+      }`,
+    );
+    assertStringIncludes(inProgress, "repo=owner/repo-a issue=#200");
+    assertStringIncludes(inProgress, "assignee=sibling-bot");
   },
 );

@@ -634,7 +634,13 @@ repo:
 3. **Lowest-priority queue position** — the `idle-task` label sits at the bottom
    of the priority order so idle-task work is selected only when every higher
    tier is empty. It will never pre-empt PR feedback, CI fixes, planning, or
-   new-issue work.
+   new-issue work. The one exception is **dependency-chain promotion**
+   (Issue #2495): when a `top-priority` or `work-on` issue is blocked on an
+   idle-task issue, that dependency is lifted into the blocked issue's tier for
+   the length of one scan and logged as
+   `promoted-dependency=<owner/repo>#<N> for #<M>`. The ladder is unchanged —
+   the promoted issue is worked *as* the higher-tier work it unblocks, never
+   ahead of it.
 4. **Idle capacity, per episode** (Issues #925, #1083) — since the filer
    fires when *a slot* has no claimable work, rather than only when the whole
    fleet found nothing, one slot re-scanning 74 times would otherwise file 74
