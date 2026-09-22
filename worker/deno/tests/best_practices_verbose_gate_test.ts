@@ -25,6 +25,11 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
+import {
+  readRepoDoc,
+  section,
+  withoutSection,
+} from "./support/markdown_docs.ts";
 
 /** Repo root, derived from this test file's location. */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
@@ -69,45 +74,7 @@ async function orchestratorPrompt(): Promise<string> {
 
 /** A bucket guide, as shipped. */
 function bucketGuide(bucket: string): Promise<string> {
-  return Deno.readTextFile(
-    `${PROMPTS_DIR}/best_practices/buckets/${bucket}.md`,
-  );
-}
-
-/** Index of the line that is exactly `heading`. */
-function headingIndex(lines: readonly string[], heading: string): number {
-  const at = lines.findIndex((line) => line.trim() === heading);
-  assert(at >= 0, `heading not found: ${heading}`);
-  return at;
-}
-
-/** Index of the first heading at or above `heading`'s level after `from`. */
-function sectionEnd(
-  lines: readonly string[],
-  heading: string,
-  from: number,
-): number {
-  const level = heading.match(/^#+/)![0].length;
-  for (let i = from; i < lines.length; i++) {
-    const opened = /^(#{1,6}) /.exec(lines[i]!);
-    if (opened && opened[1]!.length <= level) return i;
-  }
-  return lines.length;
-}
-
-/** Just the section `heading` opens. */
-function section(text: string, heading: string): string {
-  const lines = text.split("\n");
-  const start = headingIndex(lines, heading);
-  return lines.slice(start, sectionEnd(lines, heading, start + 1)).join("\n");
-}
-
-/** Everything but the section `heading` opens — the negative control. */
-function withoutSection(text: string, heading: string): string {
-  const lines = text.split("\n");
-  const start = headingIndex(lines, heading);
-  const end = sectionEnd(lines, heading, start + 1);
-  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+  return readRepoDoc(`prompts/best_practices/buckets/${bucket}.md`);
 }
 
 /**
@@ -306,9 +273,7 @@ Deno.test(
   async () => {
     // A code change owes a docs change: the operator manual is where the
     // fixed ids and the cap arithmetic are explained.
-    const doc = await Deno.readTextFile(
-      `${REPO_ROOT}docs/BEST-PRACTICES-SCAN.md`,
-    );
+    const doc = await readRepoDoc("docs/BEST-PRACTICES-SCAN.md");
     assert(
       doc.includes("BP-VERBOSE-GATE"),
       "docs/BEST-PRACTICES-SCAN.md does not document the BP-VERBOSE-GATE id",
