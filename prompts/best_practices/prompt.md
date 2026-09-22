@@ -396,8 +396,9 @@ once, and those five guides carry only a pointer to it.
 - **What to flag.** A test runner, build or install step that invokes
   its default per-test reporter where the ecosystem offers a quiet or
   failures-only one, and an explicit `--verbose`, `-v` or `set -x` on
-  any of those surfaces, even alongside a quiet flag. An on-demand test
-  task that a person runs by hand to read its output is out of scope.
+  any of those surfaces, even alongside a quiet flag.
+  An on-demand test task that a person runs by hand to read its output
+  is out of scope.
 - **Ecosystem quiet flags**, the substance a fold across five guides
   must not lose:
 
@@ -422,10 +423,10 @@ once, and those five guides carry only a pointer to it.
   `work-on` PR, which must confirm on a deliberately failing test that
   the name, the assertion message and the stack trace still print once
   the quiet flag is applied.
-- **Waiver.** A finding is waived by a `best-practice-ignore:
-  BP-VERBOSE-GATE` marker bearing an author, an expiry date and a
-  reason. The waiver fails closed: a missing field or a passed expiry
-  means the finding still files.
+- **Waiver.** A finding is waived by a `best-practice-ignore: BP-VERBOSE-GATE`
+  marker bearing an author, an expiry date and a reason. The waiver
+  fails closed: a missing field or a passed expiry means the finding
+  still files.
 
 ## Phase 3 — Triage
 
