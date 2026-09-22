@@ -37,24 +37,48 @@ function headingLevels(lines: string[]): (number | undefined)[] {
 }
 
 /**
- * The body of the section introduced by the first heading containing `title`,
- * up to the next heading at the same or a higher level. Throws when no such
- * heading exists — a renamed section fails loudly rather than asserting
- * against an empty string.
+ * Start/end line indices of the section opened by the first heading
+ * containing `title` (start is the heading line itself; end is exclusive,
+ * the next heading at the same or a higher level, or the end of the
+ * document). Throws when no such heading exists — a renamed section fails
+ * loudly rather than asserting against an empty string.
+ */
+function sectionBounds(
+  lines: string[],
+  title: string,
+): { start: number; end: number } {
+  const levels = headingLevels(lines);
+  const start = lines.findIndex((line, index) =>
+    (levels[index] ?? 0) >= 2 && line.includes(title)
+  );
+  assert(start >= 0, `no heading containing "${title}"`);
+  const level = levels[start] ?? 2;
+  const endOffset = levels.slice(start + 1).findIndex((depth) =>
+    depth !== undefined && depth <= level
+  );
+  const end = endOffset === -1 ? lines.length : start + 1 + endOffset;
+  return { start, end };
+}
+
+/**
+ * The body of the section introduced by the first heading containing `title`
+ * (heading excluded), up to the next heading at the same or a higher level.
  */
 export function section(markdown: string, title: string): string {
   const lines = markdown.split("\n");
-  const levels = headingLevels(lines);
-  const startIndex = lines.findIndex((line, index) =>
-    (levels[index] ?? 0) >= 2 && line.includes(title)
-  );
-  assert(startIndex >= 0, `no heading containing "${title}"`);
-  const level = levels[startIndex] ?? 2;
-  const endOffset = levels.slice(startIndex + 1).findIndex((depth) =>
-    depth !== undefined && depth <= level
-  );
-  const rest = lines.slice(startIndex + 1);
-  return (endOffset === -1 ? rest : rest.slice(0, endOffset)).join("\n");
+  const { start, end } = sectionBounds(lines, title);
+  return lines.slice(start + 1, end).join("\n");
+}
+
+/**
+ * The document with the section opened by the first heading containing
+ * `title` removed entirely, heading included — the negative control for
+ * `section()`: a predicate that still holds here pins nothing.
+ */
+export function withoutSection(markdown: string, title: string): string {
+  const lines = markdown.split("\n");
+  const { start, end } = sectionBounds(lines, title);
+  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
 }
 
 /** One line, single-spaced — prose wrapped at 80 columns still matches. */
