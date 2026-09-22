@@ -262,8 +262,9 @@ async function restoreTip(
   cwd?: string,
 ): Promise<void> {
   const opts = cwd === undefined ? undefined : { cwd };
-  // Whichever operation the agent left in flight, only one of these applies —
-  // the others fail harmlessly, so their exit codes are deliberately ignored.
+  // SIMPLE-ON-PURPOSE: exit codes ignored — whichever operation the agent left
+  // in flight, only one of these four abort calls applies and the rest fail
+  // harmlessly — upgrade when a caller needs to know which state was aborted.
   await runGit(["rebase", "--abort"], opts);
   await runGit(["cherry-pick", "--abort"], opts);
   await runGit(["merge", "--abort"], opts);
