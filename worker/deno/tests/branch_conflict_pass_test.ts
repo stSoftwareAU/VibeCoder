@@ -53,7 +53,12 @@ function baselineAnswers(behindAfter: string) {
   };
 }
 
-function baseOptions(overrides: Record<string, unknown> = {}) {
+/** The options a declined branch arrives with; every test supplies its git. */
+function baseOptions(
+  overrides:
+    & Partial<DeclinedRebasePassOptions>
+    & Pick<DeclinedRebasePassOptions, "runGit">,
+): DeclinedRebasePassOptions {
   return {
     branch: "feature",
     baseBranch: "main",
