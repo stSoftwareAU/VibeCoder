@@ -1632,16 +1632,18 @@ Each candidate issue is checked by functions in
 #### 🔗 Dependency-chain promotion
 
 A candidate the **Forward dependencies** filter above blocks is not simply
-dropped. Discovery hands every blocked `configured-label` or `work-on` candidate
-to `resolveChainPromotions()` in
+dropped. Discovery hands each blocked `configured-label` or `work-on` candidate
+that actually names a blocker (`noteChainBlocked` skips an entry with none) to
+`resolveChainPromotions()` in
 [dependency_chain_promotion.ts](../worker/deno/lib/dependency_chain_promotion.ts),
 a pure function: it takes a snapshot of the open issues in the monitored repos
 plus the blocked candidates, and returns promotions, unworkable roots and
 fleet-working roots. It performs no I/O, so it is fully unit-testable.
 
 The walk is breadth-first over each blocked issue's `Depends on` / `Blocked by`
-references, with a seeded visited set — a cycle therefore promotes nothing rather
-than looping. A chain member that is **open, itself unblocked, carries a
+references, with a seeded visited set — a cycle therefore terminates and promotes
+nothing *on the cycle* rather than looping, while members off the cycle are still
+promoted normally. A chain member that is **open, itself unblocked, carries a
 discovery label and is unassigned** is promoted to the blocked issue's tier; a
 member that is still blocked is walked *through* but not promoted. When two
 blocked issues share a chain member, the **highest** tier wins and the promotion
@@ -1666,9 +1668,12 @@ Each promotion is logged by `logDependencyPromoted()` in
 
 `<N>` is the chain member being promoted and `<M>` the blocked issue that pulled
 it up. The blocked-candidate counter is **unchanged** by promotion:
-`configured-label-blocked=N` still reports every blocked `configured-label`
-candidate, whether or not its chain yielded a promotion, so the two lines stay
-independently readable.
+`configured-label-blocked=N` on the `selection-reasoning` line still counts every
+blocked candidate recorded that scan — the label *and* work-on collectors both
+feed `allBlockedDetails` — whether or not a chain yielded a promotion, so the two
+lines stay independently readable. That counter rides `logSelectionReasoning`,
+which only fires when an issue was selected and its source was not
+`configured-label`, so a scan that selected nothing prints no counter at all.
 
 A root the fleet cannot work is classified instead of retried, and returned on
 `SelectionResult.unworkableChainRoots` (see
@@ -1685,10 +1690,11 @@ A root the fleet cannot work is classified instead of retried, and returned on
 Those four drive the chain-root-unworkable comment — see
 [Reporting a chain root nobody can move](#-reporting-a-chain-root-nobody-can-move).
 A root assigned to a **fleet** account is not unworkable: it is returned as a
-fleet-working root, logged as
-`[issue-finder] chain-root-in-progress repo=… issue=#N assignee=…`, and no
-comment is posted. A root missing from the snapshot is skipped silently — an
-unreadable chain is never reported as a fault.
+fleet-working root and no comment is posted. Unlike `promoted-dependency=`, its
+`[issue-finder] chain-root-in-progress repo=… issue=#N assignee=…` line is
+**debug-gated** — it is written only with `ISSUE_FINDER_DEBUG=true`. A root
+missing from the snapshot is skipped silently: an unreadable chain is never
+reported as a fault.
 
 #### 🎯 Milestone-aware PR blocking
 

@@ -2682,7 +2682,8 @@ Three boundaries keep the promotion honest:
   memory for exactly one scan and is recomputed from scratch on the next.
 - **A chain that cannot be read is never assumed closed.** A blocker in a repo
   whose issue list could not be fetched stays in the chain; only a blocker absent
-  from a list that *was* read counts as closed. A cycle promotes nothing.
+  from a list that *was* read counts as closed. A cycle terminates on its own
+  members rather than looping; chain members off the cycle still promote.
 
 Each promotion is auditable from the scan log alone:
 
@@ -2699,10 +2700,11 @@ than retried**: `cross-repo-unmonitored` (the blocker lives in a repo this fleet
 does not monitor), `needs-human`, `assigned` (a human holds it), or
 `no-discovery-label`. Those four post the chain-root-unworkable comment on the
 blocked issue — a plain explanation, no labels changed, deduped to one per
-root-and-reason per 24 hours. A root assigned to a **fleet** account is not
-unworkable at all: a sibling host is already on it, so the scan logs
-`chain-root-in-progress` and stays silent, because a comment there would report a
-fault that does not exist.
+blocked-issue-and-root-and-reason per 24 hours. A root assigned to a **fleet**
+account is not unworkable at all: a sibling host is already on it, so the scan
+stays silent (logging `chain-root-in-progress` only under
+`ISSUE_FINDER_DEBUG=true`), because a comment there would report a fault that
+does not exist.
 
 ```mermaid
 flowchart TD
