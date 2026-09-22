@@ -10,6 +10,7 @@
 
 import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
 import {
   decideMilestoneBaseMerge,
@@ -205,8 +206,9 @@ export interface EnableAutoMergeOptions {
   fleetAuthors?: readonly string[];
   /**
    * When the milestone base is behind the default branch, attempt one
-   * in-cycle sync and re-arm if it lands (Issue #2005). Absent, the
-   * #1779 deferral stands — no `--auto`, no comment.
+   * in-cycle sync and re-ask the gate if it lands (Issue #2005). Absent — or
+   * when the sync conflicts — the child is armed anyway (Issue #2460); only
+   * the sync-reason comment is skipped when no hook was supplied.
    */
   syncBehindMilestone?: (info: {
     milestoneBranch: string;
@@ -229,24 +231,37 @@ export function resetBehindSyncComments(): void {
   postedBehindSyncReason.clear();
 }
 
+/** Marker on the creation-arming reason comment (Issue #2457). */
+const ARMING_REASON_MARKER = "<!-- vibe-auto-merge-not-armed -->";
+
 async function postBehindSyncReason(
   repo: string,
   prNumber: number,
   milestoneBranch: string,
   detail: string,
+  willArm: boolean,
   commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
   log: (message: string) => void,
 ): Promise<void> {
   const key = `${repo}#${prNumber}`;
   if (postedBehindSyncReason.has(key)) return;
   postedBehindSyncReason.add(key);
+  // The outcome is settled before the comment is written, so the PR is never
+  // told it was armed by a run that then held it (fail loud, never falsely
+  // green).
+  const outcome = willArm
+    ? "Auto-merge is armed anyway (Issue #2460) — the base ruleset holds the " +
+      "merge until the branch is level."
+    : "Auto-merge is not armed: the base enforces no required status checks, " +
+      "so nothing would hold the merge back until the branch is level " +
+      "(Issue #2460).";
   const body = [
     MILESTONE_BEHIND_SYNC_MARKER,
     `The milestone branch \`${milestoneBranch}\` is still behind the ` +
     `default branch after an in-cycle sync: ${detail}`,
     "",
-    "Auto-merge is not armed. The periodic milestone sync will retry; a " +
-    "conflicting sync is never side-picked (Issue #2005).",
+    `${outcome} The periodic milestone sync will retry; a conflicting sync ` +
+    `is never side-picked (Issue #2005).`,
   ].join("\n");
   try {
     await commentFn(repo, prNumber, body);
@@ -256,6 +271,58 @@ async function postBehindSyncReason(
       `WARNING: could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
     );
   }
+}
+
+/**
+ * Whether a creation-arming outcome warrants a warn log and a single reason
+ * comment on the PR (Issue #2457).
+ *
+ * A genuine refusal to arm needs the comment: `Failed`, `NotAllowed`, and a
+ * `Deferred` that nothing else has already explained. Everything else is
+ * either the worker doing what it set out to do (`Enabled`, `Skipped`,
+ * `MergedDirectly`) or already explained on the PR by the path that produced
+ * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
+ * `BlockedOpenChildren` (#3909), a `milestone-behind` outcome (the #2005
+ * `postBehindSyncReason` already explains it on the PR), and the #4375/#1082
+ * gated direct-merge hold (the deliberate "never `--auto`" path).
+ */
+export function autoMergeOutcomeNeedsComment(
+  outcome: EnableAutoMergeResult,
+): boolean {
+  if (outcome.result === AutoMergeResult.Failed) return true;
+  if (outcome.result === AutoMergeResult.NotAllowed) return true;
+  if (outcome.result !== AutoMergeResult.Deferred) return false;
+  // A deferral needs the comment unless the path that produced it already
+  // holds deliberately: the #4375 gated direct merge, or a milestone-behind
+  // outcome, whose reason #2005 has already posted.
+  if (outcome.directMergeDeferred) return false;
+  if (outcome.deferral === "milestone-behind") return false;
+  return true;
+}
+
+/**
+ * Build the comment body explaining why auto-merge was not armed at creation
+ * (Issue #2457).
+ *
+ * The comment always says the Auto-Merge sweep retries, because it does: the
+ * periodic sweep re-reads the PR every cycle and arms it the moment the
+ * obstruction clears. A latched refusal names the latch's reset time instead,
+ * because in-run retries are futile — every further `gh` call in the window
+ * fails the same way.
+ */
+export function buildArmingReasonComment(
+  outcome: EnableAutoMergeResult,
+): string {
+  const retryLine = outcome.latched
+    ? `The primary GitHub quota is exhausted, so no further auto-merge attempt ` +
+      `was made in this run; the Auto-Merge sweep retries once the quota resets.`
+    : `The Auto-Merge sweep retries.`;
+  return [
+    ARMING_REASON_MARKER,
+    `Auto-merge was not armed on this PR: ${outcome.message}`,
+    "",
+    retryLine,
+  ].join("\n");
 }
 
 /**
@@ -332,17 +399,35 @@ export interface EnableAutoMergeResult {
   /** Human-readable message */
   message: string;
   /**
-   * Why a `deferred` outcome deferred, when the caller must treat it as a
-   * deliberate hold rather than a merge error (Issue #1779). A milestone
-   * base behind the default branch is first offered an in-cycle sync
-   * (Issue #2005); a conflicting sync still gets no `--auto` and no
-   * label, and the reason is posted on the PR.
+   * Why the outcome was held back, when the caller must treat it as a
+   * deliberate hold rather than a merge error (Issue #1779).
+   *
+   * `milestone-behind` is now a log marker, not a hold: the base was behind
+   * the default branch when the PR was armed (Issue #2460). An in-cycle sync
+   * is offered first (Issue #2005) and a conflicting one posts its reason on
+   * the PR, but the child is armed either way — the milestone ruleset's
+   * strict up-to-date policy holds the merge itself until the branch levels.
    *
    * `sync-base-unreadable` is the same kind of hold (Issue #1967): a
    * sync-shaped head whose base could not be compared with the default
    * branch is neither armed nor escalated — it is re-read next scan.
    */
   deferral?: "milestone-behind" | "sync-base-unreadable";
+  /**
+   * Whether a `deferred` outcome is the deliberate #4375/#1082 gated
+   * direct-merge hold: an unprotected base has no required checks, so the
+   * worker held the PR instead of ever calling `--auto`. This is a chosen
+   * hold, not a refusal, so it needs no arming-reason comment (Issue #2457).
+   */
+  directMergeDeferred?: boolean;
+  /**
+   * Whether the `gh pr merge --auto` refusal was the primary-quota latch
+   * short-circuiting the call, rather than GitHub answering (Issue #2457).
+   * A latched refusal is deliberately not retried in-run — every further
+   * `gh` call in the window fails the same way, so the Auto-Merge sweep
+   * retries after the reset the comment names.
+   */
+  latched?: boolean;
   /**
    * Whether a comment explaining this block is on the PR — set on both
    * `blocked_open_children` reasons (Issue #2479). `false` means the block was
@@ -494,6 +579,36 @@ export function _resetBaseProtectionMemo(): void {
 }
 
 /**
+ * Read a base's protection once per cycle, through the memo.
+ *
+ * Shared by the two callers that need the answer — the #2460 sync-reason
+ * comment, which must state the arming outcome it is about to produce, and the
+ * #4375 arming route itself — so asking early costs no extra API call and the
+ * comment can never disagree with the decision taken moments later.
+ */
+async function resolveBaseProtection(
+  repo: string,
+  baseRefName: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  isBaseProtectedFn?: (
+    repo: string,
+    baseRefName: string,
+    ghCommandFn: (args: string[]) => Promise<string>,
+  ) => Promise<boolean | null>,
+): Promise<boolean | null> {
+  const memoKey = `${repo}#${baseRefName}`;
+  const memoised = baseProtectionMemo.get(memoKey);
+  if (memoised !== undefined) return memoised;
+  const read = await (isBaseProtectedFn ?? isBaseProtected)(
+    repo,
+    baseRefName,
+    ghCommandFn,
+  );
+  baseProtectionMemo.set(memoKey, read);
+  return read;
+}
+
+/**
  * Recognise GitHub refusing a merge because a rule governs the base
  * (Issue #1763).
  *
@@ -604,11 +719,13 @@ export async function enableAutoMerge(
   // whose route to the default branch has closed (rollup PR merged, or
   // milestone closed). Seven fixes were lost that way with their issues
   // reading COMPLETED. Refuse loud and retarget the PR at the default branch.
-  // Issue #1779: `requireSyncedBase` adds the second half — a child never
-  // lands on a milestone tip that is behind the default branch, so it is
-  // built on what the default branch already has. The compare is memoised
-  // per milestone, so the N children of one milestone in a sweep cost one
-  // call, and a non-milestone base costs none.
+  // Issue #1779: `requireSyncedBase` adds the second half — it reports a
+  // milestone tip that is behind the default branch, which drives the
+  // in-cycle sync below. Issue #2460: being behind no longer withholds
+  // arming, because the milestone ruleset's strict up-to-date policy blocks
+  // the merge itself; withholding `--auto` only left the child unarmed. The
+  // compare is memoised per milestone, so the N children of one milestone in
+  // a sweep cost one call, and a non-milestone base costs none.
   let routeGate = await (options.decideMilestoneBaseFn ??
     decideMilestoneBaseMerge)({
       repo,
@@ -618,6 +735,8 @@ export async function enableAutoMerge(
       // PR — the one PR whose whole job is to clear "behind".
       ...(options.headRefName ? { headRefName: options.headRefName } : {}),
       ghCommandFn,
+      // Issue #2460: kept `true` so a behind tip is still reported; the
+      // report is now a sync trigger and a log marker, not a withhold.
       requireSyncedBase: true,
       ...(options.getDefaultBranchFn
         ? { getDefaultBranchFn: options.getDefaultBranchFn }
@@ -627,13 +746,11 @@ export async function enableAutoMerge(
   // untouched and look again next scan — a rate limit must never move a
   // healthy milestone child onto the review-gated default branch.
   //
-  // Issue #1779: a behind milestone base defers the same way — no `--auto`,
-  // no gated direct merge, no label. Issue #2005: when the caller supplies
-  // a sync hook, one in-cycle attempt runs first; a clean landing re-asks
-  // the gate and arms in this cycle. A conflicting sync still defers, and
-  // the reason is posted on the PR. Known limit: a PR whose GitHub
-  // auto-merge was armed *before* the branch fell behind still merges when
-  // its checks pass — this gate governs arming, not GitHub's merge.
+  // Issue #2005: when the base is behind and the caller supplies a sync
+  // hook, one in-cycle attempt runs first; a clean landing re-asks the gate.
+  // A conflicting sync posts its reason on the PR and the child is armed
+  // anyway (Issue #2460) — GitHub holds the merge until the branch is level,
+  // and the periodic sync clears it without any child being side-picked.
   if (
     routeGate.decision === "defer" &&
     routeGate.reason === "milestone-behind" &&
@@ -670,35 +787,40 @@ export async function enableAutoMerge(
             : {}),
         });
     } else {
+      // The arming route below turns on whether the base enforces required
+      // checks, so settle that first and tell the PR what actually happens.
+      // The answer is memoised, so the check at the arming route is free.
+      const protectedBase = await resolveBaseProtection(
+        repo,
+        routeGate.milestoneBranch,
+        ghCommandFn,
+        options.isBaseProtectedFn,
+      );
       await postBehindSyncReason(
         repo,
         prNumber,
         routeGate.milestoneBranch,
         sync.detail,
+        protectedBase === true,
         commentFn,
         log,
       );
-      return {
-        result: AutoMergeResult.Deferred,
-        deferral: "milestone-behind",
-        message:
-          `milestone behind default branch (${routeGate.behindBy} commit${
-            routeGate.behindBy === 1 ? "" : "s"
-          }) — in-cycle sync deferred: ${sync.detail} (Issue #2005)`,
-      };
     }
   }
-  if (routeGate.decision === "defer") {
+  // Issue #2460: a behind base is recorded and carried onto the arming
+  // outcome as `deferral`, then the arming loop runs as usual. It is not
+  // logged here: the `log` seam is a warning sink, and arming a behind child
+  // is now the expected path, not a degradation anyone must act on.
+  let behindDeferral: "milestone-behind" | undefined;
+  if (
+    routeGate.decision === "defer" && routeGate.reason === "milestone-behind"
+  ) {
+    behindDeferral = "milestone-behind";
+  } else if (routeGate.decision === "defer") {
     return {
       result: AutoMergeResult.Deferred,
-      ...(routeGate.reason === "milestone-behind"
-        ? { deferral: "milestone-behind" as const }
-        : {}),
-      message: routeGate.reason === "milestone-behind"
-        ? `milestone behind default branch (${routeGate.behindBy} commit${
-          routeGate.behindBy === 1 ? "" : "s"
-        }) — PR #${prNumber} left on ${routeGate.milestoneBranch} until the next sync (Issue #1779)`
-        : `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
+      message:
+        `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — retrying next scan (Issue #477)`,
     };
   }
   if (routeGate.decision === "block") {
@@ -822,16 +944,32 @@ export async function enableAutoMerge(
   // settled head, or deferred until the next scan.
   if (baseRefName) {
     const memoKey = `${repo}#${baseRefName}`;
-    let protectedBase = baseProtectionMemo.get(memoKey);
-    if (protectedBase === undefined) {
-      protectedBase = await (options.isBaseProtectedFn ?? isBaseProtected)(
-        repo,
-        baseRefName,
-        ghCommandFn,
-      );
-      baseProtectionMemo.set(memoKey, protectedBase);
-    }
+    const protectedBase = await resolveBaseProtection(
+      repo,
+      baseRefName,
+      ghCommandFn,
+      options.isBaseProtectedFn,
+    );
     if (protectedBase !== true) {
+      // Issue #2460: arming over a behind base is safe *because* the milestone
+      // ruleset's strict up-to-date policy holds the merge until the branch is
+      // level. A base with no required checks — or one whose protection could
+      // not be read, which is treated as unprotected throughout — has no such
+      // policy: `--auto` there merges immediately whatever CI says
+      // (Issue #4375) and the gated direct merge only checks the head against
+      // its own base, so either route would land the child on a stale tip, the
+      // side-pick #1779 exists to prevent. Hold it for the next scan instead;
+      // the periodic sync levels the branch, and `postBehindSyncReason` has
+      // already told the PR it was held rather than armed.
+      if (behindDeferral) {
+        return {
+          result: AutoMergeResult.Deferred,
+          deferral: behindDeferral,
+          message:
+            `PR #${prNumber} held: base '${baseRefName}' is behind the default branch and enforces no required checks, so nothing would hold the merge until it is level (Issue #2460)`,
+        };
+      }
+
       // Issue #1082: an unprotected base is the only place the default-branch
       // guard has no alternative path to offer, so hand the gated merge the
       // fleet logins and let a genuine outside approval stand in for the
@@ -873,12 +1011,14 @@ export async function enableAutoMerge(
       } else if (merge.value.blocked === "default_branch_unapproved") {
         return {
           result: AutoMergeResult.Deferred,
+          directMergeDeferred: true,
           message:
             `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
         };
       } else {
         return {
           result: AutoMergeResult.Deferred,
+          directMergeDeferred: true,
           message:
             `PR #${prNumber} not merged onto unprotected '${baseRefName}': ${
               merge.value.blocked ?? "gate deferred"
@@ -924,12 +1064,27 @@ export async function enableAutoMerge(
       ]);
       return {
         result: AutoMergeResult.Enabled,
+        // Issue #2460: kept for logging — the base was behind when armed.
+        ...(behindDeferral ? { deferral: behindDeferral } : {}),
         message: `Auto ${
           mergeMethod === "--merge" ? "merge-commit" : "squash"
         } merge enabled on PR #${prNumber}`,
       };
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // Issue #2457: a refusal that is really the primary-quota latch must
+      // never be retried in-run — every further `gh` call in the window is
+      // refused the same way before it even spawns. Surface it as a latched
+      // failure so the caller names the reset and leaves the sweep to retry.
+      if (errorMsg.includes(PRIMARY_QUOTA_SKIP_PREFIX)) {
+        return {
+          result: AutoMergeResult.Failed,
+          latched: true,
+          message:
+            `Could not enable auto-merge on PR #${prNumber}: ${errorMsg}`,
+        };
+      }
 
       // A repository that forbids merge commits cannot take the sync as one
       // (Issue #1048). Downgrade to the squash it can take — loudly, naming
@@ -1082,7 +1237,7 @@ async function refuseMilestoneMerge(
 export async function finalisePr(
   options: EnableAutoMergeOptions,
   directMergeFn?: (repo: string, prNumber: number) => Promise<void>,
-): Promise<Result<string, Error>> {
+): Promise<Result<EnableAutoMergeResult, Error>> {
   const result = await enableAutoMerge(options);
 
   if (result.result === AutoMergeResult.NotAllowed && directMergeFn) {
@@ -1090,16 +1245,22 @@ export async function finalisePr(
       await directMergeFn(options.repo, options.prNumber);
       return {
         ok: true,
-        value: `Direct merge attempted for PR #${options.prNumber}`,
+        value: {
+          result: AutoMergeResult.MergedDirectly,
+          message: `Direct merge attempted for PR #${options.prNumber}`,
+        },
       };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return {
         ok: true,
-        value: `Auto-merge not available, direct merge also failed: ${msg}`,
+        value: {
+          result: AutoMergeResult.Failed,
+          message: `Auto-merge not available, direct merge also failed: ${msg}`,
+        },
       };
     }
   }
 
-  return { ok: true, value: result.message };
+  return { ok: true, value: result };
 }
