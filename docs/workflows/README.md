@@ -277,6 +277,67 @@ exactly as it bounds the pool: no new pass starts once SIGTERM lands, and a pass
 still running after `slot_drain_grace_seconds` is abandoned with its agent
 terminated rather than holding the exit open.
 
+### Maintenance lease (Issue #2451)
+
+The repository lease above is **in-process**: it stops two flows inside one host
+from writing to the same clone. The **maintenance lease** solves a different
+problem — it stops every host in the fleet from repeating the same read-only
+work. Four fixed-cost maintenance sweeps (`Close Issues for Merged PRs`,
+`Recover Assigned with Closed PRs`, `Milestone Completions` and
+`Failure-Detection Repair Resume`) cost roughly 80 GraphQL calls per cycle and
+reach the same conclusion on every host, so a four-host fleet spent ≈320 calls
+per cycle to learn one answer. Gated on the lease, one host runs them and the
+others stand down — ≈80 calls per cycle fleet-wide.
+
+The lease itself is a hidden marker comment on a fleet-owned **anchor issue**,
+so it is fleet-readable state with no extra store. Each cycle a host reads every
+configured repository's marker once, and the sweeps are handed only the
+repositories it may sweep:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant H1 as Host 1
+  participant A as Anchor issue<br/>(lease marker)
+  participant H2 as Host 2
+
+  H1->>A: read lease (owner/repo)
+  A-->>H1: no holder
+  H1->>A: refresh — holder = host 1, at = T
+  Note over H1: runs all four sweeps
+
+  H2->>A: read lease (owner/repo)
+  A-->>H2: holder = host 1, at = T
+  Note over H2: held-elsewhere —<br/>skips all four sweeps
+
+  Note over A: host 1 dies — marker ages past 900s
+
+  H2->>A: read lease (owner/repo)
+  A-->>H2: holder = host 1, at = T (expired)
+  H2->>A: refresh — holder = host 2, at = T+900
+  Note over H2: takes over, runs the sweeps
+```
+
+Three properties make it safe to lose:
+
+- **Fail open, loudly.** A degraded read is indistinguishable from "no holder"
+  by return value, so the store reports it through its log sink and the
+  repository **stays in the list**. A fleet that cannot read the lease keeps
+  sweeping rather than going quiet — the lease is a cost optimisation, never a
+  lock.
+- **Expiry, not release.** A holder that dies mid-cycle never releases anything;
+  its marker simply ages past `MAINTENANCE_LEASE_SECONDS` (900s) and the next
+  host takes over.
+- **Identity is the install uuid**, not the hostname — the container's hostname
+  changes hourly while the uuid survives a relaunch, so a host does not lose its
+  own lease to itself.
+
+Each cycle logs one summary line,
+`maintenance-lease: ran=<n> held-elsewhere=<n> degraded=<n>`, beside the
+existing `graphql-quota:` line. The holder's uuid is operator detail and is
+named at debug level only. A host reporting `ran=<every repo>` every cycle while
+its siblings are alive means the lease is not being honoured.
+
 ### Per-lane worktrees (Issue #394)
 
 The lease covers the passes that lease. The **Priority-1.6 branch-update pass**
