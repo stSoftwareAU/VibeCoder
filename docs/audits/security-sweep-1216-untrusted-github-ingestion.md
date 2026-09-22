@@ -7,7 +7,7 @@ This record exists so a later run can tell a **swept** path from an unswept one.
 The parent scan swept the three modules built to defend the internet-unauth
 boundary — `prompt_delimiter.ts`, `run_injection_scanner.ts`,
 `worker_label_guard.ts` — and found nothing. It did not sweep the modules that
-_consume_ GitHub data downstream of those defences. This slice did.
+*consume* GitHub data downstream of those defences. This slice did.
 
 Its sibling is
 [`security-sweep-1214-subprocess-argv.md`](security-sweep-1214-subprocess-argv.md)
@@ -32,15 +32,15 @@ per-file passes, plus targeted repo-wide greps for the prototype-pollution and
 ReDoS shapes. Each GitHub-sourced field was classified before any trust decision
 was traced through it:
 
-| Authenticated                                                                                                                                                  | Attacker-writable (any GitHub account, public repo)                                                                             |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `author.login`, `authorAssociation`, `permissions`, API metadata (numbers, timestamps, `isDraft`, `mergeStateStatus`), label application (needs triage rights) | issue title, issue body, comment body, PR title, PR body, head branch name, label _text_, commit message, comment **reactions** |
+| Authenticated | Attacker-writable (any GitHub account, public repo) |
+| ------------- | --------------------------------------------------- |
+| `author.login`, `authorAssociation`, `permissions`, API metadata (numbers, timestamps, `isDraft`, `mergeStateStatus`), label application (needs triage rights) | issue title, issue body, comment body, PR title, PR body, head branch name, label *text*, commit message, comment **reactions** |
 
 Triage followed the Phase 3 discipline of
 [`SECURITY-SCAN.md`](../SECURITY-SCAN.md): refute-unless-proven, then severity
-recalibrated for the internet-unauth exposure band. A candidate that could not
-be traced from a **named** attacker-writable field to the dangerous use was
-dropped rather than filed.
+recalibrated for the internet-unauth exposure band. A candidate that could not be
+traced from a **named** attacker-writable field to the dangerous use was dropped
+rather than filed.
 
 > **This is not an empty result.** The issue asks that an empty result be stated
 > explicitly; it was not empty. Nineteen distinct root causes survived triage.
@@ -58,12 +58,12 @@ seven call sites, because `blocking_pr_stall_detector.ts` reads two markers and
 the shared helper has four callers — read the marker and not the author, and
 every one of them fails towards silence, the direction nobody notices.
 
-| Site (pre-fix)                                            | Marker                                               | What a planted comment did                                                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lib/issue_comment_pages.ts` `issueCommentsContainMarker` | any                                                  | **The shared one.** Substring-matched the raw page JSON, so it matched a marker anywhere in the payload, from anyone. Four callers: the blocking-PR stall escalation (suppressed outright), each stall-reason comment, the self-schedule announcement, the CI-nudge audit trail                                                                                                                                       |
-| `lib/needs_human_escalation.ts`                           | `<!-- needs-human-escalation: <key> -->`             | Every production dedup key is derivable from public numbers (`context-budget-<n>`, `merge-blocked:<repo>#<pr>`, `cross-repo-pr-<n>`, …), so one invisible HTML comment silenced a hand-off's "why / next step" explanation for 24 h                                                                                                                                                                                   |
-| `lib/run_failure_issue.ts`                                | `<!-- VIBE_RUN_FAILURE_FOLLOWUP:<class>:<epoch> -->` | The epoch is attacker-chosen and unbounded, so `t - epoch < window` stayed true for ever and the descending sort put the forged comment first. Every later occurrence of the class was `PATCH`ed onto the attacker's comment — or, when that edit was refused, the class was permanently `suppressed:gh_failed`. Step 1 of the same function already author-verified the _issue_ match; step 3 dropped the discipline |
-| `lib/milestone_branch_self_heal.ts`                       | `<!-- vibe-coder:milestone-retarget -->`             | Permanently exempted a PR from being retargeted at its milestone branch, so its work merged to the default branch outside the milestone                                                                                                                                                                                                                                                                               |
+| Site (pre-fix) | Marker | What a planted comment did |
+| -------------- | ------ | -------------------------- |
+| `lib/issue_comment_pages.ts` `issueCommentsContainMarker` | any | **The shared one.** Substring-matched the raw page JSON, so it matched a marker anywhere in the payload, from anyone. Four callers: the blocking-PR stall escalation (suppressed outright), each stall-reason comment, the self-schedule announcement, the CI-nudge audit trail |
+| `lib/needs_human_escalation.ts` | `<!-- needs-human-escalation: <key> -->` | Every production dedup key is derivable from public numbers (`context-budget-<n>`, `merge-blocked:<repo>#<pr>`, `cross-repo-pr-<n>`, …), so one invisible HTML comment silenced a hand-off's "why / next step" explanation for 24 h |
+| `lib/run_failure_issue.ts` | `<!-- VIBE_RUN_FAILURE_FOLLOWUP:<class>:<epoch> -->` | The epoch is attacker-chosen and unbounded, so `t - epoch < window` stayed true for ever and the descending sort put the forged comment first. Every later occurrence of the class was `PATCH`ed onto the attacker's comment — or, when that edit was refused, the class was permanently `suppressed:gh_failed`. Step 1 of the same function already author-verified the *issue* match; step 3 dropped the discipline |
+| `lib/milestone_branch_self_heal.ts` | `<!-- vibe-coder:milestone-retarget -->` | Permanently exempted a PR from being retargeted at its milestone branch, so its work merged to the default branch outside the milestone |
 
 **Why the existing gate did not catch it.** `marker_dedup_author_manifest.ts`'s
 scanner recognises two shapes: a `--search` expression matching `in:title` /
@@ -79,11 +79,11 @@ list — `idle_task_activity.ts`, `idle_task_snapshot.ts`,
 `milestone_children_gate.ts`, `conflict_abandon_restart.ts` and
 `pr_merge_conflict_scan.ts` — so the count is visible in the enforced constant
 rather than only in prose. `idle_task_activity.ts` moved there from the
-"deliberately absent" note above it: the note said the read "takes only GitHub's
-own `created_at`, never the marker's payload", but the marker's _presence_ is
-itself the trusted signal, so the exclusion was wrong. The list has no staleness
-gate and cannot have one — the scanner is what makes the two-directional cap
-possible, and these are the sites it cannot classify.
+"deliberately absent" note above it: the note said the read "takes only
+GitHub's own `created_at`, never the marker's payload", but the marker's
+*presence* is itself the trusted signal, so the exclusion was wrong. The list
+has no staleness gate and cannot have one — the scanner is what makes the
+two-directional cap possible, and these are the sites it cannot classify.
 
 **The fix.** All six now route through `selectFleetAuthoredComments`
 (`lib/alert_dedup_authors.ts`) — the control already applied at
@@ -113,54 +113,47 @@ Each is a distinct root cause from SEC-1216-01 and from each other. The per-run
 filing cap of six was reached, so the remainder is carried by an overflow
 tracker rather than dropped.
 
-- **SEC-1216-02**
-  ([#1243](https://github.com/stSoftwareAU/VibeCoder/issues/1243)) —
-  `lib/idle_task_snapshot.ts` reads the `<!-- finding-id: … -->` marker out of
+- **SEC-1216-02** ([#1243](https://github.com/stSoftwareAU/VibeCoder/issues/1243))
+  — `lib/idle_task_snapshot.ts` reads the `<!-- finding-id: … -->` marker out of
   open issue **bodies** with `--json number,body` and no author check. One issue
   anybody opens, carrying a deterministic finding id, suppresses that real
   finding on every subsequent scan across ~12 scanners. The #1097 class exactly.
   `severity:high` · `confidence:high`
-- **SEC-1216-03**
-  ([#1244](https://github.com/stSoftwareAU/VibeCoder/issues/1244)) — the
-  planning close-out path decides from unauthenticated text at four sites:
+- **SEC-1216-03** ([#1244](https://github.com/stSoftwareAU/VibeCoder/issues/1244))
+  — the planning close-out path decides from unauthenticated text at four sites:
   `planning_processor.ts`'s two sub-issue look-ups (`Part of #N` in a body, no
   `author:` qualifier, no fork check), `planning_carrier.ts`'s `nothing-to-do`
   comment signal, and `plan_coverage_gate.ts`'s first-match coverage table.
   `severity:high` · `confidence:high`
-- **SEC-1216-04**
-  ([#1245](https://github.com/stSoftwareAU/VibeCoder/issues/1245)) — measured
-  catastrophic backtracking in `plan_coverage_gate.ts`'s `SEPARATOR_RE`, applied
-  to every line of every comment with no length cap: 2 000 dashes → 13.7 ms, 40
-  000 → 5.4 s, quadratic; one 64 KB comment costs ~14 s. `severity:medium` ·
-  `confidence:high`
-- **SEC-1216-05**
-  ([#1246](https://github.com/stSoftwareAU/VibeCoder/issues/1246)) —
-  `MILESTONE_TRACKING_TITLE_RE` classifies a worker tracking issue from its
+- **SEC-1216-04** ([#1245](https://github.com/stSoftwareAU/VibeCoder/issues/1245))
+  — measured catastrophic backtracking in `plan_coverage_gate.ts`'s
+  `SEPARATOR_RE`, applied to every line of every comment with no length cap:
+  2 000 dashes → 13.7 ms, 40 000 → 5.4 s, quadratic; one 64 KB comment costs
+  ~14 s. `severity:medium` · `confidence:high`
+- **SEC-1216-05** ([#1246](https://github.com/stSoftwareAU/VibeCoder/issues/1246))
+  — `MILESTONE_TRACKING_TITLE_RE` classifies a worker tracking issue from its
   **title** alone, not the body marker the worker writes and not the author. A
   retitled third-party issue makes `openCount` read 0 → milestone declared
   complete → milestone branch deleted, and gets `gh issue close`d by the worker.
   `severity:high` · `confidence:medium`
-- **SEC-1216-06**
-  ([#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247)) — consumers
-  that parse `fetchIssueCommentPages`' raw array themselves:
+- **SEC-1216-06** ([#1247](https://github.com/stSoftwareAU/VibeCoder/issues/1247))
+  — consumers that parse `fetchIssueCommentPages`' raw array themselves:
   `pr_merge_conflict_scan.ts`'s `parseConflictAttempts` (two planted
   `CONFLICT_FAILED_MARKER` comments make the worker **close the PR**) and
   `conflict_abandon_restart.ts`'s `restartMarkerPrNumbers` /
   `summariseFailedAttempts`. Filed rather than fixed alongside SEC-1216-01
-  because the restart marker suppresses a _destructive_ action, so its fail
+  because the restart marker suppresses a *destructive* action, so its fail
   direction needs a decision rather than the uniform "discard and act".
   `severity:high` · `confidence:high`
-- **SEC-1216-07**
-  ([#1248](https://github.com/stSoftwareAU/VibeCoder/issues/1248)) —
-  `completion_phase.ts` interpolates the issue title into the PR title
+- **SEC-1216-07** ([#1248](https://github.com/stSoftwareAU/VibeCoder/issues/1248))
+  — `completion_phase.ts` interpolates the issue title into the PR title
   unscrubbed. An issue titled `Add caching [#999]` produces a fleet-authored PR
   that every title matcher reads as referencing #999; once merged, #999 is
   permanently skipped. `severity:medium` · `confidence:high`
-- **SEC-1216-08**
-  ([#1249](https://github.com/stSoftwareAU/VibeCoder/issues/1249)) — overflow
-  tracker carrying the twelve further findings the cap displaced: the
-  `CLAIM_LOCK` liveness forgery in `idle_task_activity.ts`, the last-comment
-  scan-outcome classification in `idle_task_freshness.ts`, the two
+- **SEC-1216-08** ([#1249](https://github.com/stSoftwareAU/VibeCoder/issues/1249))
+  — overflow tracker carrying the twelve further findings the cap displaced:
+  the `CLAIM_LOCK` liveness forgery in `idle_task_activity.ts`, the
+  last-comment scan-outcome classification in `idle_task_freshness.ts`, the two
   comment-suppression markers in `milestone_children_gate.ts`, the nonce-less
   `[TRUSTED - <login>]:` header in `comment_trust_filter.ts`, the
   reaction-driven gating in `pr_comments.ts` / `pr_maintenance.ts`, the
@@ -217,8 +210,8 @@ Named here so a later sweep does not re-litigate them.
   `pr_linkage.ts`). Pushing a branch into the target repository needs write
   access there, so a same-repository head is evidence.
 - **Timeline-authored label trust** — `label_security.ts`,
-  `custom_label_pr_finder.ts`, `pr_invitation_lookup.ts`, `issue_edit_actor.ts`.
-  All paginate to exhaustion and fail closed.
+  `custom_label_pr_finder.ts`, `pr_invitation_lookup.ts`,
+  `issue_edit_actor.ts`. All paginate to exhaustion and fail closed.
 - **Shape-validated `gh --json` parsing** — `github.ts` (`validateGhIssueJson`,
   `parseCreatedCommentJson`), `validation.ts`, `timeline_batch.ts`,
   `check_runs_batch.ts`, `comment_batch.ts`, `backlog_fetch.ts`,
@@ -239,7 +232,7 @@ Named here so a later sweep does not re-litigate them.
   only consulted against **assignees**, and GitHub refuses assignees without
   push access); `reported_check_names.ts` (names intersected with a hardcoded
   catalogue before reaching a ruleset); `seed_idle_tasks_request.ts` (the
-  title-derived slug only _selects_ an operator-configured repo);
+  title-derived slug only *selects* an operator-configured repo);
   `cross_repo_fix.ts` `openCrossRepoFixPr` (no production caller);
   `branch_push_policy.ts` (misclassification needs default-branch push access
   already); `references_source_probe.ts` (curated `docs/REFERENCES.md` list).
