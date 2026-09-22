@@ -373,6 +373,61 @@ once:
   This rule is about where a test lives and what it touches, never
   about the shape of its assertions.
 
+### Cross-bucket: verbose gate output
+
+Every scan applies this check, whichever bucket the SLOC-weighted draw
+picked for the rest of the run — a repository whose draw lands on
+`terraform` or `design` still gets asked the question. The rule
+shipped four times over, once in `general.md` and once each in
+`typescript.md`, `rust.md`, `java.md` and `react.md`; it now lives here
+once, and those five guides carry only a pointer to it.
+
+- **Quiet when green, complete when red.** A green quality-gate
+  script, default test task, or CI step that runs on pull requests
+  must print no per-test pass line and at most one summary line per
+  stage. A red run must still print every failure in full: the test's
+  name, the assertion message and the stack trace. There is no fixed
+  line cap either way — the rule is about the shape of the output, not
+  a count.
+- **Static evidence only.** Read the quality-gate script, the default
+  test task and the pull-request CI steps as text. Never run the suite
+  to see how much it prints — Hard Constraint 2 forbids it, and a
+  transcript captured on the scanning host is not evidence anyway.
+- **What to flag.** A test runner, build or install step that invokes
+  its default per-test reporter where the ecosystem offers a quiet or
+  failures-only one, and an explicit `--verbose`, `-v` or `set -x` on
+  any of those surfaces, even alongside a quiet flag.
+  An on-demand test task that a person runs by hand to read its output
+  is out of scope.
+- **Ecosystem quiet flags**, the substance a fold across five guides
+  must not lose:
+
+  | Ecosystem | Quiet / failures-only flag |
+  | --- | --- |
+  | Deno | `deno test --reporter=dot` |
+  | Rust | `cargo test -q` (or `cargo nextest run --status-level=fail`) |
+  | JavaScript/TypeScript | `vitest run --reporter=dot`, `jest --silent` |
+  | Java (Maven) | `mvn -q`, Surefire's `<statelessTestsetInfoReporter>` |
+  | Java (Gradle) | `test { testLogging { events "failed" } }` |
+  | Shell (Bats) | a quiet `bats` formatter, never the per-test default |
+
+- **File one issue per repository** under the fixed id
+  `BP-VERBOSE-GATE` at `severity:medium`, listing every verbose line by
+  file and line number beside the ecosystem's quiet flag from the
+  table above. This id departs from the usual `{repo, bucket, slug,
+  file}` recipe on purpose: the finding is bucket-independent, so a
+  per-bucket hash would file once per bucket the draw ever lands on. A
+  second scan while `BP-VERBOSE-GATE` is already open on the repository
+  files nothing.
+- **Never opens a pull request.** The fix rides the repository's own
+  `work-on` PR, which must confirm on a deliberately failing test that
+  the name, the assertion message and the stack trace still print once
+  the quiet flag is applied.
+- **Waiver.** A finding is waived by a `best-practice-ignore: BP-VERBOSE-GATE`
+  marker bearing an author, an expiry date and a reason. The waiver
+  fails closed: a missing field or a passed expiry means the finding
+  still files.
+
 ## Phase 3 — Triage
 
 Apply these rules in order to every candidate from Phase 2:

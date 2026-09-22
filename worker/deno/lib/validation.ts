@@ -142,6 +142,11 @@ export interface ConfigFileJson {
   agent_providers?: string[];
   /** Opt-in ordered fallback providers (Issue #1700). */
   agent_provider_fallback?: string[];
+  /**
+   * Drain the held Claude token to zero rather than parking the backlog
+   * at the week-pace projection (Issue #2474).
+   */
+  claude_week_pace_drain?: boolean;
   claude_model?: string;
   best_planning_model?: string;
   claude_timeout?: number;
@@ -682,6 +687,7 @@ export function validateConfigFileJson(
     "trusted_review_bots",
     "agent_providers",
     "agent_provider_fallback",
+    "claude_week_pace_drain",
     // Long-job labels for the adaptive claim floor (Issue #245).
     "claim_long_job_labels",
   ] as const;
@@ -748,6 +754,8 @@ export function validateConfigFileJson(
     "enable_session_resume",
     // Host-wide issue-executor split (Issue #2341).
     "issue_executor_split",
+    // Drain the held Claude token to zero (Issue #2474).
+    "claude_week_pace_drain",
   ] as const;
 
   for (const field of booleanFields) {

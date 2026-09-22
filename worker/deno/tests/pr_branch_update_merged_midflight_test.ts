@@ -130,23 +130,33 @@ Deno.test("parsePrLiveFields - both fields, in either payload shape", () => {
     {
       state: "OPEN",
       mergeable: "CONFLICTING",
+      armed: false,
+      behind: false,
     },
   );
   assertEquals(parsePrLiveFields('{"mergeable":"mergeable","state":"OPEN"}'), {
     state: "OPEN",
     mergeable: "MERGEABLE",
+    armed: false,
+    behind: false,
   });
   assertEquals(parsePrLiveFields('{"mergeable":null,"state":"OPEN"}'), {
     state: "OPEN",
     mergeable: "UNKNOWN",
+    armed: false,
+    behind: false,
   });
   assertEquals(parsePrLiveFields("CLOSED\n"), {
     state: "CLOSED",
     mergeable: "UNKNOWN",
+    armed: false,
+    behind: false,
   });
   assertEquals(parsePrLiveFields("[]"), {
     state: "UNKNOWN",
     mergeable: "UNKNOWN",
+    armed: false,
+    behind: false,
   });
 });
 
@@ -164,7 +174,12 @@ Deno.test("makeGhPrStateFetcher - asks gh for state and mergeable, and returns t
   assertEquals(calls.length, 1);
   assertEquals(calls[0]!.includes("381"), true);
   assertEquals(calls[0]!.includes("org/repo"), true);
-  assertEquals(calls[0]!.includes("state,mergeable"), true);
+  assertEquals(
+    calls[0]!.includes(
+      "state,mergeable,autoMergeRequest,mergeStateStatus",
+    ),
+    true,
+  );
 });
 
 // =============================================================================

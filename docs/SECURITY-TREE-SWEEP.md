@@ -291,7 +291,15 @@ workflow, the baseline or the sweep code:
    --stamp`, report appended to the job summary and uploaded as an artefact
    (with the raw semgrep JSON and SARIF, seven days). The job fails when a
    scanner produced nothing, when the sweep could not run, or when any
-   deduplicated finding is unbaselined.
+   deduplicated finding is unbaselined. A **pull request** run first
+   collects the PR's changed files (diff against the base SHA from the
+   event payload) and passes them as `--changed-files`: unbaselined
+   findings OUTSIDE that set are listed in the report under "Unbaselined,
+   outside the changed files" and do not fail the run — a PR gates its own
+   diff, and the tree-wide scheduled sweep owns everything else. A
+   dependabot pin bump therefore goes green even while main carries
+   untriaged findings, because no commit on the PR branch could clear
+   them. The scheduled and manual runs pass no list and stay strict.
 
 Repository-local by construction: the slug comes from `github.repository`
 and the baseline lives at `.github/security-tree-sweep-baseline.json` (both

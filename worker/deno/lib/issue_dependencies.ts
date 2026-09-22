@@ -39,6 +39,21 @@ export interface IssueState {
 }
 
 /**
+ * A dependency that blocks a candidate (Issue #2473).
+ *
+ * Extracted from a candidate's dependency graph so the collector can
+ * classify whether the blocker is stalled (unclaimable) or merely busy.
+ */
+export interface DependencyBlocker {
+  /** Repository containing the blocking dependency. */
+  repo: string;
+  /** Issue number of the blocking dependency. */
+  number: number;
+  /** Type of dependency relationship. */
+  kind: "child" | "depends-on";
+}
+
+/**
  * Normalise a raw GitHub `state` string into the binary OPEN/CLOSED used
  * for dependency and blocking checks.
  *

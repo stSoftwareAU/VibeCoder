@@ -419,29 +419,8 @@ test asserts belongs to the `test-audit` scan, not here.
     occupy the host. A number taken under concurrent load is not
     merely a slow result — it is a result nobody can act on.
 
-19. **A green gate prints no per-test pass line.** The gate that runs
-    on every change runs many times a day, and its output is quoted
-    back into review comments and agent prompts, so a line per passing
-    test is paid for repeatedly: one repository's green run printed
-    roughly 23,000 of them. A green stage should print at most one
-    summary line; a red run must still print every failure in full —
-    the test's name, the assertion message and the stack trace. Flag
-    the quality script, the default test task, or a CI step that runs
-    on pull requests where it invokes the test runner on its default
-    per-test reporter and the ecosystem offers a quiet or
-    failures-only one. The evidence is that invocation line and
-    nothing else: read the script, task or workflow definition, and
-    never run the suite to see how much it prints. An on-demand test
-    task is a person deliberately reading output, so it is out of
-    scope. File at `severity:medium` where the noisy invocation is the
-    every-change gate or a pull-request CI step, `severity:low`
-    otherwise.
-
-    Suggested fix: pass the ecosystem's quiet or failures-only
-    reporter flag on that invocation, and confirm what the flag prints
-    on a failure before adopting it — a reporter that also drops the
-    assertion message or the stack trace trades a token bill for a
-    debugging one. Where the quietest reporter the runner accepts
-    still marks each passing test, pair the flag with a trim of the
-    passing stage's output in whatever collects the gate's
-    transcript.
+19. **A green gate prints no per-test pass line.** Folded into
+    `### Cross-bucket: verbose gate output` in the orchestrator
+    prompt, which every scan applies regardless of the drawn bucket —
+    see there for the full contract and the per-ecosystem quiet
+    flags.

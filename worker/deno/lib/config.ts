@@ -1041,6 +1041,7 @@ export async function loadConfig(
     agentProvider,
     enabledAgentProviders: enabledAgentProviderIds,
     agentProviderFallback: [...agentProviderFallback],
+    claudeWeekPaceDrain: file.claude_week_pace_drain === true,
     claudeModel,
     bestPlanningModel,
     claudeTimeout,

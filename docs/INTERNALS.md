@@ -2145,8 +2145,13 @@ immediately before `gh pr merge`:
   merge it deliberately.
 - **Unverifiable state blocks too** — once the PR is known to be a summary PR, a
   failed children read blocks the merge rather than being read as "no children".
-  The maintenance scan treats the block as a deferral (`await_checks`), not an
-  escalation.
+  That block also posts one comment naming the unreadable lookup and saying the
+  sweep retries, so an unarmed PR is never silent (Issue #2479); it is
+  de-duplicated by an in-memory per-PR registry that deliberately survives the
+  per-iteration cache reset, so a lookup that stays broken is explained once, not
+  once per cycle. The maintenance scan treats the block as a deferral
+  (`await_checks`), not an escalation. Either block reports whether the PR
+  carries its explanation as `blockCommented` on the auto-merge result.
 
 ```mermaid
 flowchart TD
@@ -2154,8 +2159,8 @@ flowchart TD
     B -- No --> M[gh pr merge --auto]
     B -- Yes --> C[Re-read open children<br/>issues + PRs based on branch]
     C -- none --> M
-    C -- some --> D[Warn + one comment<br/>PR left open]
-    C -- read failed --> E[Warn, no comment<br/>PR left open]
+    C -- some --> D[Warn + one gate comment<br/>marker de-duplicated<br/>PR left open]
+    C -- read failed --> E[Warn + one lookup comment<br/>registry de-duplicated<br/>PR left open]
 ```
 
 ### 📝 PR creation

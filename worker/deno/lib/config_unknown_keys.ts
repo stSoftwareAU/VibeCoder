@@ -52,6 +52,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "agent_provider",
   "agent_providers",
   "agent_provider_fallback",
+  "claude_week_pace_drain",
   "claude_model",
   "best_planning_model",
   "phase_model_overrides",
