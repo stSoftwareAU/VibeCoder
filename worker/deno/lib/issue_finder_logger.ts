@@ -10,6 +10,7 @@
 
 import type { FleetAuthorSetDivergence } from "./fleet_authors.ts";
 import type { DependencyBlocker } from "./issue_dependencies.ts";
+import type { ChainIssueRef } from "./dependency_chain_promotion.ts";
 
 /**
  * Skip reason codes for issue filtering.
@@ -256,6 +257,27 @@ export interface IssueFinderDiagnostics {
    * divergence warning.
    */
   logBlockingPr(info: BlockingPrInfo): void;
+  /**
+   * Log that a dependency was promoted into the tier of the blocked issue
+   * waiting on it (Issue #2495). Written unconditionally: a scan that
+   * works the chain instead of the labelled issue must be explicable from
+   * the ordinary worker log, without `ISSUE_FINDER_DEBUG`.
+   */
+  logDependencyPromoted(
+    repo: string,
+    issueNumber: number,
+    promotedBy: ChainIssueRef,
+  ): void;
+  /**
+   * Log that a chain root is already assigned to the fleet (Issue #2495).
+   * Debug-gated — nothing was promoted and nothing needs doing, but the
+   * resolver's verdict is still recorded rather than silently dropped.
+   */
+  logChainRootFleetWorking(
+    repo: string,
+    issueNumber: number,
+    assignee: string,
+  ): void;
   /** Log the final candidate selection */
   logFinalSelection(repo: string, issueNumber: number, source: string): void;
   /**
@@ -606,6 +628,30 @@ export function createDiagnostics(options: {
         `in-maintenance-set=${info.inMaintenanceSet}`;
       messages.push(message);
       write(message);
+    },
+
+    logDependencyPromoted(
+      repo: string,
+      issueNumber: number,
+      promotedBy: ChainIssueRef,
+    ): void {
+      const message = `[issue-finder] promoted-dependency=${
+        sanitiseLogField(repo)
+      }#${issueNumber} for #${promotedBy.number}`;
+      messages.push(message);
+      write(message);
+    },
+
+    logChainRootFleetWorking(
+      repo: string,
+      issueNumber: number,
+      assignee: string,
+    ): void {
+      emit(
+        `[issue-finder] chain-root-in-progress repo=${
+          sanitiseLogField(repo)
+        } issue=#${issueNumber} assignee=${sanitiseLogField(assignee)}`,
+      );
     },
 
     logFinalSelection(repo: string, issueNumber: number, source: string): void {

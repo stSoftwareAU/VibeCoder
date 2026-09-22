@@ -2033,6 +2033,18 @@
    ]
   },
   {
+   "issue": 2495,
+   "chunk": "top-up-2495",
+   "title": "top-up: the chain-promotion discovery wiring",
+   "ledger": "docs/audits/security-sweep-2495-chain-promotion-wiring.md",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: apply_chain_promotions.ts (#2495)",
+   "status": "swept",
+   "sweptAt": "146a269b64cf60b6d6e246283c1055f2ef100893",
+   "paths": [
+    "worker/deno/lib/apply_chain_promotions.ts"
+   ]
+  },
+  {
    "issue": 2493,
    "chunk": "top-up-2493",
    "title": "top-up: the dependency-chain promotion resolver",
