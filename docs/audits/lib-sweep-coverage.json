@@ -2055,6 +2055,18 @@
    "paths": [
     "worker/deno/lib/maintenance_lease_store.ts"
    ]
+  },
+  {
+   "issue": 2493,
+   "chunk": "top-up-2493",
+   "title": "top-up: the dependency-chain promotion resolver",
+   "ledger": "docs/audits/security-sweep-2493-dependency-chain-promotion.md",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: dependency_chain_promotion.ts (#2493)",
+   "status": "swept",
+   "sweptAt": "54561e566ad899a385b85bbc24da8db6de0e1810",
+   "paths": [
+    "worker/deno/lib/dependency_chain_promotion.ts"
+   ]
   }
  ],
  "roots": [
