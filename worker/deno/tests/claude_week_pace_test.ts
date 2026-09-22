@@ -76,6 +76,35 @@ Deno.test("claudeWeekPaceVerdict - over pace engages the gate", () => {
   assertEquals(verdict.reading.resetAt, NOW + WINDOW_MS - 84 * HOUR_MS);
 });
 
+Deno.test("claudeWeekPaceVerdict - drain mode keeps the gate off on an over-pace projection (Issue #2474)", () => {
+  // The same projection that engages the guard: half elapsed, 62% spent.
+  const verdict = claudeWeekPaceVerdict(weekBudget(0.62, 84), NOW, {
+    drain: true,
+  });
+  assertEquals(verdict.state, "off");
+  assert(verdict.state === "off");
+  assertEquals(verdict.reason, "drain");
+  assertEquals(verdict.reading.projectedShare, null);
+});
+
+Deno.test("claudeWeekPaceVerdict - drain mode keeps the gate off even with nothing left", () => {
+  // Fully spent, over pace: the guard's projection would engage; drain mode
+  // leaves the switch-over to the pool selection and the outage fallback.
+  const verdict = claudeWeekPaceVerdict(weekBudget(1, 84), NOW, {
+    drain: true,
+  });
+  assertEquals(verdict.state, "off");
+  assert(verdict.state === "off");
+  assertEquals(verdict.reason, "drain");
+});
+
+Deno.test("claudeWeekPaceVerdict - without drain the over-pace projection still engages", () => {
+  const verdict = claudeWeekPaceVerdict(weekBudget(0.62, 84), NOW, {
+    drain: false,
+  });
+  assertEquals(verdict.state, "engaged");
+});
+
 Deno.test("claudeWeekPaceVerdict - exactly on the threshold engages", () => {
   // Projected share lands exactly on the threshold; the target is full use at
   // the reset, so the gate engages at 1.0 rather than above it.
