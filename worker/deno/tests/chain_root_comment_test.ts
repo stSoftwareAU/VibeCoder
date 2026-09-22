@@ -194,20 +194,22 @@ Deno.test("buildChainRootUnworkableComment - names no mention when the assignee 
 Deno.test("buildChainRootUnworkableComment - strips markup from a crafted repository reference", () => {
   const comment = buildChainRootUnworkableComment({
     blockedNumber: 100,
-    root: { repo: 'owner/repo" --> <script>', number: 5 },
+    root: { repo: 'owner/repo" --> injected', number: 5 },
     reason: "cross-repo-unmonitored",
     detail: 'owner/repo" -->',
   });
 
   // The reference is parsed out of an attacker-writable issue body and lands
   // inside the marker's `key="…"` attribute, so it keeps only the characters
-  // a repository name may actually use.
+  // a repository name may actually use — the quote that would close the
+  // attribute and the `>` that would close the comment are both gone.
   assertEquals(
     comment.dedupKey,
-    "chain-root-unworkable-100-owner/repo--script#5-cross-repo-unmonitored",
+    "chain-root-unworkable-100-owner/repo--injected#5-cross-repo-unmonitored",
   );
   assertEquals(comment.body.split("-->").length, 2);
-  assertEquals(comment.body.includes("<script"), false);
+  assertEquals(comment.body.includes('"'), true);
+  assertEquals(comment.body.split('"').length, 3);
 });
 
 // =============================================================================
