@@ -167,7 +167,7 @@ import {
   formatTransientNetworkHalt,
   isTransientNetworkFailure,
 } from "./transient_network_failure.ts";
-import { computePacedSleepSeconds } from "./budget_pacing.ts";
+import { computePacedSleepSeconds, isInReserve } from "./budget_pacing.ts";
 import {
   type GraphqlQuotaReading,
   graphqlSpendBetween,
@@ -313,6 +313,20 @@ export interface PriorityHandler {
    * pool is off (`max_concurrent_issues: 1`).
    */
   maintenanceLane?: boolean;
+  /**
+   * `deferrable` marks a **fixed-cost maintenance sweep** the cycle skips
+   * while the GraphQL budget is inside its reserve (Issue #2449). These
+   * sweeps cost their ≈ 80 calls whether or not there is work for them, so
+   * once `inReserve` is set (`computePacedSleepSeconds`, Issue #2447) a
+   * longer sleep alone is not enough — what is left of the window goes to
+   * issue work instead, and the sweep runs a cycle later.
+   *
+   * Only for a sweep whose work is genuinely deferrable by a cycle. Never for
+   * a handler that services in-flight work (issue scanning, PR feedback, CI
+   * fixes, auto-merge), and never for a handler that spends no GraphQL
+   * budget.
+   */
+  budgetTier?: "deferrable";
 }
 
 /** What one dispatched priority handler did. */
@@ -1800,6 +1814,9 @@ export function buildPriorityDispatchTable(
     {
       priority: 1.67,
       name: "Close Issues for Merged PRs",
+      // Issue #2449: a fixed-cost sweep, skipped for a cycle while the
+      // GraphQL budget is inside its reserve.
+      budgetTier: "deferrable",
       execute: () =>
         deps.closeIssuesForMergedPrs().then((r) =>
           r.ok
@@ -1810,6 +1827,7 @@ export function buildPriorityDispatchTable(
     {
       priority: 1.68,
       name: "Recover Assigned with Closed PRs",
+      budgetTier: "deferrable", // Issue #2449
       execute: () =>
         deps.recoverAssignedWithClosedPr().then((r) =>
           r.ok
@@ -1820,6 +1838,7 @@ export function buildPriorityDispatchTable(
     {
       priority: 1.7,
       name: "Milestone Completions",
+      budgetTier: "deferrable", // Issue #2449
       execute: () =>
         deps.checkMilestoneCompletions().then((r) =>
           r.ok
@@ -1916,6 +1935,7 @@ export function buildPriorityDispatchTable(
       priority: 1.81,
       name: "Failure-Detection Repair Resume",
       agentBacked: true,
+      budgetTier: "deferrable", // Issue #2449
       execute: (opts) =>
         deps.resumeFailureDetectionRepairs?.(opts) ??
           Promise.resolve({
@@ -5256,6 +5276,12 @@ export async function runCoreLoop(
   let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
   /** When that reading was taken, so the spend and its span share a window. */
   let lastGraphqlQuotaReadingAtMs = startTime;
+  // Issue #2449: whether the latest reading put the window inside its reserve.
+  // Set by the end-of-cycle probe below and read by the next cycle's dispatch,
+  // which skips the `deferrable` fixed-cost sweeps while it holds. No reading
+  // — no dep, a `null` reading, or a probe that threw — means no evidence, so
+  // it falls back to false and nothing is skipped.
+  let budgetInReserve = false;
 
   const fireCycleCallback = (reason: CycleEndReason): Promise<void> => {
     const finishedAt = deps.now();
@@ -5316,6 +5342,9 @@ export async function runCoreLoop(
   async function pacedEndOfCycleSleepSeconds(
     baseSleepSeconds: number,
   ): Promise<number> {
+    // Issue #2449: no reading is no evidence, so the tier gate opens again
+    // rather than holding a stale skip over the rest of the run.
+    budgetInReserve = false;
     if (!deps.readGraphqlQuota) return baseSleepSeconds;
     let reading: { limit: number; remaining: number; reset: number } | null;
     try {
@@ -5330,6 +5359,11 @@ export async function runCoreLoop(
       return baseSleepSeconds;
     }
     if (reading === null) return baseSleepSeconds;
+    // Read from the reading itself, not from the pacing decision below, so
+    // the run's first reading — which has no previous reading to diff a spend
+    // against — already tiers the next cycle (Issue #2449). Same rule either
+    // way: `computePacedSleepSeconds` reports this very function's result.
+    budgetInReserve = isInReserve(reading.limit, reading.remaining);
 
     // `graphqlSpendBetween` diffs `used`, which this dep does not carry. Both
     // readings synthesise it the same way, so the difference it takes is the
@@ -6121,6 +6155,12 @@ export async function runCoreLoop(
           }
           /** Lane passes deferred out of the ladder, in priority order. */
           const deferredLanePasses: PriorityHandler[] = [];
+          /**
+           * Fixed-cost sweeps skipped this cycle because the previous cycle's
+           * quota reading put the window inside its reserve (Issue #2449).
+           * Collected so the cycle logs one line rather than one per sweep.
+           */
+          const skippedDeferrable: string[] = [];
 
           for (const handler of priorityTable) {
             if (handler.priority >= 2) break; // Priority 2 handled separately
@@ -6130,6 +6170,15 @@ export async function runCoreLoop(
             // limit fired. `skipBelowPriority` is 1 on a normal cycle, so this
             // is a no-op except immediately after a fresh start / resume.
             if (handler.priority < skipBelowPriority) {
+              continue;
+            }
+
+            // Issue #2449: inside the reserve the window has too little left
+            // for the fixed-cost sweeps as well as issue work, so the sweeps
+            // stand down for the cycle. Checked ahead of the lane deferral so
+            // the tier holds wherever the handler would have run.
+            if (budgetInReserve && handler.budgetTier === "deferrable") {
+              skippedDeferrable.push(handler.name);
               continue;
             }
 
@@ -6157,6 +6206,16 @@ export async function runCoreLoop(
             if (dispatched.kind === "rate-limited") {
               break; // Stop processing further priorities this cycle
             }
+          }
+
+          // Issue #2449: one line per cycle, naming what stood down and why,
+          // so a cycle missing its sweeps is never silent.
+          if (skippedDeferrable.length > 0) {
+            warnOf(deps)(
+              `budget-pacing: in reserve — skipped deferrable sweeps: ${
+                skippedDeferrable.join(", ")
+              }`,
+            );
           }
 
           // --- Priority 2: Issue scanning inner loop ---
