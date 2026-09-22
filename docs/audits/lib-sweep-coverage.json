@@ -2033,6 +2033,30 @@
    ]
   },
   {
+   "issue": 2496,
+   "chunk": "top-up-2496",
+   "title": "top-up: the unworkable chain-root report",
+   "ledger": "docs/audits/security-sweep-2496-chain-root-comment.md",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: chain_root_comment.ts (#2496)",
+   "status": "swept",
+   "sweptAt": "a48714b9c0b5e13d96a9e12fc31b2fabdd2d782f",
+   "paths": [
+    "worker/deno/lib/chain_root_comment.ts"
+   ]
+  },
+  {
+   "issue": 2495,
+   "chunk": "top-up-2495",
+   "title": "top-up: the chain-promotion discovery wiring",
+   "ledger": "docs/audits/security-sweep-2495-chain-promotion-wiring.md",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: apply_chain_promotions.ts (#2495)",
+   "status": "swept",
+   "sweptAt": "f8011f766b7c020b31c53312bba1119598d4ccfb",
+   "paths": [
+    "worker/deno/lib/apply_chain_promotions.ts"
+   ]
+  },
+  {
    "issue": 2493,
    "chunk": "top-up-2493",
    "title": "top-up: the dependency-chain promotion resolver",

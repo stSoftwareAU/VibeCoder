@@ -9,6 +9,8 @@
  */
 
 import type { FleetAuthorSetDivergence } from "./fleet_authors.ts";
+import type { DependencyBlocker } from "./issue_dependencies.ts";
+import type { ChainIssueRef } from "./dependency_chain_promotion.ts";
 
 /**
  * Skip reason codes for issue filtering.
@@ -137,6 +139,17 @@ export interface BlockedCandidateInfo {
   milestone: string;
   /** Skip reason that caused the issue to be blocked. */
   reason: SkipReason;
+  /**
+   * The dependencies that blocked the issue (Issue #2494). Recorded so the
+   * chain-promotion resolver can walk the chain straight from the blocked
+   * list instead of re-fetching each candidate's dependencies.
+   *
+   * Populated by the configured-label and work-on collectors on a
+   * `dependency-blocked` skip. Other writers of that reason — and every
+   * other skip reason — leave it absent, so a consumer must treat
+   * `undefined` as "not recorded", never as "no blockers".
+   */
+  blockers?: DependencyBlocker[];
 }
 
 /**
@@ -244,6 +257,27 @@ export interface IssueFinderDiagnostics {
    * divergence warning.
    */
   logBlockingPr(info: BlockingPrInfo): void;
+  /**
+   * Log that a dependency was promoted into the tier of the blocked issue
+   * waiting on it (Issue #2495). Written unconditionally: a scan that
+   * works the chain instead of the labelled issue must be explicable from
+   * the ordinary worker log, without `ISSUE_FINDER_DEBUG`.
+   */
+  logDependencyPromoted(
+    repo: string,
+    issueNumber: number,
+    promotedBy: ChainIssueRef,
+  ): void;
+  /**
+   * Log that a chain root is already assigned to the fleet (Issue #2495).
+   * Debug-gated — nothing was promoted and nothing needs doing, but the
+   * resolver's verdict is still recorded rather than silently dropped.
+   */
+  logChainRootFleetWorking(
+    repo: string,
+    issueNumber: number,
+    assignee: string,
+  ): void;
   /** Log the final candidate selection */
   logFinalSelection(repo: string, issueNumber: number, source: string): void;
   /**
@@ -594,6 +628,30 @@ export function createDiagnostics(options: {
         `in-maintenance-set=${info.inMaintenanceSet}`;
       messages.push(message);
       write(message);
+    },
+
+    logDependencyPromoted(
+      repo: string,
+      issueNumber: number,
+      promotedBy: ChainIssueRef,
+    ): void {
+      const message = `[issue-finder] promoted-dependency=${
+        sanitiseLogField(repo)
+      }#${issueNumber} for #${promotedBy.number}`;
+      messages.push(message);
+      write(message);
+    },
+
+    logChainRootFleetWorking(
+      repo: string,
+      issueNumber: number,
+      assignee: string,
+    ): void {
+      emit(
+        `[issue-finder] chain-root-in-progress repo=${
+          sanitiseLogField(repo)
+        } issue=#${issueNumber} assignee=${sanitiseLogField(assignee)}`,
+      );
     },
 
     logFinalSelection(repo: string, issueNumber: number, source: string): void {

@@ -396,8 +396,17 @@ export async function collectWorkOnCandidates(
     issueNumber: number,
     milestone: string,
     reason: SkipReason,
+    /** Issue #2494: the dependencies holding the issue, for a dependency block. */
+    blockers?: DependencyBlocker[],
   ): void => {
-    blockedDetails.push({ repo, issueNumber, milestone, reason });
+    // The key is omitted, not set to `undefined`, for a non-dependency block.
+    blockedDetails.push({
+      repo,
+      issueNumber,
+      milestone,
+      reason,
+      ...(blockers ? { blockers } : {}),
+    });
     if (suppressesLowerTiers(reason)) suppressingCount++;
   };
 
@@ -621,8 +630,10 @@ export async function collectWorkOnCandidates(
         continue;
       }
 
-      // Blocker is claimable but busy — ordinary wait.
-      noteBlocked(issue.number, milestoneTitle, "dependency-blocked");
+      // Blocker is claimable but busy — ordinary wait. Issue #2494: the
+      // blockers the stall check just read are recorded on the entry so the
+      // chain-promotion resolver need not re-fetch them.
+      noteBlocked(issue.number, milestoneTitle, "dependency-blocked", blockers);
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       dependencyBlockedIssues.push(issue.number);
       continue;

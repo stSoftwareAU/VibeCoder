@@ -31,7 +31,7 @@ import {
 import type { ClosedPR, OpenPR } from "./issue_query.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
 import { extractMilestonePriority } from "./milestone_priority.ts";
-import type { IssueFetcher } from "./issue_dependencies.ts";
+import type { DependencyBlocker, IssueFetcher } from "./issue_dependencies.ts";
 import {
   filterTrustedLabels,
   verifyOperationalLabels,
@@ -388,7 +388,11 @@ export async function collectLabelCandidates(
         }
       }
 
-      // Check dependency blocking
+      // Check dependency blocking. Issue #2494: the blocker list is collected
+      // rather than discarded, so the blocked entry names the chain that holds
+      // this candidate. The verdict is unchanged — `isDependencyBlocked`
+      // returns `blockers.length > 0` when an out-param is supplied.
+      const blockers: DependencyBlocker[] = [];
       if (
         await isDependencyBlocked(
           repo,
@@ -396,6 +400,7 @@ export async function collectLabelCandidates(
           fetcher,
           openStateMap,
           { candidateMilestone: milestoneTitle, isMilestoneOpen },
+          blockers,
         )
       ) {
         diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
@@ -407,6 +412,7 @@ export async function collectLabelCandidates(
           issueNumber: issue.number,
           milestone: milestoneTitle,
           reason: "dependency-blocked",
+          blockers,
         });
         continue;
       }

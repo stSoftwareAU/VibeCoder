@@ -642,6 +642,11 @@ export async function isDependencyBlocked(
 
     return blockers ? blockers.length > 0 : false;
   } catch {
-    return false;
+    // Issue #2494: a partial collection still blocks. Supplying the out-param
+    // suppresses the early `return true` above, so an unreadable issue body
+    // (a rate limit, a network blip) now lands here with blockers already
+    // found — answering `false` would release a dependant this scan knows is
+    // blocked. Fail safe on what was collected.
+    return blockers ? blockers.length > 0 : false;
   }
 }

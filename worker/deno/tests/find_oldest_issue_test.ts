@@ -13,6 +13,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { findOldestIssue } from "../lib/find_oldest_issue.ts";
+import { buildChainRootUnworkableComment } from "../lib/chain_root_comment.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createDiagnostics } from "../lib/issue_finder_logger.ts";
@@ -87,6 +88,19 @@ function createPerRepoMockGh(
     if (command.includes("issue list")) {
       const fixture = fixtures[repo];
       return Promise.resolve(JSON.stringify(fixture?.issues ?? []));
+    }
+    // Issue #2495: a per-issue view. The fixture lists only *open* issues,
+    // so a number missing from it is closed — the same answer GitHub gives.
+    if (command.includes("issue view")) {
+      const number = Number(args[args.indexOf("view") + 1]);
+      const issue = fixtures[repo]?.issues.find((i) => i.number === number);
+      return Promise.resolve(JSON.stringify({
+        number,
+        state: issue ? "OPEN" : "CLOSED",
+        title: issue?.title ?? "",
+        body: issue?.body ?? "",
+        milestone: issue?.milestone ?? null,
+      }));
     }
     if (command.includes("pr list")) {
       return Promise.resolve("[]");
@@ -1436,5 +1450,695 @@ Deno.test(
 
     assertEquals(result.found, true);
     assertEquals(result.output.includes("|11|"), true);
+  },
+);
+
+// =============================================================================
+// Dependency-chain promotion (Issue #2495)
+// =============================================================================
+
+/** A minimal open-issue fixture for the chain-promotion tests. */
+function chainIssue(
+  number: number,
+  labels: string[],
+  createdAt: string,
+  body = "",
+): Record<string, unknown> {
+  return {
+    number,
+    title: `Issue ${number}`,
+    url: `https://github.com/owner/repo/issues/${number}`,
+    assignees: [],
+    labels: labels.map((name) => ({ name })),
+    createdAt,
+    author: ALICE,
+    milestone: null,
+    body,
+  };
+}
+
+/** Label events for every label the chain-promotion fixtures apply. */
+const CHAIN_TIMELINE = [
+  { event: "labeled", label: { name: "top-priority" }, actor: ALICE },
+  { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+  { event: "labeled", label: { name: "work-on" }, actor: ALICE },
+];
+
+Deno.test(
+  "findOldestIssue - promotes the low-priority dependency of a blocked top-priority issue (Issue #2495)",
+  async () => {
+    // #100 is top-priority but blocked on #200, a low-priority issue in the
+    // same repo. Without promotion the scan would take repo-b's older
+    // low-priority #300; with it, the chain behind the blocked top-priority
+    // is worked first.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          chainIssue(
+            100,
+            ["top-priority"],
+            "2024-01-01T00:00:00Z",
+            "Depends on #200",
+          ),
+          chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z"),
+        ],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(300, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|200|"),
+      `expected the promoted dependency, got: ${result.output}`,
+    );
+    const promotedLine = output.find((m) => m.includes("promoted-dependency="));
+    assert(
+      promotedLine !== undefined,
+      `expected a promotion line, got: ${output.join("\n")}`,
+    );
+    assertStringIncludes(
+      promotedLine,
+      "promoted-dependency=owner/repo-a#200 for #100",
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - promotes a dependency in another monitored repo with that repo's nice (Issue #2495)",
+  async () => {
+    // The blocked top-priority #100 depends on a low-priority issue in each
+    // repo. Both are promoted; repo-b's higher `nice` keeps repo-a's #200
+    // ahead of it, so a promoted candidate is ranked by its *own* repo.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          chainIssue(
+            100,
+            ["top-priority"],
+            "2024-01-01T00:00:00Z",
+            "Depends on #200 and depends on owner/repo-b#500",
+          ),
+          chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z"),
+        ],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(500, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: {
+        randomFn: () => 0,
+        randomPoolSize: 1,
+        repoNice: (repo: string) => repo === "owner/repo-b" ? 1 : 0,
+      },
+    });
+
+    assertEquals(result.found, true);
+    const promotions = output.filter((m) => m.includes("promoted-dependency="));
+    assertEquals(promotions.length, 2, promotions.join("\n"));
+    assert(
+      promotions.some((m) =>
+        m.includes("promoted-dependency=owner/repo-b#500 for #100")
+      ),
+      `expected the cross-repo promotion, got: ${promotions.join("\n")}`,
+    );
+    // Both are now tier-1; `nice` decides, and it is read per promoted repo.
+    assert(
+      result.output.includes("|200|"),
+      `expected the lower-nice repo's dependency, got: ${result.output}`,
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a dependency that is itself still blocked is not promoted (Issue #2495)",
+  async () => {
+    // #200 depends on #300, which carries no discovery label. The chain ends
+    // unworkable, so nothing is promoted and the scan falls through to
+    // repo-b's low-priority backlog exactly as it did before.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          chainIssue(
+            100,
+            ["top-priority"],
+            "2024-01-01T00:00:00Z",
+            "Depends on #200",
+          ),
+          chainIssue(
+            200,
+            ["low-priority"],
+            "2024-06-01T00:00:00Z",
+            "Depends on #300",
+          ),
+          chainIssue(300, [], "2024-06-02T00:00:00Z"),
+        ],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(400, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|400|"),
+      `expected the untouched low-priority tier, got: ${result.output}`,
+    );
+    assertEquals(
+      output.filter((m) => m.includes("promoted-dependency=")),
+      [],
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - nothing promoted leaves the lower tiers exactly as they were (Issue #2495)",
+  async () => {
+    // No blocked candidate at all: the ladder still drains low-priority
+    // oldest-first across repos, and no promotion line is emitted.
+    const config = makeConfig();
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+      "owner/repo-b": {
+        issues: [chainIssue(300, ["low-priority"], "2023-01-01T00:00:00Z")],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag, output } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|300|"),
+      `expected the oldest low-priority issue, got: ${result.output}`,
+    );
+    assertEquals(
+      output.filter((m) => m.includes("promoted-dependency=")),
+      [],
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a chain root the fleet is already working is logged, not promoted (Issue #2495)",
+  async () => {
+    // #200 unblocks the top-priority #100, but a sibling fleet host already
+    // holds it. There is nothing to promote and nothing to escalate — the
+    // verdict is recorded at debug level rather than dropped. The two sit in
+    // different milestones so the sibling's claim occupies its own work
+    // stream, not the blocked issue's.
+    const config = makeConfig({
+      repos: ["owner/repo-a"],
+      fleetPrAuthors: ["sibling-bot"],
+    });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    blocked.milestone = { title: "v1.0" };
+    const assigned = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    assigned.assignees = [{ login: "sibling-bot" }];
+    assigned.milestone = { title: "v2.0" };
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [blocked, assigned],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const output: string[] = [];
+    const diag = createDiagnostics({
+      enabled: true,
+      write: (msg: string) => output.push(msg),
+    });
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(output.filter((m) => m.includes("promoted-dependency=")), []);
+    const inProgress = output.find((m) => m.includes("chain-root-in-progress"));
+    assert(
+      inProgress !== undefined,
+      `expected the fleet-working chain root to be logged, got: ${
+        output.join("\n")
+      }`,
+    );
+    assertStringIncludes(inProgress, "repo=owner/repo-a issue=#200");
+    assertStringIncludes(inProgress, "assignee=sibling-bot");
+  },
+);
+
+// =============================================================================
+// Unworkable chain-root comment (Issue #2496)
+// =============================================================================
+
+/** Wraps the per-repo mock so comment reads and writes can be inspected. */
+function createChainCommentGh(
+  fixtures: Record<string, RepoFixture>,
+  existingComments: Record<string, unknown>[] = [],
+): { calls: string[][]; ghFn: (args: string[]) => Promise<string> } {
+  const base = createPerRepoMockGh(fixtures);
+  const calls: string[][] = [];
+  const ghFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args.includes("POST")) return Promise.resolve("{}");
+    if (args.some((a) => a.includes("/comments"))) {
+      return Promise.resolve(JSON.stringify(existingComments));
+    }
+    return base(args);
+  };
+  return { calls, ghFn };
+}
+
+/** Every chain-root comment actually posted, as `{ target, body }`. */
+function postedChainComments(
+  calls: string[][],
+): Array<{ target: string; body: string }> {
+  return calls
+    .filter((a) =>
+      a.includes("POST") && a.some((part) => part.endsWith("/comments"))
+    )
+    .map((a) => ({
+      target: a.find((part) => part.endsWith("/comments")) ?? "",
+      body: a[a.indexOf("-f") + 1] ?? "",
+    }));
+}
+
+/** Any call that would add or remove a label — none may ever be made. */
+function labelMutations(calls: string[][]): string[][] {
+  return calls.filter((a) =>
+    a.includes("--add-label") || a.includes("--remove-label") ||
+    a.some((part) => part.includes("/labels"))
+  );
+}
+
+Deno.test(
+  "findOldestIssue - comments once on a blocked top-priority issue whose chain root is human-assigned (Issue #2496)",
+  async () => {
+    // #100 is top-priority and blocked on #200, which a human holds. Nothing
+    // can be promoted, so the fleet says why — and changes no label.
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    root.assignees = [{ login: "carol" }];
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": { issues: [blocked, root], timeline: CHAIN_TIMELINE },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertEquals(
+      comments[0]?.target,
+      "repos/owner/repo-a/issues/100/comments",
+    );
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "waiting on @carol, who is assigned to owner/repo-a#200",
+    );
+    assertEquals(labelMutations(calls), []);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - comments on a blocked work-on issue whose dependency a trusted human holds (Issues #2496, #2473)",
+  async () => {
+    // The trusted-human gap: `alice` is an allowed author, so nothing
+    // escalates her — but the work-on issue behind her dependency still needs
+    // to say why it is idle, with no `needs-human` anywhere in sight.
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blocked = chainIssue(
+      100,
+      ["work-on"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    root.assignees = [ALICE];
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": { issues: [blocked, root], timeline: CHAIN_TIMELINE },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertEquals(
+      comments[0]?.target,
+      "repos/owner/repo-a/issues/100/comments",
+    );
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "waiting on @alice, who is assigned to owner/repo-a#200",
+    );
+    assertEquals((comments[0]?.body ?? "").includes("needs-human"), false);
+    assertEquals(labelMutations(calls), []);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - says nothing while the fleet is working the chain root (Issue #2496)",
+  async () => {
+    const config = makeConfig({
+      repos: ["owner/repo-a"],
+      fleetPrAuthors: ["sibling-bot"],
+    });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    blocked.milestone = { title: "v1.0" };
+    const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    root.assignees = [{ login: "sibling-bot" }];
+    root.milestone = { title: "v2.0" };
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": { issues: [blocked, root], timeline: CHAIN_TIMELINE },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(postedChainComments(calls), []);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - says nothing when the chain root was promoted instead (Issue #2496)",
+  async () => {
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": {
+        issues: [
+          chainIssue(
+            100,
+            ["top-priority"],
+            "2024-01-01T00:00:00Z",
+            "Depends on #200",
+          ),
+          chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z"),
+        ],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assertEquals(postedChainComments(calls), []);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - every blocked member of a chain gets its own comment (Issue #2496)",
+  async () => {
+    // Two blocked candidates, one shared unworkable root: each is told, on
+    // its own thread, why it is not moving.
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blockedTop = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    const blockedWorkOn = chainIssue(
+      101,
+      ["work-on"],
+      "2024-01-02T00:00:00Z",
+      "Depends on #200",
+    );
+    const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    root.assignees = [{ login: "carol" }];
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": {
+        issues: [blockedTop, blockedWorkOn, root],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    const targets = postedChainComments(calls).map((c) => c.target).sort();
+    assertEquals(targets, [
+      "repos/owner/repo-a/issues/100/comments",
+      "repos/owner/repo-a/issues/101/comments",
+    ]);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a chain-root comment posted within 24 hours is not repeated (Issue #2496)",
+  async () => {
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    root.assignees = [{ login: "carol" }];
+    const alreadyPosted = buildChainRootUnworkableComment({
+      blockedNumber: 100,
+      root: { repo: "owner/repo-a", number: 200 },
+      reason: "assigned",
+      detail: "carol",
+    });
+    const { calls, ghFn } = createChainCommentGh(
+      { "owner/repo-a": { issues: [blocked, root], timeline: CHAIN_TIMELINE } },
+      // The shape `fetchMarkerComments`'s `--jq` projection returns.
+      [{
+        id: 1,
+        body: alreadyPosted.body,
+        created_at: new Date().toISOString(),
+        author: "bot",
+      }],
+    );
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(postedChainComments(calls), []);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a failed chain-root comment never costs the scan its selection (Issue #2496)",
+  async () => {
+    // The report is best effort: a comment read that throws is logged and the
+    // scan still selects. Discovery losing a claim over a comment would be a
+    // far worse failure than a missing comment.
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200",
+    );
+    const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    root.assignees = [{ login: "carol" }];
+    const backlog = chainIssue(300, ["low-priority"], "2023-01-01T00:00:00Z");
+    const base = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [blocked, root, backlog],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> =>
+      args.some((a) => a.includes("/comments"))
+        ? Promise.reject(new Error("gh: 502 Bad Gateway"))
+        : base(args);
+
+    const { diag } = captureDiagnostics();
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assert(
+      result.output.includes("|300|"),
+      `expected the untouched backlog tier, got: ${result.output}`,
+    );
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a chain the fleet is working stays silent even when another branch is unworkable (Issue #2496)",
+  async () => {
+    // #100 depends on two issues: #200 a sibling host already holds, and #300
+    // a human holds. Work is happening on the chain, so the fleet says
+    // nothing rather than adding noise to the thread.
+    const config = makeConfig({
+      repos: ["owner/repo-a"],
+      fleetPrAuthors: ["sibling-bot"],
+    });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200 and depends on #300",
+    );
+    blocked.milestone = { title: "v1.0" };
+    const fleetHeld = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    fleetHeld.assignees = [{ login: "sibling-bot" }];
+    fleetHeld.milestone = { title: "v2.0" };
+    const humanHeld = chainIssue(300, ["low-priority"], "2024-06-02T00:00:00Z");
+    humanHeld.assignees = [{ login: "carol" }];
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": {
+        issues: [blocked, fleetHeld, humanHeld],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(postedChainComments(calls), []);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a blocked issue with two unworkable roots gets one comment per scan (Issue #2496)",
+  async () => {
+    // Both #200 and #300 are stuck. The blocked issue is told about the first
+    // one; the next scan after it is dealt with reports the other.
+    const config = makeConfig({ repos: ["owner/repo-a"] });
+    const blocked = chainIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "Depends on #200 and depends on #300",
+    );
+    const assigned = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
+    assigned.assignees = [{ login: "carol" }];
+    const unlabelled = chainIssue(300, [], "2024-06-02T00:00:00Z");
+    const { calls, ghFn } = createChainCommentGh({
+      "owner/repo-a": {
+        issues: [blocked, assigned, unlabelled],
+        timeline: CHAIN_TIMELINE,
+      },
+    });
+
+    const { diag } = captureDiagnostics();
+    await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+      cache: createTestCache(),
+      diagnostics: diag,
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertEquals(comments[0]?.target, "repos/owner/repo-a/issues/100/comments");
   },
 );
