@@ -1765,8 +1765,11 @@ async function attemptMerge(
     }
 
     // Issue #1779: a child whose milestone base is behind the default branch
-    // is left exactly as it is — no comment, no label. The every-cycle
-    // milestone sync clears it, so this is a deferral, never an escalation.
+    // and has no required checks to hold the merge is left as it is — the
+    // arming chokepoint has already posted the sync reason, and the
+    // every-cycle milestone sync clears the rest. A deferral, never an
+    // escalation. (An armed behind child returns `enabled` above and lands
+    // as soon as the branch is level — Issue #2460.)
     if (result.deferral === "milestone-behind") {
       return { kind: "milestone_base_behind" };
     }

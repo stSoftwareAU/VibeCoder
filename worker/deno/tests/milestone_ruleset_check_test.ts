@@ -22,6 +22,7 @@ import {
   serviceAccountCanBypass,
   unreportableChecks,
 } from "../lib/milestone_ruleset_check.ts";
+import { buildMilestoneRulesetBody } from "../lib/repo_rulesets.ts";
 
 const ACCOUNT = { login: "VibeCoderST", permission: "write" };
 
@@ -44,6 +45,10 @@ function ruleset(overrides: Partial<RulesetDetail> = {}): RulesetDetail {
           // exist yet has no check runs to satisfy. Tests that want the
           // defect override this explicitly.
           do_not_enforce_on_create: true,
+          // …and it requires the branch to be up to date (Issue #2461), which
+          // is what holds an armed child PR whose base is behind the default
+          // branch until the sync levels it.
+          strict_required_status_checks_policy: true,
         },
       },
     ],
@@ -535,6 +540,115 @@ Deno.test("assessMilestoneRuleset - a ruleset already exempt on create is not re
   // The shared fixture is already the correct shape, which is the point.
   const findings = assessMilestoneRuleset([ruleset()], ACCOUNT);
   assertEquals(findings.filter((f) => f.code === "create-blocked"), []);
+});
+
+// ---------------------------------------------------------------------------
+// Required checks WITHOUT the strict up-to-date policy (Issue #2461). A child
+// PR whose base is behind the default branch is armed anyway (Issue #2460),
+// and the strict policy is the only thing that then holds the merge until the
+// branch is level.
+// ---------------------------------------------------------------------------
+
+Deno.test("assessMilestoneRuleset - required checks that do not require an up-to-date branch are an ERROR", () => {
+  const findings = assessMilestoneRuleset(
+    [ruleset({
+      rules: [{
+        type: "required_status_checks",
+        parameters: {
+          required_status_checks: [{ context: "semgrep" }],
+          do_not_enforce_on_create: true,
+          strict_required_status_checks_policy: false,
+        },
+      }],
+    })],
+    ACCOUNT,
+  );
+  const stale = findings.find((f) => f.code === "non-strict-checks");
+  assert(
+    stale,
+    `expected non-strict-checks: ${JSON.stringify(codes(findings))}`,
+  );
+  assertEquals(stale.severity, "error");
+  // Names the parameter to set, and why it matters.
+  assertStringIncludes(
+    stale.message,
+    "strict_required_status_checks_policy",
+  );
+  assertStringIncludes(stale.message, "stale tip");
+});
+
+Deno.test("assessMilestoneRuleset - an absent strict policy is reported like an explicit false", () => {
+  // GitHub defaults the parameter to false, so absence is the same defect —
+  // and it is the shape every ruleset written before the builder set it has.
+  const findings = assessMilestoneRuleset(
+    [ruleset({
+      rules: [{
+        type: "required_status_checks",
+        parameters: {
+          required_status_checks: [{ context: "semgrep" }],
+          do_not_enforce_on_create: true,
+        },
+      }],
+    })],
+    ACCOUNT,
+  );
+  const stale = findings.find((f) => f.code === "non-strict-checks");
+  assert(
+    stale,
+    `expected non-strict-checks: ${JSON.stringify(codes(findings))}`,
+  );
+  assertEquals(stale.severity, "error");
+});
+
+Deno.test("assessMilestoneRuleset - a strict ruleset raises no staleness finding and reports configured", () => {
+  // Spelt out rather than taken from the fixture, so the healthy case is
+  // pinned to the parameter rather than to whatever the fixture happens to
+  // carry.
+  const findings = assessMilestoneRuleset(
+    [ruleset({
+      rules: [{
+        type: "required_status_checks",
+        parameters: {
+          required_status_checks: [{ context: "semgrep" }],
+          do_not_enforce_on_create: true,
+          strict_required_status_checks_policy: true,
+        },
+      }],
+      bypass_actors: [
+        { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
+      ],
+    })],
+    ACCOUNT,
+  );
+  assertEquals(codes(findings), ["configured"]);
+});
+
+Deno.test("assessMilestoneRuleset - no required checks means no staleness finding to make", () => {
+  // Nothing to make strict: with no `required_status_checks` rule there is no
+  // policy to set. It is reported as `no-required-checks` instead, and this
+  // check must not double-report it.
+  const findings = assessMilestoneRuleset(
+    [ruleset({ rules: [{ type: "deletion" }] })],
+    ACCOUNT,
+  );
+  assertEquals(findings.filter((f) => f.code === "non-strict-checks"), []);
+  assertEquals(codes(findings), ["no-required-checks"]);
+});
+
+Deno.test("assessMilestoneRuleset - the ruleset this repo writes passes with no errors", () => {
+  // The builder and the checker must agree: a ruleset the fleet created for
+  // itself must not be reported back as broken.
+  const body = buildMilestoneRulesetBody("milestone-branches", ["gate"], [
+    { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
+  ]);
+  const findings = assessMilestoneRuleset(
+    [body as unknown as RulesetDetail],
+    ACCOUNT,
+    ["gate"],
+  );
+  // Exactly `configured`, not merely "no errors": a body that stopped
+  // covering `milestone/**` would raise a WARNING and pass a weaker check.
+  assertEquals(codes(findings), ["configured"]);
 });
 
 Deno.test("assessMilestoneRuleset - a ruleset with no required checks raises no create finding", () => {

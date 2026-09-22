@@ -254,6 +254,75 @@ Deno.test("raiseMilestoneSyncPr - an existing sync PR is not re-cleared (Issue #
   );
 });
 
+Deno.test("raiseMilestoneSyncPr - a refused --auto posts one reason comment and warns (Issue #2457)", async () => {
+  const gh: string[][] = [];
+  const warnings: string[] = [];
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    git: () => Promise.resolve({ code: 0, stderr: "" }),
+    gh: (args: string[]) => {
+      gh.push(args);
+      if (args[1] === "list") return Promise.resolve("[]");
+      if (args[1] === "create") {
+        return Promise.resolve("https://github.com/org/repo/pull/700\n");
+      }
+      if (args[1] === "merge") {
+        return Promise.reject(new Error("HTTP 500 Internal Server Error"));
+      }
+      if (args.includes("GET")) {
+        return Promise.resolve('{"users":[],"teams":[]}');
+      }
+      return Promise.resolve("");
+    },
+    log: (m: string) => warnings.push(m),
+  });
+
+  assert(result.ok && result.value.opened);
+  assert(gh.some((a) => a[1] === "merge" && a.includes("--auto")));
+
+  const comment = gh.find((a) => a[1] === "comment");
+  assert(comment, `expected a reason comment: ${JSON.stringify(gh)}`);
+  assertStringIncludes(comment.join(" "), "HTTP 500");
+  assertStringIncludes(comment.join(" "), "Auto-Merge sweep retries");
+  assertEquals(
+    warnings.some((m) => m.includes("was not armed for auto-merge")),
+    true,
+    warnings.join(" | "),
+  );
+});
+
+Deno.test("raiseMilestoneSyncPr - a latched refusal posts one comment and never retries (Issue #2457)", async () => {
+  const gh: string[][] = [];
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    git: () => Promise.resolve({ code: 0, stderr: "" }),
+    gh: (args: string[]) => {
+      gh.push(args);
+      if (args[1] === "list") return Promise.resolve("[]");
+      if (args[1] === "create") {
+        return Promise.resolve("https://github.com/org/repo/pull/700\n");
+      }
+      if (args[1] === "merge") {
+        return Promise.reject(
+          new Error(
+            "gh command skipped: GraphQL primary quota exhausted (API rate " +
+              "limit already exceeded) — at 2026-09-21 10:00:00 AEST (in 5m 0s)",
+          ),
+        );
+      }
+      if (args.includes("GET")) {
+        return Promise.resolve('{"users":[],"teams":[]}');
+      }
+      return Promise.resolve("");
+    },
+  });
+
+  assert(result.ok && result.value.opened);
+  const mergeCalls = gh.filter((a) => a[1] === "merge" && a.includes("--auto"));
+  assertEquals(mergeCalls.length, 1, "a latched refusal must not retry in-run");
+  const comment = gh.find((a) => a[1] === "comment");
+  assert(comment);
+  assertStringIncludes(comment.join(" "), "primary quota exhausted");
+});
+
 Deno.test("raiseMilestoneSyncPr - a branch absent from the remote still pushes (Issue #1568)", async () => {
   // `git fetch origin <branch>` fails when the branch does not exist yet.
   // That is the ordinary first-run case and must not stop the sync — git

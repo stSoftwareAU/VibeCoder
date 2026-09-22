@@ -2319,6 +2319,53 @@ flowchart TD
     style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+### 🔁 One-pass rebase for a declined branch (`branch_conflict_pass.ts`)
+
+`ensureBranchCurrent` in `branch_currency.ts` is deliberately not a
+merge-conflict resolver: when content has genuinely diverged it declines and
+leaves the branch alone. The PR was then raised on the stale head, armed, and
+sat unmergeable until the merge-conflict ladder found it hours later — the run
+had an agent right there and spent it on nothing (Issue #2459).
+
+`runDeclinedRebasePass` spends exactly one agent pass closing that gap. The
+resolving lives here, not in `branch_currency.ts`, which stays a non-resolver.
+
+- **One invocation, never a loop.** One call through the injected `runAgentFn`
+  seam — no retry, no `sleep`, no polling.
+- **Bounded by the cycle deadline.** Below `MIN_REBASE_PASS_RUNWAY_SECONDS` of
+  runway the pass is not started at all, and the remaining seconds are passed to
+  the agent as its own timeout.
+- **Never started unrestorably.** If the branch tip cannot be read there is
+  nothing to restore to, so no pass runs — an extra CI run beats a lost branch.
+- **Success is measured, not claimed.** The branch is re-measured with
+  `measureBranchDrift`; anything short of `behind === 0` is a failure, however
+  confidently the agent reported otherwise.
+- **Every failure restores the pre-attempt tip** and hands the PR to the
+  conflict ladder (`pr_merge_conflict_processor.ts`) with exactly one comment
+  naming the paths both sides changed.
+- **The PR is raised either way.** The pass never fails its caller; it only
+  decides whether the PR is raised on a current head. An `unknown` currency
+  outcome is untouched — it means the comparison could not be read, so there is
+  nothing to resolve.
+
+```mermaid
+flowchart TD
+    D["ensureBranchCurrent<br/>returned 'declined'"] --> T{"branch tip<br/>readable?"}
+    T -- no --> H["restore nothing,<br/>hand off"]
+    T -- yes --> B{"runway ≥ 180s<br/>before deadline?"}
+    B -- no --> H
+    B -- yes --> A["one agent pass:<br/>rebase onto origin/base"]
+    A --> M{"re-measured<br/>behind === 0?"}
+    M -- no --> R["reset --hard to<br/>the pre-attempt tip"]
+    R --> H
+    M -- yes --> OKC["PR raised on the<br/>updated head, no comment"]
+    H --> C["PR raised anyway<br/>+ one conflict comment;<br/>ladder owns it"]
+    style H fill:#e9c46a,stroke:#b08968,color:#000
+    style R fill:#e9c46a,stroke:#b08968,color:#000
+    style C fill:#c1121f,stroke:#780000,color:#fff
+    style OKC fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
 ### ⚠️ Failure handling
 
 PR comment processing uses a two-attempt system:
@@ -4616,6 +4663,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [stale_workflow_detector.ts](../worker/deno/lib/stale_workflow_detector.ts)                                       | Stale workflow label detection and cleanup                                                                                                                                           |
 |                             | [pr_branch_lock.ts](../worker/deno/lib/pr_branch_lock.ts)                                                         | Distributed lock for PR branch updates and CI fixes — acquire, renew, release                                                                                                        |
 |                             | [stale_branch_lineage.ts](../worker/deno/lib/stale_branch_lineage.ts)                                             | Detect a branch whose work the base already carries as a squash, and rebase it past that merge before the push                                                                        |
+|                             | [branch_conflict_pass.ts](../worker/deno/lib/branch_conflict_pass.ts)                                             | One agent rebase-and-fix pass when the pre-PR rebase declines — re-measured, restored on failure, handed to the conflict ladder with one comment                                      |
 | **Security scan**           |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [security_scanner.ts](../worker/deno/lib/security_scanner.ts)                                                     | Four-phase scan executor — loads + substitutes the prompt, runs Claude with Write/Edit disallowed and Bash allowed so Claude can call `gh issue create` (outcome-only contract,)     |
 |                             | [idle_task_templates/security_scan_template.ts](../worker/deno/lib/idle_task_templates/security_scan_template.ts) | Idle-task template wrapper — snapshots open `security`-labelled issues before and after the scan, diffs to compute newly-filed issues, renders the close-comment summary             |
