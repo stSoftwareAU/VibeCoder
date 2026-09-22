@@ -30,6 +30,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
 
 /** Prefix for the branch a sync PR is raised from. No ruleset covers it. */
@@ -203,7 +204,9 @@ export interface MilestoneSyncPrOutcome {
  *
  * A repository that forbids merge commits gets the squash it can take, with a
  * loud warning naming the setting — never a quiet downgrade. Any other failure
- * is left for `ensureAutoMergeOnOpenPrs` to retry, as before.
+ * is reported on the PR once (Issue #2457), naming the reason and stating the
+ * Auto-Merge sweep retries — the same contract as ordinary creation arming.
+ * A latched quota refusal is named as such and never retried in-run.
  */
 async function armSyncPrAutoMerge(
   repo: string,
@@ -213,18 +216,60 @@ async function armSyncPrAutoMerge(
 ): Promise<void> {
   const arm = (method: "--merge" | "--squash") =>
     deps.gh(["pr", "merge", prNumber, "--repo", repo, "--auto", method]);
+
+  const report = async (message: string): Promise<void> => {
+    deps.log?.(
+      `WARNING: the sync PR ${repo}#${prNumber} was not armed for auto-merge: ` +
+        message.trim(),
+    );
+    const retryLine = message.includes(PRIMARY_QUOTA_SKIP_PREFIX)
+      ? "The primary GitHub quota is exhausted, so no further auto-merge " +
+        "attempt was made in this run; the Auto-Merge sweep retries once the " +
+        "quota resets."
+      : "The Auto-Merge sweep retries.";
+    try {
+      await deps.gh([
+        "pr",
+        "comment",
+        prNumber,
+        "--repo",
+        repo,
+        "--body",
+        `Auto-merge was not armed on this sync PR: ${message.trim()}\n\n` +
+        retryLine,
+      ]);
+    } catch (commentError) {
+      // Fail loud: the refusal must never become silent because the comment
+      // could not be posted. The warning above named the reason; this names
+      // the lost comment too.
+      deps.log?.(
+        `WARNING: could not post the auto-merge reason comment on ${repo}#${prNumber}: ${
+          commentError instanceof Error
+            ? commentError.message
+            : String(commentError)
+        }`,
+      );
+    }
+  };
+
   try {
     // The worker pushed this branch into `repo` itself moments ago, so the
     // head is same-repository by construction (Issue #1249).
     await arm(mergeMethodFlagForHead(branch, true));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (!isMergeCommitNotAllowed(message)) return;
+    if (!isMergeCommitNotAllowed(message)) {
+      await report(message);
+      return;
+    }
     try {
       await arm("--squash");
       deps.log?.(squashedSyncWarning(repo, branch, message.trim()));
-    } catch {
-      // Left for `ensureAutoMergeOnOpenPrs` to arm on its next pass.
+    } catch (squashError) {
+      const squashMessage = squashError instanceof Error
+        ? squashError.message
+        : String(squashError);
+      await report(squashMessage);
     }
   }
 }

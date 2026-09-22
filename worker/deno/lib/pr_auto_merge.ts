@@ -10,6 +10,7 @@
 
 import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
 import {
   decideMilestoneBaseMerge,
@@ -220,6 +221,9 @@ export function resetBehindSyncComments(): void {
   postedBehindSyncReason.clear();
 }
 
+/** Marker on the creation-arming reason comment (Issue #2457). */
+const ARMING_REASON_MARKER = "<!-- vibe-auto-merge-not-armed -->";
+
 async function postBehindSyncReason(
   repo: string,
   prNumber: number,
@@ -249,6 +253,59 @@ async function postBehindSyncReason(
   }
 }
 
+/**
+ * Whether a creation-arming outcome warrants a warn log and a single reason
+ * comment on the PR (Issue #2457).
+ *
+ * A genuine refusal to arm needs the comment: `Failed`, `NotAllowed`, and a
+ * `Deferred` that nothing else has already explained. Everything else is
+ * either the worker doing what it set out to do (`Enabled`, `Skipped`,
+ * `MergedDirectly`) or already explained on the PR by the path that produced
+ * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
+ * `BlockedOpenChildren` (#3909), the #2005 milestone-behind deferral (its
+ * `postBehindSyncReason`, and the #1779 behind hold that shares its
+ * `milestone-behind` deferral), and the #4375/#1082 gated direct-merge hold
+ * (the deliberate "never `--auto`" path).
+ */
+export function autoMergeOutcomeNeedsComment(
+  outcome: EnableAutoMergeResult,
+): boolean {
+  if (outcome.result === AutoMergeResult.Failed) return true;
+  if (outcome.result === AutoMergeResult.NotAllowed) return true;
+  if (outcome.result !== AutoMergeResult.Deferred) return false;
+  // A deferral needs the comment unless the path that produced it already
+  // holds deliberately: the #4375 gated direct merge, or a milestone-behind
+  // hold (#2005 posts its reason; #1779's is the same silent hold).
+  if (outcome.directMergeDeferred) return false;
+  if (outcome.deferral === "milestone-behind") return false;
+  return true;
+}
+
+/**
+ * Build the comment body explaining why auto-merge was not armed at creation
+ * (Issue #2457).
+ *
+ * The comment always says the Auto-Merge sweep retries, because it does: the
+ * periodic sweep re-reads the PR every cycle and arms it the moment the
+ * obstruction clears. A latched refusal names the latch's reset time instead,
+ * because in-run retries are futile — every further `gh` call in the window
+ * fails the same way.
+ */
+export function buildArmingReasonComment(
+  outcome: EnableAutoMergeResult,
+): string {
+  const retryLine = outcome.latched
+    ? `The primary GitHub quota is exhausted, so no further auto-merge attempt ` +
+      `was made in this run; the Auto-Merge sweep retries once the quota resets.`
+    : `The Auto-Merge sweep retries.`;
+  return [
+    ARMING_REASON_MARKER,
+    `Auto-merge was not armed on this PR: ${outcome.message}`,
+    "",
+    retryLine,
+  ].join("\n");
+}
+
 /** Result of enabling auto-merge. */
 export interface EnableAutoMergeResult {
   /** Outcome of the attempt */
@@ -267,6 +324,21 @@ export interface EnableAutoMergeResult {
    * branch is neither armed nor escalated — it is re-read next scan.
    */
   deferral?: "milestone-behind" | "sync-base-unreadable";
+  /**
+   * Whether a `deferred` outcome is the deliberate #4375/#1082 gated
+   * direct-merge hold: an unprotected base has no required checks, so the
+   * worker held the PR instead of ever calling `--auto`. This is a chosen
+   * hold, not a refusal, so it needs no arming-reason comment (Issue #2457).
+   */
+  directMergeDeferred?: boolean;
+  /**
+   * Whether the `gh pr merge --auto` refusal was the primary-quota latch
+   * short-circuiting the call, rather than GitHub answering (Issue #2457).
+   * A latched refusal is deliberately not retried in-run — every further
+   * `gh` call in the window fails the same way, so the Auto-Merge sweep
+   * retries after the reset the comment names.
+   */
+  latched?: boolean;
 }
 
 /**
@@ -789,12 +861,14 @@ export async function enableAutoMerge(
       } else if (merge.value.blocked === "default_branch_unapproved") {
         return {
           result: AutoMergeResult.Deferred,
+          directMergeDeferred: true,
           message:
             `PR #${prNumber} held on default branch '${baseRefName}': no approving review from outside the fleet, and the base has no required checks to enforce one (Issue #1082)`,
         };
       } else {
         return {
           result: AutoMergeResult.Deferred,
+          directMergeDeferred: true,
           message:
             `PR #${prNumber} not merged onto unprotected '${baseRefName}': ${
               merge.value.blocked ?? "gate deferred"
@@ -846,6 +920,19 @@ export async function enableAutoMerge(
       };
     } catch (error: unknown) {
       const errorMsg = error instanceof Error ? error.message : String(error);
+
+      // Issue #2457: a refusal that is really the primary-quota latch must
+      // never be retried in-run — every further `gh` call in the window is
+      // refused the same way before it even spawns. Surface it as a latched
+      // failure so the caller names the reset and leaves the sweep to retry.
+      if (errorMsg.includes(PRIMARY_QUOTA_SKIP_PREFIX)) {
+        return {
+          result: AutoMergeResult.Failed,
+          latched: true,
+          message:
+            `Could not enable auto-merge on PR #${prNumber}: ${errorMsg}`,
+        };
+      }
 
       // A repository that forbids merge commits cannot take the sync as one
       // (Issue #1048). Downgrade to the squash it can take — loudly, naming
@@ -973,7 +1060,7 @@ async function refuseMilestoneMerge(
 export async function finalisePr(
   options: EnableAutoMergeOptions,
   directMergeFn?: (repo: string, prNumber: number) => Promise<void>,
-): Promise<Result<string, Error>> {
+): Promise<Result<EnableAutoMergeResult, Error>> {
   const result = await enableAutoMerge(options);
 
   if (result.result === AutoMergeResult.NotAllowed && directMergeFn) {
@@ -981,16 +1068,22 @@ export async function finalisePr(
       await directMergeFn(options.repo, options.prNumber);
       return {
         ok: true,
-        value: `Direct merge attempted for PR #${options.prNumber}`,
+        value: {
+          result: AutoMergeResult.MergedDirectly,
+          message: `Direct merge attempted for PR #${options.prNumber}`,
+        },
       };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return {
         ok: true,
-        value: `Auto-merge not available, direct merge also failed: ${msg}`,
+        value: {
+          result: AutoMergeResult.Failed,
+          message: `Auto-merge not available, direct merge also failed: ${msg}`,
+        },
       };
     }
   }
 
-  return { ok: true, value: result.message };
+  return { ok: true, value: result };
 }

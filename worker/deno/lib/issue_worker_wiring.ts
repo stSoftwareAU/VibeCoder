@@ -1051,7 +1051,10 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
       })
     ),
     finalisePr: mockFn<PrDeps["finalisePr"]>(() =>
-      Promise.resolve({ ok: true, value: "finalised" })
+      Promise.resolve({
+        ok: true,
+        value: { result: AutoMergeResult.Enabled, message: "finalised" },
+      })
     ),
     markCommentProcessed: mockFn<PrDeps["markCommentProcessed"]>(() =>
       Promise.resolve({ ok: true, value: undefined })
