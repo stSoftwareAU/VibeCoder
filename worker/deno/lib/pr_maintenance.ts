@@ -19,6 +19,8 @@
 
 import type { Logger, Result } from "../types.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
+import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
+import { extractIssueNumberFromPrTitle } from "./pr_body.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
 import {
   findRollbackAfterMerge,
@@ -268,6 +270,20 @@ export interface AutoMergeOptions extends PrScanOptions {
    * the label check — the same behaviour as the per-issue path.
    */
   cache?: IssueCache;
+  /**
+   * Close the issue a just-merged PR resolves (Issue #2502). GitHub honours
+   * `Closes #N` only on a merge into the default branch, so a PR the sweep
+   * merges into a milestone branch leaves its issue open — claimable by a
+   * sibling host, and invisible to milestone completion — until a later
+   * sweep notices. Called in the same pass as the merge. Defaults to
+   * {@link ensureIssueClosedIfPrMerged}, which re-reads the PR state, so an
+   * attempt that only armed native auto-merge closes nothing.
+   */
+  closeIssueIfMergedFn?: (
+    repo: string,
+    issueNumber: number,
+    prNumber: number,
+  ) => Promise<void>;
 }
 
 /** Options for closing issues on merged PRs. */
@@ -1510,6 +1526,17 @@ export async function ensureAutoMergeOnOpenPrs(
     prAuthors,
     allowedAuthors,
   } = options;
+  const closeIssueIfMergedFn = options.closeIssueIfMergedFn ??
+    ((repo: string, issueNumber: number, prNumber: number) =>
+      closeIssueForMergedPr(
+        repo,
+        issueNumber,
+        prNumber,
+        githubUser,
+        ghCommandFn,
+        logger,
+        cache,
+      ));
 
   const scanAuthors = resolveFleetMaintenanceAuthorSet({
     githubUser,
@@ -1533,7 +1560,7 @@ export async function ensureAutoMergeOnOpenPrs(
     const prs = await listActionablePrs(
       repo,
       scanAuthors,
-      "number,headRefName,autoMergeRequest",
+      "number,title,headRefName,autoMergeRequest",
       options,
     );
 
@@ -1620,6 +1647,21 @@ export async function ensureAutoMergeOnOpenPrs(
       } else {
         skippedCount++;
       }
+
+      // Issue #2502: the PR merged in this attempt, so close its issue now
+      // rather than leave it for a later sweep. The branch names the issue
+      // for every worker-authored PR; the title is the fallback for the rest.
+      if (outcome.kind === "landed" && outcome.merged) {
+        const issueNumber = resolveMergedPrIssue(branchName, pr.title);
+        if (issueNumber === null) {
+          logger.info(
+            "Merged PR names no issue in its branch or title — nothing to close (Issue #2502)",
+            { repo, prNumber, branchName },
+          );
+        } else {
+          await closeIssueIfMergedFn(repo, issueNumber, prNumber);
+        }
+      }
     }
   }
 
@@ -1633,6 +1675,61 @@ export async function ensureAutoMergeOnOpenPrs(
     ok: true,
     value: { enabledCount, skippedCount, failedCount },
   };
+}
+
+/**
+ * The issue a merged PR resolves: the branch name first (every
+ * worker-authored branch carries it), then the PR title's trailing
+ * `(Issue #N)` / `(#N)` (Issue #2502).
+ */
+function resolveMergedPrIssue(
+  branchName: string,
+  title: string | undefined,
+): number | null {
+  const fromBranch = issueNumberFromBranch(branchName);
+  if (fromBranch !== null) return fromBranch;
+  if (!title) return null;
+  const fromTitle = extractIssueNumberFromPrTitle(title);
+  return fromTitle.ok ? fromTitle.value : null;
+}
+
+/**
+ * Close the issue a PR the sweep just merged resolves (Issue #2502).
+ *
+ * Delegates to {@link ensureIssueClosedIfPrMerged}, which re-reads the PR,
+ * confirms the merge landed, closes with a comment, unassigns the worker and
+ * posts the milestone progress note. Best-effort: a failure here is logged,
+ * never thrown — the merged-PR close-out sweep remains the backstop.
+ */
+async function closeIssueForMergedPr(
+  repo: string,
+  issueNumber: number,
+  prNumber: number,
+  githubUser: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  logger: Logger,
+  cache?: IssueCache,
+): Promise<void> {
+  const result = await ensureIssueClosedIfPrMerged(
+    repo,
+    issueNumber,
+    prNumber,
+    githubUser,
+    { ghCommandFn, logger, ...(cache ? { cache } : {}) },
+  );
+  if (!result.ok) {
+    logger.warn(
+      "Could not close the issue after merging its PR — the merged-PR sweep will retry (Issue #2502)",
+      { repo, issueNumber, prNumber, error: result.error.message },
+    );
+    return;
+  }
+  logger.info(
+    result.value.closed
+      ? "Closed the issue in the pass that merged its PR (Issue #2502)"
+      : "Issue left open after its PR merged (Issue #2502)",
+    { repo, issueNumber, prNumber, reason: result.value.reason },
+  );
 }
 
 /**
@@ -1688,6 +1785,14 @@ async function attemptMerge(
       return { kind: "milestone_route_unreadable" };
     }
 
+    // Issue #2502: the arming chokepoint merged the PR itself — its
+    // SHA-pinned direct merge onto an unprotected base (Issue #4375). That is
+    // a landing, and until now it fell through to `merge_error`, so a PR that
+    // had just merged was escalated as one that could not be.
+    if (result.result === "merged_directly") {
+      return { kind: "landed", merged: true };
+    }
+
     if (result.result === "not_allowed" && directMergeFn) {
       // Issue #553: say WHY. GitHub's refusal was dropped here, so a PR that
       // merged directly looked like one where auto-merge had "randomly" not
@@ -1701,7 +1806,9 @@ async function attemptMerge(
           reason: result.message ?? "GitHub gave no reason",
         },
       );
-      return await directMergeFn(repo, prNumber);
+      const direct = await directMergeFn(repo, prNumber);
+      // The fallback only reports `landed` when it merged (Issue #2502).
+      return direct.kind === "landed" ? { ...direct, merged: true } : direct;
     }
 
     return { kind: "merge_error", message: result.message };

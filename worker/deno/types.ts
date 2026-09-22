@@ -933,14 +933,6 @@ export interface RepoConfig {
    * global `blocking_pr_stall_threshold_seconds`.
    */
   blockingPrStallThresholdSeconds?: number;
-  /**
-   * The issue this repository's maintenance lease lives on (Issue #2450).
-   *
-   * Normally the anchor issue is resolved and pinned automatically; set this
-   * to point the fleet at an issue the operator chose instead. A
-   * non-positive or non-integer value is ignored.
-   */
-  maintenanceLeaseIssue?: number;
   /** Per-repo verbosity level override (Issue #1330) */
   verbosity?: "minimal" | "concise" | "standard" | "verbose";
   /**
