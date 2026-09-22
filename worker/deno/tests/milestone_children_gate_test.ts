@@ -232,9 +232,9 @@ Deno.test("postOpenChildrenBlockComment - posts once, then never again", async (
     authorOptions: { fleetAuthors: ["vibe-bot"] },
   };
 
-  assertEquals(await postOpenChildrenBlockComment(options), true);
-  assertEquals(await postOpenChildrenBlockComment(options), false);
-  assertEquals(await postOpenChildrenBlockComment(options), false);
+  assertEquals(await postOpenChildrenBlockComment(options), "posted");
+  assertEquals(await postOpenChildrenBlockComment(options), "already-present");
+  assertEquals(await postOpenChildrenBlockComment(options), "already-present");
   assertEquals(comments.length, 1);
 });
 
@@ -258,7 +258,7 @@ Deno.test("postOpenChildrenBlockComment - posts nothing when the thread cannot b
     log: (message) => logs.push(message),
   });
 
-  assertEquals(result, false);
+  assertEquals(result, "unconfirmed");
   assertEquals(posted, 0);
   assertStringIncludes(logs[0]!, "could not read comments");
 });

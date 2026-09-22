@@ -35,6 +35,8 @@ import {
   closeRetargetedSyncPr,
   isRetargetedSyncPr,
 } from "./milestone_sync_pr_retirement.ts";
+import { scrubUntrustedText } from "./prompt_delimiter.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -313,6 +315,73 @@ export function buildArmingReasonComment(
   ].join("\n");
 }
 
+/**
+ * Marker on the comment explaining that a milestone summary PR was left
+ * unarmed because its open-children count could not be read (Issue #2479).
+ */
+export const OPEN_CHILDREN_LOOKUP_MARKER =
+  "<!-- vibe-open-children-lookup-failed -->";
+
+/**
+ * PRs already told their open-children count could not be read.
+ *
+ * Deliberately NOT cleared by `resetIterationCaches` the way
+ * `postedBehindSyncReason` is: a lookup that stays broken is re-swept every
+ * cycle, and the PR is owed one explanation, not one per cycle (Issue #2479).
+ */
+const postedOpenChildrenLookupReason = new Set<string>();
+
+/** Drop the per-PR unreadable-count comment registry. Tests only. */
+export function resetOpenChildrenLookupComments(): void {
+  postedOpenChildrenLookupReason.clear();
+}
+
+/**
+ * Tell a PR its open-children count could not be read, at most once.
+ *
+ * The key is recorded only after a successful post, so a post that failed is
+ * retried on the next sweep rather than latched as "explained".
+ *
+ * @returns true when the PR carries the explanation, false when the post failed
+ */
+async function postOpenChildrenLookupReason(
+  repo: string,
+  prNumber: number,
+  milestoneNumber: number,
+  milestoneTitle: string,
+  detail: string,
+  commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const key = `${repo}#${prNumber}`;
+  if (postedOpenChildrenLookupReason.has(key)) return true;
+  // The title is attacker-writable and the detail is raw API text: redact any
+  // secret the transport error carried, then neutralise marker-shaped content
+  // so neither can forge a fleet marker in this body (Issues #1249, #2479).
+  const safeTitle = scrubUntrustedText(milestoneTitle);
+  const safeDetail = scrubUntrustedText(redactSecrets(detail));
+  const body = [
+    OPEN_CHILDREN_LOOKUP_MARKER,
+    `Auto-merge is not armed: the open-children count for milestone ` +
+    `#${milestoneNumber} '${safeTitle}' could not be read — ${safeDetail}`,
+    "",
+    "Merging a summary PR over unread children could close a milestone that " +
+    "still has open work, so the gate refuses (Issue #3909). The Auto-Merge " +
+    "sweep retries every cycle and arms the PR once the count reads.",
+  ].join("\n");
+  try {
+    await commentFn(repo, prNumber, body);
+    postedOpenChildrenLookupReason.add(key);
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(
+      `WARNING: could not post the unreadable open-children count on ${repo}#${prNumber}: ${message}`,
+    );
+    return false;
+  }
+}
+
 /** Result of enabling auto-merge. */
 export interface EnableAutoMergeResult {
   /** Outcome of the attempt */
@@ -346,6 +415,13 @@ export interface EnableAutoMergeResult {
    * retries after the reset the comment names.
    */
   latched?: boolean;
+  /**
+   * Whether a comment explaining this block is on the PR — set on both
+   * `blocked_open_children` reasons (Issue #2479). `false` means the block was
+   * announced nowhere but the log, so a caller that comments on unarmed PRs
+   * must speak for it rather than assume the gate already did.
+   */
+  blockCommented?: boolean;
 }
 
 /**
@@ -590,6 +666,7 @@ export async function enableAutoMerge(
       prNumber,
       gate,
       ghCommandFn,
+      commentFn,
       log,
       options.authorOptions,
     );
@@ -1013,18 +1090,26 @@ export async function enableAutoMerge(
 /**
  * Refuse an auto-merge the milestone open-children gate blocked (Issue #3909).
  *
- * Always loud: the warning names the milestone, the summary PR and the
- * blocking children. On an open-children block the PR also gets exactly one
- * explanatory comment (the gate de-duplicates against its marker), so a
- * repeating scan cycle explains itself once and then stays quiet. The PR is
- * never closed — the milestone is genuinely unfinished and a human may still
- * choose to merge it by hand.
+ * Always loud: the warning names the milestone, the summary PR and either the
+ * blocking children or the lookup that failed. Both block reasons also explain
+ * themselves on the PR exactly once — the open-children gate de-duplicates
+ * against its own marker, the unreadable-count comment against its per-PR
+ * registry — so a repeating scan cycle explains itself once and then stays
+ * quiet (Issue #2479). `blockCommented` reports whether that explanation is
+ * actually on the PR, so a caller that comments on unarmed PRs can speak for
+ * the block rather than assume the gate already did. The PR is never closed —
+ * a human may still choose to merge it by hand.
  */
 async function refuseMilestoneMerge(
   repo: string,
   prNumber: number,
   gate: Extract<SummaryPrMergeDecision, { decision: "block" }>,
   ghCommandFn: (args: string[]) => Promise<string>,
+  commentFn: (
+    repo: string,
+    prNumber: number,
+    body: string,
+  ) => Promise<void>,
   log: (message: string) => void,
   authorOptions?: AlertDedupAuthorOptions,
 ): Promise<EnableAutoMergeResult> {
@@ -1034,7 +1119,20 @@ async function refuseMilestoneMerge(
       `for milestone #${gate.milestoneNumber} '${gate.milestoneTitle}' — its ` +
       `open-children count could not be read: ${gate.message} (Issue #3909)`;
     log(message);
-    return { result: AutoMergeResult.BlockedOpenChildren, message };
+    const blockCommented = await postOpenChildrenLookupReason(
+      repo,
+      prNumber,
+      gate.milestoneNumber,
+      gate.milestoneTitle,
+      gate.message,
+      commentFn,
+      log,
+    );
+    return {
+      result: AutoMergeResult.BlockedOpenChildren,
+      message,
+      blockCommented,
+    };
   }
 
   const warning = renderBlockWarning(
@@ -1045,7 +1143,7 @@ async function refuseMilestoneMerge(
     gate.children,
   );
   log(warning);
-  await postOpenChildrenBlockComment({
+  const outcome = await postOpenChildrenBlockComment({
     repo,
     prNumber,
     milestoneTitle: gate.milestoneTitle,
@@ -1054,7 +1152,11 @@ async function refuseMilestoneMerge(
     log,
     ...(authorOptions ? { authorOptions } : {}),
   });
-  return { result: AutoMergeResult.BlockedOpenChildren, message: warning };
+  return {
+    result: AutoMergeResult.BlockedOpenChildren,
+    message: warning,
+    blockCommented: outcome !== "unconfirmed",
+  };
 }
 
 /**
