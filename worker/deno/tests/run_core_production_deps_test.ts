@@ -26,6 +26,7 @@ import {
   writeRateLimitSignal,
 } from "../lib/rate_limit_signal.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { MaintenanceLeaseHolder } from "../lib/maintenance_lease.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
 
@@ -678,5 +679,173 @@ Deno.test("repo failure deps - recordRepoSuccess and resetRepoFailures clear per
     assertEquals(contents.trim(), "");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Maintenance lease gating (Issue #2451)
+// ---------------------------------------------------------------------------
+//
+// The four fixed-cost maintenance sweeps are gated on the per-repository
+// maintenance lease so only the holding host runs them. These tests inject a
+// fake lease store and fake sweeps through `maintenanceSweeps`, so what is
+// asserted is the gate itself: which repositories each sweep is handed, and
+// that the lease is refreshed exactly once per leased repository per cycle.
+
+/** A lease marker for some other install, stamped now (so it is still fresh). */
+function foreignHolder(): MaintenanceLeaseHolder {
+  return { host: crypto.randomUUID(), atEpoch: Math.floor(Date.now() / 1000) };
+}
+
+Deno.test("maintenance lease - all four sweeps receive only the leased repos", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    const holderA = foreignHolder();
+    const refreshed: string[] = [];
+    const seen: Record<string, string[][]> = {
+      close: [],
+      recover: [],
+      milestone: [],
+      resume: [],
+    };
+
+    const options = createTestOptions({
+      workDir,
+      config: {
+        ...buildDefaultWorkerConfig(),
+        repos: ["org/a", "org/b", "org/c"],
+      },
+      maintenanceSweeps: {
+        readLease: (repo, io) => {
+          if (repo === "org/a") return Promise.resolve(holderA);
+          if (repo === "org/c") {
+            // A degraded read is indistinguishable from "no holder" by return
+            // value — the store reports it through the log sink.
+            io.log("maintenance-lease: org/c degraded — anchor unreachable");
+          }
+          return Promise.resolve(null);
+        },
+        refreshLease: (repo) => {
+          refreshed.push(repo);
+          return Promise.resolve(true);
+        },
+        closeIssuesForMergedPrs: (repos) => {
+          seen.close?.push(repos);
+          return Promise.resolve(0);
+        },
+        recoverAssignedWithClosedPr: (repos) => {
+          seen.recover?.push(repos);
+          return Promise.resolve();
+        },
+        checkMilestoneCompletions: (repos) => {
+          seen.milestone?.push(repos);
+          return Promise.resolve();
+        },
+        resumeFailureDetectionRepairs: (repos) => {
+          seen.resume?.push(repos);
+          return Promise.resolve(false);
+        },
+      },
+    });
+
+    const { deps, cleanup } = await createProductionRunCoreDeps(options);
+    try {
+      assertEquals((await deps.closeIssuesForMergedPrs()).ok, true);
+      assertEquals((await deps.recoverAssignedWithClosedPr()).ok, true);
+      assertEquals((await deps.checkMilestoneCompletions()).ok, true);
+      assertEquals((await deps.resumeFailureDetectionRepairs?.())?.ok, true);
+    } finally {
+      cleanup();
+    }
+
+    // Repo A is held elsewhere and is dropped; B has no holder and C's read
+    // degraded, so both stay — a degraded read never skips a repository.
+    for (const key of ["close", "recover", "milestone", "resume"]) {
+      assertEquals(seen[key]?.length, 1, `${key} ran once`);
+      assertEquals(seen[key]?.[0], ["org/b", "org/c"], `${key} repos`);
+    }
+
+    // Exactly once per leased repo per cycle, across all four sweeps.
+    assertEquals(refreshed, ["org/b", "org/c"]);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("maintenance lease - two hosts, one repo: exactly one refreshes", async () => {
+  const workDirOne = await Deno.makeTempDir();
+  const workDirTwo = await Deno.makeTempDir();
+  try {
+    // One shared lease store standing in for the anchor issue both hosts read.
+    let holder: MaintenanceLeaseHolder | null = null;
+    const refreshes: string[] = [];
+    const sweptBy: Record<string, string[]> = {};
+
+    const hostOptions = (name: string, workDir: string, lines: string[]) =>
+      createTestOptions({
+        workDir,
+        logger: createLogger({
+          write: (message: string) => lines.push(message),
+          logLevel: "DEBUG",
+        }),
+        config: { ...buildDefaultWorkerConfig(), repos: ["org/shared"] },
+        maintenanceSweeps: {
+          readLease: () => Promise.resolve(holder),
+          refreshLease: (_repo, host, nowSeconds) => {
+            refreshes.push(host);
+            holder = { host, atEpoch: nowSeconds };
+            return Promise.resolve(true);
+          },
+          closeIssuesForMergedPrs: (repos) => {
+            sweptBy[name] = repos;
+            return Promise.resolve(0);
+          },
+        },
+      });
+
+    const linesOne: string[] = [];
+    const linesTwo: string[] = [];
+    const one = await createProductionRunCoreDeps(
+      hostOptions("one", workDirOne, linesOne),
+    );
+    const two = await createProductionRunCoreDeps(
+      hostOptions("two", workDirTwo, linesTwo),
+    );
+    try {
+      await one.deps.closeIssuesForMergedPrs();
+      await two.deps.closeIssuesForMergedPrs();
+    } finally {
+      one.cleanup();
+      two.cleanup();
+    }
+
+    // Host one found no holder, took the lease and swept; host two saw host
+    // one's fresh lease and stood down.
+    assertEquals(refreshes.length, 1);
+    assertEquals(sweptBy.one, ["org/shared"]);
+    assertEquals(sweptBy.two, []);
+
+    const oneText = linesOne.join("\n");
+    const twoText = linesTwo.join("\n");
+    assertEquals(
+      oneText.includes("maintenance-lease: ran=1 held-elsewhere=0 degraded=0"),
+      true,
+      oneText,
+    );
+    assertEquals(
+      twoText.includes("maintenance-lease: ran=0 held-elsewhere=1 degraded=0"),
+      true,
+      twoText,
+    );
+    // The holder host is named at debug level only.
+    const holderHost = refreshes[0] ?? "";
+    assertEquals(
+      twoText.includes("held-elsewhere") && twoText.includes(holderHost),
+      true,
+      twoText,
+    );
+  } finally {
+    await Deno.remove(workDirOne, { recursive: true });
+    await Deno.remove(workDirTwo, { recursive: true });
   }
 });
