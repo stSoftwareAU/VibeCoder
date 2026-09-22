@@ -106,8 +106,12 @@ function scriptGh(
     }
     if (key.includes("pr comment")) return Promise.resolve("");
     // The #3909 de-duplication read of existing PR comments.
-    if (key.includes("pr view") || key.includes("/comments")) {
+    if (key.includes("/comments")) {
       return Promise.resolve(JSON.stringify(options.prComments ?? []));
+    }
+    // The gated direct merge asks what the summary PR targets (Issue #2416).
+    if (key.includes("pr view") && key.includes("baseRefName")) {
+      return Promise.resolve("main");
     }
     // Open PRs targeting the milestone branch (the gate's second read).
     if (key.includes("pr list") && key.includes("--base")) {
@@ -239,6 +243,27 @@ Deno.test("summary PR arming - an unreadable PR URL fails loud and arms nothing"
     ),
     true,
   );
+});
+
+Deno.test("summary PR arming - an unprotected default branch takes the gated merge with the fleet logins", async () => {
+  _resetBaseProtectionMemo();
+  const { gh, calls } = scriptGh({ baseProtected: false });
+  const logs: string[] = [];
+
+  const result = await checkAndHandleMilestoneCompletions(
+    deps(gh, logs, { fleetAuthors: ["bot"] }),
+  );
+  assertEquals(result.ok, true);
+
+  // A base with no required checks never gets a bare `--auto` (Issue #4375).
+  assertEquals(armingCalls(calls).length, 0);
+  // With the fleet logins in hand the gated merge runs its own gate rather
+  // than refusing the default-branch PR outright (Issue #2416/#1082), so the
+  // PR carries no "auto-merge was not armed" comment naming that refusal.
+  const refusals = commentCalls(calls).filter((c) =>
+    c.args[c.args.indexOf("--body") + 1]!.includes("2416")
+  );
+  assertEquals(refusals.length, 0);
 });
 
 Deno.test("summary PR arming - an existing summary PR is left untouched", async () => {

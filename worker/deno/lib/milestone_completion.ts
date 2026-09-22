@@ -110,6 +110,14 @@ export interface MilestoneCompletionDeps {
    * repository with no such setting gets.
    */
   skipAutoMerge?: (repo: string) => boolean;
+  /**
+   * Push-capable fleet logins (Issue #2458). The summary PR's base is always
+   * the default branch, so on a base with no required checks its arming takes
+   * the gated direct merge — which needs these logins to tell a genuine
+   * outside approval from a sibling fleet account's (Issue #1082). The
+   * Auto-Merge sweep passes the same set.
+   */
+  fleetAuthors?: readonly string[];
   /** Logging function. */
   log: (message: string) => void;
 }
@@ -188,6 +196,27 @@ export type SummaryPrOutcome =
  *   reason comment naming the sweep retry was posted.
  */
 export type SummaryPrArming = "armed" | "withheld" | "failed";
+
+/**
+ * What the summary-PR arming path needs from the caller (Issue #2458).
+ *
+ * Grouped rather than passed as three more positional arguments: the arming
+ * inputs travel together down every hop, and an options object cannot be
+ * transposed at a call site the way an optional boolean beside an optional
+ * object can.
+ */
+interface SummaryPrArmingInputs {
+  /** Repository opts out of auto-merge (`skip_auto_merge`). */
+  skipAutoMerge: boolean;
+  /**
+   * Fleet logins, so the gated direct merge on an unprotected default branch
+   * can tell a genuine outside review from a sibling fleet account's approval
+   * (Issue #1082). Absent, that merge refuses outright (Issue #2416).
+   */
+  fleetAuthors?: readonly string[];
+  /** Fleet-identity inputs for the #3909 gate's marker author checks. */
+  authorOptions?: AlertDedupAuthorOptions;
+}
 
 // ---------------------------------------------------------------------------
 // checkMilestoneComplete
@@ -765,8 +794,7 @@ async function armSummaryPrAutoMerge(
   defaultBranch: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
-  skipAutoMerge: boolean,
-  authorOptions?: AlertDedupAuthorOptions,
+  arming: SummaryPrArmingInputs,
 ): Promise<SummaryPrArming> {
   const commentFn = async (
     r: string,
@@ -792,8 +820,17 @@ async function armSummaryPrAutoMerge(
     ghCommandFn,
     commentFn,
     log,
-    skipAutoMerge,
-    ...(authorOptions ? { authorOptions } : {}),
+    skipAutoMerge: arming.skipAutoMerge,
+    ...(arming.authorOptions ? { authorOptions: arming.authorOptions } : {}),
+    // Issue #1082: the summary PR is the one fleet PR whose base is always
+    // the default branch, so on a base with no required checks it takes the
+    // gated direct merge. Without the fleet logins that merge refuses
+    // outright (Issue #2416) and the PR is reported unarmed — the same logins
+    // the Auto-Merge sweep passes are what let an outside approval stand in
+    // for the branch protection that is not there.
+    ...(arming.fleetAuthors && arming.fleetAuthors.length > 0
+      ? { fleetAuthors: arming.fleetAuthors }
+      : {}),
   });
 
   // `finalisePr` reports `ok: false` for nothing today, but an error result
@@ -864,8 +901,7 @@ async function createMilestoneSummaryPr(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   cache?: IssueCache,
-  authorOptions?: AlertDedupAuthorOptions,
-  skipAutoMerge = false,
+  arming: SummaryPrArmingInputs = { skipAutoMerge: false },
 ): Promise<SummaryPrOutcome> {
   // Idempotent check — do not create duplicate PRs
   const existingResult = await hasExistingMilestoneSummaryPr(
@@ -904,11 +940,12 @@ async function createMilestoneSummaryPr(
     trackingIssueNumber ?? undefined,
   );
 
+  let prUrl: string;
   try {
     log(
       `Creating milestone summary PR: '${milestoneTitle}' → ${defaultBranch} in ${repo}`,
     );
-    const prUrl = await ghCommandFn([
+    prUrl = await ghCommandFn([
       "pr",
       "create",
       "--repo",
@@ -922,35 +959,6 @@ async function createMilestoneSummaryPr(
       "--base",
       defaultBranch,
     ]);
-    log(`Milestone summary PR created: ${prUrl}`);
-    // Issue #1798: invalidate the branch-keyed cache so a follow-up
-    // lookup within the same iteration sees the newly created PR.
-    if (cache) {
-      await invalidateAllStatePRsByBranch(cache, repo, milestoneBranch);
-    }
-    // Issue #2458: arm auto-merge here rather than leaving the summary PR for
-    // the next Auto-Merge sweep — it was the only fleet PR kind with no
-    // arming attempt at creation.
-    const prNumber = summaryPrNumberFromUrl(prUrl);
-    if (prNumber === null) {
-      log(
-        `WARNING: could not read a PR number from '${prUrl.trim()}' — the ` +
-          `milestone summary PR for '${milestoneTitle}' in ${repo} was not ` +
-          `armed for auto-merge; the Auto-Merge sweep retries`,
-      );
-      return { outcome: "created", prNumber: null, autoMerge: "failed" };
-    }
-    const autoMerge = await armSummaryPrAutoMerge(
-      repo,
-      prNumber,
-      milestoneBranch,
-      defaultBranch,
-      ghCommandFn,
-      log,
-      skipAutoMerge,
-      authorOptions,
-    );
-    return { outcome: "created", prNumber, autoMerge };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log(
@@ -958,6 +966,39 @@ async function createMilestoneSummaryPr(
     );
     return { outcome: "failed", reason: message };
   }
+
+  log(`Milestone summary PR created: ${prUrl}`);
+  // Issue #1798: invalidate the branch-keyed cache so a follow-up
+  // lookup within the same iteration sees the newly created PR.
+  if (cache) {
+    await invalidateAllStatePRsByBranch(cache, repo, milestoneBranch);
+  }
+
+  // Issue #2458: arm auto-merge here rather than leaving the summary PR for
+  // the next Auto-Merge sweep — it was the only fleet PR kind with no arming
+  // attempt at creation. Deliberately outside the creation try/catch: the PR
+  // exists from this point on, and an arming fault must never re-label a
+  // created PR as `failed` — that would suppress `onPrCreated` and leave the
+  // milestone's tracking issue open.
+  const prNumber = summaryPrNumberFromUrl(prUrl);
+  if (prNumber === null) {
+    log(
+      `WARNING: could not read a PR number from '${prUrl.trim()}' — the ` +
+        `milestone summary PR for '${milestoneTitle}' in ${repo} was not ` +
+        `armed for auto-merge; the Auto-Merge sweep retries`,
+    );
+    return { outcome: "created", prNumber: null, autoMerge: "failed" };
+  }
+  const autoMerge = await armSummaryPrAutoMerge(
+    repo,
+    prNumber,
+    milestoneBranch,
+    defaultBranch,
+    ghCommandFn,
+    log,
+    arming,
+  );
+  return { outcome: "created", prNumber, autoMerge };
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,7 +1243,10 @@ export async function checkAndHandleMilestoneCompletions(
         },
         deps.cache,
         deps.authorOptions,
-        deps.skipAutoMerge?.(repo) ?? false,
+        {
+          skipAutoMerge: deps.skipAutoMerge?.(repo) ?? false,
+          ...(deps.fleetAuthors ? { fleetAuthors: deps.fleetAuthors } : {}),
+        },
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1230,7 +1274,7 @@ async function processRepoMilestones(
   onPrCreated: (count: number) => void,
   cache?: IssueCache,
   authorOptions?: AlertDedupAuthorOptions,
-  skipAutoMerge = false,
+  arming: SummaryPrArmingInputs = { skipAutoMerge: false },
 ): Promise<void> {
   // Issue #1246: one verification context for every tracker decision in this
   // repo's scan, so no call site can be left reading titles on their own.
@@ -1525,8 +1569,7 @@ async function processRepoMilestones(
       ghCommandFn,
       log,
       cache,
-      authorOptions,
-      skipAutoMerge,
+      { ...arming, ...(authorOptions !== undefined ? { authorOptions } : {}) },
     );
     if (prResult.outcome === "created") {
       onPrCreated(1);

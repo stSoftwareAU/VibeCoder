@@ -3107,6 +3107,7 @@ export async function createProductionRunCoreDeps(
           logger,
           config.serviceAccounts ?? [],
           config.repoConfig,
+          maintenanceAuthors,
           issueCache,
         );
         return { ok: true, value: undefined };
@@ -5655,6 +5656,7 @@ async function checkAndHandleMilestoneCompletionsFn(
   logger: Logger,
   serviceAccounts: string[],
   repoConfigs: Record<string, RepoConfig> | undefined,
+  fleetAuthors: readonly string[],
   cache?: IssueCache,
 ): Promise<void> {
   const { checkAndHandleMilestoneCompletions } = await import(
@@ -5677,6 +5679,10 @@ async function checkAndHandleMilestoneCompletionsFn(
     // same `skip_auto_merge` setting the Auto-Merge sweep honours.
     skipAutoMerge: (repo: string) =>
       getRepoConfig(repoConfigs, repo, "skipAutoMerge") === "true",
+    // Issue #1082: the same push-capable fleet logins the Auto-Merge sweep
+    // passes, so the summary PR's gated direct merge on an unprotected
+    // default branch can read a genuine outside approval.
+    fleetAuthors,
     log: (msg: string) => logger.info(msg),
   });
   // Fail loud — never let an identity mismatch (ok: false) be silently
