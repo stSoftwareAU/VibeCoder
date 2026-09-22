@@ -200,6 +200,12 @@ export interface WorkerConfig {
    * substituted.
    */
   agentProviderFallback?: string[];
+  /**
+   * Drain the held Claude token to zero rather than parking the backlog
+   * at the week-pace projection (Issue #2474). Default true — the
+   * projection guard is the opt-in.
+   */
+  claudeWeekPaceDrain?: boolean;
   /** Claude model ID to use (empty string means CLI default) (Issue #260) */
   claudeModel: string;
   /**
@@ -1218,6 +1224,11 @@ export interface ConfigFile {
    * be in `agent_providers`.
    */
   agent_provider_fallback?: string[];
+  /**
+   * Drain the held Claude token to zero rather than parking the backlog
+   * at the week-pace projection (Issue #2474). Default false.
+   */
+  claude_week_pace_drain?: boolean;
   claude_model?: string;
   /** Configured best planning model for degraded-model detection (Issue #2654) */
   best_planning_model?: string;

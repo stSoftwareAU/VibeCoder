@@ -90,6 +90,20 @@ interface IssueSpec {
   body?: string;
 }
 
+function buildFilterableIssue(spec: IssueSpec): FilterableIssue {
+  return {
+    number: spec.number,
+    title: spec.title,
+    url: `https://github.com/owner/repo/issues/${spec.number}`,
+    assignees: spec.assignees ?? [],
+    labels: spec.labels,
+    createdAt: `2024-06-0${spec.number % 9}T00:00:00Z`,
+    author: "alice",
+    milestone: "",
+    body: spec.body ?? "",
+  };
+}
+
 function buildListEntry(spec: IssueSpec): Record<string, unknown> {
   return {
     number: spec.number,
@@ -173,6 +187,7 @@ async function collect(
   mockGh: (args: string[]) => Promise<string>,
   config: WorkerConfig,
   recorder: Recorder,
+  repoAllIssues?: FilterableIssue[],
 ) {
   const cache = new IssueCache(
     Deno.makeTempDirSync({ prefix: "work-on-escalation-cache-" }),
@@ -187,13 +202,13 @@ async function collect(
   const fetcher = createIssueFetcher(mockGh);
   const repoPRs: OpenPR[] = [];
   const repoClosedPRs: ClosedPR[] = [];
-  const repoAllIssues: FilterableIssue[] = [];
+  const issues = repoAllIssues ?? [];
   return await collectWorkOnCandidates(
     "owner/repo",
     config,
     options,
     repoPRs,
-    repoAllIssues,
+    issues,
     fetcher,
     repoClosedPRs,
   );
@@ -344,5 +359,107 @@ Deno.test(
     assertEquals(recorder.labels, []);
     assertEquals(recorder.comments, []);
     assertEquals(result.hasSuppressingWorkOn, false);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Dependency-stalled escalation
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collectWorkOnCandidates - escalates when blocking dependency carries needs-human",
+  async () => {
+    const config = makeConfig();
+    const recorder: Recorder = { labels: [], comments: [] };
+    const mockGh = createMockGh({
+      specs: [
+        {
+          number: 100,
+          title: "Feature depending on fix",
+          labels: ["work-on"],
+          body: "Depends on #200",
+        },
+        {
+          number: 200,
+          title: "Unclaimable fix",
+          labels: ["needs-human"],
+        },
+      ],
+    });
+
+    const repoAllIssues: FilterableIssue[] = [
+      buildFilterableIssue({
+        number: 100,
+        title: "Feature depending on fix",
+        labels: ["work-on"],
+        body: "Depends on #200",
+      }),
+      buildFilterableIssue({
+        number: 200,
+        title: "Unclaimable fix",
+        labels: ["needs-human"],
+      }),
+    ];
+
+    const result = await collect(mockGh, config, recorder, repoAllIssues);
+
+    // The candidate should be dropped due to unclaimable dependency.
+    assertEquals(result.candidates, []);
+
+    // Escalation should fire: needs-human label and comment on #100.
+    assertEquals(recorder.labels, [{ issue: 100, label: "needs-human" }]);
+    assertEquals(recorder.comments.length, 1);
+    assertStringIncludes(
+      recorder.comments[0]!.body,
+      "#200",
+    );
+  },
+);
+
+Deno.test(
+  "collectWorkOnCandidates - does not escalate when blocking dependency is claimable",
+  async () => {
+    const config = makeConfig();
+    const recorder: Recorder = { labels: [], comments: [] };
+    const mockGh = createMockGh({
+      specs: [
+        {
+          number: 100,
+          title: "Feature depending on claimable fix",
+          labels: ["work-on"],
+          body: "Depends on #200",
+        },
+        {
+          number: 200,
+          title: "Claimable fix",
+          labels: [],
+          assignees: ["alice"],
+        },
+      ],
+    });
+
+    const repoAllIssues: FilterableIssue[] = [
+      buildFilterableIssue({
+        number: 100,
+        title: "Feature depending on claimable fix",
+        labels: ["work-on"],
+        body: "Depends on #200",
+      }),
+      buildFilterableIssue({
+        number: 200,
+        title: "Claimable fix",
+        labels: [],
+        assignees: ["alice"],
+      }),
+    ];
+
+    const result = await collect(mockGh, config, recorder, repoAllIssues);
+
+    // The candidate should be dropped due to ordinary dependency block (not escalated).
+    assertEquals(result.candidates, []);
+
+    // No escalation: no labels or comments posted.
+    assertEquals(recorder.labels, []);
+    assertEquals(recorder.comments, []);
   },
 );

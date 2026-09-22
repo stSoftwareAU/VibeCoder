@@ -436,22 +436,10 @@ is a soundness fix the compiler enforces, and the second affects
 debuggers and profilers rather than source. They are noted here so a
 future reader does not re-derive them as candidates.
 
-## Test output — quiet when green, complete when red
+## Test output
 
-The gate that runs on every change runs many times a day, and its
-output is quoted back into review comments and agent prompts. A line
-per passing test is paid for on every green run, and says nothing.
-
-### Checks
-
-32. **A green `cargo test` prints a line per passing test.** Flag a
-    `cargo test` or `cargo nextest run` invocation in the quality
-    script, the default test task, or a CI step that runs on pull
-    requests, where no quiet or failures-only flag is set. Cite the
-    script, task or workflow line — never run the suite to measure
-    what it prints. Suggested fix: pass `cargo test -q` (or
-    `cargo nextest run --status-level=fail`, which reports only the
-    tests that failed), then confirm on a deliberately failing test
-    that the test name, the assertion message and the panic backtrace
-    all still appear. `severity:medium` when the invocation is the
-    every-change gate or a per-PR CI step, `severity:low` otherwise.
+32. **A green `cargo test` prints a line per passing test.** Folded
+    into `### Cross-bucket: verbose gate output` in the orchestrator
+    prompt, which every scan applies regardless of the drawn bucket —
+    see there for the full contract and the per-ecosystem quiet
+    flags.

@@ -549,6 +549,18 @@ async function hasFleetAuthoredMarker(
 }
 
 /**
+ * Whether the blocked summary PR carries the gate's explanation (Issue #2479).
+ *
+ * `posted` and `already-present` both mean the reason is readable on the PR;
+ * `unconfirmed` means it is not — the thread could not be read, or the post
+ * failed — so a caller must not treat the block as explained.
+ */
+export type OpenChildrenCommentOutcome =
+  | "posted"
+  | "already-present"
+  | "unconfirmed";
+
+/**
  * Post the explanatory comment on the blocked summary PR — exactly once.
  *
  * Idempotency comes from {@link OPEN_CHILDREN_BLOCK_MARKER}: the existing
@@ -557,11 +569,11 @@ async function hasFleetAuthoredMarker(
  * comments cannot be read, nothing is posted (a duplicate comment every cycle
  * would be worse than none) and the failure is logged.
  *
- * @returns true when a new comment was posted.
+ * @returns which of the three states the PR thread ended in
  */
 export async function postOpenChildrenBlockComment(
   options: BlockCommentOptions,
-): Promise<boolean> {
+): Promise<OpenChildrenCommentOutcome> {
   const { repo, prNumber, ghCommandFn, log } = options;
 
   let alreadyPosted: boolean;
@@ -580,11 +592,11 @@ export async function postOpenChildrenBlockComment(
         `the milestone open-children block comment: ` +
         `${err instanceof Error ? err.message : String(err)} (Issue #3909)`,
     );
-    return false;
+    return "unconfirmed";
   }
 
   if (alreadyPosted) {
-    return false;
+    return "already-present";
   }
 
   const body = renderOpenChildrenBlockComment(
@@ -601,14 +613,14 @@ export async function postOpenChildrenBlockComment(
       "--body",
       body,
     ]);
-    return true;
+    return "posted";
   } catch (err) {
     log(
       `WARNING: failed to post the milestone open-children block comment on ` +
         `${repo}#${prNumber}: ` +
         `${err instanceof Error ? err.message : String(err)} (Issue #3909)`,
     );
-    return false;
+    return "unconfirmed";
   }
 }
 

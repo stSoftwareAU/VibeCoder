@@ -206,6 +206,9 @@ Deno.test(
     }
     assertEquals(PROTECTED_STOCK_LABELS.includes("good first issue"), true);
     assertEquals(PROTECTED_STOCK_LABELS.includes("help wanted"), true);
+    // `dependencies` is the label dependabot.yml's `labels:` names —
+    // absent, every dependabot PR nags about it (Issue #2467).
+    assertEquals(PROTECTED_STOCK_LABELS.includes("dependencies"), true);
   },
 );
 
