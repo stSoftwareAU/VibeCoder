@@ -12,8 +12,11 @@
  *
  * The lease exists to stop four sweeps costing ≈ 20 GraphQL calls each, per
  * host, per cycle. A lease that itself cost GraphQL would eat the saving, so
- * every call here is REST: `gh api` for the comment read, post, patch and
- * delete, and `gh issue list` / `gh issue create` for the anchor.
+ * every call here is `gh api` — the comment read, post, patch and delete, the
+ * anchor search (`search/issues`) and the anchor creation
+ * (`POST repos/{repo}/issues`). Every other `gh` sub-command is
+ * GraphQL-backed (`gh_argv.ts`), `gh issue list` and `gh issue create`
+ * included, so neither is used here.
  *
  * ## The anchor issue
  *
@@ -42,6 +45,10 @@
 
 import type { RepoConfig } from "../types.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
+import {
+  classifyGitHubError,
+  GitHubErrorCategory,
+} from "./github_errors.ts";
 import {
   decideMaintenanceLease,
   formatMaintenanceLeaseMarker,
@@ -198,29 +205,31 @@ async function findAnchorIssue(
   repo: string,
   io: MaintenanceLeaseIo,
 ): Promise<number | null> {
+  // `gh api search/issues`, not `gh issue list`: every `gh` sub-command other
+  // than `api` is GraphQL-backed (`gh_argv.ts`), and a lease that spends the
+  // budget it exists to save is no lease at all.
   const raw = await io.ghCommandFn([
-    "issue",
-    "list",
-    "--repo",
-    repo,
-    "--state",
-    "open",
-    "--search",
-    `"${MAINTENANCE_LEASE_ANCHOR_MARKER_PREFIX} repo=${repo}" in:body`,
-    "--json",
-    "number,body,author",
-    "--limit",
-    ANCHOR_SEARCH_LIMIT,
+    "api",
+    "-X",
+    "GET",
+    "search/issues",
+    "-f",
+    `q=repo:${repo} is:issue state:open in:body ` +
+    `"${MAINTENANCE_LEASE_ANCHOR_MARKER_PREFIX} repo=${repo}"`,
+    "-F",
+    `per_page=${ANCHOR_SEARCH_LIMIT}`,
+    "--jq",
+    "[.items[] | {number: .number, body: .body, author: .user.login}]",
   ]);
   const rows = JSON.parse(raw.trim() || "[]") as Array<{
     number?: unknown;
     body?: unknown;
-    author?: { login?: unknown };
+    author?: unknown;
   }>;
   const marker = formatMaintenanceLeaseAnchorMarker(repo);
   const numbers = rows
     .filter((row) => typeof row.body === "string" && row.body.includes(marker))
-    .filter((row) => isTrustedAuthor(row.author?.login, io))
+    .filter((row) => isTrustedAuthor(row.author, io))
     .map((row) => Number(row.number))
     .filter((number) => Number.isInteger(number) && number > 0);
   // The oldest hit wins, so every host converges on the same anchor when two
@@ -251,28 +260,31 @@ async function createAnchorIssue(
   io: MaintenanceLeaseIo,
 ): Promise<number | null> {
   const output = await io.ghCommandFn([
-    "issue",
-    "create",
-    "--repo",
-    repo,
-    "--title",
-    MAINTENANCE_LEASE_ANCHOR_TITLE,
-    "--body",
-    buildAnchorBody(repo),
+    "api",
+    `repos/${repo}/issues`,
+    "-X",
+    "POST",
+    "-f",
+    `title=${MAINTENANCE_LEASE_ANCHOR_TITLE}`,
+    "-f",
+    `body=${buildAnchorBody(repo)}`,
+    "--jq",
+    ".number",
   ]);
-  const match = /\/issues\/(\d+)\s*$/.exec(output.trim());
-  return match?.[1] === undefined ? null : Number.parseInt(match[1], 10);
+  return positiveIssueNumber(output);
 }
 
-/**
- * Resolve the anchor issue for `repo` — override, pin, search, create.
- *
- * @returns The anchor issue number, or null when the lease is degraded
- */
-export async function resolveMaintenanceLeaseAnchor(
+/** A resolved anchor, and which of the four sources answered. */
+interface ResolvedAnchor {
+  issue: number;
+  source: "override" | "pin" | "search" | "created";
+}
+
+/** Resolve the anchor and say where the number came from. */
+async function resolveAnchor(
   repo: string,
   io: MaintenanceLeaseIo,
-): Promise<number | null> {
+): Promise<ResolvedAnchor | null> {
   // Validated before it reaches an argv or a file path: `repo` arrives from
   // operator configuration, and an unchecked value would land in a `gh api`
   // endpoint and in the pin file's name.
@@ -284,16 +296,16 @@ export async function resolveMaintenanceLeaseAnchor(
   const override = positiveIssueNumber(
     getRepoConfig(io.repoConfigs, repo, "maintenanceLeaseIssue"),
   );
-  if (override !== null) return override;
+  if (override !== null) return { issue: override, source: "override" };
 
   const pinned = await readPinnedAnchor(repo, io);
-  if (pinned !== null) return pinned;
+  if (pinned !== null) return { issue: pinned, source: "pin" };
 
   try {
     const found = await findAnchorIssue(repo, io);
     if (found !== null) {
       await pinAnchor(repo, found, io);
-      return found;
+      return { issue: found, source: "search" };
     }
     const created = await createAnchorIssue(repo, io);
     if (created === null) {
@@ -301,10 +313,58 @@ export async function resolveMaintenanceLeaseAnchor(
       return null;
     }
     await pinAnchor(repo, created, io);
-    return created;
+    return { issue: created, source: "created" };
   } catch (err) {
     degrade(io, `anchor lookup failed for ${repo}: ${messageOf(err)}`);
     return null;
+  }
+}
+
+/**
+ * Resolve the anchor issue for `repo` — override, pin, search, create.
+ *
+ * The pin file is the per-launch memo: once written, resolution is a local
+ * file read and costs no GitHub call at all.
+ *
+ * @returns The anchor issue number, or null when the lease is degraded
+ */
+export async function resolveMaintenanceLeaseAnchor(
+  repo: string,
+  io: MaintenanceLeaseIo,
+): Promise<number | null> {
+  return (await resolveAnchor(repo, io))?.issue ?? null;
+}
+
+/**
+ * Drop a pin that points at an anchor GitHub says is gone.
+ *
+ * Without this a closed or deleted anchor would leave the host logging
+ * `degraded` every cycle for ever, which is the symptom rather than a
+ * recovery. The next call re-runs the search and re-creates the anchor.
+ */
+async function healStaleAnchor(
+  repo: string,
+  anchor: ResolvedAnchor,
+  err: unknown,
+  io: MaintenanceLeaseIo,
+): Promise<void> {
+  if (anchor.source !== "pin") return;
+  const category = classifyGitHubError(messageOf(err)).category;
+  if (category !== GitHubErrorCategory.NotFound) return;
+  const path = maintenanceLeaseAnchorPinPath(io.workDir, repo);
+  try {
+    await Deno.remove(path);
+    io.log(
+      `maintenance-lease: anchor #${anchor.issue} for ${repo} is gone — ` +
+        `dropped the pin, the next cycle resolves a new anchor`,
+    );
+  } catch (removeErr) {
+    if (removeErr instanceof Deno.errors.NotFound) return;
+    io.log(
+      `maintenance-lease: could not drop the stale anchor pin ${path} — ${
+        messageOf(removeErr)
+      }`,
+    );
   }
 }
 
@@ -364,15 +424,16 @@ export async function readMaintenanceLease(
   repo: string,
   io: MaintenanceLeaseIo,
 ): Promise<MaintenanceLeaseHolder | null> {
-  const anchor = await resolveMaintenanceLeaseAnchor(repo, io);
+  const anchor = await resolveAnchor(repo, io);
   if (anchor === null) return null;
 
   try {
-    const best = freshest(await readLeaseEntries(repo, anchor, io));
+    const best = freshest(await readLeaseEntries(repo, anchor.issue, io));
     if (best === null) return null;
     return { host: best.marker.host, atEpoch: best.marker.atEpoch };
   } catch (err) {
     degrade(io, `lease read failed for ${repo}: ${messageOf(err)}`);
+    await healStaleAnchor(repo, anchor, err, io);
     return null;
   }
 }
@@ -423,8 +484,14 @@ async function patchLeaseComment(
   ]);
 }
 
-/** Delete the markers of holders whose lease has run out. */
-async function dropExpiredMarkers(
+/**
+ * Delete marker comments that no longer record a live lease.
+ *
+ * Two shapes qualify: a holder whose lease has run out, and a duplicate of
+ * this host's own marker left behind by a raced double-post — without the
+ * second, "one marker per host" would decay into one comment per race.
+ */
+async function dropDeadMarkers(
   repo: string,
   expired: readonly LeaseEntry[],
   io: MaintenanceLeaseIo,
@@ -437,7 +504,7 @@ async function dropExpiredMarkers(
     );
     if (error !== null) {
       io.log(
-        `maintenance-lease: could not delete the expired marker ` +
+        `maintenance-lease: could not delete the dead marker ` +
           `comment ${entry.commentId} in ${repo} — ${error.message}`,
       );
     }
@@ -447,19 +514,23 @@ async function dropExpiredMarkers(
 /**
  * Take or refresh `repo`'s maintenance lease for `host`.
  *
- * Call this only once `decideMaintenanceLease` has said this host runs the
- * pass: the store writes the marker it is told to write and does not re-decide
- * whether a fresh foreign holder should have kept it.
+ * Every marker on the anchor is classified by `decideMaintenanceLease`, so the
+ * store and the decision cannot disagree about which marker is this host's or
+ * when a holder is dead:
  *
- * The host's own marker is patched in place rather than re-posted, so the
- * anchor never grows a comment per cycle. Identity and expiry both come from
- * `decideMaintenanceLease`, so the store and the decision cannot disagree
- * about which marker is this host's or when a holder is dead.
+ * - **own** — the first is patched in place, so the anchor never grows a
+ *   comment per cycle; any duplicate of it is deleted;
+ * - **expired** — deleted, the holder is dead;
+ * - **held elsewhere** — another host's lease is still fresh, so nothing is
+ *   written and this returns false. Callers consult `decideMaintenanceLease`
+ *   before refreshing, and this is the second layer: mutual exclusion does not
+ *   rest on the caller getting it right.
  *
  * @param repo - Repository in "owner/repo" format
  * @param host - This host's machine id (`getMachineId`) or install uuid
  * @param nowSeconds - Current epoch seconds, stamped into the marker
- * @returns True when the marker was written, false when the lease is degraded
+ * @returns True when the marker was written; false when the lease is degraded
+ *          or another host holds it
  */
 export async function refreshMaintenanceLease(
   repo: string,
@@ -467,27 +538,45 @@ export async function refreshMaintenanceLease(
   nowSeconds: number,
   io: MaintenanceLeaseIo,
 ): Promise<boolean> {
-  const anchor = await resolveMaintenanceLeaseAnchor(repo, io);
+  const anchor = await resolveAnchor(repo, io);
   if (anchor === null) return false;
 
   let entries: LeaseEntry[];
   try {
-    entries = await readLeaseEntries(repo, anchor, io);
+    entries = await readLeaseEntries(repo, anchor.issue, io);
   } catch (err) {
     degrade(io, `lease read failed for ${repo}: ${messageOf(err)}`);
+    await healStaleAnchor(repo, anchor, err, io);
     return false;
   }
 
   let own: LeaseEntry | null = null;
-  const expired: LeaseEntry[] = [];
+  const dead: LeaseEntry[] = [];
+  let heldElsewhere: string | null = null;
   for (const entry of entries) {
     const decision = decideMaintenanceLease({
       holder: entry.marker,
       thisHost: host,
       nowSeconds,
     });
-    if (decision.reason === "own-lease") own = entry;
-    else if (decision.reason === "holder-expired") expired.push(entry);
+    if (decision.reason === "own-lease") {
+      // The first own marker is the one kept; a duplicate from a raced
+      // double-post is dead weight and is deleted with the rest.
+      if (own === null) own = entry;
+      else dead.push(entry);
+    } else if (decision.reason === "holder-expired") {
+      dead.push(entry);
+    } else {
+      heldElsewhere = decision.holderHost ?? entry.marker.host;
+    }
+  }
+
+  if (own === null && heldElsewhere !== null) {
+    io.log(
+      `maintenance-lease: ${repo} is held by ${heldElsewhere} — ` +
+        `not taking it`,
+    );
+    return false;
   }
 
   // The marker records the bare install uuid when the host id carries one, so
@@ -497,7 +586,7 @@ export async function refreshMaintenanceLease(
 
   try {
     if (own === null) {
-      await postLeaseComment(repo, anchor, body, io);
+      await postLeaseComment(repo, anchor.issue, body, io);
     } else {
       await patchLeaseComment(repo, own.commentId, body, io);
     }
@@ -508,9 +597,10 @@ export async function refreshMaintenanceLease(
         messageOf(err)
       }`,
     );
+    await healStaleAnchor(repo, anchor, err, io);
     return false;
   }
 
-  await dropExpiredMarkers(repo, expired, io);
+  await dropDeadMarkers(repo, dead, io);
   return true;
 }

@@ -67,16 +67,42 @@ function commentsPayload(
   );
 }
 
-/** The payload `gh issue list --json number,body,author` prints. */
-function issueListPayload(
+/** The payload the anchor search's `--jq` projection prints. */
+function searchPayload(
   rows: Array<{ number: number; body: string; author: string }>,
 ): string {
   return JSON.stringify(
     rows.map((row) => ({
       number: row.number,
       body: row.body,
-      author: { login: row.author },
+      author: row.author,
     })),
+  );
+}
+
+/** Is this argv the REST anchor search? */
+function isAnchorSearch(args: string[]): boolean {
+  return args[0] === "api" && args.includes("search/issues");
+}
+
+/** Is this argv the REST anchor creation? */
+function isAnchorCreate(args: string[]): boolean {
+  return args[0] === "api" && args[1] === `repos/${REPO}/issues` &&
+    args.includes("POST");
+}
+
+/** Is this argv a comment post on the anchor? */
+function isCommentPost(args: string[]): boolean {
+  return args[0] === "api" &&
+    (args[1] ?? "").endsWith(`/issues/${ANCHOR}/comments`) &&
+    args.includes("POST");
+}
+
+/** The value of the `-f <name>=…` field in this argv. */
+function field(args: string[], name: string): string {
+  const prefix = `${name}=`;
+  return (args.find((arg) => arg.startsWith(prefix)) ?? "").slice(
+    prefix.length,
   );
 }
 
@@ -101,15 +127,13 @@ function fakeAnchorThread(
   let nextId = 1000;
   const gh = fakeGh((args) => {
     const endpoint = args[1] ?? "";
-    if (args[0] === "issue" && args[1] === "list") return issueListPayload([]);
-    if (args[0] === "issue" && args[1] === "create") {
-      return `https://github.com/${REPO}/issues/${ANCHOR}\n`;
-    }
+    if (isAnchorSearch(args)) return searchPayload([]);
+    if (isAnchorCreate(args)) return `${ANCHOR}\n`;
     if (isCommentRead(args, ANCHOR)) {
       return commentsPayload(comments);
     }
-    const body = (args[args.indexOf("-f") + 1] ?? "").replace(/^body=/u, "");
-    if (args.includes("POST")) {
+    const body = field(args, "body");
+    if (isCommentPost(args)) {
       const id = nextId++;
       comments.push({ id, body, author: writeAuthor });
       return JSON.stringify({ id });
@@ -194,30 +218,23 @@ function leaseComment(
 Deno.test("maintenance lease anchor - no anchor exists, so it is created and pinned", async () => {
   await withWorkDir(async (workDir) => {
     const gh = fakeGh((args) => {
-      if (args[0] === "issue" && args[1] === "list") {
-        return issueListPayload([]);
-      }
-      if (args[0] === "issue" && args[1] === "create") {
-        return `https://github.com/${REPO}/issues/${ANCHOR}\n`;
-      }
+      if (isAnchorSearch(args)) return searchPayload([]);
+      if (isAnchorCreate(args)) return `${ANCHOR}\n`;
       throw new Error(`unexpected gh call: ${args.join(" ")}`);
     });
     const { io, logs } = makeIo(workDir, gh);
 
     assertEquals(await resolveMaintenanceLeaseAnchor(REPO, io), ANCHOR);
 
-    const create = gh.calls.find((args) =>
-      args[0] === "issue" && args[1] === "create"
-    );
+    const create = gh.calls.find(isAnchorCreate);
     assert(create !== undefined, "the anchor issue must be created");
-    assert(
-      create.includes(MAINTENANCE_LEASE_ANCHOR_TITLE),
-      "the anchor keeps its canonical title",
+    assertEquals(field(create, "title"), MAINTENANCE_LEASE_ANCHOR_TITLE);
+    assertStringIncludes(
+      field(create, "body"),
+      formatMaintenanceLeaseAnchorMarker(REPO),
     );
-    const body = create[create.indexOf("--body") + 1] ?? "";
-    assertStringIncludes(body, formatMaintenanceLeaseAnchorMarker(REPO));
     assertEquals(
-      create.includes("--label"),
+      create.some((arg) => arg.startsWith("labels")),
       false,
       "the anchor never carries a discovery label",
     );
@@ -249,8 +266,8 @@ Deno.test("maintenance lease anchor - the pinned number is reused without a sear
 Deno.test("maintenance lease anchor - an existing anchor by a fleet author is adopted, not duplicated", async () => {
   await withWorkDir(async (workDir) => {
     const gh = fakeGh((args) => {
-      if (args[0] === "issue" && args[1] === "list") {
-        return issueListPayload([
+      if (isAnchorSearch(args)) {
+        return searchPayload([
           // An impostor's anchor is ignored; the fleet-authored one is adopted.
           {
             number: 7,
@@ -270,7 +287,7 @@ Deno.test("maintenance lease anchor - an existing anchor by a fleet author is ad
 
     assertEquals(await resolveMaintenanceLeaseAnchor(REPO, io), ANCHOR);
     assertEquals(
-      gh.calls.some((args) => args[1] === "create"),
+      gh.calls.some(isAnchorCreate),
       false,
       "an adopted anchor is never re-created",
     );
@@ -324,12 +341,9 @@ Deno.test("maintenance lease anchor - a non-positive or non-integer override is 
 Deno.test("maintenance lease anchor - an unparseable create result degrades rather than guessing", async () => {
   await withWorkDir(async (workDir) => {
     const gh = fakeGh((args) => {
-      if (args[0] === "issue" && args[1] === "list") {
-        return issueListPayload([]);
-      }
-      if (args[0] === "issue" && args[1] === "create") {
-        return "Creating issue in stSoftwareAU/VibeCoder\n";
-      }
+      if (isAnchorSearch(args)) return searchPayload([]);
+      // A response the `--jq .number` projection could not reduce to a number.
+      if (isAnchorCreate(args)) return "null\n";
       throw new Error(`unexpected gh call: ${args.join(" ")}`);
     });
     const { io, logs } = makeIo(workDir, gh);
@@ -348,7 +362,7 @@ Deno.test("maintenance lease anchor - an unparseable create result degrades rath
 Deno.test("maintenance lease anchor - a failed search never files a duplicate anchor", async () => {
   await withWorkDir(async (workDir) => {
     const gh = fakeGh((args) => {
-      if (args[0] === "issue" && args[1] === "list") {
+      if (isAnchorSearch(args)) {
         throw new Error("gh: API rate limit exceeded");
       }
       throw new Error(`unexpected gh call: ${args.join(" ")}`);
@@ -356,7 +370,7 @@ Deno.test("maintenance lease anchor - a failed search never files a duplicate an
     const { io, logs } = makeIo(workDir, gh);
 
     assertEquals(await resolveMaintenanceLeaseAnchor(REPO, io), null);
-    assertEquals(gh.calls.some((args) => args[1] === "create"), false);
+    assertEquals(gh.calls.some(isAnchorCreate), false);
     assert(
       logs.some((line) =>
         line.startsWith("maintenance-lease: degraded — ") &&
@@ -438,6 +452,42 @@ Deno.test("maintenance lease read - an API failure degrades to null without thro
   });
 });
 
+Deno.test("maintenance lease read - a pin pointing at a deleted anchor is dropped so the next cycle recovers", async () => {
+  await withWorkDir(async (workDir) => {
+    const pin = maintenanceLeaseAnchorPinPath(workDir, REPO);
+    await Deno.writeTextFile(pin, `${ANCHOR}\n`);
+    const gh = fakeGh(() => {
+      throw new Error("gh: HTTP 404: Not Found");
+    });
+    const { io } = makeIo(workDir, gh);
+
+    assertEquals(await readMaintenanceLease(REPO, io), null);
+    assertEquals(
+      await Deno.stat(pin).then(() => true).catch(() => false),
+      false,
+      "a pin GitHub says is gone must not be kept and re-read for ever",
+    );
+  });
+});
+
+Deno.test("maintenance lease read - a transient failure keeps the pin", async () => {
+  await withWorkDir(async (workDir) => {
+    const pin = maintenanceLeaseAnchorPinPath(workDir, REPO);
+    await Deno.writeTextFile(pin, `${ANCHOR}\n`);
+    const gh = fakeGh(() => {
+      throw new Error("gh: 503 Service Unavailable");
+    });
+    const { io } = makeIo(workDir, gh);
+
+    assertEquals(await readMaintenanceLease(REPO, io), null);
+    assertEquals(
+      (await Deno.readTextFile(pin)).trim(),
+      String(ANCHOR),
+      "a transient error is not evidence the anchor is gone",
+    );
+  });
+});
+
 Deno.test("maintenance lease read - a malformed repository name degrades instead of building a path", async () => {
   await withWorkDir(async (workDir) => {
     const gh = fakeGh((args) => {
@@ -466,10 +516,10 @@ Deno.test("maintenance lease refresh - the first hold posts a new marker comment
 
     assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
 
-    const post = gh.calls.find((args) => args.includes("POST"));
+    const post = gh.calls.find(isCommentPost);
     assert(post !== undefined, "the first hold posts the marker");
     assertEquals(post[1], `repos/${REPO}/issues/${ANCHOR}/comments`);
-    const body = post[post.indexOf("-f") + 1] ?? "";
+    const body = field(post, "body");
     assertStringIncludes(body, `host=${INSTALL}`);
     assertStringIncludes(body, `at=${NOW}`);
     assert(
@@ -523,12 +573,34 @@ Deno.test("maintenance lease refresh - the host's own marker is patched, never r
     assert(patch !== undefined, "the own marker is patched in place");
     assertEquals(patch[1], `repos/${REPO}/issues/comments/88`);
     assertEquals(
-      gh.calls.some((args) => args.includes("POST")),
+      gh.calls.some(isCommentPost),
       false,
       "a second comment is never posted for the same host",
     );
     assertEquals(gh.comments.length, 1);
     assertStringIncludes(gh.comments[0]?.body ?? "", `at=${NOW}`);
+  });
+});
+
+Deno.test("maintenance lease refresh - a duplicate of this host's own marker is deleted", async () => {
+  await withWorkDir(async (workDir) => {
+    await Deno.writeTextFile(
+      maintenanceLeaseAnchorPinPath(workDir, REPO),
+      `${ANCHOR}\n`,
+    );
+    // Two markers for one install — a raced double-post.
+    const gh = fakeAnchorThread([
+      leaseComment(88, INSTALL, NOW - 120),
+      leaseComment(89, INSTALL, NOW - 60),
+    ]);
+    const { io } = makeIo(workDir, gh);
+
+    assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
+    assertEquals(
+      gh.comments.map((comment) => comment.id),
+      [88],
+      "the first own marker is kept and refreshed; the duplicate goes",
+    );
   });
 });
 
@@ -540,19 +612,40 @@ Deno.test("maintenance lease refresh - an expired foreign marker is deleted", as
     );
     const gh = fakeAnchorThread([
       leaseComment(11, OTHER_INSTALL, NOW - MAINTENANCE_LEASE_SECONDS),
-      leaseComment(12, OTHER_INSTALL, NOW - 10),
     ]);
     const { io } = makeIo(workDir, gh);
 
     assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
 
     const deletes = gh.calls.filter((args) => args.includes("DELETE"));
-    assertEquals(deletes.length, 1, "only the expired marker is deleted");
+    assertEquals(deletes.length, 1, "the dead holder's marker is deleted");
     assertEquals(deletes[0]?.at(-1), `repos/${REPO}/issues/comments/11`);
     assertEquals(
-      gh.comments.map((comment) => comment.id).sort((a, b) => a - b),
-      [12, 1000],
-      "the fresh foreign marker survives beside this host's new one",
+      gh.comments.map((comment) => comment.id),
+      [1000],
+      "this host's new marker is all that is left",
+    );
+  });
+});
+
+Deno.test("maintenance lease refresh - a fresh foreign holder is never overwritten", async () => {
+  await withWorkDir(async (workDir) => {
+    await Deno.writeTextFile(
+      maintenanceLeaseAnchorPinPath(workDir, REPO),
+      `${ANCHOR}\n`,
+    );
+    const gh = fakeAnchorThread([leaseComment(12, OTHER_INSTALL, NOW - 10)]);
+    const { io, logs } = makeIo(workDir, gh);
+
+    assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), false);
+    assertEquals(
+      gh.comments.map((comment) => comment.id),
+      [12],
+      "the holder's marker is untouched and no second marker is posted",
+    );
+    assert(
+      logs.some((line) => line.includes(`held by ${OTHER_INSTALL}`)),
+      `expected a held-elsewhere log line, got ${JSON.stringify(logs)}`,
     );
   });
 });
@@ -571,7 +664,7 @@ Deno.test("maintenance lease refresh - a foreign marker whose author differs onl
 
     assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
     assertEquals(
-      gh.calls.some((args) => args.includes("POST")),
+      gh.calls.some(isCommentPost),
       false,
       "the marker is recognised as this host's own and patched, not duplicated",
     );
@@ -629,9 +722,9 @@ Deno.test("maintenance lease store - every gh call is REST, never GraphQL", asyn
         false,
         `GraphQL document in argv: ${args.join(" ")}`,
       );
-      const rest = args[0] === "api" ||
-        (args[0] === "issue" && (args[1] === "list" || args[1] === "create"));
-      assert(rest, `not a REST-backed call: ${args.join(" ")}`);
+      // `gh api` is the only REST-backed verb; every other sub-command goes
+      // through GraphQL (`gh_argv.ts`), `issue list`/`issue create` included.
+      assertEquals(args[0], "api", `not a REST call: ${args.join(" ")}`);
     }
   });
 });
