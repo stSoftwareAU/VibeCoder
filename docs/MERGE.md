@@ -498,6 +498,18 @@ log marker rather than withholding the arming.
   afterwards is consulted — which is exactly why arming over a behind base is
   safe: the milestone ruleset's strict up-to-date policy is the thing that
   keeps a stale child from landing.
+- **A ruleset without that policy is reported, not assumed.** Because the
+  arming rests on it, `assessMilestoneRuleset` in
+  [`worker/deno/lib/milestone_ruleset_check.ts`](../worker/deno/lib/milestone_ruleset_check.ts)
+  raises an **error** finding, `non-strict-checks`, on any `milestone/**`
+  ruleset whose `required_status_checks` rule does not set
+  `strict_required_status_checks_policy` (Issue #2461). It sits beside the
+  other findings that report a `milestone/**` ruleset the fleet cannot rely on
+  — `no-required-checks`, `create-blocked` and `unreportable-checks` — and,
+  like them, is surfaced by setup and on the repository's tracking issue. An
+  absent parameter reads as `false`, which is how GitHub evaluates it. The
+  ruleset the fleet writes itself (`buildMilestoneRulesetBody`) sets it, so
+  only a hand-written or pre-Issue #2461 ruleset trips this.
 
 Two callers deliberately do **not** require a synced base. The post-merge
 landing check (`merge_landing.ts`) asks a different question — that PR has

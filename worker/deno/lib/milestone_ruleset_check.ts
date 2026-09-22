@@ -103,6 +103,7 @@ export interface MilestoneRulesetFinding {
     | "ruleset-disabled"
     | "create-blocked"
     | "unreportable-checks"
+    | "non-strict-checks"
     | "no-automerge-gate"
     | "ruleset-read-failed"
     | "configured";
@@ -308,6 +309,34 @@ export function assessMilestoneRuleset(
             `starting work. Set \`do_not_enforce_on_create\` on that rule — do ` +
             `NOT remove the rule, which would leave the base unprotected and ` +
             `silently stop auto-merge being armed.`,
+        });
+      }
+    }
+
+    // Required checks WITHOUT the strict up-to-date policy let a stale child
+    // land. A child PR whose base is behind the default branch is armed
+    // anyway (Issue #2460), and the only thing that then holds the merge
+    // until the branch is level is
+    // `strict_required_status_checks_policy` — GitHub releases an armed PR
+    // the moment its required checks are green, however far behind the head
+    // is. Without it the arming is a side-pick onto a stale tip, and nothing
+    // ever forces the child current. The builder writes it
+    // (`buildMilestoneRulesetBody`); a hand-written or older ruleset may not.
+    if (checks !== undefined && contexts.length > 0) {
+      const strict =
+        checks.parameters?.strict_required_status_checks_policy === true;
+      if (!strict) {
+        findings.push({
+          severity: "error",
+          code: "non-strict-checks",
+          message:
+            `ruleset '${name}' requires status checks on \`milestone/**\` ` +
+            `but does not require the branch to be up to date. An armed ` +
+            `child PR whose base is behind the default branch merges on ` +
+            `green checks alone, landing work on a stale tip, and nothing ` +
+            `ever forces it current. Set ` +
+            `\`strict_required_status_checks_policy\` on that rule ` +
+            `(Issue #2460).`,
         });
       }
     }
