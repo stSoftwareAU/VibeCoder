@@ -363,20 +363,8 @@ state it touches.
     occupy the host. A number produced under concurrent load is not a
     slow result; it is a result nobody can act on.
 
-28. **A green test run prints a line per passing test.** Flag a
-    `deno test`, `vitest run` or `jest` invocation in the quality
-    script, the default test task, or a CI step that runs on pull
-    requests, where the default per-test reporter is left in place.
-    Cite the task, script or workflow line — never run the suite to
-    measure what it prints. `severity:medium` when that invocation is
-    the every-change gate or a per-PR CI step, `severity:low`
-    otherwise.
-
-    Suggested fix: pass the failures-only reporter —
-    `deno test --reporter=dot`, `vitest run --reporter=dot`, or
-    `jest --silent` — and confirm on a deliberately failing test that
-    the name, the assertion message and the stack trace all survive.
-    `dot` still prints one mark per passing test rather than nothing,
-    so where a wrapper collects the output, have it keep only the
-    summary line of a stage that passed and the whole body of one that
-    failed.
+28. **A green test run prints a line per passing test.** Folded into
+    `### Cross-bucket: verbose gate output` in the orchestrator
+    prompt, which every scan applies regardless of the drawn bucket —
+    see there for the full contract and the per-ecosystem quiet
+    flags.
