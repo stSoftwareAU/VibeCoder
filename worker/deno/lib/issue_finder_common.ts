@@ -514,12 +514,20 @@ export function createOpenMilestoneLookup(
  * The hold is same-repo only: milestone titles are per-repository, so another
  * repo's milestone title has no meaning in this repo's open-milestone listing.
  */
+/**
+ * Check whether an issue is blocked by its dependencies.
+ *
+ * When `blockers` is provided, collects all blockers instead of returning
+ * early on the first one. Used to classify whether blockers are claimable
+ * or stalled (Issue #2473).
+ */
 export async function isDependencyBlocked(
   repo: string,
   issueNumber: number,
   fetcher: IssueFetcher,
   openStateMap?: OpenIssueStateMap,
   milestoneScope?: MilestoneScope,
+  blockers?: Array<{ repo: string; number: number; kind: "child" | "depends-on" }>,
 ): Promise<boolean> {
   try {
     // Check parent/child blocking
@@ -530,7 +538,14 @@ export async function isDependencyBlocked(
       openStateMap,
     );
     if (parentResult.ok && parentResult.value.isBlocked) {
-      return true;
+      if (parentResult.ok && parentResult.value.openChildren) {
+        for (const child of parentResult.value.openChildren) {
+          if (blockers) {
+            blockers.push({ repo, number: child, kind: "child" });
+          }
+          if (!blockers) return true;
+        }
+      }
     }
 
     // Check forward dependencies. Issue #222: a cross-repo reference
@@ -545,16 +560,33 @@ export async function isDependencyBlocked(
         .toLowerCase();
       // Map hit → still open; immediate block.
       if (isSameRepo && openStateMap?.has(dep.number)) {
-        return true;
+        if (blockers) {
+          blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+        } else {
+          return true;
+        }
+        continue;
       }
       let depState: IssueState;
       try {
         depState = await fetcher.getIssueState(depRepo, dep.number);
       } catch {
         // If we can't check, assume blocked (fail safe)
-        return true;
+        if (blockers) {
+          blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+        } else {
+          return true;
+        }
+        continue;
       }
-      if (depState.state === "OPEN") return true;
+      if (depState.state === "OPEN") {
+        if (blockers) {
+          blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+        } else {
+          return true;
+        }
+        continue;
+      }
 
       // Issue #2173: the dependency is closed, but if it belongs to another
       // milestone of *this* repo that is still open, its merged code has not
@@ -565,16 +597,28 @@ export async function isDependencyBlocked(
         depMilestone !== milestoneScope.candidateMilestone
       ) {
         try {
-          if (await milestoneScope.isMilestoneOpen(depMilestone)) return true;
+          if (await milestoneScope.isMilestoneOpen(depMilestone)) {
+            if (blockers) {
+              blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+            } else {
+              return true;
+            }
+            continue;
+          }
         } catch {
           // Unreadable open-milestone listing — fail safe (blocked) rather
           // than releasing the dependant against unmerged work.
-          return true;
+          if (blockers) {
+            blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+          } else {
+            return true;
+          }
+          continue;
         }
       }
     }
 
-    return false;
+    return blockers ? blockers.length > 0 : false;
   } catch {
     return false;
   }
