@@ -193,3 +193,133 @@ Deno.test("label denylist - an ordinary content label is still allowed", () => {
     assertEquals(mayAddLabel(label), true, `${label} must stay allowed`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// `gh label` — the definition side of the same denylist (Issue #2518)
+// ---------------------------------------------------------------------------
+
+/** Run one `gh` vector past the guard and report whether it may proceed. */
+function mayRun(
+  args: readonly string[],
+  ctx: typeof CTX | typeof CLAIMED = CTX,
+): boolean {
+  return evaluateGhCommand(args, ctx).allowed;
+}
+
+Deno.test("label denylist - gh label create/edit/delete cannot target a reserved label (Issue #2518)", () => {
+  // The name is POSITIONAL on all three verbs, so the flag-only extractor saw
+  // no labels at all and the cwd-scoped mutation fell through to the
+  // write-repo allowlist's `allowed: true`. Deleting `top-priority` removes
+  // the fleet's scheduling control from the repo outright — a worse outcome
+  // than the label application this denylist was written to stop.
+  for (
+    const args of [
+      ["label", "delete", "top-priority", "--yes"],
+      ["label", "create", "top-priority", "--color", "FF0000"],
+      ["label", "edit", "top-priority", "--color", "FF0000"],
+      ["label", "delete", "work-on", "--yes"],
+      ["label", "create", "best-model"],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, CTX);
+    assertEquals(
+      decision.allowed,
+      false,
+      `gh ${args.join(" ")} must be refused`,
+    );
+    assertEquals(decision.marker, "WORKER_LABEL_REFUSED");
+  }
+});
+
+Deno.test("label denylist - every gh label edit rename spelling is refused (Issue #2518)", () => {
+  // `--name` renames an ordinary label INTO a reserved one, which is the same
+  // capability as creating it. `normaliseGhArgs` normalises only R/l/X/f/F, so
+  // the attached `-n` spellings reach the guard unexpanded and have to be
+  // understood here.
+  for (
+    const rename of [
+      ["-n", "top-priority"],
+      ["--name", "top-priority"],
+      ["--name=top-priority"],
+      ["-n=top-priority"],
+      ["-ntop-priority"],
+    ]
+  ) {
+    const args = ["label", "edit", "any-label", ...rename];
+    assertEquals(
+      mayRun(args),
+      false,
+      `gh ${args.join(" ")} must be refused`,
+    );
+  }
+});
+
+Deno.test("label denylist - every forbidden label is covered on the definition path (Issue #2518)", () => {
+  const permitted: string[] = [];
+  for (
+    const label of [...RESERVED_LABELS, ...WORKER_FORBIDDEN_LABEL_LITERALS]
+  ) {
+    if (mayRun(["label", "delete", label, "--yes"])) permitted.push(label);
+  }
+  assertEquals(
+    permitted,
+    [],
+    "a reserved label the agent can delete outright is the hole",
+  );
+});
+
+Deno.test("label denylist - definition spellings that dodge the naive scan (Issue #2518)", () => {
+  // Case folding, the `--` end-of-flags marker, a flag ahead of the
+  // positional, and a repo flag in its attached pflag spelling.
+  for (
+    const args of [
+      ["label", "delete", "TOP-PRIORITY", "--yes"],
+      ["label", "delete", "--yes", "top-priority"],
+      ["label", "delete", "--", "top-priority"],
+      ["label", "create", "-f", "top-priority"],
+      ["label", "delete", "top-priority", "-Rowner/repo"],
+    ]
+  ) {
+    assertEquals(
+      mayRun(args),
+      false,
+      `gh ${args.join(" ")} must be refused`,
+    );
+  }
+});
+
+Deno.test("label denylist - the needs-human escalation does not extend to defining it (Issue #2518)", () => {
+  // Applying `needs-human` to the run's own issue is the sanctioned ask for a
+  // human; deleting or renaming the label itself removes that escalation
+  // route for every later run, so the exemption must not reach this path.
+  assertEquals(mayRun(["label", "delete", "needs-human", "--yes"], CLAIMED), false);
+  assertEquals(mayRun(["label", "edit", "bug", "-n", "needs-human"], CLAIMED), false);
+  // …while the escalation itself is untouched.
+  assertEquals(mayAddLabelTo("needs-human", 42, CLAIMED), true);
+});
+
+Deno.test("label denylist - ordinary gh label work is still allowed (Issue #2518)", () => {
+  for (
+    const args of [
+      ["label", "list"],
+      ["label", "create", "bug", "--color", "FF0000"],
+      ["label", "edit", "bug", "--color", "FF0000"],
+      ["label", "edit", "bug", "-n", "defect"],
+      ["label", "delete", "stale", "--yes"],
+      // A description that merely MENTIONS a reserved label is not a
+      // definition of one — refusing this would be a false positive.
+      ["label", "create", "bug", "-d", "raise with top-priority if urgent"],
+      ["label", "create", "bug", "--description", "see work-on"],
+      // `gh label clone <source-repository>` names a REPO, never a label, and
+      // creates only labels absent from the destination — it can neither
+      // rename nor delete a reserved label.
+      ["label", "clone", "owner/other-repo"],
+    ]
+  ) {
+    assertEquals(
+      mayRun(args),
+      true,
+      `gh ${args.join(" ")} must stay allowed`,
+    );
+  }
+});

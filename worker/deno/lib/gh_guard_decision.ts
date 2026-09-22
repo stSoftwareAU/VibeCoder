@@ -361,6 +361,113 @@ export function extractLabelValues(rawArgs: readonly string[]): string[] {
   return labels;
 }
 
+/**
+ * `gh label` verbs whose positional argument is a label NAME (Issue #2518).
+ *
+ * `clone` is deliberately absent: its positional is a
+ * `<source-repository>`, never a label name, and it only creates labels the
+ * destination lacks — labels absent from the source "will not be deleted or
+ * modified", so it can neither rename nor destroy a reserved label. Comparing
+ * a repo slug against the denylist would refuse legitimate clones and protect
+ * nothing.
+ */
+const LABEL_DEFINITION_VERBS: ReadonlySet<string> = new Set([
+  "create",
+  "edit",
+  "delete",
+]);
+
+/**
+ * Value-taking flags of `gh label create|edit|delete` in separated spelling.
+ *
+ * Skipping their values is what keeps a *description* that merely mentions a
+ * reserved label ( `-d "raise with top-priority"` ) from being read as a
+ * definition of one. `-f`/`--force` and `--yes` are boolean and must NOT be
+ * listed — skipping a token after them would hide the real positional.
+ */
+const LABEL_CMD_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "-c",
+  "--color",
+  "-d",
+  "--description",
+  "-R",
+  "--repo",
+]);
+
+/**
+ * Label names a `gh label create|edit|delete` invocation would define, rename
+ * to, or destroy (Issue #2518).
+ *
+ * {@link extractLabelValues} reads flag values only, because that is what
+ * `gh issue`/`gh pr` use — but `gh label`'s name is POSITIONAL, so the
+ * reserved-label denylist saw an empty list and `gh label delete top-priority`
+ * fell through to the write-repo allowlist, which waves a cwd-scoped write
+ * through. Deleting or renaming a scheduling label is a strictly worse outcome
+ * than the label *application* that denylist was written to stop.
+ *
+ * Both name-bearing positions are collected: the positional `<name>` and
+ * `gh label edit`'s `-n`/`--name` rename target. `normaliseGhArgs` normalises
+ * only `R,l,X,f,F`, so the attached `-ntop-priority` / `-n=top-priority`
+ * spellings arrive unexpanded and are expanded here rather than by widening
+ * that set, which would rewrite unrelated commands (`gh release create -nNotes`).
+ * Only index 1 of a shorthand group needs the `-n` treatment: every other
+ * shorthand `gh label edit` accepts takes a value, so it would swallow an `n`
+ * behind it as part of its own value — exactly as pflag does.
+ *
+ * @param rawArgs - Arguments passed to the `gh` binary.
+ * @returns Candidate label names, in argv order.
+ */
+function labelDefinitionNames(rawArgs: readonly string[]): string[] {
+  const args = normaliseGhArgs(rawArgs);
+  let i = 0;
+  while (args[i]?.startsWith("-")) i++;
+  if (args[i] !== "label") return [];
+  i++;
+  while (args[i]?.startsWith("-")) i++;
+  const verb = args[i];
+  if (verb === undefined || !LABEL_DEFINITION_VERBS.has(verb)) return [];
+
+  const names: string[] = [];
+  let endOfFlags = false;
+  for (let j = i + 1; j < args.length; j++) {
+    const token = args[j];
+    if (token === undefined) continue;
+    if (endOfFlags || !token.startsWith("-") || token === "-") {
+      names.push(token);
+      continue;
+    }
+    if (token === "--") {
+      endOfFlags = true;
+      continue;
+    }
+    if (token === "-n" || token === "--name") {
+      const value = args[j + 1];
+      if (value !== undefined) {
+        names.push(value);
+        j++;
+      }
+      continue;
+    }
+    if (token.startsWith("--name=")) {
+      names.push(token.slice("--name=".length));
+      continue;
+    }
+    if (token.startsWith("-n") && !token.startsWith("--")) {
+      const rest = token.slice(2);
+      names.push(rest.startsWith("=") ? rest.slice(1) : rest);
+      continue;
+    }
+    if (LABEL_CMD_VALUE_FLAGS.has(token)) {
+      j++;
+      continue;
+    }
+    // An unrecognised flag's separated value may be read as a positional on
+    // the next pass. That direction fails closed — a false refusal, never a
+    // waved-through definition.
+  }
+  return names;
+}
+
 /** Outcome of scanning a `--input` body file for reserved workflow labels. */
 type BodyScan =
   | { kind: "clean" }
@@ -649,6 +756,22 @@ export function evaluateGhCommand(
         marker: "WORKER_LABEL_REFUSED",
         reason: `label=${forbidden} verb=${info.verb} ` +
           `caller=agent-subprocess reason=reserved_workflow_label`,
+      };
+    }
+
+    // Issue #2518: the same denylist on the label DEFINITION path, where the
+    // name is positional. `isPermittedEscalation` deliberately does not apply
+    // — applying `needs-human` to the run's own issue is the sanctioned ask
+    // for a human, but deleting or renaming the label itself withdraws that
+    // route from every later run.
+    const defined = labelDefinitionNames(args)
+      .find((l) => FORBIDDEN_LABELS.has(normaliseLabelName(l)));
+    if (defined !== undefined) {
+      return {
+        allowed: false,
+        marker: "WORKER_LABEL_REFUSED",
+        reason: `label=${defined} verb=${info.verb} ` +
+          `caller=agent-subprocess reason=reserved_workflow_label_definition`,
       };
     }
 
