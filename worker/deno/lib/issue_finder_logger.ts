@@ -9,6 +9,7 @@
  */
 
 import type { FleetAuthorSetDivergence } from "./fleet_authors.ts";
+import type { DependencyBlocker } from "./issue_dependencies.ts";
 
 /**
  * Skip reason codes for issue filtering.
@@ -137,6 +138,13 @@ export interface BlockedCandidateInfo {
   milestone: string;
   /** Skip reason that caused the issue to be blocked. */
   reason: SkipReason;
+  /**
+   * The dependencies that blocked the issue (Issue #2494), when the skip
+   * reason is a dependency block. Recorded so the chain-promotion resolver
+   * can walk the chain straight from the blocked list instead of re-fetching
+   * each candidate's dependencies. Absent for every other skip reason.
+   */
+  blockers?: DependencyBlocker[];
 }
 
 /**

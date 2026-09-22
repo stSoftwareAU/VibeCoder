@@ -21,6 +21,7 @@ import {
 } from "../lib/issue_finder_common.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
+import type { IssueFetcher } from "../lib/issue_dependencies.ts";
 import type { WorkerConfig } from "../types.ts";
 
 interface MockGhData {
@@ -538,6 +539,76 @@ async function assertUntrustedLabelStripped(
     }`,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Dependency blockers are recorded on the blocked entry (Issue #2494)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - a dependency-blocked candidate records every blocker, cross-repo included",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 70,
+          title: "Blocked by dependencies",
+          url: "https://github.com/owner/repo/issues/70",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-10T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-10T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Blocked by dependencies", body: "" },
+    });
+
+    // An open sub-issue (child blocker) plus a cross-repo forward dependency.
+    const fetcher: IssueFetcher = {
+      getSubIssues: (_repo: string, issueNumber: number) =>
+        Promise.resolve(issueNumber === 70 ? [7] : []),
+      getIssueBody: (_repo: string, issueNumber: number) =>
+        Promise.resolve(
+          issueNumber === 70 ? "Depends on other/repo#9" : "",
+        ),
+      getIssueState: (_repo: string, issueNumber: number) =>
+        Promise.resolve({
+          number: issueNumber,
+          state: "OPEN" as const,
+          title: `#${issueNumber}`,
+        }),
+    };
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(result.candidates.length, 0);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 70);
+    assertEquals(entry?.reason, "dependency-blocked");
+    // Every blocker `isDependencyBlocked` found, with the cross-repo
+    // dependency keeping its own repo.
+    assertEquals(entry?.blockers, [
+      { repo: "owner/repo", number: 7, kind: "child" },
+      { repo: "other/repo", number: 9, kind: "depends-on" },
+    ]);
+  },
+);
 
 Deno.test(
   "collect_label_candidates - strips a custom_label_prompts label added by an untrusted actor (Issue #847)",
