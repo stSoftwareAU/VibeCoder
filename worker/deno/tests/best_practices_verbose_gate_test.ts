@@ -162,8 +162,7 @@ const CLAUSES: readonly {
   {
     // An explicitly loud invocation is as much a finding as a missing flag.
     name: "explicit-verbosity detections",
-    holds: (t) =>
-      t.includes("--verbose") && t.includes("set -x"),
+    holds: (t) => t.includes("--verbose") && t.includes("set -x"),
   },
   {
     name: "per-ecosystem quiet flags",
@@ -179,7 +178,8 @@ const CLAUSES: readonly {
   },
   {
     name: "severity band",
-    holds: (t) => t.includes("BP-VERBOSE-GATE") && t.includes("severity:medium"),
+    holds: (t) =>
+      t.includes("BP-VERBOSE-GATE") && t.includes("severity:medium"),
   },
   {
     // Phase 3 rule 4 governs the waiver; the stanza names its own id so a

@@ -89,7 +89,7 @@ the convention itself.
 ## Check coverage
 
 The orchestrating prompt (`prompts/best_practices/`, from v3 onward)
-frames three cross-bucket concerns at the orchestrator level. Each is
+frames four cross-bucket concerns at the orchestrator level. Each is
 named once in the prompt; the per-language detection sits in the
 matching bucket guide under
 [`prompts/best_practices/buckets/`](../prompts/best_practices/buckets/).
@@ -133,6 +133,11 @@ matching bucket guide under
   (Gradle 7+, Spring Boot 3.x, unversioned Maven plug-ins). The
   `github-actions` bucket is again out of scope; workflow-config
   deprecations are owned by the github-actions-audit scan.
+- **Verbose gate output.** The quality gate and the pull-request
+  CI's test/build/install steps must be quiet when green and complete
+  when red — see
+  [`### Cross-bucket: verbose gate output`](#cross-bucket-verbose-gate-output-check)
+  below for the fixed id, the flag table, and the filing rule.
 
 ### Rust bug-class checks
 
@@ -752,6 +757,86 @@ files `severity:high`. The same fail-safe applies to the actionlint
 This is defence in depth: the sibling root-cause fix (parent)
 makes the zero-load *stop happening*; this fail-safe makes a zero-load
 *harmless* if it ever recurs.
+
+## Cross-bucket: verbose gate output check
+
+The verbose-gate check runs on **every** best-practices scan,
+regardless of which bucket the SLOC-weighted draw picked — it lives
+in the `### Cross-bucket: verbose gate output` stanza of
+[`prompts/best_practices/prompt.md`](../prompts/best_practices/prompt.md),
+not in a per-language bucket guide. The five bucket guides that used
+to carry a full "Test output" section (`general`, `typescript`,
+`rust`, `java`, `react`) now hold a one-line pointer back to the
+stanza instead of a duplicate copy — asserted by
+[`worker/deno/tests/best_practices_verbose_gate_test.ts`](../worker/deno/tests/best_practices_verbose_gate_test.ts),
+which fails if any guide still carries a full copy or if the stanza
+heading goes missing from the orchestrator prompt.
+
+**"Quiet" is the same definition as the #2430 fix**: a green run
+prints no per-test pass line and at most one summary line per gate
+stage; a red run still prints every failure with its test name,
+assertion message, and stack trace — there is no line cap on
+failures.
+
+**Static evidence only.** The check reads the quality-gate script,
+the default test task, and the pull-request CI workflow steps **as
+text** — it never runs the suite. It flags:
+
+- test runners, build steps, or install steps with **no quiet or
+  failures-only flag** set, and
+- any explicit **`--verbose`**, **`-v`**, or **`set -x`** on those
+  same surfaces.
+
+On-demand test tasks (ones not wired into the default quality gate or
+PR CI path) are out of scope — only the surfaces a green run actually
+exercises are checked.
+
+| Ecosystem | Quiet / failures-only flag |
+| --------- | --------------------------- |
+| Deno | `deno test --reporter=dot` |
+| JavaScript/TypeScript (Jest) | `jest --silent` |
+| Rust | `cargo test -q` |
+| Java (Maven) | `mvn -q` |
+| Java (Gradle) | `testLogging` minimal/quiet configuration |
+| Shell (Bats) | `bats --status-level=fail` (`statelessTestsetInfoReporter`-style suppression for stateless output) |
+
+**Fixed id, filed once per repository.** Unlike ordinary findings
+(hashed per `{ repo, bucket, title, file }` — see
+[Stable finding ID recipe](../prompts/best_practices/prompt.md)),
+a verbose-gate finding always uses the fixed id `BP-VERBOSE-GATE` at
+`severity:medium`, tagged `best-practices` + the drawn bucket's
+`lang:` label, and counts against the run's 6-issue cap. The finding
+body lists every verbose line by file and line number, with the
+ecosystem's quiet flag suggested alongside it. Because the id is
+fixed rather than hashed, a scan that draws a *different* bucket next
+time still recognises the issue as already open and files nothing —
+the same known-open dedup the CI-gate check (`BP-LINTER-<bucket>`,
+above) relies on. Repositories already known to be verbose at the
+time the check shipped are excluded from the hand-filed backlog; the
+check still fires for them on their next scan like any other repo.
+
+**Waivable, fail-closed.** A finding is suppressed only by the
+governed marker described in
+[Suppression-comment syntax](#suppression-comment-syntax):
+`best-practice-ignore: BP-VERBOSE-GATE` with an `author=`, an
+`expires=` date, and a reason. A missing field or a passed expiry
+date is **not** honoured — the check fails closed and files the
+finding anyway.
+
+**Never opens a PR** — see [No PR, ever](#no-pr-ever) below; the fix
+rides the repository's own `work-on` PR, which must confirm on a
+deliberately failing test that the test name, assertion message, and
+stack trace still print after the quiet flag is added.
+
+```mermaid
+flowchart LR
+    A[Scan draws a bucket] --> B["Read quality-gate script,\ndefault test task, PR CI steps (text only)"]
+    B --> C{Any runner/build/install\nstep missing a quiet flag,\nor uses --verbose/-v/set -x?}
+    C -- no --> D[No finding]
+    C -- yes --> E{BP-VERBOSE-GATE\nalready open?}
+    E -- yes --> F[File nothing — dedup]
+    E -- no --> G[File one issue,\nseverity:medium,\nid BP-VERBOSE-GATE]
+```
 
 ## No PR, ever
 
