@@ -2027,7 +2027,7 @@
       "ledger": "docs/audits/security-sweep-2450-maintenance-lease-store.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: maintenance_lease_store.ts (#2450)",
       "status": "swept",
-      "sweptAt": "88db2f9a",
+      "sweptAt": "9d7414ff7b93b5895693314b7edc04a77def3a70",
       "paths": [
         "worker/deno/lib/maintenance_lease_store.ts"
       ]
