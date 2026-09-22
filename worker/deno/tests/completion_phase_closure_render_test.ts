@@ -16,6 +16,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
@@ -257,7 +258,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         Promise.resolve({ ok: false as const, error: new Error("none") }),
       recoverExistingPr: () =>
         Promise.resolve({ ok: true, value: "recovered" }),
-      finalisePr: () => Promise.resolve({ ok: true, value: "armed" }),
+      finalisePr: () =>
+        Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "armed" },
+        }),
     },
   });
 

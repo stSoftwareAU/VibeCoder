@@ -13,10 +13,11 @@
  */
 
 import { HeadDivergedError } from "../git_branch.ts";
-import type {
-  IssueContext,
-  PhaseResult,
-  PhaseState,
+import {
+  type IssueContext,
+  type PhaseResult,
+  type PhaseState,
+  recordClaudeRunStats,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
@@ -67,8 +68,17 @@ import {
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
 import { createPullRequestViaRest } from "../pr_create_rest.ts";
 import { ensureBranchCurrent } from "../branch_currency.ts";
+import {
+  buildRebasePassPrompt,
+  postBranchConflictComment,
+  runDeclinedRebasePass,
+} from "../branch_conflict_pass.ts";
 import { rebaseOntoBase } from "../stale_branch_lineage.ts";
 import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
+import {
+  autoMergeOutcomeNeedsComment,
+  buildArmingReasonComment,
+} from "../pr_auto_merge.ts";
 import { buildBumpRejectionComment, buildBumpSkipNote } from "../bump_deps.ts";
 import {
   formatBuildStamp,
@@ -267,10 +277,29 @@ async function armAutoMergeAtCreation(
     );
   }
   const workDir = config.workDir;
+  // Issue #2457: one comment seam, shared by `finalisePr`'s own note and the
+  // caller's reason comment, so every PR comment goes through the same
+  // `EnableAutoMergeOptions.commentFn` shape.
+  const commentFn = async (
+    r: string,
+    n: number,
+    body: string,
+  ): Promise<void> => {
+    await deps.github.runGhCommand([
+      "pr",
+      "comment",
+      String(n),
+      "--repo",
+      r,
+      "--body",
+      body,
+    ]);
+  };
   const result = await deps.pr.finalisePr({
     repo,
     prNumber,
     skipAutoMerge,
+    commentFn,
     // Route the milestone gates' warnings into the worker log rather than
     // `console.warn`, which no operator reads.
     log: (message: string) => logger.warn(message, { repo, prNumber }),
@@ -305,10 +334,33 @@ async function armAutoMergeAtCreation(
   });
   if (result.ok) {
     if (!skipAutoMerge) {
-      logger.info(`Auto-merge armed at creation: ${result.value}`, {
+      logger.info(
+        `Auto-merge ${result.value.result} at creation: ${result.value.message}`,
+        { repo, prNumber },
+      );
+    }
+    // Issue #2457: a refusal to arm must carry a reason on the PR, exactly
+    // once per run, naming the reason and stating the sweep retries. Success
+    // and already-explained outcomes stay quiet on the comment channel.
+    if (
+      !skipAutoMerge &&
+      autoMergeOutcomeNeedsComment(result.value)
+    ) {
+      const body = buildArmingReasonComment(result.value);
+      logger.warn(`Auto-merge NOT armed at creation: ${result.value.message}`, {
         repo,
         prNumber,
       });
+      try {
+        await commentFn(repo, prNumber, body);
+      } catch (error: unknown) {
+        logger.warn(
+          `Could not post the auto-merge reason comment on ${repo}#${prNumber}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { repo, prNumber },
+        );
+      }
     }
     return;
   }
@@ -1131,7 +1183,53 @@ async function completionBody(
     rebase: rebaseOntoBase,
     log: (m: string) => logger.info(m),
   });
-  if (currency.kind === "declined" || currency.kind === "unknown") {
+  // Issue #2459: a decline means the content genuinely diverged, and until now
+  // the PR was raised on the stale head and sat unmergeable until the conflict
+  // ladder found it hours later. Spend exactly one agent pass trying to close
+  // that gap — one invocation, bounded by the cycle deadline, no retry loop and
+  // no polling. `branch_currency.ts` stays a non-resolver; the resolving lives
+  // here. `unknown` is unchanged: it means we could not read the comparison, so
+  // there is nothing to resolve.
+  let branchConflictComment: string | null = null;
+  if (currency.kind === "declined") {
+    const pass = await runDeclinedRebasePass({
+      branch: state.branchName,
+      baseBranch,
+      detail: currency.detail,
+      runGit: deps.git.runGitCommand,
+      cwd: state.repoPath,
+      deadlineEpochMs: ctx.cycleDeadlineEpochMs,
+      log: (m: string) => logger.info(m),
+      runAgentFn: async (request) => {
+        const result = await deps.claude.runClaudeWithRetry(
+          {
+            prompt: buildRebasePassPrompt(request),
+            phase: "issue",
+            repo,
+            issueNumber,
+            timeoutSeconds: Math.min(
+              config.claudeTimeout,
+              request.budgetSeconds ?? config.claudeTimeout,
+            ),
+            killAfterSeconds: config.claudeKillAfter,
+            model: config.claudeModel || undefined,
+            cwd: state.repoPath,
+            logger,
+          },
+          { maxRetries: config.maxRateLimitRetries },
+        );
+        if (result.ok) recordClaudeRunStats(state, result.value);
+        return result;
+      },
+    });
+    if (pass.kind === "handed-off") {
+      branchConflictComment = pass.comment;
+      logger.warn(
+        `'${state.branchName}' was not brought up to date before its PR — ` +
+          `CI may run twice: ${pass.detail}`,
+      );
+    }
+  } else if (currency.kind === "unknown") {
     logger.warn(
       `'${state.branchName}' was not brought up to date before its PR — ` +
         `CI may run twice: ${currency.detail}`,
@@ -2186,6 +2284,18 @@ async function completionBody(
         }
       }
     }
+
+    // Issue #2459: the rebase pass could not bring this branch forward, so say
+    // so once — which paths diverged, and that the conflict ladder owns the PR
+    // from here. Exactly one comment; the PR itself was raised regardless.
+    await postBranchConflictComment({
+      repo,
+      prNumber,
+      comment: branchConflictComment,
+      postComment: (r, n, body) =>
+        deps.github.createClient(logger).postComment(r, n, body),
+      warn: (m: string) => logger.warn(m),
+    });
   } catch (err) {
     // Post-PR finalisation is best-effort
     logger.warn("Post-PR finalisation error (non-fatal)", {

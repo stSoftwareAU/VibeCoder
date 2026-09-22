@@ -20,6 +20,7 @@ import {
   workOnIssueSetupBranch,
 } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -2301,7 +2302,10 @@ Deno.test("completion - arms auto-merge on a milestone child PR at creation (Iss
         Promise.resolve({ ok: false, error: new Error("No PR found") }),
       finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
         capturedSkipAutoMerge = opts.skipAutoMerge;
-        return Promise.resolve({ ok: true, value: "finalised" });
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "finalised" },
+        });
       }) as unknown as typeof deps.pr.finalisePr,
     },
   });
@@ -2346,7 +2350,10 @@ Deno.test("completion - a behind milestone is offered an in-cycle sync before ar
         }) => Promise<{ status: string; detail: string }>;
       }) => {
         capturedHook = opts.syncBehindMilestone;
-        return Promise.resolve({ ok: true, value: "finalised" });
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "finalised" },
+        });
       }) as unknown as typeof deps.pr.finalisePr,
     },
   });
@@ -2374,7 +2381,10 @@ Deno.test("completion - enables auto-merge for non-milestone PRs (Issue #1125)",
         Promise.resolve({ ok: false, error: new Error("No PR found") }),
       finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
         capturedSkipAutoMerge = opts.skipAutoMerge;
-        return Promise.resolve({ ok: true, value: "finalised" });
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "finalised" },
+        });
       }) as unknown as typeof deps.pr.finalisePr,
     },
   });
@@ -2410,7 +2420,10 @@ Deno.test("completion - a repository that opts out with skip_auto_merge is not a
         Promise.resolve({ ok: false, error: new Error("No PR found") }),
       finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
         capturedSkipAutoMerge = opts.skipAutoMerge;
-        return Promise.resolve({ ok: true, value: "finalised" });
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "finalised" },
+        });
       }) as unknown as typeof deps.pr.finalisePr,
     },
   });
@@ -2457,7 +2470,10 @@ Deno.test("completion - a repository without the opt-out is still armed at creat
         Promise.resolve({ ok: false, error: new Error("No PR found") }),
       finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
         capturedSkipAutoMerge = opts.skipAutoMerge;
-        return Promise.resolve({ ok: true, value: "finalised" });
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "finalised" },
+        });
       }) as unknown as typeof deps.pr.finalisePr,
     },
   });
@@ -2489,7 +2505,10 @@ Deno.test("completion - the arming outcome is logged at PR creation (Issue #1136
       finalisePr: (() =>
         Promise.resolve({
           ok: true,
-          value: "PR #5 left on milestone/oidc-auth: checks pending",
+          value: {
+            result: AutoMergeResult.Deferred,
+            message: "PR #5 left on milestone/oidc-auth: checks pending",
+          },
         })) as unknown as typeof deps.pr.finalisePr,
     },
   });
@@ -2504,11 +2523,215 @@ Deno.test("completion - the arming outcome is logged at PR creation (Issue #1136
   assertEquals(result.status, "continue");
   assertEquals(
     logMessages.some((m) =>
-      m.includes("Auto-merge armed at creation") && m.includes("checks pending")
+      m.includes("Auto-merge deferred at creation") &&
+      m.includes("checks pending")
     ),
     true,
     `expected the arming outcome in the log: ${logMessages.join(" | ")}`,
   );
+});
+
+// Issue #2457: a refusal to arm at creation must carry one reason comment on
+// the PR, naming the reason and stating the sweep retries — never silent.
+Deno.test("completion - a refused arming posts one reason comment and warns (Issue #2457)", async () => {
+  const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  const ghCalls: string[][] = [];
+  const warnings: string[] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[1] === "create" || args[1] === "view") {
+          return Promise.resolve("https://github.com/org/repo/pull/5");
+        }
+        return Promise.resolve("");
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            result: AutoMergeResult.Failed,
+            message: "Could not enable auto-merge on PR #5: HTTP 500",
+          },
+        })) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+  const originalWarn = deps.logger.warn;
+  deps.logger.warn = ((msg: string, data?: Record<string, unknown>) => {
+    warnings.push(msg);
+    return originalWarn.call(deps.logger, msg, data);
+  }) as typeof deps.logger.warn;
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
+  assertEquals(comments.length, 1, JSON.stringify(ghCalls));
+  assertStringIncludes(comments[0]!.join(" "), "HTTP 500");
+  assertStringIncludes(comments[0]!.join(" "), "Auto-Merge sweep retries");
+  assertEquals(
+    warnings.some((m) => m.includes("Auto-merge NOT armed at creation")),
+    true,
+    warnings.join(" | "),
+  );
+});
+
+// Issue #2457: a latched refusal names the latch and never retries in-run.
+Deno.test("completion - a latched refusal posts one comment naming the quota (Issue #2457)", async () => {
+  const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  const ghCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[1] === "create" || args[1] === "view") {
+          return Promise.resolve("https://github.com/org/repo/pull/5");
+        }
+        return Promise.resolve("");
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            result: AutoMergeResult.Failed,
+            latched: true,
+            message:
+              "Could not enable auto-merge on PR #5: gh command skipped: " +
+              "GraphQL primary quota exhausted (API rate limit already exceeded)",
+          },
+        })) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
+  assertEquals(comments.length, 1, JSON.stringify(ghCalls));
+  assertStringIncludes(comments[0]!.join(" "), "no further auto-merge attempt");
+});
+
+// Issue #2457: a route-gate deferral nothing else explained gets one comment.
+Deno.test("completion - a route-gate Deferred outcome posts one reason comment (Issue #2457)", async () => {
+  const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  const ghCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[1] === "create" || args[1] === "view") {
+          return Promise.resolve("https://github.com/org/repo/pull/5");
+        }
+        return Promise.resolve("");
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            result: AutoMergeResult.Deferred,
+            message: "PR #5 left on milestone/oidc-auth: checks pending",
+          },
+        })) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
+  assertEquals(comments.length, 1, JSON.stringify(ghCalls));
+  assertStringIncludes(comments[0]!.join(" "), "checks pending");
+  assertStringIncludes(comments[0]!.join(" "), "Auto-Merge sweep retries");
+});
+
+// Issue #2457: a NotAllowed refusal is one of the three outcomes that comment.
+Deno.test("completion - a NotAllowed outcome posts one reason comment (Issue #2457)", async () => {
+  const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  const ghCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[1] === "create" || args[1] === "view") {
+          return Promise.resolve("https://github.com/org/repo/pull/5");
+        }
+        return Promise.resolve("");
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            result: AutoMergeResult.NotAllowed,
+            message:
+              "Auto-merge not allowed for PR #5 — target branch likely not protected",
+          },
+        })) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
+  assertEquals(comments.length, 1, JSON.stringify(ghCalls));
+  assertStringIncludes(comments[0]!.join(" "), "not protected");
+  assertStringIncludes(comments[0]!.join(" "), "Auto-Merge sweep retries");
+});
+
+// Issue #2457: an already-explained outcome posts no second comment.
+Deno.test("completion - a NotEnabledOnRepo outcome posts no second comment (Issue #2457)", async () => {
+  const ctx = makeContext({ milestoneTitle: "OIDC Auth" });
+  const state = makeState({ milestoneBranch: "milestone/oidc-auth" });
+  const ghCalls: string[][] = [];
+  const deps = createMockDeps({
+    github: {
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        if (args[1] === "create" || args[1] === "view") {
+          return Promise.resolve("https://github.com/org/repo/pull/5");
+        }
+        return Promise.resolve("");
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      finalisePr: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            result: AutoMergeResult.NotEnabledOnRepo,
+            message: "Auto-merge is not enabled on this repository",
+          },
+        })) as unknown as typeof deps.pr.finalisePr,
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  const comments = ghCalls.filter((a) => a[1] === "comment" && a[2] === "5");
+  assertEquals(comments.length, 0, JSON.stringify(ghCalls));
 });
 
 // Issue #1136: the recovery path arms the same way the creation path does —
@@ -2526,7 +2749,10 @@ Deno.test("completion - arms auto-merge on a recovered milestone child PR (idemp
         }),
       finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
         capturedSkipAutoMerge = opts.skipAutoMerge;
-        return Promise.resolve({ ok: true, value: "finalised" });
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "finalised" },
+        });
       }) as unknown as typeof deps.pr.finalisePr,
     },
   });
@@ -2559,7 +2785,10 @@ Deno.test("completion - a recovered PR honours the repository's skip_auto_merge 
         }),
       finalisePr: ((opts: { skipAutoMerge?: boolean }) => {
         capturedSkipAutoMerge = opts.skipAutoMerge;
-        return Promise.resolve({ ok: true, value: "finalised" });
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "finalised" },
+        });
       }) as unknown as typeof deps.pr.finalisePr,
     },
   });
