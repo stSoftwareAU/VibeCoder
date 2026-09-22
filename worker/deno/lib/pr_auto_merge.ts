@@ -256,6 +256,68 @@ async function postBehindSyncReason(
   }
 }
 
+/**
+ * Marker on the comment explaining that a milestone summary PR was left
+ * unarmed because its open-children count could not be read (Issue #2479).
+ */
+export const OPEN_CHILDREN_LOOKUP_MARKER =
+  "<!-- vibe-open-children-lookup-failed -->";
+
+/**
+ * PRs already told their open-children count could not be read.
+ *
+ * Deliberately NOT cleared by `resetIterationCaches` the way
+ * `postedBehindSyncReason` is: a lookup that stays broken is re-swept every
+ * cycle, and the PR is owed one explanation, not one per cycle (Issue #2479).
+ */
+const postedOpenChildrenLookupReason = new Set<string>();
+
+/** Drop the per-PR unreadable-count comment registry. Tests only. */
+export function resetOpenChildrenLookupComments(): void {
+  postedOpenChildrenLookupReason.clear();
+}
+
+/**
+ * Tell a PR its open-children count could not be read, at most once.
+ *
+ * The key is recorded only after a successful post, so a post that failed is
+ * retried on the next sweep rather than latched as "explained".
+ *
+ * @returns true when the PR carries the explanation, false when the post failed
+ */
+async function postOpenChildrenLookupReason(
+  repo: string,
+  prNumber: number,
+  milestoneNumber: number,
+  milestoneTitle: string,
+  detail: string,
+  commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
+  log: (message: string) => void,
+): Promise<boolean> {
+  const key = `${repo}#${prNumber}`;
+  if (postedOpenChildrenLookupReason.has(key)) return true;
+  const body = [
+    OPEN_CHILDREN_LOOKUP_MARKER,
+    `Auto-merge is not armed: the open-children count for milestone ` +
+    `#${milestoneNumber} '${milestoneTitle}' could not be read — ${detail}`,
+    "",
+    "Merging a summary PR over unread children could close a milestone that " +
+    "still has open work, so the gate refuses (Issue #3909). The Auto-Merge " +
+    "sweep retries every cycle and arms the PR once the count reads.",
+  ].join("\n");
+  try {
+    await commentFn(repo, prNumber, body);
+    postedOpenChildrenLookupReason.add(key);
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(
+      `WARNING: could not post the unreadable open-children count on ${repo}#${prNumber}: ${message}`,
+    );
+    return false;
+  }
+}
+
 /** Result of enabling auto-merge. */
 export interface EnableAutoMergeResult {
   /** Outcome of the attempt */
@@ -274,6 +336,13 @@ export interface EnableAutoMergeResult {
    * branch is neither armed nor escalated — it is re-read next scan.
    */
   deferral?: "milestone-behind" | "sync-base-unreadable";
+  /**
+   * Whether a comment explaining this block is on the PR — set on both
+   * `blocked_open_children` reasons (Issue #2479). `false` means the block was
+   * announced nowhere but the log, so a caller that comments on unarmed PRs
+   * must speak for it rather than assume the gate already did.
+   */
+  blockCommented?: boolean;
 }
 
 /**
@@ -518,6 +587,7 @@ export async function enableAutoMerge(
       prNumber,
       gate,
       ghCommandFn,
+      commentFn,
       log,
       options.authorOptions,
     );

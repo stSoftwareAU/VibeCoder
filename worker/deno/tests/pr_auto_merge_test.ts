@@ -15,7 +15,9 @@ import {
   isTransientError,
   logAutoMergeOutcome,
   MILESTONE_BEHIND_SYNC_MARKER,
+  OPEN_CHILDREN_LOOKUP_MARKER,
   resetBehindSyncComments,
+  resetOpenChildrenLookupComments,
 } from "../lib/pr_auto_merge.ts";
 import {
   _resetMilestoneBehindMemo,
@@ -260,6 +262,9 @@ Deno.test("pr_auto_merge - blocks summary-PR auto-merge while milestone has open
   assertEquals(state.posted.length, 1);
   assertStringIncludes(state.posted[0]!, OPEN_CHILDREN_BLOCK_MARKER);
   assertStringIncludes(state.posted[0]!, "#3866");
+  // Issue #2479: a genuine block keeps the gate's own comment and adds none.
+  assertEquals(state.posted[0]!.includes(OPEN_CHILDREN_LOOKUP_MARKER), false);
+  assertEquals(result.blockCommented, true);
   // Observable warning naming milestone, PR and blocking children.
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0]!, "owner/repo#900");
@@ -333,17 +338,86 @@ Deno.test("pr_auto_merge - resolves the head branch itself when the caller omits
   assertEquals(state.merges, 0);
 });
 
+/** A `gh` stub whose milestone-children query always fails (Issue #2479). */
+function createUnreadableChildrenStub(state: GateStubState) {
+  const base = createGateStub(state);
+  return async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("/issues?milestone=")) {
+      throw new Error("HTTP 502 Bad Gateway");
+    }
+    return await base(args);
+  };
+}
+
 Deno.test("pr_auto_merge - blocks the merge when the open-children count cannot be read", async () => {
+  resetOpenChildrenLookupComments();
   const state: GateStubState = {
     openChildren: [],
     comments: [],
     merges: 0,
     posted: [],
   };
-  const base = createGateStub(state);
+  const logs: string[] = [];
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: createUnreadableChildrenStub(state),
+    log: (message) => logs.push(message),
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.merges, 0);
+  assertStringIncludes(logs[0]!, "could not be read");
+  // Issue #2479: an unreadable count must not leave the PR unarmed in
+  // silence — exactly one comment names the failed lookup and the retry.
+  assertEquals(result.blockCommented, true);
+  assertEquals(state.posted.length, 1);
+  assertStringIncludes(state.posted[0]!, OPEN_CHILDREN_LOOKUP_MARKER);
+  assertStringIncludes(state.posted[0]!, "could not be read");
+  assertStringIncludes(state.posted[0]!, "HTTP 502 Bad Gateway");
+  assertStringIncludes(state.posted[0]!, "retries");
+});
+
+Deno.test("pr_auto_merge - repeated sweeps over an unreadable count post one comment", async () => {
+  resetOpenChildrenLookupComments();
+  const state: GateStubState = {
+    openChildren: [],
+    comments: [],
+    merges: 0,
+    posted: [],
+  };
+  const ghFn = createUnreadableChildrenStub(state);
+
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const result = await enableAutoMerge({
+      repo: "owner/repo",
+      prNumber: GATE_PR,
+      headRefName: GATE_BRANCH,
+      ghCommandFn: ghFn,
+      log: () => {},
+    });
+    assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  }
+
+  assertEquals(state.merges, 0);
+  // Issue #2479: the sweep explains itself once, not every cycle.
+  assertEquals(state.posted.length, 1);
+});
+
+Deno.test("pr_auto_merge - a failed lookup comment post is reported, not swallowed", async () => {
+  resetOpenChildrenLookupComments();
+  const state: GateStubState = {
+    openChildren: [],
+    comments: [],
+    merges: 0,
+    posted: [],
+  };
+  const base = createUnreadableChildrenStub(state);
   const ghFn = async (args: string[]): Promise<string> => {
-    if (args.join(" ").includes("/issues?milestone=")) {
-      throw new Error("HTTP 502 Bad Gateway");
+    if (args.join(" ").includes("pr comment")) {
+      throw new Error("HTTP 403 Forbidden");
     }
     return await base(args);
   };
@@ -358,10 +432,10 @@ Deno.test("pr_auto_merge - blocks the merge when the open-children count cannot 
   });
 
   assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
-  assertEquals(state.merges, 0);
-  // Unverifiable state is loud, but must not spam the PR thread.
   assertEquals(state.posted.length, 0);
-  assertStringIncludes(logs[0]!, "could not be read");
+  // Absence of a success marker is not success: nothing was said on the PR.
+  assertEquals(result.blockCommented, false);
+  assert(logs.some((line) => line.includes("HTTP 403 Forbidden")));
 });
 
 Deno.test("pr_auto_merge - an ordinary fix PR is unaffected by the milestone gate", async () => {
