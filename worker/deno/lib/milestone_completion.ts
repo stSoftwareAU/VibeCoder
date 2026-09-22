@@ -732,7 +732,10 @@ Raise a PR to merge the milestone branch to \`${defaultBranch}\`.`;
  *
  * Returns `null` when the output carries no `/pull/<n>` segment — an
  * unreadable URL is never guessed at, because the number is what every
- * follow-up write (arming, commenting) is addressed to.
+ * follow-up write (arming, commenting) is addressed to. `run_outcome.ts`'s
+ * `prNumberFromUrl` answers `0` for the same input, which would address the
+ * writes below at PR #0; the null sentinel is what keeps the failure loud, and
+ * it costs no dependency edge from the milestone path into run reporting.
  */
 function summaryPrNumberFromUrl(prUrl: string): number | null {
   const match = /\/pull\/(\d+)/.exec(prUrl);
@@ -861,8 +864,8 @@ async function createMilestoneSummaryPr(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   cache?: IssueCache,
-  skipAutoMerge = false,
   authorOptions?: AlertDedupAuthorOptions,
+  skipAutoMerge = false,
 ): Promise<SummaryPrOutcome> {
   // Idempotent check — do not create duplicate PRs
   const existingResult = await hasExistingMilestoneSummaryPr(
@@ -1522,8 +1525,8 @@ async function processRepoMilestones(
       ghCommandFn,
       log,
       cache,
-      skipAutoMerge,
       authorOptions,
+      skipAutoMerge,
     );
     if (prResult.outcome === "created") {
       onPrCreated(1);
