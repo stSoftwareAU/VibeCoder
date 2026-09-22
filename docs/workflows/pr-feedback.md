@@ -108,6 +108,13 @@ monitor the PR — author is sufficient.
   but auto-merge is only enabled **after** merge issues have been fixed. The
   worker must not enable auto-merge on a PR that has merge conflicts or is
   otherwise not mergeable.
+- **Close the issue in the pass that merges its PR** (Issue #2502) — GitHub
+  honours `Closes #N` only on a merge into the default branch, so a PR the
+  worker merges into a milestone branch would leave its issue open: claimable
+  by a sibling host, and invisible to milestone completion. When the sweep's
+  own merge lands, it closes the linked issue (from the branch name, else the
+  PR title) in the same pass. The merged-PR close-out sweep remains the
+  backstop for merges the worker did not perform.
 - Feedback is processed once: after handling, comments are marked (e.g. eyes
   reaction) and reviews are dismissed so they are not picked up again.
 

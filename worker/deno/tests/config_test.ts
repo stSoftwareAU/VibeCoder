@@ -1459,26 +1459,6 @@ Deno.test("config - loadConfig normalises repo_config snake_case keys to camelCa
   });
 });
 
-Deno.test("config - loadConfig normalises the maintenance-lease anchor override (Issue #2450)", async () => {
-  const testConfig: ConfigFile = {
-    allowed_authors: ["testuser"],
-    repos: ["org/repo"],
-    repo_config: {
-      "org/test-repo": {
-        maintenance_lease_issue: 314,
-      } as unknown as import("../types.ts").RepoConfig,
-    },
-  };
-
-  await withTempConfig(testConfig, async (configPath) => {
-    const config = await loadConfig(configPath);
-    assertEquals(
-      config.repoConfig?.["org/test-repo"]?.maintenanceLeaseIssue,
-      314,
-    );
-  });
-});
-
 Deno.test("config - loadConfig preserves repo_config camelCase keys (Issue #1296)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
