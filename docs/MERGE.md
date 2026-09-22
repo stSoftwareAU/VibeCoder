@@ -467,9 +467,13 @@ log marker rather than withholding the arming.
   `--auto` there merges immediately whatever CI says (Issue #4375), and the
   gated direct merge only measures the head against its own base, not the base
   against the default branch. Either route would land the child on a stale tip
-  — the side-pick this section exists to prevent — so a behind *unprotected*
-  base posts its sync reason and then defers to the next scan, once the
-  periodic 1.72 sweep has levelled the branch (Issue #2460).
+  — the side-pick this section exists to prevent — so a behind base that does
+  not enforce required checks defers to the next scan instead, until the
+  periodic 1.72 sweep has levelled the branch (Issue #2460). A protection
+  lookup that *fails* reads as unprotected here, as it does everywhere else in
+  the arming path. The protection is settled **before** the sync reason is
+  written, so that one comment says which of the two happened — a held PR is
+  never told it was armed.
 - **The milestone sync PR is exempt.** Its base *is* the milestone branch and
   its head is `sync/milestone-*` — it is the PR that clears "behind". Deferring
   it for the state it exists to fix would deadlock the milestone: the sync
