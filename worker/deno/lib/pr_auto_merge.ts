@@ -996,18 +996,26 @@ export async function enableAutoMerge(
 /**
  * Refuse an auto-merge the milestone open-children gate blocked (Issue #3909).
  *
- * Always loud: the warning names the milestone, the summary PR and the
- * blocking children. On an open-children block the PR also gets exactly one
- * explanatory comment (the gate de-duplicates against its marker), so a
- * repeating scan cycle explains itself once and then stays quiet. The PR is
- * never closed — the milestone is genuinely unfinished and a human may still
- * choose to merge it by hand.
+ * Always loud: the warning names the milestone, the summary PR and either the
+ * blocking children or the lookup that failed. Both block reasons also explain
+ * themselves on the PR exactly once — the open-children gate de-duplicates
+ * against its own marker, the unreadable-count comment against its per-PR
+ * registry — so a repeating scan cycle explains itself once and then stays
+ * quiet (Issue #2479). `blockCommented` reports whether that explanation is
+ * actually on the PR, so a caller that comments on unarmed PRs can speak for
+ * the block rather than assume the gate already did. The PR is never closed —
+ * a human may still choose to merge it by hand.
  */
 async function refuseMilestoneMerge(
   repo: string,
   prNumber: number,
   gate: Extract<SummaryPrMergeDecision, { decision: "block" }>,
   ghCommandFn: (args: string[]) => Promise<string>,
+  commentFn: (
+    repo: string,
+    prNumber: number,
+    body: string,
+  ) => Promise<void>,
   log: (message: string) => void,
   authorOptions?: AlertDedupAuthorOptions,
 ): Promise<EnableAutoMergeResult> {
@@ -1017,7 +1025,20 @@ async function refuseMilestoneMerge(
       `for milestone #${gate.milestoneNumber} '${gate.milestoneTitle}' — its ` +
       `open-children count could not be read: ${gate.message} (Issue #3909)`;
     log(message);
-    return { result: AutoMergeResult.BlockedOpenChildren, message };
+    const blockCommented = await postOpenChildrenLookupReason(
+      repo,
+      prNumber,
+      gate.milestoneNumber,
+      gate.milestoneTitle,
+      gate.message,
+      commentFn,
+      log,
+    );
+    return {
+      result: AutoMergeResult.BlockedOpenChildren,
+      message,
+      blockCommented,
+    };
   }
 
   const warning = renderBlockWarning(
@@ -1028,7 +1049,7 @@ async function refuseMilestoneMerge(
     gate.children,
   );
   log(warning);
-  await postOpenChildrenBlockComment({
+  const outcome = await postOpenChildrenBlockComment({
     repo,
     prNumber,
     milestoneTitle: gate.milestoneTitle,
@@ -1037,7 +1058,11 @@ async function refuseMilestoneMerge(
     log,
     ...(authorOptions ? { authorOptions } : {}),
   });
-  return { result: AutoMergeResult.BlockedOpenChildren, message: warning };
+  return {
+    result: AutoMergeResult.BlockedOpenChildren,
+    message: warning,
+    blockCommented: outcome !== "unconfirmed",
+  };
 }
 
 /**

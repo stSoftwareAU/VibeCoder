@@ -592,11 +592,11 @@ export async function postOpenChildrenBlockComment(
         `the milestone open-children block comment: ` +
         `${err instanceof Error ? err.message : String(err)} (Issue #3909)`,
     );
-    return false;
+    return "unconfirmed";
   }
 
   if (alreadyPosted) {
-    return false;
+    return "already-present";
   }
 
   const body = renderOpenChildrenBlockComment(
@@ -613,14 +613,14 @@ export async function postOpenChildrenBlockComment(
       "--body",
       body,
     ]);
-    return true;
+    return "posted";
   } catch (err) {
     log(
       `WARNING: failed to post the milestone open-children block comment on ` +
         `${repo}#${prNumber}: ` +
         `${err instanceof Error ? err.message : String(err)} (Issue #3909)`,
     );
-    return false;
+    return "unconfirmed";
   }
 }
 
