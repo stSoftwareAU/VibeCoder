@@ -15,6 +15,7 @@ import {
   runCoreLoop,
   sleepWithJitter,
 } from "../lib/run_core.ts";
+import { MAX_PACED_SLEEP_SECONDS } from "../lib/budget_pacing.ts";
 import {
   recordRepoProbe,
   resetRepoAccessState,
@@ -1448,6 +1449,160 @@ Deno.test("run_core - sleepWithJitter handles zero base", () => {
   const jittered = sleepWithJitter(0);
   assertEquals(jittered, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Tests — GraphQL budget pacing of the end-of-cycle sleep (Issue #2447)
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive the loop through one successful claim so the `scanHadSuccess` branch of
+ * the end-of-cycle sleep runs, with the given quota dep. Returns the sleeps the
+ * loop requested and every log line it emitted.
+ */
+async function runPacedCycle(
+  readGraphqlQuota?: () => Promise<
+    { limit: number; remaining: number; reset: number } | null
+  >,
+): Promise<{ sleeps: number[]; logs: string[] }> {
+  const logs: string[] = [];
+  const sleeps: number[] = [];
+  let nowValue = 1_800_000_000;
+  let findCalls = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: (ms?: number) => {
+      sleeps.push(ms ?? 0);
+      // Exceed the 1h run duration so the loop exits after one sleep.
+      nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    findNextIssue: () => {
+      findCalls += 1;
+      if (findCalls === 1) {
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            repo: "org/repo",
+            issueNumber: 2447,
+            issueTitle: "Issue 2447",
+            milestoneTitle: "",
+          },
+        });
+      }
+      return Promise.resolve({ ok: true as const, value: null });
+    },
+    processIssue: () =>
+      Promise.resolve({ ok: true as const, value: { success: true } }),
+    readGraphqlQuota,
+  });
+  deps.log = (msg: string) => {
+    logs.push(msg);
+  };
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  await runCoreLoop(config, deps);
+  return { sleeps, logs };
+}
+
+Deno.test(
+  "run_core - end-of-cycle sleep is paced when the quota dep returns a reading (Issue #2447)",
+  async () => {
+    const sleeps: number[] = [];
+    const logs: string[] = [];
+    let nowValue = 1_800_000_000;
+    let cycle = 0;
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: (ms?: number) => {
+        sleeps.push(ms ?? 0);
+        nowValue += 130_000; // 130 s cycle wall time (120 s sleep + 10 s work)
+        cycle += 1;
+        return Promise.resolve();
+      },
+      findNextIssue: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            repo: "org/repo",
+            issueNumber: 2447,
+            issueTitle: "Issue 2447",
+            milestoneTitle: "",
+          },
+        }),
+      processIssue: () =>
+        Promise.resolve({ ok: true as const, value: { success: true } }),
+      readGraphqlQuota: () => {
+        // used climbs as remaining falls: 5000-3200 = 1800, then 5000-1500 =
+        // 3500 — a 1700-point cycle, far past the ~27 points 40 minutes left
+        // can afford, so the second sleep is capped at 300 s.
+        const remaining = cycle === 0 ? 3200 : 1500;
+        return Promise.resolve({
+          limit: 5000,
+          remaining,
+          reset: 1_800_000_000 + 2400,
+        });
+      },
+    });
+    deps.log = (msg: string) => {
+      logs.push(msg);
+    };
+
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    await runCoreLoop(config, deps);
+
+    assert(
+      sleeps.includes(MAX_PACED_SLEEP_SECONDS * 1000),
+      `expected a 300 s paced sleep, got [${sleeps}]`,
+    );
+    const pacingLine = logs.find((line) => line.startsWith("budget-pacing:"));
+    assert(pacingLine, "expected a budget-pacing log line");
+    assertStringIncludes(pacingLine, "last cycle's spend exceeds");
+    assertStringIncludes(pacingLine, "sleep=300s");
+  },
+);
+
+Deno.test(
+  "run_core - end-of-cycle sleep keeps the fixed sleep when the quota dep returns null (Issue #2447)",
+  async () => {
+    const { sleeps, logs } = await runPacedCycle(() => Promise.resolve(null));
+    assert(sleeps.length >= 1, "expected at least one end-of-cycle sleep");
+    assert(
+      !logs.some((line) => line.startsWith("budget-pacing:")),
+      "no pacing line expected when the probe is unavailable",
+    );
+  },
+);
+
+Deno.test(
+  "run_core - end-of-cycle sleep keeps the fixed sleep when the quota dep is absent (Issue #2447)",
+  async () => {
+    const { sleeps, logs } = await runPacedCycle();
+    assert(sleeps.length >= 1, "expected at least one end-of-cycle sleep");
+    assert(
+      !logs.some((line) => line.startsWith("budget-pacing:")),
+      "no pacing line expected when the dep is absent",
+    );
+  },
+);
+
+Deno.test(
+  "run_core - a throwing quota probe keeps the fixed sleep and says so (Issue #2447)",
+  async () => {
+    const { sleeps, logs } = await runPacedCycle(() =>
+      Promise.reject(new Error("probe exploded"))
+    );
+    assert(sleeps.length >= 1, "expected at least one end-of-cycle sleep");
+    // Fail loud: the probe's failure is reported, not swallowed into a
+    // silently-unchanged sleep.
+    const warned = logs.find((line) => line.includes("budget-pacing:"));
+    assert(warned, `expected the throw to be reported, got [${logs}]`);
+    assertStringIncludes(warned, "probe exploded");
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Tests — Consecutive failure exit
