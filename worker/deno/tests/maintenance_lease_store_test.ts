@@ -80,6 +80,59 @@ function issueListPayload(
   );
 }
 
+/** A fake anchor thread — the service the store talks to, in memory. */
+interface FakeThread extends FakeGh {
+  /** The comments currently on the anchor, as GitHub would hold them. */
+  comments: Array<{ id: number; body: string; author: string }>;
+}
+
+/**
+ * A fake `gh` that models the anchor thread rather than a canned reply.
+ *
+ * A POST really appends a comment, a PATCH really rewrites one and a DELETE
+ * really removes it, so a marker the store writes is readable by the store's
+ * own next read — the round trip no canned payload can prove.
+ */
+function fakeAnchorThread(
+  seed: Array<{ id: number; body: string; author: string }> = [],
+  writeAuthor: string = FLEET,
+): FakeThread {
+  const comments = [...seed];
+  let nextId = 1000;
+  const gh = fakeGh((args) => {
+    const endpoint = args[1] ?? "";
+    if (args[0] === "issue" && args[1] === "list") return issueListPayload([]);
+    if (args[0] === "issue" && args[1] === "create") {
+      return `https://github.com/${REPO}/issues/${ANCHOR}\n`;
+    }
+    if (isCommentRead(args, ANCHOR)) {
+      return commentsPayload(comments);
+    }
+    const body = (args[args.indexOf("-f") + 1] ?? "").replace(/^body=/u, "");
+    if (args.includes("POST")) {
+      const id = nextId++;
+      comments.push({ id, body, author: writeAuthor });
+      return JSON.stringify({ id });
+    }
+    if (args.includes("PATCH")) {
+      const id = Number(endpoint.split("/").at(-1));
+      const target = comments.find((comment) => comment.id === id);
+      if (target === undefined) throw new Error(`gh: 404 comment ${id}`);
+      target.body = body;
+      return JSON.stringify({ id });
+    }
+    if (args.includes("DELETE")) {
+      const id = Number((args.at(-1) ?? "").split("/").at(-1));
+      const index = comments.findIndex((comment) => comment.id === id);
+      if (index < 0) throw new Error(`gh: 404 comment ${id}`);
+      comments.splice(index, 1);
+      return "";
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  });
+  return { calls: gh.calls, ghCommandFn: gh.ghCommandFn, comments };
+}
+
 /** Does this argv read the comment thread of `issueNumber`? */
 function isCommentRead(args: string[], issueNumber: number): boolean {
   return args[0] === "api" &&
@@ -246,6 +299,52 @@ Deno.test("maintenance lease anchor - the per-repo config override wins over the
   });
 });
 
+Deno.test("maintenance lease anchor - a non-positive or non-integer override is ignored", async () => {
+  await withWorkDir(async (workDir) => {
+    await Deno.writeTextFile(
+      maintenanceLeaseAnchorPinPath(workDir, REPO),
+      `${ANCHOR}\n`,
+    );
+    for (const bad of [0, -1, 2.5, Number.NaN]) {
+      const gh = fakeGh((args) => {
+        throw new Error(`unexpected gh call: ${args.join(" ")}`);
+      });
+      const { io } = makeIo(workDir, gh, {
+        repoConfigs: { [REPO]: { maintenanceLeaseIssue: bad } },
+      });
+      assertEquals(
+        await resolveMaintenanceLeaseAnchor(REPO, io),
+        ANCHOR,
+        `override ${bad} must fall through to the pinned anchor`,
+      );
+    }
+  });
+});
+
+Deno.test("maintenance lease anchor - an unparseable create result degrades rather than guessing", async () => {
+  await withWorkDir(async (workDir) => {
+    const gh = fakeGh((args) => {
+      if (args[0] === "issue" && args[1] === "list") {
+        return issueListPayload([]);
+      }
+      if (args[0] === "issue" && args[1] === "create") {
+        return "Creating issue in stSoftwareAU/VibeCoder\n";
+      }
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    });
+    const { io, logs } = makeIo(workDir, gh);
+
+    assertEquals(await resolveMaintenanceLeaseAnchor(REPO, io), null);
+    assert(
+      logs.some((line) =>
+        line.startsWith("maintenance-lease: degraded — ") &&
+        line.includes("could not be created")
+      ),
+      `expected a degraded log line, got ${JSON.stringify(logs)}`,
+    );
+  });
+});
+
 Deno.test("maintenance lease anchor - a failed search never files a duplicate anchor", async () => {
   await withWorkDir(async (workDir) => {
     const gh = fakeGh((args) => {
@@ -362,11 +461,7 @@ Deno.test("maintenance lease refresh - the first hold posts a new marker comment
       maintenanceLeaseAnchorPinPath(workDir, REPO),
       `${ANCHOR}\n`,
     );
-    const gh = fakeGh((args) => {
-      if (isCommentRead(args, ANCHOR)) return commentsPayload([]);
-      if (args.includes("POST")) return "{}";
-      throw new Error(`unexpected gh call: ${args.join(" ")}`);
-    });
+    const gh = fakeAnchorThread();
     const { io, logs } = makeIo(workDir, gh);
 
     assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
@@ -381,7 +476,34 @@ Deno.test("maintenance lease refresh - the first hold posts a new marker comment
       body.replace(/<!--[\s\S]*?-->/gu, "").trim().length > 0,
       "the comment carries a visible line as well as the marker",
     );
+    assertEquals(gh.comments.length, 1, "exactly one marker is on the anchor");
     assertEquals(logs.filter((l) => l.includes("degraded")), []);
+  });
+});
+
+Deno.test("maintenance lease refresh - the marker written is the marker read back", async () => {
+  await withWorkDir(async (workDir) => {
+    await Deno.writeTextFile(
+      maintenanceLeaseAnchorPinPath(workDir, REPO),
+      `${ANCHOR}\n`,
+    );
+    const gh = fakeAnchorThread();
+    const { io } = makeIo(workDir, gh);
+
+    assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
+
+    const holder = await readMaintenanceLease(REPO, io);
+    assert(holder !== null, "the lease this host just took must be readable");
+    assertEquals(holder.host, INSTALL);
+    assertEquals(holder.atEpoch, NOW);
+
+    // The next cycle refreshes the same comment, and the read follows it.
+    assertEquals(
+      await refreshMaintenanceLease(REPO, HOST, NOW + 300, io),
+      true,
+    );
+    assertEquals(gh.comments.length, 1, "the anchor keeps one marker per host");
+    assertEquals((await readMaintenanceLease(REPO, io))?.atEpoch, NOW + 300);
   });
 });
 
@@ -391,14 +513,8 @@ Deno.test("maintenance lease refresh - the host's own marker is patched, never r
       maintenanceLeaseAnchorPinPath(workDir, REPO),
       `${ANCHOR}\n`,
     );
-    const gh = fakeGh((args) => {
-      if (isCommentRead(args, ANCHOR)) {
-        // Stamped by the same install under an older hostname (Issue #2403).
-        return commentsPayload([leaseComment(88, INSTALL, NOW - 120)]);
-      }
-      if (args.includes("PATCH")) return "88";
-      throw new Error(`unexpected gh call: ${args.join(" ")}`);
-    });
+    // Stamped by the same install under an older hostname (Issue #2403).
+    const gh = fakeAnchorThread([leaseComment(88, INSTALL, NOW - 120)]);
     const { io } = makeIo(workDir, gh);
 
     assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
@@ -406,12 +522,13 @@ Deno.test("maintenance lease refresh - the host's own marker is patched, never r
     const patch = gh.calls.find((args) => args.includes("PATCH"));
     assert(patch !== undefined, "the own marker is patched in place");
     assertEquals(patch[1], `repos/${REPO}/issues/comments/88`);
-    assertStringIncludes(patch[patch.indexOf("-f") + 1] ?? "", `at=${NOW}`);
     assertEquals(
       gh.calls.some((args) => args.includes("POST")),
       false,
       "a second comment is never posted for the same host",
     );
+    assertEquals(gh.comments.length, 1);
+    assertStringIncludes(gh.comments[0]?.body ?? "", `at=${NOW}`);
   });
 });
 
@@ -421,25 +538,42 @@ Deno.test("maintenance lease refresh - an expired foreign marker is deleted", as
       maintenanceLeaseAnchorPinPath(workDir, REPO),
       `${ANCHOR}\n`,
     );
-    const gh = fakeGh((args) => {
-      if (isCommentRead(args, ANCHOR)) {
-        return commentsPayload([
-          leaseComment(11, OTHER_INSTALL, NOW - MAINTENANCE_LEASE_SECONDS),
-          leaseComment(12, OTHER_INSTALL, NOW - 10),
-        ]);
-      }
-      if (args.includes("POST") || args.includes("DELETE")) return "{}";
-      throw new Error(`unexpected gh call: ${args.join(" ")}`);
-    });
+    const gh = fakeAnchorThread([
+      leaseComment(11, OTHER_INSTALL, NOW - MAINTENANCE_LEASE_SECONDS),
+      leaseComment(12, OTHER_INSTALL, NOW - 10),
+    ]);
     const { io } = makeIo(workDir, gh);
 
     assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
 
     const deletes = gh.calls.filter((args) => args.includes("DELETE"));
     assertEquals(deletes.length, 1, "only the expired marker is deleted");
+    assertEquals(deletes[0]?.at(-1), `repos/${REPO}/issues/comments/11`);
     assertEquals(
-      deletes[0]?.at(-1),
-      `repos/${REPO}/issues/comments/11`,
+      gh.comments.map((comment) => comment.id).sort((a, b) => a - b),
+      [12, 1000],
+      "the fresh foreign marker survives beside this host's new one",
+    );
+  });
+});
+
+Deno.test("maintenance lease refresh - a foreign marker whose author differs only in case is this host's fleet", async () => {
+  await withWorkDir(async (workDir) => {
+    await Deno.writeTextFile(
+      maintenanceLeaseAnchorPinPath(workDir, REPO),
+      `${ANCHOR}\n`,
+    );
+    // GitHub logins are case-insensitive, so `Vibe-Coder-Bot` is `vibe-coder-bot`.
+    const gh = fakeAnchorThread([
+      leaseComment(88, INSTALL, NOW - 120, FLEET.toUpperCase()),
+    ]);
+    const { io } = makeIo(workDir, gh);
+
+    assertEquals(await refreshMaintenanceLease(REPO, HOST, NOW, io), true);
+    assertEquals(
+      gh.calls.some((args) => args.includes("POST")),
+      false,
+      "the marker is recognised as this host's own and patched, not duplicated",
     );
   });
 });
@@ -473,20 +607,11 @@ Deno.test("maintenance lease refresh - a failed write degrades to false without 
 
 Deno.test("maintenance lease store - every gh call is REST, never GraphQL", async () => {
   await withWorkDir(async (workDir) => {
-    const gh = fakeGh((args) => {
-      if (args[0] === "issue" && args[1] === "list") {
-        return issueListPayload([]);
-      }
-      if (args[0] === "issue" && args[1] === "create") {
-        return `https://github.com/${REPO}/issues/${ANCHOR}\n`;
-      }
-      if (isCommentRead(args, ANCHOR)) {
-        return commentsPayload([
-          leaseComment(11, OTHER_INSTALL, NOW - MAINTENANCE_LEASE_SECONDS),
-        ]);
-      }
-      return "{}";
-    });
+    // Anchor creation, the comment read, the post and the expired-marker
+    // delete — every path the store has, in one pass.
+    const gh = fakeAnchorThread([
+      leaseComment(11, OTHER_INSTALL, NOW - MAINTENANCE_LEASE_SECONDS),
+    ]);
     const { io } = makeIo(workDir, gh);
 
     await refreshMaintenanceLease(REPO, HOST, NOW, io);
@@ -495,10 +620,14 @@ Deno.test("maintenance lease store - every gh call is REST, never GraphQL", asyn
     assert(gh.calls.length > 0, "the fake gh must have been exercised");
     for (const args of gh.calls) {
       assertEquals(
-        args.includes("graphql") || args.includes("--field") &&
-            args.includes("query"),
+        args.includes("graphql"),
         false,
         `GraphQL argv: ${args.join(" ")}`,
+      );
+      assertEquals(
+        args.some((arg) => arg.includes("query {") || arg.includes("query(")),
+        false,
+        `GraphQL document in argv: ${args.join(" ")}`,
       );
       const rest = args[0] === "api" ||
         (args[0] === "issue" && (args[1] === "list" || args[1] === "create"));

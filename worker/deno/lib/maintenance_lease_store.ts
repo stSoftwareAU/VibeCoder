@@ -41,6 +41,7 @@
  */
 
 import type { RepoConfig } from "../types.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 import {
   decideMaintenanceLease,
   formatMaintenanceLeaseMarker,
@@ -55,6 +56,7 @@ import {
   fetchMarkerComments,
 } from "./marker_comment_pages.ts";
 import { getRepoConfig } from "./repo_config.ts";
+import { isValidRepoSlug } from "./repo_rulesets.ts";
 import { installFromMachineId } from "./stream_holder.ts";
 
 /** Marker that identifies the anchor issue in its body. */
@@ -68,15 +70,6 @@ export const MAINTENANCE_LEASE_ANCHOR_TITLE =
 /** How many search hits the anchor lookup considers. */
 const ANCHOR_SEARCH_LIMIT = "20";
 
-/**
- * A repository name the store will act on.
- *
- * Validated before it reaches an argv or a file path: `repo` arrives from
- * operator configuration, and an unchecked value would land in a `gh api`
- * endpoint and in the pin file's name.
- */
-const REPO_RE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-
 /** Everything the store touches, injected so tests need no live GitHub. */
 export interface MaintenanceLeaseIo {
   /** Runs `gh`. */
@@ -89,7 +82,11 @@ export interface MaintenanceLeaseIo {
   trustedAuthors: readonly string[];
   /** Directory the anchor pin file lives in. */
   workDir: string;
-  /** Where the degraded line goes. */
+  /**
+   * The **warning** sink: every line this module logs reports a lease that
+   * degraded or a write that did not stick, and the run continues either way
+   * (`stream_holder.ts` routes its own degraded lines to `console.warn`).
+   */
   log: (message: string) => void;
   /** The `repo_config` map, for the `maintenance_lease_issue` override. */
   repoConfigs?: Record<string, RepoConfig>;
@@ -125,18 +122,32 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** `value` as a positive issue number, or null when it is not one. */
+/**
+ * `value` as a positive issue number, or null when it is not one.
+ *
+ * Whole-string conversion, not `parseInt`: `2.5` and `7abc` are rejected
+ * rather than silently truncated to an issue number nobody configured.
+ */
 function positiveIssueNumber(value: string): number | null {
-  const parsed = Number.parseInt(value.trim(), 10);
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  const parsed = Number(trimmed);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-/** Is `login` one of the fleet authors the store trusts? */
+/**
+ * Is `login` one of the fleet authors the store trusts?
+ *
+ * Delegates to `isFleetAuthor`, so the comparison is case-insensitive the way
+ * GitHub logins are — a marker whose author differs only in case is this
+ * host's fleet, not an outsider.
+ */
 function isTrustedAuthor(
   login: unknown,
   io: MaintenanceLeaseIo,
 ): boolean {
-  return typeof login === "string" && io.trustedAuthors.includes(login);
+  if (typeof login !== "string") return false;
+  return isFleetAuthor(login, [...io.trustedAuthors]);
 }
 
 /** The anchor number pinned for `repo`, or null when none is pinned. */
@@ -262,7 +273,10 @@ export async function resolveMaintenanceLeaseAnchor(
   repo: string,
   io: MaintenanceLeaseIo,
 ): Promise<number | null> {
-  if (!REPO_RE.test(repo)) {
+  // Validated before it reaches an argv or a file path: `repo` arrives from
+  // operator configuration, and an unchecked value would land in a `gh api`
+  // endpoint and in the pin file's name.
+  if (!isValidRepoSlug(repo)) {
     degrade(io, `'${repo}' is not an owner/repo repository name`);
     return null;
   }
@@ -432,6 +446,10 @@ async function dropExpiredMarkers(
 
 /**
  * Take or refresh `repo`'s maintenance lease for `host`.
+ *
+ * Call this only once `decideMaintenanceLease` has said this host runs the
+ * pass: the store writes the marker it is told to write and does not re-decide
+ * whether a fresh foreign holder should have kept it.
  *
  * The host's own marker is patched in place rather than re-posted, so the
  * anchor never grows a comment per cycle. Identity and expiry both come from
