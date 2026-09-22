@@ -13,6 +13,7 @@
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { runGhCommand } from "../lib/github.ts";
 import { checkAndHandleMilestoneCompletions } from "../lib/milestone_completion.ts";
+import { getRepoConfig } from "../lib/repo_config.ts";
 
 export const milestoneCompletionCommand: Command = {
   name: "check-milestone-completions",
@@ -39,6 +40,10 @@ export const milestoneCompletionCommand: Command = {
       // Issue #3528: re-check the live `gh` login against the service-account
       // allowlist before any milestone write.
       serviceAccounts: config.serviceAccounts ?? [],
+      // Issue #2458: the summary PR is armed at creation, so it honours the
+      // same `skip_auto_merge` setting the Auto-Merge sweep honours.
+      skipAutoMerge: (repo: string) =>
+        getRepoConfig(config.repoConfig, repo, "skipAutoMerge") === "true",
       log: (msg: string) => logs.push(msg),
     });
 

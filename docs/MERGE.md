@@ -523,9 +523,16 @@ Two changes close that window:
   after `gh pr create` for **every** PR it raises, milestone children
   included. GitHub then lands the PR the moment its checks pass, with no cycle
   boundary involved. The milestone *summary* PR is raised by
-  `milestone_completion.ts`, not here, and is re-gated on open children at
-  merge time by `decideSummaryPrMerge` (Issue #3909) — so arming a child PR
-  never merges a milestone early.
+  `milestone_completion.ts`, not here, and arms itself there through the same
+  `finalisePr` chokepoint (Issue #2458) — head the milestone branch, base the
+  default branch — so it too is armed before the function returns rather than
+  waiting for the next sweep. Every arming is re-gated on open children at
+  merge time by `decideSummaryPrMerge` (Issue #3909), so neither a child PR nor
+  the summary PR merges a milestone early: an open child withholds the arming
+  and the gate's own comment is the only one posted, while a refusal nothing
+  else explained gets exactly one reason comment naming the sweep retry
+  (Issue #2457). A repository with `skip_auto_merge` set has its summary PR
+  raised and left unarmed, exactly as the sweep already treats it.
 - **Sweep again once the slots drain.** `runPostScanAutoMerge` in
   [`worker/deno/lib/run_core.ts`](../worker/deno/lib/run_core.ts) repeats the
   sweep at the end of a cycle that did work, catching the paths arming cannot:
