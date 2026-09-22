@@ -239,20 +239,29 @@ async function postBehindSyncReason(
   prNumber: number,
   milestoneBranch: string,
   detail: string,
+  willArm: boolean,
   commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
   log: (message: string) => void,
 ): Promise<void> {
   const key = `${repo}#${prNumber}`;
   if (postedBehindSyncReason.has(key)) return;
   postedBehindSyncReason.add(key);
+  // The outcome is settled before the comment is written, so the PR is never
+  // told it was armed by a run that then held it (fail loud, never falsely
+  // green).
+  const outcome = willArm
+    ? "Auto-merge is armed anyway (Issue #2460) — the base ruleset holds the " +
+      "merge until the branch is level."
+    : "Auto-merge is not armed: the base enforces no required status checks, " +
+      "so nothing would hold the merge back until the branch is level " +
+      "(Issue #2460).";
   const body = [
     MILESTONE_BEHIND_SYNC_MARKER,
     `The milestone branch \`${milestoneBranch}\` is still behind the ` +
     `default branch after an in-cycle sync: ${detail}`,
     "",
-    "Auto-merge is armed anyway (Issue #2460) — the milestone ruleset holds " +
-    "the merge until the branch is level. The periodic milestone sync will " +
-    "retry; a conflicting sync is never side-picked (Issue #2005).",
+    `${outcome} The periodic milestone sync will retry; a conflicting sync ` +
+    `is never side-picked (Issue #2005).`,
   ].join("\n");
   try {
     await commentFn(repo, prNumber, body);
@@ -570,6 +579,36 @@ export function _resetBaseProtectionMemo(): void {
 }
 
 /**
+ * Read a base's protection once per cycle, through the memo.
+ *
+ * Shared by the two callers that need the answer — the #2460 sync-reason
+ * comment, which must state the arming outcome it is about to produce, and the
+ * #4375 arming route itself — so asking early costs no extra API call and the
+ * comment can never disagree with the decision taken moments later.
+ */
+async function resolveBaseProtection(
+  repo: string,
+  baseRefName: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  isBaseProtectedFn?: (
+    repo: string,
+    baseRefName: string,
+    ghCommandFn: (args: string[]) => Promise<string>,
+  ) => Promise<boolean | null>,
+): Promise<boolean | null> {
+  const memoKey = `${repo}#${baseRefName}`;
+  const memoised = baseProtectionMemo.get(memoKey);
+  if (memoised !== undefined) return memoised;
+  const read = await (isBaseProtectedFn ?? isBaseProtected)(
+    repo,
+    baseRefName,
+    ghCommandFn,
+  );
+  baseProtectionMemo.set(memoKey, read);
+  return read;
+}
+
+/**
  * Recognise GitHub refusing a merge because a rule governs the base
  * (Issue #1763).
  *
@@ -694,10 +733,10 @@ export async function enableAutoMerge(
       baseRefName: options.baseRefName,
       // Issue #1779: lets the synced-base check exempt the milestone sync
       // PR — the one PR whose whole job is to clear "behind".
-      // Issue #2460: kept `true` so a behind tip is still reported; the
-      // report is now a log marker and a sync trigger, not a withhold.
       ...(options.headRefName ? { headRefName: options.headRefName } : {}),
       ghCommandFn,
+      // Issue #2460: kept `true` so a behind tip is still reported; the
+      // report is now a sync trigger and a log marker, not a withhold.
       requireSyncedBase: true,
       ...(options.getDefaultBranchFn
         ? { getDefaultBranchFn: options.getDefaultBranchFn }
@@ -748,27 +787,34 @@ export async function enableAutoMerge(
             : {}),
         });
     } else {
+      // The arming route below turns on whether the base enforces required
+      // checks, so settle that first and tell the PR what actually happens.
+      // The answer is memoised, so the check at the arming route is free.
+      const protectedBase = await resolveBaseProtection(
+        repo,
+        routeGate.milestoneBranch,
+        ghCommandFn,
+        options.isBaseProtectedFn,
+      );
       await postBehindSyncReason(
         repo,
         prNumber,
         routeGate.milestoneBranch,
         sync.detail,
+        protectedBase === true,
         commentFn,
         log,
       );
     }
   }
   // Issue #2460: a behind base is recorded and carried onto the arming
-  // outcome for logging, then the arming loop runs as usual.
+  // outcome as `deferral`, then the arming loop runs as usual. It is not
+  // logged here: the `log` seam is a warning sink, and arming a behind child
+  // is now the expected path, not a degradation anyone must act on.
   let behindDeferral: "milestone-behind" | undefined;
   if (
     routeGate.decision === "defer" && routeGate.reason === "milestone-behind"
   ) {
-    log(
-      `PR #${prNumber}: ${routeGate.milestoneBranch} is ${routeGate.behindBy} commit${
-        routeGate.behindBy === 1 ? "" : "s"
-      } behind the default branch — arming anyway (Issue #2460)`,
-    );
     behindDeferral = "milestone-behind";
   } else if (routeGate.decision === "defer") {
     return {
@@ -898,29 +944,29 @@ export async function enableAutoMerge(
   // settled head, or deferred until the next scan.
   if (baseRefName) {
     const memoKey = `${repo}#${baseRefName}`;
-    let protectedBase = baseProtectionMemo.get(memoKey);
-    if (protectedBase === undefined) {
-      protectedBase = await (options.isBaseProtectedFn ?? isBaseProtected)(
-        repo,
-        baseRefName,
-        ghCommandFn,
-      );
-      baseProtectionMemo.set(memoKey, protectedBase);
-    }
+    const protectedBase = await resolveBaseProtection(
+      repo,
+      baseRefName,
+      ghCommandFn,
+      options.isBaseProtectedFn,
+    );
     if (protectedBase !== true) {
       // Issue #2460: arming over a behind base is safe *because* the milestone
       // ruleset's strict up-to-date policy holds the merge until the branch is
-      // level. An unprotected base has no such policy — `--auto` there merges
-      // immediately whatever CI says (Issue #4375) and the gated direct merge
-      // only checks the head against its own base — so either route would land
-      // the child on a stale tip, the side-pick #1779 exists to prevent. Hold
-      // it for the next scan instead; the periodic sync levels the branch.
+      // level. A base with no required checks — or one whose protection could
+      // not be read, which is treated as unprotected throughout — has no such
+      // policy: `--auto` there merges immediately whatever CI says
+      // (Issue #4375) and the gated direct merge only checks the head against
+      // its own base, so either route would land the child on a stale tip, the
+      // side-pick #1779 exists to prevent. Hold it for the next scan instead;
+      // the periodic sync levels the branch, and `postBehindSyncReason` has
+      // already told the PR it was held rather than armed.
       if (behindDeferral) {
         return {
           result: AutoMergeResult.Deferred,
           deferral: behindDeferral,
           message:
-            `PR #${prNumber} held: base '${baseRefName}' is behind the default branch and has no required checks, so nothing would hold the merge until it is level (Issue #2460)`,
+            `PR #${prNumber} held: base '${baseRefName}' is behind the default branch and enforces no required checks, so nothing would hold the merge until it is level (Issue #2460)`,
         };
       }
 

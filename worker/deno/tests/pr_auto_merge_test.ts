@@ -1206,6 +1206,11 @@ Deno.test("pr_auto_merge - a conflicting in-cycle sync arms the child anyway and
   assertEquals(comments.length, 1);
   assertStringIncludes(comments[0]!, MILESTONE_BEHIND_SYNC_MARKER);
   assertStringIncludes(comments[0]!, "unresolved conflict on src/foo.ts");
+  assertStringIncludes(
+    comments[0]!,
+    "Auto-merge is armed anyway",
+    "the comment states the arming outcome the run actually produced",
+  );
   assertEquals(
     autoMergeOutcomeNeedsComment(result),
     false,
@@ -1248,6 +1253,11 @@ Deno.test("pr_auto_merge - a behind base with no required checks is held, not ar
   assertEquals(autoCalls, 0, "an unprotected base must not be armed");
   assertEquals(directMergeCalls, 0, "nor side-picked onto the stale tip");
   assertEquals(comments.length, 1, "the sync reason is still posted once");
+  assertStringIncludes(
+    comments[0]!,
+    "Auto-merge is not armed",
+    "a held PR is never told it was armed (fail loud, never falsely green)",
+  );
   assertEquals(
     autoMergeOutcomeNeedsComment(result),
     false,
