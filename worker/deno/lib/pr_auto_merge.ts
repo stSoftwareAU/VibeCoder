@@ -34,6 +34,8 @@ import {
   closeRetargetedSyncPr,
   isRetargetedSyncPr,
 } from "./milestone_sync_pr_retirement.ts";
+import { scrubUntrustedText } from "./prompt_delimiter.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -296,10 +298,15 @@ async function postOpenChildrenLookupReason(
 ): Promise<boolean> {
   const key = `${repo}#${prNumber}`;
   if (postedOpenChildrenLookupReason.has(key)) return true;
+  // The title is attacker-writable and the detail is raw API text: redact any
+  // secret the transport error carried, then neutralise marker-shaped content
+  // so neither can forge a fleet marker in this body (Issues #1249, #2479).
+  const safeTitle = scrubUntrustedText(milestoneTitle);
+  const safeDetail = scrubUntrustedText(redactSecrets(detail));
   const body = [
     OPEN_CHILDREN_LOOKUP_MARKER,
     `Auto-merge is not armed: the open-children count for milestone ` +
-    `#${milestoneNumber} '${milestoneTitle}' could not be read — ${detail}`,
+    `#${milestoneNumber} '${safeTitle}' could not be read — ${safeDetail}`,
     "",
     "Merging a summary PR over unread children could close a milestone that " +
     "still has open work, so the gate refuses (Issue #3909). The Auto-Merge " +

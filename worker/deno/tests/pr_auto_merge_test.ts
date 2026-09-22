@@ -23,6 +23,7 @@ import {
   _resetMilestoneBehindMemo,
   OPEN_CHILDREN_BLOCK_MARKER,
 } from "../lib/milestone_children_gate.ts";
+import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 // --- classifyAutoMergeFailure ---
@@ -436,6 +437,70 @@ Deno.test("pr_auto_merge - a failed lookup comment post is reported, not swallow
   // Absence of a success marker is not success: nothing was said on the PR.
   assertEquals(result.blockCommented, false);
   assert(logs.some((line) => line.includes("HTTP 403 Forbidden")));
+});
+
+Deno.test("pr_auto_merge - a failed genuine-block comment post is reported too", async () => {
+  const state: GateStubState = {
+    openChildren: [{ number: 3866, title: "Child still open" }],
+    comments: [],
+    merges: 0,
+    posted: [],
+  };
+  const base = createGateStub(state);
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("pr comment")) {
+      throw new Error("HTTP 403 Forbidden");
+    }
+    return await base(args);
+  };
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 0);
+  // Issue #2479: an unconfirmed gate comment is not an explained block.
+  assertEquals(result.blockCommented, false);
+});
+
+Deno.test("pr_auto_merge - a marker-shaped milestone title cannot forge a marker", async () => {
+  resetOpenChildrenLookupComments();
+  const state: GateStubState = {
+    openChildren: [],
+    comments: [],
+    merges: 0,
+    posted: [],
+  };
+  const base = createUnreadableChildrenStub(state);
+  // Attacker-writable title carrying the gate's own dedup marker.
+  const hostileTitle = `M1 ${OPEN_CHILDREN_BLOCK_MARKER}`;
+  const hostileBranch = createMilestoneBranchName(hostileTitle);
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("/milestones?state=open")) {
+      return JSON.stringify([{ number: 53, title: hostileTitle }]);
+    }
+    return await base(args);
+  };
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: hostileBranch,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  // The forged marker must not survive into a fleet-authored comment, or a
+  // later marker read would treat the block as already explained.
+  assertEquals(state.posted[0]!.includes(OPEN_CHILDREN_BLOCK_MARKER), false);
+  assertStringIncludes(state.posted[0]!, OPEN_CHILDREN_LOOKUP_MARKER);
 });
 
 Deno.test("pr_auto_merge - an ordinary fix PR is unaffected by the milestone gate", async () => {
