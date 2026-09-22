@@ -41,6 +41,10 @@ const MILESTONE: RulesetDetail = {
       // exist yet has no check runs, so enforcing them on creation makes the
       // milestone branch impossible to open.
       do_not_enforce_on_create: true,
+      // …and it requires the branch to be up to date (Issue #2461): an armed
+      // child PR whose base is behind the default branch is held by this and
+      // nothing else.
+      strict_required_status_checks_policy: true,
     },
   }],
   bypass_actors: [
