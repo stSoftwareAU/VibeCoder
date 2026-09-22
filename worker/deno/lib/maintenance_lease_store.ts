@@ -45,10 +45,7 @@
 
 import type { RepoConfig } from "../types.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
-import {
-  classifyGitHubError,
-  GitHubErrorCategory,
-} from "./github_errors.ts";
+import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
 import {
   decideMaintenanceLease,
   formatMaintenanceLeaseMarker,
