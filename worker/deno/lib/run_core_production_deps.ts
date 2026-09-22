@@ -356,16 +356,6 @@ import {
   resolveSuppressionExcludedLogins,
 } from "./fleet_authors.ts";
 import { prefetchFleetOpenPrs } from "./fleet_pr_prefetch.ts";
-import { installFromMachineId } from "./stream_holder.ts";
-import {
-  decideMaintenanceLease,
-  type MaintenanceLeaseHolder,
-} from "./maintenance_lease.ts";
-import {
-  type MaintenanceLeaseIo,
-  readMaintenanceLease,
-  refreshMaintenanceLease,
-} from "./maintenance_lease_store.ts";
 import {
   clearIdleInversion,
   idleInversionStatePath,
@@ -558,51 +548,6 @@ export interface ProductionDepsOptions {
    * prefetch, not factory-wide.
    */
   fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
-
-  /**
-   * Test seams for the lease-gated maintenance sweeps (Issue #2451).
-   *
-   * Production leaves this unset and gets the real lease store and the real
-   * sweeps. Tests inject stubs because the thing worth asserting is the
-   * *gate*: which repositories each sweep is handed once the lease has been
-   * consulted, and that the lease is refreshed exactly once per leased
-   * repository per cycle. Every one of those sweeps otherwise reaches GitHub,
-   * so a test without these seams would report the host rather than the code.
-   *
-   * Scoped to the four fixed-cost sweeps the lease gates, not factory-wide.
-   */
-  maintenanceSweeps?: MaintenanceSweepSeams;
-}
-
-/**
- * The lease store and the four sweeps it gates, each overridable on its own
- * (Issue #2451). Every member is optional; an unset member keeps the
- * production implementation.
- */
-export interface MaintenanceSweepSeams {
-  /** Reads the current lease holder for a repository. */
-  readLease?: (
-    repo: string,
-    io: MaintenanceLeaseIo,
-  ) => Promise<MaintenanceLeaseHolder | null>;
-  /** Claims or extends this host's lease on a repository. */
-  refreshLease?: (
-    repo: string,
-    host: string,
-    nowSeconds: number,
-    io: MaintenanceLeaseIo,
-  ) => Promise<boolean>;
-  /** Priority 1.67 — receives the leased repositories, returns the close count. */
-  closeIssuesForMergedPrs?: (repos: string[]) => Promise<number>;
-  /** Priority 1.68 — receives the leased repositories. */
-  recoverAssignedWithClosedPr?: (repos: string[]) => Promise<void>;
-  /** Priority 1.7 — receives the leased repositories. */
-  checkMilestoneCompletions?: (repos: string[]) => Promise<void>;
-  /** Priority 1.81 — receives the leased repositories and the watchdog deadline. */
-  resumeFailureDetectionRepairs?: (
-    repos: string[],
-    deadlineEpochMs: number | undefined,
-  ) => Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1358,110 +1303,6 @@ export async function createProductionRunCoreDeps(
   };
 
   const repos = config.repos ?? [];
-
-  // -------------------------------------------------------------------------
-  // Maintenance lease gate (Issue #2451)
-  // -------------------------------------------------------------------------
-
-  /** The lease store and the four sweeps it gates; production leaves it unset. */
-  const maintenanceSeams: MaintenanceSweepSeams = options.maintenanceSweeps ??
-    {};
-  const readLeaseFn = maintenanceSeams.readLease ?? readMaintenanceLease;
-  const refreshLeaseFn = maintenanceSeams.refreshLease ??
-    refreshMaintenanceLease;
-
-  /**
-   * This host's lease identity — the per-install uuid, because the container's
-   * hostname changes hourly while the uuid survives a relaunch.
-   */
-  const leaseHost = installFromMachineId(machineId) ?? machineId;
-
-  /** Memoised for the cycle; `resetIterationCaches` clears it. */
-  let leasedReposPending: Promise<string[]> | null = null;
-
-  /**
-   * The repositories this host holds the maintenance lease on.
-   *
-   * Reads each repo's lease once, refreshes the ones it may sweep, and drops
-   * the ones another live host holds. A degraded read returns `null` from the
-   * store — indistinguishable from "no holder" by return value, so the log
-   * sink is what marks it — and the repo **stays in the list**: the lease is a
-   * cost optimisation, never a lock, so a fleet that cannot read it keeps
-   * sweeping rather than going quiet.
-   */
-  async function resolveLeasedRepos(): Promise<string[]> {
-    if (repos.length === 0) return [];
-
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const trustedAuthors = resolveFleetMaintenanceAuthorSet({
-      githubUser,
-      allowedAuthors: fleetPrAuthorInput.allowedAuthors,
-      fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
-    });
-
-    const leased: string[] = [];
-    let heldElsewhere = 0;
-    let degraded = 0;
-
-    for (const repo of repos) {
-      // Every line the store logs reports a lease that degraded, so the sink
-      // both counts the degradation and forwards it to the operator.
-      let degradedRead = false;
-      const io: MaintenanceLeaseIo = {
-        ghCommandFn: runGhCommand,
-        trustedAuthors,
-        workDir,
-        log: (message: string) => {
-          degradedRead = true;
-          logger.warn(message);
-        },
-        ...(config.repoConfig ? { repoConfigs: config.repoConfig } : {}),
-      };
-
-      let holder: MaintenanceLeaseHolder | null = null;
-      try {
-        holder = await readLeaseFn(repo, io);
-      } catch (err) {
-        degradedRead = true;
-        logger.warn(
-          `maintenance-lease: ${repo} degraded — read failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
-
-      const decision = decideMaintenanceLease({
-        holder,
-        thisHost: leaseHost,
-        nowSeconds,
-      });
-      if (!decision.run) {
-        heldElsewhere++;
-        // The holder host is an install uuid — operator detail, debug only.
-        logger.debug(
-          `maintenance-lease: ${repo} held-elsewhere by ` +
-            `${decision.holderHost} (${decision.secondsLeft}s left)`,
-        );
-        continue;
-      }
-
-      if (degradedRead) degraded++;
-      leased.push(repo);
-      await refreshLeaseFn(repo, leaseHost, nowSeconds, io);
-    }
-
-    logger.info(
-      `maintenance-lease: ran=${leased.length} ` +
-        `held-elsewhere=${heldElsewhere} degraded=${degraded}`,
-    );
-    return leased;
-  }
-
-  /** Resolved once per cycle and shared by all four gated sweeps. */
-  function leasedRepos(): Promise<string[]> {
-    leasedReposPending ??= resolveLeasedRepos();
-    return leasedReposPending;
-  }
 
   /**
    * A repo's closed/merged fleet PRs, read through the same iteration-scoped
@@ -3180,28 +3021,24 @@ export async function createProductionRunCoreDeps(
         // used to spend 4–6 minutes and up to 840 GraphQL issue views
         // per cycle re-discovering that old issues are still closed.
         const startedAt = Date.now();
-        // Issue #2451: only the repositories this host leases.
-        const leased = await leasedRepos();
-        const closed = maintenanceSeams.closeIssuesForMergedPrs
-          ? await maintenanceSeams.closeIssuesForMergedPrs(leased)
-          : await prIssueCloseForMerged(
-            leased,
-            githubUser,
-            undefined,
-            config.planningLabel,
-            issueCache,
-            {
-              watermarkPath: mergedReconcileWatermarkPath(workDir),
-              // Issue #1770: a child reopened by a milestone roll-back stays
-              // reopened. Only the fleet's own roll-back marker suppresses the
-              // close, so the maintenance author set is what is trusted here.
-              fleetAuthors: maintenanceAuthors,
-              logFn: (message: string) => logger.info(message),
-            },
-          );
+        const closed = await prIssueCloseForMerged(
+          repos,
+          githubUser,
+          undefined,
+          config.planningLabel,
+          issueCache,
+          {
+            watermarkPath: mergedReconcileWatermarkPath(workDir),
+            // Issue #1770: a child reopened by a milestone roll-back stays
+            // reopened. Only the fleet's own roll-back marker suppresses the
+            // close, so the maintenance author set is what is trusted here.
+            fleetAuthors: maintenanceAuthors,
+            logFn: (message: string) => logger.info(message),
+          },
+        );
         const seconds = Math.round((Date.now() - startedAt) / 1000);
         logger.info(
-          `Close Issues for Merged PRs: ${leased.length} repos, ` +
+          `Close Issues for Merged PRs: ${repos.length} repos, ` +
             `${closed} closed, ${seconds}s`,
         );
         return { ok: true, value: undefined };
@@ -3218,19 +3055,13 @@ export async function createProductionRunCoreDeps(
       try {
         // Issue #1787: pass `issueCache` so the assigned-issue and
         // merged-PR scans reuse the iteration-scoped cache.
-        // Issue #2451: only the repositories this host leases.
-        const leased = await leasedRepos();
-        if (maintenanceSeams.recoverAssignedWithClosedPr) {
-          await maintenanceSeams.recoverAssignedWithClosedPr(leased);
-        } else {
-          await recoverClosedPrFn(
-            { ...stuckIssueConfig, repos: leased },
-            githubUser,
-            config.planningLabel,
-            undefined,
-            issueCache,
-          );
-        }
+        await recoverClosedPrFn(
+          stuckIssueConfig,
+          githubUser,
+          config.planningLabel,
+          undefined,
+          issueCache,
+        );
         return { ok: true, value: undefined };
       } catch (err) {
         return {
@@ -3265,18 +3096,12 @@ export async function createProductionRunCoreDeps(
     // -- Priority 1.7: Milestone completions --
     async checkMilestoneCompletions() {
       try {
-        // Issue #2451: only the repositories this host leases.
-        const leased = await leasedRepos();
-        if (maintenanceSeams.checkMilestoneCompletions) {
-          await maintenanceSeams.checkMilestoneCompletions(leased);
-        } else {
-          await checkAndHandleMilestoneCompletionsFn(
-            leased,
-            logger,
-            config.serviceAccounts ?? [],
-            issueCache,
-          );
-        }
+        await checkAndHandleMilestoneCompletionsFn(
+          repos,
+          logger,
+          config.serviceAccounts ?? [],
+          issueCache,
+        );
         return { ok: true, value: undefined };
       } catch (err) {
         return {
@@ -3363,15 +3188,8 @@ export async function createProductionRunCoreDeps(
     // still offends, so a sub-issue fixed by hand costs no Claude call at all.
     async resumeFailureDetectionRepairs(opts) {
       try {
-        // Issue #2451: only the repositories this host leases.
-        const leased = await leasedRepos();
-        if (maintenanceSeams.resumeFailureDetectionRepairs) {
-          const processed = await maintenanceSeams
-            .resumeFailureDetectionRepairs(leased, opts?.deadlineEpochMs);
-          return { ok: true, value: { processed } };
-        }
         const result = await runFailureDetectionResumePass({
-          repos: leased,
+          repos,
           ghClient: createGitHubClient(logger),
           ghCommandFn: runGhCommand,
           runClaude: (repairPrompt: string) =>
@@ -4827,9 +4645,6 @@ export async function createProductionRunCoreDeps(
       resetRepoAccessLogState();
       resetMilestoneArmSyncMemo();
       resetBehindSyncComments();
-      // Issue #2451: the maintenance lease is resolved once per cycle, so the
-      // next cycle must re-read it rather than reuse a lease that has aged.
-      leasedReposPending = null;
     },
 
     // Issue #1486: one cross-repo search per owner fills the per-repo
