@@ -12,6 +12,18 @@ export const BUDGET_RESERVE_FRACTION = 0.2;
 /** Hard ceiling on the paced sleep, so pacing never parks the worker for an hour. */
 export const MAX_PACED_SLEEP_SECONDS = 300;
 
+/**
+ * Whether a quota reading leaves the window at or below its reserve.
+ *
+ * The single source of truth for "in reserve": {@link computePacedSleepSeconds}
+ * reports it in its decision, and the cycle loop asks it directly of the
+ * reading it just took (Issue #2449) — including the run's first reading,
+ * which has no previous reading to diff a spend against.
+ */
+export function isInReserve(limit: number, remaining: number): boolean {
+  return remaining <= limit * BUDGET_RESERVE_FRACTION;
+}
+
 /** Inputs to the pacing decision. */
 export interface PacedSleepInput {
   /** Points per window (5,000 for a user token). */
@@ -65,7 +77,7 @@ export function computePacedSleepSeconds(
   } = input;
 
   const reserve = limit * BUDGET_RESERVE_FRACTION;
-  const inReserve = remaining <= reserve;
+  const inReserve = isInReserve(limit, remaining);
   const base = Math.max(0, baseSleepSeconds);
 
   // Floored at 1 so a window about to reset (or a stale/negative reset) cannot

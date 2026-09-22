@@ -604,6 +604,57 @@ and it is not allowed to look like it. The circuit-breaker back-off
 branch is untouched; pacing only ever lengthens the successful-cycle
 settle sleep.
 
+### The `deferrable` tier — the sweeps that stand down in the reserve
+
+A longer sleep is not the whole answer. The fixed-cost maintenance
+sweeps spend their GraphQL calls every cycle whether or not there is
+anything for them to do, so inside the reserve they compete with the
+issue work the reserve exists to protect. Since Issue #2449 a priority
+handler may carry `budgetTier: "deferrable"`
+(`PriorityHandler`, `worker/deno/lib/run_core.ts`), and the cycle skips
+every deferrable handler while the previous cycle's reading put the
+window at or below its reserve — `isInReserve(limit, remaining)`, the
+same `remaining ≤ limit·reserve` rule the pacing decision reports.
+
+Exactly four handlers are tiered, all of them sweeps whose work keeps
+until the next cycle:
+
+| Priority | Handler                            |
+| -------- | ---------------------------------- |
+| 1.67     | Close Issues for Merged PRs        |
+| 1.68     | Recover Assigned with Closed PRs   |
+| 1.7      | Milestone Completions              |
+| 1.81     | Failure-Detection Repair Resume    |
+
+Nothing that services in-flight work is tiered — Issue Scanning, PR
+Feedback, CI Fix and Auto-Merge always run — and neither is the
+local-only Closed Milestone Housekeeping, which spends no GraphQL
+budget to skip.
+
+A cycle that skips says so once, at WARNING beside the pacing line that
+set the flag:
+
+```
+budget-pacing: in reserve — skipped deferrable sweeps: Close Issues for Merged PRs, Recover Assigned with Closed PRs, Milestone Completions, Failure-Detection Repair Resume
+```
+
+No reading is no evidence. The flag is **consumed** by the cycle that
+reads it, so only a fresh in-reserve reading arms it again: a missing
+`readGraphqlQuota` dep, a `null` reading, a probe that threw, the
+circuit-breaker back-off branch and a rate-limit pause all take no
+reading, and the sweeps come straight back. A skip can never outlive
+the reading that justified it by more than the one cycle it was made
+for.
+
+```mermaid
+flowchart TD
+    P["End-of-cycle quota probe"] -->|"no reading"| C["flag stays clear"]
+    P -->|"remaining > reserve"| C
+    P -->|"remaining ≤ reserve"| R["flag armed"]
+    C --> N["Next cycle: every handler runs"]
+    R --> S["Next cycle: deferrable sweeps skipped,<br/>one WARNING naming them;<br/>flag consumed"]
+```
+
 ## Trade-offs
 
 - **TTL vs staleness.** A 10-minute issue-list TTL means the worker

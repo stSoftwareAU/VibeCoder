@@ -810,12 +810,19 @@ flowchart TD
     style P29 fill:#909090,stroke:,color:#fff
 ```
 
-The ladder is serial, with one exception: when `max_concurrent_issues` is above
-`1`, the four agent-backed PR passes (Priority 1, 1.5, 1.55 and 1.61) run in a
-**maintenance lane** beside the Priority-2 pool instead of ahead of it, each
-leasing its repository from the pool's in-flight registry so no slot and no pass
-ever write the same clone. A 30-minute CI fix therefore runs concurrently with
-issue work rather than idling every slot until it finishes. See
+Four rungs are skipped for a cycle when the previous cycle's GraphQL quota
+reading put the window at or below its reserve: Priorities 1.67, 1.68, 1.7 and
+1.81 carry `budgetTier: "deferrable"`, so what is left of the window goes to
+issue work and the sweeps run a cycle later (Issue #2449). The cycle logs one
+`budget-pacing: in reserve — skipped deferrable sweeps: …` line naming them. See
+[The `deferrable` tier](GH-API-OPTIMISATION.md#the-deferrable-tier--the-sweeps-that-stand-down-in-the-reserve).
+
+The ladder is otherwise serial, with one exception: when `max_concurrent_issues`
+is above `1`, the four agent-backed PR passes (Priority 1, 1.5, 1.55 and 1.61)
+run in a **maintenance lane** beside the Priority-2 pool instead of ahead of it,
+each leasing its repository from the pool's in-flight registry so no slot and no
+pass ever write the same clone. A 30-minute CI fix therefore runs concurrently
+with issue work rather than idling every slot until it finishes. See
 [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
 
 The Priority-1.6 branch-update pass takes no lease; it works in its own linked

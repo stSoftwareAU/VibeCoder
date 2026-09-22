@@ -1605,6 +1605,224 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
+// Tests — Deferrable sweeps skipped while the budget is in reserve (#2449)
+// ---------------------------------------------------------------------------
+
+/** The four fixed-cost sweeps tiered `deferrable` (Issue #2449). */
+const DEFERRABLE_HANDLER_NAMES = [
+  "Close Issues for Merged PRs",
+  "Recover Assigned with Closed PRs",
+  "Milestone Completions",
+  "Failure-Detection Repair Resume",
+];
+
+/**
+ * Drive two successful cycles with the given quota dep, recording which
+ * priority handlers ran in each cycle (Issue #2449).
+ *
+ * The end-of-cycle quota probe is the cycle boundary: it fires once per cycle,
+ * after every handler, so it advances the cycle index and re-arms the single
+ * claim that keeps `scanHadSuccess` true (and therefore keeps the loop on the
+ * paced-sleep branch).
+ */
+async function runCyclesWithQuota(
+  readGraphqlQuota?: () => Promise<
+    { limit: number; remaining: number; reset: number } | null
+  >,
+): Promise<{ cycles: string[][]; logs: string[] }> {
+  const cycles: string[][] = [[]];
+  const logs: string[] = [];
+  let nowValue = 1_800_000_000_000;
+  let claimedThisCycle = false;
+  let cycleIndex = 0;
+
+  const record = (name: string) => {
+    cycles[cycleIndex]!.push(name);
+  };
+  const done = () => Promise.resolve({ ok: true as const, value: undefined });
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: (ms?: number) => {
+      nowValue += ms ?? 0;
+      return Promise.resolve();
+    },
+    findNextIssue: () => {
+      if (claimedThisCycle) return Promise.resolve({ ok: true, value: null });
+      claimedThisCycle = true;
+      return Promise.resolve({
+        ok: true,
+        value: {
+          repo: "org/repo",
+          issueNumber: 2449,
+          issueTitle: "Issue 2449",
+          milestoneTitle: "",
+        },
+      });
+    },
+    processIssue: () =>
+      Promise.resolve({ ok: true as const, value: { success: true } }),
+    // Deferrable sweeps.
+    closeIssuesForMergedPrs: () => {
+      record("Close Issues for Merged PRs");
+      return done();
+    },
+    recoverAssignedWithClosedPr: () => {
+      record("Recover Assigned with Closed PRs");
+      return done();
+    },
+    checkMilestoneCompletions: () => {
+      record("Milestone Completions");
+      return done();
+    },
+    resumeFailureDetectionRepairs: () => {
+      record("Failure-Detection Repair Resume");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    // A representative sample of the handlers that must never be skipped.
+    findAndProcessPrFeedback: () => {
+      record("PR Feedback");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    findAndProcessCiFailure: () => {
+      record("CI Fix");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    ensureAutoMerge: () => {
+      record("Auto-Merge");
+      return done();
+    },
+    sweepClosedMilestones: () => {
+      record("Closed Milestone Housekeeping");
+      return done();
+    },
+    findAndProcessPlanning: () => {
+      record("Planning Mode");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    readGraphqlQuota: readGraphqlQuota
+      ? async () => {
+        const reading = await readGraphqlQuota();
+        cycleIndex += 1;
+        cycles[cycleIndex] = [];
+        claimedThisCycle = false;
+        // Two cycles is all this test needs: the second starts past the run
+        // duration, so the loop exits once it has finished.
+        if (cycleIndex >= 2) nowValue += 4000 * 1000;
+        return reading;
+      }
+      : undefined,
+  });
+  deps.log = (msg: string) => {
+    logs.push(msg);
+  };
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  await runCoreLoop(config, deps);
+  return { cycles, logs };
+}
+
+Deno.test(
+  "run_core - exactly four handlers carry budgetTier deferrable (Issue #2449)",
+  () => {
+    const table = buildPriorityDispatchTable(createMockDeps());
+    const tiered = table
+      .filter((h) => h.budgetTier === "deferrable")
+      .map((h) => h.name);
+    assertEquals(tiered.sort(), [...DEFERRABLE_HANDLER_NAMES].sort());
+  },
+);
+
+Deno.test(
+  "run_core - deferrable sweeps are skipped while the budget is in reserve (Issue #2449)",
+  async () => {
+    // remaining 400 of 5,000 is inside the 20% reserve.
+    const { cycles, logs } = await runCyclesWithQuota(() =>
+      Promise.resolve({
+        limit: 5000,
+        remaining: 400,
+        reset: 1_800_000_000 + 2400,
+      })
+    );
+
+    assert(cycles.length >= 2, `expected two cycles, got ${cycles.length}`);
+    // The first cycle has no reading yet, so nothing is skipped.
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(cycles[0]!.includes(name), `${name} should run in cycle 1`);
+    }
+    // The second cycle sees the previous cycle's in-reserve reading.
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(
+        !cycles[1]!.includes(name),
+        `${name} should be skipped in cycle 2`,
+      );
+    }
+    for (
+      const name of [
+        "PR Feedback",
+        "CI Fix",
+        "Auto-Merge",
+        "Closed Milestone Housekeeping",
+        "Planning Mode",
+      ]
+    ) {
+      assert(cycles[1]!.includes(name), `${name} must still run in cycle 2`);
+    }
+
+    const skipLines = logs.filter((line) =>
+      line.includes("skipped deferrable sweeps:")
+    );
+    assertEquals(skipLines.length, 1, "expected one skip line per cycle");
+    assertStringIncludes(skipLines[0]!, "budget-pacing: in reserve");
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assertStringIncludes(skipLines[0]!, name);
+    }
+  },
+);
+
+Deno.test(
+  "run_core - every handler runs while the budget is outside the reserve (Issue #2449)",
+  async () => {
+    const { cycles, logs } = await runCyclesWithQuota(() =>
+      Promise.resolve({
+        limit: 5000,
+        remaining: 4800,
+        reset: 1_800_000_000 + 2400,
+      })
+    );
+
+    assert(cycles.length >= 2, `expected two cycles, got ${cycles.length}`);
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(cycles[1]!.includes(name), `${name} must run outside the reserve`);
+    }
+    assert(
+      !logs.some((line) => line.includes("skipped deferrable sweeps:")),
+      "no skip line expected outside the reserve",
+    );
+  },
+);
+
+Deno.test(
+  "run_core - no quota reading skips nothing (Issue #2449)",
+  async () => {
+    const { cycles, logs } = await runCyclesWithQuota(() =>
+      Promise.resolve(null)
+    );
+    // With no reading the cycle boundary still advances, so cycle 2 exists and
+    // every handler — deferrable included — runs in it.
+    assert(cycles.length >= 2, `expected two cycles, got ${cycles.length}`);
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(cycles[1]!.includes(name), `${name} must run with no reading`);
+    }
+    assert(
+      !logs.some((line) => line.includes("skipped deferrable sweeps:")),
+      "no skip line expected without a reading",
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Tests — Consecutive failure exit
 // ---------------------------------------------------------------------------
 

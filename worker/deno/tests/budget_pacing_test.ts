@@ -7,6 +7,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   BUDGET_RESERVE_FRACTION,
   computePacedSleepSeconds,
+  isInReserve,
   MAX_PACED_SLEEP_SECONDS,
   type PacedSleepInput,
 } from "../lib/budget_pacing.ts";
@@ -132,4 +133,17 @@ Deno.test("a base sleep of zero stays zero", () => {
     baseSleepSeconds: 0,
   }));
   assertEquals(result.sleepSeconds, 0);
+});
+
+Deno.test("isInReserve is inclusive at the reserve boundary (Issue #2449)", () => {
+  assertEquals(isInReserve(LIMIT, RESERVE), true, "the boundary is inside");
+  assertEquals(isInReserve(LIMIT, RESERVE - 1), true);
+  assertEquals(isInReserve(LIMIT, RESERVE + 1), false);
+  assertEquals(isInReserve(LIMIT, 0), true, "an exhausted window is inside");
+  // The same rule the pacing decision reports, so the tier gate and the
+  // `budget-pacing:` line can never disagree.
+  assertEquals(
+    computePacedSleepSeconds(input({ remaining: RESERVE })).inReserve,
+    isInReserve(LIMIT, RESERVE),
+  );
 });
