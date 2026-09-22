@@ -7,6 +7,10 @@
  * added by an unauthorised actor is rejected, and content modified after
  * approval by an untrusted author is blocked (TOCTOU). The happy path
  * confirms an authorised label still yields a candidate.
+ *
+ * Issue #2494 adds the dependency-blocker recording cases: a blocked
+ * candidate names every blocker it was held by, and an unreadable body still
+ * blocks on the blockers already found.
  */
 
 import { assertEquals } from "@std/assert";
@@ -21,6 +25,7 @@ import {
 } from "../lib/issue_finder_common.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
+import type { IssueFetcher } from "../lib/issue_dependencies.ts";
 import type { WorkerConfig } from "../types.ts";
 
 interface MockGhData {
@@ -538,6 +543,142 @@ async function assertUntrustedLabelStripped(
     }`,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Dependency blockers are recorded on the blocked entry (Issue #2494)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - a dependency-blocked candidate records every blocker, cross-repo included",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 70,
+          title: "Blocked by dependencies",
+          url: "https://github.com/owner/repo/issues/70",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-10T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-10T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Blocked by dependencies", body: "" },
+    });
+
+    // An open sub-issue (child blocker) plus a cross-repo forward dependency.
+    const fetcher: IssueFetcher = {
+      getSubIssues: (_repo: string, issueNumber: number) =>
+        Promise.resolve(issueNumber === 70 ? [7] : []),
+      getIssueBody: (_repo: string, issueNumber: number) =>
+        Promise.resolve(
+          issueNumber === 70 ? "Depends on other/repo#9" : "",
+        ),
+      getIssueState: (_repo: string, issueNumber: number) =>
+        Promise.resolve({
+          number: issueNumber,
+          state: "OPEN" as const,
+          title: `#${issueNumber}`,
+        }),
+    };
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(result.candidates.length, 0);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 70);
+    assertEquals(entry?.reason, "dependency-blocked");
+    // Every blocker `isDependencyBlocked` found, with the cross-repo
+    // dependency keeping its own repo.
+    assertEquals(entry?.blockers, [
+      { repo: "owner/repo", number: 7, kind: "child" },
+      { repo: "other/repo", number: 9, kind: "depends-on" },
+    ]);
+  },
+);
+
+Deno.test(
+  "collect_label_candidates - an unreadable issue body still blocks on the blockers already found",
+  async () => {
+    // Collecting the blockers suppresses the early return inside
+    // `isDependencyBlocked`, so a failing body read now reaches its outer
+    // catch. The verdict must stay "blocked" — releasing a candidate whose
+    // open child is already known would be a fail-open regression.
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 71,
+          title: "Blocked with an unreadable body",
+          url: "https://github.com/owner/repo/issues/71",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-11T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-11T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Blocked with an unreadable body", body: "" },
+    });
+
+    const fetcher: IssueFetcher = {
+      getSubIssues: (_repo: string, issueNumber: number) =>
+        Promise.resolve(issueNumber === 71 ? [7] : []),
+      getIssueBody: (_repo: string, issueNumber: number) =>
+        issueNumber === 71
+          ? Promise.reject(new Error("gh issue view failed"))
+          : Promise.resolve(""),
+      getIssueState: (_repo: string, issueNumber: number) =>
+        Promise.resolve({
+          number: issueNumber,
+          state: "OPEN" as const,
+          title: `#${issueNumber}`,
+        }),
+    };
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(result.candidates.length, 0);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 71);
+    assertEquals(entry?.reason, "dependency-blocked");
+    assertEquals(entry?.blockers, [
+      { repo: "owner/repo", number: 7, kind: "child" },
+    ]);
+  },
+);
 
 Deno.test(
   "collect_label_candidates - strips a custom_label_prompts label added by an untrusted actor (Issue #847)",

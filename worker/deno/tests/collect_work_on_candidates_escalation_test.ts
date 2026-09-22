@@ -10,7 +10,9 @@
  *   - a milestone-tracking issue carrying `work-on` is escalated as a
  *     self-suppressing dead label and dropped;
  *   - re-scanning an already-escalated issue (carrying `needs-human`) posts
- *     no duplicate comment and does not re-apply the label.
+ *     no duplicate comment and does not re-apply the label;
+ *   - an ordinary (claimable) dependency block records the blockers the stall
+ *     check read on the blocked entry (Issue #2494).
  *
  * The GitHub label/comment calls are mocked via an injected recording client
  * and their payloads asserted.
@@ -461,5 +463,60 @@ Deno.test(
     // No escalation: no labels or comments posted.
     assertEquals(recorder.labels, []);
     assertEquals(recorder.comments, []);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Dependency blockers are recorded on the blocked entry (Issue #2494)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collectWorkOnCandidates - a dependency-blocked candidate records the blockers the stall check used",
+  async () => {
+    const config = makeConfig();
+    const recorder: Recorder = { labels: [], comments: [] };
+    const body = "Depends on #200\nDepends on other/repo#9";
+    const mockGh = createMockGh({
+      specs: [
+        {
+          number: 100,
+          title: "Feature depending on claimable fixes",
+          labels: ["work-on"],
+          body,
+        },
+        {
+          number: 200,
+          title: "Claimable fix",
+          labels: [],
+          assignees: ["alice"],
+        },
+      ],
+    });
+
+    const repoAllIssues: FilterableIssue[] = [
+      buildFilterableIssue({
+        number: 100,
+        title: "Feature depending on claimable fixes",
+        labels: ["work-on"],
+        body,
+      }),
+      buildFilterableIssue({
+        number: 200,
+        title: "Claimable fix",
+        labels: [],
+        assignees: ["alice"],
+      }),
+    ];
+
+    const result = await collect(mockGh, config, recorder, repoAllIssues);
+
+    assertEquals(result.candidates, []);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 100);
+    assertEquals(entry?.reason, "dependency-blocked");
+    // The cross-repo blocker keeps its own repo.
+    assertEquals(entry?.blockers, [
+      { repo: "owner/repo", number: 200, kind: "depends-on" },
+      { repo: "other/repo", number: 9, kind: "depends-on" },
+    ]);
   },
 );
