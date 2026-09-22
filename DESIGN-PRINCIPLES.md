@@ -2657,6 +2657,83 @@ flowchart TD
     C -- no --> A["Analysis-only hand-off<br/>(needs-human)"]
 ```
 
+### A blocked issue promotes its chain rather than yielding the fleet
+
+Deferring a blocked issue keeps it safe, but on its own it also hands the host to
+lower-priority work: a `top-priority` issue waiting on `Depends on #N` is skipped
+by the dependency gate, and the very next candidate the ladder offers is a
+`low-priority` one. The fleet then works the least valuable thing available while
+the most valuable chain sits still — even though `#N` itself is open, labelled
+and nobody's.
+
+Discovery now walks that chain. From every dependency-blocked `top-priority` or
+`work-on` candidate it walks the blockers breadth-first, and each member that is
+**open, itself unblocked, carrying a discovery label and unassigned** is
+**promoted into the blocked issue's own tier** for that scan. Unblocking the
+chain *is* the top-priority work, so it is ranked as such.
+
+Three boundaries keep the promotion honest:
+
+- **Promotion changes rank, never eligibility.** A promoted issue is otherwise
+  untouched — same repo, same labels, same discovery source. An issue that is not
+  already a candidate at some tier is not made one by being in a chain.
+- **No labels are written.** The worker cannot apply `top-priority` to anything —
+  label security strips reserved labels the worker adds — so a promotion lives in
+  memory for exactly one scan and is recomputed from scratch on the next.
+- **A chain that cannot be read is never assumed closed.** A blocker in a repo
+  whose issue list could not be fetched stays in the chain; only a blocker absent
+  from a list that *was* read counts as closed. A cycle promotes nothing.
+
+Each promotion is auditable from the scan log alone:
+
+```text
+[issue-finder] promoted-dependency=owner/repo#412 for #398
+```
+
+The blocked issue's own counter is untouched — `configured-label-blocked=N` still
+counts every blocked candidate, promoted chain or not, so the two lines answer
+different questions and neither hides the other.
+
+When the walk ends somewhere the fleet cannot go, the root is **classified rather
+than retried**: `cross-repo-unmonitored` (the blocker lives in a repo this fleet
+does not monitor), `needs-human`, `assigned` (a human holds it), or
+`no-discovery-label`. Those four post the chain-root-unworkable comment on the
+blocked issue — a plain explanation, no labels changed, deduped to one per
+root-and-reason per 24 hours. A root assigned to a **fleet** account is not
+unworkable at all: a sibling host is already on it, so the scan logs
+`chain-root-in-progress` and stays silent, because a comment there would report a
+fault that does not exist.
+
+```mermaid
+flowchart TD
+    B["Blocked top-priority issue #M"] --> W{"Walk its blockers"}
+    W -->|"still blocked"| W
+    W -->|"unmonitored repo"| U["Unworkable: cross-repo-unmonitored"]
+    W -->|"needs-human"| N["Unworkable: needs-human"]
+    W -->|"fleet assignee"| F["Sibling host is on it —<br/>log chain-root-in-progress, no comment"]
+    W -->|"human assignee"| A["Unworkable: assigned"]
+    W -->|"no discovery label"| L["Unworkable: no-discovery-label"]
+    W -->|"open, unassigned, labelled"| P["Promote to #M's tier<br/>for this scan"]
+    U --> C["Comment on #M: chain root the fleet cannot work"]
+    N --> C
+    A --> C
+    L --> C
+    style P fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style F fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
+    style C fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+```
+
+**Implementation:**
+[`dependency_chain_promotion.ts`](worker/deno/lib/dependency_chain_promotion.ts)
+(the pure resolver),
+[`apply_chain_promotions.ts`](worker/deno/lib/apply_chain_promotions.ts)
+(discovery wiring) and
+[`chain_root_comment.ts`](worker/deno/lib/chain_root_comment.ts) (the comment and
+its 24-hour dedup). Operator view:
+[`docs/INTERNALS.md` → Dependency-chain promotion](docs/INTERNALS.md#-dependency-chain-promotion)
+and
+[`docs/TROUBLESHOOTING.md` → Top-priority issue blocked but fleet works low-priority](docs/TROUBLESHOOTING.md#top-priority-issue-blocked-but-fleet-works-low-priority).
+
 ### An already-fixed issue is closed with a note, not escalated
 
 A run that reads the code, finds the issue already fixed on the default branch

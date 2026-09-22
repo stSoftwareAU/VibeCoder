@@ -673,6 +673,54 @@ flowchart TD
     style CheckLog fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
 ```
 
+### Top-priority issue blocked but fleet works low-priority
+
+**Symptom:** a `top-priority` (or `work-on`) issue sits untouched while the fleet
+picks up `low-priority` or `idle-task` work.
+
+**Expected behaviour:** the issue is dependency-blocked, so the ladder skips it —
+but discovery then walks its `Depends on` / `Blocked by` chain and **promotes**
+the chain members it can work into the blocked issue's own tier for that scan. If
+the fleet is working something else instead, the chain produced no promotable
+member.
+
+**Step 1 — check the scan log** (`${LOG_DIR}/worker.log`) for a promotion:
+
+```bash
+grep -E 'promoted-dependency=|chain-root-in-progress' "${LOG_DIR}/worker.log"
+```
+
+A line of the form `[issue-finder] promoted-dependency=owner/repo#412 for #398`
+means the chain *was* promoted: `#412` is being worked at `#398`'s priority, and
+nothing is wrong. Note that `configured-label-blocked=N` on the same scan still
+counts `#398` as blocked — that counter is unaffected by promotion, so a non-zero
+value beside a promotion line is expected.
+
+**Step 2 — read the comment on the blocked issue.** When the walk ends at a root
+nobody can move, the worker posts a *chain root the fleet cannot work* comment on
+the blocked issue. It changes **no labels** and is deduped to one comment per root
+and reason per 24 hours, so a stalled chain is reported once a day, not every
+scan. The comment names the root and one of four reasons:
+
+| Reason in the comment            | What it means                                       | Fix                                                        |
+| -------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
+| waiting on `@login`, who is assigned | A non-fleet account holds the root issue        | Unassign it, or wait for that person to finish             |
+| carries no discovery label       | The root has none of the configured labels          | Add `top-priority`, `work-on` or the repo's discovery label |
+| is `needs-human`                 | The root was escalated to a human                   | Resolve the blocker, then remove `needs-human`             |
+| cross-repo blocker … not monitored | The root lives in a repo absent from `repos`      | Add that repo to `.config.json` `repos`, or resolve it manually |
+
+**Step 3 — no comment and no promotion?** A root assigned to a **fleet** account
+is deliberately silent: a sibling host is already working it, so the scan logs
+`[issue-finder] chain-root-in-progress repo=… issue=#N assignee=…` and posts
+nothing. Wait for that host to finish. Silence with neither log line usually means
+the chain member is itself blocked further down — follow its own `Depends on`
+references.
+
+Design rationale:
+[Design Principles — A blocked issue promotes its chain rather than yielding the fleet](../DESIGN-PRINCIPLES.md#a-blocked-issue-promotes-its-chain-rather-than-yielding-the-fleet).
+Internals:
+[INTERNALS.md — Dependency-chain promotion](INTERNALS.md#-dependency-chain-promotion).
+
 ## 🛰️ Host reports unhealthy — `repos inaccessible`
 
 The per-iteration health gate has a third condition alongside Claude health and
