@@ -1629,6 +1629,73 @@ Each candidate issue is checked by functions in
 | **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items)                                               |
 | **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
 
+#### 🔗 Dependency-chain promotion
+
+A candidate the **Forward dependencies** filter above blocks is not simply
+dropped. Discovery hands each blocked `configured-label` or `work-on` candidate
+that actually names a blocker (`noteChainBlocked` skips an entry with none) to
+`resolveChainPromotions()` in
+[dependency_chain_promotion.ts](../worker/deno/lib/dependency_chain_promotion.ts),
+a pure function: it takes a snapshot of the open issues in the monitored repos
+plus the blocked candidates, and returns promotions, unworkable roots and
+fleet-working roots. It performs no I/O, so it is fully unit-testable.
+
+The walk is breadth-first over each blocked issue's `Depends on` / `Blocked by`
+references, with a seeded visited set — a cycle therefore terminates and promotes
+nothing *on the cycle* rather than looping, while members off the cycle are still
+promoted normally. A chain member that is **open, itself unblocked, carries a
+discovery label and is unassigned** is promoted to the blocked issue's tier; a
+member that is still blocked is walked *through* but not promoted. When two
+blocked issues share a chain member, the **highest** tier wins and the promotion
+is emitted once.
+
+[apply_chain_promotions.ts](../worker/deno/lib/apply_chain_promotions.ts) applies
+the result to the tier candidate lists. A `configured-label` promotion pulls from
+the `work-on`, `low-priority` and `idle-task` lists; a `work-on` promotion pulls
+from `low-priority` and `idle-task`. **Promotion changes rank, never
+eligibility** — a promoted issue keeps its repo, labels and discovery `source`,
+and an issue that is a candidate at no tier is left alone. No label is written:
+the worker cannot apply `top-priority` (label security strips reserved labels the
+worker adds), so the promotion lives in memory for a single scan. When no
+candidate is blocked, the snapshot is never built.
+
+Each promotion is logged by `logDependencyPromoted()` in
+[issue_finder_logger.ts](../worker/deno/lib/issue_finder_logger.ts):
+
+```text
+[issue-finder] promoted-dependency=<owner/repo>#<N> for #<M>
+```
+
+`<N>` is the chain member being promoted and `<M>` the blocked issue that pulled
+it up. The blocked-candidate counter is **unchanged** by promotion:
+`configured-label-blocked=N` on the `selection-reasoning` line still counts every
+blocked candidate recorded that scan — the label *and* work-on collectors both
+feed `allBlockedDetails` — whether or not a chain yielded a promotion, so the two
+lines stay independently readable. That counter rides `logSelectionReasoning`,
+which only fires when an issue was selected and its source was not
+`configured-label`, so a scan that selected nothing prints no counter at all.
+
+A root the fleet cannot work is classified instead of retried, and returned on
+`SelectionResult.unworkableChainRoots` (see
+[issue_priority.ts](../worker/deno/lib/issue_priority.ts), populated in
+[find_oldest_issue.ts](../worker/deno/lib/find_oldest_issue.ts)):
+
+| `ChainRootReason`        | Meaning                                                    |
+| ------------------------ | ---------------------------------------------------------- |
+| `cross-repo-unmonitored` | The blocker lives in a repo this fleet does not monitor    |
+| `needs-human`            | The blocker carries `needs-human`                          |
+| `assigned`               | A non-fleet account holds the blocker (login in `detail`)  |
+| `no-discovery-label`     | The blocker carries no discovery label                     |
+
+Those four drive the chain-root-unworkable comment — see
+[Reporting a chain root nobody can move](#-reporting-a-chain-root-nobody-can-move).
+A root assigned to a **fleet** account is not unworkable: it is returned as a
+fleet-working root and no comment is posted. Unlike `promoted-dependency=`, its
+`[issue-finder] chain-root-in-progress repo=… issue=#N assignee=…` line is
+**debug-gated** — it is written only with `ISSUE_FINDER_DEBUG=true`. A root
+missing from the snapshot is skipped silently: an unreadable chain is never
+reported as a fault.
+
 #### 🎯 Milestone-aware PR blocking
 
 For **milestone issues**, only PRs targeting the same milestone branch are
@@ -2644,6 +2711,12 @@ migrated to Deno as part of):
 
 **Fail-open design** — if API calls fail during dependency checking, the issue
 is treated as **not blocked** to avoid stalling the entire queue.
+
+**Blocking is not the end of the story** — a blocked `configured-label` or
+`work-on` candidate has its dependency chain walked, and the chain members the
+fleet *can* work are promoted to its tier for that scan
+(`promoted-dependency=<owner/repo>#<N> for #<M>` in the scan log). See
+[Dependency-chain promotion](#-dependency-chain-promotion).
 
 ### 👪 Parent-child relationships: `worker/deno/lib/issue_dependencies.ts`
 
