@@ -316,10 +316,10 @@ export interface PriorityHandler {
   /**
    * `deferrable` marks a **fixed-cost maintenance sweep** the cycle skips
    * while the GraphQL budget is inside its reserve (Issue #2449). These
-   * sweeps cost their ≈ 80 calls whether or not there is work for them, so
-   * once `inReserve` is set (`computePacedSleepSeconds`, Issue #2447) a
-   * longer sleep alone is not enough — what is left of the window goes to
-   * issue work instead, and the sweep runs a cycle later.
+   * sweeps spend their calls whether or not there is work for them, so once
+   * `inReserve` is set (`computePacedSleepSeconds`, Issue #2447) a longer
+   * sleep alone is not enough — what is left of the window goes to issue work
+   * instead, and the sweep runs a cycle later.
    *
    * Only for a sweep whose work is genuinely deferrable by a cycle. Never for
    * a handler that services in-flight work (issue scanning, PR feedback, CI
@@ -1814,9 +1814,7 @@ export function buildPriorityDispatchTable(
     {
       priority: 1.67,
       name: "Close Issues for Merged PRs",
-      // Issue #2449: a fixed-cost sweep, skipped for a cycle while the
-      // GraphQL budget is inside its reserve.
-      budgetTier: "deferrable",
+      budgetTier: "deferrable", // Issue #2449
       execute: () =>
         deps.closeIssuesForMergedPrs().then((r) =>
           r.ok
@@ -5276,11 +5274,12 @@ export async function runCoreLoop(
   let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
   /** When that reading was taken, so the spend and its span share a window. */
   let lastGraphqlQuotaReadingAtMs = startTime;
-  // Issue #2449: whether the latest reading put the window inside its reserve.
-  // Set by the end-of-cycle probe below and read by the next cycle's dispatch,
-  // which skips the `deferrable` fixed-cost sweeps while it holds. No reading
-  // — no dep, a `null` reading, or a probe that threw — means no evidence, so
-  // it falls back to false and nothing is skipped.
+  // Issue #2449: set by the end-of-cycle quota probe when the window is at or
+  // below its reserve, and consumed by the next cycle's dispatch, which skips
+  // the `deferrable` sweeps for that cycle. Consumed, not merely read: only a
+  // fresh reading re-arms it, so a skip can never outlive the reading behind
+  // it — a cycle that takes no reading (no dep, a `null` reading, a probe that
+  // threw, the circuit-breaker branch, a rate-limit pause) skips nothing.
   let budgetInReserve = false;
 
   const fireCycleCallback = (reason: CycleEndReason): Promise<void> => {
@@ -5342,9 +5341,6 @@ export async function runCoreLoop(
   async function pacedEndOfCycleSleepSeconds(
     baseSleepSeconds: number,
   ): Promise<number> {
-    // Issue #2449: no reading is no evidence, so the tier gate opens again
-    // rather than holding a stale skip over the rest of the run.
-    budgetInReserve = false;
     if (!deps.readGraphqlQuota) return baseSleepSeconds;
     let reading: { limit: number; remaining: number; reset: number } | null;
     try {
@@ -6161,6 +6157,10 @@ export async function runCoreLoop(
            * Collected so the cycle logs one line rather than one per sweep.
            */
           const skippedDeferrable: string[] = [];
+          // Consume the tier gate: this cycle owns the reading that set it,
+          // and only the next reading can arm it again (Issue #2449).
+          const inReserveThisCycle = budgetInReserve;
+          budgetInReserve = false;
 
           for (const handler of priorityTable) {
             if (handler.priority >= 2) break; // Priority 2 handled separately
@@ -6177,7 +6177,7 @@ export async function runCoreLoop(
             // for the fixed-cost sweeps as well as issue work, so the sweeps
             // stand down for the cycle. Checked ahead of the lane deferral so
             // the tier holds wherever the handler would have run.
-            if (budgetInReserve && handler.budgetTier === "deferrable") {
+            if (inReserveThisCycle && handler.budgetTier === "deferrable") {
               skippedDeferrable.push(handler.name);
               continue;
             }
