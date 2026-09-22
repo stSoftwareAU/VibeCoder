@@ -711,8 +711,9 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
 });
 
 // ---------------------------------------------------------------------------
-// Issue #1779: a child never merges into a milestone branch that is behind
-// the default branch
+// Issue #1779 / #2460: a milestone branch behind the default branch is
+// reported, but the child is armed anyway — the milestone ruleset's strict
+// up-to-date policy holds the merge itself until the branch is level.
 // ---------------------------------------------------------------------------
 
 /** gh stub for a healthy, open milestone whose branch is `behindBy` behind. */
@@ -732,8 +733,9 @@ function ghForBehindMilestone(
   };
 }
 
-Deno.test("pr_auto_merge - a milestone base behind the default branch is DEFERRED: no `--auto`, no direct merge, no comment (Issue #1779)", async () => {
+Deno.test("pr_auto_merge - a milestone base behind the default branch is ARMED anyway, silently when no sync hook is supplied (Issue #2460)", async () => {
   _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
   const calls: string[][] = [];
   let directMerges = 0;
   let comments = 0;
@@ -744,6 +746,7 @@ Deno.test("pr_auto_merge - a milestone base behind the default branch is DEFERRE
     baseRefName: "milestone/1730-sync",
     getDefaultBranchFn: () =>
       Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
     ghCommandFn: ghForBehindMilestone(3, calls),
     commentFn: async () => {
       comments++;
@@ -754,25 +757,27 @@ Deno.test("pr_auto_merge - a milestone base behind the default branch is DEFERRE
     },
   });
 
-  assertEquals(result.result, AutoMergeResult.Deferred);
-  assertStringIncludes(result.message, "milestone behind default branch");
-  assertStringIncludes(result.message, "(3 commits)");
-  assertEquals(directMerges, 0, "a behind milestone base must not be merged");
-  assertEquals(comments, 0, "the deferral is silent on the PR");
+  assertEquals(result.result, AutoMergeResult.Enabled);
   assertEquals(
-    calls.some((a) => a[0] === "pr" && a[1] === "merge"),
-    false,
-    "`gh pr merge` must not run for a behind milestone base",
+    result.deferral,
+    "milestone-behind",
+    "the behind base is still recorded for logging",
   );
   assertEquals(
+    directMerges,
+    0,
+    "a behind milestone base is armed, never side-picked",
+  );
+  assertEquals(comments, 0, "without a sync hook there is nothing to report");
+  assertEquals(
     calls.some((a) => a.includes("--auto")),
-    false,
-    "GitHub auto-merge must not be armed for a behind milestone base",
+    true,
+    "GitHub auto-merge is armed; the ruleset holds the merge until level",
   );
   assertEquals(
     calls.some((a) => a.includes("--add-label")),
     false,
-    "the deferral applies no label",
+    "arming a behind base applies no label",
   );
 });
 
@@ -798,8 +803,9 @@ Deno.test("pr_auto_merge - a milestone base level with the default branch still 
   );
 });
 
-Deno.test("pr_auto_merge - the behind deferral is recorded by logAutoMergeOutcome (Issue #1779)", async () => {
+Deno.test("pr_auto_merge - arming over a behind base logs as a success, not a warning (Issue #2460)", async () => {
   _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
   const lines: Array<{ level: string; message: string }> = [];
   const unused = () => {};
   const logger = {
@@ -823,19 +829,19 @@ Deno.test("pr_auto_merge - the behind deferral is recorded by logAutoMergeOutcom
     baseRefName: "milestone/1730-sync",
     getDefaultBranchFn: () =>
       Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
     ghCommandFn: ghForBehindMilestone(2, []),
   });
   logAutoMergeOutcome(logger, "owner/repo", 1781, outcome);
 
   assertEquals(lines.length, 1);
-  assertStringIncludes(
-    lines[0]!.message,
-    "deferred: milestone behind default branch (2 commits)",
-  );
+  assertEquals(lines[0]!.level, "info", "arming is not a warning");
+  assertStringIncludes(lines[0]!.message, "Auto-merge enabled");
 });
 
 Deno.test("pr_auto_merge - two children of one behind milestone cost ONE compare call (Issue #1779)", async () => {
   _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
   const calls: string[][] = [];
   const gh = ghForBehindMilestone(5, calls);
   for (const prNumber of [1, 2]) {
@@ -846,9 +852,10 @@ Deno.test("pr_auto_merge - two children of one behind milestone cost ONE compare
       baseRefName: "milestone/1730-sync",
       getDefaultBranchFn: () =>
         Promise.resolve({ ok: true as const, value: "Develop" }),
+      isBaseProtectedFn: async () => true,
       ghCommandFn: gh,
     });
-    assertEquals(result.result, AutoMergeResult.Deferred);
+    assertEquals(result.result, AutoMergeResult.Enabled);
   }
   assertEquals(
     calls.filter((a) => a.join(" ").includes("/compare/")).length,
@@ -875,13 +882,15 @@ Deno.test("pr_auto_merge - a default-branch base makes no milestone compare call
   );
 });
 
-Deno.test("pr_auto_merge - the gate seam still governs: an injected behind decision defers without any gh call (Issue #1779)", async () => {
+Deno.test("pr_auto_merge - the gate seam still governs: an injected behind decision arms without any compare call (Issue #2460)", async () => {
+  _resetBaseProtectionMemo();
   const calls: string[][] = [];
   const result = await enableAutoMerge({
     repo: "owner/repo",
     prNumber: 4,
     headRefName: "issue-4-child",
     baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => true,
     decideMilestoneBaseFn: () =>
       Promise.resolve({
         decision: "defer" as const,
@@ -895,9 +904,17 @@ Deno.test("pr_auto_merge - the gate seam still governs: an injected behind decis
       return "";
     },
   });
-  assertEquals(result.result, AutoMergeResult.Deferred);
-  assertStringIncludes(result.message, "(1 commit)");
-  assertEquals(calls.length, 0);
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(result.deferral, "milestone-behind");
+  assertEquals(
+    calls.some((a) => a.join(" ").includes("/compare/")),
+    false,
+    "the injected gate decision replaces the compare call",
+  );
+  assertEquals(
+    calls.some((a) => a.includes("--auto")),
+    true,
+  );
 });
 
 Deno.test("pr_auto_merge - the milestone sync PR is still armed while its base is behind (Issue #1779)", async () => {
@@ -922,8 +939,9 @@ Deno.test("pr_auto_merge - the milestone sync PR is still armed while its base i
   assertEquals(calls.some((a) => a.includes("--auto")), true);
 });
 
-Deno.test("pr_auto_merge - a behind deferral names itself so callers do not escalate it (Issue #1779)", async () => {
+Deno.test("pr_auto_merge - an armed outcome still names the behind base so callers do not escalate it (Issue #2460)", async () => {
   _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
   const result = await enableAutoMerge({
     repo: "owner/repo",
     prNumber: 1783,
@@ -931,10 +949,16 @@ Deno.test("pr_auto_merge - a behind deferral names itself so callers do not esca
     baseRefName: "milestone/1730-sync",
     getDefaultBranchFn: () =>
       Promise.resolve({ ok: true as const, value: "Develop" }),
+    isBaseProtectedFn: async () => true,
     ghCommandFn: ghForBehindMilestone(3, []),
   });
-  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertEquals(result.result, AutoMergeResult.Enabled);
   assertEquals(result.deferral, "milestone-behind");
+  assertEquals(
+    autoMergeOutcomeNeedsComment(result),
+    false,
+    "an armed child needs no #2457 comment",
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -429,13 +429,15 @@ sequenceDiagram
 #### The milestone base is behind the default branch
 
 The same defer-and-retry shape covers the *base* as well as the head
-(Issue #1779). A child PR whose base is a `milestone/*` branch is **not armed
-and not merged** while that milestone branch is behind the default branch —
+(Issue #1779). A child PR whose base is a `milestone/*` branch that is behind
+the default branch is **armed anyway** (Issue #2460): the milestone ruleset's
+strict up-to-date policy holds the *merge* until the branch is level, so arming
+early is safe and the child lands the moment the sync catches up.
 `decideMilestoneBaseMerge` in
 [`worker/deno/lib/milestone_children_gate.ts`](../worker/deno/lib/milestone_children_gate.ts)
-returns `defer` / `milestone-behind`, so the child would otherwise land on a
-stale tip and the milestone rollup would carry work never tested against what
-the default branch already has.
+still returns `defer` / `milestone-behind` — that decision is what triggers the
+inline sync and the reason comment, and it rides along on the armed outcome as a
+log marker rather than withholding the arming.
 
 - **What is compared.** `repos/{repo}/compare/{default}...{milestone}`, whose
   `behind_by` is the milestone branch measured against the default branch. The
@@ -451,12 +453,13 @@ the default branch already has.
   per milestone per cycle. A clean landing (or a sync PR that merges in
   the remaining budget) invalidates the compare memo and arms the PR in
   the same cycle — at creation, on the post-scan sweep, and on priority
-  1.65. A conflicting sync still does nothing to the merge: no `--auto`,
-  no gated direct merge, no label, and no side-pick. The reason is posted
-  on the PR; the periodic 1.72 sweep is the backstop. The deferral names
-  itself (`deferral: "milestone-behind"`), so the PR-maintenance scan
-  classifies it `await_checks` rather than escalating a healthy child to
-  `needs-human`.
+  1.65. A conflicting sync is never side-picked, but it no longer holds
+  the child back either: the reason is posted on the PR and `--auto` is
+  issued regardless (Issue #2460), leaving GitHub to release the merge
+  once the periodic 1.72 sweep levels the branch. The armed outcome still
+  names the behind base (`deferral: "milestone-behind"`) for logging, so
+  the PR-maintenance scan treats a healthy child as landed rather than
+  escalating it to `needs-human`.
 - **The milestone sync PR is exempt.** Its base *is* the milestone branch and
   its head is `sync/milestone-*` — it is the PR that clears "behind". Deferring
   it for the state it exists to fix would deadlock the milestone: the sync
@@ -476,10 +479,11 @@ the default branch already has.
   [INTERNALS](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
 - **An unreadable comparison defers as `lookup-failed`**, exactly as an
   unreadable route does (Issue #477). "I could not read it" is never actioned.
-- **Known limit.** The gate governs **arming**, not GitHub's merge. A PR whose
-  GitHub auto-merge was armed *before* the milestone branch fell behind still
-  merges when its checks pass — GitHub owns that merge, and nothing the worker
-  decides afterwards is consulted.
+- **Who holds the merge.** GitHub does, not the worker. Once `--auto` is
+  issued the merge is GitHub's to release, and nothing the worker decides
+  afterwards is consulted — which is exactly why arming over a behind base is
+  safe: the milestone ruleset's strict up-to-date policy is the thing that
+  keeps a stale child from landing.
 
 Two callers deliberately do **not** require a synced base. The post-merge
 landing check (`merge_landing.ts`) asks a different question — that PR has
