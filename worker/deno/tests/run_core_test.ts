@@ -15,6 +15,7 @@ import {
   runCoreLoop,
   sleepWithJitter,
 } from "../lib/run_core.ts";
+import { MAX_PACED_SLEEP_SECONDS } from "../lib/budget_pacing.ts";
 import {
   recordRepoProbe,
   resetRepoAccessState,
@@ -200,7 +201,8 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
 Deno.test("run_core - createDefaultRunCoreConfig returns valid defaults", () => {
   const config = createDefaultRunCoreConfig();
   assertEquals(config.runDurationSeconds, 3600);
-  assertEquals(config.sleepInterval, 30);
+  // Issue #2446: default sleep interval raised from 30 s to 120 s.
+  assertEquals(config.sleepInterval, 120);
   assertEquals(typeof config.maxConsecutiveFailures, "number");
   assertEquals(config.maxConsecutiveFailures > 0, true);
 });
@@ -1447,6 +1449,378 @@ Deno.test("run_core - sleepWithJitter handles zero base", () => {
   const jittered = sleepWithJitter(0);
   assertEquals(jittered, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Tests — GraphQL budget pacing of the end-of-cycle sleep (Issue #2447)
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive the loop through one successful claim so the `scanHadSuccess` branch of
+ * the end-of-cycle sleep runs, with the given quota dep. Returns the sleeps the
+ * loop requested and every log line it emitted.
+ */
+async function runPacedCycle(
+  readGraphqlQuota?: () => Promise<
+    { limit: number; remaining: number; reset: number } | null
+  >,
+): Promise<{ sleeps: number[]; logs: string[] }> {
+  const logs: string[] = [];
+  const sleeps: number[] = [];
+  let nowValue = 1_800_000_000;
+  let findCalls = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: (ms?: number) => {
+      sleeps.push(ms ?? 0);
+      // Exceed the 1h run duration so the loop exits after one sleep.
+      nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    findNextIssue: () => {
+      findCalls += 1;
+      if (findCalls === 1) {
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            repo: "org/repo",
+            issueNumber: 2447,
+            issueTitle: "Issue 2447",
+            milestoneTitle: "",
+          },
+        });
+      }
+      return Promise.resolve({ ok: true as const, value: null });
+    },
+    processIssue: () =>
+      Promise.resolve({ ok: true as const, value: { success: true } }),
+    readGraphqlQuota,
+  });
+  deps.log = (msg: string) => {
+    logs.push(msg);
+  };
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  await runCoreLoop(config, deps);
+  return { sleeps, logs };
+}
+
+Deno.test(
+  "run_core - end-of-cycle sleep is paced when the quota dep returns a reading (Issue #2447)",
+  async () => {
+    const sleeps: number[] = [];
+    const logs: string[] = [];
+    let nowValue = 1_800_000_000;
+    let cycle = 0;
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: (ms?: number) => {
+        sleeps.push(ms ?? 0);
+        nowValue += 130_000; // 130 s cycle wall time (120 s sleep + 10 s work)
+        cycle += 1;
+        return Promise.resolve();
+      },
+      findNextIssue: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            repo: "org/repo",
+            issueNumber: 2447,
+            issueTitle: "Issue 2447",
+            milestoneTitle: "",
+          },
+        }),
+      processIssue: () =>
+        Promise.resolve({ ok: true as const, value: { success: true } }),
+      readGraphqlQuota: () => {
+        // used climbs as remaining falls: 5000-3200 = 1800, then 5000-1500 =
+        // 3500 — a 1700-point cycle, far past the ~27 points 40 minutes left
+        // can afford, so the second sleep is capped at 300 s.
+        const remaining = cycle === 0 ? 3200 : 1500;
+        return Promise.resolve({
+          limit: 5000,
+          remaining,
+          reset: 1_800_000_000 + 2400,
+        });
+      },
+    });
+    deps.log = (msg: string) => {
+      logs.push(msg);
+    };
+
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    await runCoreLoop(config, deps);
+
+    assert(
+      sleeps.includes(MAX_PACED_SLEEP_SECONDS * 1000),
+      `expected a 300 s paced sleep, got [${sleeps}]`,
+    );
+    const pacingLine = logs.find((line) => line.startsWith("budget-pacing:"));
+    assert(pacingLine, "expected a budget-pacing log line");
+    assertStringIncludes(pacingLine, "last cycle's spend exceeds");
+    assertStringIncludes(pacingLine, "sleep=300s");
+  },
+);
+
+Deno.test(
+  "run_core - end-of-cycle sleep keeps the fixed sleep when the quota dep returns null (Issue #2447)",
+  async () => {
+    const { sleeps, logs } = await runPacedCycle(() => Promise.resolve(null));
+    assert(sleeps.length >= 1, "expected at least one end-of-cycle sleep");
+    assert(
+      !logs.some((line) => line.startsWith("budget-pacing:")),
+      "no pacing line expected when the probe is unavailable",
+    );
+  },
+);
+
+Deno.test(
+  "run_core - end-of-cycle sleep keeps the fixed sleep when the quota dep is absent (Issue #2447)",
+  async () => {
+    const { sleeps, logs } = await runPacedCycle();
+    assert(sleeps.length >= 1, "expected at least one end-of-cycle sleep");
+    assert(
+      !logs.some((line) => line.startsWith("budget-pacing:")),
+      "no pacing line expected when the dep is absent",
+    );
+  },
+);
+
+Deno.test(
+  "run_core - a throwing quota probe keeps the fixed sleep and says so (Issue #2447)",
+  async () => {
+    const { sleeps, logs } = await runPacedCycle(() =>
+      Promise.reject(new Error("probe exploded"))
+    );
+    assert(sleeps.length >= 1, "expected at least one end-of-cycle sleep");
+    // Fail loud: the probe's failure is reported, not swallowed into a
+    // silently-unchanged sleep.
+    const warned = logs.find((line) => line.includes("budget-pacing:"));
+    assert(warned, `expected the throw to be reported, got [${logs}]`);
+    assertStringIncludes(warned, "probe exploded");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Tests — Deferrable sweeps skipped while the budget is in reserve (#2449)
+// ---------------------------------------------------------------------------
+
+/** The four fixed-cost sweeps tiered `deferrable` (Issue #2449). */
+const DEFERRABLE_HANDLER_NAMES = [
+  "Close Issues for Merged PRs",
+  "Recover Assigned with Closed PRs",
+  "Milestone Completions",
+  "Failure-Detection Repair Resume",
+];
+
+/**
+ * Drive two successful cycles with the given quota dep, recording which
+ * priority handlers ran in each cycle (Issue #2449).
+ *
+ * The end-of-cycle quota probe is the cycle boundary: it fires once per cycle,
+ * after every handler, so it advances the cycle index and re-arms the single
+ * claim that keeps `scanHadSuccess` true (and therefore keeps the loop on the
+ * paced-sleep branch).
+ */
+async function runCyclesWithQuota(
+  readGraphqlQuota?: () => Promise<
+    { limit: number; remaining: number; reset: number } | null
+  >,
+): Promise<{ cycles: string[][]; logs: string[] }> {
+  const cycles: string[][] = [[]];
+  const logs: string[] = [];
+  let nowValue = 1_800_000_000_000;
+  let claimedThisCycle = false;
+  let cycleIndex = 0;
+
+  const record = (name: string) => {
+    cycles[cycleIndex]!.push(name);
+  };
+  const done = () => Promise.resolve({ ok: true as const, value: undefined });
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: (ms?: number) => {
+      nowValue += ms ?? 0;
+      return Promise.resolve();
+    },
+    findNextIssue: () => {
+      if (claimedThisCycle) return Promise.resolve({ ok: true, value: null });
+      claimedThisCycle = true;
+      return Promise.resolve({
+        ok: true,
+        value: {
+          repo: "org/repo",
+          issueNumber: 2449,
+          issueTitle: "Issue 2449",
+          milestoneTitle: "",
+        },
+      });
+    },
+    processIssue: () =>
+      Promise.resolve({ ok: true as const, value: { success: true } }),
+    // Deferrable sweeps.
+    closeIssuesForMergedPrs: () => {
+      record("Close Issues for Merged PRs");
+      return done();
+    },
+    recoverAssignedWithClosedPr: () => {
+      record("Recover Assigned with Closed PRs");
+      return done();
+    },
+    checkMilestoneCompletions: () => {
+      record("Milestone Completions");
+      return done();
+    },
+    resumeFailureDetectionRepairs: () => {
+      record("Failure-Detection Repair Resume");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    // A representative sample of the handlers that must never be skipped.
+    findAndProcessPrFeedback: () => {
+      record("PR Feedback");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    findAndProcessCiFailure: () => {
+      record("CI Fix");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    ensureAutoMerge: () => {
+      record("Auto-Merge");
+      return done();
+    },
+    sweepClosedMilestones: () => {
+      record("Closed Milestone Housekeeping");
+      return done();
+    },
+    findAndProcessPlanning: () => {
+      record("Planning Mode");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    readGraphqlQuota: readGraphqlQuota
+      ? async () => {
+        const reading = await readGraphqlQuota();
+        cycleIndex += 1;
+        cycles[cycleIndex] = [];
+        claimedThisCycle = false;
+        // Two cycles is all this test needs: the second starts past the run
+        // duration, so the loop exits once it has finished.
+        if (cycleIndex >= 2) nowValue += 4000 * 1000;
+        return reading;
+      }
+      : undefined,
+  });
+  deps.log = (msg: string) => {
+    logs.push(msg);
+  };
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  await runCoreLoop(config, deps);
+  return { cycles, logs };
+}
+
+Deno.test(
+  "run_core - exactly four handlers carry budgetTier deferrable (Issue #2449)",
+  () => {
+    const table = buildPriorityDispatchTable(createMockDeps());
+    const tiered = table
+      .filter((h) => h.budgetTier === "deferrable")
+      .map((h) => h.name);
+    assertEquals(tiered.sort(), [...DEFERRABLE_HANDLER_NAMES].sort());
+  },
+);
+
+Deno.test(
+  "run_core - deferrable sweeps are skipped while the budget is in reserve (Issue #2449)",
+  async () => {
+    // remaining 400 of 5,000 is inside the 20% reserve.
+    const { cycles, logs } = await runCyclesWithQuota(() =>
+      Promise.resolve({
+        limit: 5000,
+        remaining: 400,
+        reset: 1_800_000_000 + 2400,
+      })
+    );
+
+    assert(cycles.length >= 2, `expected two cycles, got ${cycles.length}`);
+    // The first cycle has no reading yet, so nothing is skipped.
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(cycles[0]!.includes(name), `${name} should run in cycle 1`);
+    }
+    // The second cycle sees the previous cycle's in-reserve reading.
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(
+        !cycles[1]!.includes(name),
+        `${name} should be skipped in cycle 2`,
+      );
+    }
+    for (
+      const name of [
+        "PR Feedback",
+        "CI Fix",
+        "Auto-Merge",
+        "Closed Milestone Housekeeping",
+        "Planning Mode",
+      ]
+    ) {
+      assert(cycles[1]!.includes(name), `${name} must still run in cycle 2`);
+    }
+
+    const skipLines = logs.filter((line) =>
+      line.includes("skipped deferrable sweeps:")
+    );
+    assertEquals(skipLines.length, 1, "expected one skip line per cycle");
+    assertStringIncludes(skipLines[0]!, "budget-pacing: in reserve");
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assertStringIncludes(skipLines[0]!, name);
+    }
+  },
+);
+
+Deno.test(
+  "run_core - every handler runs while the budget is outside the reserve (Issue #2449)",
+  async () => {
+    const { cycles, logs } = await runCyclesWithQuota(() =>
+      Promise.resolve({
+        limit: 5000,
+        remaining: 4800,
+        reset: 1_800_000_000 + 2400,
+      })
+    );
+
+    assert(cycles.length >= 2, `expected two cycles, got ${cycles.length}`);
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(cycles[1]!.includes(name), `${name} must run outside the reserve`);
+    }
+    assert(
+      !logs.some((line) => line.includes("skipped deferrable sweeps:")),
+      "no skip line expected outside the reserve",
+    );
+  },
+);
+
+Deno.test(
+  "run_core - no quota reading skips nothing (Issue #2449)",
+  async () => {
+    const { cycles, logs } = await runCyclesWithQuota(() =>
+      Promise.resolve(null)
+    );
+    // With no reading the cycle boundary still advances, so cycle 2 exists and
+    // every handler — deferrable included — runs in it.
+    assert(cycles.length >= 2, `expected two cycles, got ${cycles.length}`);
+    for (const name of DEFERRABLE_HANDLER_NAMES) {
+      assert(cycles[1]!.includes(name), `${name} must run with no reading`);
+    }
+    assert(
+      !logs.some((line) => line.includes("skipped deferrable sweeps:")),
+      "no skip line expected without a reading",
+    );
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Tests — Consecutive failure exit

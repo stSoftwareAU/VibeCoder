@@ -18,7 +18,7 @@
  * When the branch cannot be brought level the run **defers**: it exits before
  * any implementation agent is spent, leaves the issue open with its pickup
  * label untouched, and says why on the release comment. What stops every
- * other slot re-claiming the same milestone 30 seconds later is the ledger
+ * other slot re-claiming the same milestone a cycle later is the ledger
  * itself — an attempt open on this host, or a budget already spent (the
  * selector reads both — see {@link milestonePacedUntil}).
  *
@@ -168,7 +168,7 @@ export interface MilestonePresyncDeps {
  *
  * Read by the issue selector so a paced milestone's issues are skipped before
  * a claim is made: claiming a child only to defer it would comment on an issue
- * every 30 seconds. A local file read — no API call.
+ * on every scan cycle. A local file read — no API call.
  *
  * Three states pace the children, and nothing else does:
  *

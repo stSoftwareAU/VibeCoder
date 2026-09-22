@@ -225,7 +225,8 @@ Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct claudeTimeout (Iss
 });
 
 Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct sleepInterval", () => {
-  assertEquals(OPERATIONAL_DEFAULTS.sleepInterval, 30);
+  // Issue #2446: raised from 30 to 120 to cut the fixed per-cycle GraphQL spend.
+  assertEquals(OPERATIONAL_DEFAULTS.sleepInterval, 120);
 });
 
 Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct planningTimeout (Issue #1824)", () => {
