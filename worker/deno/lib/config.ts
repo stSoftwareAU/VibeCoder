@@ -234,8 +234,6 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   max_auto_fix_attempts: "maxAutoFixAttempts",
   // Per-repo blocking-PR stall threshold (Issue #4025).
   blocking_pr_stall_threshold_seconds: "blockingPrStallThresholdSeconds",
-  // Per-repo maintenance-lease anchor issue (Issue #2450).
-  maintenance_lease_issue: "maintenanceLeaseIssue",
 };
 
 /**
