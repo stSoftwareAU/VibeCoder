@@ -61,7 +61,7 @@ export interface ChainPromotionInput {
   blocked: BlockedCandidate[];
   /** Snapshots of every chain member, keyed by {@link chainIssueKey}. */
   issues: Map<string, ChainSnapshotIssue>;
-  /** Repositories the fleet monitors, in `owner/repo` form. */
+  /** Repositories the fleet monitors, in `owner/repo` form; matched case-insensitively. */
   monitoredRepos: Set<string>;
   /** Labels that make an issue discoverable (e.g. `bug`, `enhancement`). */
   discoveryLabels: string[];
@@ -144,15 +144,20 @@ function ref(repo: string, issueNumber: number): ChainIssueRef {
  * itself still blocked is walked *through* — never promoted, never classified
  * — and the walk continues to its own blockers until it reaches roots.
  *
- * Roots are classified in a fixed order: unmonitored repo, unknown snapshot,
- * `needs-human`, fleet assignee, other assignee, missing discovery label,
- * otherwise promoted.
+ * Roots are classified in a fixed order: unmonitored repo, `needs-human`,
+ * fleet assignee, other assignee, missing discovery label, otherwise promoted.
+ * A blocker with no snapshot is skipped rather than classified — the caller
+ * could not read it, and a partial view must not become a confident verdict.
  */
 export function resolveChainPromotions(
   input: ChainPromotionInput,
 ): ChainPromotionResult {
   const discovery = new Set(input.discoveryLabels.map(normalise));
   const needsHuman = normalise(input.needsHumanLabel);
+  // GitHub renders the same repo as `Owner/Repo` or `owner/repo`; a casing
+  // mismatch here would report a monitored repo as unreachable and silently
+  // drop its whole subtree, so match it the way every other string is matched.
+  const monitored = new Set([...input.monitoredRepos].map(normalise));
 
   const promoted = new Map<string, PromotedChainMember>();
   const fleetWorking: FleetWorkingRoot[] = [];
@@ -176,7 +181,7 @@ export function resolveChainPromotions(
       const rootRef = ref(next.repo, next.number);
 
       // A blocker the fleet does not monitor cannot be worked or walked past.
-      if (!input.monitoredRepos.has(next.repo)) {
+      if (!monitored.has(normalise(next.repo))) {
         unworkableRoots.push({
           blocked: blockedRef,
           root: rootRef,

@@ -302,6 +302,28 @@ Deno.test("resolveChainPromotions - cross-repo root in an unmonitored repo is un
   }]);
 });
 
+Deno.test("resolveChainPromotions - monitored repo matching ignores case", () => {
+  const result = resolveChainPromotions(input({
+    blocked: [{
+      repo: REPO,
+      number: 100,
+      tier: "configured-label",
+      blockers: [blocker(500, OTHER)],
+    }],
+    issues: issueMap(snapshot(500, { repo: OTHER })),
+    // GitHub hands back either casing; the same repo must not read as foreign.
+    monitoredRepos: new Set([REPO, OTHER.toUpperCase()]),
+  }));
+
+  assertEquals(result.unworkableRoots, []);
+  assertEquals(result.promoted, [{
+    repo: OTHER,
+    number: 500,
+    tier: "configured-label",
+    promotedBy: { repo: REPO, number: 100 },
+  }]);
+});
+
 // ---------------------------------------------------------------------------
 // Assignees: fleet vs human
 // ---------------------------------------------------------------------------

@@ -44,9 +44,10 @@ Promotion is the caller's side effect — discovery wiring, logging and the
 chain-root comment land in Issues #2494–#2496, which own every write. The
 resolver itself cannot label, comment, or claim, so a wrong verdict here can
 only change which candidate the scan reports, never mutate GitHub state
-directly. Label and login comparisons are normalised with
+directly. Label, login and repository comparisons are normalised with
 `trim().toLowerCase()` so padded or differently-cased GitHub data cannot slip
-past the needs-human or fleet-author checks. Every `detail` string is a repo
+past the needs-human, fleet-author or monitored-repo checks — a casing mismatch
+must not report a monitored repo as unreachable and silently drop its subtree. Every `detail` string is a repo
 name, a label name, or an assignee login taken from GitHub data the caller
 already fenced as untrusted; it is reported, never interpolated into a command
 or a path.
