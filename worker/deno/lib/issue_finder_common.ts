@@ -527,7 +527,9 @@ export async function isDependencyBlocked(
   fetcher: IssueFetcher,
   openStateMap?: OpenIssueStateMap,
   milestoneScope?: MilestoneScope,
-  blockers?: Array<{ repo: string; number: number; kind: "child" | "depends-on" }>,
+  blockers?: Array<
+    { repo: string; number: number; kind: "child" | "depends-on" }
+  >,
 ): Promise<boolean> {
   try {
     // Check parent/child blocking
@@ -561,7 +563,11 @@ export async function isDependencyBlocked(
       // Map hit → still open; immediate block.
       if (isSameRepo && openStateMap?.has(dep.number)) {
         if (blockers) {
-          blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+          blockers.push({
+            repo: depRepo,
+            number: dep.number,
+            kind: "depends-on",
+          });
         } else {
           return true;
         }
@@ -573,7 +579,11 @@ export async function isDependencyBlocked(
       } catch {
         // If we can't check, assume blocked (fail safe)
         if (blockers) {
-          blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+          blockers.push({
+            repo: depRepo,
+            number: dep.number,
+            kind: "depends-on",
+          });
         } else {
           return true;
         }
@@ -581,7 +591,11 @@ export async function isDependencyBlocked(
       }
       if (depState.state === "OPEN") {
         if (blockers) {
-          blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+          blockers.push({
+            repo: depRepo,
+            number: dep.number,
+            kind: "depends-on",
+          });
         } else {
           return true;
         }
@@ -599,7 +613,11 @@ export async function isDependencyBlocked(
         try {
           if (await milestoneScope.isMilestoneOpen(depMilestone)) {
             if (blockers) {
-              blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+              blockers.push({
+                repo: depRepo,
+                number: dep.number,
+                kind: "depends-on",
+              });
             } else {
               return true;
             }
@@ -609,7 +627,11 @@ export async function isDependencyBlocked(
           // Unreadable open-milestone listing — fail safe (blocked) rather
           // than releasing the dependant against unmerged work.
           if (blockers) {
-            blockers.push({ repo: depRepo, number: dep.number, kind: "depends-on" });
+            blockers.push({
+              repo: depRepo,
+              number: dep.number,
+              kind: "depends-on",
+            });
           } else {
             return true;
           }

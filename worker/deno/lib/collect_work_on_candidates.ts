@@ -44,7 +44,7 @@ import type {
 } from "./issue_finder_logger.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
 import { extractMilestonePriority } from "./milestone_priority.ts";
-import type { IssueFetcher, DependencyBlocker } from "./issue_dependencies.ts";
+import type { DependencyBlocker, IssueFetcher } from "./issue_dependencies.ts";
 import {
   buildWorkOnDependencyGraph,
   detectDependencyCycles,
@@ -57,8 +57,8 @@ import {
   escalateUnworkableWorkOn,
 } from "./escalate_unworkable_work_on.ts";
 import {
-  findDependencyStall,
   type DependencyClaimabilityContext,
+  findDependencyStall,
 } from "./dependency_claimability.ts";
 import {
   filterTrustedLabels,
@@ -577,9 +577,15 @@ export async function collectWorkOnCandidates(
       const repoIssuesMap = new Map(
         repoAllIssues.map((issue) => [issue.number, issue]),
       );
-      const isBlockedByMergedPr = (blockerRepo: string, blockerNumber: number): boolean => {
+      const isBlockedByMergedPr = (
+        blockerRepo: string,
+        blockerNumber: number,
+      ): boolean => {
         if (blockerRepo !== repo) return false;
-        const closedPR = isBlockedByRecentlyClosedPR(repoClosedPRs, blockerNumber);
+        const closedPR = isBlockedByRecentlyClosedPR(
+          repoClosedPRs,
+          blockerNumber,
+        );
         return closedPR !== null && closedPR.merged === true;
       };
       const ctx: DependencyClaimabilityContext = {

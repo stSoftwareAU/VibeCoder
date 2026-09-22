@@ -23,7 +23,10 @@ import type { FilterableIssue } from "./issue_filter.ts";
  * - `"merged-pr-permanent"` — the dependency is blocked by a merged PR
  *   (permanent block that only explicit trusted re-approval lifts).
  */
-export type DependencyStallClass = "needs-human" | "assigned" | "merged-pr-permanent";
+export type DependencyStallClass =
+  | "needs-human"
+  | "assigned"
+  | "merged-pr-permanent";
 
 /**
  * A dependency that is stalled due to an unclaimable state.
