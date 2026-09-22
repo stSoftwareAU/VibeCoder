@@ -1147,8 +1147,9 @@ Deno.test("pr_auto_merge - a clean in-cycle sync arms a behind child (Issue #200
   assertEquals(comments.length, 0, "a clean sync does not comment");
 });
 
-Deno.test("pr_auto_merge - a conflicting in-cycle sync stays deferred and posts the reason (Issue #2005)", async () => {
+Deno.test("pr_auto_merge - a conflicting in-cycle sync arms the child anyway and posts the reason (Issue #2460)", async () => {
   resetBehindSyncComments();
+  _resetBaseProtectionMemo();
   const comments: string[] = [];
   let autoCalls = 0;
   const result = await enableAutoMerge({
@@ -1156,6 +1157,7 @@ Deno.test("pr_auto_merge - a conflicting in-cycle sync stays deferred and posts 
     prNumber: 43,
     headRefName: "issue-43-child",
     baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => true,
     decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
     syncBehindMilestone: () =>
       Promise.resolve({
@@ -1170,22 +1172,32 @@ Deno.test("pr_auto_merge - a conflicting in-cycle sync stays deferred and posts 
       return "";
     },
   });
-  assertEquals(result.result, AutoMergeResult.Deferred);
-  assertEquals(result.deferral, "milestone-behind");
-  assertStringIncludes(result.message, "unresolved conflict on src/foo.ts");
-  assertEquals(autoCalls, 0, "a conflicting sync must not arm");
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(
+    result.deferral,
+    "milestone-behind",
+    "the behind base is still recorded for logging",
+  );
+  assertEquals(autoCalls, 1, "a conflicting sync still arms the child");
   assertEquals(comments.length, 1);
   assertStringIncludes(comments[0]!, MILESTONE_BEHIND_SYNC_MARKER);
   assertStringIncludes(comments[0]!, "unresolved conflict on src/foo.ts");
+  assertEquals(
+    autoMergeOutcomeNeedsComment(result),
+    false,
+    "the #2457 reporting adds nothing to the one sync-reason comment",
+  );
 });
 
 Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle (Issue #2005)", async () => {
   resetBehindSyncComments();
+  _resetBaseProtectionMemo();
   const comments: string[] = [];
   const opts = {
     repo: "owner/repo",
     headRefName: "issue-44-child",
     baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => true,
     decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
     syncBehindMilestone: () =>
       Promise.resolve({
