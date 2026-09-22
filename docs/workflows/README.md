@@ -310,7 +310,7 @@ sequenceDiagram
   A-->>H2: holder = host 1, at = T
   Note over H2: held-elsewhere —<br/>skips all four sweeps
 
-  Note over A: host 1 dies; marker ages past 900s
+  Note over A: host 1 dies — marker ages past 900s
 
   H2->>A: read lease (owner/repo)
   A-->>H2: holder = host 1, at = T (expired)
