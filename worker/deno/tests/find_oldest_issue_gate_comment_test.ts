@@ -9,12 +9,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import {
-  assert,
-  assertEquals,
-  assertFalse,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { findOldestIssue } from "../lib/find_oldest_issue.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -22,7 +17,6 @@ import { createDiagnostics } from "../lib/issue_finder_logger.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const ALICE = { login: "alice" };
-const BOT = { login: "vibe-worker" };
 
 function createTestCache(): IssueCache {
   const dir = Deno.makeTempDirSync({ prefix: "find-oldest-gate-" });
@@ -146,29 +140,49 @@ function createGateCommentMockGh(
 
       // Comment operations
       if (command.includes("/comments")) {
-        const isPost = args.includes("-X") && args[args.indexOf("-X") + 1] === "POST";
-        const isPatch = args.includes("-X") && args[args.indexOf("-X") + 1] === "PATCH";
-        const isDelete = args.includes("-X") && args[args.indexOf("-X") + 1] === "DELETE";
-        const isGet = !isPost && !isPatch && !isDelete && args.includes("--paginate");
+        const isPost = args.includes("-X") &&
+          args[args.indexOf("-X") + 1] === "POST";
+        const isPatch = args.includes("-X") &&
+          args[args.indexOf("-X") + 1] === "PATCH";
+        const isDelete = args.includes("-X") &&
+          args[args.indexOf("-X") + 1] === "DELETE";
+        const isGet = !isPost && !isPatch && !isDelete &&
+          args.includes("--paginate");
 
         if (isPost) {
-          calls.push({ method: "POST", endpoint: `repos/${repo}/issues/\${N}/comments`, args });
+          calls.push({
+            method: "POST",
+            endpoint: `repos/${repo}/issues/\${N}/comments`,
+            args,
+          });
           return "{}";
         }
 
         if (isPatch) {
-          calls.push({ method: "PATCH", endpoint: "repos/*/issues/comments/*", args });
+          calls.push({
+            method: "PATCH",
+            endpoint: "repos/*/issues/comments/*",
+            args,
+          });
           return "{}";
         }
 
         if (isDelete) {
-          calls.push({ method: "DELETE", endpoint: "repos/*/issues/comments/*", args });
+          calls.push({
+            method: "DELETE",
+            endpoint: "repos/*/issues/comments/*",
+            args,
+          });
           return "{}";
         }
 
         if (isGet) {
           // Paginated comment read, return existing comments
-          calls.push({ method: "GET", endpoint: "repos/*/issues/\${N}/comments", args });
+          calls.push({
+            method: "GET",
+            endpoint: "repos/*/issues/\${N}/comments",
+            args,
+          });
           const comments = fixture?.comments ?? [];
           return JSON.stringify(comments);
         }
@@ -197,7 +211,9 @@ function heldIssue(
     createdAt,
     author: ALICE,
     milestone: null,
-    body: blockingNumber ? `Depends on ${blockingRepo}#${blockingNumber}` : body,
+    body: blockingNumber
+      ? `Depends on ${blockingRepo}#${blockingNumber}`
+      : body,
   };
 }
 
@@ -214,7 +230,14 @@ Deno.test(
     // #100 (top-priority) blocked on #200 (low-priority, in same repo).
     // Gate comment should be posted on #100, named as dependency.
     const config = makeConfig({ repos: ["owner/repo-a"] });
-    const blocked = heldIssue(100, ["top-priority"], "2024-01-01T00:00:00Z", "", "owner/repo-a", 200);
+    const blocked = heldIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "",
+      "owner/repo-a",
+      200,
+    );
     const blocker = heldIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
 
     const { calls, ghFn } = createGateCommentMockGh({
@@ -225,7 +248,7 @@ Deno.test(
     });
 
     const { diag } = captureDiagnostics();
-    const result = await findOldestIssue(config, {
+    await findOldestIssue(config, {
       githubUser: "bot",
       ghCommandFn: ghFn,
       cache: createTestCache(),
@@ -235,7 +258,11 @@ Deno.test(
 
     // Verify gate comment was posted
     const postCalls = calls.filter((c) => c.method === "POST");
-    assertEquals(postCalls.length, 1, `Expected 1 POST, got ${postCalls.length}`);
+    assertEquals(
+      postCalls.length,
+      1,
+      `Expected 1 POST, got ${postCalls.length}`,
+    );
     assertStringIncludes(
       postCalls[0]?.args.join(" ") ?? "",
       "vibe-held-issue-gate",
@@ -250,7 +277,14 @@ Deno.test(
     // #100 (low-priority) blocked on #200 (low-priority).
     // Low-priority held issues do not get gate comments.
     const config = makeConfig({ repos: ["owner/repo-a"] });
-    const blocked = heldIssue(100, ["low-priority"], "2024-01-01T00:00:00Z", "", "owner/repo-a", 200);
+    const blocked = heldIssue(
+      100,
+      ["low-priority"],
+      "2024-01-01T00:00:00Z",
+      "",
+      "owner/repo-a",
+      200,
+    );
     const blocker = heldIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
 
     const { calls, ghFn } = createGateCommentMockGh({
@@ -271,7 +305,11 @@ Deno.test(
 
     // No gate comment should be posted for low-priority
     const postCalls = calls.filter((c) => c.method === "POST");
-    assertEquals(postCalls.length, 0, "Low-priority held issue should not get gate comment");
+    assertEquals(
+      postCalls.length,
+      0,
+      "Low-priority held issue should not get gate comment",
+    );
   },
 );
 
@@ -282,7 +320,14 @@ Deno.test(
     // Second run should skip thread read because cache shows gate unchanged
     // within 24 hours — the cache key and gate key match.
     const config = makeConfig({ repos: ["owner/repo-a"] });
-    const blocked = heldIssue(100, ["top-priority"], "2024-01-01T00:00:00Z", "", "owner/repo-a", 200);
+    const blocked = heldIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "",
+      "owner/repo-a",
+      200,
+    );
     const blocker = heldIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
 
     const { calls: calls1, ghFn: ghFn1 } = createGateCommentMockGh({
@@ -325,7 +370,11 @@ Deno.test(
     });
 
     const getCalls2 = calls2.filter((c) => c.method === "GET");
-    assertEquals(getCalls2.length, 0, "Second scan should skip thread read (cache hit)");
+    assertEquals(
+      getCalls2.length,
+      0,
+      "Second scan should skip thread read (cache hit)",
+    );
   },
 );
 
@@ -336,7 +385,14 @@ Deno.test(
     // Gate comment should be edited (PATCH), not re-posted (POST).
     // Legacy vibe-chain-root-unworkable comments should be deleted (DELETE).
     const config = makeConfig({ repos: ["owner/repo-a"] });
-    const blocked = heldIssue(100, ["top-priority"], "2024-01-01T00:00:00Z", "", "owner/repo-a", 200);
+    const blocked = heldIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "",
+      "owner/repo-a",
+      200,
+    );
     const blocker1 = heldIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
     const blocker2 = heldIssue(300, ["low-priority"], "2024-06-02T00:00:00Z");
 
@@ -365,12 +421,19 @@ Deno.test(
     // Second scan: blocker changed to #300, legacy comment exists
     const legacyComment = {
       id: 999,
-      body: "<!-- vibe-chain-root-unworkable key=\"...\" -->",
+      body: '<!-- vibe-chain-root-unworkable key="..." -->',
       created_at: new Date().toISOString(),
       user: { login: "vibe-worker" },
     };
 
-    const blocked2 = heldIssue(100, ["top-priority"], "2024-01-01T00:00:00Z", "", "owner/repo-a", 300);
+    const blocked2 = heldIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "",
+      "owner/repo-a",
+      300,
+    );
     const { calls: calls2, ghFn: ghFn2 } = createGateCommentMockGh({
       "owner/repo-a": {
         issues: [blocked2, blocker2],
@@ -391,8 +454,16 @@ Deno.test(
     const patchCalls = calls2.filter((c) => c.method === "PATCH");
     const deleteCalls = calls2.filter((c) => c.method === "DELETE");
 
-    assertEquals(patchCalls.length, 1, "Changed gate should be edited, not re-posted");
-    assertEquals(deleteCalls.length, 1, "Legacy chain-root comment should be deleted");
+    assertEquals(
+      patchCalls.length,
+      1,
+      "Changed gate should be edited, not re-posted",
+    );
+    assertEquals(
+      deleteCalls.length,
+      1,
+      "Legacy chain-root comment should be deleted",
+    );
   },
 );
 
@@ -402,11 +473,18 @@ Deno.test(
     // Gate-comment upsert fails (e.g., thread read permission denied).
     // Scan should log the failure but continue — not abort selection.
     const config = makeConfig({ repos: ["owner/repo-a"] });
-    const blocked = heldIssue(100, ["top-priority"], "2024-01-01T00:00:00Z", "", "owner/repo-a", 200);
+    const blocked = heldIssue(
+      100,
+      ["top-priority"],
+      "2024-01-01T00:00:00Z",
+      "",
+      "owner/repo-a",
+      200,
+    );
     const blocker = heldIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
 
     let shouldFail = false;
-    const { calls, ghFn: baseGhFn } = createGateCommentMockGh({
+    const { ghFn: baseGhFn } = createGateCommentMockGh({
       "owner/repo-a": {
         issues: [blocked, blocker],
         timeline: HELD_ISSUE_TIMELINE,
@@ -415,7 +493,9 @@ Deno.test(
 
     const failingGhFn = async (args: string[]): Promise<string> => {
       // Simulate failure on comment read
-      if (args.includes("/comments") && args.includes("--paginate") && shouldFail) {
+      if (
+        args.includes("/comments") && args.includes("--paginate") && shouldFail
+      ) {
         throw new Error("Permission denied: cannot read comments");
       }
       return baseGhFn(args);
@@ -432,6 +512,10 @@ Deno.test(
     });
 
     // Scan should still find a candidate despite the gate-comment failure
-    assertEquals(result.found, true, "Scan should continue despite gate-comment failure");
+    assertEquals(
+      result.found,
+      true,
+      "Scan should continue despite gate-comment failure",
+    );
   },
 );
