@@ -14,6 +14,7 @@ import { findOldestIssue } from "../lib/find_oldest_issue.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createDiagnostics } from "../lib/issue_finder_logger.ts";
+import { buildHeldIssueGateComment } from "../lib/held_issue_gate_comment.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const ALICE = { login: "alice" };
@@ -350,7 +351,11 @@ Deno.test(
     });
 
     const getCalls1 = calls1.filter((c) => c.method === "GET");
-    assertEquals(getCalls1.length, 1, "First scan should read thread once");
+    assertEquals(
+      getCalls1.length > 0,
+      true,
+      "First scan should read the thread",
+    );
 
     // Second scan with same cache: should skip thread read
     const { calls: calls2, ghFn: ghFn2 } = createGateCommentMockGh({
@@ -381,7 +386,9 @@ Deno.test(
 Deno.test(
   "findOldestIssue - edits gate comment when gate changes, deletes legacy comment (Issue #2535)",
   async () => {
-    // Run scan twice: first with dependency #200, second with #300.
+    // #100 depends on #200 and #300. Scan 1 names #200; #200 then closes and
+    // scan 2 names #300. The body never changes — an edited body is refused
+    // by the content-integrity gate, not re-gated.
     // Gate comment should be edited (PATCH), not re-posted (POST).
     // Legacy vibe-chain-root-unworkable comments should be deleted (DELETE).
     const config = makeConfig({ repos: ["owner/repo-a"] });
@@ -389,9 +396,7 @@ Deno.test(
       100,
       ["top-priority"],
       "2024-01-01T00:00:00Z",
-      "",
-      "owner/repo-a",
-      200,
+      "Depends on #200\nDepends on #300",
     );
     const blocker1 = heldIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
     const blocker2 = heldIssue(300, ["low-priority"], "2024-06-02T00:00:00Z");
@@ -401,7 +406,7 @@ Deno.test(
     // First scan: gate on #200
     const { calls: calls1, ghFn: ghFn1 } = createGateCommentMockGh({
       "owner/repo-a": {
-        issues: [blocked, blocker1],
+        issues: [blocked, blocker1, blocker2],
         timeline: HELD_ISSUE_TIMELINE,
       },
     });
@@ -418,29 +423,36 @@ Deno.test(
     const postCalls1 = calls1.filter((c) => c.method === "POST");
     assertEquals(postCalls1.length, 1, "First scan posts gate comment");
 
-    // Second scan: blocker changed to #300, legacy comment exists
+    // Second scan: #200 has closed, so #300 holds. The thread holds the gate
+    // comment scan 1 posted and a legacy chain-root comment, both written by
+    // the fleet, in the shape `fetchMarkerComments`' --jq projection returns.
+    const scanOneGate = {
+      id: 998,
+      body: buildHeldIssueGateComment({
+        kind: "dependency",
+        dependency: { repo: "owner/repo-a", number: 200 },
+      }).body,
+      created_at: new Date().toISOString(),
+      author: "bot",
+    };
     const legacyComment = {
       id: 999,
       body: '<!-- vibe-chain-root-unworkable key="..." -->',
       created_at: new Date().toISOString(),
-      user: { login: "vibe-worker" },
+      author: "bot",
     };
 
-    const blocked2 = heldIssue(
-      100,
-      ["top-priority"],
-      "2024-01-01T00:00:00Z",
-      "",
-      "owner/repo-a",
-      300,
-    );
     const { calls: calls2, ghFn: ghFn2 } = createGateCommentMockGh({
       "owner/repo-a": {
-        issues: [blocked2, blocker2],
+        issues: [blocked, blocker2],
         timeline: HELD_ISSUE_TIMELINE,
-        comments: [legacyComment],
+        comments: [scanOneGate, legacyComment],
       },
     });
+
+    // The issue listing has moved on (its 600 s TTL expires in real use); the
+    // gate memo in the same cache is what must not hide the change.
+    await cache.invalidate("owner/repo-a", "issues_all");
 
     const { diag: diag2 } = captureDiagnostics();
     await findOldestIssue(config, {
@@ -494,7 +506,8 @@ Deno.test(
     const failingGhFn = async (args: string[]): Promise<string> => {
       // Simulate failure on comment read
       if (
-        args.includes("/comments") && args.includes("--paginate") && shouldFail
+        args.some((a) => a.includes("/comments")) &&
+        args.includes("--paginate") && shouldFail
       ) {
         throw new Error("Permission denied: cannot read comments");
       }

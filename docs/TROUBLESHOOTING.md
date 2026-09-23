@@ -702,12 +702,13 @@ unaffected by promotion, so a non-zero value beside a promotion line is expected
 It is printed only when the scan selected an issue from below the
 `configured-label` tier, so its absence is normal too.
 
-**Step 2 — read the comment on the blocked issue.** When the walk ends at a root
-nobody can move, the worker posts a *chain root the fleet cannot work* comment on
-the blocked issue. It changes **no labels** and is deduped on blocked issue +
-root + reason for 24 hours, so a stalled chain is reported once a day, not every
-scan — and at most one comment per blocked issue per scan. The comment names the
-root and one of four reasons:
+**Step 2 — read the gate comment on the blocked issue.** Every held
+`top-priority`/`work-on` issue carries one *Held by the fleet* comment naming
+what holds it: an open PR on its stream, a milestone it waits on, or a
+dependency. It changes **no labels** and is edited in place when the gate
+moves, so it always names the current one (Issue #2535). When the walk ends at a
+root nobody can move, the dependency sentence also names the root and one of
+four reasons:
 
 | Reason in the comment            | What it means                                       | Fix                                                        |
 | -------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
@@ -716,9 +717,10 @@ root and one of four reasons:
 | is `needs-human`                 | The root was escalated to a human                   | Resolve the blocker, then remove `needs-human`             |
 | cross-repo blocker … not monitored | The root lives in a repo absent from `repos`      | Add that repo to `.config.json` `repos`, or resolve it manually |
 
-**Step 3 — no comment and no promotion?** A root assigned to a **fleet** account
-is deliberately silent: a sibling host is already working it, so the scan posts
-nothing, and if any branch of the chain is fleet-held the whole chain stays quiet.
+**Step 3 — the comment names no root and nothing is promoted?** A root assigned
+to a **fleet** account is not a fault: a sibling host is already working it, so
+the gate comment names the dependency and leaves the root out — and if any
+branch of the chain is fleet-held, no root sentence is added at all.
 With `ISSUE_FINDER_DEBUG=true` that case prints
 `[issue-finder] chain-root-in-progress repo=… issue=#N assignee=…`; without it
 there is no line at all, so rerun with the flag before concluding. Wait for that

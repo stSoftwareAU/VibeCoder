@@ -13,7 +13,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { findOldestIssue } from "../lib/find_oldest_issue.ts";
-import { buildChainRootUnworkableComment } from "../lib/chain_root_comment.ts";
+import { buildHeldIssueGateComment } from "../lib/held_issue_gate_comment.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createDiagnostics } from "../lib/issue_finder_logger.ts";
@@ -1749,7 +1749,11 @@ Deno.test(
 );
 
 // =============================================================================
-// Unworkable chain-root comment (Issue #2496)
+// Held-issue gate comment (Issues #2496, #2535)
+//
+// #2535 replaced the #2496 chain-root comment with one gate comment per held
+// issue. The chain's unworkable root is now the \`dependency\` gate's
+// sentence, so these tests keep their shapes; the rules that moved are marked.
 // =============================================================================
 
 /** Wraps the per-repo mock so comment reads and writes can be inspected. */
@@ -1877,7 +1881,7 @@ Deno.test(
 );
 
 Deno.test(
-  "findOldestIssue - says nothing while the fleet is working the chain root (Issue #2496)",
+  "findOldestIssue - names the dependency but not the root while the fleet works the root (Issue #2535)",
   async () => {
     const config = makeConfig({
       repos: ["owner/repo-a"],
@@ -1906,12 +1910,21 @@ Deno.test(
       selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
     });
 
-    assertEquals(postedChainComments(calls), []);
+    // #2535: work is happening, so the root sentence is dropped — but the
+    // issue is still told which dependency it waits on.
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "This issue waits on dependency owner/repo-a#200.",
+    );
+    assertEquals((comments[0]?.body ?? "").includes("@sibling-bot"), false);
+    assertEquals(labelMutations(calls), []);
   },
 );
 
 Deno.test(
-  "findOldestIssue - says nothing when the chain root was promoted instead (Issue #2496)",
+  "findOldestIssue - a blocked issue whose root was promoted still names its dependency (Issue #2535)",
   async () => {
     const config = makeConfig({ repos: ["owner/repo-a"] });
     const { calls, ghFn } = createChainCommentGh({
@@ -1939,7 +1952,19 @@ Deno.test(
     });
 
     assertEquals(result.found, true);
-    assertEquals(postedChainComments(calls), []);
+    // #2535: the root is being worked (promoted), and the held issue says
+    // which dependency it waits on — no root sentence, no labels.
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertEquals(
+      comments[0]?.target,
+      "repos/owner/repo-a/issues/100/comments",
+    );
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "This issue waits on dependency owner/repo-a#200.",
+    );
+    assertEquals(labelMutations(calls), []);
   },
 );
 
@@ -1988,7 +2013,7 @@ Deno.test(
 );
 
 Deno.test(
-  "findOldestIssue - a chain-root comment posted within 24 hours is not repeated (Issue #2496)",
+  "findOldestIssue - a gate comment that already names the gate is not rewritten (Issue #2535)",
   async () => {
     const config = makeConfig({ repos: ["owner/repo-a"] });
     const blocked = chainIssue(
@@ -1999,11 +2024,12 @@ Deno.test(
     );
     const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
     root.assignees = [{ login: "carol" }];
-    const alreadyPosted = buildChainRootUnworkableComment({
-      blockedNumber: 100,
+    const alreadyPosted = buildHeldIssueGateComment({
+      kind: "dependency",
+      dependency: { repo: "owner/repo-a", number: 200 },
+      rootReason: "assigned",
       root: { repo: "owner/repo-a", number: 200 },
-      reason: "assigned",
-      detail: "carol",
+      rootDetail: "carol",
     });
     const { calls, ghFn } = createChainCommentGh(
       { "owner/repo-a": { issues: [blocked, root], timeline: CHAIN_TIMELINE } },
@@ -2026,6 +2052,11 @@ Deno.test(
     });
 
     assertEquals(postedChainComments(calls), []);
+    // Unchanged: no edit, and no delete either.
+    assertEquals(
+      calls.filter((a) => a.includes("PATCH") || a.includes("DELETE")),
+      [],
+    );
   },
 );
 
@@ -2074,11 +2105,11 @@ Deno.test(
 );
 
 Deno.test(
-  "findOldestIssue - a chain the fleet is working stays silent even when another branch is unworkable (Issue #2496)",
+  "findOldestIssue - a chain the fleet is working names its dependency without a root sentence (Issue #2535)",
   async () => {
     // #100 depends on two issues: #200 a sibling host already holds, and #300
-    // a human holds. Work is happening on the chain, so the fleet says
-    // nothing rather than adding noise to the thread.
+    // a human holds. Work is happening on the chain, so no root sentence —
+    // but the issue is still told which dependency it waits on (#2535).
     const config = makeConfig({
       repos: ["owner/repo-a"],
       fleetPrAuthors: ["sibling-bot"],
@@ -2111,7 +2142,13 @@ Deno.test(
       selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
     });
 
-    assertEquals(postedChainComments(calls), []);
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "This issue waits on dependency owner/repo-a#200.",
+    );
+    assertEquals((comments[0]?.body ?? "").includes("@carol"), false);
   },
 );
 
