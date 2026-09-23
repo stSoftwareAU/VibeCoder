@@ -39,7 +39,6 @@ export const SKIP_REASONS = [
   "merged-pr-permanent",
   "dependency-blocked",
   /** Issue #2473: blocking dependency is unclaimable — escalated and dropped */
-  "dependency-stalled",
   "cooldown",
   "cross-worker-cooldown",
   /**
