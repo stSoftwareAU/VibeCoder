@@ -394,16 +394,24 @@ export async function collectWorkOnCandidates(
     issueNumber: number,
     milestone: string,
     reason: SkipReason,
-    /** Issue #2494: the dependencies holding the issue, for a dependency block. */
-    blockers?: DependencyBlocker[],
+    /** The concrete gate holding the issue, when the reason names one. */
+    gate?: {
+      /** Issue #2494: the dependencies holding the issue. */
+      blockers?: DependencyBlocker[];
+      /** Issue #2534: the open PR holding the issue. */
+      blockingPr?: number;
+    },
   ): void => {
-    // The key is omitted, not set to `undefined`, for a non-dependency block.
+    // Each key is omitted, not set to `undefined`, when it does not apply.
     blockedDetails.push({
       repo,
       issueNumber,
       milestone,
       reason,
-      ...(blockers ? { blockers } : {}),
+      ...(gate?.blockers ? { blockers: gate.blockers } : {}),
+      ...(gate?.blockingPr === undefined
+        ? {}
+        : { blockingPr: gate.blockingPr }),
     });
     if (suppressesLowerTiers(reason)) suppressingCount++;
   };
@@ -563,7 +571,9 @@ export async function collectWorkOnCandidates(
           options.cache,
         );
         if (!hasIgnore) {
-          noteBlocked(issue.number, milestoneTitle, "pr-blocked");
+          noteBlocked(issue.number, milestoneTitle, "pr-blocked", {
+            blockingPr: blockingPR.number,
+          });
           diag?.logIssueSkipped(
             repo,
             issue.number,
@@ -593,7 +603,9 @@ export async function collectWorkOnCandidates(
       // the close-out sweep, #2537); the label never would, and on a
       // dependency it spread down the chain. The chain-root comment (#2496)
       // reports a root nobody can work without touching labels.
-      noteBlocked(issue.number, milestoneTitle, "dependency-blocked", blockers);
+      noteBlocked(issue.number, milestoneTitle, "dependency-blocked", {
+        blockers,
+      });
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       dependencyBlockedIssues.push(issue.number);
       continue;

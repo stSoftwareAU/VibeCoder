@@ -191,6 +191,7 @@ async function collect(
   recorder: Recorder,
   repoAllIssues?: FilterableIssue[],
   repoClosedPRs: ClosedPR[] = [],
+  repoPRs: OpenPR[] = [],
 ) {
   const cache = new IssueCache(
     Deno.makeTempDirSync({ prefix: "work-on-escalation-cache-" }),
@@ -203,7 +204,6 @@ async function collect(
     escalateDeps: escalateDeps(recorder),
   };
   const fetcher = createIssueFetcher(mockGh);
-  const repoPRs: OpenPR[] = [];
   const issues = repoAllIssues ?? [];
   return await collectWorkOnCandidates(
     "owner/repo",
@@ -553,5 +553,97 @@ Deno.test(
       { repo: "owner/repo", number: 200, kind: "depends-on" },
       { repo: "other/repo", number: 9, kind: "depends-on" },
     ]);
+    // Issue #2534: a non-`pr-blocked` skip records no blocking PR.
+    assertEquals(entry?.blockingPr, undefined);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The blocking PR is recorded on the blocked entry (Issue #2534)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collectWorkOnCandidates - a pr-blocked candidate records the blocking PR number",
+  async () => {
+    const config = makeConfig();
+    const recorder: Recorder = { labels: [], comments: [] };
+    const mockGh = createMockGh({
+      specs: [
+        {
+          number: 110,
+          title: "Held by an open fleet PR",
+          labels: ["work-on"],
+          body: "No dependencies",
+        },
+      ],
+    });
+
+    // A fleet-authored PR on the default branch blocks a non-milestone issue.
+    const repoPRs: OpenPR[] = [{
+      number: 914,
+      title: "Fleet work in flight",
+      baseRefName: "main",
+      headRefName: "issue-109-something",
+      author: "bot",
+    }];
+
+    const result = await collect(
+      mockGh,
+      config,
+      recorder,
+      undefined,
+      [],
+      repoPRs,
+    );
+
+    assertEquals(result.candidates, []);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 110);
+    assertEquals(entry?.reason, "pr-blocked");
+    assertEquals(entry?.blockingPr, 914);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The blocking PR is recorded on the blocked entry (Issue #2534)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collectWorkOnCandidates - a pr-blocked candidate records the blocking PR number",
+  async () => {
+    const config = makeConfig();
+    const recorder: Recorder = { labels: [], comments: [] };
+    const mockGh = createMockGh({
+      specs: [
+        {
+          number: 110,
+          title: "Held by an open fleet PR",
+          labels: ["work-on"],
+          body: "No dependencies",
+        },
+      ],
+    });
+
+    // A fleet-authored PR on the default branch blocks a non-milestone issue.
+    const repoPRs: OpenPR[] = [{
+      number: 914,
+      title: "Fleet work in flight",
+      baseRefName: "main",
+      headRefName: "issue-109-something",
+      author: "bot",
+    }];
+
+    const result = await collect(
+      mockGh,
+      config,
+      recorder,
+      undefined,
+      [],
+      repoPRs,
+    );
+
+    assertEquals(result.candidates, []);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 110);
+    assertEquals(entry?.reason, "pr-blocked");
+    assertEquals(entry?.blockingPr, 914);
   },
 );

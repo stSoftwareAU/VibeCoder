@@ -259,6 +259,8 @@ Deno.test("a cross-repo dependency is not measured against this repo's milestone
 
 // ---------------------------------------------------------------------------
 // Reporting the hold to a human (Issue #2533)
+// Reporting the hold to a human (Issue #2533), and the blocker that records
+// which milestone holds it (Issue #2534)
 // ---------------------------------------------------------------------------
 
 Deno.test("collected blockers name the milestone holding a closed dependency", async () => {
@@ -288,6 +290,52 @@ Deno.test("collected blockers name the milestone holding a closed dependency", a
     describeDependencyBlockers(REPO, blockers),
     "held: dependency #2170 is closed but in open milestone 'Foundation'",
   );
+});
+
+Deno.test("an unreadable open-milestone lookup still names the dependency's milestone", async () => {
+  const blockers: DependencyBlocker[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(REPO, CANDIDATE, fetcher, undefined, {
+      candidateMilestone: "Dependant",
+      isMilestoneOpen: () => Promise.reject(new Error("gh api failed")),
+    }, blockers),
+    true,
+  );
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+    heldByMilestone: "Foundation",
+  }]);
+});
+
+Deno.test("an open dependency's blocker names no milestone", async () => {
+  const blockers: DependencyBlocker[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "OPEN", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(
+      REPO,
+      CANDIDATE,
+      fetcher,
+      undefined,
+      makeScope("Dependant", ["Foundation"]),
+      blockers,
+    ),
+    true,
+  );
+  // The key is absent, not `undefined` — the dependency is simply open.
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+  }]);
 });
 
 Deno.test("an open sub-issue is collected as a child blocker", async () => {
