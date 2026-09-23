@@ -498,21 +498,12 @@ export function createOpenMilestoneLookup(
 
 /**
  * One reason an issue is held, as collected by {@link isDependencyBlocked}.
+ *
+ * Canonically declared in `issue_dependencies.ts` and re-exported here so the
+ * diagnose commands can keep importing it alongside
+ * {@link describeDependencyBlockers}.
  */
-export interface DependencyBlocker {
-  /** Repository the blocker lives in, "owner/repo". */
-  repo: string;
-  /** Blocking issue number. */
-  number: number;
-  /** Whether it blocks as an open sub-issue or a forward dependency. */
-  kind: "child" | "depends-on";
-  /**
-   * Issue #2533: set only for the cross-milestone hold (Issue #2173) — the
-   * still-open milestone that a *closed* dependency sits in. Callers that
-   * report to a human use it to name the milestone; the gates ignore it.
-   */
-  heldByMilestone?: string;
-}
+export type { DependencyBlocker };
 
 /**
  * Render collected {@link DependencyBlocker}s as one human-readable reason
