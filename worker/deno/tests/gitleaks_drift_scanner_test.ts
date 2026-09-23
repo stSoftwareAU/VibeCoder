@@ -245,6 +245,109 @@ ${actionAndCliJob(CURRENT_SHA)}`,
 });
 
 // ---------------------------------------------------------------------------
+// Reusable gitleaks workflow called by a pull_request-triggered caller
+// (Issue #2522)
+// ---------------------------------------------------------------------------
+
+/** This repo's own shape: gitleaks is reusable, with no trigger of its own. */
+const WORKFLOW_CALL_ONLY = `on:
+  workflow_call:
+    secrets:
+      GITLEAKS_LICENSE:
+        required: false
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+`;
+
+/** A `quality.yml`-shaped caller: one PR trigger, one aggregate gate job. */
+function callerWorkflow(
+  uses: string,
+  trigger = MILESTONE_FILTER,
+): string {
+  return `name: Quality
+${trigger}jobs:
+  gitleaks:
+    uses: ${uses}
+  gate:
+    needs: [gitleaks]
+    runs-on: ubuntu-latest
+    steps:
+      - run: .github/scripts/gate.sh
+`;
+}
+
+Deno.test("scanGitleaksDrift - reusable gitleaks called by a PR-triggered workflow is scanned", () => {
+  const files = [
+    wf(
+      ".github/workflows/gitleaks.yml",
+      `name: Gitleaks\n${WORKFLOW_CALL_ONLY}${actionAndCliJob(CURRENT_SHA)}`,
+    ),
+    wf(
+      ".github/workflows/quality.yml",
+      callerWorkflow("./.github/workflows/gitleaks.yml"),
+    ),
+  ];
+  assertEquals(scanGitleaksDrift(files), []);
+});
+
+Deno.test("scanGitleaksDrift - a called reusable gitleaks workflow counts however the caller spells the path", () => {
+  for (
+    const uses of [
+      "./.github/workflows/gitleaks.yml",
+      ".github/workflows/gitleaks.yml",
+      "./.github/workflows/gitleaks.yml@main",
+    ]
+  ) {
+    const files = [
+      wf(
+        ".github/workflows/gitleaks.yml",
+        `name: Gitleaks\n${WORKFLOW_CALL_ONLY}${actionAndCliJob(CURRENT_SHA)}`,
+      ),
+      wf(".github/workflows/quality.yml", callerWorkflow(uses)),
+    ];
+    assertEquals(
+      scanGitleaksDrift(files).map((f) => f.findingId),
+      [],
+      `uses: ${uses} should count as PR coverage`,
+    );
+  }
+});
+
+Deno.test("scanGitleaksDrift - reusable gitleaks whose caller never runs on PRs is still unscanned", () => {
+  const files = [
+    wf(
+      ".github/workflows/gitleaks.yml",
+      `name: Gitleaks\n${WORKFLOW_CALL_ONLY}${actionAndCliJob(CURRENT_SHA)}`,
+    ),
+    wf(
+      ".github/workflows/quality.yml",
+      callerWorkflow(
+        "./.github/workflows/gitleaks.yml",
+        "on:\n  push:\n    branches: [main]\n",
+      ),
+    ),
+  ];
+  const findings = scanGitleaksDrift(files);
+  assertEquals(findings.map((f) => f.findingId), [NO_PR_ID]);
+  assertEquals(findings[0]!.kind, "no-pr-trigger");
+});
+
+Deno.test("scanGitleaksDrift - a PR-triggered workflow calling something else does not cover gitleaks", () => {
+  const files = [
+    wf(
+      ".github/workflows/gitleaks.yml",
+      `name: Gitleaks\n${WORKFLOW_CALL_ONLY}${actionAndCliJob(CURRENT_SHA)}`,
+    ),
+    wf(
+      ".github/workflows/quality.yml",
+      callerWorkflow("./.github/workflows/semgrep.yml"),
+    ),
+  ];
+  assertEquals(scanGitleaksDrift(files).map((f) => f.findingId), [NO_PR_ID]);
+});
+
+// ---------------------------------------------------------------------------
 // Current template, malformed YAML, non-gitleaks workflows
 // ---------------------------------------------------------------------------
 

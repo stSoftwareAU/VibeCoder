@@ -25,8 +25,11 @@
  *     no Actions secrets, so the action exits `ErrLicense` and scans
  *     nothing (Issue #2981).
  *   - `BP-GITLEAKS-NO-PR-TRIGGER-<basename>` — no gitleaks workflow in the
- *     repo has a `pull_request` trigger at all: the files exist, the PRs
- *     are unscanned.
+ *     repo runs on a pull request at all: the files exist, the PRs are
+ *     unscanned. A reusable gitleaks workflow (`on: workflow_call`) called
+ *     by a `pull_request`-triggered workflow *does* run on every PR, so it
+ *     is not drift — this repo's own `gitleaks.yml` is exactly that shape,
+ *     called by `quality.yml` (Issue #2522).
  *
  * The branch finding is dropped when `scanMilestoneBranchFilters` already
  * owns the same gap for the same workflow path (its
@@ -52,6 +55,7 @@ import {
   workflowMilestoneCoverage,
 } from "./milestone_branch_filter_scanner.ts";
 import { pinnedAction } from "./pinned_actions.ts";
+import { calledWorkflowPath } from "./pr_check_contexts.ts";
 import {
   checkNamesFromWorkflow,
   requiredStatusCheckSection,
@@ -226,6 +230,35 @@ function actionCallSites(rawText: string): { line: number; ref: string }[] {
   return sites;
 }
 
+/**
+ * Workflow paths that some `pull_request`-triggered workflow in `files`
+ * invokes with `uses:` (Issue #2522).
+ *
+ * A reusable workflow carries no trigger of its own — this repo's
+ * `gitleaks.yml` is `on: workflow_call`, run once per PR through
+ * `quality.yml`'s `gitleaks` job — so reading only its own `on:` block reports
+ * a gap that does not exist. The test is deliberately weaker than
+ * `pullRequestCheckContexts`' aggregate-gate derivation: gitleaks *runs* on
+ * the PR whether or not the caller's gate job is a perfect aggregate, and
+ * that is the whole of what `no-pr-trigger` claims.
+ */
+function pullRequestCalledWorkflows(
+  files: readonly WorkflowFile[],
+): Set<string> {
+  const called = new Set<string>();
+  for (const file of files) {
+    if (file.kind !== "workflow") continue;
+    if (workflowMilestoneCoverage(file.parsed) === "none") continue;
+    const jobs = isRecord(file.parsed) ? file.parsed["jobs"] : undefined;
+    if (!isRecord(jobs)) continue;
+    for (const definition of Object.values(jobs)) {
+      const path = calledWorkflowPath(definition);
+      if (path !== null) called.add(path);
+    }
+  }
+  return called;
+}
+
 /** Best-effort: 1-based line of the top-level `on:` key. */
 function lineOfOnKey(rawText: string): number {
   const lines = rawText.split("\n");
@@ -251,8 +284,10 @@ type PartialFinding = Omit<
  *     never qualify.
  *   - Unparseable workflows yield no finding and never throw.
  *   - `BP-GITLEAKS-NO-PR-TRIGGER-*` is emitted only when **no** gitleaks
- *     workflow in the repo has a `pull_request` trigger — a nightly
- *     scheduled copy beside a PR-gating one is not drift.
+ *     workflow in the repo runs on a pull request — a nightly scheduled copy
+ *     beside a PR-gating one is not drift, and neither is a reusable copy
+ *     (`on: workflow_call`) invoked by a `pull_request`-triggered workflow,
+ *     which is how this repo runs gitleaks (Issue #2522).
  *   - The branch finding is dropped when the milestone-branch-filter
  *     scanner already owns the same gap for the same path (its
  *     `BP-MILESTONE-FILTER-<basename>` id is suppressed or known-open).
@@ -275,10 +310,13 @@ export function scanGitleaksDrift(
     if (workflow !== null) workflows.push(workflow);
   }
 
-  // A repo gates PRs when any of its gitleaks workflows has a
-  // `pull_request` trigger — covered or gapped, the trigger is there.
-  const anyPrTrigger = workflows.some(
-    (w) => workflowMilestoneCoverage(w.file.parsed) !== "none",
+  // A repo scans PRs when any of its gitleaks workflows either carries a
+  // `pull_request` trigger itself — covered or gapped, the trigger is there —
+  // or is reusable and invoked by a workflow that does (Issue #2522).
+  const calledByPrWorkflow = pullRequestCalledWorkflows(files);
+  const anyPrScan = workflows.some((w) =>
+    workflowMilestoneCoverage(w.file.parsed) !== "none" ||
+    calledByPrWorkflow.has(w.file.path)
   );
 
   const findings: GitleaksDriftFinding[] = [];
@@ -326,7 +364,7 @@ export function scanGitleaksDrift(
       if (!knownOpen.has(milestoneId) && !suppressed.has(milestoneId)) {
         emit(file, branchFinding(file, slug));
       }
-    } else if (coverage === "none" && !anyPrTrigger) {
+    } else if (coverage === "none" && !anyPrScan) {
       emit(file, noPrTriggerFinding(file, slug));
     }
 
@@ -383,8 +421,9 @@ function noPrTriggerFinding(file: WorkflowFile, slug: string): PartialFinding {
     title: `${MEDIUM_EMOJI} Gitleaks never runs on pull requests ` +
       `(\`${file.path}\`)`,
     lines: line,
-    whyItMatters: "This is the repo's only gitleaks workflow and it has no " +
-      "`pull_request` trigger, so no pull request is ever scanned for " +
+    whyItMatters: "This is the repo's only gitleaks workflow, it has no " +
+      "`pull_request` trigger, and no `pull_request`-triggered workflow calls " +
+      "it, so no pull request is ever scanned for " +
       "secrets: a leaked credential is caught by the next scheduled run at " +
       "the earliest, after it has already been merged and pushed. The " +
       "workflow audit counts the file as present, so the gap is invisible " +
@@ -393,10 +432,14 @@ function noPrTriggerFinding(file: WorkflowFile, slug: string): PartialFinding {
       "actually target:\n\n```yaml\non:\n  pull_request:\n    branches: " +
       `[Develop, main, ${MILESTONE_GLOB}]\n\`\`\`\n\nKeep any existing ` +
       "`schedule:` trigger — the two are complementary, catching secrets " +
-      "before merge and in history respectively.",
+      "before merge and in history respectively. Alternatively make this " +
+      "workflow reusable (`on: workflow_call`) and call it from a " +
+      "`pull_request`-triggered workflow, which runs it once per PR through " +
+      "that caller's gate.",
     evidence: `\`${file.path}\`:${line} — \`on:\` declares no ` +
-      "`pull_request` trigger, and no other gitleaks workflow in this repo " +
-      "does either",
+      "`pull_request` trigger, no other gitleaks workflow in this repo does " +
+      "either, and no `pull_request`-triggered workflow invokes this one with " +
+      "`uses:`",
   };
 }
 
