@@ -553,6 +553,8 @@ Deno.test(
       { repo: "owner/repo", number: 200, kind: "depends-on" },
       { repo: "other/repo", number: 9, kind: "depends-on" },
     ]);
+    // Issue #2534: a non-`pr-blocked` skip records no blocking PR.
+    assertEquals(entry?.blockingPr, undefined);
   },
 );
 
