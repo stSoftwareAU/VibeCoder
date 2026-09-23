@@ -3007,8 +3007,8 @@ Deno.test("claim issue - a shareable blank-stream issue is claimed with no strea
   assertEquals(wasCalledWith(calls, "issue list"), false);
 });
 
-Deno.test("claim issue - a first holder of a free stream shares nothing (Issue #2530)", async () => {
-  const { ghCommandFn } = streamGh([
+Deno.test("claim issue - a first holder of a free stream shares nothing and still checks affinity (Issue #2530)", async () => {
+  const { ghCommandFn, calls } = streamGh([
     beatingSibling(2333, LIVE_HEARTBEAT_WINDOW_SECONDS + 1),
   ]);
 
@@ -3031,4 +3031,8 @@ Deno.test("claim issue - a first holder of a free stream shares nothing (Issue #
     assertEquals(result.value.claimed, true);
     assertEquals(result.value.streamShared, undefined);
   }
+  // Issue #2336 is untouched for a first holder: the stream's tracking issue
+  // is still read for the holder marker — which is what the shared claim
+  // above proves is skipped.
+  assertEquals(wasCalledWith(calls, "issues/2319/comments"), true);
 });

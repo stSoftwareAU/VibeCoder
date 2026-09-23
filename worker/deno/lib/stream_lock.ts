@@ -15,6 +15,12 @@
  * sub-issues of the same milestone at once are two runs inside one
  * conversation — a bug, not a fork.
  *
+ * Issue #2530 qualifies that for two tiers: a `top-priority` or `work-on`
+ * issue is claimed into a busy stream anyway and runs in its **own per-issue
+ * conversation**, so the stream's conversation still carries one run. This
+ * module is unchanged by that — it reports `busy` exactly as before, and the
+ * caller (`preClaimFreshnessCheck`, `shareable`) decides whether to wait.
+ *
  * Before a claim is taken, this module reads the milestone's **other open
  * issues** and asks whether any of them is live:
  *

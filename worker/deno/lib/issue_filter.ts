@@ -153,7 +153,6 @@ export function isStreamSharingTier(
 ): boolean {
   const normalise = (label: string) => label.trim().toLowerCase();
   const applied = new Set(labels.map(normalise).filter((l) => l.length > 0));
-  if (applied.size === 0) return false;
   return [...(tiers.issueLabels ?? []), tiers.workOnLabel ?? ""]
     .map(normalise)
     .filter((label) => label.length > 0)

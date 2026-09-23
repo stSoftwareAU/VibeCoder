@@ -40,8 +40,11 @@ import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { postCooldownComment } from "./shared_cooldown.ts";
 import { checkStreamAffinity } from "./stream_holder.ts";
-import { checkMilestoneStreamBusy, formatStreamBusy } from "./stream_lock.ts";
-import type { StreamBusy } from "./stream_lock.ts";
+import {
+  checkMilestoneStreamBusy,
+  formatStreamBusy,
+  type StreamBusy,
+} from "./stream_lock.ts";
 import { getHostname } from "./worker_identity.ts";
 
 /** The claim marker prefix used in issue comments for tie-breaking. */
