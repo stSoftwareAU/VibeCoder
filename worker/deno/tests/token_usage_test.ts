@@ -245,12 +245,43 @@ Deno.test("token_usage - lookupModelPricing returns pricing for Opus 4.8 (Issue 
   assertEquals(pricing?.cacheReadPerMillion, 0.50);
 });
 
-Deno.test("token_usage - lookupModelPricing resolves bare 'opus' alias to current Opus pricing (Issue #2389)", () => {
+Deno.test("token_usage - lookupModelPricing resolves bare 'opus' alias to current Opus pricing (Issues #2389, #2543)", () => {
+  // The current Opus is 5.5, so the alias costs at the 5.5 rate.
   const pricing = lookupModelPricing("opus");
-  assertEquals(pricing?.inputPerMillion, 5);
-  assertEquals(pricing?.outputPerMillion, 25);
-  assertEquals(pricing?.cacheWritePerMillion, 6.25);
-  assertEquals(pricing?.cacheReadPerMillion, 0.50);
+  assertEquals(pricing?.inputPerMillion, 4);
+  assertEquals(pricing?.outputPerMillion, 20);
+  assertEquals(pricing?.cacheWritePerMillion, 5);
+  assertEquals(pricing?.cacheReadPerMillion, 0.20);
+});
+
+Deno.test("token_usage - lookupModelPricing returns pricing for Opus 5.5 (Issue #2543)", () => {
+  for (const model of ["claude-opus-5-5", "claude-opus-5-5-20260915"]) {
+    const pricing = lookupModelPricing(model);
+    assertEquals(pricing?.inputPerMillion, 4, model);
+    assertEquals(pricing?.outputPerMillion, 20, model);
+    assertEquals(pricing?.cacheWritePerMillion, 5, model);
+    assertEquals(pricing?.cacheReadPerMillion, 0.20, model);
+  }
+});
+
+Deno.test("token_usage - lookupModelPricing keeps the 5.0-5.4 rate below Opus 5.5 (Issue #2543)", () => {
+  // The cheaper rate arrived with 5.5: earlier 5-family minors, and the 4.5+
+  // line whose minor also reads 5, must keep the modern $5/$25 row.
+  for (const model of ["claude-opus-5-4", "claude-opus-4-5-20251101"]) {
+    const pricing = lookupModelPricing(model);
+    assertEquals(pricing?.inputPerMillion, 5, model);
+    assertEquals(pricing?.outputPerMillion, 25, model);
+  }
+});
+
+Deno.test("token_usage - MODEL_PRICING lists Opus 5.5 before the broader Opus 5 key (Issue #2543)", () => {
+  // `lookupPricing` in batch_api.ts takes the first row whose key the model id
+  // contains, so a later 5.5 row would be shadowed by `claude-opus-5`.
+  const keys = [...MODEL_PRICING.keys()];
+  const specific = keys.indexOf("claude-opus-5-5");
+  const broad = keys.indexOf("claude-opus-5");
+  assertEquals(specific >= 0, true);
+  assertEquals(specific < broad, true);
 });
 
 Deno.test("token_usage - lookupModelPricing resolves bare 'sonnet'/'haiku' aliases (Issue #2389, #747)", () => {
