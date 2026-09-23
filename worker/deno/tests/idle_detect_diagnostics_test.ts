@@ -1263,11 +1263,31 @@ Deno.test("classifyIssues - top-priority and work-on issues share an occupied st
   const verdicts = classifyIssues(
     [
       // #837 is in flight in the milestone stream.
-      { number: 837, labels: ["work-on"], assignees: ["vibebot"], milestone: "Priority streams" },
-      { number: 824, labels: ["top-priority"], assignees: [], milestone: "Priority streams" },
-      { number: 843, labels: ["work-on"], assignees: [], milestone: "Priority streams" },
+      {
+        number: 837,
+        labels: ["work-on"],
+        assignees: ["vibebot"],
+        milestone: "Priority streams",
+      },
+      {
+        number: 824,
+        labels: ["top-priority"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
+      {
+        number: 843,
+        labels: ["work-on"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
       // The lower tier still waits for the stream.
-      { number: 845, labels: ["low-priority"], assignees: [], milestone: "Priority streams" },
+      {
+        number: 845,
+        labels: ["low-priority"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
     ],
     { workerUser: "vibebot" },
   );
@@ -1282,7 +1302,12 @@ Deno.test("classifyIssues - the occupied blank stream does not exclude a top-pri
   // stream while unassigned top-priority #849 waits behind it.
   const verdicts = classifyIssues(
     [
-      { number: 829, labels: ["low-priority"], assignees: ["vibebot"], milestone: "" },
+      {
+        number: 829,
+        labels: ["low-priority"],
+        assignees: ["vibebot"],
+        milestone: "",
+      },
       { number: 849, labels: ["top-priority"], assignees: [], milestone: "" },
     ],
     { workerUser: "vibebot" },

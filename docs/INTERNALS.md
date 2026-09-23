@@ -1716,6 +1716,18 @@ host's login plus `fleet_pr_authors` and `service_accounts`, resolved by
 (`Vibecoderbot`, `stsvcbot`, …) a sibling host's assignment also occupies the
 stream and a second host will not start the same issue.
 
+The rule binds the **lower tiers only** (Issues #2530, #2532). `top-priority`
+and `work-on` are work a human has asked for now, so their claim joins a busy
+stream in its own fresh per-issue conversation: `collect_label_candidates.ts`
+and `collect_work_on_candidates.ts` apply no occupancy check, and the
+idle-decision census and idle-detect audit count such an issue under its tier
+instead of `stream_occupied`. `low-priority`, `idle-task`, the self-diagnostic
+tier and the custom PR-producing labels (`new_work_eligibility.ts`) still
+serialise one issue per stream. This host's own slots are kept apart
+regardless — `BlankStreamLockRegistry` (`stream_lock.ts`) refuses a second
+no-milestone issue of the same repository, and the fleet-wide stream lock
+gates the milestone streams at claim time.
+
 Human assignees are **never** counted. The match set is deliberately not
 `config.allowedAuthors`: that is a permission list ("whose issues may we work
 on?") which legitimately contains humans, and resolving the fleet from it let a
