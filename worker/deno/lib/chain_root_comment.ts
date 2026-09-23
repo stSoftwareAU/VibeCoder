@@ -93,13 +93,23 @@ function safeLogin(detail: string): string {
   return detail.trim().replace(/[^A-Za-z0-9-]/g, "").slice(0, 39);
 }
 
-/** `owner/repo#N`, as a human reads it and as the dedup key spells it. */
-function renderRef(root: ChainIssueRef): string {
+/**
+ * `owner/repo#N`, as a human reads it and as the dedup key spells it.
+ *
+ * Exported so other fleet comments interpolate references through the same
+ * sanitiser rather than reimplementing {@link safeRepo}.
+ */
+export function renderRef(root: ChainIssueRef): string {
   return `${safeRepo(root.repo)}#${root.number}`;
 }
 
-/** The one sentence that says why the chain stopped here. */
-function reasonSentence(
+/**
+ * The one sentence that says why the chain stopped here.
+ *
+ * Exported so the held-issue gate comment reuses this wording verbatim instead
+ * of drifting a second copy of it.
+ */
+export function reasonSentence(
   reason: ChainRootReason,
   ref: string,
   detail: string,
