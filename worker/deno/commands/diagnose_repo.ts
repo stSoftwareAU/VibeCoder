@@ -273,6 +273,8 @@ export const diagnoseRepoCommand: Command = {
         let unmetDependencies: string | undefined;
         let openSubIssues: string | undefined;
         try {
+          // Supplying `blockers` makes the return value exactly
+          // `blockers.length > 0`, so the collected list is the verdict.
           const blockers: DependencyBlocker[] = [];
           await isDependencyBlocked(
             repo,

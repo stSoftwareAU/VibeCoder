@@ -128,8 +128,11 @@ async function fetchIssueData(
 
 /**
  * Create an IssueFetcher from a gh command function.
+ *
+ * Exported so `commands/diagnose_repo.ts` reports the dependency hold from the
+ * same validated reads as `diagnose_issue` (Issue #2533).
  */
-function createIssueFetcher(
+export function createDiagnosticIssueFetcher(
   ghCommandFn: (args: string[]) => Promise<string>,
 ): IssueFetcher {
   return {
@@ -366,11 +369,11 @@ export async function diagnoseIssue(
       passed: !milestoneOccupied,
       detail: milestoneOccupied
         ? `Milestone "${issue.milestone}" already has a worker-assigned issue`
+        : !issue.milestone
+        ? "Issue has no milestone (not affected by milestone occupancy)"
         : streamShareable
         ? `Milestone "${issue.milestone}" occupancy does not apply — the issue's tier shares the stream`
-        : issue.milestone
-        ? `Milestone "${issue.milestone}" has no worker-assigned issues`
-        : "Issue has no milestone (not affected by milestone occupancy)",
+        : `Milestone "${issue.milestone}" has no worker-assigned issues`,
       suggestion: milestoneOccupied
         ? `Wait for the worker's current work in milestone "${issue.milestone}" to complete`
         : undefined,

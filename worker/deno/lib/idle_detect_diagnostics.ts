@@ -548,6 +548,12 @@ function isDependencyBlockedByOpenIssue(
   const lowerRepo = repo.trim().toLowerCase();
   // The candidate's own milestone is never a cross-milestone blocker: an
   // issue is not held by the milestone it already sits in.
+  // SIMPLE-ON-PURPOSE: the closed dependency's own milestone is not fetched, so
+  // this models the hold's precondition — some other milestone of the repo is
+  // open — exactly as the census does (Issue #2455). It over-holds towards
+  // "not claimable", the direction that cannot manufacture a false
+  // `mis_classification` ALERT — upgrade when the audit already has each
+  // dependency's milestone to hand without an extra API call per tick.
   const otherMilestoneOpen = [...openMilestones].some(
     (title) => title !== candidateMilestone,
   );

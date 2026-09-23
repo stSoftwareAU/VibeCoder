@@ -1166,13 +1166,12 @@ export function validateIssueStateJson(
     return fail("title", `Expected string, got ${typeof data.title}`);
   }
   // Issue #2533: `gh` returns `milestone` as an object (or null); anything
-  // else is treated as "no milestone" rather than failing the whole read.
-  let milestone: string | null = null;
-  if (isObject(data.milestone) && typeof data.milestone.title === "string") {
-    milestone = data.milestone.title;
-  } else if (typeof data.milestone === "string") {
-    milestone = data.milestone;
-  }
+  // else is treated as "no milestone" rather than failing the whole read, so a
+  // caller that never requested the field still validates.
+  const milestone: string | null =
+    isObject(data.milestone) && typeof data.milestone.title === "string"
+      ? data.milestone.title
+      : null;
   return ok({
     number: data.number as number,
     state: data.state as string,
