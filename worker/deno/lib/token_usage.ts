@@ -93,7 +93,22 @@ const FABLE_5_PRICING: ModelPricing = {
   cacheReadPerMillion: 1,
 };
 
-/** Claude Opus 4.5+ — reduced pricing (Issue #1398). */
+/**
+ * Claude Opus 5.5 — current top tier, replacing Fable (Issue #2543).
+ *
+ * Cheaper than Opus 5.0-5.4/4.5+ on every rate, and cache hits/refreshes are
+ * priced at 0.05x the base input rate rather than the usual 0.1x.
+ * Source: https://platform.claude.com/docs/en/about-claude/pricing, checked
+ * 2026-09-23.
+ */
+const OPUS_5_5_PRICING: ModelPricing = {
+  inputPerMillion: 4,
+  outputPerMillion: 20,
+  cacheWritePerMillion: 5,
+  cacheReadPerMillion: 0.20,
+};
+
+/** Claude Opus 4.5-5.4 — reduced pricing (Issue #1398). */
 const OPUS_PRICING_MODERN: ModelPricing = {
   inputPerMillion: 5,
   outputPerMillion: 25,
