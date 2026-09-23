@@ -24,6 +24,7 @@
 
 import { assertEquals } from "@std/assert";
 import { collectLabelCandidates } from "../lib/collect_label_candidates.ts";
+import { collectLowPriorityCandidates } from "../lib/collect_low_priority_candidates.ts";
 import {
   buildNewWorkGateContext,
   filterNewWorkEligible,
@@ -97,17 +98,18 @@ function makeIssue(
   };
 }
 
-/** The `gh issue list` payload shape for a `top-priority` candidate. */
+/** The `gh issue list` payload shape for a candidate carrying `label`. */
 function listedIssue(
   number: number,
   milestone: string | null,
+  label = "top-priority",
 ): Record<string, unknown> {
   return {
     number,
     title: `Issue ${number}`,
     url: `https://github.com/${REPO}/issues/${number}`,
     assignees: [],
-    labels: [{ name: "top-priority" }],
+    labels: [{ name: label }],
     createdAt: "2026-09-04T09:24:00Z",
     author: { login: HUMAN },
     milestone: milestone === null ? null : { title: milestone },
@@ -131,12 +133,18 @@ function createMockGh(
       );
     }
     if (command.includes("timeline")) {
-      // The `top-priority` label was added by a trusted author, so the
+      // The discovery label was added by a trusted author, so the
       // label-authorisation gate passes and occupancy is the gate under test.
       return Promise.resolve(JSON.stringify([
         {
           event: "labeled",
           label: { name: "top-priority" },
+          actor: { login: HUMAN },
+          created_at: "2026-09-04T09:24:00Z",
+        },
+        {
+          event: "labeled",
+          label: { name: "low-priority" },
           actor: { login: HUMAN },
           created_at: "2026-09-04T09:24:00Z",
         },
@@ -188,6 +196,46 @@ async function selectableWith(
   return result.candidates.some((c) => c.number === candidateNumber);
 }
 
+/**
+ * The same shape one tier down: a `low-priority` candidate in `stream`, with
+ * `occupant` holding a second open issue in the same stream.
+ *
+ * Issue #2532: occupancy serialises `low-priority` and `idle-task` only, so
+ * this is the collector the duplicate-PR guard below must be asserted
+ * through. A `top-priority` candidate shares the stream by design.
+ */
+async function lowPrioritySelectableWith(
+  occupantAssignees: string[],
+  stream: string,
+): Promise<boolean> {
+  const candidateNumber = 998;
+  const occupantNumber = 944;
+  const mockGh = createMockGh([
+    listedIssue(candidateNumber, stream === "" ? null : stream, "low-priority"),
+  ]);
+  const repoAllIssues: FilterableIssue[] = [
+    makeIssue(occupantNumber, {
+      assignees: occupantAssignees,
+      milestone: stream,
+    }),
+    makeIssue(candidateNumber, {
+      milestone: stream,
+      labels: ["low-priority"],
+    }),
+  ];
+
+  const result = await collectLowPriorityCandidates(
+    REPO,
+    makeConfig(),
+    buildOptions(mockGh, createTestCache()),
+    [] as OpenPR[],
+    repoAllIssues,
+    createIssueFetcher(mockGh),
+    [] as ClosedPR[],
+  );
+  return result.candidates.some((c) => c.number === candidateNumber);
+}
+
 // ---------------------------------------------------------------------------
 // The live incident — a human assignee must not occupy a work stream
 // ---------------------------------------------------------------------------
@@ -213,28 +261,41 @@ Deno.test(
 Deno.test(
   "human_assignment_never_occupies - a sibling Vibe Coder's assignment still occupies the default-branch stream",
   async () => {
-    assertEquals(await selectableWith([SIBLING], ""), false);
+    assertEquals(await lowPrioritySelectableWith([SIBLING], ""), false);
   },
 );
 
 Deno.test(
   "human_assignment_never_occupies - a sibling Vibe Coder's assignment still occupies a milestone stream",
   async () => {
-    assertEquals(await selectableWith([SIBLING], "Fleet Logs"), false);
+    assertEquals(
+      await lowPrioritySelectableWith([SIBLING], "Fleet Logs"),
+      false,
+    );
   },
 );
 
 Deno.test(
   "human_assignment_never_occupies - this host's own assignment still occupies the default-branch stream",
   async () => {
-    assertEquals(await selectableWith([HOST], ""), false);
+    assertEquals(await lowPrioritySelectableWith([HOST], ""), false);
   },
 );
 
 Deno.test(
   "human_assignment_never_occupies - this host's own assignment still occupies a milestone stream",
   async () => {
-    assertEquals(await selectableWith([HOST], "Fleet Logs"), false);
+    assertEquals(await lowPrioritySelectableWith([HOST], "Fleet Logs"), false);
+  },
+);
+
+// Issue #2532: the tiers a human asked for now share a busy stream, in their
+// own fresh conversation — the other half of the same rule.
+Deno.test(
+  "human_assignment_never_occupies - a top-priority candidate shares a stream a sibling holds (Issue #2532)",
+  async () => {
+    assertEquals(await selectableWith([SIBLING], ""), true);
+    assertEquals(await selectableWith([SIBLING], "Fleet Logs"), true);
   },
 );
 

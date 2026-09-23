@@ -16,6 +16,12 @@
  * them, and the audit's `claimable_total=24` suppressed the filer on work
  * nothing could take.
  *
+ * Issue #2532 changed which tiers that gate binds: `top-priority` and
+ * `work-on` now share a busy stream in their own fresh conversation, so the
+ * fixtures below state the drought's shape in `low-priority` — the tier
+ * occupancy still serialises, and therefore the tier on which the scan and
+ * the audit must still agree.
+ *
  * Both directions are pinned here. Widening occupancy would suppress nothing
  * and re-introduce the #2106 wrapper flooding — and widening it as far as
  * `allowed_authors` would re-introduce #1064, where a human's assignment
@@ -37,20 +43,20 @@ const SIBLING = "sibling-bot";
 /** The push-capable set, as `resolveFleetMaintenanceAuthorSet` builds it. */
 const FLEET = [SIBLING, WORKER];
 
-/** Two unassigned `work-on` issues, plus whatever `extra` adds. */
+/** Two unassigned `low-priority` issues, plus whatever `extra` adds. */
 function backlog(extra: Array<Record<string, unknown>> = []) {
   return [
     {
       number: 10,
       title: "Backlog item 10",
-      labels: ["work-on"],
+      labels: ["low-priority"],
       assignees: [] as string[],
       milestone: "",
     },
     {
       number: 11,
       title: "Backlog item 11",
-      labels: ["work-on"],
+      labels: ["low-priority"],
       assignees: [] as string[],
       milestone: "",
     },
@@ -135,7 +141,7 @@ Deno.test(
       {
         number: 30,
         title: "In a milestone of its own",
-        labels: ["work-on"],
+        labels: ["low-priority"],
         assignees: [] as string[],
         milestone: "M1",
       },
@@ -231,14 +237,14 @@ function ghReturning(
   return (_args: string[]) => Promise.resolve(JSON.stringify(issues));
 }
 
-/** The live fixture: 24 work-on issues behind one sibling assignment. */
+/** The live fixture: 24 low-priority issues behind one sibling assignment. */
 function liveShape(withOccupyingAssignment: boolean) {
   const rows: Array<Record<string, unknown>> = [];
   for (let n = 100; n < 124; n++) {
     rows.push({
       number: n,
       title: `Backlog ${n}`,
-      labels: [{ name: "work-on" }],
+      labels: [{ name: "low-priority" }],
       assignees: [],
       milestone: null,
       body: "",

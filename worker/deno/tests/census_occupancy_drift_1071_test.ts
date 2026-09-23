@@ -135,11 +135,17 @@ function censusStreamOccupied(rows: Row[]): number {
  * census would otherwise count as claimable, whose work stream
  * `isMilestoneOccupied` calls occupied. If the two definitions agree, these
  * two numbers agree for every issue set.
+ *
+ * Issue #2532: the tier here is `low-priority`, and so is every fixture
+ * below. Occupancy now serialises the lower tiers only — a `top-priority`
+ * or `work-on` issue shares a busy stream in its own fresh conversation —
+ * so stating the drift fixtures in a stream-sharing tier would compare the
+ * two definitions on issues neither of them defers.
  */
 function expectedFromSelector(rows: Row[], occupied: string[]): number {
   const streams = new Set(occupied);
   return rows.filter((r) =>
-    r.assignees.length === 0 && r.labels.includes("work-on") &&
+    r.assignees.length === 0 && r.labels.includes("low-priority") &&
     streams.has(r.milestone)
   ).length;
 }
@@ -172,8 +178,8 @@ Deno.test(
   () => {
     assertAgree(
       [
-        { number: 10, labels: ["work-on"], assignees: [HUMAN], milestone: "" },
-        { number: 11, labels: ["work-on"], assignees: [], milestone: "" },
+        { number: 10, labels: ["low-priority"], assignees: [HUMAN], milestone: "" },
+        { number: 11, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       [],
       "human assignee in the default-branch stream",
@@ -190,11 +196,11 @@ Deno.test(
       [
         {
           number: 20,
-          labels: ["work-on"],
+          labels: ["low-priority"],
           assignees: [SIBLING],
           milestone: "",
         },
-        { number: 21, labels: ["work-on"], assignees: [], milestone: "" },
+        { number: 21, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       [""],
       "sibling assignee in the default-branch stream",
@@ -207,8 +213,8 @@ Deno.test(
   () => {
     assertAgree(
       [
-        { number: 30, labels: ["work-on"], assignees: [WORKER], milestone: "" },
-        { number: 31, labels: ["work-on"], assignees: [], milestone: "" },
+        { number: 30, labels: ["low-priority"], assignees: [WORKER], milestone: "" },
+        { number: 31, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       [""],
       "own-host assignee in the default-branch stream",
@@ -223,11 +229,11 @@ Deno.test(
       [
         {
           number: 40,
-          labels: ["work-on"],
+          labels: ["low-priority"],
           assignees: [STRANGER],
           milestone: "",
         },
-        { number: 41, labels: ["work-on"], assignees: [], milestone: "" },
+        { number: 41, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       [],
       "stranger assignee in the default-branch stream",
@@ -240,8 +246,8 @@ Deno.test(
   () => {
     assertAgree(
       [
-        { number: 50, labels: ["work-on"], assignees: [], milestone: "" },
-        { number: 51, labels: ["work-on"], assignees: [], milestone: "v2" },
+        { number: 50, labels: ["low-priority"], assignees: [], milestone: "" },
+        { number: 51, labels: ["low-priority"], assignees: [], milestone: "v2" },
       ],
       [],
       "no assignees anywhere",
@@ -259,19 +265,19 @@ Deno.test(
       [
         {
           number: 60,
-          labels: ["work-on"],
+          labels: ["low-priority"],
           assignees: [SIBLING],
           milestone: "v2",
         },
-        { number: 61, labels: ["work-on"], assignees: [], milestone: "v2" },
+        { number: 61, labels: ["low-priority"], assignees: [], milestone: "v2" },
         {
           number: 62,
-          labels: ["work-on"],
+          labels: ["low-priority"],
           assignees: [HUMAN],
           milestone: "v3",
         },
-        { number: 63, labels: ["work-on"], assignees: [], milestone: "v3" },
-        { number: 64, labels: ["work-on"], assignees: [], milestone: "" },
+        { number: 63, labels: ["low-priority"], assignees: [], milestone: "v3" },
+        { number: 64, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       ["v2"],
       "one occupied milestone beside a human-held one and a free stream",
@@ -286,19 +292,19 @@ Deno.test(
     // shape a per-function test would not have caught, because each function
     // was self-consistent while the two disagreed.
     const rows: Row[] = [
-      { number: 70, labels: ["work-on"], assignees: [HUMAN], milestone: "" },
-      { number: 71, labels: ["work-on"], assignees: [STRANGER], milestone: "" },
-      { number: 72, labels: ["work-on"], assignees: [], milestone: "" },
+      { number: 70, labels: ["low-priority"], assignees: [HUMAN], milestone: "" },
+      { number: 71, labels: ["low-priority"], assignees: [STRANGER], milestone: "" },
+      { number: 72, labels: ["low-priority"], assignees: [], milestone: "" },
       {
         number: 73,
-        labels: ["work-on"],
+        labels: ["low-priority"],
         assignees: [SIBLING],
         milestone: "v2",
       },
-      { number: 74, labels: ["work-on"], assignees: [], milestone: "v2" },
-      { number: 75, labels: ["work-on"], assignees: [WORKER], milestone: "v3" },
-      { number: 76, labels: ["work-on"], assignees: [], milestone: "v3" },
-      { number: 77, labels: ["work-on"], assignees: [], milestone: "v4" },
+      { number: 74, labels: ["low-priority"], assignees: [], milestone: "v2" },
+      { number: 75, labels: ["low-priority"], assignees: [WORKER], milestone: "v3" },
+      { number: 76, labels: ["low-priority"], assignees: [], milestone: "v3" },
+      { number: 77, labels: ["low-priority"], assignees: [], milestone: "v4" },
     ];
     assertAgree(rows, ["v2", "v3"], "every account kind in one set");
   },
@@ -313,8 +319,8 @@ Deno.test(
     // both times. A census with its own hard-coded notion of who counts
     // would hold one of these fixed.
     const rows: Row[] = [
-      { number: 80, labels: ["work-on"], assignees: [SIBLING], milestone: "" },
-      { number: 81, labels: ["work-on"], assignees: [], milestone: "" },
+      { number: 80, labels: ["low-priority"], assignees: [SIBLING], milestone: "" },
+      { number: 81, labels: ["low-priority"], assignees: [], milestone: "" },
     ];
     const withSibling = buildCensus(rows, [SIBLING]);
     const withoutSibling = buildCensus(rows, []);
