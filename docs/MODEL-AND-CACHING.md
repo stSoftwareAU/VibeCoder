@@ -2314,7 +2314,8 @@ Approximate list prices (USD per million tokens, as of September 2026):
 |-------|------:|-------:|------------:|-----------:|
 | Claude Fable 5.1 | $10.00 | $50.00 | $12.50 | $0.25 |
 | Claude Fable 5 | $10.00 | $50.00 | $12.50 | $1.00 |
-| Claude Opus 5 | $5.00 | $25.00 | $6.25 | $0.50 |
+| Claude Opus 5.5 | $4.00 | $20.00 | $5.00 | $0.20 |
+| Claude Opus 5.0–5.4 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.5–4.8 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.0/4.1 | $15.00 | $75.00 | $18.75 | $1.50 |
 | Claude Sonnet 5 | $2.00 | $10.00 | $2.50 | $0.20 |
@@ -2362,11 +2363,19 @@ Basis for each group, stated because the vendor publishes more than one rate:
   which is not modelled). The column is still rendered, as `$0.0000`, so the
   breakdown reconciles.
 
-Opus 5 (model id `claude-opus-5`, alias `opus`) lands at the **same** price point
+Opus 5.0–5.4 (model id `claude-opus-5`) lands at the **same** price point
 as the modern Opus 4.5–4.8 line ($5 / $25 per MTok, cache $6.25 / $0.50) — a
 step-change in capability over Opus 4.8 for free. The `claude-opus-5` pricing row
 and the 5-family fallback parser were added together so Opus 5 traffic is
-never dropped from cost tracking. These rows mirror `MODEL_PRICING` in
+never dropped from cost tracking.
+
+**Opus 5.5** (model id `claude-opus-5-5`, and what the alias `opus` now resolves
+to) is cheaper again on every rate — $4 / $20 per MTok, cache $5.00 / $0.20 —
+with cache hits at 0.05× the base input rate rather than the usual 0.1×
+(Issue #2543). Its row precedes the broader `claude-opus-5` key so the ordered
+prefix walk in `batch_api.ts` reaches it, and `lookupModelPricing` prices any
+5.5-or-later id at this rate while 5.0–5.4 keep the row above. These rows mirror
+`MODEL_PRICING` in
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts).
 
 Fable (alias `fable`) is the top tier above Opus with a 1M-token context
