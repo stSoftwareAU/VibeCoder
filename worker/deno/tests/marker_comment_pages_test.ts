@@ -75,7 +75,7 @@ Deno.test("fetchMarkerComments - reads every page and keeps the author", async (
     return Promise.resolve([
       JSON.stringify([{
         id: 1,
-        body: "<!-- vibe-marker key=\"a\" -->",
+        body: '<!-- vibe-marker key="a" -->',
         created_at: "2026-09-22T12:00:00Z",
         author: "vibe-bot",
       }]),
@@ -92,7 +92,7 @@ Deno.test("fetchMarkerComments - reads every page and keeps the author", async (
 
   assertEquals(rows, [{
     id: 1,
-    body: "<!-- vibe-marker key=\"a\" -->",
+    body: '<!-- vibe-marker key="a" -->',
     createdAt: "2026-09-22T12:00:00Z",
     author: "vibe-bot",
   }]);
