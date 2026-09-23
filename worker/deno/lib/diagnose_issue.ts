@@ -446,7 +446,7 @@ export async function diagnoseIssue(
   let depBlocked = false;
   let depBlockDetail = "";
   try {
-    const fetcher = createIssueFetcher(ghFn);
+    const fetcher = createDiagnosticIssueFetcher(ghFn);
     const blockers: DependencyBlocker[] = [];
     depBlocked = await isDependencyBlocked(
       repo,

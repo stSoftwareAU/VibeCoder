@@ -38,8 +38,7 @@ import {
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import { COOLDOWN_DEFAULTS, isIssueInCooldown } from "../lib/cooldown_state.ts";
 import type { CooldownConfig } from "../lib/cooldown_state.ts";
-import { normaliseIssueState } from "../lib/issue_dependencies.ts";
-import type { IssueFetcher } from "../lib/issue_dependencies.ts";
+import { createDiagnosticIssueFetcher } from "../lib/diagnose_issue.ts";
 import type { DependencyBlocker } from "../lib/issue_finder_common.ts";
 import {
   createOpenMilestoneLookup,
@@ -61,72 +60,6 @@ export interface RepoDiagnosticReport {
   fleetAuthors: string[];
   /** Fleet-configuration validation result (Issue #3138). */
   fleetValidation: FleetConfigValidation;
-}
-
-/**
- * Create an IssueFetcher from a gh command function.
- */
-function createIssueFetcher(
-  ghCommandFn: (args: string[]) => Promise<string>,
-): IssueFetcher {
-  return {
-    async getIssueState(repo: string, issueNumber: number) {
-      const output = await ghCommandFn([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--json",
-        // Issue #2533: `milestone` rides this existing per-dependency call so
-        // the cross-milestone hold (Issue #2173) can name the open milestone
-        // holding a closed dependency, at no extra `gh` call.
-        "number,state,title,milestone",
-      ]);
-      const parsed = JSON.parse(output) as {
-        number: number;
-        state: string;
-        title: string;
-        milestone?: { title?: string } | null;
-      };
-      return {
-        number: parsed.number,
-        // Issue #3218: a merged PR reports `MERGED` — resolve it to CLOSED.
-        state: normaliseIssueState(parsed.state),
-        title: parsed.title,
-        milestone: parsed.milestone?.title ?? null,
-      };
-    },
-    async getSubIssues(repo: string, issueNumber: number) {
-      try {
-        const output = await ghCommandFn([
-          "api",
-          `repos/${repo}/issues/${issueNumber}`,
-        ]);
-        const parsed = JSON.parse(output) as { body?: string };
-        if (!parsed.body) return [];
-        const { extractSubIssueReferences } = await import(
-          "../lib/issue_dependencies.ts"
-        );
-        return extractSubIssueReferences(parsed.body, repo);
-      } catch {
-        return [];
-      }
-    },
-    async getIssueBody(repo: string, issueNumber: number) {
-      const output = await ghCommandFn([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--json",
-        "body",
-      ]);
-      const parsed = JSON.parse(output) as { body?: string };
-      return parsed.body ?? "";
-    },
-  };
 }
 
 export const diagnoseRepoCommand: Command = {
@@ -227,8 +160,9 @@ export const diagnoseRepoCommand: Command = {
     let dependencyBlockedCount = 0;
     let otherBlockedCount = 0;
 
-    // Create fetcher for dependency checks
-    const fetcher = createIssueFetcher(ghFn);
+    // Issue #2533: the same validated reads `diagnose_issue` uses, so both
+    // commands report the dependency hold from one fetcher.
+    const fetcher = createDiagnosticIssueFetcher(ghFn);
 
     // Issue #2533: one memoised open-milestone lookup for the whole repo, so
     // the cross-milestone hold costs a single milestone listing rather than one
