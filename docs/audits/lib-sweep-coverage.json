@@ -2021,18 +2021,6 @@
       ]
     },
     {
-      "issue": 2473,
-      "chunk": "top-up-2473",
-      "title": "top-up: dependency claimability classification",
-      "ledger": "docs/audits/security-sweep-2473-dependency-claimability.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: dependency_claimability.ts (#2473)",
-      "status": "swept",
-      "sweptAt": "1c1ee2b7e6a966069f34a6fa9476bd3a3bc6eaf7",
-      "paths": [
-        "worker/deno/lib/dependency_claimability.ts"
-      ]
-    },
-    {
       "issue": 2496,
       "chunk": "top-up-2496",
       "title": "top-up: the unworkable chain-root report",
