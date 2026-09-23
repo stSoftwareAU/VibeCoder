@@ -114,6 +114,35 @@ export async function fetchMarkerComments(
 }
 
 /**
+ * Rewrite the body of one issue/PR comment, so a marker comment can be edited
+ * in place instead of re-posted.
+ *
+ * Unlike {@link deleteIssueComment} this throws rather than returning the
+ * error: a caller edits because the old body is now wrong, and a swallowed
+ * failure would leave that stale body on the thread reading as current.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param commentId - The comment to rewrite
+ * @param body - The replacement body, in full
+ * @param ghCommandFn - Runs `gh` (injectable for testing)
+ */
+export async function updateIssueComment(
+  repo: string,
+  commentId: number,
+  body: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<void> {
+  await ghCommandFn([
+    "api",
+    "-X",
+    "PATCH",
+    `repos/${repo}/issues/comments/${commentId}`,
+    "-f",
+    `body=${body}`,
+  ]);
+}
+
+/**
  * Delete one issue/PR comment, reporting the failure rather than hiding it.
  *
  * @param repo - Repository in "owner/repo" format
