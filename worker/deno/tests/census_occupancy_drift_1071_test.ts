@@ -178,7 +178,12 @@ Deno.test(
   () => {
     assertAgree(
       [
-        { number: 10, labels: ["low-priority"], assignees: [HUMAN], milestone: "" },
+        {
+          number: 10,
+          labels: ["low-priority"],
+          assignees: [HUMAN],
+          milestone: "",
+        },
         { number: 11, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       [],
@@ -213,7 +218,12 @@ Deno.test(
   () => {
     assertAgree(
       [
-        { number: 30, labels: ["low-priority"], assignees: [WORKER], milestone: "" },
+        {
+          number: 30,
+          labels: ["low-priority"],
+          assignees: [WORKER],
+          milestone: "",
+        },
         { number: 31, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       [""],
@@ -247,7 +257,12 @@ Deno.test(
     assertAgree(
       [
         { number: 50, labels: ["low-priority"], assignees: [], milestone: "" },
-        { number: 51, labels: ["low-priority"], assignees: [], milestone: "v2" },
+        {
+          number: 51,
+          labels: ["low-priority"],
+          assignees: [],
+          milestone: "v2",
+        },
       ],
       [],
       "no assignees anywhere",
@@ -269,14 +284,24 @@ Deno.test(
           assignees: [SIBLING],
           milestone: "v2",
         },
-        { number: 61, labels: ["low-priority"], assignees: [], milestone: "v2" },
+        {
+          number: 61,
+          labels: ["low-priority"],
+          assignees: [],
+          milestone: "v2",
+        },
         {
           number: 62,
           labels: ["low-priority"],
           assignees: [HUMAN],
           milestone: "v3",
         },
-        { number: 63, labels: ["low-priority"], assignees: [], milestone: "v3" },
+        {
+          number: 63,
+          labels: ["low-priority"],
+          assignees: [],
+          milestone: "v3",
+        },
         { number: 64, labels: ["low-priority"], assignees: [], milestone: "" },
       ],
       ["v2"],
@@ -292,8 +317,18 @@ Deno.test(
     // shape a per-function test would not have caught, because each function
     // was self-consistent while the two disagreed.
     const rows: Row[] = [
-      { number: 70, labels: ["low-priority"], assignees: [HUMAN], milestone: "" },
-      { number: 71, labels: ["low-priority"], assignees: [STRANGER], milestone: "" },
+      {
+        number: 70,
+        labels: ["low-priority"],
+        assignees: [HUMAN],
+        milestone: "",
+      },
+      {
+        number: 71,
+        labels: ["low-priority"],
+        assignees: [STRANGER],
+        milestone: "",
+      },
       { number: 72, labels: ["low-priority"], assignees: [], milestone: "" },
       {
         number: 73,
@@ -302,7 +337,12 @@ Deno.test(
         milestone: "v2",
       },
       { number: 74, labels: ["low-priority"], assignees: [], milestone: "v2" },
-      { number: 75, labels: ["low-priority"], assignees: [WORKER], milestone: "v3" },
+      {
+        number: 75,
+        labels: ["low-priority"],
+        assignees: [WORKER],
+        milestone: "v3",
+      },
       { number: 76, labels: ["low-priority"], assignees: [], milestone: "v3" },
       { number: 77, labels: ["low-priority"], assignees: [], milestone: "v4" },
     ];
@@ -319,7 +359,12 @@ Deno.test(
     // both times. A census with its own hard-coded notion of who counts
     // would hold one of these fixed.
     const rows: Row[] = [
-      { number: 80, labels: ["low-priority"], assignees: [SIBLING], milestone: "" },
+      {
+        number: 80,
+        labels: ["low-priority"],
+        assignees: [SIBLING],
+        milestone: "",
+      },
       { number: 81, labels: ["low-priority"], assignees: [], milestone: "" },
     ];
     const withSibling = buildCensus(rows, [SIBLING]);
