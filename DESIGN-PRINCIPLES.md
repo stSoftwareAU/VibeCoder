@@ -101,6 +101,21 @@ at once.
   fleet merges it to the default branch. That is precisely why milestone work
   parallelises: a milestone stream never stalls on a human reviewer mid-flight,
   so adding milestones adds throughput rather than adding queue.
+- **F2b — `top-priority` and `work-on` never wait for a busy stream**
+  (Issue #2530). The fleet-wide one-run-per-stream lock — the rule that keeps a
+  stream's **shared agent conversation** carrying one run at a time — now
+  applies to `low-priority` and `idle-task` alone. An issue a human has
+  labelled `top-priority` or `work-on` is claimed while another host is running
+  the same milestone stream and runs in its **own per-issue conversation**, so
+  the stream's transcript is still never shared by two runs: the second holder
+  writes no stream session record and no `vibe-stream-holder` marker. Each host
+  still takes one issue per `(repo, milestone)` at a time (the host-local
+  in-flight registry is unchanged), so in-stream parallelism is bounded by the
+  number of hosts — and until Issue #2532 relaxes discovery's fleet-wide
+  milestone-occupancy filter for these tiers, the exception applies at claim
+  time only. F2a is what makes this safe —
+  a milestone branch carries no approval gate mid-flight, so a second pull
+  request on it buries no reviewer.
 - **F3 — eight slots need eight work streams.** Because of F2, eight
   concurrent issues require **eight work streams** with startable work — not
   eight repositories. One repository with several open milestones can supply

@@ -50,6 +50,7 @@ import {
   resolveStreamRunKind,
 } from "../stream_session.ts";
 import { primeStreamCompaction } from "../stream_compaction.ts";
+import { isStreamSharingTier } from "../issue_filter.ts";
 import {
   claimRepoLevelRejectionReport,
   describeRepoLevelRejection,
@@ -137,6 +138,13 @@ export async function workOnIssueSetupBranch(
     // stream and never set it. With `enable_session_resume` off there is no
     // shared conversation, so there is no lock and no extra API call.
     streamLockEnabled: config.enableSessionResume,
+    // Issue #2530: a `top-priority` or `work-on` issue is wanted now, so a
+    // busy stream is shared rather than waited for — the claim proceeds and
+    // this run keeps a per-issue conversation (see the stream priming below).
+    streamShareable: isStreamSharingTier(ctx.issueLabels, {
+      issueLabels: config.issueLabels,
+      workOnLabel: config.workOnLabel,
+    }),
     markerOptions: {
       machineId,
       workDir: config.workDir,
@@ -650,7 +658,28 @@ export async function workOnIssueSetupBranch(
   //
   // An idle-task sweep keeps its per-issue session and reads no stream record;
   // `primeStreamSession` returns undefined for it, and for any fault.
-  if (config.enableSessionResume && !state.sessionResumeState) {
+  //
+  // Issue #2530: so does a run that shared a busy stream. Another host is
+  // inside that conversation right now, so this run starts its own — no stream
+  // session, no compaction of someone else's transcript, and (because
+  // `state.streamSession` stays unset) no stream record or `vibe-stream-holder`
+  // marker written when it finishes.
+  const sharedStream = claimResult.value.streamShared;
+  if (sharedStream) {
+    logger.info(
+      "Stream shared — keeping a per-issue session (Issue #2530)",
+      {
+        repo,
+        issueNumber,
+        stream: sharedStream.streamLabel,
+        holderIssue: sharedStream.holderIssue,
+        holderHost: sharedStream.holderHost,
+      },
+    );
+  }
+  if (
+    config.enableSessionResume && !state.sessionResumeState && !sharedStream
+  ) {
     const providerId = anticipatedProviderId({
       ...(config.repoConfig?.[repo]
         ? { repoConfig: config.repoConfig[repo] }

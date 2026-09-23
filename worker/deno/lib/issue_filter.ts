@@ -120,6 +120,46 @@ export function filterByAssignee(issues: FilterableIssue[]): FilterableIssue[] {
 }
 
 /**
+ * The two discovery tiers whose issues share a busy milestone stream
+ * (Issue #2530) — the configured `top-priority` tier and `work-on`.
+ */
+export interface StreamSharingLabels {
+  /** Configured-label discovery tier — `config.issueLabels`. */
+  issueLabels?: readonly string[];
+  /** The `work-on` label — `config.workOnLabel`. */
+  workOnLabel?: string;
+}
+
+/**
+ * Whether an issue's tier may join a milestone stream another host already
+ * holds (Issue #2530).
+ *
+ * The fleet-wide one-run-per-stream lock (Issue #2334) exists so a stream's
+ * shared conversation carries one run at a time. `top-priority` and `work-on`
+ * are the tiers a human has asked for now: they are claimed anyway and run in
+ * their own per-issue conversation, so the stream's transcript is never shared
+ * by two runs. Every other tier (`low-priority`, `idle-task`) still waits.
+ *
+ * Labels are compared case- and whitespace-insensitively, because a label is
+ * operator-typed on both sides of this comparison.
+ *
+ * @param labels - Labels the issue actually carries
+ * @param tiers - The configured tier labels to match against
+ * @returns True when the issue carries a stream-sharing tier label
+ */
+export function isStreamSharingTier(
+  labels: readonly string[],
+  tiers: StreamSharingLabels,
+): boolean {
+  const normalise = (label: string) => label.trim().toLowerCase();
+  const applied = new Set(labels.map(normalise).filter((l) => l.length > 0));
+  return [...(tiers.issueLabels ?? []), tiers.workOnLabel ?? ""]
+    .map(normalise)
+    .filter((label) => label.length > 0)
+    .some((label) => applied.has(label));
+}
+
+/**
  * Check whether a work stream is already occupied by a Vibe Coder.
  *
  * Scheduling exists only **between Vibe Coders**. There is no locking or

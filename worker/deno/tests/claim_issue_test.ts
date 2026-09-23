@@ -2916,3 +2916,123 @@ Deno.test("claim issue - session resume off makes no stream check and no extra g
   if (result.ok) assertEquals(result.value.claimed, true);
   assertEquals(wasCalledWith(calls, "issue list"), false);
 });
+
+// ---------------------------------------------------------------------------
+// Sharing a busy milestone stream (Issue #2530)
+// ---------------------------------------------------------------------------
+
+Deno.test("claim issue - a shareable tier claims into a busy stream and reports the holder (Issue #2530)", async () => {
+  const { ghCommandFn, calls } = streamGh([beatingSibling(2333, 30)]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    milestoneTitle: "#2319 session resume on by default",
+    streamLockEnabled: true,
+    streamShareable: true,
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.claimed, true);
+    assertEquals(result.value.streamShared?.holderIssue, 2333);
+    assertEquals(result.value.streamShared?.holderHost, "GRQ-23-box");
+    assertEquals(
+      (result.value.streamShared?.streamLabel ?? "").length > 0,
+      true,
+    );
+  }
+  // The claim really happened — assignee and claim comment were written.
+  assertEquals(wasCalledWith(calls, "--add-assignee worker-bot"), true);
+  // Issue #2336's affinity deferral is skipped: a second holder has no
+  // conversation to hand over, so the tracking issue is never read.
+  assertEquals(wasCalledWith(calls, "issues/2319/comments"), false);
+});
+
+Deno.test("claim issue - a non-shareable tier still waits for the busy stream (Issue #2530)", async () => {
+  const { ghCommandFn, calls } = streamGh([beatingSibling(2333, 30)]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    milestoneTitle: "#2319 session resume on by default",
+    streamLockEnabled: true,
+    // A `low-priority` / `idle-task` issue: not a sharing tier.
+    streamShareable: false,
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.claimed, false);
+    assertEquals(result.value.reason, "stream_busy");
+    assertEquals(result.value.streamShared, undefined);
+  }
+  assertEquals(wasCalledWith(calls, "--add-assignee"), false);
+});
+
+Deno.test("claim issue - a shareable blank-stream issue is claimed with no stream check and no sharing (Issue #2530)", async () => {
+  const { ghCommandFn, calls } = streamGh([beatingSibling(2333, 30)]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    streamLockEnabled: true,
+    streamShareable: true,
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.claimed, true);
+    // Nothing was shared — a blank stream is never locked.
+    assertEquals(result.value.streamShared, undefined);
+  }
+  assertEquals(wasCalledWith(calls, "issue list"), false);
+});
+
+Deno.test("claim issue - a first holder of a free stream shares nothing and still checks affinity (Issue #2530)", async () => {
+  const { ghCommandFn, calls } = streamGh([
+    beatingSibling(2333, LIVE_HEARTBEAT_WINDOW_SECONDS + 1),
+  ]);
+
+  const result = await claimIssue({
+    repo: "stSoftwareAU/VibeCoder",
+    issueNumber: 2334,
+    githubUser: "worker-bot",
+    workerId: "my-worker",
+    fleetAuthors: ["worker-bot", "stservice"],
+    milestoneTitle: "#2319 session resume on by default",
+    streamLockEnabled: true,
+    streamShareable: true,
+    sleepFn: noSleep,
+    ghCommandFn,
+    wasClosedThisRun: () => false,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.claimed, true);
+    assertEquals(result.value.streamShared, undefined);
+  }
+  // Issue #2336 is untouched for a first holder: the stream's tracking issue
+  // is still read for the holder marker — which is what the shared claim
+  // above proves is skipped.
+  assertEquals(wasCalledWith(calls, "issues/2319/comments"), true);
+});
