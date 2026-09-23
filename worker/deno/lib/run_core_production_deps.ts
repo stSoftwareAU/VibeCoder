@@ -4926,6 +4926,19 @@ export async function createProductionRunCoreDeps(
           // permanently by the scan, so counting it as claimable kept the
           // `mis_classification` ALERT firing against a scan that was right.
           mergedPRsFn: (repo: string) => fetchMergedPRsForCensus(repo, auditGh),
+          // Issue #2533: the repo's open milestone titles, read through the
+          // same `milestones_open_counts` cache entry the scan's
+          // `createOpenMilestoneLookup` and the census (Issue #2455) already
+          // use — so a dependency that is closed inside another still-open
+          // milestone reads as held here too, and the cross-milestone hold
+          // (Issue #2173) costs one cached read per repo rather than an API
+          // call per tick. `auditClaimableState` catches a rejection itself
+          // and falls back to no cross-milestone hold.
+          openMilestonesFn: async (repo: string) =>
+            new Set(
+              (await fetchOpenMilestoneClosedCounts(repo, issueCache, auditGh))
+                .keys(),
+            ),
           // Issue #655: this run's persisted retry cooldown and its
           // processed-issue registry, resolved above from the one hold set
           // `findNextIssue` filters its candidates against.

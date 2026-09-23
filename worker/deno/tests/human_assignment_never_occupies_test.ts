@@ -415,16 +415,22 @@ Deno.test(
 // The repo diagnostic reports the same rule
 // ---------------------------------------------------------------------------
 
-/** `diagnoseRepoIssue`'s occupancy verdict for a milestone held by `holder`. */
+/**
+ * `diagnoseRepoIssue`'s occupancy verdict for a milestone held by `holder`.
+ *
+ * The candidate carries `low-priority` so occupancy is the only thing under
+ * test: a stream-sharing tier (`top-priority`/`work-on`) is exempt from
+ * occupancy altogether (Issue #2530), which is covered in `diagnose_repo_test.ts`.
+ */
 function diagnosticOccupied(holder: string): boolean {
   const config = makeConfig();
   const milestone = "Fleet Logs";
   const result = diagnoseRepoIssue({
-    issue: makeIssue(997, { milestone, labels: ["top-priority"] }),
+    issue: makeIssue(997, { milestone, labels: ["low-priority"] }),
     prs: [],
     allIssues: [
       makeIssue(944, { assignees: [holder], milestone }),
-      makeIssue(997, { milestone, labels: ["top-priority"] }),
+      makeIssue(997, { milestone, labels: ["low-priority"] }),
     ],
     labelConfig: {
       failedLabel: config.failedLabel,

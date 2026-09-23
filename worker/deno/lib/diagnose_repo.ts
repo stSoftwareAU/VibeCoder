@@ -9,7 +9,12 @@
  */
 
 import type { FilterableIssue } from "./issue_filter.ts";
-import { isMilestoneOccupied } from "./issue_filter.ts";
+import type { StreamSharingLabels } from "./issue_filter.ts";
+import {
+  DEFAULT_STREAM_SHARING_TIERS,
+  isMilestoneOccupied,
+  isStreamSharingTier,
+} from "./issue_filter.ts";
 import type { BlockingPRInfo, OpenPR } from "./issue_query.ts";
 import { getBlockingPRForIssue } from "./issue_query.ts";
 
@@ -93,6 +98,15 @@ export interface RepoIssueDiagnosticInput {
   unmetDependencies?: string;
   /** Open sub-issues description (if any). */
   openSubIssues?: string;
+  /**
+   * Tier labels that share a busy work stream (Issues #2530, #2533).
+   *
+   * Defaults to {@link DEFAULT_STREAM_SHARING_TIERS}; callers holding operator
+   * config pass its own label names instead. An issue on one of these tiers is
+   * claimed even when the stream is busy, so occupancy is not reported as a
+   * blocking reason for it.
+   */
+  streamSharingTiers?: StreamSharingLabels;
 }
 
 /**
@@ -258,7 +272,13 @@ export function diagnoseRepoIssue(
   // Check work-stream occupancy. Fleet-aware: any fleet account's
   // assignment occupies (Issue #3099), and only a fleet account's does
   // (Issue #1064) — a human assignee never occupies a stream.
-  if (issue.milestone && allIssues.length > 0) {
+  // Issue #2533: a `top-priority`/`work-on` issue shares a busy stream
+  // (Issue #2530) — it is claimed anyway, so occupancy is not a reason here.
+  const streamShareable = isStreamSharingTier(
+    issue.labels,
+    input.streamSharingTiers ?? DEFAULT_STREAM_SHARING_TIERS,
+  );
+  if (issue.milestone && allIssues.length > 0 && !streamShareable) {
     if (
       isMilestoneOccupied(
         allIssues,

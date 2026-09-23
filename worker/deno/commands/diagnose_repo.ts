@@ -38,12 +38,13 @@ import {
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import { COOLDOWN_DEFAULTS, isIssueInCooldown } from "../lib/cooldown_state.ts";
 import type { CooldownConfig } from "../lib/cooldown_state.ts";
+import { createDiagnosticIssueFetcher } from "../lib/diagnose_issue.ts";
+import type { DependencyBlocker } from "../lib/issue_finder_common.ts";
 import {
-  checkParentBlocked,
-  extractDependencyReferences,
-  normaliseIssueState,
-} from "../lib/issue_dependencies.ts";
-import type { IssueFetcher } from "../lib/issue_dependencies.ts";
+  createOpenMilestoneLookup,
+  describeDependencyBlockers,
+  isDependencyBlocked,
+} from "../lib/issue_finder_common.ts";
 import { runGhCommand } from "../lib/github.ts";
 
 /**
@@ -59,67 +60,6 @@ export interface RepoDiagnosticReport {
   fleetAuthors: string[];
   /** Fleet-configuration validation result (Issue #3138). */
   fleetValidation: FleetConfigValidation;
-}
-
-/**
- * Create an IssueFetcher from a gh command function.
- */
-function createIssueFetcher(
-  ghCommandFn: (args: string[]) => Promise<string>,
-): IssueFetcher {
-  return {
-    async getIssueState(repo: string, issueNumber: number) {
-      const output = await ghCommandFn([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--json",
-        "number,state,title",
-      ]);
-      const parsed = JSON.parse(output) as {
-        number: number;
-        state: string;
-        title: string;
-      };
-      return {
-        number: parsed.number,
-        // Issue #3218: a merged PR reports `MERGED` — resolve it to CLOSED.
-        state: normaliseIssueState(parsed.state),
-        title: parsed.title,
-      };
-    },
-    async getSubIssues(repo: string, issueNumber: number) {
-      try {
-        const output = await ghCommandFn([
-          "api",
-          `repos/${repo}/issues/${issueNumber}`,
-        ]);
-        const parsed = JSON.parse(output) as { body?: string };
-        if (!parsed.body) return [];
-        const { extractSubIssueReferences } = await import(
-          "../lib/issue_dependencies.ts"
-        );
-        return extractSubIssueReferences(parsed.body, repo);
-      } catch {
-        return [];
-      }
-    },
-    async getIssueBody(repo: string, issueNumber: number) {
-      const output = await ghCommandFn([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        repo,
-        "--json",
-        "body",
-      ]);
-      const parsed = JSON.parse(output) as { body?: string };
-      return parsed.body ?? "";
-    },
-  };
 }
 
 export const diagnoseRepoCommand: Command = {
@@ -220,8 +160,14 @@ export const diagnoseRepoCommand: Command = {
     let dependencyBlockedCount = 0;
     let otherBlockedCount = 0;
 
-    // Create fetcher for dependency checks
-    const fetcher = createIssueFetcher(ghFn);
+    // Issue #2533: the same validated reads `diagnose_issue` uses, so both
+    // commands report the dependency hold from one fetcher.
+    const fetcher = createDiagnosticIssueFetcher(ghFn);
+
+    // Issue #2533: one memoised open-milestone lookup for the whole repo, so
+    // the cross-milestone hold costs a single milestone listing rather than one
+    // per candidate.
+    const milestoneScope = createOpenMilestoneLookup(repo, undefined, ghFn);
 
     for (const label of searchLabels) {
       let issues: FilterableIssue[];
@@ -251,36 +197,37 @@ export const diagnoseRepoCommand: Command = {
           // Cooldown check failed — assume not in cooldown
         }
 
-        // Check dependencies
+        // Check dependencies.
+        // Issue #2533: run the scan's own `isDependencyBlocked` gate with this
+        // candidate's milestone scope rather than a hand-rolled open-state
+        // loop. The loop only asked "is the dependency OPEN?", so a dependency
+        // closed inside another still-open milestone — held by the
+        // cross-milestone hold (Issue #2173) — was reported here as no
+        // dependency at all, contradicting the scan that skipped the issue.
         let unmetDependencies: string | undefined;
         let openSubIssues: string | undefined;
         try {
-          const parentResult = await checkParentBlocked(
-            fetcher,
+          // Supplying `blockers` makes the return value exactly
+          // `blockers.length > 0`, so the collected list is the verdict.
+          const blockers: DependencyBlocker[] = [];
+          await isDependencyBlocked(
             repo,
             issue.number,
+            fetcher,
+            undefined,
+            {
+              candidateMilestone: issue.milestone,
+              isMilestoneOpen: milestoneScope,
+            },
+            blockers,
           );
-          if (parentResult.ok && parentResult.value.isBlocked) {
-            openSubIssues = parentResult.value.openChildren
-              .map((n) => `#${n}`)
-              .join(", ");
+          const children = blockers.filter((b) => b.kind === "child");
+          if (children.length > 0) {
+            openSubIssues = children.map((b) => `#${b.number}`).join(", ");
           }
-
-          if (!openSubIssues) {
-            const body = await fetcher.getIssueBody(repo, issue.number);
-            const deps = extractDependencyReferences(body);
-            for (const dep of deps) {
-              try {
-                const depState = await fetcher.getIssueState(repo, dep);
-                if (depState.state === "OPEN") {
-                  unmetDependencies = `#${dep} (${depState.title})`;
-                  break;
-                }
-              } catch {
-                unmetDependencies = `#${dep} (could not verify state)`;
-                break;
-              }
-            }
+          const forward = blockers.filter((b) => b.kind === "depends-on");
+          if (forward.length > 0) {
+            unmetDependencies = describeDependencyBlockers(repo, forward);
           }
         } catch {
           // Dependency check failed — skip
@@ -301,6 +248,12 @@ export const diagnoseRepoCommand: Command = {
           isInCooldown,
           unmetDependencies,
           openSubIssues,
+          // Issue #2533: the operator's own tier label names, so a
+          // stream-sharing tier is not reported as blocked by occupancy.
+          streamSharingTiers: {
+            issueLabels: config.issueLabels,
+            workOnLabel: config.workOnLabel,
+          },
         });
 
         diagnostics.push(diag);
