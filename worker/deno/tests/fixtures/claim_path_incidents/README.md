@@ -35,12 +35,12 @@ with this shape (the schema is `RecordedIncident` in
 `gate` is one of `none`, `milestone-occupied`, `pr-blocked`,
 `merged-pr-permanent`, `dependency-blocked`, `cooldown` — the gates the census
 models, and so the ones the two instruments can be compared over. Since Issue
-#2532 `milestone-occupied` no longer refuses a `work-on` or `top-priority`
-issue (those tiers share a busy stream), so a state pairing that gate with one
-of them describes a claimable issue — `STREAM_SHARING_EXEMPT_GATES` in
-`../claim_path_state.ts` records the exemption. Keep issue
-numbers as they were in the field: the point of the corpus is that these are
-real states, not invented ones.
+#2532 `milestone-occupied` no longer refuses a `work-on` or `top-priority` issue
+(those tiers share a busy stream), so a state pairing that gate with one of them
+describes a claimable issue — `STREAM_SHARING_EXEMPT_GATES` in
+`../claim_path_state.ts` records the exemption. Keep issue numbers as they were
+in the field: the point of the corpus is that these are real states, not
+invented ones.
 
 **Never record anything sensitive.** The files hold issue numbers, tiers and
 gates — no titles, no bodies, no logins beyond the fixed fleet placeholders.
