@@ -610,9 +610,11 @@ function censusInput(
       },
       {
         // Behind the sibling's claim in the same stream: refused, and the
-        // refusal is recorded against the stream rather than lost.
+        // refusal is recorded against the stream rather than lost. Issue
+        // #2532: `low-priority`, because occupancy now serialises the lower
+        // tiers only — a `top-priority` sibling shares the stream.
         number: 1090,
-        labels: ["top-priority"],
+        labels: ["low-priority"],
         assignees: [],
         milestone: "PR Auto-merge",
       },

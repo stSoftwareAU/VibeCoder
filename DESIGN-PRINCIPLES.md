@@ -432,6 +432,25 @@ branch):**
    legitimately contains humans, so resolving the fleet from it made one
    human-assigned issue park a whole work stream. The parameter is named
    `pushCapableAuthors` so the permission list cannot be handed to it by habit.
+
+   **Occupancy serialises `low-priority` and `idle-task` only** (Issues #2530,
+   #2532). `top-priority` and `work-on` are work a human has asked for *now*:
+   the claim joins a busy stream in its own fresh per-issue conversation, so
+   the configured-label and work-on collectors no longer refuse a candidate
+   for `milestone-occupied`, and the idle-decision census and the idle-detect
+   audit count such an issue under its tier rather than `stream_occupied`.
+   Treating the empty milestone as a stream was what inverted the ladder
+   fleet-wide: one fleet-assigned `low-priority` issue on the default branch
+   held every `top-priority` issue of that repository behind it. The lower
+   tiers still wait, and this **host's** own slots are still kept apart — by
+   the blank-stream lock (`worker/deno/lib/stream_lock.ts`) for no-milestone
+   issues and by `InFlightRepoRegistry` (`worker/deno/lib/in_flight_repos.ts`),
+   which holds one `(repo, milestone)` stream per slot, for milestone ones.
+   The fleet-wide stream lock of Issue #2334 is **not** that guard for these
+   two tiers: `claimIssue` is told the claim is shareable and proceeds. A
+   candidate the slot registry then refuses is held out of that slot's next
+   scan (`scanExcludedIssues`) until the sibling releases, so the refusal
+   costs one skipped candidate rather than a re-scan loop.
 2. **PR blocking** (`getBlockingPRForIssue` in
    `worker/deno/lib/issue_query.ts`): blocks if the **fleet** has an open PR
    targeting the same branch (milestone branch or default branch). Only

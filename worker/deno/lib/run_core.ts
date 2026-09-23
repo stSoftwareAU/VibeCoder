@@ -3651,29 +3651,41 @@ async function settleLiveSlotTails(
  * The issues one slot's next scan must not be offered.
  *
  * The pool's adaptive-floor deferrals (Issue #245), plus the issues this slot
- * refused for a busy blank stream (Issue #2335) **whose stream is still
- * busy**. Entries whose holder has released are dropped here rather than
- * lingering: the whole point of a host-local lock is that the stream frees the
- * moment the sibling's run ends, so the issue behind it must become claimable
- * on the very next scan.
+ * refused because a sibling slot on this host holds their work stream — the
+ * blank-stream lock (Issue #2335) or the slot registry (Issues #1091, #2532)
+ * — **whose stream is still busy**. Entries whose holder has released are
+ * dropped here rather than lingering: the whole point of a host-local lock is
+ * that the stream frees the moment the sibling's run ends, so the issue behind
+ * it must become claimable on the very next scan.
+ *
+ * Issue #2532 is why the registry is consulted too. Until then the scan never
+ * offered an issue in a stream a sibling slot held — occupancy refused every
+ * tier — so `registry.tryAcquire` could not lose to a sibling on this host.
+ * Now `top-priority` and `work-on` share the stream at selection, so the
+ * refusal is reachable, and without this the slot would invalidate the repo's
+ * cache and re-scan onto the same refused issue for as long as the sibling ran.
  *
  * Exported for its own test: the self-healing is the whole behaviour, and
  * observing it through the pool would depend on run timing.
  *
  * @param deferredClaims - The pool's adaptive-floor deferrals (Issue #245)
  * @param blankStreamLocks - The host's blank-stream holds (Issue #2335)
- * @param streamBusyIssues - This slot's blank-stream refusals, pruned in place
+ * @param streamBusyIssues - This slot's stream refusals, pruned in place
+ * @param registry - The host's slot holds (Issues #1091, #2532)
  * @returns The union to hand `findNextIssue` as `excludeIssues`
  */
 export function scanExcludedIssues(
   deferredClaims: ReadonlySet<string>,
   blankStreamLocks: BlankStreamLockRegistry,
   streamBusyIssues: Map<string, BlankStreamRef>,
+  registry?: InFlightRepoRegistry,
 ): ReadonlySet<string> {
   if (streamBusyIssues.size === 0) return deferredClaims;
   const union = new Set(deferredClaims);
   for (const [key, ref] of streamBusyIssues) {
-    if (blankStreamLocks.holder(ref) === undefined) {
+    const streamHeld = blankStreamLocks.holder(ref) !== undefined ||
+      registry?.isStreamHeld(ref.repo, ref.milestoneTitle ?? "") === true;
+    if (!streamHeld) {
       streamBusyIssues.delete(key);
       continue;
     }
@@ -3789,6 +3801,7 @@ async function runSlot(
           pool.deferredClaims,
           pool.blankStreamLocks,
           streamBusyIssues,
+          pool.registry,
         ),
         onScanSummary: (summary) => {
           scanSummary = summary;
@@ -4011,6 +4024,17 @@ async function runSlot(
         })
       ) {
         releaseBlankStream();
+        // Issue #2532: held out of this slot's next scan while the stream
+        // stays held, exactly as the blank-stream refusal above is. The
+        // stream-sharing tiers are now offered in a stream a sibling slot on
+        // this host holds, so without this the slot re-scans onto the same
+        // refused issue — cache invalidation and all — for as long as the
+        // sibling's run lasts. `scanExcludedIssues` drops the entry the
+        // moment the sibling releases.
+        streamBusyIssues.set(issueClaimKey(issue.repo, issue.issueNumber), {
+          repo: issue.repo,
+          milestoneTitle: issue.milestoneTitle,
+        });
         // Issue #219: the ranking this scan produced has already lost, so
         // drop the repository's cached issue list before looking again —
         // otherwise the next scan can be served the same stale list.

@@ -227,7 +227,12 @@ import {
   isBlockedByRecentlyClosedPR,
   type OpenPR,
 } from "./issue_query.ts";
-import { type FilterableIssue, isMilestoneOccupied } from "./issue_filter.ts";
+import {
+  DEFAULT_STREAM_SHARING_TIERS,
+  type FilterableIssue,
+  isMilestoneOccupied,
+  isStreamSharingTier,
+} from "./issue_filter.ts";
 import {
   checkRepoAvailability,
   type RepoIssueInfo,
@@ -306,6 +311,11 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // the census. Omitting them over-counts.
     "closed-pr-cooldown": "run-local",
     "cross-worker-cooldown": "run-local",
+    // Issue #2532: a sibling slot's hold on this host, carried by the
+    // `applyInFlightClaims` overlay. Nothing on GitHub shows it until the
+    // claim's assignment lands, and the census is not handed the registry, so
+    // it over-counts by at most the issues this host holds right now.
+    "slot-in-flight": "run-local",
     // Issue #1780: the milestone branch's conflict ledger lives in this
     // worker's own `milestone_sync_failures.json`, and nothing hands it to the
     // census. Modelling it would need the ledger; omitting it over-counts by
@@ -1070,7 +1080,16 @@ function countUnblocked(
     // Attributed ahead of PR blocking, matching `classifyIssues`: an issue
     // the scan already refuses for occupancy keeps that reason, so
     // `pr_blocked` marks only issues that would otherwise be claimable now.
-    if (occupiedStreams.has(issue.milestone)) {
+    //
+    // Issue #2532: occupancy serialises `low-priority` and `idle-task` only.
+    // A `top-priority` or `work-on` issue shares a busy stream in its own
+    // fresh conversation (Issue #2530) and the collectors no longer refuse
+    // it, so counting it here as `stream_occupied` would make the census
+    // disagree with the scan — the divergence the idle-task drought was.
+    if (
+      occupiedStreams.has(issue.milestone) &&
+      !isStreamSharingTier(issue.labels, DEFAULT_STREAM_SHARING_TIERS)
+    ) {
       streamOccupied += 1;
       continue;
     }

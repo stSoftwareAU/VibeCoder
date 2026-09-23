@@ -100,6 +100,8 @@ Deno.test("classifyIssues - excludes assigned issues as assignee_filter", () => 
 });
 
 Deno.test("classifyIssues - excludes stream_occupied when worker already has an issue in that milestone", () => {
+  // Issue #2532: occupancy serialises the lower tiers only, so the waiting
+  // sibling here is `low-priority` — a `work-on` one shares the stream.
   const verdicts = classifyIssues(
     [
       {
@@ -110,7 +112,7 @@ Deno.test("classifyIssues - excludes stream_occupied when worker already has an 
       },
       {
         number: 101,
-        labels: ["work-on"],
+        labels: ["low-priority"],
         assignees: [],
         milestone: "v2",
       },
@@ -137,7 +139,7 @@ Deno.test("classifyIssues - default branch stream occupancy uses empty milestone
       },
       {
         number: 201,
-        labels: ["top-priority"],
+        labels: ["low-priority"],
         assignees: [],
         milestone: "",
       },
@@ -1247,4 +1249,69 @@ Deno.test("auditClaimableState - a failing openIssuesFn is a probe_error for tha
   assertEquals(result.claimableTotal, 1);
   const alpha = logs.find((l) => l.includes("repo=org/alpha"));
   assert(alpha !== undefined && alpha.includes("reason=probe_error"), alpha);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2532: the stream-sharing tiers are claimable in a busy stream
+// ---------------------------------------------------------------------------
+// The audit must agree with the scan, or the `mis_classification` ALERT
+// fires on every tick. Since Issue #2530 a `top-priority`/`work-on` claim
+// joins a busy stream in its own fresh conversation and the collectors no
+// longer refuse it, so neither does this classifier.
+
+Deno.test("classifyIssues - top-priority and work-on issues share an occupied stream (Issue #2532)", () => {
+  const verdicts = classifyIssues(
+    [
+      // #837 is in flight in the milestone stream.
+      {
+        number: 837,
+        labels: ["work-on"],
+        assignees: ["vibebot"],
+        milestone: "Priority streams",
+      },
+      {
+        number: 824,
+        labels: ["top-priority"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
+      {
+        number: 843,
+        labels: ["work-on"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
+      // The lower tier still waits for the stream.
+      {
+        number: 845,
+        labels: ["low-priority"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
+    ],
+    { workerUser: "vibebot" },
+  );
+  assertEquals(verdicts[0]!.excludedBy, "assignee_filter");
+  assertEquals(verdicts[1]!.claimable, true);
+  assertEquals(verdicts[2]!.claimable, true);
+  assertEquals(verdicts[3]!.excludedBy, "stream_occupied");
+});
+
+Deno.test("classifyIssues - the occupied blank stream does not exclude a top-priority issue (Issue #2532)", () => {
+  // The #829→#849 inversion: fleet-assigned #829 holds the default-branch
+  // stream while unassigned top-priority #849 waits behind it.
+  const verdicts = classifyIssues(
+    [
+      {
+        number: 829,
+        labels: ["low-priority"],
+        assignees: ["vibebot"],
+        milestone: "",
+      },
+      { number: 849, labels: ["top-priority"], assignees: [], milestone: "" },
+    ],
+    { workerUser: "vibebot" },
+  );
+  assertEquals(verdicts[1]!.claimable, true);
+  assertEquals(verdicts[1]!.excludedBy, undefined);
 });

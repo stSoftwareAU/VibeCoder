@@ -253,6 +253,39 @@ Deno.test("blank stream lock - the refused issue leaves the scan's exclusion set
   assertEquals([...deferred], [`${OTHER}#7`]);
 });
 
+Deno.test("slot registry - a milestone issue a sibling slot holds is kept out of the next scan (Issue #2532)", () => {
+  // Since Issue #2532 the scan offers a `top-priority`/`work-on` issue in a
+  // milestone stream a sibling slot on this host holds, and
+  // `InFlightRepoRegistry.tryAcquire` then refuses it. Without the exclusion
+  // the slot would invalidate the repo's cache and re-scan onto the same
+  // refused issue for as long as the sibling's run lasted.
+  const registry = new InFlightRepoRegistry();
+  assertEquals(
+    registry.tryAcquire(REPO, 837, "s1", { milestone: "Priority streams" }),
+    true,
+  );
+  const locks = new BlankStreamLockRegistry();
+  const streamBusy = new Map([[
+    `${REPO}#843`,
+    { repo: REPO, milestoneTitle: "Priority streams" },
+  ]]);
+  const deferred = new Set<string>();
+
+  assertEquals(
+    [...scanExcludedIssues(deferred, locks, streamBusy, registry)],
+    [`${REPO}#843`],
+  );
+
+  // And it frees the moment the sibling run ends — the same self-healing the
+  // blank-stream refusal has.
+  registry.release(REPO, "Priority streams");
+  assertEquals(
+    [...scanExcludedIssues(deferred, locks, streamBusy, registry)],
+    [],
+  );
+  assertEquals(streamBusy.size, 0);
+});
+
 // ---------------------------------------------------------------------------
 // The slot pool: two slots, one blank stream
 // ---------------------------------------------------------------------------

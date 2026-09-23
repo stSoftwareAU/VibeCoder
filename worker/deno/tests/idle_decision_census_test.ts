@@ -421,7 +421,12 @@ Deno.test("formatter - per-repo line carries the pr_blocked count (Issue #3526)"
 // scan logged `milestone-occupied=4` and the audit logged
 // `claimable=0 reason=stream_occupied`.
 
-Deno.test("census - work-on issues behind an in-flight claim in the same stream are not counted (Issue #3852)", () => {
+// Issue #2532 retiers these cases: occupancy now serialises `low-priority`
+// and `idle-task` only, so the fixtures below use `low-priority` where they
+// used to use `work-on`. The gate they pin — one stream, one claim — is
+// unchanged for the tiers it still applies to.
+
+Deno.test("census - low-priority issues behind an in-flight claim in the same stream are not counted (Issue #3852)", () => {
   const census = buildIdleDecisionCensus({
     decisionPoint: "filing",
     workerUser: "vibe-bot",
@@ -429,9 +434,9 @@ Deno.test("census - work-on issues behind an in-flight claim in the same stream 
       repoInput({
         repo: "org/neat",
         issues: [
-          issue(3849, ["work-on"], ["vibe-bot"]),
-          issue(3850, ["work-on"]),
-          issue(3851, ["work-on"]),
+          issue(3849, ["low-priority"], ["vibe-bot"]),
+          issue(3850, ["low-priority"]),
+          issue(3851, ["low-priority"]),
           issue(3852, ["low-priority"]),
         ],
       }),
@@ -454,16 +459,16 @@ Deno.test("census - occupancy is per work stream, not per repo (Issue #3852)", (
         repo: "org/neat",
         issues: [
           // Default-branch stream is occupied by an in-flight claim.
-          issue(10, ["work-on"], ["vibe-bot"]),
-          issue(11, ["work-on"]),
+          issue(10, ["low-priority"], ["vibe-bot"]),
+          issue(11, ["low-priority"]),
           // The v2 milestone stream is free, so its work is still claimable.
-          issue(12, ["work-on"], [], "v2"),
+          issue(12, ["low-priority"], [], "v2"),
         ],
       }),
     ],
   });
   const entry = census.perRepo[0]!;
-  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.unblocked.lowPriority, 1);
   assertEquals(entry.streamOccupied, 1);
   assert(entry.inversionSignal);
 });
@@ -476,14 +481,14 @@ Deno.test("census - a sibling worker's assignment does not occupy the stream (Is
       repoInput({
         repo: "org/neat",
         issues: [
-          issue(20, ["work-on"], ["other-bot"]),
-          issue(21, ["work-on"]),
+          issue(20, ["low-priority"], ["other-bot"]),
+          issue(21, ["low-priority"]),
         ],
       }),
     ],
   });
   const entry = census.perRepo[0]!;
-  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.unblocked.lowPriority, 1);
   assertEquals(entry.streamOccupied, 0);
   assert(entry.inversionSignal);
 });
@@ -496,15 +501,15 @@ Deno.test("census - stream occupancy is attributed ahead of PR blocking (Issue #
       repoInput({
         repo: "org/neat",
         issues: [
-          issue(30, ["work-on"], ["vibe-bot"]),
-          issue(31, ["work-on"]),
+          issue(30, ["low-priority"], ["vibe-bot"]),
+          issue(31, ["low-priority"]),
         ],
         openPRs: [openPR(32, "Develop", "issue-30-fix")],
       }),
     ],
   });
   const entry = census.perRepo[0]!;
-  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.unblocked.lowPriority, 0);
   assertEquals(entry.streamOccupied, 1);
   assertEquals(entry.prBlocked, 0);
   assert(!entry.inversionSignal);
@@ -538,8 +543,8 @@ Deno.test("formatter - per-repo line carries the stream_occupied count (Issue #3
       repoInput({
         repo: "org/neat",
         issues: [
-          issue(50, ["work-on"], ["vibe-bot"]),
-          issue(51, ["work-on"]),
+          issue(50, ["low-priority"], ["vibe-bot"]),
+          issue(51, ["low-priority"]),
         ],
       }),
     ],
@@ -548,7 +553,7 @@ Deno.test("formatter - per-repo line carries the stream_occupied count (Issue #3
     l.includes("repo=org/neat")
   )!;
   assert(line.includes("stream_occupied=1"));
-  assert(line.includes("work_on=0"));
+  assert(line.includes("low_priority=0"));
   assert(line.includes("inversion_signal=false"));
 });
 
@@ -644,8 +649,8 @@ Deno.test("census - stream occupancy is attributed ahead of a merged PR (GRQ#441
       repoInput({
         repo: "stSoftwareAU/GRQ",
         issues: [
-          issue(60, ["work-on"], ["vibe-bot"], "M1"),
-          issue(61, ["work-on"], [], "M1"),
+          issue(60, ["low-priority"], ["vibe-bot"], "M1"),
+          issue(61, ["low-priority"], [], "M1"),
         ],
         mergedPRs: [mergedPR(62, "Done (Issue #61)")],
       }),
@@ -1320,11 +1325,12 @@ Deno.test("census - a purely dependency-blocked work-on issue does not suppress 
   assertEquals(entry.lowPrioritySuppressed, 0);
 });
 
-Deno.test("census - a stream-occupied work-on issue still suppresses the backlog (Issue #499)", () => {
-  // Occupancy clears by itself once the in-flight claim lands, so waiting is
-  // the scan's correct behaviour (the issue survives `filterAndSort` and keeps
-  // raising `hasSuppressingWorkOn`). The census must agree rather than
-  // counting the backlog as work the scan refused.
+Deno.test("census - a work-on issue sharing a busy stream still suppresses the backlog (Issues #499, #2532)", () => {
+  // Issue #2532: the work-on issue is no longer refused for occupancy — it
+  // shares the stream in its own conversation — so it is claimable *and*
+  // keeps raising `hasSuppressingWorkOn`. Either way the low-priority
+  // backlog behind it is reported as suppressed, not as work the scan
+  // wrongly refused.
   const census = buildIdleDecisionCensus({
     decisionPoint: "filing",
     workerUser: "vibe-bot",
@@ -1340,11 +1346,11 @@ Deno.test("census - a stream-occupied work-on issue still suppresses the backlog
     ],
   });
   const entry = census.perRepo[0]!;
-  assertEquals(entry.streamOccupied, 1);
-  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.streamOccupied, 0);
+  assertEquals(entry.unblocked.workOn, 1);
   assertEquals(entry.unblocked.lowPriority, 0);
   assertEquals(entry.lowPrioritySuppressed, 1);
-  assert(!entry.inversionSignal);
+  assert(entry.inversionSignal);
 });
 
 Deno.test("census - a blocked-label work-on issue does not suppress the backlog (Issue #2751)", () => {
@@ -1561,15 +1567,17 @@ Deno.test("census - a sibling Vibe Coder's assignment occupies the stream, as th
         issues: [
           // A sibling Vibe Coder holds one issue in the milestone…
           issue(40, ["work-on"], ["sibling-bot"], "v2"),
-          // …so its siblings are what the scan calls milestone-occupied.
-          issue(41, ["work-on"], [], "v2"),
-          issue(42, ["work-on"], [], "v2"),
+          // …so its lower-tier siblings are what the scan calls
+          // milestone-occupied (Issue #2532: the stream-sharing tiers are
+          // not, so the fixture states the case in `low-priority`).
+          issue(41, ["low-priority"], [], "v2"),
+          issue(42, ["low-priority"], [], "v2"),
         ],
       }),
     ],
   });
   const entry = census.perRepo[0]!;
-  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.unblocked.lowPriority, 0);
   // The held issue itself is not counted at all — an assigned issue is
   // already refused by the label/assignee gate — so what is attributed to
   // occupancy is its two siblings.
@@ -1586,9 +1594,9 @@ Deno.test("census - the reported inversion is not raised once the sets agree (Is
   const issues = [
     issue(750, ["bug"], ["sibling-bot"]),
     issue(751, ["bug"], ["sibling-bot"]),
-    issue(743, ["work-on"]),
-    issue(745, ["work-on"]),
-    issue(747, ["work-on"]),
+    issue(743, ["low-priority"]),
+    issue(745, ["low-priority"]),
+    issue(747, ["low-priority"]),
   ];
 
   const before = buildIdleDecisionCensus({
@@ -1598,7 +1606,7 @@ Deno.test("census - the reported inversion is not raised once the sets agree (Is
   });
   // Without the selector's set, the sibling's assignments are invisible and
   // all three read as claimable — `work_on=3`, the alert as filed.
-  assertEquals(before.perRepo[0]!.unblocked.workOn, 3);
+  assertEquals(before.perRepo[0]!.unblocked.lowPriority, 3);
   assertEquals(before.perRepo[0]!.streamOccupied, 0);
   assert(before.perRepo[0]!.inversionSignal);
 
@@ -1608,7 +1616,7 @@ Deno.test("census - the reported inversion is not raised once the sets agree (Is
     pushCapableAuthors: ["sibling-bot"],
     repos: [repoInput({ repo: "stSoftwareAU/VibeCoder", issues })],
   });
-  assertEquals(after.perRepo[0]!.unblocked.workOn, 0);
+  assertEquals(after.perRepo[0]!.unblocked.lowPriority, 0);
   assertEquals(after.perRepo[0]!.streamOccupied, 3);
   assertEquals(after.perRepo[0]!.inversionSignal, false);
   assertEquals(after.escalationRepos, []);
@@ -1626,15 +1634,15 @@ Deno.test("census - an account the selector does not honour still does not occup
       repoInput({
         repo: "org/neat",
         issues: [
-          issue(50, ["work-on"], ["stranger"], "v2"),
-          issue(51, ["work-on"], [], "v2"),
+          issue(50, ["low-priority"], ["stranger"], "v2"),
+          issue(51, ["low-priority"], [], "v2"),
         ],
       }),
     ],
   });
   const entry = census.perRepo[0]!;
   assertEquals(entry.streamOccupied, 0);
-  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.unblocked.lowPriority, 1);
   assert(entry.inversionSignal);
 });
 
@@ -1648,14 +1656,14 @@ Deno.test("census - the account set is matched case-insensitively, as the select
         repo: "org/neat",
         issues: [
           issue(60, ["bug"], ["sibling-bot"], "v2"),
-          issue(61, ["work-on"], [], "v2"),
+          issue(61, ["low-priority"], [], "v2"),
         ],
       }),
     ],
   });
   const entry = census.perRepo[0]!;
   assertEquals(entry.streamOccupied, 1);
-  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.unblocked.lowPriority, 0);
 });
 
 Deno.test("census - a human's assignment occupies nothing (Issue #1071)", () => {
@@ -1673,16 +1681,16 @@ Deno.test("census - a human's assignment occupies nothing (Issue #1071)", () => 
       repoInput({
         repo: "org/neat",
         issues: [
-          issue(70, ["work-on"], ["human-dev"], "v2"),
-          issue(71, ["work-on"], [], "v2"),
-          issue(72, ["work-on"], [], "v2"),
+          issue(70, ["low-priority"], ["human-dev"], "v2"),
+          issue(71, ["low-priority"], [], "v2"),
+          issue(72, ["low-priority"], [], "v2"),
         ],
       }),
     ],
   });
   const entry = census.perRepo[0]!;
   assertEquals(entry.streamOccupied, 0);
-  assertEquals(entry.unblocked.workOn, 2);
+  assertEquals(entry.unblocked.lowPriority, 2);
   assert(entry.inversionSignal);
 });
 
@@ -1833,4 +1841,60 @@ Deno.test("census - the log line carries claim_refused beside run_local_hold (Is
   const lines = formatIdleDecisionCensus(census, "host-a").join("\n");
   assert(lines.includes("run_local_hold=1"), lines);
   assert(lines.includes("claim_refused=1"), lines);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2532: the stream-sharing tiers are counted under their tier
+// ---------------------------------------------------------------------------
+// `top-priority` and `work-on` claims join a busy stream in their own fresh
+// conversation (Issue #2530), so the scan no longer refuses them for
+// occupancy. The census must agree, or the fleet-global ladder reads a
+// repo's most urgent work as `stream_occupied` and falls through to
+// `low-priority` elsewhere — the #829→#849 inversion.
+
+Deno.test("census - top-priority issues in an occupied stream count under their tier (Issue #2532)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/VibeCoder",
+        issues: [
+          // #837 is in flight in the milestone stream.
+          issue(837, ["work-on"], ["vibe-bot"], "Priority streams"),
+          issue(824, ["top-priority"], [], "Priority streams"),
+          issue(843, ["top-priority"], [], "Priority streams"),
+          issue(844, ["top-priority"], [], "Priority streams"),
+          // A low-priority sibling still waits for the stream.
+          issue(845, ["low-priority"], [], "Priority streams"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.topPriority, 3);
+  assertEquals(entry.unblocked.lowPriority, 0);
+  assertEquals(entry.streamOccupied, 1);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - work-on issues in the occupied blank stream count under their tier (Issue #2532)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/VibeCoder",
+        issues: [
+          // Fleet-assigned #829 holds the default-branch stream.
+          issue(829, ["low-priority"], ["vibe-bot"]),
+          issue(849, ["work-on"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.streamOccupied, 0);
+  assert(entry.inversionSignal);
 });

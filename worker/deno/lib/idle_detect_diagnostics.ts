@@ -100,9 +100,11 @@ import {
   type OpenPR,
 } from "./issue_query.ts";
 import {
+  DEFAULT_STREAM_SHARING_TIERS,
   type FilterableIssue,
   isMilestoneOccupied,
   isMilestoneTrackingIssue,
+  isStreamSharingTier,
 } from "./issue_filter.ts";
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -652,7 +654,15 @@ export function classifyIssues(
       });
       continue;
     }
-    if (occupiedStreams.has(issue.milestone)) {
+    // Issue #2532: occupancy serialises `low-priority` and `idle-task` only.
+    // A `top-priority` or `work-on` claim joins a busy stream in its own
+    // fresh conversation (Issue #2530) and the collectors no longer refuse
+    // it, so excluding it here would put the audit back in disagreement with
+    // the scan — the divergence the 2026-08-26 idle-task drought was.
+    if (
+      occupiedStreams.has(issue.milestone) &&
+      !isStreamSharingTier(issue.labels, DEFAULT_STREAM_SHARING_TIERS)
+    ) {
       result.push({
         number: issue.number,
         claimable: false,

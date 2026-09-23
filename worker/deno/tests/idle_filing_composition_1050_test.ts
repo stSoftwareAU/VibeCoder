@@ -93,11 +93,16 @@ interface FixtureIssue {
 
 function backlogIssues(blocker: Blocker): FixtureIssue[] {
   const issues: FixtureIssue[] = [];
+  // Issue #2532: occupancy serialises the lower tiers only, so the
+  // stream-held backlog is stated in `low-priority` — a `work-on` one now
+  // shares the busy stream and would not be blocked at all. Every other
+  // blocker still binds `work-on`.
+  const tier = blocker === "sibling_occupied" ? "low-priority" : "work-on";
   for (let n = 100; n < 100 + BACKLOG_SIZE; n++) {
     issues.push({
       number: n,
       title: `Backlog item ${n}`,
-      labels: ["work-on"],
+      labels: [tier],
       assignees: blocker === "assigned" ? ["someone"] : [],
       milestone: "",
     });

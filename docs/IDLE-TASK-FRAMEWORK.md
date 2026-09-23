@@ -824,10 +824,20 @@ filter is hiding the work" hypothesis.
 Work streams are milestones, plus `""` for the default-branch stream. A stream
 is **occupied** once it hosts an open issue assigned to a Vibe Coder — this host
 or a sibling in `fleet_pr_authors`/`service_accounts` — and the Priority 2 scan
-then refuses every sibling in it (`isMilestoneOccupied` → the
+then refuses its **lower-tier** siblings in it (`isMilestoneOccupied` → the
 `milestone-occupied` skip). The census applies the same gate and reports the
 excluded siblings as `stream_occupied=<n>`, alongside `pr_blocked=<n>`, so both
 deferrals stay observable without inflating the inversion signal.
+
+`stream_occupied` counts `low-priority` and `idle-task` issues only
+(Issues #2530, #2532). A `top-priority` or `work-on` sibling shares the busy
+stream in
+its own fresh conversation, so the scan no longer refuses it and the census
+counts it under `top_priority=<n>` / `work_on=<n>`. Counting it here instead
+would put the census back in disagreement with the scan — and
+`classifyIssues` applies the identical rule, so the
+`[idle-detect] … ALERT mis_classification` line still fires if the two ever
+part company.
 
 Since Issue #1071 it is not merely "the same gate" but the same **function**:
 `occupiedStreamsFor` calls `isMilestoneOccupied`, over the fleet-identity set
@@ -845,7 +855,7 @@ flowchart LR
     L -- no --> X[not counted]
     L -- yes --> B{Blocking label<br/>or assignee?}
     B -- yes --> X
-    B -- no --> S{Stream already<br/>occupied?}
+    B -- no --> S{"Stream occupied,<br/>and tier is low-priority<br/>or idle-task?"}
     S -- yes --> SO["stream_occupied+1"]
     S -- no --> P{Open PR blocks<br/>its stream?}
     P -- yes --> PB["pr_blocked+1"]
@@ -1168,10 +1178,13 @@ those issues; none was ever consulted.
 
 A sibling **slot**'s hold is no longer such a case (Issue #1091). The unit of
 slot exclusion is now the work stream — `(repo, milestone)`, the default branch
-for an issue carrying none — so the scan looks at the repository, refuses the
-held stream through the existing `isMilestoneOccupied` gate, and evaluates every
-other stream in it. The refusal is recorded per issue as `milestone-occupied`
-and counted in the census's `stream_occupied` column, where a reader can see it;
+for an issue carrying none — so the scan looks at the repository, refuses what
+the hold blocks, and evaluates everything else in it. Since Issue #2532 what the
+hold blocks depends on the tier: a `low-priority` or `idle-task` sibling is
+refused `milestone-occupied` for the whole stream and counted in the census's
+`stream_occupied` column, while a `top-priority` or `work-on` sibling shares the
+stream and only the held **issue** itself is refused, as `slot-in-flight`.
+Either way the refusal is recorded per issue, where a reader can see it;
 `repo_held_in_flight` records nothing about a single issue, which is why it must
 stay reserved for a repository the scan genuinely never saw.
 

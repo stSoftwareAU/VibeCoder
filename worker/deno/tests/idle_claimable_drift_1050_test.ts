@@ -261,8 +261,12 @@ Deno.test(
 );
 
 Deno.test(
-  "claimable drift - a stream held by a sibling worker: both take nothing (Issue #1050)",
+  "claimable drift - a stream held by a sibling worker: both still take the work-on issues (Issues #1050, #2532)",
   async () => {
+    // Issue #2532: occupancy no longer defers a `work-on` candidate — the
+    // claim joins the busy stream in its own fresh conversation — so both
+    // definitions take the backlog. What #1050 pins is that they move
+    // together, whichever way the gate is set.
     await assertAgree(
       [
         {
@@ -281,7 +285,7 @@ Deno.test(
         },
         OCCUPYING_ISSUE,
       ],
-      [],
+      [10, 11],
       "default-branch stream held by a sibling worker",
     );
   },
@@ -339,7 +343,7 @@ Deno.test(
         },
         OCCUPYING_ISSUE,
       ],
-      [30],
+      [10, 30],
       "milestone beside an occupied default stream",
     );
   },
