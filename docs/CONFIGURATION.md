@@ -3431,6 +3431,19 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   shared conversation and are never checked, and with
   `enable_session_resume` off the check — and its one extra `gh issue list` —
   never runs at all.
+- **…except `top-priority` and `work-on`, which share a busy stream**
+  (Issue #2530). Those two tiers are what a human has asked for now, so a busy
+  stream does not hold them up: the claim proceeds and the worker logs
+  `stream shared: <stream> held by #<issue> on <host> — claiming into a
+  per-issue session`. Such a run keeps its **own per-issue conversation** — it
+  joins no stream session, compacts no one else's transcript, and writes back
+  neither the stream record nor the `vibe-stream-holder` marker — so the
+  stream's shared conversation still carries one run at a time, and the host
+  holding it is left undisturbed. The affinity head start (Issue #2336) is
+  skipped with the wait, because a second holder has no conversation to take
+  over. Each host still takes one issue per `(repo, milestone)` at a time, so
+  in-stream parallelism is bounded by the number of hosts. `low-priority` and
+  `idle-task` issues are unaffected and still wait for the stream.
 - **One non-milestone issue per repository per host** (Issue #2335). The blank
   stream has no fleet-wide conversation to collide in — each host keeps its
   **own** blank conversation per repository — so it is locked **host-locally**

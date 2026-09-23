@@ -414,3 +414,104 @@ Deno.test("#2333 - the stream is not joined with enable_session_resume off", asy
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
 });
+
+Deno.test("#2530 - a shared stream keeps this run on a per-issue session", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue2530-shared-" });
+  try {
+    const milestoneTitle = "#2319 session resume on by default";
+    const ctx = buildContext(workDir, true, { milestoneTitle });
+    // Another host is inside this stream's conversation right now.
+    await saveStreamSession(
+      workDir,
+      resolveStreamId(ctx.repo, milestoneTitle),
+      {
+        providerId: "claude",
+        sessionId: STREAM_SESSION_ID,
+        holderHost: "other-host",
+      },
+    );
+    const state = buildState();
+    const lines: string[] = [];
+    const deps = createMockDeps({
+      git: depsWithPushedWip().git,
+      issues: {
+        claimIssue: () =>
+          Promise.resolve({
+            ok: true as const,
+            value: {
+              claimed: true,
+              winnerId: "my-worker",
+              streamShared: {
+                holderIssue: 2529,
+                holderHost: "other-host",
+                streamLabel: `${"stSoftwareAU/VibeCoder"}${milestoneTitle}`,
+              },
+            },
+          }),
+      },
+    });
+    const baseInfo = deps.logger.info.bind(deps.logger);
+    deps.logger.info = (message: string, fields?: Record<string, unknown>) => {
+      lines.push(message);
+      baseInfo(message, fields);
+    };
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+
+    assertEquals(result.status, "continue");
+    // The stream's conversation belongs to the holder — this run starts its
+    // own, so nothing is written back as the stream's session or holder.
+    assertEquals(state.streamSession, undefined);
+    assertEquals(state.sessionResumeState, undefined);
+    assertEquals(
+      lines.filter((line) =>
+        line.startsWith("Stream shared — keeping a per-issue session")
+      ).length,
+      1,
+    );
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#2530 - the claim is told the tier may share a busy stream", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue2530-tier-" });
+  try {
+    const ctx = buildContext(workDir, true, {
+      milestoneTitle: "#2319 session resume on by default",
+    });
+    const shareable: unknown[] = [];
+    const deps = createMockDeps({
+      git: depsWithPushedWip().git,
+      issues: {
+        claimIssue: (options: { streamShareable?: boolean }) => {
+          shareable.push(options.streamShareable);
+          return Promise.resolve({
+            ok: true as const,
+            value: { claimed: true, winnerId: "my-worker" },
+          });
+        },
+      },
+    });
+
+    // `top-priority` (the default configured tier) shares...
+    const topState = buildState();
+    await workOnIssueSetupBranch(ctx, topState, deps);
+    // ...and `low-priority` does not.
+    const lowState = buildState();
+    await workOnIssueSetupBranch(
+      { ...ctx, issueLabels: ["low-priority"] },
+      lowState,
+      deps,
+    );
+
+    assertEquals(shareable, [true, false]);
+
+    if (topState.heartbeatHandle) await stopHeartbeat(topState.heartbeatHandle);
+    if (lowState.heartbeatHandle) await stopHeartbeat(lowState.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
