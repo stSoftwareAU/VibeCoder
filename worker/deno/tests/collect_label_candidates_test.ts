@@ -680,6 +680,64 @@ Deno.test(
   },
 );
 
+// ---------------------------------------------------------------------------
+// The blocking PR is recorded on the blocked entry (Issue #2534)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - a pr-blocked candidate records the blocking PR number",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 72,
+          title: "Held by an open fleet PR",
+          url: "https://github.com/owner/repo/issues/72",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-12T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-12T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Held by an open fleet PR", body: "" },
+    });
+
+    // A fleet-authored PR on the default branch blocks a non-milestone issue.
+    const repoPRs: OpenPR[] = [{
+      number: 913,
+      title: "Fleet work in flight",
+      baseRefName: "main",
+      headRefName: "issue-71-something",
+      author: "bot",
+    }];
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      repoPRs,
+      [],
+      createIssueFetcher(mockGh),
+      [],
+    );
+
+    assertEquals(result.candidates.length, 0);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 72);
+    assertEquals(entry?.reason, "pr-blocked");
+    assertEquals(entry?.blockingPr, 913);
+  },
+);
+
 Deno.test(
   "collect_label_candidates - strips a custom_label_prompts label added by an untrusted actor (Issue #847)",
   async () => {

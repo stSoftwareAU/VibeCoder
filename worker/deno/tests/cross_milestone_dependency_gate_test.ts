@@ -13,7 +13,11 @@
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
-import type { IssueFetcher, IssueState } from "../lib/issue_dependencies.ts";
+import type {
+  DependencyBlocker,
+  IssueFetcher,
+  IssueState,
+} from "../lib/issue_dependencies.ts";
 import {
   createIssueFetcher,
   createOpenMilestoneLookup,
@@ -253,6 +257,81 @@ Deno.test("a cross-repo dependency is not measured against this repo's milestone
     false,
   );
   assertEquals(lookups, []);
+});
+
+// ---------------------------------------------------------------------------
+// The recorded blocker names the milestone holding it (Issue #2534)
+// ---------------------------------------------------------------------------
+
+Deno.test("a cross-milestone hold records the milestone holding the dependant", async () => {
+  const blockers: DependencyBlocker[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(
+      REPO,
+      CANDIDATE,
+      fetcher,
+      undefined,
+      makeScope("Dependant", ["Foundation", "Dependant"]),
+      blockers,
+    ),
+    true,
+  );
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+    heldByMilestone: "Foundation",
+  }]);
+});
+
+Deno.test("an unreadable open-milestone lookup still names the dependency's milestone", async () => {
+  const blockers: DependencyBlocker[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(REPO, CANDIDATE, fetcher, undefined, {
+      candidateMilestone: "Dependant",
+      isMilestoneOpen: () => Promise.reject(new Error("gh api failed")),
+    }, blockers),
+    true,
+  );
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+    heldByMilestone: "Foundation",
+  }]);
+});
+
+Deno.test("an open dependency's blocker names no milestone", async () => {
+  const blockers: DependencyBlocker[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "OPEN", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(
+      REPO,
+      CANDIDATE,
+      fetcher,
+      undefined,
+      makeScope("Dependant", ["Foundation"]),
+      blockers,
+    ),
+    true,
+  );
+  // The key is absent, not `undefined` — the dependency is simply open.
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+  }]);
 });
 
 // ---------------------------------------------------------------------------

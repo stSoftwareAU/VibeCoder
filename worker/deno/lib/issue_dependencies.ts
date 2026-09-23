@@ -51,6 +51,18 @@ export interface DependencyBlocker {
   number: number;
   /** Type of dependency relationship. */
   kind: "child" | "depends-on";
+  /**
+   * The dependency's milestone title when the hold is the cross-milestone
+   * one (Issue #2173): the dependency is *closed*, but sits in another
+   * still-open milestone, so its code has not reached the default branch
+   * yet. Recorded so a gate comment can name the milestone the dependant
+   * is actually waiting on (Issue #2534).
+   *
+   * Absent for every other blocker — an open dependency, an open child, or
+   * a dependency satisfied on close — so `undefined` reads as "not a
+   * cross-milestone hold", never as "milestone unknown".
+   */
+  heldByMilestone?: string;
 }
 
 /**

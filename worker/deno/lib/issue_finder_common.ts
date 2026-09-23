@@ -28,6 +28,7 @@ import {
   normaliseIssueState,
 } from "./issue_dependencies.ts";
 import type {
+  DependencyBlocker,
   IssueFetcher,
   IssueState,
   OpenIssueStateMap,
@@ -527,9 +528,7 @@ export async function isDependencyBlocked(
   fetcher: IssueFetcher,
   openStateMap?: OpenIssueStateMap,
   milestoneScope?: MilestoneScope,
-  blockers?: Array<
-    { repo: string; number: number; kind: "child" | "depends-on" }
-  >,
+  blockers?: DependencyBlocker[],
 ): Promise<boolean> {
   try {
     // Check parent/child blocking
@@ -613,10 +612,13 @@ export async function isDependencyBlocked(
         try {
           if (await milestoneScope.isMilestoneOpen(depMilestone)) {
             if (blockers) {
+              // Issue #2534: the gate is the *milestone*, not the dependency
+              // itself — record it so a gate comment can name it.
               blockers.push({
                 repo: depRepo,
                 number: dep.number,
                 kind: "depends-on",
+                heldByMilestone: depMilestone,
               });
             } else {
               return true;
@@ -625,12 +627,14 @@ export async function isDependencyBlocked(
           }
         } catch {
           // Unreadable open-milestone listing — fail safe (blocked) rather
-          // than releasing the dependant against unmerged work.
+          // than releasing the dependant against unmerged work. The hold is
+          // still the dependency's milestone, so it is named the same way.
           if (blockers) {
             blockers.push({
               repo: depRepo,
               number: dep.number,
               kind: "depends-on",
+              heldByMilestone: depMilestone,
             });
           } else {
             return true;

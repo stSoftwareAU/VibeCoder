@@ -158,6 +158,16 @@ export interface BlockedCandidateInfo {
    * `undefined` as "not recorded", never as "no blockers".
    */
   blockers?: DependencyBlocker[];
+  /**
+   * The open pull request that held the issue (Issue #2534), recorded on a
+   * `pr-blocked` skip by the configured-label and work-on collectors so a
+   * gate comment can name the PR the issue is waiting on.
+   *
+   * Every other skip reason — and every other writer of `pr-blocked` —
+   * leaves it absent, so a consumer must treat `undefined` as "not
+   * recorded", never as "no blocking PR".
+   */
+  blockingPr?: number;
 }
 
 /**
