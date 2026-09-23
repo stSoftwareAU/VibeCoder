@@ -19,6 +19,7 @@ import {
 } from "../lib/diagnose_repo.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { OpenPR } from "../lib/issue_query.ts";
+import { describeDependencyBlockers } from "../lib/issue_finder_common.ts";
 
 // =============================================================================
 // formatLabels tests
@@ -294,7 +295,8 @@ Deno.test("diagnoseRepoIssue - detects milestone occupancy by worker", () => {
   ];
 
   const input: RepoIssueDiagnosticInput = {
-    issue: makeIssue({ number: 42, milestone: "v2.0" }),
+    // `idle-task` does not share a busy stream (Issue #2530).
+    issue: makeIssue({ number: 42, milestone: "v2.0", labels: ["idle-task"] }),
     prs: [],
     allIssues,
     labelConfig: defaultLabelConfig,
@@ -310,6 +312,53 @@ Deno.test("diagnoseRepoIssue - detects milestone occupancy by worker", () => {
     true,
   );
 });
+
+Deno.test(
+  "diagnoseRepoIssue - stream-sharing tier is not reported as occupied (Issue #2533)",
+  () => {
+    const allIssues: FilterableIssue[] = [
+      makeIssue({ number: 10, milestone: "v2.0", assignees: ["worker-bot"] }),
+    ];
+
+    for (const tier of ["work-on", "top-priority"]) {
+      const result = diagnoseRepoIssue({
+        issue: makeIssue({ number: 42, milestone: "v2.0", labels: [tier] }),
+        prs: [],
+        allIssues,
+        labelConfig: defaultLabelConfig,
+        workerUser: "worker-bot",
+      });
+      assertEquals(
+        result.reasons.some((r) => r.includes("occupied")),
+        false,
+        `${tier} should share the busy stream`,
+      );
+      assertEquals(result.isBlocked, false, `${tier} should be eligible`);
+    }
+  },
+);
+
+Deno.test(
+  "diagnoseRepoIssue - operator's own tier labels exempt occupancy (Issue #2533)",
+  () => {
+    const allIssues: FilterableIssue[] = [
+      makeIssue({ number: 10, milestone: "v2.0", assignees: ["worker-bot"] }),
+    ];
+
+    const result = diagnoseRepoIssue({
+      issue: makeIssue({ number: 42, milestone: "v2.0", labels: ["urgent"] }),
+      prs: [],
+      allIssues,
+      labelConfig: defaultLabelConfig,
+      workerUser: "worker-bot",
+      streamSharingTiers: { issueLabels: ["urgent"], workOnLabel: "do-now" },
+    });
+    assertEquals(
+      result.reasons.some((r) => r.includes("occupied")),
+      false,
+    );
+  },
+);
 
 Deno.test("diagnoseRepoIssue - cooldown blocking", () => {
   const input: RepoIssueDiagnosticInput = {
@@ -497,3 +546,50 @@ Deno.test("formatIssueDiagnostic - non-blocked issue with reasons stays eligible
   assertStringIncludes(out, "- **Status**: Eligible for pickup");
   assert(!out.includes("- **Status**: Blocked"));
 });
+
+Deno.test(
+  "diagnoseRepoIssue - names the open milestone holding a closed dependency (Issue #2533)",
+  () => {
+    const result = diagnoseRepoIssue({
+      issue: makeIssue({ number: 42, milestone: "Milestone 34" }),
+      prs: [],
+      allIssues: [],
+      labelConfig: defaultLabelConfig,
+      workerUser: "worker-bot",
+      unmetDependencies: describeDependencyBlockers("owner/repo", [{
+        repo: "owner/repo",
+        number: 726,
+        kind: "depends-on",
+        heldByMilestone: "Automatic buying from the score sheet",
+      }]),
+    });
+
+    assertEquals(result.isBlocked, true);
+    const reason = result.reasons.find((r) => r.includes("#726"));
+    assert(reason, "expected a dependency reason naming #726");
+    assertStringIncludes(reason, "Automatic buying from the score sheet");
+  },
+);
+
+Deno.test(
+  "diagnoseRepoIssue - an unresolved dependency reads as unmet, not held (Issue #2533)",
+  () => {
+    const result = diagnoseRepoIssue({
+      issue: makeIssue({ number: 42, milestone: "Milestone 34" }),
+      prs: [],
+      allIssues: [],
+      labelConfig: defaultLabelConfig,
+      workerUser: "worker-bot",
+      unmetDependencies: describeDependencyBlockers("owner/repo", [{
+        repo: "owner/repo",
+        number: 726,
+        kind: "depends-on",
+      }]),
+    });
+
+    const reason = result.reasons.find((r) => r.includes("#726"));
+    assert(reason, "expected a dependency reason naming #726");
+    assertStringIncludes(reason, "not resolved");
+    assert(!reason.includes("open milestone"));
+  },
+);
