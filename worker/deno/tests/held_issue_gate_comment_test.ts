@@ -241,9 +241,10 @@ Deno.test("upsertHeldIssueGateComment - an unchanged gate writes nothing, a chan
 
   assertEquals(outcome, "edited");
   assertEquals(posts(calls).length, 1);
-  const patched = patches(calls);
-  assertEquals(patched.length, 1);
-  assertEquals(patched[0].slice(0, 4), [
+  const patch = patches(calls)[0];
+  assertEquals(patches(calls).length, 1);
+  assert(patch !== undefined, "expected one PATCH call");
+  assertEquals(patch.slice(0, 4), [
     "api",
     "-X",
     "PATCH",
@@ -251,7 +252,9 @@ Deno.test("upsertHeldIssueGateComment - an unchanged gate writes nothing, a chan
   ]);
   // One comment on the thread the whole way through, now naming the new gate.
   assertEquals(rows.length, 1);
-  assertStringIncludes(rows[0].body, "waits on dependency owner/repo-b#42");
+  const row = rows[0];
+  assert(row !== undefined, "expected the comment to still be on the thread");
+  assertStringIncludes(row.body, "waits on dependency owner/repo-b#42");
 });
 
 Deno.test("upsertHeldIssueGateComment - edits the newest fleet marker when several exist", async () => {
@@ -270,10 +273,9 @@ Deno.test("upsertHeldIssueGateComment - edits the newest fleet marker when sever
   });
 
   assertEquals(outcome, "edited");
-  assertEquals(
-    patches(calls)[0][3],
-    "repos/owner/repo-a/issues/comments/22",
-  );
+  const patch = patches(calls)[0];
+  assert(patch !== undefined, "expected one PATCH call");
+  assertEquals(patch[3], "repos/owner/repo-a/issues/comments/22");
 });
 
 Deno.test("upsertHeldIssueGateComment - a marker from outside the fleet is neither trusted nor edited", async () => {
@@ -314,7 +316,9 @@ Deno.test("upsertHeldIssueGateComment - a non-fleet marker is not edited when th
 
   assertEquals(outcome, "posted");
   assertEquals(patches(calls), []);
-  assertEquals(rows[0].body, forged.body);
+  const stranger = rows[0];
+  assert(stranger !== undefined, "expected the forged comment to survive");
+  assertEquals(stranger.body, forged.body);
 });
 
 Deno.test("upsertHeldIssueGateComment - an empty fleet-author list posts rather than trusting a marker", async () => {
@@ -384,9 +388,11 @@ Deno.test("upsertHeldIssueGateComment - finds the marker on a later page", async
 
   assertEquals(outcome, "unchanged");
   assertEquals(writes(calls), []);
+  const read = calls[0];
+  assert(read !== undefined, "expected one read call");
   assert(
-    calls[0].includes("--paginate"),
-    `expected a paginated read, got: ${JSON.stringify(calls[0])}`,
+    read.includes("--paginate"),
+    `expected a paginated read, got: ${JSON.stringify(read)}`,
   );
 });
 

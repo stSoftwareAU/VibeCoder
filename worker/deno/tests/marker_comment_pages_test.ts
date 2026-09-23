@@ -96,8 +96,10 @@ Deno.test("fetchMarkerComments - reads every page and keeps the author", async (
     createdAt: "2026-09-22T12:00:00Z",
     author: "vibe-bot",
   }]);
-  assert(calls[0].includes("--paginate"));
-  assertStringIncludes(calls[0].join(" "), "author: .user.login");
+  const read = calls[0];
+  assert(read !== undefined, "expected one read call");
+  assert(read.includes("--paginate"));
+  assertStringIncludes(read.join(" "), "author: .user.login");
 });
 
 Deno.test("parseMarkerCommentPages - keeps page order and defaults a missing author", () => {
@@ -110,6 +112,5 @@ Deno.test("parseMarkerCommentPages - keeps page order and defaults a missing aut
   );
 
   assertEquals(rows.map((r) => r.id), [1, 2]);
-  assertEquals(rows[0].author, null);
-  assertEquals(rows[1].author, null);
+  assertEquals(rows.map((r) => r.author), [null, null]);
 });
