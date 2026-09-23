@@ -496,25 +496,6 @@ export function createOpenMilestoneLookup(
 }
 
 /**
- * Check if an issue is blocked by dependencies or sub-issues.
- *
- * Issue #1808: when `openStateMap` is supplied, child-issue and
- * forward-dependency state lookups resolve from the local map first;
- * misses fall back to the per-issue fetcher path.
- *
- * Issue #2173: when `milestoneScope` is supplied, a **closed** same-repo
- * dependency that sits in a *different*, still-open milestone keeps blocking.
- * Its code reaches the default branch — and so the dependant's milestone
- * branch — only once that milestone's final PR merges, so releasing the
- * dependant on close alone would build it against work that is not there yet.
- * A dependency with no milestone, or one in the candidate's own milestone, is
- * satisfied on close exactly as before. Omitting `milestoneScope` keeps the
- * pre-#2173 behaviour; a failed open-milestone lookup fails safe (blocked).
- *
- * The hold is same-repo only: milestone titles are per-repository, so another
- * repo's milestone title has no meaning in this repo's open-milestone listing.
- */
-/**
  * One reason an issue is held, as collected by {@link isDependencyBlocked}.
  */
 export interface DependencyBlocker {
