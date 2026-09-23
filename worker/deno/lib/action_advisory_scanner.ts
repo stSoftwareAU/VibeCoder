@@ -15,11 +15,23 @@
  * reported through `onLookupFailure` and yields no finding — the caller
  * logs it loud; it is never a silent "clean".
  *
+ * An advisory whose fix is *already in place* is not filed (Issue #2523): a
+ * pin sitting at or after `first_patched_version` at every call site is
+ * remediated, and re-filing it every scan buries the real findings. The bar
+ * for that suppression is deliberately high — see
+ * {@link advisoryIsRemediated} — because suppressing on an unverified
+ * comment would turn a live advisory into a silent pass.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { extractUsesValue } from "./action_pin_scanner.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
+import { compareSemver, parseSemver } from "./software_updates.ts";
+import {
+  type ActionPinComment,
+  collectActionPins,
+} from "./workflow_hygiene_check.ts";
 import type {
   GhCommandFn,
   WorkflowFile,
@@ -132,6 +144,106 @@ function advisoryText(value: string | null | undefined): string | null {
 }
 
 /**
+ * Tag shapes we are willing to interpolate into a `gh api` path. A git tag
+ * is one path segment, so anything outside `[A-Za-z0-9._-]` — or a `..`
+ * traversal — is refused rather than sent (input validation at the trust
+ * boundary: the tag is read off a workflow comment).
+ */
+const SAFE_TAG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** Resolves `owner/name@tag` to its commit SHA, memoised, null when unproven. */
+type TagResolver = (coordinate: string, tag: string) => Promise<string | null>;
+
+/**
+ * Resolve a tag to the SHA it points at upstream, once per `coordinate@tag`.
+ *
+ * A refused tag, a failed call, or an unparsable answer returns `null`,
+ * which the caller reads as "not proven patched" and therefore *files* the
+ * finding — the loud direction. Nothing here can turn a live advisory into a
+ * silent pass.
+ */
+function makeTagResolver(ghCommandFn: GhCommandFn): TagResolver {
+  const cache = new Map<string, Promise<string | null>>();
+  return (coordinate, tag) => {
+    const key = `${coordinate}@${tag}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const pending = (async (): Promise<string | null> => {
+      if (!SAFE_TAG_RE.test(tag) || tag.includes("..")) return null;
+      try {
+        const raw = await ghCommandFn([
+          "api",
+          `repos/${coordinate}/commits/${tag}`,
+          "--jq",
+          ".sha",
+        ]);
+        const sha = raw.trim().replace(/^"|"$/g, "").toLowerCase();
+        return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+      } catch {
+        return null;
+      }
+    })();
+    cache.set(key, pending);
+    return pending;
+  };
+}
+
+/** SHA-pinned `uses:` references and their version comments, by `file:line`. */
+function pinsByLocation(
+  files: readonly WorkflowFile[],
+): Map<string, ActionPinComment[]> {
+  const byLocation = new Map<string, ActionPinComment[]>();
+  for (const file of files) {
+    for (const pin of collectActionPins(file.rawText, file.path)) {
+      const key = `${pin.file}:${pin.line}`;
+      byLocation.set(key, [...(byLocation.get(key) ?? []), pin]);
+    }
+  }
+  return byLocation;
+}
+
+/**
+ * True only when this advisory is provably fixed at **every** call site.
+ *
+ * All four conditions must hold, at every site, or the finding is filed:
+ *
+ * 1. `first_patched_version` parses as a semver.
+ * 2. The site is SHA-pinned and carries a version comment that parses.
+ * 3. That version is at or after the patched version.
+ * 4. The tag the comment claims resolves *upstream* to the SHA actually
+ *    pinned — a comment is a human annotation, and trusting one unverified
+ *    would suppress a real advisory on the strength of a typo or a lie.
+ */
+async function advisoryIsRemediated(
+  coordinate: string,
+  patched: string,
+  siteKeys: readonly string[],
+  pins: Map<string, ActionPinComment[]>,
+  resolveTag: TagResolver,
+): Promise<boolean> {
+  const target = parseSemver(patched);
+  if (target === null || siteKeys.length === 0) return false;
+
+  for (const key of siteKeys) {
+    const sitePins = pins.get(key) ?? [];
+    if (sitePins.length === 0) return false;
+    let verified = false;
+    for (const pin of sitePins) {
+      const claimed = pin.version === undefined
+        ? null
+        : parseSemver(pin.version);
+      if (claimed === null || compareSemver(claimed, target) < 0) return false;
+      if (!verified) {
+        const sha = await resolveTag(coordinate, pin.version as string);
+        verified = sha !== null && sha === pin.sha.toLowerCase();
+      }
+    }
+    if (!verified) return false;
+  }
+  return true;
+}
+
+/**
  * Enumerate third-party action coordinates with their first call site,
  * query GHSA once per coordinate, and return one finding per advisory.
  */
@@ -157,6 +269,9 @@ export async function scanActionAdvisories(
       allSites.set(coordinate, list);
     });
   }
+
+  const pins = pinsByLocation(files);
+  const resolveTag = makeTagResolver(options.ghCommandFn);
 
   const findings: ActionAdvisoryFinding[] = [];
   for (const [coordinate, site] of sites) {
@@ -192,6 +307,18 @@ export async function scanActionAdvisories(
       // Every advisory-sourced string reaches a filed issue body, so each is
       // scrubbed once here and only the scrubbed form is interpolated below.
       const patched = advisoryText(vuln?.first_patched_version);
+      // Already fixed everywhere it is used? Then there is nothing to file.
+      if (
+        patched !== null && await advisoryIsRemediated(
+          coordinate,
+          patched,
+          allSites.get(coordinate) ?? [],
+          pins,
+          resolveTag,
+        )
+      ) {
+        continue;
+      }
       const range = advisoryText(vuln?.vulnerable_version_range) ??
         "unspecified";
       const summary = advisoryText(advisory.summary) ?? "no summary";

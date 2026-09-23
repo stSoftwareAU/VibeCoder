@@ -136,6 +136,160 @@ Deno.test("scanActionAdvisories - a failed or malformed lookup is reported, neve
 });
 const failures: string[] = [];
 
+// --- Advisories already remediated at every call site (Issue #2523) --------
+
+/** The SHA `aquasecurity/trivy-action@v0.36.0` actually points at. */
+const TRIVY_SHA = "ed142fd0673e97e23eac54620cfb913e5ce36c25";
+
+const TRIVY_ADVISORY = {
+  ghsa_id: "GHSA-69fq-xp46-6x23",
+  cve_id: "CVE-2026-33634",
+  summary: "Trivy ecosystem supply chain was briefly compromised",
+  severity: "critical",
+  html_url: "https://github.com/advisories/GHSA-69fq-xp46-6x23",
+  published_at: "2026-03-24T17:53:12Z",
+  vulnerabilities: [
+    {
+      package: { ecosystem: "actions", name: "aquasecurity/trivy-action" },
+      vulnerable_version_range: "< 0.35.0",
+      first_patched_version: "0.35.0",
+    },
+  ],
+};
+
+/** A one-step workflow pinning trivy-action, optionally annotated. */
+function trivyWorkflow(comment: string | null, sha = TRIVY_SHA): WorkflowFile {
+  const lines = [
+    "name: audit",
+    "on: [push]",
+    "jobs:",
+    "  sbom:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    ...(comment === null ? [] : [`      ${comment}`]),
+    `      - uses: aquasecurity/trivy-action@${sha}`,
+    "",
+  ];
+  return wf(".github/workflows/dependency-audit.yml", lines.join("\n"));
+}
+
+/** Stub `gh`: the advisory query, plus tag→SHA resolution from `tags`. */
+function trivyGh(
+  tags: Record<string, string>,
+  advisory: unknown = TRIVY_ADVISORY,
+): { fn: (args: string[]) => Promise<string>; calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    fn: (args: string[]) => {
+      const target = args[1] ?? "";
+      calls.push(target);
+      if (target.startsWith("repos/")) {
+        const tag = target.split("/commits/")[1] ?? "";
+        const sha = tags[tag];
+        return sha === undefined
+          ? Promise.reject(new Error("HTTP 404"))
+          : Promise.resolve(`${sha}\n`);
+      }
+      return Promise.resolve(
+        target.includes("trivy-action") ? JSON.stringify([advisory]) : "[]",
+      );
+    },
+  };
+}
+
+Deno.test("scanActionAdvisories - an advisory already patched at every call site is not filed, and the tag is resolved once (Issue #2523)", async () => {
+  const gh = trivyGh({ "v0.36.0": TRIVY_SHA });
+  const findings = await scanActionAdvisories(
+    [trivyWorkflow("# aquasecurity/trivy-action@v0.36.0")],
+    { ghCommandFn: gh.fn },
+  );
+  assertEquals(findings, []);
+  assertEquals(
+    gh.calls.filter((c) => c.startsWith("repos/")),
+    ["repos/aquasecurity/trivy-action/commits/v0.36.0"],
+  );
+});
+
+Deno.test("scanActionAdvisories - a pin below the patched version is still filed (Issue #2523)", async () => {
+  const gh = trivyGh({ "v0.34.0": TRIVY_SHA });
+  const findings = await scanActionAdvisories(
+    [trivyWorkflow("# aquasecurity/trivy-action@v0.34.0")],
+    { ghCommandFn: gh.fn },
+  );
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]?.ghsaId, "GHSA-69fq-xp46-6x23");
+});
+
+Deno.test("scanActionAdvisories - a pin with no version comment is still filed: an unannotated SHA proves nothing (Issue #2523)", async () => {
+  const gh = trivyGh({ "v0.36.0": TRIVY_SHA });
+  const findings = await scanActionAdvisories([trivyWorkflow(null)], {
+    ghCommandFn: gh.fn,
+  });
+  assertEquals(findings.length, 1);
+});
+
+Deno.test("scanActionAdvisories - a version comment that does not resolve to the pinned SHA is still filed (Issue #2523)", async () => {
+  // The comment claims v0.36.0, but that tag points somewhere else — the
+  // annotation is wrong, so the pin is not proven patched.
+  const gh = trivyGh({ "v0.36.0": "a".repeat(40) });
+  const findings = await scanActionAdvisories(
+    [trivyWorkflow("# aquasecurity/trivy-action@v0.36.0")],
+    { ghCommandFn: gh.fn },
+  );
+  assertEquals(findings.length, 1);
+
+  // Same shape when the tag cannot be resolved at all (404, rate limit, …).
+  const unresolved = await scanActionAdvisories(
+    [trivyWorkflow("# aquasecurity/trivy-action@v0.36.0")],
+    { ghCommandFn: trivyGh({}).fn },
+  );
+  assertEquals(unresolved.length, 1);
+});
+
+Deno.test("scanActionAdvisories - an advisory with no first patched version is always filed (Issue #2523)", async () => {
+  const unpatched = {
+    ...TRIVY_ADVISORY,
+    vulnerabilities: [
+      {
+        package: { ecosystem: "actions", name: "aquasecurity/trivy-action" },
+        vulnerable_version_range: ">= 0",
+        first_patched_version: null,
+      },
+    ],
+  };
+  const gh = trivyGh({ "v0.36.0": TRIVY_SHA }, unpatched);
+  const findings = await scanActionAdvisories(
+    [trivyWorkflow("# aquasecurity/trivy-action@v0.36.0")],
+    { ghCommandFn: gh.fn },
+  );
+  assertEquals(findings.length, 1);
+});
+
+Deno.test("scanActionAdvisories - one lagging call site keeps the finding for all of them (Issue #2523)", async () => {
+  const gh = trivyGh({ "v0.36.0": TRIVY_SHA, "v0.34.0": "b".repeat(40) });
+  const findings = await scanActionAdvisories([
+    trivyWorkflow("# aquasecurity/trivy-action@v0.36.0"),
+    wf(
+      ".github/workflows/scan.yml",
+      `name: scan
+on: [push]
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      # aquasecurity/trivy-action@v0.34.0
+      - uses: aquasecurity/trivy-action@${"b".repeat(40)}
+`,
+    ),
+  ], { ghCommandFn: gh.fn });
+  assertEquals(findings.length, 1);
+  assert(
+    findings[0]?.evidence?.includes(".github/workflows/scan.yml:8"),
+    findings[0]?.evidence,
+  );
+});
+
 Deno.test("scanActionAdvisories - severity maps GHSA bands onto the audit's three (Issue #4405)", async () => {
   const low = { ...ADVISORY, ghsa_id: "GHSA-low0-0000-0000", severity: "low" };
   const critical = {
