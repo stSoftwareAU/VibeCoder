@@ -5,8 +5,8 @@ top-up-2496) · **Parent:** #1209 · extended by
 [#2531](https://github.com/stSoftwareAU/VibeCoder/issues/2531)
 
 This is the written record for the modules that entered `worker/deno/lib/` under
-#2496 and its follow-on #2531 — both are comment writers keyed by a hidden
-marker, so they share one reading:
+the two issues linked above — both are comment writers keyed by a hidden marker,
+so they share one reading:
 
 - `worker/deno/lib/chain_root_comment.ts` (#2496)
 - `worker/deno/lib/held_issue_gate_comment.ts` (#2531)
