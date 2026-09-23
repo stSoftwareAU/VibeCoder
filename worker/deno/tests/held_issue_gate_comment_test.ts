@@ -128,7 +128,55 @@ Deno.test("buildHeldIssueGateComment - adds the chain-root reason when the chain
     comment.body,
     "waiting on @alice, who is assigned to owner/repo-b#42",
   );
-  assertEquals(comment.key, "held-gate-dependency-owner/repo-b#42-assigned");
+  assertEquals(
+    comment.key,
+    "held-gate-dependency-owner/repo-b#42-assigned-owner/repo-b#42-alice",
+  );
+});
+
+Deno.test("buildHeldIssueGateComment - names the chain root, not the dependency, when they differ", () => {
+  const comment = buildHeldIssueGateComment({
+    kind: "dependency",
+    dependency: DEP,
+    rootReason: "cross-repo-unmonitored",
+    root: { repo: "other/repo-c", number: 7 },
+    rootDetail: "other/repo-c",
+  });
+
+  // A chain is often more than one hop: the reason belongs to the root, so
+  // attributing it to the dependency would state something untrue of it.
+  assertStringIncludes(comment.body, "waits on dependency owner/repo-b#42");
+  assertStringIncludes(
+    comment.body,
+    "cross-repo blocker other/repo-c#7 is not monitored by this fleet",
+  );
+  assert(
+    !comment.body.includes("blocker owner/repo-b#42"),
+    `expected the root to own the reason, got: ${comment.body}`,
+  );
+  assertStringIncludes(comment.key, "other/repo-c#7");
+});
+
+Deno.test("buildHeldIssueGateComment - a changed assignee changes the key", () => {
+  const alice = buildHeldIssueGateComment({
+    kind: "dependency",
+    dependency: DEP,
+    rootReason: "assigned",
+    rootDetail: "alice",
+  });
+  const bob = buildHeldIssueGateComment({
+    kind: "dependency",
+    dependency: DEP,
+    rootReason: "assigned",
+    rootDetail: "bob",
+  });
+
+  // Same reason, different person: the visible sentence changed, so the key
+  // must too — otherwise the comment names @alice for ever.
+  assert(
+    alice.key !== bob.key,
+    `expected distinct keys, both were ${alice.key}`,
+  );
 });
 
 Deno.test("buildHeldIssueGateComment - keys a needs-human root apart from a plain dependency", () => {

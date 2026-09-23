@@ -6,7 +6,8 @@
  * stream, a closed dependency whose code only lands when a milestone merges, or
  * a dependency still open — looks identical from outside to an issue the fleet
  * has forgotten. So the fleet says which gate holds it, in **one** comment:
- * posted once, **edited in place** when the gate changes, never duplicated.
+ * posted once and **edited in place** when the gate changes, so the fleet never
+ * adds a second one.
  *
  * That is the difference from `chain_root_comment.ts`, whose poster is POST-only
  * and keyed by root+reason: when the gate moved on, the old comment simply
@@ -29,7 +30,7 @@
  *
  * The module is pure and injectable — every `gh` call goes through `ghFn` — so
  * the scan wiring (a separate sub-issue) decides *when* a gate is reported; this
- * module only decides *what it says* and *that there is exactly one of it*.
+ * module only decides *what it says* and *that the fleet writes no second one*.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -68,6 +69,13 @@ export type HeldIssueGate =
     dependency: ChainIssueRef;
     /** Set when the chain behind the dependency ends at an unworkable root. */
     rootReason?: ChainRootReason;
+    /**
+     * The issue the chain actually ends at, when that is not the dependency
+     * itself. A chain is often more than one hop, and the reason belongs to the
+     * root — naming the dependency there would state something untrue of it.
+     * Defaults to {@link dependency} for a one-hop chain.
+     */
+    root?: ChainIssueRef;
     /** The value that triggered that classification (login, repo, labels). */
     rootDetail?: string;
   };
@@ -97,6 +105,18 @@ function safeMilestone(milestone: string): string {
   return milestone.trim().replace(/[^A-Za-z0-9._/ -]/g, "").slice(0, 120);
 }
 
+/**
+ * Keep a root detail to the characters a key can carry.
+ *
+ * The detail is whatever triggered the root classification — a login, a repo, a
+ * label — so it reaches the key from outside the fleet. The visible sentence
+ * sanitises it through `chain_root_comment.ts`; the key needs its own pass
+ * because it interpolates the raw value rather than the rendered sentence.
+ */
+function safeDetail(detail: string): string {
+  return detail.trim().replace(/[^A-Za-z0-9._/-]/g, "").slice(0, 60);
+}
+
 /** The one sentence that names the gate. */
 function gateSentence(gate: HeldIssueGate): string {
   switch (gate.kind) {
@@ -115,9 +135,11 @@ function gateSentence(gate: HeldIssueGate): string {
       if (gate.rootReason === undefined) {
         return `This issue waits on dependency ${ref}.`;
       }
+      // The reason belongs to the root, so it must name the root — the
+      // dependency is only the root when the chain is a single hop.
       const reason = reasonSentence(
         gate.rootReason,
-        ref,
+        renderRef(gate.root ?? gate.dependency),
         gate.rootDetail ?? "",
       );
       return `This issue waits on dependency ${ref}, and the chain behind it ` +
@@ -142,9 +164,13 @@ function gateKey(gate: HeldIssueGate): string {
         `${safeMilestone(gate.milestone)}`;
     case "dependency": {
       const base = `held-gate-dependency-${renderRef(gate.dependency)}`;
-      return gate.rootReason === undefined
-        ? base
-        : `${base}-${gate.rootReason}`;
+      if (gate.rootReason === undefined) return base;
+      // The root and its detail are in the visible sentence, so they must be in
+      // the key: an assignee changing from alice to bob is a different gate, and
+      // a key that ignored it would leave the comment naming alice for ever.
+      return `${base}-${gate.rootReason}-` +
+        `${renderRef(gate.root ?? gate.dependency)}-` +
+        `${safeDetail(gate.rootDetail ?? "")}`;
     }
   }
 }

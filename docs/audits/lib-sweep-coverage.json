@@ -2037,11 +2037,12 @@
    "chunk": "top-up-2496",
    "title": "top-up: the unworkable chain-root report",
    "ledger": "docs/audits/security-sweep-2496-chain-root-comment.md",
-   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: chain_root_comment.ts (#2496)",
+   "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: chain_root_comment.ts (#2496), held_issue_gate_comment.ts (#2531)",
    "status": "swept",
    "sweptAt": "a48714b9c0b5e13d96a9e12fc31b2fabdd2d782f",
    "paths": [
-    "worker/deno/lib/chain_root_comment.ts"
+    "worker/deno/lib/chain_root_comment.ts",
+    "worker/deno/lib/held_issue_gate_comment.ts"
    ]
   },
   {
