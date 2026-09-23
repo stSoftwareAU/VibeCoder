@@ -409,7 +409,9 @@ export async function collectWorkOnCandidates(
       milestone,
       reason,
       ...(gate?.blockers ? { blockers: gate.blockers } : {}),
-      ...(gate?.blockingPr ? { blockingPr: gate.blockingPr } : {}),
+      ...(gate?.blockingPr === undefined
+        ? {}
+        : { blockingPr: gate.blockingPr }),
     });
     if (suppressesLowerTiers(reason)) suppressingCount++;
   };

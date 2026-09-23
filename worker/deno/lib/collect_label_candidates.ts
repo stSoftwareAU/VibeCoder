@@ -398,6 +398,7 @@ export async function collectLabelCandidates(
               issueNumber: issue.number,
               milestone: milestoneTitle,
               reason: "pr-blocked",
+              // Issue #2534: the concrete gate, so a comment can name it.
               blockingPr: blockingPR.number,
             });
             continue;
