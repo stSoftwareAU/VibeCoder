@@ -2732,13 +2732,18 @@ different questions and neither hides the other.
 When the walk ends somewhere the fleet cannot go, the root is **classified rather
 than retried**: `cross-repo-unmonitored` (the blocker lives in a repo this fleet
 does not monitor), `needs-human`, `assigned` (a human holds it), or
-`no-discovery-label`. Those four post the chain-root-unworkable comment on the
-blocked issue — a plain explanation, no labels changed, deduped to one per
-blocked-issue-and-root-and-reason per 24 hours. A root assigned to a **fleet**
-account is not unworkable at all: a sibling host is already on it, so the scan
-stays silent (logging `chain-root-in-progress` only under
-`ISSUE_FINDER_DEBUG=true`), because a comment there would report a fault that
-does not exist.
+`no-discovery-label`. Those four become the root sentence of the blocked issue's
+**gate comment** (Issue #2535). Every held `top-priority`/`work-on` issue
+carries exactly one fleet comment naming the gate that holds it — *PR #N is
+open on this stream*, *waits on milestone M*, or *waits on dependency #N* —
+with the unworkable root and its reason added to the last. No labels change;
+the comment is **edited in place** when the gate moves, so it never names a
+root the chain has passed, and the retired stand-alone chain-root comment
+(#2496) is deleted once the gate comment is written. A root assigned to a
+**fleet** account is not unworkable at all: a sibling host is already on it, so
+the root sentence is left out (logging `chain-root-in-progress` only under
+`ISSUE_FINDER_DEBUG=true`) — the issue is still told which dependency it waits
+on.
 
 ```mermaid
 flowchart TD
@@ -2746,14 +2751,16 @@ flowchart TD
     W -->|"still blocked"| W
     W -->|"unmonitored repo"| U["Unworkable: cross-repo-unmonitored"]
     W -->|"needs-human"| N["Unworkable: needs-human"]
-    W -->|"fleet assignee"| F["Sibling host is on it —<br/>log chain-root-in-progress, no comment"]
+    W -->|"fleet assignee"| F["Sibling host is on it —<br/>log chain-root-in-progress"]
     W -->|"human assignee"| A["Unworkable: assigned"]
     W -->|"no discovery label"| L["Unworkable: no-discovery-label"]
     W -->|"open, unassigned, labelled"| P["Promote to #M's tier<br/>for this scan"]
-    U --> C["Comment on #M: chain root the fleet cannot work"]
+    U --> C["Gate comment on #M: waits on dependency,<br/>chain ends at a root the fleet cannot work"]
     N --> C
     A --> C
     L --> C
+    P --> D["Gate comment on #M: waits on dependency"]
+    F --> D
     style P fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style F fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style C fill:#e0a050,stroke:#8b4500,color:#1a1a1a
@@ -2764,8 +2771,10 @@ flowchart TD
 (the pure resolver),
 [`apply_chain_promotions.ts`](worker/deno/lib/apply_chain_promotions.ts)
 (discovery wiring) and
-[`chain_root_comment.ts`](worker/deno/lib/chain_root_comment.ts) (the comment and
-its 24-hour dedup). Operator view:
+[`held_issue_gate_comment.ts`](worker/deno/lib/held_issue_gate_comment.ts) (the
+gate comment, edited in place) with
+[`chain_root_comment.ts`](worker/deno/lib/chain_root_comment.ts) (the root
+sentence). Operator view:
 [`docs/INTERNALS.md` → Dependency-chain promotion](docs/INTERNALS.md#-dependency-chain-promotion)
 and
 [`docs/TROUBLESHOOTING.md` → Top-priority issue blocked but fleet works low-priority](docs/TROUBLESHOOTING.md#top-priority-issue-blocked-but-fleet-works-low-priority).

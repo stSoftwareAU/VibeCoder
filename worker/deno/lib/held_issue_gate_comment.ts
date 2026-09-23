@@ -38,10 +38,18 @@
 import type {
   ChainIssueRef,
   ChainRootReason,
+  UnworkableChainRoot,
 } from "./dependency_chain_promotion.ts";
-import { reasonSentence, renderRef } from "./chain_root_comment.ts";
-import { isFleetAuthor } from "./fleet_authors.ts";
 import {
+  CHAIN_ROOT_UNWORKABLE_MARKER,
+  reasonSentence,
+  renderRef,
+} from "./chain_root_comment.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
+import type { IssueCache } from "./issue_cache.ts";
+import type { BlockedCandidateInfo } from "./issue_finder_logger.ts";
+import {
+  deleteIssueComment,
   fetchMarkerComments,
   updateIssueComment,
 } from "./marker_comment_pages.ts";
@@ -254,4 +262,133 @@ export async function upsertHeldIssueGateComment(opts: {
 
   await updateIssueComment(opts.repo, newest.id, comment.body, opts.ghFn);
   return "edited";
+}
+
+/**
+ * The gate a held issue's scan entry names, or `null` when the entry names none
+ * the fleet reports (Issue #2535).
+ *
+ * - `pr-blocked` with the PR recorded (#2534) ⇒ `pr-open`.
+ * - `dependency-blocked` ⇒ the first recorded blocker: `milestone-wait` when it
+ *   is the cross-milestone hold (#2173), otherwise `dependency`, carrying the
+ *   chain's unworkable root unless the fleet is already working the chain —
+ *   work is happening, so only the root sentence is dropped; the issue is still
+ *   told which dependency it waits on.
+ *
+ * Every other reason (`milestone-paced`, cooldowns, …) is not commented: the
+ * parent issue names these gates and no others.
+ *
+ * @param held - The scan's record of why the issue was refused
+ * @param unworkable - The chain's unworkable root, if the resolver found one
+ * @param fleetWorkingChain - True when a fleet account holds the chain's root
+ */
+export function heldIssueGateFor(
+  held: BlockedCandidateInfo,
+  unworkable: UnworkableChainRoot | undefined,
+  fleetWorkingChain: boolean,
+): HeldIssueGate | null {
+  if (held.reason === "pr-blocked") {
+    return held.blockingPr === undefined
+      ? null
+      : { kind: "pr-open", prNumber: held.blockingPr };
+  }
+  if (held.reason !== "dependency-blocked") return null;
+  const first = held.blockers?.[0];
+  if (first === undefined) return null;
+  const dependency = { repo: first.repo, number: first.number };
+  if (first.heldByMilestone) {
+    return {
+      kind: "milestone-wait",
+      dependency,
+      milestone: first.heldByMilestone,
+    };
+  }
+  if (unworkable === undefined || fleetWorkingChain) {
+    return { kind: "dependency", dependency };
+  }
+  return {
+    kind: "dependency",
+    dependency,
+    rootReason: unworkable.reason,
+    root: unworkable.root,
+    rootDetail: unworkable.detail,
+  };
+}
+
+/** How long a confirmed gate is trusted before the thread is read again. */
+export const HELD_ISSUE_GATE_RECHECK_SECONDS = 24 * 60 * 60;
+
+/** The cache key under which a confirmed gate is remembered. */
+function recheckCacheKey(issueNumber: number): string {
+  return `held_issue_gate_${issueNumber}`;
+}
+
+/** What {@link reportHeldIssueGate} did on one issue. */
+export type HeldIssueGateReport =
+  | HeldIssueGateOutcome
+  /** The same gate was confirmed on GitHub inside the recheck window. */
+  | "cached";
+
+/**
+ * Report one held issue's gate: upsert the comment, then retire the legacy
+ * chain-root comment it replaces (Issue #2535).
+ *
+ * Every slot on every host scans, and a repository can hold a dozen issues, so
+ * reading each thread on every scan would spend GitHub quota on answers that
+ * rarely change. A gate confirmed on GitHub is remembered in `cache` for
+ * {@link HELD_ISSUE_GATE_RECHECK_SECONDS}; an unchanged gate inside that window
+ * reads nothing. A changed gate always reads, and so does an expired one — the
+ * comment may have been deleted by hand.
+ *
+ * Once the comment is posted or edited, fleet-authored
+ * `vibe-chain-root-unworkable` comments on the thread are deleted: they were
+ * POST-only and never edited, so the stale ones name a root the chain has
+ * moved past. Only fleet-authored ones — the fleet never deletes a comment it
+ * cannot prove it wrote.
+ *
+ * Throws when a thread cannot be read or written; the caller logs and carries
+ * on. A legacy delete that fails is not fatal to the report and is returned
+ * in `deleteErrors`.
+ */
+export async function reportHeldIssueGate(opts: {
+  repo: string;
+  issueNumber: number;
+  gate: HeldIssueGate;
+  ghFn: GhFn;
+  fleetAuthors: string[];
+  /** Where a confirmed gate is remembered; omitted, every call reads. */
+  cache?: IssueCache;
+}): Promise<{ outcome: HeldIssueGateReport; deleteErrors: Error[] }> {
+  const key = buildHeldIssueGateComment(opts.gate).key;
+  const cacheKey = recheckCacheKey(opts.issueNumber);
+  const confirmed = await opts.cache?.read<{ key: string }>(
+    opts.repo,
+    cacheKey,
+    { ttlSeconds: HELD_ISSUE_GATE_RECHECK_SECONDS },
+  );
+  if (confirmed?.key === key) return { outcome: "cached", deleteErrors: [] };
+
+  const outcome = await upsertHeldIssueGateComment(opts);
+
+  const deleteErrors: Error[] = [];
+  if (outcome !== "unchanged") {
+    const legacy = await fetchMarkerComments(
+      opts.repo,
+      opts.issueNumber,
+      CHAIN_ROOT_UNWORKABLE_MARKER,
+      opts.ghFn,
+    );
+    for (const comment of legacy) {
+      if (!isFleetAuthor(comment.author, opts.fleetAuthors)) continue;
+      const err = await deleteIssueComment(opts.repo, comment.id, opts.ghFn);
+      if (err) deleteErrors.push(err);
+    }
+  }
+
+  // A legacy delete that failed is retried on the next read: only a fully
+  // settled thread is remembered.
+  if (deleteErrors.length === 0) {
+    await opts.cache?.write(opts.repo, cacheKey, { key });
+  }
+  return { outcome, deleteErrors };
 }

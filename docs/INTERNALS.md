@@ -1687,10 +1687,11 @@ A root the fleet cannot work is classified instead of retried, and returned on
 | `assigned`               | A non-fleet account holds the blocker (login in `detail`)  |
 | `no-discovery-label`     | The blocker carries no discovery label                     |
 
-Those four drive the chain-root-unworkable comment — see
-[Reporting a chain root nobody can move](#-reporting-a-chain-root-nobody-can-move).
+Those four become the root sentence of the blocked issue's gate comment — see
+[Naming the gate on a held issue](#-naming-the-gate-on-a-held-issue).
 A root assigned to a **fleet** account is not unworkable: it is returned as a
-fleet-working root and no comment is posted. Unlike `promoted-dependency=`, its
+fleet-working root, and the gate comment names the dependency without a root
+sentence. Unlike `promoted-dependency=`, its
 `[issue-finder] chain-root-in-progress repo=… issue=#N assignee=…` line is
 **debug-gated** — it is written only with `ISSUE_FINDER_DEBUG=true`. A root
 missing from the snapshot is skipped silently: an unreadable chain is never
@@ -2826,51 +2827,65 @@ flowchart TD
     H -. idempotent re-scan: no-op .-> H
 ```
 
-#### 💬 Reporting a chain root nobody can move
+#### 💬 Naming the gate on a held issue
 
-Dependency-chain promotion (Issue #2495) lifts the workable dependency of a
-blocked `top-priority`/`work-on` issue into that issue's own tier. When the
-chain instead ends at a root the fleet **cannot** work, there is nothing to
-promote — and, before Issue #2496, nothing was said either: a human saw an
-urgent label and no activity.
+A held `top-priority`/`work-on` issue looks, from outside, exactly like one the
+fleet has forgotten. So once selection is settled each scan tells every such
+issue **which gate holds it**, in one fleet comment
+([held_issue_gate_comment.ts](../worker/deno/lib/held_issue_gate_comment.ts),
+wired in `find_oldest_issue.ts`; Issue #2535). The gate is built from what the
+collectors recorded on the refusal (Issue #2534):
 
-`buildChainRootUnworkableComment` / `postChainRootUnworkableComment`
-([chain_root_comment.ts](../worker/deno/lib/chain_root_comment.ts)) post one
-plain comment on the **blocked** issue naming the root and the reason
-`resolveChainPromotions` classified it with — `assigned` (waiting on
-`@login`), `no-discovery-label`, `needs-human`, or `cross-repo-unmonitored`.
-Deliberately **not** an escalation:
+| Gate             | When                                                                   | Sentence                                                          |
+| ---------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `pr-open`        | `pr-blocked`, with the PR recorded                                     | PR #N is open on this stream; worked once it lands                |
+| `milestone-wait` | `dependency-blocked` on a closed dependency in another open milestone  | waits on milestone M — its code lands when M merges               |
+| `dependency`     | `dependency-blocked` on an open dependency                             | waits on dependency #N (+ the unworkable root, when there is one) |
 
-- **No label is applied or removed.** The worker cannot apply `top-priority`,
-  and `needs-human` stays reserved for the `escalateToHuman` chokepoint — a
-  root a human is already working is waited on, not escalated. This is also
-  what closes the trusted-human half of Issue #2473, which `escalateToHuman`
-  could not: a trusted human's dependency now gets a report rather than
-  silence.
-- **At most once per 24 hours**, keyed by blocked issue + root + reason
-  (`fetchMarkerComments` reads the hidden `vibe-chain-root-unworkable` marker
-  across every page). A changed root or reason is news, so it posts again at
-  once.
-- **Silent while the fleet is working the chain** — a fleet-assigned root is a
-  `fleetWorking` entry, never an `unworkableRoots` one.
-- Each blocked member of a shared chain gets its own comment, on its own
-  thread.
-- The report is best effort: a failure is logged and discovery carries on.
+When the chain behind the dependency ends at a root the fleet cannot move
+(`assigned`, `no-discovery-label`, `needs-human`, `cross-repo-unmonitored`), its
+reason is added to the `dependency` sentence — the wording lives in
+[chain_root_comment.ts](../worker/deno/lib/chain_root_comment.ts)
+(`reasonSentence`). While the fleet itself holds the root, the root sentence is
+left out; the issue is still told which dependency it waits on.
+
+- **No label is applied or removed.** A wait that clears by itself is never a
+  human's task.
+- **One comment, edited in place.** The hidden `vibe-held-issue-gate` marker
+  carries a key over the gate; an unchanged key writes nothing, a changed one
+  edits the fleet's newest marker comment. Only a fleet-authored marker is
+  trusted or edited.
+- **Bounded reads.** A gate confirmed on GitHub is remembered in the issue
+  cache for 24 hours (`held_issue_gate_<n>`); an unchanged gate inside that
+  window reads no thread at all. Every slot on every host scans, so without
+  this a repository with a dozen held issues would read a dozen threads per
+  scan.
+- **The retired chain-root comment is deleted.** Issue #2496 posted a
+  stand-alone, never-edited comment (`vibe-chain-root-unworkable`) that went
+  stale when the chain moved. Once the gate comment is posted or edited, the
+  fleet-authored ones on that thread are deleted.
+- **Best effort.** A failure logs `findOldestIssue: gate comment failed` and
+  discovery carries on; a missing comment never costs the fleet its selection.
+- `low-priority`, `idle-task` and self-diagnostic refusals are never commented.
 
 "The fleet" here means the accounts the fleet *operates*
 (`resolveFleetMaintenanceAuthorSet` — this host, its siblings, the service
-accounts), **not** `allowed_authors`: the trusted humans who direct the
-worker are exactly the assignees this report exists to name.
+accounts), **not** `allowed_authors`: the trusted humans who direct the worker
+are exactly the assignees a root sentence exists to name.
 
 ```mermaid
 flowchart TD
-    A[blocked top-priority / work-on issue] --> B[walk the dependency chain]
-    B -->|workable root| C[promote into the blocked issue's tier]
-    B -->|fleet already holds the root| D[log chain-root-in-progress, stay silent]
-    B -->|root nobody can move| E{same root + reason<br/>commented < 24h ago?}
-    E -->|yes| F[say nothing]
-    E -->|no| G[post ONE comment — no labels]
-    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+    A[held top-priority / work-on issue] --> B{gate}
+    B -->|PR open on the stream| C[pr-open]
+    B -->|closed dependency in another open milestone| D[milestone-wait]
+    B -->|open dependency| E[dependency<br/>+ unworkable root, unless the fleet holds it]
+    C --> F{same gate confirmed<br/>< 24 h ago?}
+    D --> F
+    E --> F
+    F -->|yes| G[read nothing]
+    F -->|no| H[upsert ONE comment — edit in place, no labels]
+    H -->|posted or edited| I[delete fleet-authored legacy chain-root comments]
+    style H fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
 ### 🔗 Sub-issue relationship tracking: `worker/deno/lib/planning_processor.ts`
