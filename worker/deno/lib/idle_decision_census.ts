@@ -227,7 +227,12 @@ import {
   isBlockedByRecentlyClosedPR,
   type OpenPR,
 } from "./issue_query.ts";
-import { type FilterableIssue, isMilestoneOccupied } from "./issue_filter.ts";
+import {
+  type FilterableIssue,
+  isMilestoneOccupied,
+  isStreamSharingTier,
+  type StreamSharingLabels,
+} from "./issue_filter.ts";
 import {
   checkRepoAvailability,
   type RepoIssueInfo,
@@ -770,6 +775,18 @@ const BLOCKING_SET: ReadonlySet<string> = new Set(BLOCKING_LABELS);
 const IGNORE_OPEN_PRS_LABEL = "ignore-open-prs";
 
 /**
+ * The tiers that share a busy work stream (Issues #2530, #2532).
+ *
+ * Spelled from {@link LABEL_DEFAULTS}, as every other tier test in this
+ * module is — the census reads no operator config, and an operator-renamed
+ * tier label under-counts here rather than mis-blocking a pickup.
+ */
+const STREAM_SHARING_TIERS: StreamSharingLabels = {
+  issueLabels: [LABEL_DEFAULTS.topPriorityLabel],
+  workOnLabel: LABEL_DEFAULTS.workOnLabel,
+};
+
+/**
  * True when `issue` carries `label`, has no blocking label, and has no
  * assignees — i.e. the worker could pick it up right now.
  */
@@ -1070,7 +1087,16 @@ function countUnblocked(
     // Attributed ahead of PR blocking, matching `classifyIssues`: an issue
     // the scan already refuses for occupancy keeps that reason, so
     // `pr_blocked` marks only issues that would otherwise be claimable now.
-    if (occupiedStreams.has(issue.milestone)) {
+    //
+    // Issue #2532: occupancy serialises `low-priority` and `idle-task` only.
+    // A `top-priority` or `work-on` issue shares a busy stream in its own
+    // fresh conversation (Issue #2530) and the collectors no longer refuse
+    // it, so counting it here as `stream_occupied` would make the census
+    // disagree with the scan — the divergence the idle-task drought was.
+    if (
+      occupiedStreams.has(issue.milestone) &&
+      !isStreamSharingTier(issue.labels, STREAM_SHARING_TIERS)
+    ) {
       streamOccupied += 1;
       continue;
     }

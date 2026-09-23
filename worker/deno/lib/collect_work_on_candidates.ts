@@ -4,9 +4,12 @@
  * Fetches issues carrying the configured work-on label, strips
  * untrusted operational labels, applies filterAndSort, then enforces
  * label-author authorisation, content-integrity verification (Issue
- * #1341), milestone occupancy, recently-closed PR cooldowns,
- * milestone-aware PR blocking, and dependency blocking. Used by
- * `findOldestIssue`.
+ * #1341), recently-closed PR cooldowns, milestone-aware PR blocking, and
+ * dependency blocking. Used by `findOldestIssue`.
+ *
+ * Issue #2532: work-stream occupancy is deliberately *not* one of those
+ * gates. This tier shares a busy stream (Issue #2530); occupancy still
+ * serialises the lower tiers.
  *
  * Issue #2752: `work-on` issues that can never be progressed are escalated
  * rather than left to dangle. A dependency cycle (A→B→A) and a
@@ -26,7 +29,6 @@ import type { FilterableIssue } from "./issue_filter.ts";
 import {
   cleanStaleLabels,
   filterAndSort,
-  isMilestoneOccupied,
   isMilestoneTrackingIssue,
 } from "./issue_filter.ts";
 import {
@@ -475,26 +477,14 @@ export async function collectWorkOnCandidates(
 
     const milestoneTitle = issue.milestone;
 
-    if (
-      isMilestoneOccupied(
-        repoAllIssues,
-        milestoneTitle,
-        options.githubUser,
-        // Issue #1064: only the accounts the fleet operates occupy a work
-        // stream. `config.allowedAuthors` is a permission list and holds
-        // humans, whose assignments must never stall the worker.
-        pushCapableAuthors,
-      )
-    ) {
-      noteBlocked(issue.number, milestoneTitle, "milestone-occupied");
-      diag?.logIssueSkipped(
-        repo,
-        issue.number,
-        "milestone-occupied",
-        milestoneTitle,
-      );
-      continue;
-    }
+    // Issue #2532: no work-stream occupancy check here. `work-on` is work a
+    // human has asked for now, and Issue #2530 already lets its claim join a
+    // busy stream in its own fresh conversation, so refusing the candidate
+    // one gate earlier only inverted the ladder. Occupancy still serialises
+    // `low-priority`, `idle-task`, the self-diagnostic tier and the custom
+    // PR-producing labels; this host's own slots are still kept apart by the
+    // blank-stream lock (`stream_lock.ts`) and the fleet-wide stream lock at
+    // claim time.
 
     // Issue #1427: Check recently-closed PR blocking — prevent duplicate PRs
     if (repoClosedPRs.length > 0) {

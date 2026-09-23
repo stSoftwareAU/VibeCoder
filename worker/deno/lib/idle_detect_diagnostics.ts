@@ -103,6 +103,8 @@ import {
   type FilterableIssue,
   isMilestoneOccupied,
   isMilestoneTrackingIssue,
+  isStreamSharingTier,
+  type StreamSharingLabels,
 } from "./issue_filter.ts";
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -142,6 +144,18 @@ const PACE_EXEMPT_LABELS: readonly string[] = [
   LABEL_DEFAULTS.topPriorityLabel,
   LABEL_DEFAULTS.workOnLabel,
 ] as const;
+
+/**
+ * The tiers that share a busy work stream (Issues #2530, #2532).
+ *
+ * Named separately from {@link PACE_EXEMPT_LABELS} even though the two sets
+ * coincide today: one is about the week-pace ladder, the other about stream
+ * occupancy, and a change to either must not silently move the other.
+ */
+const STREAM_SHARING_TIERS: StreamSharingLabels = {
+  issueLabels: [LABEL_DEFAULTS.topPriorityLabel],
+  workOnLabel: LABEL_DEFAULTS.workOnLabel,
+};
 
 /**
  * Labels that exclude an issue from the discovery scan regardless of
@@ -652,7 +666,15 @@ export function classifyIssues(
       });
       continue;
     }
-    if (occupiedStreams.has(issue.milestone)) {
+    // Issue #2532: occupancy serialises `low-priority` and `idle-task` only.
+    // A `top-priority` or `work-on` claim joins a busy stream in its own
+    // fresh conversation (Issue #2530) and the collectors no longer refuse
+    // it, so excluding it here would put the audit back in disagreement with
+    // the scan — the divergence the 2026-08-26 idle-task drought was.
+    if (
+      occupiedStreams.has(issue.milestone) &&
+      !isStreamSharingTier(issue.labels, STREAM_SHARING_TIERS)
+    ) {
       result.push({
         number: issue.number,
         claimable: false,

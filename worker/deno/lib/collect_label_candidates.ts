@@ -5,9 +5,13 @@
  * fetches matching issues, strips untrusted operational labels,
  * applies filterAndSort, and then enforces label-author authorisation,
  * content-integrity verification (Issue #2967 — parity with the work-on
- * and low-priority collectors), milestone occupancy, recently-closed PR
- * cooldowns, milestone-aware PR blocking, and dependency blocking. Used
- * by `findOldestIssue`.
+ * and low-priority collectors), recently-closed PR cooldowns,
+ * milestone-aware PR blocking, and dependency blocking. Used by
+ * `findOldestIssue`.
+ *
+ * Issue #2532: work-stream occupancy is deliberately *not* one of those
+ * gates. This tier shares a busy stream (Issue #2530); occupancy still
+ * serialises the lower tiers.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -15,11 +19,7 @@
 import type { WorkerConfig } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
-import {
-  cleanStaleLabels,
-  filterAndSort,
-  isMilestoneOccupied,
-} from "./issue_filter.ts";
+import { cleanStaleLabels, filterAndSort } from "./issue_filter.ts";
 import {
   fetchIssuesByLabel,
   getBlockingPRForIssue,
@@ -281,33 +281,16 @@ export async function collectLabelCandidates(
         continue;
       }
 
-      // Check work-stream occupancy. Issue #1064: only the accounts the
-      // fleet operates occupy a stream — `config.allowedAuthors` is a
-      // permission list that legitimately holds humans, and a human
-      // assignee must never stall the worker.
-      if (
-        isMilestoneOccupied(
-          repoAllIssues,
-          milestoneTitle,
-          options.githubUser,
-          pushCapableAuthors,
-        )
-      ) {
-        diag?.logIssueSkipped(
-          repo,
-          issue.number,
-          "milestone-occupied",
-          milestoneTitle,
-        );
-        blocked.push({ repo, milestone: milestoneTitle });
-        blockedDetails.push({
-          repo,
-          issueNumber: issue.number,
-          milestone: milestoneTitle,
-          reason: "milestone-occupied",
-        });
-        continue;
-      }
+      // Issue #2532: no work-stream occupancy check here. This tier is work
+      // a human has asked for now, and Issue #2530 already lets its claim
+      // join a busy stream in its own fresh conversation, so refusing the
+      // candidate one gate earlier only inverted the ladder — the blank
+      // stream has no claim-time lock, so a fleet-assigned `low-priority`
+      // issue in flight held every `top-priority` issue of the repo behind
+      // it. Occupancy still serialises `low-priority`, `idle-task`, the
+      // self-diagnostic tier and the custom PR-producing labels, and this
+      // host's own slots are still kept apart by the blank-stream lock
+      // (`stream_lock.ts`) and the fleet-wide stream lock at claim time.
 
       // Issue #1427: Check recently-closed PR blocking — prevent duplicate PRs
       if (repoClosedPRs.length > 0) {
