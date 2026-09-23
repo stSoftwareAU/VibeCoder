@@ -71,7 +71,7 @@ Supporting detail:
 
 ## Test Plan
 
-Five new behavioural tests in
+Six new behavioural tests in
 `worker/deno/tests/action_advisory_scanner_test.ts`, all calling the real
 `scanActionAdvisories` with a stubbed `gh`:
 
