@@ -242,3 +242,37 @@ Deno.test("already_resolved - only the cited fields are rendered", () => {
     "- **PR:** owner/other#12",
   );
 });
+
+Deno.test("detectAlreadyResolved - accepts a marker whose commit and pr are unquoted (Issue #2548)", () => {
+  // The marker the agent actually wrote on VibeCoder#2524. Its evidence was
+  // complete, but the attributes were bare, so the parser read no commit and
+  // no PR and the run handed a proven-resolved issue to a human.
+  const output = [
+    "No files changed, nothing committed, no PR raised.",
+    "",
+    '<!-- vibe-already-resolved commit=e7d3249f24dcaf5072fd998f1cf19cc37fcde3e4 pr=2529 verified="gh api /advisories/GHSA-9p44-j4g5-cfx5 gives first patched 0.34.0; the sole call site pins v0.36.0" -->',
+  ].join("\n");
+
+  const outcome = resolved(
+    detectAlreadyResolved(output, {
+      repo: "stSoftwareAU/VibeCoder",
+      issueNumber: 2524,
+    }),
+  );
+
+  assertEquals(outcome.source, "marker");
+  assertEquals(
+    outcome.evidence.commit,
+    "e7d3249f24dcaf5072fd998f1cf19cc37fcde3e4",
+  );
+  assertEquals(outcome.evidence.pr, "#2529");
+});
+
+Deno.test("detectAlreadyResolved - an unquoted self-reference is still not evidence (Issue #2548)", () => {
+  const detection = detectAlreadyResolved(
+    '<!-- vibe-already-resolved pr=2524 verified="looked at it" -->',
+    { repo: "stSoftwareAU/VibeCoder", issueNumber: 2524 },
+  );
+
+  assertEquals(detection.status, "unverified");
+});
