@@ -258,6 +258,7 @@ Deno.test("a cross-repo dependency is not measured against this repo's milestone
 });
 
 // ---------------------------------------------------------------------------
+// Reporting the hold to a human (Issue #2533)
 // Reporting the hold to a human (Issue #2533), and the blocker that records
 // which milestone holds it (Issue #2534)
 // ---------------------------------------------------------------------------
