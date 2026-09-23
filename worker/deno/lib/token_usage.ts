@@ -326,7 +326,7 @@ const DEEPSEEK_FLASH_PRICING: ModelPricing = {
  */
 export const TIER_CURRENT_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["fable", FABLE_5_1_PRICING],
-  ["opus", OPUS_PRICING_MODERN],
+  ["opus", OPUS_5_5_PRICING],
   ["sonnet", SONNET_5_PRICING],
   ["haiku", HAIKU_PRICING],
 ]);
@@ -354,7 +354,13 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["claude-fable-5-1", FABLE_5_1_PRICING],
   // Claude Fable 5 — the previous top tier (Issue #2619)
   ["claude-fable-5", FABLE_5_PRICING],
-  // Claude Opus 5 — same reduced price point as Opus 4.8 (Issue #3559)
+  // Claude Opus 5.5 — current top tier, cheaper than Opus 5.0-5.4 (Issue
+  // #2543). Must precede the broader `claude-opus-5` key: `lookupPricing` in
+  // `batch_api.ts` walks these rows in insertion order and takes the first
+  // whose key the model id contains, and `"claude-opus-5-5".includes(
+  // "claude-opus-5")` is true.
+  ["claude-opus-5-5", OPUS_5_5_PRICING],
+  // Claude Opus 5.0-5.4 — same reduced price point as Opus 4.8 (Issue #3559)
   ["claude-opus-5", OPUS_PRICING_MODERN],
   // Claude Opus 4.5+ — reduced pricing (Issue #1398, #2389)
   ["claude-opus-4-8", OPUS_PRICING_MODERN],
@@ -514,6 +520,12 @@ export function isModelTier(value: string): value is ModelTier {
 /** Minor version at/above which Opus uses the modern (4.5+) reduced pricing. */
 const OPUS_MODERN_MIN_MINOR = 5;
 
+/** Major version at/above which Opus can carry the cheaper 5.5 rate. */
+const OPUS_5_5_MIN_MAJOR = 5;
+
+/** Minor version at/above which Opus 5 uses the cheaper 5.5 rate. */
+const OPUS_5_5_MIN_MINOR = 5;
+
 /** Major version at/above which Fable can carry the cheaper cache-read rate. */
 const FABLE_CHEAP_CACHE_MIN_MAJOR = 5;
 
@@ -585,6 +597,14 @@ export function lookupModelPricing(model: string): ModelPricing | null {
   const parsed = parseClaudeModernVersion(normalised);
   if (parsed) {
     if (parsed.tier === "opus") {
+      // Both halves matter: the cheaper 5.5 rate arrived with Opus 5.5, so a
+      // `claude-opus-4-5` must not inherit it on minor alone (Issue #2543).
+      if (
+        parsed.major >= OPUS_5_5_MIN_MAJOR &&
+        parsed.minor >= OPUS_5_5_MIN_MINOR
+      ) {
+        return OPUS_5_5_PRICING;
+      }
       const modern = parsed.major >= 5 || parsed.minor >= OPUS_MODERN_MIN_MINOR;
       return modern ? OPUS_PRICING_MODERN : OPUS_PRICING_LEGACY;
     }
