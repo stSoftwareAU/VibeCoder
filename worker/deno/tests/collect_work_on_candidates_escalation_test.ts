@@ -190,6 +190,7 @@ async function collect(
   config: WorkerConfig,
   recorder: Recorder,
   repoAllIssues?: FilterableIssue[],
+  repoClosedPRs: ClosedPR[] = [],
 ) {
   const cache = new IssueCache(
     Deno.makeTempDirSync({ prefix: "work-on-escalation-cache-" }),
@@ -203,7 +204,6 @@ async function collect(
   };
   const fetcher = createIssueFetcher(mockGh);
   const repoPRs: OpenPR[] = [];
-  const repoClosedPRs: ClosedPR[] = [];
   const issues = repoAllIssues ?? [];
   return await collectWorkOnCandidates(
     "owner/repo",
@@ -365,55 +365,90 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// Dependency-stalled escalation
+// A stalled dependency is an ordinary wait, never `needs-human` (Issue #2545)
+//
+// Issue #2473 labelled a work-on issue `needs-human` whenever its dependency
+// carried `needs-human`, was assigned outside a configured list, or had a
+// merged PR. On 2026-09-23 that parked VibeCoder #2532 (dependency #2530 had
+// a merged PR and had already closed), #2534 (dependency #2532 had just been
+// given the label) and #2535 (dependency #2531 was being worked by the fleet
+// account VibeCoderST). Each would have been worked unattended the moment
+// its dependency closed. A dependency wait clears by itself; the label never
+// does.
 // ---------------------------------------------------------------------------
 
+async function stalledBlockerCase(
+  blocker: Omit<IssueSpec, "number" | "title">,
+  repoClosedPRs: ClosedPR[] = [],
+): Promise<{
+  recorder: Recorder;
+  result: Awaited<ReturnType<typeof collect>>;
+}> {
+  const config = makeConfig();
+  const recorder: Recorder = { labels: [], comments: [] };
+  const specs: IssueSpec[] = [
+    {
+      number: 100,
+      title: "Feature depending on fix",
+      labels: ["work-on"],
+      body: "Depends on #200",
+    },
+    { number: 200, title: "The fix", ...blocker },
+  ];
+  const result = await collect(
+    createMockGh({ specs }),
+    config,
+    recorder,
+    specs.map(buildFilterableIssue),
+    repoClosedPRs,
+  );
+  return { recorder, result };
+}
+
+function assertOrdinaryWait(
+  { recorder, result }: Awaited<ReturnType<typeof stalledBlockerCase>>,
+): void {
+  assertEquals(result.candidates, []);
+  assertEquals(
+    recorder.labels,
+    [],
+    "a dependency wait must never park the dependant with needs-human",
+  );
+  assertEquals(recorder.comments, []);
+  assertEquals(
+    result.blockedDetails.find((b) => b.issueNumber === 100)?.reason,
+    "dependency-blocked",
+  );
+}
+
 Deno.test(
-  "collectWorkOnCandidates - escalates when blocking dependency carries needs-human",
+  "collectWorkOnCandidates - a dependency carrying needs-human does not spread the label to its dependant (Issue #2545)",
   async () => {
-    const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
-    const mockGh = createMockGh({
-      specs: [
+    assertOrdinaryWait(await stalledBlockerCase({ labels: ["needs-human"] }));
+  },
+);
+
+Deno.test(
+  "collectWorkOnCandidates - a dependency a sibling fleet account is working is an ordinary wait (Issue #2545)",
+  async () => {
+    assertOrdinaryWait(
+      await stalledBlockerCase({ labels: [], assignees: ["VibeCoderST"] }),
+    );
+  },
+);
+
+Deno.test(
+  "collectWorkOnCandidates - a dependency whose PR merged is an ordinary wait until it closes (Issue #2545)",
+  async () => {
+    assertOrdinaryWait(
+      await stalledBlockerCase({ labels: ["work-on"] }, [
         {
-          number: 100,
-          title: "Feature depending on fix",
-          labels: ["work-on"],
-          body: "Depends on #200",
+          number: 2541,
+          title: "Let claims share a busy milestone stream (Issue #200)",
+          closedAt: "2026-09-23T11:02:21Z",
+          merged: true,
         },
-        {
-          number: 200,
-          title: "Unclaimable fix",
-          labels: ["needs-human"],
-        },
-      ],
-    });
-
-    const repoAllIssues: FilterableIssue[] = [
-      buildFilterableIssue({
-        number: 100,
-        title: "Feature depending on fix",
-        labels: ["work-on"],
-        body: "Depends on #200",
-      }),
-      buildFilterableIssue({
-        number: 200,
-        title: "Unclaimable fix",
-        labels: ["needs-human"],
-      }),
-    ];
-
-    const result = await collect(mockGh, config, recorder, repoAllIssues);
-
-    // The candidate should be dropped due to unclaimable dependency.
-    assertEquals(result.candidates, []);
-
-    // Escalation should fire: needs-human label and comment on #100.
-    assertEquals(recorder.labels, [{ issue: 100, label: "needs-human" }]);
-    assertEquals(recorder.comments.length, 1);
-    assertStringIncludes(
-      recorder.comments[0]!.body,
-      "#200",
+      ]),
     );
   },
 );

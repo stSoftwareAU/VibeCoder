@@ -53,13 +53,8 @@ import {
 import {
   buildCycleEscalation,
   buildDeadLabelEscalation,
-  buildDependencyStalledEscalation,
   escalateUnworkableWorkOn,
 } from "./escalate_unworkable_work_on.ts";
-import {
-  type DependencyClaimabilityContext,
-  findDependencyStall,
-} from "./dependency_claimability.ts";
 import {
   filterTrustedLabels,
   verifyOperationalLabels,
@@ -572,8 +567,8 @@ export async function collectWorkOnCandidates(
       }
     }
 
-    // Issue #2473: collect blockers to classify whether they are stalled
-    // (unclaimable) or ordinary blocks (claimable but busy).
+    // Issue #2494: the blockers are recorded on the entry so the
+    // chain-promotion resolver need not re-fetch them.
     const blockers: DependencyBlocker[] = [];
     await isDependencyBlocked(repo, issue.number, memoFetcher, openStateMap, {
       candidateMilestone: milestoneTitle,
@@ -581,58 +576,12 @@ export async function collectWorkOnCandidates(
     }, blockers);
 
     if (blockers.length > 0) {
-      // Issue #2473: check if any blocker is unclaimable (stalled). Build the
-      // claimability context from the current repo snapshot.
-      const repoIssuesMap = new Map(
-        repoAllIssues.map((issue) => [issue.number, issue]),
-      );
-      const isBlockedByMergedPr = (
-        blockerRepo: string,
-        blockerNumber: number,
-      ): boolean => {
-        if (blockerRepo !== repo) return false;
-        const closedPR = isBlockedByRecentlyClosedPR(
-          repoClosedPRs,
-          blockerNumber,
-        );
-        return closedPR !== null && closedPR.merged === true;
-      };
-      const ctx: DependencyClaimabilityContext = {
-        repo,
-        needsHumanLabel: config.needsHumanLabel,
-        fleetAuthors: [
-          ...pushCapableAuthors,
-          ...config.allowedAuthors,
-        ],
-        openIssues: repoIssuesMap,
-        isBlockedByMergedPr,
-      };
-      const stall = findDependencyStall(blockers, ctx);
-
-      if (stall) {
-        // Blocker is unclaimable — escalate and drop from candidates.
-        await escalateUnworkableWorkOn({
-          repo,
-          issueNumber: issue.number,
-          needsHumanLabel: config.needsHumanLabel,
-          escalation: buildDependencyStalledEscalation(
-            issue.number,
-            stall.number,
-            stall.detail,
-          ),
-          githubUser: options.githubUser,
-          ghFn,
-          deps: options.escalateDeps,
-        });
-        noteBlocked(issue.number, milestoneTitle, "dependency-stalled");
-        diag?.logIssueSkipped(repo, issue.number, "dependency-stalled");
-        dependencyBlockedIssues.push(issue.number);
-        continue;
-      }
-
-      // Blocker is claimable but busy — ordinary wait. Issue #2494: the
-      // blockers the stall check just read are recorded on the entry so the
-      // chain-promotion resolver need not re-fetch them.
+      // Issue #2545: a dependency wait is always an ordinary wait — never
+      // `needs-human`, whatever state the dependency is in. It clears by
+      // itself when the dependency closes (a merged PR's issue is closed by
+      // the close-out sweep, #2537); the label never would, and on a
+      // dependency it spread down the chain. The chain-root comment (#2496)
+      // reports a root nobody can work without touching labels.
       noteBlocked(issue.number, milestoneTitle, "dependency-blocked", blockers);
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       dependencyBlockedIssues.push(issue.number);

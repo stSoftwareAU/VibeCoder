@@ -73,11 +73,16 @@ const MARKER_RE = new RegExp(
 );
 
 /**
- * Matches every `name="…"` / `name='…'` attribute in the marker's inner text.
- * The name is data, matched against the captured group, so no pattern is ever
- * compiled from a variable.
+ * Matches every `name="…"` / `name='…'` / bare `name=value` attribute in the
+ * marker's inner text. Issue #2548: agents write bare values (`commit=e7d3…
+ * pr=2529`) — on VibeCoder#2524 a fully evidenced marker read as `unverified`
+ * and a proven-resolved issue went to a human. Each value is still validated
+ * by its own field (SHA shape, PR shape, self-reference), so accepting the
+ * bare form widens nothing but the spelling. The name is data, matched
+ * against the captured group, so no pattern is ever compiled from a variable.
  */
-const ATTRIBUTE_RE = /([A-Za-z][A-Za-z0-9_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const ATTRIBUTE_RE =
+  /([A-Za-z][A-Za-z0-9_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
 
 /** A commit SHA: 7–40 hex characters. */
 const SHA_RE = /^[0-9a-f]{7,40}$/i;
@@ -138,7 +143,7 @@ function attribute(inner: string, name: string): string | undefined {
   const wanted = name.toLowerCase();
   for (const match of inner.matchAll(ATTRIBUTE_RE)) {
     if (match[1]?.toLowerCase() !== wanted) continue;
-    return match[2] ?? match[3];
+    return match[2] ?? match[3] ?? match[4];
   }
   return undefined;
 }
