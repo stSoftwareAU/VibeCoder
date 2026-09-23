@@ -327,7 +327,6 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "dead-label-tracker-escalated": "escalated-elsewhere",
     "human-pr-blocked-escalated": "escalated-elsewhere",
     // Issue #2473: unclaimable blocking dependency escalated.
-    "dependency-stalled": "escalated-elsewhere",
     // Issue #505: a diagnostic nothing can schedule is put in front of a
     // human on the issue itself.
     "self-schedule-escalated": "escalated-elsewhere",
