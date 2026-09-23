@@ -12,7 +12,7 @@ import type { Result } from "../types.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import {
   fetchClosedPRsByBranch,
-  fetchMergedPRsByUser,
+  fetchMergedPRsAnyAuthor,
   fetchPRsByBranch,
   fetchPRsForIssueByTitle,
   invalidatePRsByBranch,
@@ -803,7 +803,8 @@ export async function updatePrLabels(
  * GitHub's "Closes #N" keyword processing might fail.
  *
  * @param repos - Repositories to scan
- * @param githubUser - GitHub username whose merged PRs to check
+ * @param githubUser - Worker login (unused since Issue #2537: every author's
+ *   merged PRs are checked, not just this host's)
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  * @param planningLabel - Label marking deliberately-open planning issues
  * @param cache - Optional iteration-scoped cache (Issue #1787)
@@ -858,7 +859,7 @@ export function mergedPrCloseComment(
 
 export async function closeIssuesForMergedPrs(
   repos: string[],
-  githubUser: string,
+  _githubUser: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
   planningLabel = "planning",
   cache?: IssueCache,
@@ -902,15 +903,9 @@ export async function closeIssuesForMergedPrs(
   for (const repo of repos) {
     let mergedPrs: MergedPR[];
     try {
-      // Issue #1787: route through `fetchMergedPRsByUser` so this
-      // call reuses the iteration-scoped `prs_merged_${user}` cache.
-      mergedPrs = await fetchMergedPRsByUser(
-        repo,
-        githubUser,
-        cache,
-        30,
-        ghCommandFn,
-      );
+      // Issue #2537: every merged PR, not just this host's — a milestone
+      // child is closed by nothing else, whoever wrote its PR.
+      mergedPrs = await fetchMergedPRsAnyAuthor(repo, cache, 30, ghCommandFn);
     } catch {
       // Repo-level failure is not fatal
       continue;
