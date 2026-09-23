@@ -1739,6 +1739,28 @@ export async function fetchMergedPRsByUser(
   // cleanup / close-issues then saw a repo with no merged PRs for the TTL.
   assertListOutput(output, `fetchMergedPRsByUser(${repo})`);
 
+  const prs = parseMergedPrListing(output);
+
+  if (cache) {
+    await writeSettledListing(
+      repo,
+      githubUser,
+      cacheKey,
+      prs,
+      cache,
+      ghCommandFn,
+      nowSeconds(),
+    );
+  }
+  return prs;
+}
+
+/**
+ * Parse a `gh pr list --state merged --json
+ * number,title,headRefName,mergedAt,body` listing. The body itself is not
+ * kept — only the closing references the closers need from it.
+ */
+function parseMergedPrListing(output: string): MergedPR[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(output.trim());
@@ -1756,24 +1778,57 @@ export async function fetchMergedPRsByUser(
       title: typeof item.title === "string" ? item.title : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
-      // The body itself is not cached — only what the closers need from it.
       closingRefs: extractClosingIssueNumbers(
         typeof item.body === "string" ? item.body : "",
       ),
     });
   }
+  return prs;
+}
 
+/**
+ * Fetch a repo's most recently merged PRs, **whoever authored them**
+ * (Issue #2537).
+ *
+ * GitHub honours `Closes #N` only on a merge into the default branch, so the
+ * worker closes a milestone child itself. That close must not depend on who
+ * wrote the PR: a human's PR merged into a milestone branch left GRQ-AutoTrader
+ * #824 open for a day, holding three `top-priority` dependants, because every
+ * host listed only its own PRs. Merging needs write access, so no author
+ * filter is protecting anything here.
+ *
+ * Cached under `prs_merged_any` for the cache's normal TTL — at worst a close
+ * lands one TTL late, and each host spends one listing per repo per TTL.
+ */
+export async function fetchMergedPRsAnyAuthor(
+  repo: string,
+  cache?: IssueCache,
+  limit = 30,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<MergedPR[]> {
+  const cacheKey = "prs_merged_any";
   if (cache) {
-    await writeSettledListing(
-      repo,
-      githubUser,
-      cacheKey,
-      prs,
-      cache,
-      ghCommandFn,
-      nowSeconds(),
-    );
+    const cached = await cache.read<MergedPR[]>(repo, cacheKey);
+    if (Array.isArray(cached)) return cached;
   }
+
+  const output = await ghCommandFn([
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "merged",
+    "--json",
+    "number,title,headRefName,mergedAt,body",
+    "--limit",
+    String(limit),
+  ]);
+  // Never cache a failure (Issue #4257).
+  assertListOutput(output, `fetchMergedPRsAnyAuthor(${repo})`);
+
+  const prs = parseMergedPrListing(output);
+  if (cache) await cache.write(repo, cacheKey, prs);
   return prs;
 }
 
