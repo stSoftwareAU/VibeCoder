@@ -1725,8 +1725,12 @@ instead of `stream_occupied`. `low-priority`, `idle-task`, the self-diagnostic
 tier and the custom PR-producing labels (`new_work_eligibility.ts`) still
 serialise one issue per stream. This host's own slots are kept apart
 regardless — `BlankStreamLockRegistry` (`stream_lock.ts`) refuses a second
-no-milestone issue of the same repository, and the fleet-wide stream lock
-gates the milestone streams at claim time.
+no-milestone issue of the same repository, and `InFlightRepoRegistry`
+(`in_flight_repos.ts`) holds one `(repo, milestone)` stream per slot. The
+fleet-wide stream lock (Issue #2334) is not that guard for these two tiers —
+`claimIssue` is told the claim is shareable and proceeds — so an issue the
+slot registry refuses is held out of that slot's next scan by
+`scanExcludedIssues` until the sibling run releases it.
 
 Human assignees are **never** counted. The match set is deliberately not
 `config.allowedAuthors`: that is a permission list ("whose issues may we work

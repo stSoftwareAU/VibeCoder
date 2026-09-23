@@ -442,9 +442,15 @@ branch):**
    Treating the empty milestone as a stream was what inverted the ladder
    fleet-wide: one fleet-assigned `low-priority` issue on the default branch
    held every `top-priority` issue of that repository behind it. The lower
-   tiers still wait, and this host's own slots are still kept apart — by the
-   blank-stream lock (`worker/deno/lib/stream_lock.ts`) for no-milestone
-   issues and the fleet-wide stream lock at claim time for milestone ones.
+   tiers still wait, and this **host's** own slots are still kept apart — by
+   the blank-stream lock (`worker/deno/lib/stream_lock.ts`) for no-milestone
+   issues and by `InFlightRepoRegistry` (`worker/deno/lib/in_flight_repos.ts`),
+   which holds one `(repo, milestone)` stream per slot, for milestone ones.
+   The fleet-wide stream lock of Issue #2334 is **not** that guard for these
+   two tiers: `claimIssue` is told the claim is shareable and proceeds. A
+   candidate the slot registry then refuses is held out of that slot's next
+   scan (`scanExcludedIssues`) until the sibling releases, so the refusal
+   costs one skipped candidate rather than a re-scan loop.
 2. **PR blocking** (`getBlockingPRForIssue` in
    `worker/deno/lib/issue_query.ts`): blocks if the **fleet** has an open PR
    targeting the same branch (milestone branch or default branch). Only
