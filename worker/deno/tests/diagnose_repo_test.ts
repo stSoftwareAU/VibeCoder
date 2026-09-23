@@ -19,6 +19,7 @@ import {
 } from "../lib/diagnose_repo.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { OpenPR } from "../lib/issue_query.ts";
+import { describeDependencyBlockers } from "../lib/issue_finder_common.ts";
 
 // =============================================================================
 // formatLabels tests
@@ -545,3 +546,50 @@ Deno.test("formatIssueDiagnostic - non-blocked issue with reasons stays eligible
   assertStringIncludes(out, "- **Status**: Eligible for pickup");
   assert(!out.includes("- **Status**: Blocked"));
 });
+
+Deno.test(
+  "diagnoseRepoIssue - names the open milestone holding a closed dependency (Issue #2533)",
+  () => {
+    const result = diagnoseRepoIssue({
+      issue: makeIssue({ number: 42, milestone: "Milestone 34" }),
+      prs: [],
+      allIssues: [],
+      labelConfig: defaultLabelConfig,
+      workerUser: "worker-bot",
+      unmetDependencies: describeDependencyBlockers("owner/repo", [{
+        repo: "owner/repo",
+        number: 726,
+        kind: "depends-on",
+        heldByMilestone: "Automatic buying from the score sheet",
+      }]),
+    });
+
+    assertEquals(result.isBlocked, true);
+    const reason = result.reasons.find((r) => r.includes("#726"));
+    assert(reason, "expected a dependency reason naming #726");
+    assertStringIncludes(reason, "Automatic buying from the score sheet");
+  },
+);
+
+Deno.test(
+  "diagnoseRepoIssue - an unresolved dependency reads as unmet, not held (Issue #2533)",
+  () => {
+    const result = diagnoseRepoIssue({
+      issue: makeIssue({ number: 42, milestone: "Milestone 34" }),
+      prs: [],
+      allIssues: [],
+      labelConfig: defaultLabelConfig,
+      workerUser: "worker-bot",
+      unmetDependencies: describeDependencyBlockers("owner/repo", [{
+        repo: "owner/repo",
+        number: 726,
+        kind: "depends-on",
+      }]),
+    });
+
+    const reason = result.reasons.find((r) => r.includes("#726"));
+    assert(reason, "expected a dependency reason naming #726");
+    assertStringIncludes(reason, "not resolved");
+    assert(!reason.includes("open milestone"));
+  },
+);

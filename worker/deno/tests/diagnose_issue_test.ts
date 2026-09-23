@@ -338,6 +338,92 @@ Deno.test("diagnose_issue - fails when issue has open dependency", async () => {
   assert(check.detail.includes("#99"));
 });
 
+/**
+ * Drive `diagnose_issue` against a candidate whose dependency #99 is CLOSED in
+ * `depMilestone`, with `openMilestones` the repo's open milestone titles
+ * (Issue #2533).
+ */
+async function diagnoseCrossMilestoneDependency(opts: {
+  candidateMilestone: string;
+  depMilestone: string | null;
+  openMilestones: string[];
+}) {
+  const mockGh = createMockGh({
+    issueView: makeIssueViewData({
+      milestone: { title: opts.candidateMilestone },
+    }),
+    issueBody: "Depends on #99",
+  });
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const command = args.join(" ");
+    if (command.includes("milestones?state=open")) {
+      return JSON.stringify(
+        opts.openMilestones.map((title) => ({ title, closed_issues: 1 })),
+      );
+    }
+    if (
+      command.includes("issue view") && command.includes("state") &&
+      command.includes("99")
+    ) {
+      return JSON.stringify({
+        number: 99,
+        state: "CLOSED",
+        title: "Dependency",
+        milestone: opts.depMilestone ? { title: opts.depMilestone } : null,
+      });
+    }
+    return await mockGh(args);
+  };
+
+  const report = await diagnoseIssue("owner/repo", 42, makeConfig(), {
+    githubUser: "bot",
+    ghCommandFn: ghFn,
+  });
+  return findCheck(report.checks, "not-dependency-blocked");
+}
+
+Deno.test(
+  "diagnose_issue - names the open milestone holding a closed dependency (Issue #2533)",
+  async () => {
+    const check = await diagnoseCrossMilestoneDependency({
+      candidateMilestone: "Milestone 34",
+      depMilestone: "Automatic buying from the score sheet",
+      openMilestones: ["Milestone 34", "Automatic buying from the score sheet"],
+    });
+
+    assertEquals(check.passed, false);
+    assert(check.detail.includes("#99"));
+    assert(check.detail.includes("Automatic buying from the score sheet"));
+  },
+);
+
+Deno.test(
+  "diagnose_issue - a closed dependency in the candidate's own milestone is not held (Issue #2533)",
+  async () => {
+    const check = await diagnoseCrossMilestoneDependency({
+      candidateMilestone: "Milestone 34",
+      depMilestone: "Milestone 34",
+      openMilestones: ["Milestone 34"],
+    });
+
+    assertEquals(check.passed, true);
+  },
+);
+
+Deno.test(
+  "diagnose_issue - a closed dependency in a closed milestone is not held (Issue #2533)",
+  async () => {
+    const check = await diagnoseCrossMilestoneDependency({
+      candidateMilestone: "Milestone 34",
+      depMilestone: "Milestone 32",
+      openMilestones: ["Milestone 34"],
+    });
+
+    assertEquals(check.passed, true);
+  },
+);
+
 // =============================================================================
 // Work-on label author check
 // =============================================================================
@@ -517,6 +603,8 @@ Deno.test("diagnose_issue - fails when milestone is occupied by worker", async (
   const config = makeConfig();
   const issueView = makeIssueViewData({
     milestone: { title: "v2.0" },
+    // `idle-task` waits for a busy stream (Issue #2530).
+    labels: [{ name: "idle-task" }],
   });
   const mockGh = createMockGh({
     issueView,
@@ -539,6 +627,38 @@ Deno.test("diagnose_issue - fails when milestone is occupied by worker", async (
   assertEquals(check.passed, false);
   assert(check.detail.includes("v2.0"));
 });
+
+Deno.test(
+  "diagnose_issue - a stream-sharing tier is not reported as occupied (Issue #2533)",
+  async () => {
+    const config = makeConfig();
+    for (const tier of ["help wanted", "work-on"]) {
+      const mockGh = createMockGh({
+        issueView: makeIssueViewData({
+          milestone: { title: "v2.0" },
+          labels: [{ name: tier }],
+        }),
+        allIssues: [
+          {
+            ...makeIssueViewData({ milestone: { title: "v2.0" } }),
+            number: 99,
+            assignees: [{ login: "bot" }],
+          },
+        ],
+      });
+
+      const report = await diagnoseIssue("owner/repo", 42, config, {
+        githubUser: "bot",
+        ghCommandFn: mockGh,
+      });
+
+      const check = findCheck(report.checks, "milestone-not-occupied");
+      assertEquals(check.passed, true, `${tier} shares the busy stream`);
+      assert(check.detail.includes("shares the stream"));
+      assertEquals(check.suggestion, undefined);
+    }
+  },
+);
 
 Deno.test("diagnose_issue - passes when milestone has only human-assigned issues", async () => {
   const config = makeConfig();
