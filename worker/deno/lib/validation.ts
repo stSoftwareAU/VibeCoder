@@ -1128,11 +1128,20 @@ export function validateIssueBodyJson(
 
 // --- Issue state wrapper ---
 
-/** `{ number, state, title }` — used by gh issue view --json number,state,title. */
+/**
+ * `{ number, state, title, milestone? }` — used by
+ * `gh issue view --json number,state,title,milestone`.
+ *
+ * Issue #2533: `milestone` is optional so callers that still request only
+ * `number,state,title` keep validating, while the diagnose commands can carry
+ * the dependency's milestone title into the cross-milestone hold (Issue #2173).
+ */
 export interface IssueStateJson {
   number: number;
   state: string;
   title: string;
+  /** Milestone title, or `null` when the issue has no milestone. */
+  milestone?: string | null;
 }
 
 /**
@@ -1156,10 +1165,19 @@ export function validateIssueStateJson(
   if (typeof data.title !== "string") {
     return fail("title", `Expected string, got ${typeof data.title}`);
   }
+  // Issue #2533: `gh` returns `milestone` as an object (or null); anything
+  // else is treated as "no milestone" rather than failing the whole read.
+  let milestone: string | null = null;
+  if (isObject(data.milestone) && typeof data.milestone.title === "string") {
+    milestone = data.milestone.title;
+  } else if (typeof data.milestone === "string") {
+    milestone = data.milestone;
+  }
   return ok({
     number: data.number as number,
     state: data.state as string,
     title: data.title as string,
+    milestone,
   });
 }
 

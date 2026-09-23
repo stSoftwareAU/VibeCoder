@@ -38,12 +38,14 @@ import {
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import { COOLDOWN_DEFAULTS, isIssueInCooldown } from "../lib/cooldown_state.ts";
 import type { CooldownConfig } from "../lib/cooldown_state.ts";
-import {
-  checkParentBlocked,
-  extractDependencyReferences,
-  normaliseIssueState,
-} from "../lib/issue_dependencies.ts";
+import { normaliseIssueState } from "../lib/issue_dependencies.ts";
 import type { IssueFetcher } from "../lib/issue_dependencies.ts";
+import type { DependencyBlocker } from "../lib/issue_finder_common.ts";
+import {
+  createOpenMilestoneLookup,
+  describeDependencyBlockers,
+  isDependencyBlocked,
+} from "../lib/issue_finder_common.ts";
 import { runGhCommand } from "../lib/github.ts";
 
 /**
@@ -76,18 +78,23 @@ function createIssueFetcher(
         "--repo",
         repo,
         "--json",
-        "number,state,title",
+        // Issue #2533: `milestone` rides this existing per-dependency call so
+        // the cross-milestone hold (Issue #2173) can name the open milestone
+        // holding a closed dependency, at no extra `gh` call.
+        "number,state,title,milestone",
       ]);
       const parsed = JSON.parse(output) as {
         number: number;
         state: string;
         title: string;
+        milestone?: { title?: string } | null;
       };
       return {
         number: parsed.number,
         // Issue #3218: a merged PR reports `MERGED` — resolve it to CLOSED.
         state: normaliseIssueState(parsed.state),
         title: parsed.title,
+        milestone: parsed.milestone?.title ?? null,
       };
     },
     async getSubIssues(repo: string, issueNumber: number) {
@@ -223,6 +230,11 @@ export const diagnoseRepoCommand: Command = {
     // Create fetcher for dependency checks
     const fetcher = createIssueFetcher(ghFn);
 
+    // Issue #2533: one memoised open-milestone lookup for the whole repo, so
+    // the cross-milestone hold costs a single milestone listing rather than one
+    // per candidate.
+    const milestoneScope = createOpenMilestoneLookup(repo, undefined, ghFn);
+
     for (const label of searchLabels) {
       let issues: FilterableIssue[];
       try {
@@ -251,36 +263,35 @@ export const diagnoseRepoCommand: Command = {
           // Cooldown check failed — assume not in cooldown
         }
 
-        // Check dependencies
+        // Check dependencies.
+        // Issue #2533: run the scan's own `isDependencyBlocked` gate with this
+        // candidate's milestone scope rather than a hand-rolled open-state
+        // loop. The loop only asked "is the dependency OPEN?", so a dependency
+        // closed inside another still-open milestone — held by the
+        // cross-milestone hold (Issue #2173) — was reported here as no
+        // dependency at all, contradicting the scan that skipped the issue.
         let unmetDependencies: string | undefined;
         let openSubIssues: string | undefined;
         try {
-          const parentResult = await checkParentBlocked(
-            fetcher,
+          const blockers: DependencyBlocker[] = [];
+          await isDependencyBlocked(
             repo,
             issue.number,
+            fetcher,
+            undefined,
+            {
+              candidateMilestone: issue.milestone,
+              isMilestoneOpen: milestoneScope,
+            },
+            blockers,
           );
-          if (parentResult.ok && parentResult.value.isBlocked) {
-            openSubIssues = parentResult.value.openChildren
-              .map((n) => `#${n}`)
-              .join(", ");
+          const children = blockers.filter((b) => b.kind === "child");
+          if (children.length > 0) {
+            openSubIssues = children.map((b) => `#${b.number}`).join(", ");
           }
-
-          if (!openSubIssues) {
-            const body = await fetcher.getIssueBody(repo, issue.number);
-            const deps = extractDependencyReferences(body);
-            for (const dep of deps) {
-              try {
-                const depState = await fetcher.getIssueState(repo, dep);
-                if (depState.state === "OPEN") {
-                  unmetDependencies = `#${dep} (${depState.title})`;
-                  break;
-                }
-              } catch {
-                unmetDependencies = `#${dep} (could not verify state)`;
-                break;
-              }
-            }
+          const forward = blockers.filter((b) => b.kind === "depends-on");
+          if (forward.length > 0) {
+            unmetDependencies = describeDependencyBlockers(repo, forward);
           }
         } catch {
           // Dependency check failed — skip
@@ -301,6 +312,12 @@ export const diagnoseRepoCommand: Command = {
           isInCooldown,
           unmetDependencies,
           openSubIssues,
+          // Issue #2533: the operator's own tier label names, so a
+          // stream-sharing tier is not reported as blocked by occupancy.
+          streamSharingTiers: {
+            issueLabels: config.issueLabels,
+            workOnLabel: config.workOnLabel,
+          },
         });
 
         diagnostics.push(diag);

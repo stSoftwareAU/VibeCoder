@@ -515,6 +515,62 @@ export function createOpenMilestoneLookup(
  * repo's milestone title has no meaning in this repo's open-milestone listing.
  */
 /**
+ * One reason an issue is held, as collected by {@link isDependencyBlocked}.
+ */
+export interface DependencyBlocker {
+  /** Repository the blocker lives in, "owner/repo". */
+  repo: string;
+  /** Blocking issue number. */
+  number: number;
+  /** Whether it blocks as an open sub-issue or a forward dependency. */
+  kind: "child" | "depends-on";
+  /**
+   * Issue #2533: set only for the cross-milestone hold (Issue #2173) — the
+   * still-open milestone that a *closed* dependency sits in. Callers that
+   * report to a human use it to name the milestone; the gates ignore it.
+   */
+  heldByMilestone?: string;
+}
+
+/**
+ * Render collected {@link DependencyBlocker}s as one human-readable reason
+ * (Issue #2533), shared by `diagnose_issue` and `diagnose_repo` so both
+ * commands name a cross-milestone hold the same way.
+ *
+ * @param repo - The candidate's repo, so only cross-repo blockers are qualified
+ * @param blockers - Blockers collected by {@link isDependencyBlocked}
+ * @returns The reason, or `""` when there are no blockers
+ */
+export function describeDependencyBlockers(
+  repo: string,
+  blockers: readonly DependencyBlocker[],
+): string {
+  if (blockers.length === 0) return "";
+  const lowerRepo = repo.trim().toLowerCase();
+  const ref = (b: DependencyBlocker) =>
+    b.repo.trim().toLowerCase() === lowerRepo
+      ? `#${b.number}`
+      : `${b.repo}#${b.number}`;
+  const parts: string[] = [];
+  const children = blockers.filter((b) => b.kind === "child");
+  if (children.length > 0) {
+    parts.push(
+      `blocked by open sub-issue(s): ${children.map(ref).join(", ")}`,
+    );
+  }
+  for (const dep of blockers.filter((b) => b.kind === "depends-on")) {
+    parts.push(
+      dep.heldByMilestone
+        ? `held: dependency ${
+          ref(dep)
+        } is closed but in open milestone '${dep.heldByMilestone}'`
+        : `depends on ${ref(dep)} which is not resolved`,
+    );
+  }
+  return parts.join("; ");
+}
+
+/**
  * Check whether an issue is blocked by its dependencies.
  *
  * When `blockers` is provided, collects all blockers instead of returning
@@ -527,9 +583,7 @@ export async function isDependencyBlocked(
   fetcher: IssueFetcher,
   openStateMap?: OpenIssueStateMap,
   milestoneScope?: MilestoneScope,
-  blockers?: Array<
-    { repo: string; number: number; kind: "child" | "depends-on" }
-  >,
+  blockers?: DependencyBlocker[],
 ): Promise<boolean> {
   try {
     // Check parent/child blocking
@@ -617,6 +671,7 @@ export async function isDependencyBlocked(
                 repo: depRepo,
                 number: dep.number,
                 kind: "depends-on",
+                heldByMilestone: depMilestone,
               });
             } else {
               return true;

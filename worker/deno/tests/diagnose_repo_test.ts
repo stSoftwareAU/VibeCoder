@@ -294,7 +294,8 @@ Deno.test("diagnoseRepoIssue - detects milestone occupancy by worker", () => {
   ];
 
   const input: RepoIssueDiagnosticInput = {
-    issue: makeIssue({ number: 42, milestone: "v2.0" }),
+    // `idle-task` does not share a busy stream (Issue #2530).
+    issue: makeIssue({ number: 42, milestone: "v2.0", labels: ["idle-task"] }),
     prs: [],
     allIssues,
     labelConfig: defaultLabelConfig,
@@ -310,6 +311,53 @@ Deno.test("diagnoseRepoIssue - detects milestone occupancy by worker", () => {
     true,
   );
 });
+
+Deno.test(
+  "diagnoseRepoIssue - stream-sharing tier is not reported as occupied (Issue #2533)",
+  () => {
+    const allIssues: FilterableIssue[] = [
+      makeIssue({ number: 10, milestone: "v2.0", assignees: ["worker-bot"] }),
+    ];
+
+    for (const tier of ["work-on", "top-priority"]) {
+      const result = diagnoseRepoIssue({
+        issue: makeIssue({ number: 42, milestone: "v2.0", labels: [tier] }),
+        prs: [],
+        allIssues,
+        labelConfig: defaultLabelConfig,
+        workerUser: "worker-bot",
+      });
+      assertEquals(
+        result.reasons.some((r) => r.includes("occupied")),
+        false,
+        `${tier} should share the busy stream`,
+      );
+      assertEquals(result.isBlocked, false, `${tier} should be eligible`);
+    }
+  },
+);
+
+Deno.test(
+  "diagnoseRepoIssue - operator's own tier labels exempt occupancy (Issue #2533)",
+  () => {
+    const allIssues: FilterableIssue[] = [
+      makeIssue({ number: 10, milestone: "v2.0", assignees: ["worker-bot"] }),
+    ];
+
+    const result = diagnoseRepoIssue({
+      issue: makeIssue({ number: 42, milestone: "v2.0", labels: ["urgent"] }),
+      prs: [],
+      allIssues,
+      labelConfig: defaultLabelConfig,
+      workerUser: "worker-bot",
+      streamSharingTiers: { issueLabels: ["urgent"], workOnLabel: "do-now" },
+    });
+    assertEquals(
+      result.reasons.some((r) => r.includes("occupied")),
+      false,
+    );
+  },
+);
 
 Deno.test("diagnoseRepoIssue - cooldown blocking", () => {
   const input: RepoIssueDiagnosticInput = {
