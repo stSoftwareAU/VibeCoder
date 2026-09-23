@@ -2,15 +2,39 @@
   "incident": "stSoftwareAU/NEAT-AI 2026-08-23",
   "issue": "VibeCoder#3852",
   "observed": "[idle-census] repo=stSoftwareAU/NEAT-AI work_on=4 inversion_signal=true — while the scan logged milestone-occupied=4 and the audit logged claimable=0 reason=stream_occupied",
-  "note": "The opposite direction to #499: here the scan was right and the census was wrong. Every work-on issue sat in a work stream already hosting a worker-assigned issue, so the scan refused all four; the census did not model stream occupancy and filed an issue against a repo whose work was simply already being done. The disagreement, not the issue numbers, is what this records.",
+  "note": "The opposite direction to #499: here the scan was right and the census was wrong. Every work-on issue sat in a work stream already hosting a worker-assigned issue, so the scan refused all four; the census did not model stream occupancy and filed an issue against a repo whose work was simply already being done. The disagreement, not the issue numbers, is what this records. Issue #2532 changed what the fleet should do with this state: `top-priority` and `work-on` claims share a busy stream in their own fresh conversation, so all four are claimable now and the scan takes one. The recorded state is unchanged — what it must never produce again is a census-versus-scan disagreement.",
   "state": {
     "repo": "stSoftwareAU/NEAT-AI",
     "issues": [
-      { "number": 101, "tier": "work-on", "gate": "milestone-occupied" },
-      { "number": 102, "tier": "work-on", "gate": "milestone-occupied" },
-      { "number": 103, "tier": "work-on", "gate": "milestone-occupied" },
-      { "number": 104, "tier": "work-on", "gate": "milestone-occupied" }
+      {
+        "number": 101,
+        "tier": "work-on",
+        "gate": "milestone-occupied"
+      },
+      {
+        "number": 102,
+        "tier": "work-on",
+        "gate": "milestone-occupied"
+      },
+      {
+        "number": 103,
+        "tier": "work-on",
+        "gate": "milestone-occupied"
+      },
+      {
+        "number": 104,
+        "tier": "work-on",
+        "gate": "milestone-occupied"
+      }
     ]
   },
-  "expect": { "claimable": [], "scanClaims": false }
+  "expect": {
+    "claimable": [
+      101,
+      102,
+      103,
+      104
+    ],
+    "scanClaims": true
+  }
 }

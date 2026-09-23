@@ -19,7 +19,11 @@
 import type { WorkerConfig } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
-import { cleanStaleLabels, filterAndSort } from "./issue_filter.ts";
+import {
+  cleanStaleLabels,
+  filterAndSort,
+  isIssueFleetAssigned,
+} from "./issue_filter.ts";
 import {
   fetchIssuesByLabel,
   getBlockingPRForIssue,
@@ -281,16 +285,36 @@ export async function collectLabelCandidates(
         continue;
       }
 
-      // Issue #2532: no work-stream occupancy check here. This tier is work
+      // Issue #2532: no work-*stream* occupancy check here. This tier is work
       // a human has asked for now, and Issue #2530 already lets its claim
       // join a busy stream in its own fresh conversation, so refusing the
       // candidate one gate earlier only inverted the ladder — the blank
       // stream has no claim-time lock, so a fleet-assigned `low-priority`
       // issue in flight held every `top-priority` issue of the repo behind
       // it. Occupancy still serialises `low-priority`, `idle-task`, the
-      // self-diagnostic tier and the custom PR-producing labels, and this
-      // host's own slots are still kept apart by the blank-stream lock
-      // (`stream_lock.ts`) and the fleet-wide stream lock at claim time.
+      // self-diagnostic tier and the custom PR-producing labels.
+      //
+      // The issue-level hold survives (Issue #1091): a sibling slot on this
+      // host has its claim overlaid onto `repoAllIssues` by
+      // `applyInFlightClaims` before the GitHub assignment lands, so the
+      // issue it holds must not be re-offered to this scan.
+      if (
+        isIssueFleetAssigned(
+          repoAllIssues,
+          issue.number,
+          options.githubUser,
+          pushCapableAuthors,
+        )
+      ) {
+        diag?.logIssueSkipped(repo, issue.number, "assigned", milestoneTitle);
+        blockedDetails.push({
+          repo,
+          issueNumber: issue.number,
+          milestone: milestoneTitle,
+          reason: "assigned",
+        });
+        continue;
+      }
 
       // Issue #1427: Check recently-closed PR blocking — prevent duplicate PRs
       if (repoClosedPRs.length > 0) {

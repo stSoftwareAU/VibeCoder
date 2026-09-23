@@ -199,16 +199,58 @@ export function isMilestoneOccupied(
   workerUser: string,
   pushCapableAuthors: string[] = [],
 ): boolean {
-  // Case-insensitive fleet set, matching the lowercase convention used by
-  // `filterByAllowedAuthors`. The current host is always included so a
-  // misconfigured fleet list never drops this host's own assignments.
-  const fleetAccounts = new Set(
-    [workerUser, ...pushCapableAuthors].map((a) => a.toLowerCase()),
-  );
+  const fleetAccounts = fleetAccountSet(workerUser, pushCapableAuthors);
   return allIssues.some((issue) => {
     if (issue.milestone !== milestoneTitle) return false;
     return issue.assignees.some((a) => fleetAccounts.has(a.toLowerCase()));
   });
+}
+
+/**
+ * Case-insensitive fleet set, matching the lowercase convention used by
+ * `filterByAllowedAuthors`. The current host is always included so a
+ * misconfigured fleet list never drops this host's own assignments.
+ */
+function fleetAccountSet(
+  workerUser: string,
+  pushCapableAuthors: readonly string[],
+): ReadonlySet<string> {
+  return new Set(
+    [workerUser, ...pushCapableAuthors].map((a) => a.toLowerCase()),
+  );
+}
+
+/**
+ * Whether **this one issue** is already assigned to an account the fleet
+ * operates (Issue #2532).
+ *
+ * The stream-level question is {@link isMilestoneOccupied}; this is the
+ * issue-level one the stream-sharing tiers still have to ask. `work-on` and
+ * `top-priority` candidates share a busy stream, but the single issue a
+ * sibling slot on this host already holds must never be re-offered — and in
+ * the window before the GitHub assignment lands, the only record of that hold
+ * is the overlay `applyInFlightClaims` (`work_stream.ts`) writes onto the
+ * all-issues listing. A human's assignment is ignored here for the same
+ * reason it is ignored there: scheduling exists only between Vibe Coders.
+ *
+ * @param allIssues - All open issues in the repo, with any in-flight overlay
+ * @param issueNumber - The candidate under consideration
+ * @param workerUser - The current host's GitHub login
+ * @param pushCapableAuthors - The accounts the fleet operates, from
+ *   `resolveFleetMaintenanceAuthorSet`. NEVER `config.allowedAuthors`.
+ * @returns True when the fleet already holds this issue
+ */
+export function isIssueFleetAssigned(
+  allIssues: readonly FilterableIssue[],
+  issueNumber: number,
+  workerUser: string,
+  pushCapableAuthors: readonly string[] = [],
+): boolean {
+  const fleetAccounts = fleetAccountSet(workerUser, pushCapableAuthors);
+  return allIssues.some((issue) =>
+    issue.number === issueNumber &&
+    issue.assignees.some((a) => fleetAccounts.has(a.toLowerCase()))
+  );
 }
 
 /**

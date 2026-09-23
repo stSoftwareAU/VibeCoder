@@ -166,6 +166,44 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "collect_work_on_candidates - the issue a sibling slot holds is never re-offered (Issues #1091, #2532)",
+  async () => {
+    // The stream is shared, the *issue* is not. The sibling slot's claim has
+    // not reached GitHub yet, so the label listing still shows #837
+    // unassigned — `applyInFlightClaims` is the only record of the hold.
+    const mockGh = createMockGh(
+      [ghIssue(837, "work-on", MILESTONE), ghIssue(843, "work-on", MILESTONE)],
+      ["work-on"],
+    );
+    const repoAllIssues = applyInFlightClaims(
+      REPO,
+      [
+        allIssue(837, "work-on", MILESTONE),
+        allIssue(843, "work-on", MILESTONE),
+      ],
+      [{ repo: REPO, milestone: MILESTONE, issueNumber: 837 }],
+      "bot",
+    );
+
+    const result = await collectWorkOnCandidates(
+      REPO,
+      makeConfig(),
+      buildOptions(mockGh),
+      NO_PRS,
+      repoAllIssues,
+      createIssueFetcher(mockGh),
+      NO_CLOSED_PRS,
+    );
+
+    assertEquals(result.candidates.map((c) => c.number), [843]);
+    assertEquals(
+      result.blockedDetails.map((b) => [b.issueNumber, b.reason]),
+      [[837, "assigned"]],
+    );
+  },
+);
+
 // ---------------------------------------------------------------------------
 // The low-priority collector still serialises — and still sees this host's
 // live claims through `applyInFlightClaims`

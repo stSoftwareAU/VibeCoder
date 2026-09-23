@@ -37,14 +37,20 @@ const SIBLING = "sibling-bot";
 /** A trusted human — `allowed_authors` only. Never occupies (Issue #1064). */
 const HUMAN = "human-dev";
 
-/** 24 unassigned `work-on` issues, plus one held by `heldBy`. */
+/**
+ * 24 unassigned `low-priority` issues, plus one held by `heldBy`.
+ *
+ * Issue #2532: the tier is `low-priority` because occupancy now serialises
+ * the lower tiers only — a `work-on` backlog shares a busy stream, so it
+ * would no longer exercise the wiring this file is about.
+ */
 function fixtureIssues(heldBy: string | null): Array<Record<string, unknown>> {
   const rows: Array<Record<string, unknown>> = [];
   for (let n = 100; n < 124; n++) {
     rows.push({
       number: n,
       title: `Backlog ${n}`,
-      labels: [{ name: "work-on" }],
+      labels: [{ name: "low-priority" }],
       assignees: [],
       milestone: null,
       body: "",
