@@ -488,6 +488,21 @@ export interface ClassifyOptions {
    * option existed.
    */
   weekPaceEngaged?: boolean;
+  /**
+   * Issue #2533: the repo's own **open** milestone titles, so the classifier
+   * can model the cross-milestone dependency hold (`isDependencyBlocked`,
+   * Issue #2173) the way `idle_decision_census.ts` already does (Issue #2455).
+   *
+   * A dependency that is closed but sits in another still-open milestone of
+   * the same repo is held until that milestone merges. The audit did not model
+   * that hold: GRQ-AutoTrader #738/#739 (dependencies #726/#723, closed inside
+   * open milestone 32) were counted claimable, so `mis_classification` fired
+   * against a scan that was right.
+   *
+   * Omitted or empty means "no data" and no issue is excluded by this hold —
+   * the same fail-safe as `openPRs`.
+   */
+  openMilestones?: ReadonlySet<string>;
 }
 
 /**
@@ -513,23 +528,37 @@ export interface ClassifyOptions {
  * cannot silence the audit. When `knownRepos` is empty the caller has no
  * repository list to check against and every cross-repo reference blocks, as
  * before.
+ *
+ * `openMilestones` models the cross-milestone hold (Issue #2533, mirroring the
+ * census's Issue #2455 parameter): a same-repo dependency that is *closed*
+ * still holds this issue while any **other** milestone of the repo is open,
+ * because `isDependencyBlocked` (Issue #2173) refuses it until that milestone
+ * merges. Empty means "no data" and no hold is applied.
  */
 function isDependencyBlockedByOpenIssue(
   body: string | undefined,
   repo: string,
   openIssueNumbers: ReadonlySet<number>,
   knownRepos: ReadonlySet<string>,
+  candidateMilestone: string,
+  openMilestones: ReadonlySet<string> = new Set<string>(),
 ): boolean {
   if (body === undefined) return false;
   const refs = extractDependencyReferencesDetailed(body);
   const lowerRepo = repo.trim().toLowerCase();
+  // The candidate's own milestone is never a cross-milestone blocker: an
+  // issue is not held by the milestone it already sits in.
+  const otherMilestoneOpen = [...openMilestones].some(
+    (title) => title !== candidateMilestone,
+  );
   return refs.some((ref) => {
     const refRepo = ref.repo?.trim().toLowerCase();
     const sameRepo = refRepo === undefined || refRepo === lowerRepo;
     if (!sameRepo) {
       return knownRepos.size === 0 || knownRepos.has(refRepo);
     }
-    return openIssueNumbers.has(ref.number);
+    if (openIssueNumbers.has(ref.number)) return true;
+    return otherMilestoneOpen;
   });
 }
 
@@ -558,6 +587,7 @@ export function classifyIssues(
   const mergedPRs = opts.mergedPRs ?? [];
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
   const openIssueNumbers = opts.openIssueNumbers ?? new Set<number>();
+  const openMilestones = opts.openMilestones ?? new Set<string>();
   const knownRepos = new Set(
     (opts.knownRepos ?? [])
       .filter((r) => typeof r === "string" && r.trim().length > 0)
@@ -707,13 +737,21 @@ export function classifyIssues(
     // counted dependency-blocked issues as claimable and disagreed with a
     // scan that was right, on every tick. Applied in the scan's own order,
     // so an issue refused for a more fundamental reason keeps that reason.
+    //
+    // Issue #2533: `openMilestones` alone is enough to fire this gate. A
+    // cross-milestone hold applies precisely when every dependency is
+    // *closed*, so gating it behind `openIssueNumbers.size > 0` would have
+    // suppressed the case it exists to catch.
     if (
-      openIssueNumbers.size > 0 && repo !== "" &&
+      repo !== "" &&
+      (openIssueNumbers.size > 0 || openMilestones.size > 0) &&
       isDependencyBlockedByOpenIssue(
         issue.body,
         repo,
         openIssueNumbers,
         knownRepos,
+        issue.milestone,
+        openMilestones,
       )
     ) {
       result.push({
@@ -967,6 +1005,19 @@ export interface AuditClaimableStateOptions {
    */
   mergedPRsFn?: (repo: string) => Promise<readonly ClosedPR[]>;
   /**
+   * Supplies a repo's **open** milestone titles so the audit can model the
+   * cross-milestone dependency hold (`isDependencyBlocked`, Issue #2173) that
+   * the Priority 2 scan already applies — see
+   * {@link ClassifyOptions.openMilestones} (Issue #2533).
+   *
+   * Production wires this to the cached `fetchOpenMilestoneClosedCounts`
+   * listing, so the gate costs one cached read per repo and no extra API call
+   * per tick. Omit it — or let it reject — and the audit falls back to no
+   * cross-milestone hold, exactly as before this option existed, which is the
+   * same fail-open contract as `openPRsFn`.
+   */
+  openMilestonesFn?: (repo: string) => Promise<ReadonlySet<string>>;
+  /**
    * True when this run is holding `issueNumber` in `repo` back regardless of
    * what GitHub says (Issue #655) — the same `isIssueInCooldown` predicate
    * the claim scan filters its candidates against.
@@ -1120,6 +1171,19 @@ export async function auditClaimableState(
       }
     }
 
+    // Issue #2533: the repo's open milestone titles, so a dependency that is
+    // closed inside another still-open milestone reads as held rather than
+    // claimable. Best-effort by the same rule as the two fetches above — a
+    // rejection applies no hold and never throws.
+    let openMilestones: ReadonlySet<string> = new Set<string>();
+    if (opts.openMilestonesFn) {
+      try {
+        openMilestones = await opts.openMilestonesFn(repo);
+      } catch {
+        openMilestones = new Set<string>();
+      }
+    }
+
     // Issue #655: resolve this run's own holds for the repo, so work the
     // claim scan is silently and correctly refusing is not counted as
     // claimable for the life of the process. Best-effort by the same rule as
@@ -1151,6 +1215,9 @@ export async function auditClaimableState(
       runLocalHolds,
       repo,
       openIssueNumbers,
+      // Issue #2533: a dependency closed inside another open milestone is
+      // held by the scan until that milestone merges.
+      openMilestones,
       // Issue #1249: the audit already knows which repositories the fleet
       // monitors, so a dependency on anything else is not a blocker it can
       // be silenced by.
