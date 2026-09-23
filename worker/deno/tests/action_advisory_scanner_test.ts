@@ -290,6 +290,112 @@ jobs:
   );
 });
 
+// --- Sub-path actions and comments a bump left behind (Issue #2525) --------
+
+/** The SHAs `github/codeql-action` v4.38.1 and v4.38.0 point at. */
+const CODEQL_V4_38_1 = "1c5b675653bb5c22dbe9b12b556ec555138e09fd";
+const CODEQL_V4_38_0 = "b96794f015dfd88f77b49b1c93e0fa7110f94c63";
+
+const CODEQL_ADVISORY = {
+  ghsa_id: "GHSA-vqf5-2xx6-9wfm",
+  cve_id: "CVE-2025-24362",
+  summary: "GitHub PAT written to debug artifacts",
+  severity: "high",
+  html_url: "https://github.com/advisories/GHSA-vqf5-2xx6-9wfm",
+  published_at: "2025-01-24T18:44:55Z",
+  vulnerabilities: [
+    {
+      package: { ecosystem: "actions", name: "github/codeql-action" },
+      vulnerable_version_range: ">= 3.26.11, <= 3.28.2",
+      first_patched_version: "3.28.3",
+    },
+  ],
+};
+
+/**
+ * The CodeQL sweep's two sub-path call sites, both pinned to `sha` and each
+ * annotated with `version` — the shape a group bump produces when it rewrites
+ * the pin and leaves the comment above it alone.
+ */
+function codeqlWorkflow(version: string, sha: string): WorkflowFile {
+  return wf(
+    ".github/workflows/security-tree-sweep.yml",
+    `name: security tree sweep
+on: [push]
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      # github/codeql-action/init@${version}
+      - uses: github/codeql-action/init@${sha}
+      # github/codeql-action/analyze@${version}
+      - uses: github/codeql-action/analyze@${sha}
+`,
+  );
+}
+
+/** Stub `gh`: the codeql advisory, plus tag→SHA resolution from `tags`. */
+function codeqlGh(
+  tags: Record<string, string>,
+): { fn: (args: string[]) => Promise<string>; calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    fn: (args: string[]) => {
+      const target = args[1] ?? "";
+      calls.push(target);
+      if (target.startsWith("repos/")) {
+        const sha = tags[target.split("/commits/")[1] ?? ""];
+        return sha === undefined
+          ? Promise.reject(new Error("HTTP 404"))
+          : Promise.resolve(`${sha}\n`);
+      }
+      return Promise.resolve(
+        target.includes("codeql-action")
+          ? JSON.stringify([CODEQL_ADVISORY])
+          : "[]",
+      );
+    },
+  };
+}
+
+Deno.test("scanActionAdvisories - sub-path call sites are proven patched against the parent repository's tags (Issue #2525)", async () => {
+  const gh = codeqlGh({ "v4.38.1": CODEQL_V4_38_1 });
+  const findings = await scanActionAdvisories(
+    [codeqlWorkflow("v4.38.1", CODEQL_V4_38_1)],
+    { ghCommandFn: gh.fn },
+  );
+  assertEquals(findings, []);
+  // `github/codeql-action/init` is advised — and resolved — under the
+  // repository, not under the sub-path, and once for both call sites.
+  assertEquals(
+    gh.calls.filter((c) => c.startsWith("repos/")),
+    ["repos/github/codeql-action/commits/v4.38.1"],
+  );
+});
+
+Deno.test("scanActionAdvisories - a comment a bump left behind is filed even though the pin itself is patched (Issue #2525)", async () => {
+  // Both sites are pinned to v4.38.1, far beyond the patched 3.28.3, but the
+  // comments still claim v4.38.0 — which resolves to a different SHA, so the
+  // annotation proves nothing and the finding is filed loudly.
+  const gh = codeqlGh({
+    "v4.38.1": CODEQL_V4_38_1,
+    "v4.38.0": CODEQL_V4_38_0,
+  });
+  const findings = await scanActionAdvisories(
+    [codeqlWorkflow("v4.38.0", CODEQL_V4_38_1)],
+    { ghCommandFn: gh.fn },
+  );
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]?.ghsaId, "GHSA-vqf5-2xx6-9wfm");
+  assert(
+    findings[0]?.evidence?.includes(
+      ".github/workflows/security-tree-sweep.yml:8",
+    ),
+    findings[0]?.evidence,
+  );
+});
+
 Deno.test("scanActionAdvisories - severity maps GHSA bands onto the audit's three (Issue #4405)", async () => {
   const low = { ...ADVISORY, ghsa_id: "GHSA-low0-0000-0000", severity: "low" };
   const critical = {
