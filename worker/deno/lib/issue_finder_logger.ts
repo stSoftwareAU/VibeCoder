@@ -29,6 +29,15 @@ export const SKIP_REASONS = [
   "assigned",
   "blocking-label",
   "milestone-occupied",
+  /**
+   * Issue #2532: a sibling slot **on this host** already holds this exact
+   * issue. Distinct from `assigned`, which is GitHub's own assignee state: the
+   * hold here is host-local, visible only through the `applyInFlightClaims`
+   * overlay, and it clears by itself when that run ends. The stream-sharing
+   * tiers no longer take `milestone-occupied`, so this is what remains of the
+   * one-slot-per-issue guarantee for them.
+   */
+  "slot-in-flight",
   "pr-blocked",
   "closed-pr-cooldown",
   /**

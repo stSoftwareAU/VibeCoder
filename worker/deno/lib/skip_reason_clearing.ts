@@ -80,6 +80,13 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   // Serialisation. All three end with the fleet's own next step: the PR
   // merges or closes, the stream frees, the window expires.
   "milestone-occupied": "self",
+  /**
+   * Issue #2532: a sibling slot on this host is running the issue right now,
+   * and the hold is released when that run ends — nobody has to act, so it
+   * serialises the repo exactly as the occupied stream it replaced did for
+   * the stream-sharing tiers.
+   */
+  "slot-in-flight": "self",
   "pr-blocked": "self",
   "closed-pr-cooldown": "self",
   "cooldown": "self",

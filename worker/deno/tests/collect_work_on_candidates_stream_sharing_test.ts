@@ -199,8 +199,11 @@ Deno.test(
     assertEquals(result.candidates.map((c) => c.number), [843]);
     assertEquals(
       result.blockedDetails.map((b) => [b.issueNumber, b.reason]),
-      [[837, "assigned"]],
+      [[837, "slot-in-flight"]],
     );
+    // The hold clears when the sibling run ends, so it still serialises the
+    // repo's lower tiers exactly as `milestone-occupied` did (Issue #524).
+    assertEquals(result.hasSuppressingWorkOn, true);
   },
 );
 

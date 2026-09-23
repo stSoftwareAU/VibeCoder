@@ -497,8 +497,13 @@ export async function collectWorkOnCandidates(
         pushCapableAuthors,
       )
     ) {
-      noteBlocked(issue.number, milestoneTitle, "assigned");
-      diag?.logIssueSkipped(repo, issue.number, "assigned", milestoneTitle);
+      noteBlocked(issue.number, milestoneTitle, "slot-in-flight");
+      diag?.logIssueSkipped(
+        repo,
+        issue.number,
+        "slot-in-flight",
+        milestoneTitle,
+      );
       continue;
     }
 

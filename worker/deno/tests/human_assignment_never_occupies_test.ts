@@ -118,6 +118,7 @@ function listedIssue(
 
 function createMockGh(
   issues: Record<string, unknown>[],
+  label = "top-priority",
 ): (args: string[]) => Promise<string> {
   return (args: string[]): Promise<string> => {
     const command = args.join(" ");
@@ -138,13 +139,7 @@ function createMockGh(
       return Promise.resolve(JSON.stringify([
         {
           event: "labeled",
-          label: { name: "top-priority" },
-          actor: { login: HUMAN },
-          created_at: "2026-09-04T09:24:00Z",
-        },
-        {
-          event: "labeled",
-          label: { name: "low-priority" },
+          label: { name: label },
           actor: { login: HUMAN },
           created_at: "2026-09-04T09:24:00Z",
         },
@@ -212,7 +207,7 @@ async function lowPrioritySelectableWith(
   const occupantNumber = 944;
   const mockGh = createMockGh([
     listedIssue(candidateNumber, stream === "" ? null : stream, "low-priority"),
-  ]);
+  ], "low-priority");
   const repoAllIssues: FilterableIssue[] = [
     makeIssue(occupantNumber, {
       assignees: occupantAssignees,
@@ -259,14 +254,14 @@ Deno.test(
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "human_assignment_never_occupies - a sibling Vibe Coder's assignment still occupies the default-branch stream",
+  "human_assignment_never_occupies - a sibling Vibe Coder's assignment still occupies the default-branch stream for a low-priority candidate",
   async () => {
     assertEquals(await lowPrioritySelectableWith([SIBLING], ""), false);
   },
 );
 
 Deno.test(
-  "human_assignment_never_occupies - a sibling Vibe Coder's assignment still occupies a milestone stream",
+  "human_assignment_never_occupies - a sibling Vibe Coder's assignment still occupies a milestone stream for a low-priority candidate",
   async () => {
     assertEquals(
       await lowPrioritySelectableWith([SIBLING], "Fleet Logs"),
@@ -276,14 +271,14 @@ Deno.test(
 );
 
 Deno.test(
-  "human_assignment_never_occupies - this host's own assignment still occupies the default-branch stream",
+  "human_assignment_never_occupies - this host's own assignment still occupies the default-branch stream for a low-priority candidate",
   async () => {
     assertEquals(await lowPrioritySelectableWith([HOST], ""), false);
   },
 );
 
 Deno.test(
-  "human_assignment_never_occupies - this host's own assignment still occupies a milestone stream",
+  "human_assignment_never_occupies - this host's own assignment still occupies a milestone stream for a low-priority candidate",
   async () => {
     assertEquals(await lowPrioritySelectableWith([HOST], "Fleet Logs"), false);
   },

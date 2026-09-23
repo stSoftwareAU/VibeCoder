@@ -12,6 +12,7 @@ import { runGhCommand } from "./github.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import { invalidateTimelineCache } from "./timeline_cache.ts";
 import { fetchTimelineWithCache } from "./issue_query.ts";
+import { LABEL_DEFAULTS } from "./config_defaults.ts";
 
 /**
  * Minimal issue representation for filtering operations.
@@ -129,6 +130,22 @@ export interface StreamSharingLabels {
   /** The `work-on` label — `config.workOnLabel`. */
   workOnLabel?: string;
 }
+
+/**
+ * The stream-sharing tiers under the fleet's **default** label names
+ * (Issues #2530, #2532).
+ *
+ * For the readers that hold no operator config: the idle-decision census and
+ * the idle-detect audit, which must apply exactly the rule the collectors do
+ * or the `ALERT mis_classification` line fires on every tick. One constant,
+ * because two copies of this literal is one drift away from that alert.
+ * Callers that do have config (the collectors, the claim phase) pass the
+ * operator's own labels instead.
+ */
+export const DEFAULT_STREAM_SHARING_TIERS: StreamSharingLabels = {
+  issueLabels: [LABEL_DEFAULTS.topPriorityLabel],
+  workOnLabel: LABEL_DEFAULTS.workOnLabel,
+};
 
 /**
  * Whether an issue's tier may join a milestone stream another host already

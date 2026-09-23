@@ -228,10 +228,10 @@ import {
   type OpenPR,
 } from "./issue_query.ts";
 import {
+  DEFAULT_STREAM_SHARING_TIERS,
   type FilterableIssue,
   isMilestoneOccupied,
   isStreamSharingTier,
-  type StreamSharingLabels,
 } from "./issue_filter.ts";
 import {
   checkRepoAvailability,
@@ -311,6 +311,11 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // the census. Omitting them over-counts.
     "closed-pr-cooldown": "run-local",
     "cross-worker-cooldown": "run-local",
+    // Issue #2532: a sibling slot's hold on this host, carried by the
+    // `applyInFlightClaims` overlay. Nothing on GitHub shows it until the
+    // claim's assignment lands, and the census is not handed the registry, so
+    // it over-counts by at most the issues this host holds right now.
+    "slot-in-flight": "run-local",
     // Issue #1780: the milestone branch's conflict ledger lives in this
     // worker's own `milestone_sync_failures.json`, and nothing hands it to the
     // census. Modelling it would need the ledger; omitting it over-counts by
@@ -775,18 +780,6 @@ const BLOCKING_SET: ReadonlySet<string> = new Set(BLOCKING_LABELS);
 const IGNORE_OPEN_PRS_LABEL = "ignore-open-prs";
 
 /**
- * The tiers that share a busy work stream (Issues #2530, #2532).
- *
- * Spelled from {@link LABEL_DEFAULTS}, as every other tier test in this
- * module is — the census reads no operator config, and an operator-renamed
- * tier label under-counts here rather than mis-blocking a pickup.
- */
-const STREAM_SHARING_TIERS: StreamSharingLabels = {
-  issueLabels: [LABEL_DEFAULTS.topPriorityLabel],
-  workOnLabel: LABEL_DEFAULTS.workOnLabel,
-};
-
-/**
  * True when `issue` carries `label`, has no blocking label, and has no
  * assignees — i.e. the worker could pick it up right now.
  */
@@ -1095,7 +1088,7 @@ function countUnblocked(
     // disagree with the scan — the divergence the idle-task drought was.
     if (
       occupiedStreams.has(issue.milestone) &&
-      !isStreamSharingTier(issue.labels, STREAM_SHARING_TIERS)
+      !isStreamSharingTier(issue.labels, DEFAULT_STREAM_SHARING_TIERS)
     ) {
       streamOccupied += 1;
       continue;

@@ -306,12 +306,21 @@ export async function collectLabelCandidates(
           pushCapableAuthors,
         )
       ) {
-        diag?.logIssueSkipped(repo, issue.number, "assigned", milestoneTitle);
+        diag?.logIssueSkipped(
+          repo,
+          issue.number,
+          "slot-in-flight",
+          milestoneTitle,
+        );
+        // Deliberately NOT pushed to `blocked`: that array parks the whole
+        // work stream in `selectHighestPriority`, and the stream is precisely
+        // what this tier now shares (Issue #2532). Only this one issue is
+        // held, so only this one issue is recorded.
         blockedDetails.push({
           repo,
           issueNumber: issue.number,
           milestone: milestoneTitle,
-          reason: "assigned",
+          reason: "slot-in-flight",
         });
         continue;
       }
