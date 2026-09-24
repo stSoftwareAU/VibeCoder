@@ -2080,6 +2080,18 @@
       "paths": [
         "worker/deno/lib/budget_pacing.ts"
       ]
+    },
+    {
+      "issue": 2562,
+      "chunk": "top-up-2562",
+      "title": "top-up: the degraded-run delivery guard",
+      "ledger": "docs/audits/security-sweep-2562-degraded-delivery.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: degraded_delivery.ts (#2562)",
+      "status": "swept",
+      "sweptAt": "3e07b2c3fa1f8f9e1285b970e2626caa9d13ed5a",
+      "paths": [
+        "worker/deno/lib/degraded_delivery.ts"
+      ]
     }
   ],
   "roots": [
