@@ -198,3 +198,16 @@ Deno.test("overlay - the shipped Claude overlay loads and is Playwright-free", a
     assertEquals(result.value!.includes("Playwright"), false);
   }
 });
+
+Deno.test("the Claude overlay tells an unattended run to keep working, exactly once (Issue #2560)", async () => {
+  // Opus 5.5 guidance: in an unattended agentic run, ending the turn to report
+  // progress stops the work — there is no one to answer. The worker's runs are
+  // all unattended, so the Claude overlay states it as a standing instruction.
+  const overlay = await Deno.readTextFile(
+    `${PROMPTS_DIR}/coding_guidelines_claude/prompt.md`,
+  );
+  const matches = overlay.match(/unattended run/gi) ?? [];
+  assertEquals(matches.length, 1, "the instruction appears exactly once");
+  assertStringIncludes(overlay.toLowerCase(), "keep working");
+  assertStringIncludes(overlay.toLowerCase(), "do not end the turn");
+});
