@@ -249,11 +249,15 @@ extremes.**
   (`high` → implementation, `medium` → the reactive fixes `ci_fix`,
   `pr_feedback`, `quality_fix`) on **Opus**. This gives one quality bar with a
   tunable depth dial and sidesteps the Opus alias→pricing mismatch fixed in.
-- The planning-shaped phases run on the **Fable 5** tier above Opus (
+- The planning-shaped phases ran on the **Fable 5** tier above Opus (
   extended from two phases at `max` effort to six phases at `high` effort by
   ). A better result compounds across every downstream sub-issue or run, so
-  the ~2× Fable premium is spent only on these phases — see the and
-  decision-log rows below.
+  the ~2× Fable premium was spent only on these phases — see the and
+  decision-log rows below. **Since Issue #2560 they run on Opus 5.5 at `high`**:
+  it matches Fable 5.1 on plan quality at roughly half the price, so the tier
+  lever now applies at the cheap extreme only and effort alone marks these
+  phases out. `CLAUDE_MODEL_PLANNING=fable` (and the matching per-phase
+  variables) is the rollback.
 - The three trivial phases (**spelling_fix**, **summarise**, **health**) stay
   on **Haiku**. The Opus↔Haiku gap is still ~5×; these tasks are mechanical;
   `summarise` in particular is fed the largest inputs, so the cheaper tier
@@ -988,8 +992,10 @@ duration appear only when the CLI reports them.
 
 #### Example stats comment
 
-A healthy run on the default routing (planning on the Fable 5 tier) appends a
-block like this to the planning summary comment:
+A healthy run appends a block like this to the planning summary comment. The
+example dates from when planning ran on the Fable 5 tier; on today's default
+routing (Issue #2560) the requested model reads `opus` and the served model
+`claude-opus-5-5`:
 
 ```markdown
 ## Planning run model stats
@@ -2465,6 +2471,17 @@ the CLI's `stable` channel — `stable` sat at 2.1.236 when the floor was raised
 so such a host reports "below required floor" once per interval (loudly, by
 design) until `stable` reaches 2.1.260 or the host pins a version through
 `update_mode: frozen`.
+
+**Moved again for Opus 5.5 (Issue #2560).** When the planning-shaped phases
+moved to the `opus` alias, the same two levers moved together: the image pins
+**2.1.281** and the floor is **2.1.280**, the first release whose bundled table
+resolves `opus` to `claude-opus-5-5` (2.1.261 resolved it to `claude-opus-5`).
+2.1.280 is above 2.1.260, so a phase pinned back to Fable still gets Fable 5.1
+with its cache fixes. `CURRENT_TIER_MODELS` gained an `opus` row at the same
+time, so a container still serving `claude-opus-5` is reported as a previous
+generation — but only for the label and the stats comment: the
+degraded-delivery guard (Issue #2562) ignores a stale generation, since the run
+was not handed to a fallback model.
 
 **A previous-generation Fable is now degraded.** `modelsMatch()` matches at
 tier-family level, so a run served `claude-fable-5` while `claude-fable-5-1` is

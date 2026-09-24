@@ -14,6 +14,56 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## 1.9.0 — Opus 5.5 replaces Fable as the top model tier
+
+**A default changed. Read it if you rely on Fable for planning: from this
+release the eight planning-shaped phases run on Opus 5.5 at `high` effort. Set
+`CLAUDE_MODEL_PLANNING=fable` (and the matching variable for each other phase
+you want back) to keep Fable.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| `planning`, `grill_me`, `refinement`, `revision`, `question`, `clarification`, `quorum` and `quorum_judge` default to the `opus` alias at `high` effort (were `fable` at `high`). No phase defaults to Fable any more | #2560 |
+| The container pins Claude Code **2.1.281** (was 2.1.261) and `software_min_versions.claude` defaults to **2.1.280** (was 2.1.260): 2.1.280 is the first release whose `opus` alias serves `claude-opus-5-5`. Every `opus`-routed phase — `issue`, `ci_fix`, `pr_feedback`, `quality_fix` too — is served Opus 5.5 at its existing effort | #2560 |
+| A run served `claude-opus-5` (a container still on an older CLI) is now reported as a previous-generation Opus and labelled `degraded-model`, as a stale Fable already was | #2560 |
+| The health phase makes its Fable-availability probe only while some phase routes to Fable, so a host on the defaults makes no Fable call at all | #2560 |
+| The Claude prompt overlay gains one standing instruction: an unattended run keeps working rather than ending the turn to report | #2560 |
+| A degraded (fallback-model) implementation run files its undelivered scope as an `idle-task` follow-up and says so in the PR, instead of closing the issue as complete | #2562 |
+
+### Cost profile
+
+Opus 5.5 is priced at $4 / $20 per million input / output tokens ($5 cache
+write, $0.20 cache read), against Fable 5.1's $10 / $50 ($12.50 / $0.25): the
+planning-shaped phases cost roughly 60% less per token. The other `opus` phases
+move from Opus 5 ($5 / $25) to Opus 5.5, about 20% less. Opus 5.5's API default
+effort is `medium`, but the worker passes an explicit effort on every phase, so
+no phase changes effort silently.
+
+### Why a minor
+
+A host whose `.config.json` did not change is served a different model on eight
+phases after the upgrade, and a new model generation on every other `opus`
+phase. That is an operator-visible change, so it takes a version an operator can
+point at.
+
+### Migration
+
+**None to keep the new default.** Each host builds the new image (Claude Code
+2.1.281) on its next launch, because the image tag is the hash of the container
+definition. A host that runs the CLI outside the container is checked against
+the new 2.1.280 floor on its next update pass — see
+[Minimum-Version Floor](CONFIGURATION.md#-minimum-version-floor).
+
+### Rollback
+
+Pin the phases back to Fable with the per-phase variables — for example
+`CLAUDE_MODEL_PLANNING=fable`, `CLAUDE_MODEL_GRILL_ME=fable` — or the
+`phase_model_overrides` config block, and restart the worker. A pinned phase
+keeps the whole Fable machinery: the availability probe, the pre-flight reroute
+to Opus at `max` when Fable is down, and the degraded flag.
+
 ## 1.8.0 — RTK Bash-output filtering is on by default
 
 **A default changed. Read it if your host never set `rtk_output`: from this

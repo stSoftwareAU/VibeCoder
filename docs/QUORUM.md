@@ -140,9 +140,10 @@ so the run takes one draft plus one judgement.
 
 ### Degraded-model reporting
 
-Both Quorum phases prefer Fable 5, so when the pre-flight probe
-says Fable is unavailable a **Claude** invocation runs on **Opus @ `max`**
-instead. A draft or judgement running under Codex or Gemini has no Fable tier
+Both Quorum phases default to Opus since Issue #2560, but remain
+Fable-preferring: when an operator pins them back to Fable and the pre-flight
+probe says Fable is unavailable, a **Claude** invocation runs on
+**Opus @ `max`** instead. A draft or judgement running under Codex or Gemini has no Fable tier
 to leave: it keeps its own provider routing, is never rerouted onto an
 Anthropic tier alias it cannot resolve, and is not reported degraded
 (Issue #398).

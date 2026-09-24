@@ -17,4 +17,8 @@
 #
 # 1.8.0 turns RTK output filtering on by default (Issue #2432): a host that
 # never wrote `rtk_output` now filters, and `enabled: false` is the opt-out.
-1.8.0
+#
+# 1.9.0 moves the top model tier from Fable to Opus 5.5 (Issue #2560): the
+# eight planning-shaped phases default to `opus`, the container pins Claude
+# Code 2.1.281, and `CLAUDE_MODEL_PLANNING=fable` is the rollback.
+1.9.0
