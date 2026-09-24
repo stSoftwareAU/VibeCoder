@@ -87,3 +87,88 @@ Deno.test("redactSecrets - ordinary credentials are masked exactly as before", (
     `PASSWORD=${REDACTION_PLACEHOLDER}`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// GitHub Actions permission levels (2026-09-24)
+//
+// Every `best-practices` idle-task wrapper raised across the fleet on
+// 2026-09-24 published "`id-token: ***REDACTED*** only on jobs that need it"
+// — the prompt's own advice, `id-token: write`, read as a credential
+// assignment because the key contains TOKEN. `read`, `write` and `none` are
+// the only values a `permissions:` entry takes; none of them is a secret.
+// ---------------------------------------------------------------------------
+
+Deno.test("redactSecrets - a GitHub Actions permission level under a token key is configuration", () => {
+  for (
+    const line of [
+      "  `id-token: write` only on jobs that need it, `pull_request_target`",
+      "permissions:\n  id-token: write\n  contents: read",
+      "id-token: read",
+      "id-token: none",
+      "ID_TOKEN=write",
+      "(id-token: write)",
+    ]
+  ) {
+    assertEquals(redactSecrets(line), line, line);
+  }
+});
+
+Deno.test("redactSecrets - a value that merely starts with a permission level is still masked", () => {
+  for (
+    const [line, key] of [
+      ["id-token: writeAbc123def456", "id-token: "], // gitleaks:allow fake fixture, not a real key
+      ["API_TOKEN=readonly_9f8e7d6c5b4a", "API_TOKEN="], // gitleaks:allow fake fixture, not a real key
+    ] as const
+  ) {
+    assertEquals(redactSecrets(line), `${key}${REDACTION_PLACEHOLDER}`, line);
+  }
+});
+
+Deno.test("redactSecrets - `secrets: inherit` and a `${{ … }}` expression are workflow syntax, not credentials", () => {
+  // Both are in the `github-actions-audit` prompt that every wrapper embeds:
+  // the reusable-workflow keyword and a reference to a secret by name. The
+  // secret's value never appears in either.
+  for (
+    const line of [
+      "24. **`secrets: inherit` on a reusable-workflow call.** `secrets: inherit`",
+      "    secrets: inherit",
+      "      DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}",
+      "GH_TOKEN: ${{ github.token }}",
+    ]
+  ) {
+    assertEquals(redactSecrets(line), line, line);
+  }
+});
+
+Deno.test("redactSecrets - a literal credential next to workflow syntax is still masked", () => {
+  for (
+    const [line, key] of [
+      ["DEPLOY_TOKEN: ghx_notAnExpression1234", "DEPLOY_TOKEN: "], // gitleaks:allow fake fixture, not a real key
+      ["secrets: inheritance-key-9f8e7d", "secrets: "], // gitleaks:allow fake fixture, not a real key
+      ["API_TOKEN=$abc123def456", "API_TOKEN="], // gitleaks:allow fake fixture, not a real key
+    ] as const
+  ) {
+    assertEquals(redactSecrets(line), `${key}${REDACTION_PLACEHOLDER}`, line);
+  }
+});
+
+Deno.test("redactSecrets - a parent key whose children start on the next line is YAML structure", () => {
+  // `secrets:` ends its line, so the separator reached the next line and took
+  // the child key `DEPLOY_TOKEN:` as its value — the whole reusable-workflow
+  // example in the `github-actions-audit` prompt was published masked.
+  const block = [
+    "    ```yaml",
+    "    jobs:",
+    "      call:",
+    "        uses: ./.github/workflows/deploy.yml",
+    "        secrets:",
+    "          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}",
+    "    ```",
+  ].join("\n");
+  assertEquals(redactSecrets(block), block);
+});
+
+Deno.test("redactSecrets - a credential on the line after its label is still masked", () => {
+  const text = "password:\n  hunter2-but-longer-9f8e7d6c"; // gitleaks:allow fake fixture, not a real key
+  assertEquals(redactSecrets(text), `password:\n  ${REDACTION_PLACEHOLDER}`);
+});
