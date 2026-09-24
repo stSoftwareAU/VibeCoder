@@ -5,7 +5,7 @@
  * The grill_me phase routes to the same top tier as planning (Opus since
  * #2560), so a silent degradation on a grill-me round must be surfaced the
  * same way planning surfaces it (#2646). These tests assert real behaviour:
- *   - an `opus`-served round is NOT degraded and reports nothing (Issue #2717);
+ *   - an `opus`-served round is NOT degraded and posts only its stats;
  *   - a lower-tier (`sonnet`) round IS degraded → labels the issue + posts stats;
  *   - a rate-limit `fallbackModel` round IS degraded;
  *   - all GitHub operations are non-fatal.
@@ -154,11 +154,10 @@ Deno.test("buildGrillMeInvocations - carries the fallbackModel", () => {
 // reportGrillMeDegradation — healthy path
 // ---------------------------------------------------------------------------
 
-// Behaviour (Issue #2717): grill-me is interactive, so healthy rounds stay
-// silent to avoid cluttering the conversation. The degraded-model label is the
-// visible signal; only degraded rounds post the stats block. No label on
-// healthy rounds. Model literal follows the top-tier Opus switch (Issue #2560).
-Deno.test("reportGrillMeDegradation - an opus-served round (the top tier since #2560) is not degraded; no label, no comment", async () => {
+// Behaviour change (Issue #3756): a healthy round no longer stays completely
+// silent — it posts the issue's single cost/model stats comment. The "no
+// label" half of the original assertion is unchanged.
+Deno.test("reportGrillMeDegradation - an opus-served round (the top tier since #2560) is not degraded; no label, one stats comment", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -177,10 +176,12 @@ Deno.test("reportGrillMeDegradation - an opus-served round (the top tier since #
 
   assertEquals(verdict.degraded, false);
   assertEquals(addLabelCalls.length, 0);
-  assertEquals(comments.length, 0);
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!.body, "## Grill-me run model stats");
+  assertStringIncludes(comments[0]!.body, "Estimate only");
 });
 
-Deno.test("reportGrillMeDegradation - healthy round posts no comment (Issue #2717)", async () => {
+Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comment per run", async () => {
   resetModelResolution();
   const { ghCommandFn } = fakeGh();
   const { ghClient, comments } = fakeClient({
@@ -206,7 +207,7 @@ Deno.test("reportGrillMeDegradation - healthy round posts no comment (Issue #271
   assertEquals(comments.length, 0);
 });
 
-Deno.test("reportGrillMeDegradation - healthy rounds do not post even if earlier degraded rounds exist", async () => {
+Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not hide this round's cost (Issue #797)", async () => {
   resetModelResolution();
   const { ghCommandFn } = fakeGh();
   const { ghClient, comments } = fakeClient({
@@ -228,7 +229,9 @@ Deno.test("reportGrillMeDegradation - healthy rounds do not post even if earlier
     authorOptions: { fleetAuthors: ["vibe-bot"] },
   });
 
-  assertEquals(comments.length, 0);
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!.body, "## Grill-me run model stats");
+  assertStringIncludes(comments[0]!.body, "Issue total across 2 run-stats");
 });
 
 // ---------------------------------------------------------------------------

@@ -35,7 +35,12 @@ import {
   CODEGRAPH_PROMPT_LINE,
   type CodegraphContextResult,
 } from "../lib/codegraph_context.ts";
-import { RTK_PROMPT_LINE, type RtkOutputResult } from "../lib/rtk_output.ts";
+import type { RtkOutputResult } from "../lib/rtk_output.ts";
+import {
+  assertCarriesRtkHook,
+  assertNoRtkHook,
+  type SpawnOptions,
+} from "./support/rtk_wiring_asserts.ts";
 import {
   rtkGain,
   rtkMissing,
@@ -314,11 +319,7 @@ interface ObservedRound {
   /** Every Graft collection the round asked for, in call order. */
   collected: CollectGraftContextOptions[];
   /** The options the round's single Claude invocation was given. */
-  runOptions?: {
-    prompt: string;
-    mcpConfig?: unknown;
-    settingsJson?: string;
-  };
+  runOptions?: SpawnOptions;
 }
 
 /**
@@ -354,7 +355,7 @@ async function runGrillMeRound(
   const observed: ObservedRound = { collected: [] };
   const deps = createMockDeps({
     claude: {
-      runClaudeWithRetry: ((options: ObservedRound["runOptions"]) => {
+      runClaudeWithRetry: ((options: SpawnOptions) => {
         observed.runOptions = options;
         return Promise.resolve({
           ok: true,
@@ -426,11 +427,13 @@ Deno.test(
       "Add reporting dashboard",
     );
 
-    const prompt = observed.runOptions?.prompt ?? "";
+    const prompt = String(observed.runOptions?.prompt ?? "");
     assertStringIncludes(prompt, "export function parseDate() {}");
     assertStringIncludes(prompt, GRAFT_PROMPT_LINE);
     assertStringIncludes(prompt, CODEGRAPH_PROMPT_LINE);
-    assertStringIncludes(prompt, RTK_PROMPT_LINE);
+    // The hook and its prompt line, asserted with the same words the other
+    // wired processors' RTK tests use.
+    assertCarriesRtkHook(observed.runOptions);
 
     // Both servers ride on the one spawn, and the RTK hook with them.
     const mcp = observed.runOptions?.mcpConfig as {
@@ -441,10 +444,6 @@ Deno.test(
     assert(
       mcp.servers?.codegraph !== undefined,
       "the codegraph server rides beside graft's",
-    );
-    assert(
-      observed.runOptions?.settingsJson !== undefined,
-      "the RTK rewrite hook must be installed on the spawn",
     );
   },
 );
@@ -460,14 +459,11 @@ Deno.test(
       rtkSeam([rtkMissing()]),
     );
 
-    const prompt = observed.runOptions?.prompt ?? "";
-    assertEquals(
-      prompt.includes(RTK_PROMPT_LINE),
-      false,
-      "no hook, no prompt line",
+    assertNoRtkHook(observed.runOptions);
+    assertStringIncludes(
+      String(observed.runOptions?.prompt ?? ""),
+      GRAFT_PROMPT_LINE,
     );
-    assertEquals(observed.runOptions?.settingsJson, undefined);
-    assertStringIncludes(prompt, GRAFT_PROMPT_LINE);
   },
 );
 
@@ -480,7 +476,7 @@ Deno.test(
       rtkSeam([rtkVersion(), rtkGain(100), rtkGain(100)]),
     );
 
-    const prompt = observed.runOptions?.prompt ?? "";
+    const prompt = String(observed.runOptions?.prompt ?? "");
     assertEquals(prompt.includes(GRAFT_PROMPT_LINE), false);
     assertEquals(prompt.includes(CODEGRAPH_PROMPT_LINE), false);
     assertEquals(

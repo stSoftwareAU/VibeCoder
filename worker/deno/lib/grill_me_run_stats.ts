@@ -12,15 +12,17 @@
  * `grill_me` phase, and the shared `degraded-model` label applied by
  * {@link ./planning_degraded_label.ts}.
  *
- * **Scoping difference from planning (deliberate, Issue #2717).** Planning
- * posts a stats block on every run. Grill-me is an interactive, multi-round,
- * human-facing clarification flow, so emitting a model-stats block after every
- * healthy round would clutter the conversation the developer is reading. This
- * module therefore posts the stats block **and** applies the `degraded-model`
- * label **only when a round was served by a degraded model**. Healthy rounds
- * report nothing — the label is the visible signal, paired with the stats
+ * **Scoping difference from planning (deliberate, Issue #2717).** The
+ * `degraded-model` label is applied **only when a round was served by a
+ * degraded model** — the label is the visible signal, paired with the stats
  * comment as its explanation. There are no sub-issues on a grill-me round, so
- * only the grill-me issue itself is labelled.
+ * only the grill-me issue itself is labelled. The run's cost/model stats
+ * comment itself is posted once per run either way (Issue #3756).
+ *
+ * **What the stats comment carries (Issue #2561).** Grill-me prepares Graft,
+ * CodeGraph and RTK for its round as planning does, and hands the three
+ * outcomes to this recorder, so its comment carries the same `Graft:`,
+ * `CodeGraph:` and `RTK:` lines an issue run's comment carries.
  *
  * Every GitHub operation here is **non-fatal**: a label or comment failure is
  * logged and never aborts the grill-me round (mirroring the planning closure).

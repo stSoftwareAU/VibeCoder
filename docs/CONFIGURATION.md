@@ -1803,7 +1803,7 @@ the tools — `graft_find_code`, `graft_file_api`, `graft_trace_calls`,
 reading is still right. It leads rather than trails because, as one sentence
 appended after the issue and the bundle, it was ignored: 25 of 29 `Graft: ok`
 runs reported `0 queries` (Issue #2435). The entry and the rule are added
-together or not at all, on the same five run kinds. The entry carries
+together or not at all, on the same six run kinds. The entry carries
 `alwaysLoad: true`, which exempts the server from the Claude CLI's tool-search
 deferral: deferred, a Graft tool is a name the agent must spend a call loading
 before it can use it, and it greps instead (Issue #2435). The exemption is per

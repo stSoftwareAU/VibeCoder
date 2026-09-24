@@ -96,12 +96,12 @@ import {
 } from "./grill_me_stall_guard.ts";
 import {
   collectGraftContext,
-  type CollectGraftContextOptions,
   describeGraftContext,
   formatGraftContextSection,
-  type GraftContextResult,
+  type GraftContextCollector,
   graftQueryFor,
 } from "./graft_context.ts";
+import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
 import { bindGraftRun } from "./graft_run.ts";
@@ -224,13 +224,11 @@ export interface GrillMeProcessorDeps {
    */
   promptsDir?: string;
   /**
-   * Graft context collector (Issue #2561). Optional: when omitted, Graft
-   * lines in stats report "off". Injected on the deps object directly, not
-   * nested in infrastructure deps (Issue #2102).
+   * Graft context collector seam (Issue #2561). Omitted, the real collector
+   * is used — a test names its own. Injected on the deps object directly,
+   * not nested in infrastructure deps (Issue #2102).
    */
-  collectGraftContext?: (
-    options: CollectGraftContextOptions,
-  ) => Promise<GraftContextResult>;
+  collectGraftContext?: GraftContextCollector;
 }
 
 /** Options for building the grill-me prompt. */
@@ -1884,8 +1882,7 @@ async function _processGrillMeWithHeartbeat(
   // (Issue #2561). Each is an accelerator whose collector reports a fault as
   // `failed` rather than throwing, so losing one never fails the round — the
   // figure simply reads `failed` on the round's stats comment.
-  const repoName = repo.split("/").pop() ?? repo;
-  const repoDir = `${config.workDir}/${repoName}`;
+  const repoDir = repoCheckoutPath(config.workDir, repo);
 
   const collectGraft = processorDeps.collectGraftContext ?? collectGraftContext;
   const graftContext = await collectGraft({
@@ -1981,6 +1978,9 @@ async function _processGrillMeWithHeartbeat(
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  // Issue #2561: re-read after the invocation, success or not — the hook ran
+  // either way — so the figure covers the whole round. Never throws.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     const errorMsg = claudeResult.error.message;
@@ -2013,10 +2013,8 @@ async function _processGrillMeWithHeartbeat(
     );
   }
 
-  // Issue #2561: fold the round's figures in once Claude has finished — the
-  // RTK saving, and the query tallies the Graft and CodeGraph lines report.
-  // None of the three throws.
-  await rtk.record();
+  // Issue #2561: the query tallies the Graft and CodeGraph lines report.
+  // Neither throws.
   codegraph.record(claudeResult.value.runStats);
   graft.record(claudeResult.value.runStats);
 
