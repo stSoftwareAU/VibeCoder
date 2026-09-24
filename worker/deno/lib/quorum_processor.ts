@@ -66,6 +66,11 @@ import {
   runQuorum,
 } from "./quorum_orchestrator.ts";
 import { reportQuorumDegradation } from "./quorum_run_stats.ts";
+import type { GraftContextCollector } from "./graft_context.ts";
+import {
+  type PhaseAccelerators,
+  preparePhaseAccelerators,
+} from "./phase_accelerators.ts";
 
 // ---------------------------------------------------------------------------
 // Markers
@@ -102,6 +107,8 @@ export interface QuorumProcessorDeps {
    * other parallel worker shares.
    */
   promptsDir?: string;
+  /** The Graft collection seam (Issue #2569); defaults to the real collector. */
+  collectGraftContext?: GraftContextCollector;
 }
 
 /** What one Quorum processing run did. */
@@ -426,6 +433,21 @@ async function runQuorumForIssue(
     logger.warn(auditMsg, { repo, issueNumber });
   }
 
+  // Issue #2569: one Graft, CodeGraph and RTK preparation for the plan-off,
+  // shared by every invocation on the provider it was prepared for.
+  const accel = await preparePhaseAccelerators({
+    config,
+    repo,
+    issueNumber,
+    issueTitle,
+    issueBody,
+    claude: deps.claude,
+    logger,
+    ...(processorDeps.collectGraftContext
+      ? { collectGraftContext: processorDeps.collectGraftContext }
+      : {}),
+  });
+
   const runResult = await runQuorum({
     issue: {
       repo,
@@ -445,10 +467,11 @@ async function runQuorumForIssue(
       planners: [config.quorumPlanners[0]!, config.quorumPlanners[1]!],
       judge: config.quorumJudge,
     },
-    invoke: buildQuorumInvoker(ctx, processorDeps),
+    invoke: buildQuorumInvoker(ctx, processorDeps, accel),
     timeoutSeconds: config.quorumTimeout,
     killAfterSeconds: config.quorumKillAfter,
   });
+  await accel.afterSpawn();
 
   // `ok: false` means the run could not start — an unusable bound, an
   // unresolvable provider, a prompt that will not load. Those are the
@@ -520,6 +543,7 @@ async function runQuorumForIssue(
       ghClient,
       runGhCommand: deps.github.runGhCommand,
       logger,
+      ...accel.report(),
     });
   } catch (err) {
     logger.warn("Quorum degraded-model detection failed (non-fatal)", {
@@ -563,18 +587,24 @@ async function runQuorumForIssue(
  *
  * @param ctx - Issue context (supplies the bounds and working directory).
  * @param processorDeps - Processor dependencies.
+ * @param accel - The plan-off's Graft, CodeGraph and RTK (Issue #2569); only
+ *   invocations on the provider they were prepared for carry them.
  * @returns An invoker for {@link runQuorum}.
  */
 function buildQuorumInvoker(
   ctx: IssueContext,
   processorDeps: QuorumProcessorDeps,
+  accel: PhaseAccelerators,
 ): QuorumInvoker {
   const { config } = ctx;
   const { deps, logger } = processorDeps;
   return async (invocation) => {
+    const accelerated = invocation.providerId === accel.providerId;
     const result = await deps.claude.runClaudeWithRetry(
       {
-        prompt: invocation.prompt,
+        prompt: accelerated
+          ? accel.applyPrompt(invocation.prompt)
+          : invocation.prompt,
         timeoutSeconds: invocation.timeoutSeconds,
         killAfterSeconds: invocation.killAfterSeconds,
         noOutputTimeout: config.claudeNoOutputTimeout,
@@ -582,10 +612,12 @@ function buildQuorumInvoker(
         agentProvider: invocation.agentProvider,
         cwd: config.workDir,
         logger,
+        ...(accelerated ? accel.spawnOptions() : {}),
       },
       { maxRetries: config.maxRateLimitRetries },
     );
     if (!result.ok) return result;
+    if (accelerated) accel.recordSuccess(result.value.runStats);
     return {
       ok: true,
       value: {
