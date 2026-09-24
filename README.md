@@ -159,8 +159,8 @@ host builds and runs a Codex image rather than reusing the default one.
   failure remediation, branch updates, auto-merge, branch cleanup, issue
   closure, milestone completion (with tracking issue), issue refinement,
   question answering, planning, then new issues (globally oldest across repos).
-- **Cost optimisation** — Phase-based model selection (Fable 5 / Opus for
-  complex work, Haiku for routine tasks — see
+- **Cost optimisation** — Phase-based model selection (Opus 5.5 for
+  complex work, with effort as the main lever; Haiku for routine tasks — see
   [Model, Caching & Batching](docs/MODEL-AND-CACHING.md) for the full routing
   rationale), SHA-based prompt compilation cache, prompt structure
   optimisation for Claude prompt caching, and per-issue token usage tracking.

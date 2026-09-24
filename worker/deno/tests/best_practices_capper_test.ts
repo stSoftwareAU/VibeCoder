@@ -172,3 +172,47 @@ Deno.test("cap - does not mutate the input array", () => {
   cap(input, 6);
   assertEquals(input.map((x) => x.id), originalOrder);
 });
+
+// ---------------------------------------------------------------------------
+// cap - reserved cost, speed and reliability slot (Issue #2579)
+// ---------------------------------------------------------------------------
+
+/** A cost, speed or reliability finding. */
+function csr(id: string, severity: Finding["severity"]): Finding {
+  return { ...f(id, severity), costSpeedReliability: true };
+}
+
+const MEDIUMS = ["m1", "m2", "m3", "m4", "m5", "m6"];
+
+Deno.test("cap - a low cost finding takes the last slot from medium surplus (Issue #2579)", () => {
+  const input = [...MEDIUMS.map((id) => f(id, "medium")), csr("c1", "low")];
+  assertEquals(
+    cap(input, 6).map((x) => x.id),
+    ["m1", "m2", "m3", "m4", "m5", "c1"],
+  );
+});
+
+Deno.test("cap - the reserved slot never displaces a severity:high finding (Issue #2579)", () => {
+  const highs = ["h1", "h2", "h3", "h4", "h5", "h6"].map((id) => f(id, "high"));
+  assertEquals(
+    cap([...highs, csr("c1", "medium")], 6).map((x) => x.id),
+    ["h1", "h2", "h3", "h4", "h5", "h6"],
+  );
+});
+
+Deno.test("cap - only one slot is reserved, for the highest-priority cost finding (Issue #2579)", () => {
+  const input = [
+    ...MEDIUMS.map((id) => f(id, "medium")),
+    csr("c-low", "low"),
+    csr("c-med", "medium"),
+  ];
+  assertEquals(
+    cap(input, 6).map((x) => x.id),
+    ["m1", "m2", "m3", "m4", "m5", "c-med"],
+  );
+});
+
+Deno.test("cap - no reservation is needed when a cost finding already fits (Issue #2579)", () => {
+  const input = [f("h1", "high"), csr("c1", "low"), f("m1", "medium")];
+  assertEquals(cap(input, 6).map((x) => x.id), ["h1", "m1", "c1"]);
+});

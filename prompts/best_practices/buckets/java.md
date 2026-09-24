@@ -145,3 +145,34 @@ file) so re-runs deduplicate.
     prompt, which every scan applies regardless of the drawn bucket —
     see there for the full contract and the per-ecosystem quiet
     flags.
+
+## Cost, speed and reliability
+
+Concrete, evidence-cited checks only: skip anything you cannot tie to a
+file and line. Each finding carries an `**Estimated effect:**` line
+derived from the cited source and marked estimated, plus a `**Risk:**`
+line naming what the change could break, and competes for the reserved
+slot in Phase 3. Severity is `severity:low`, or `severity:medium` on a
+production path; never `severity:high`. Each stable id uses the standard
+`BP-<12 hex>` recipe with the title given and the cited file.
+
+14. **Serial remote calls over independent items.** Flag a loop making
+    one remote call per item when no iteration uses another's result;
+    suggest a batch API, `CompletableFuture` or virtual threads. Effect:
+    latency falls from the sum of the calls to about the slowest one.
+    Risk: unbounded fan-out can trip rate limits. Stable id: title
+    `Serial remote calls in <method>`.
+15. **N+1 queries.** Flag a lazy JPA/Hibernate association read inside
+    a loop with no fetch join, `@EntityGraph` or batch size. Effect: one
+    query instead of N+1. Risk: a fetch join can multiply rows, so check
+    pagination. Stable id: title `N+1 queries in <method>`.
+16. **HTTP client without timeouts or with unsafe retries.** Flag
+    `HttpClient` with no `connectTimeout` or request `timeout`,
+    `RestTemplate`/`WebClient` with no timeouts, and retries with no
+    backoff or cap. Effect: a hung peer can no longer hold a thread.
+    Risk: too short a timeout fails slow but healthy calls. Stable id:
+    title `HTTP client in <class> has no timeout or safe retry`.
+17. **Unbounded cache.** Flag a `static` map used as a cache, or a
+    Caffeine/Guava cache with no `maximumSize` or expiry. Effect: flat
+    heap under load. Risk: eviction changes hit rates. Stable id: title
+    `Unbounded cache in <class>`.

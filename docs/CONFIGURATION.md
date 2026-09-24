@@ -400,7 +400,7 @@ explicitly overridden.
 | `issue_reviewer_agents` | `false` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off (the default), no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override, because the pilot compares hosts. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Before turning it on beyond a pilot host, run the [reviewer sub-agent pilot](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
-| `software_min_versions`      | `{ "claude": "2.1.260" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `software_min_versions`      | `{ "claude": "2.1.280" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
@@ -530,7 +530,7 @@ floors for `gh`/`deno` can be added later:
 ```json
 {
   "software_min_versions": {
-    "claude": "2.1.260"
+    "claude": "2.1.280"
   }
 }
 ```
@@ -553,15 +553,17 @@ Semantics:
 - **Skip flag still wins.** `SKIP_CLAUDE_UPDATE=true` (and the `gh`/`deno`
   equivalents) still suppresses the update, but logs that a version floor is
   unmet when it does so.
-- **Default.** `{ "claude": "2.1.260" }` — the oldest Claude CLI release
-  that resolves the `fable` alias to **Fable 5.1** (added as the default Fable
-  model in 2.1.257) *and* carries the 5.1 prompt-cache fixes that landed in
-  2.1.260 (Issue #1362). Setting the key replaces the default map; provide an
-  empty map to remove the floor.
+- **Default.** `{ "claude": "2.1.280" }` — the oldest Claude CLI release
+  that resolves the `opus` alias to **Opus 5.5** (`claude-opus-5-5`, added as
+  the default Opus model in 2.1.280), the tier every substantive phase requests
+  since Issue #2560. It was 2.1.260 before — the oldest release serving
+  **Fable 5.1** with its prompt-cache fixes (Issue #1362) — and 2.1.280 is above
+  that, so a phase pinned back to Fable keeps both. Setting the key replaces the
+  default map; provide an empty map to remove the floor.
 - **Hosts only, and the update channel bounds it.** Inside the worker container
   the software-update step is suppressed altogether — the image is the update
   mechanism, so `container/tools.json` is what decides the CLI version there
-  (pinned to 2.1.261 for the same issue). On a host in the default `dynamic`
+  (pinned to 2.1.281 since Issue #2560). On a host in the default `dynamic`
   mode the updater runs bare `claude update`, which follows the CLI's `stable`
   channel; `stable` was 2.1.236 when this floor was raised, so such a host logs
   "below required floor" once per interval until `stable` catches up or the host
@@ -1433,12 +1435,12 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 
 | Phase            | Default Model | Description                                          |
 | ---------------- | ------------- | ---------------------------------------------------- |
-| `planning` | `fable` | Complex task decomposition — Fable 5 top tier, plan quality compounds across sub-issues |
-| `grill_me` | `fable` | Requirements interrogation — Fable 5 top tier, shapes everything downstream |
-| `refinement` | `fable` | Rewording issue titles/descriptions — planning-shaped, promoted to Fable 5 |
-| `revision` | `fable` | Rewriting issues from review feedback — planning-shaped, promoted to Fable 5 |
-| `question` | `fable` | Answering codebase questions — planning-shaped, promoted to Fable 5 |
-| `clarification` | `fable` | Assessing whether an issue has sufficient detail — planning-shaped, promoted to Fable 5 |
+| `planning` | `opus` | Complex task decomposition — top tier at effort `high`, plan quality compounds across sub-issues |
+| `grill_me` | `opus` | Requirements interrogation — top tier at effort `high`, shapes everything downstream |
+| `refinement` | `opus` | Rewording issue titles/descriptions — planning-shaped, effort `high` |
+| `revision` | `opus` | Rewriting issues from review feedback — planning-shaped, effort `high` |
+| `question` | `opus` | Answering codebase questions — planning-shaped, effort `high` |
+| `clarification` | `opus` | Assessing whether an issue has sufficient detail — planning-shaped, effort `high` |
 | `implementation` | `opus` (base) | Core work — uses the base `claude_model` setting (`issue` phase, effort `high`) |
 | `ci_fix`         | `opus`        | Fixing CI failures from structured error messages (effort `medium`) |
 | `quality_fix`    | `opus`        | Fixing quality check failures (lint, test errors) (effort `medium`) |
@@ -1455,12 +1457,15 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 3. `CLAUDE_MODEL` environment variable (base model for all phases)
 4. Built-in phase defaults (table above)
 
-**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Fable (alias `fable`,
-served as `claude-fable-5-1` since 2026-09-01) is the top tier above Opus, with a 1M-token
-context window and a rate-limit fallback of `fable → opus → sonnet → haiku`
-. It is the default for the eight planning-shaped phases
-(`planning`, `grill_me`, `refinement`, `revision`, `question`, `clarification`,
-`quorum`, `quorum_judge`) under, and; pin any other phase to it explicitly, e.g.
+**Available tiers:** `fable`, `opus`, `sonnet`, `haiku`. Since Issue #2560 the
+eight planning-shaped phases (`planning`, `grill_me`, `refinement`, `revision`,
+`question`, `clarification`, `quorum`, `quorum_judge`) default to `opus`
+(served as `claude-opus-5-5`), which matches Fable 5.1 on plan quality at
+roughly half the price. Fable (alias `fable`, served as `claude-fable-5-1`) is
+still the tier above Opus, with a 1M-token context window and a rate-limit
+fallback of `fable → opus → sonnet → haiku`; no phase defaults to it, so pin a
+phase to it explicitly to get it back (`CLAUDE_MODEL_PLANNING=fable` is the
+documented rollback), e.g.
 `"phase_model_overrides": { "issue": "fable" }` or `CLAUDE_MODEL=fable`. The
 `opus` alias resolves to the latest Opus (Opus 5 as of July 2026) once the CLI
 version floor is met — see [Minimum-Version Floor](#-minimum-version-floor).
@@ -4091,24 +4096,24 @@ beat the built-in phase defaults. Overrides apply only while the worker is
 processing that repo — switching repos restores the other repo's (or global)
 routing, so a premium tier never leaks into a filler repo.
 
-> **⚠️ A per-repo `claude_model` demotes the Fable planning/grill-me tiers
+> **⚠️ A per-repo `claude_model` demotes the planning/grill-me top tier
 > unless you re-pin them (audit
 > F2/F3).**
 > Because the per-repo base `claude_model` beats the built-in phase defaults,
 > setting it to cheapen a filler repo's ordinary phases **also reroutes
-> `planning` and `grill_me` off the Fable 5 top tier** (and setting it to
+> `planning` and `grill_me` off the top tier** (and setting it to `opus` or
 > `fable` promotes the trivial Haiku phases — `spelling_fix`/`summarise`/
-> `health` — to Fable at ~5× their cost). The Fable planning escalation is the
-> highest-leverage spend, so to keep it while demoting the base,
-> re-pin the two planning-shaped phases in the same `repo_config` entry:
+> `health` — at ~5× their cost). The planning tier is the highest-leverage
+> spend, so to keep it while demoting the base, re-pin the two planning-shaped
+> phases in the same `repo_config` entry:
 >
 > ```jsonc
 > "repo_config": {
 >   "owner/filler-repo": {
 >     "claude_model": "sonnet",                 // cheapen ordinary phases
 >     "phase_model_overrides": {
->       "planning": "fable",                    // keep the Fable plan escalation
->       "grill_me": "fable"
+>       "planning": "opus",                     // keep the top-tier plan escalation
+>       "grill_me": "opus"
 >     }
 >   }
 > }
