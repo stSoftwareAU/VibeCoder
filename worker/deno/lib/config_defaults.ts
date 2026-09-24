@@ -461,6 +461,12 @@ export const OPERATIONAL_DEFAULTS = {
    * coding agent exactly as it does today.
    */
   issueExecutorSplit: false,
+  /**
+   * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
+   * defined cheaper sub-agents (Issue #2575). Off until the pilot in
+   * docs/MODEL-AND-CACHING.md clears it; off, they inherit the phase model.
+   */
+  issueReviewerAgents: false,
   /** Maximum session store size in bytes before compaction (50 MB) (Issue #1328). */
   maxSessionSizeBytes: 50 * 1024 * 1024,
   /** Maximum session age in days before cleanup (Issue #1328). */
@@ -1554,6 +1560,7 @@ export function buildDefaultWorkerConfig(
     geminiPhaseModelOverrides: {},
     deepseekPhaseModelOverrides: {},
     issueExecutorSplit: OPERATIONAL_DEFAULTS.issueExecutorSplit,
+    issueReviewerAgents: OPERATIONAL_DEFAULTS.issueReviewerAgents,
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
       OPERATIONAL_DEFAULTS.recentActivityMergedPrLimit,

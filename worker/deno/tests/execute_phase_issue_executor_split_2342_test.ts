@@ -16,16 +16,22 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
-import { ISSUE_EXECUTOR_AGENT_NAME } from "../lib/issue_executor_agents.ts";
+import {
+  ISSUE_EXECUTOR_AGENT_NAME,
+  SPEC_REVIEWER_AGENT_NAME,
+  STANDARDS_REVIEWER_AGENT_NAME,
+} from "../lib/issue_executor_agents.ts";
 import type { AgentDefinition } from "../lib/agent_provider.ts";
 
 /** Run the phase with the given host and per-repo key, and report the argv options. */
 async function runPhase(
   hostEnabled: boolean,
   repoValue?: boolean,
+  reviewerAgents = false,
 ): Promise<Record<string, unknown> | undefined> {
   const config = buildDefaultWorkerConfig();
   config.issueExecutorSplit = hostEnabled;
+  config.issueReviewerAgents = reviewerAgents;
   if (repoValue !== undefined) {
     config.repoConfig = { "org/repo": { issueExecutorSplit: repoValue } };
   }
@@ -189,4 +195,41 @@ async function promptSplitFlag(
 Deno.test("execute_phase - the key reaches the prompt build as well as the argv (Issue #2343)", async () => {
   assertEquals(await promptSplitFlag(true), true);
   assertEquals(await promptSplitFlag(false), false);
+});
+
+// ---------------------------------------------------------------------------
+// The reviewer sub-agents (Issue #2575)
+// ---------------------------------------------------------------------------
+
+Deno.test("execute_phase - issue_reviewer_agents on carries both reviewer definitions and no executor (Issue #2575)", async () => {
+  const options = await runPhase(false, undefined, true);
+  const agents = options?.agents as
+    | Record<string, AgentDefinition>
+    | undefined;
+
+  assert(agents, "the reviewer run must carry sub-agent definitions");
+  assertEquals(
+    Object.keys(agents).sort(),
+    [SPEC_REVIEWER_AGENT_NAME, STANDARDS_REVIEWER_AGENT_NAME].sort(),
+  );
+  for (const def of Object.values(agents)) {
+    assertEquals(def.model, "sonnet");
+    assertEquals(def.tools, ["Read", "Grep", "Glob"]);
+    assertEquals(def.disallowedTools, ["Agent"]);
+  }
+  assertEquals(options?.issueExecutorSplit, undefined);
+});
+
+Deno.test("execute_phase - reviewers and the split together carry all three definitions (Issue #2575)", async () => {
+  const options = await runPhase(true, undefined, true);
+  const agents = options?.agents as Record<string, AgentDefinition>;
+
+  assertEquals(
+    Object.keys(agents).sort(),
+    [
+      ISSUE_EXECUTOR_AGENT_NAME,
+      SPEC_REVIEWER_AGENT_NAME,
+      STANDARDS_REVIEWER_AGENT_NAME,
+    ].sort(),
+  );
 });
