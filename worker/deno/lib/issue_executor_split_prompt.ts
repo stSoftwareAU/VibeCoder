@@ -61,5 +61,6 @@ still governs every sub-agent this section does not describe.
 - **The reviewers are not executors.** The Spec and Standards reviewer
   sub-agents required by
   [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
-  are unchanged: you dispatch them yourself, they run on this phase's model,
-  and they review rather than edit.`;
+  are unchanged: you dispatch them yourself, they run on this phase's model
+  unless the run defines them as their own agents, and they review rather than
+  edit.`;

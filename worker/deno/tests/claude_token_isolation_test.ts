@@ -56,6 +56,7 @@ import {
   CLAUDE_CREDENTIAL_ENV_VARS,
   CLAUDE_ENV_DENYLIST,
   CLAUDE_ENV_SECRET_ALLOWLIST,
+  CLAUDE_SUBAGENT_CAP_ENV,
   isDeniedClaudeEnvVar,
 } from "../lib/claude_env.ts";
 import { buildCodexChildEnv, CODEX_ENV_DENYLIST } from "../lib/codex_env.ts";
@@ -80,8 +81,11 @@ const CLAUDE = resolveAgentProvider("claude");
 
 /** Names in `env` that carry, or could carry, an Anthropic credential. */
 function anthropicNames(env: Record<string, string>): string[] {
+  // The sub-agent spawn caps (Issue #2575) share the `CLAUDE_CODE_` prefix
+  // but are worker-set constants, not credentials.
   return Object.keys(env)
     .filter((name) => /^(ANTHROPIC_|CLAUDE_CODE_)/.test(name))
+    .filter((name) => !(name in CLAUDE_SUBAGENT_CAP_ENV))
     .sort();
 }
 

@@ -11,7 +11,11 @@
 
 import { assertEquals } from "@std/assert";
 import { resolveAgentStateDir } from "../lib/agent_state_dir.ts";
-import { buildClaudeChildEnv, CLAUDE_ENV_DENYLIST } from "../lib/claude_env.ts";
+import {
+  buildClaudeChildEnv,
+  CLAUDE_ENV_DENYLIST,
+  CLAUDE_SUBAGENT_CAP_ENV,
+} from "../lib/claude_env.ts";
 
 Deno.test("buildClaudeChildEnv - drops the GitHub App private key path", () => {
   const parent = {
@@ -60,8 +64,11 @@ Deno.test("buildClaudeChildEnv - honours a custom denylist", () => {
   assertEquals(child.KEEP, "yes");
 });
 
-Deno.test("buildClaudeChildEnv - an empty environment inherits nothing; the only entry is the audit-journal off switch (Issue #2400)", () => {
-  assertEquals(buildClaudeChildEnv({}), { VIBE_AUDIT_DISABLED: "1" });
+Deno.test("buildClaudeChildEnv - an empty environment inherits nothing; the only entries are the audit-journal off switch (Issue #2400) and the sub-agent spawn caps (Issue #2575)", () => {
+  assertEquals(buildClaudeChildEnv({}), {
+    VIBE_AUDIT_DISABLED: "1",
+    ...CLAUDE_SUBAGENT_CAP_ENV,
+  });
 });
 
 Deno.test("CLAUDE_ENV_DENYLIST - includes the GitHub App private key variables", () => {

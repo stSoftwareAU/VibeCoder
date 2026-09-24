@@ -872,6 +872,10 @@ export async function loadConfig(
   const issueExecutorSplit = file.issue_executor_split ??
     OPERATIONAL_DEFAULTS.issueExecutorSplit;
 
+  // Reviewer sub-agents, host-wide only (Issue #2575).
+  const issueReviewerAgents = file.issue_reviewer_agents ??
+    OPERATIONAL_DEFAULTS.issueReviewerAgents;
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -1111,6 +1115,7 @@ export async function loadConfig(
     geminiPhaseModelOverrides,
     deepseekPhaseModelOverrides,
     issueExecutorSplit,
+    issueReviewerAgents,
     includeRecentActivity,
     includeCodebaseMap,
     codegraphContext,

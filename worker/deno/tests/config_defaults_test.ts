@@ -693,6 +693,35 @@ Deno.test("config_defaults - loadConfig loads issue_executor_split from config (
 });
 
 // =============================================================================
+// Reviewer sub-agents (Issue #2575)
+// =============================================================================
+
+Deno.test("config_defaults - loadConfig defaults issueReviewerAgents to false (Issue #2575)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.issueReviewerAgents, false);
+  });
+});
+
+Deno.test("config_defaults - loadConfig loads issue_reviewer_agents from config (Issue #2575)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    issue_reviewer_agents: true,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.issueReviewerAgents, true);
+  });
+});
+
+// =============================================================================
 // Effort Level Constants (Issue #1402)
 // =============================================================================
 
