@@ -101,6 +101,21 @@ at once.
   fleet merges it to the default branch. That is precisely why milestone work
   parallelises: a milestone stream never stalls on a human reviewer mid-flight,
   so adding milestones adds throughput rather than adding queue.
+- **F2b — `top-priority` and `work-on` never wait for a busy stream**
+  (Issue #2530). The fleet-wide one-run-per-stream lock — the rule that keeps a
+  stream's **shared agent conversation** carrying one run at a time — now
+  applies to `low-priority` and `idle-task` alone. An issue a human has
+  labelled `top-priority` or `work-on` is claimed while another host is running
+  the same milestone stream and runs in its **own per-issue conversation**, so
+  the stream's transcript is still never shared by two runs: the second holder
+  writes no stream session record and no `vibe-stream-holder` marker. Each host
+  still takes one issue per `(repo, milestone)` at a time (the host-local
+  in-flight registry is unchanged), so in-stream parallelism is bounded by the
+  number of hosts — and until Issue #2532 relaxes discovery's fleet-wide
+  milestone-occupancy filter for these tiers, the exception applies at claim
+  time only. F2a is what makes this safe —
+  a milestone branch carries no approval gate mid-flight, so a second pull
+  request on it buries no reviewer.
 - **F3 — eight slots need eight work streams.** Because of F2, eight
   concurrent issues require **eight work streams** with startable work — not
   eight repositories. One repository with several open milestones can supply
@@ -417,6 +432,25 @@ branch):**
    legitimately contains humans, so resolving the fleet from it made one
    human-assigned issue park a whole work stream. The parameter is named
    `pushCapableAuthors` so the permission list cannot be handed to it by habit.
+
+   **Occupancy serialises `low-priority` and `idle-task` only** (Issues #2530,
+   #2532). `top-priority` and `work-on` are work a human has asked for *now*:
+   the claim joins a busy stream in its own fresh per-issue conversation, so
+   the configured-label and work-on collectors no longer refuse a candidate
+   for `milestone-occupied`, and the idle-decision census and the idle-detect
+   audit count such an issue under its tier rather than `stream_occupied`.
+   Treating the empty milestone as a stream was what inverted the ladder
+   fleet-wide: one fleet-assigned `low-priority` issue on the default branch
+   held every `top-priority` issue of that repository behind it. The lower
+   tiers still wait, and this **host's** own slots are still kept apart — by
+   the blank-stream lock (`worker/deno/lib/stream_lock.ts`) for no-milestone
+   issues and by `InFlightRepoRegistry` (`worker/deno/lib/in_flight_repos.ts`),
+   which holds one `(repo, milestone)` stream per slot, for milestone ones.
+   The fleet-wide stream lock of Issue #2334 is **not** that guard for these
+   two tiers: `claimIssue` is told the claim is shareable and proceeds. A
+   candidate the slot registry then refuses is held out of that slot's next
+   scan (`scanExcludedIssues`) until the sibling releases, so the refusal
+   costs one skipped candidate rather than a re-scan loop.
 2. **PR blocking** (`getBlockingPRForIssue` in
    `worker/deno/lib/issue_query.ts`): blocks if the **fleet** has an open PR
    targeting the same branch (milestone branch or default branch). Only
@@ -2698,13 +2732,18 @@ different questions and neither hides the other.
 When the walk ends somewhere the fleet cannot go, the root is **classified rather
 than retried**: `cross-repo-unmonitored` (the blocker lives in a repo this fleet
 does not monitor), `needs-human`, `assigned` (a human holds it), or
-`no-discovery-label`. Those four post the chain-root-unworkable comment on the
-blocked issue — a plain explanation, no labels changed, deduped to one per
-blocked-issue-and-root-and-reason per 24 hours. A root assigned to a **fleet**
-account is not unworkable at all: a sibling host is already on it, so the scan
-stays silent (logging `chain-root-in-progress` only under
-`ISSUE_FINDER_DEBUG=true`), because a comment there would report a fault that
-does not exist.
+`no-discovery-label`. Those four become the root sentence of the blocked issue's
+**gate comment** (Issue #2535). Every held `top-priority`/`work-on` issue
+carries exactly one fleet comment naming the gate that holds it — *PR #N is
+open on this stream*, *waits on milestone M*, or *waits on dependency #N* —
+with the unworkable root and its reason added to the last. No labels change;
+the comment is **edited in place** when the gate moves, so it never names a
+root the chain has passed, and the retired stand-alone chain-root comment
+(#2496) is deleted once the gate comment is written. A root assigned to a
+**fleet** account is not unworkable at all: a sibling host is already on it, so
+the root sentence is left out (logging `chain-root-in-progress` only under
+`ISSUE_FINDER_DEBUG=true`) — the issue is still told which dependency it waits
+on.
 
 ```mermaid
 flowchart TD
@@ -2712,14 +2751,16 @@ flowchart TD
     W -->|"still blocked"| W
     W -->|"unmonitored repo"| U["Unworkable: cross-repo-unmonitored"]
     W -->|"needs-human"| N["Unworkable: needs-human"]
-    W -->|"fleet assignee"| F["Sibling host is on it —<br/>log chain-root-in-progress, no comment"]
+    W -->|"fleet assignee"| F["Sibling host is on it —<br/>log chain-root-in-progress"]
     W -->|"human assignee"| A["Unworkable: assigned"]
     W -->|"no discovery label"| L["Unworkable: no-discovery-label"]
     W -->|"open, unassigned, labelled"| P["Promote to #M's tier<br/>for this scan"]
-    U --> C["Comment on #M: chain root the fleet cannot work"]
+    U --> C["Gate comment on #M: waits on dependency,<br/>chain ends at a root the fleet cannot work"]
     N --> C
     A --> C
     L --> C
+    P --> D["Gate comment on #M: waits on dependency"]
+    F --> D
     style P fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style F fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style C fill:#e0a050,stroke:#8b4500,color:#1a1a1a
@@ -2730,8 +2771,10 @@ flowchart TD
 (the pure resolver),
 [`apply_chain_promotions.ts`](worker/deno/lib/apply_chain_promotions.ts)
 (discovery wiring) and
-[`chain_root_comment.ts`](worker/deno/lib/chain_root_comment.ts) (the comment and
-its 24-hour dedup). Operator view:
+[`held_issue_gate_comment.ts`](worker/deno/lib/held_issue_gate_comment.ts) (the
+gate comment, edited in place) with
+[`chain_root_comment.ts`](worker/deno/lib/chain_root_comment.ts) (the root
+sentence). Operator view:
 [`docs/INTERNALS.md` → Dependency-chain promotion](docs/INTERNALS.md#-dependency-chain-promotion)
 and
 [`docs/TROUBLESHOOTING.md` → Top-priority issue blocked but fleet works low-priority](docs/TROUBLESHOOTING.md#top-priority-issue-blocked-but-fleet-works-low-priority).

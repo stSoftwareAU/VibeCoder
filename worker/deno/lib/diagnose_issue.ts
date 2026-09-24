@@ -13,7 +13,7 @@ import type { WorkerConfig } from "../types.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import type { IssueFetcher } from "./issue_dependencies.ts";
 import { isRepoAllowed } from "./config_validator.ts";
-import { isMilestoneOccupied } from "./issue_filter.ts";
+import { isMilestoneOccupied, isStreamSharingTier } from "./issue_filter.ts";
 import {
   fetchAllIssues,
   fetchOpenPRsForFleet,
@@ -22,11 +22,13 @@ import {
 } from "./issue_query.ts";
 import { checkRepoAvailability } from "./repo_availability.ts";
 import type { RepoIssueInfo } from "./repo_availability.ts";
+import { normaliseIssueState } from "./issue_dependencies.ts";
+import type { DependencyBlocker } from "./issue_finder_common.ts";
 import {
-  checkParentBlocked,
-  extractDependencyReferences,
-  normaliseIssueState,
-} from "./issue_dependencies.ts";
+  createOpenMilestoneLookup,
+  describeDependencyBlockers,
+  isDependencyBlocked,
+} from "./issue_finder_common.ts";
 import { runGhCommand } from "./github.ts";
 import {
   resolveFleetAuthors,
@@ -126,8 +128,11 @@ async function fetchIssueData(
 
 /**
  * Create an IssueFetcher from a gh command function.
+ *
+ * Exported so `commands/diagnose_repo.ts` reports the dependency hold from the
+ * same validated reads as `diagnose_issue` (Issue #2533).
  */
-function createIssueFetcher(
+export function createDiagnosticIssueFetcher(
   ghCommandFn: (args: string[]) => Promise<string>,
 ): IssueFetcher {
   return {
@@ -139,7 +144,10 @@ function createIssueFetcher(
         "--repo",
         repo,
         "--json",
-        "number,state,title",
+        // Issue #2533: `milestone` rides this existing per-dependency call so
+        // the cross-milestone hold (Issue #2173) can name the open milestone
+        // holding a closed dependency, at no extra `gh` call.
+        "number,state,title,milestone",
       ]);
       const parsed: unknown = JSON.parse(output);
       const validated = validateIssueStateJson(parsed);
@@ -154,6 +162,7 @@ function createIssueFetcher(
         // Issue #3218: a merged PR reports `MERGED` — resolve it to CLOSED.
         state: normaliseIssueState(v.state),
         title: v.title,
+        milestone: v.milestone ?? null,
       };
     },
     async getSubIssues(repo: string, issueNumber: number) {
@@ -338,10 +347,17 @@ export async function diagnoseIssue(
   });
 
   // 6. Work-stream occupancy check
+  // Issue #2533: a `top-priority`/`work-on` issue shares a busy stream
+  // (Issue #2530), so the scan claims it anyway — report it that way here
+  // rather than telling a human to wait for work that never blocked it.
+  const streamShareable = isStreamSharingTier(issue.labels, {
+    issueLabels: config.issueLabels,
+    workOnLabel: config.workOnLabel,
+  });
   let milestoneOccupied = false;
   try {
     const allIssues = await fetchAllIssues(repo, undefined, 100, ghFn);
-    milestoneOccupied = isMilestoneOccupied(
+    milestoneOccupied = !streamShareable && isMilestoneOccupied(
       allIssues,
       issue.milestone,
       options.githubUser,
@@ -353,9 +369,11 @@ export async function diagnoseIssue(
       passed: !milestoneOccupied,
       detail: milestoneOccupied
         ? `Milestone "${issue.milestone}" already has a worker-assigned issue`
-        : issue.milestone
-        ? `Milestone "${issue.milestone}" has no worker-assigned issues`
-        : "Issue has no milestone (not affected by milestone occupancy)",
+        : !issue.milestone
+        ? "Issue has no milestone (not affected by milestone occupancy)"
+        : streamShareable
+        ? `Milestone "${issue.milestone}" occupancy does not apply — the issue's tier shares the stream`
+        : `Milestone "${issue.milestone}" has no worker-assigned issues`,
       suggestion: milestoneOccupied
         ? `Wait for the worker's current work in milestone "${issue.milestone}" to complete`
         : undefined,
@@ -419,39 +437,29 @@ export async function diagnoseIssue(
   }
 
   // 8. Dependency blocking check
+  // Issue #2533: run the scan's own `isDependencyBlocked` gate, supplied with
+  // this candidate's `milestoneScope`, rather than a hand-rolled open-state
+  // loop. The loop only ever asked "is the dependency OPEN?", so a dependency
+  // closed inside another still-open milestone of this repo — held by the
+  // cross-milestone hold (Issue #2173) — was reported here as no dependency at
+  // all, and the diagnosis contradicted the scan that skipped the issue.
   let depBlocked = false;
   let depBlockDetail = "";
   try {
-    const fetcher = createIssueFetcher(ghFn);
-    const parentResult = await checkParentBlocked(fetcher, repo, issueNumber);
-    if (parentResult.ok && parentResult.value.isBlocked) {
-      depBlocked = true;
-      const openRefs = parentResult.value.openChildren.map((n) => `#${n}`).join(
-        ", ",
-      );
-      depBlockDetail = `blocked by open sub-issue(s): ${openRefs}`;
-    }
-
-    if (!depBlocked) {
-      const body = await fetcher.getIssueBody(repo, issueNumber);
-      const deps = extractDependencyReferences(body);
-      for (const dep of deps) {
-        try {
-          const depState = await fetcher.getIssueState(repo, dep);
-          if (depState.state === "OPEN") {
-            depBlocked = true;
-            depBlockDetail = `depends on #${dep} ("${
-              depState.title ?? ""
-            }") which is OPEN`;
-            break;
-          }
-        } catch {
-          depBlocked = true;
-          depBlockDetail = `depends on #${dep} (could not verify state)`;
-          break;
-        }
-      }
-    }
+    const fetcher = createDiagnosticIssueFetcher(ghFn);
+    const blockers: DependencyBlocker[] = [];
+    depBlocked = await isDependencyBlocked(
+      repo,
+      issueNumber,
+      fetcher,
+      undefined,
+      {
+        candidateMilestone: issue.milestone,
+        isMilestoneOpen: createOpenMilestoneLookup(repo, undefined, ghFn),
+      },
+      blockers,
+    );
+    depBlockDetail = describeDependencyBlockers(repo, blockers);
 
     checks.push({
       name: "not-dependency-blocked",

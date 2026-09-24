@@ -17,6 +17,8 @@ import type { IssueFetcher, IssueState } from "../lib/issue_dependencies.ts";
 import {
   createIssueFetcher,
   createOpenMilestoneLookup,
+  type DependencyBlocker,
+  describeDependencyBlockers,
   isDependencyBlocked,
 } from "../lib/issue_finder_common.ts";
 import { collectLowPriorityCandidates } from "../lib/collect_low_priority_candidates.ts";
@@ -253,6 +255,134 @@ Deno.test("a cross-repo dependency is not measured against this repo's milestone
     false,
   );
   assertEquals(lookups, []);
+});
+
+// ---------------------------------------------------------------------------
+// Reporting the hold to a human (Issue #2533)
+// Reporting the hold to a human (Issue #2533), and the blocker that records
+// which milestone holds it (Issue #2534)
+// ---------------------------------------------------------------------------
+
+Deno.test("collected blockers name the milestone holding a closed dependency", async () => {
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  const blockers: DependencyBlocker[] = [];
+  assertEquals(
+    await isDependencyBlocked(
+      REPO,
+      CANDIDATE,
+      fetcher,
+      undefined,
+      makeScope("Dependant", ["Foundation", "Dependant"]),
+      blockers,
+    ),
+    true,
+  );
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+    heldByMilestone: "Foundation",
+  }]);
+  assertEquals(
+    describeDependencyBlockers(REPO, blockers),
+    "held: dependency #2170 is closed but in open milestone 'Foundation'",
+  );
+});
+
+Deno.test("an unreadable open-milestone lookup still names the dependency's milestone", async () => {
+  const blockers: DependencyBlocker[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(REPO, CANDIDATE, fetcher, undefined, {
+      candidateMilestone: "Dependant",
+      isMilestoneOpen: () => Promise.reject(new Error("gh api failed")),
+    }, blockers),
+    true,
+  );
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+    heldByMilestone: "Foundation",
+  }]);
+});
+
+Deno.test("an open dependency's blocker names no milestone", async () => {
+  const blockers: DependencyBlocker[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "OPEN", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(
+      REPO,
+      CANDIDATE,
+      fetcher,
+      undefined,
+      makeScope("Dependant", ["Foundation"]),
+      blockers,
+    ),
+    true,
+  );
+  // The key is absent, not `undefined` — the dependency is simply open.
+  assertEquals(blockers, [{
+    repo: REPO,
+    number: 2170,
+    kind: "depends-on",
+  }]);
+});
+
+Deno.test("an open sub-issue is collected as a child blocker", async () => {
+  const fetcher: IssueFetcher = {
+    ...makeFetcher("", { [`${REPO}#99`]: { state: "OPEN" } }),
+    getSubIssues: () => Promise.resolve([99]),
+  };
+  const blockers: DependencyBlocker[] = [];
+  assertEquals(
+    await isDependencyBlocked(
+      REPO,
+      CANDIDATE,
+      fetcher,
+      undefined,
+      undefined,
+      blockers,
+    ),
+    true,
+  );
+  assertEquals(blockers, [{ repo: REPO, number: 99, kind: "child" }]);
+  assertEquals(
+    describeDependencyBlockers(REPO, blockers),
+    "blocked by open sub-issue(s): #99",
+  );
+});
+
+Deno.test("describeDependencyBlockers renders each blocker kind", () => {
+  // Nothing held — the caller prints no reason at all.
+  assertEquals(describeDependencyBlockers(REPO, []), "");
+  assertEquals(
+    describeDependencyBlockers(REPO, [
+      { repo: REPO, number: 10, kind: "child" },
+      { repo: REPO, number: 11, kind: "child" },
+      { repo: REPO, number: 12, kind: "depends-on" },
+      { repo: "org/dep", number: 7, kind: "depends-on" },
+      {
+        repo: REPO,
+        number: 13,
+        kind: "depends-on",
+        heldByMilestone: "Foundation",
+      },
+    ]),
+    "blocked by open sub-issue(s): #10, #11; " +
+      "depends on #12 which is not resolved; " +
+      "depends on org/dep#7 which is not resolved; " +
+      "held: dependency #13 is closed but in open milestone 'Foundation'",
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ import {
   type RepoState,
   runClaimScan,
   type StateIssue,
+  STREAM_SHARING_EXEMPT_GATES,
 } from "./fixtures/claim_path_state.ts";
 
 /** A backlog the scan certainly claims from, so a regression is visible. */
@@ -118,13 +119,17 @@ Deno.test(
     // here even though every per-gate test still passes.
     for (const gate of MODELLED_GATES) {
       const parksBacklog = SKIP_REASON_CLEARING[gate] === "self";
+      // Issue #2532: a gate that no longer binds the stream-sharing tiers
+      // describes a *claimable* work-on issue, so the scan must claim — the
+      // gate's own contract is asserted at the tier it still binds, below.
+      const exempt = STREAM_SHARING_EXEMPT_GATES.includes(gate);
       const withWorkOn = await runClaimScan({
         repo: "owner/monotone",
         issues: [{ number: 48, tier: "work-on", gate }, ...BACKLOG],
       });
       assertEquals(
         withWorkOn.claimed,
-        !parksBacklog,
+        exempt ? true : !parksBacklog,
         `a work-on issue held by '${gate}' (declared ` +
           `'${SKIP_REASON_CLEARING[gate]}') left the scan claiming ` +
           `${withWorkOn.claimedIssue} — the declaration and the behaviour ` +

@@ -680,6 +680,64 @@ Deno.test(
   },
 );
 
+// ---------------------------------------------------------------------------
+// The blocking PR is recorded on the blocked entry (Issue #2534)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - a pr-blocked candidate records the blocking PR number",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 72,
+          title: "Held by an open fleet PR",
+          url: "https://github.com/owner/repo/issues/72",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-12T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-12T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Held by an open fleet PR", body: "" },
+    });
+
+    // A fleet-authored PR on the default branch blocks a non-milestone issue.
+    const repoPRs: OpenPR[] = [{
+      number: 913,
+      title: "Fleet work in flight",
+      baseRefName: "main",
+      headRefName: "issue-71-something",
+      author: "bot",
+    }];
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      repoPRs,
+      [],
+      createIssueFetcher(mockGh),
+      [],
+    );
+
+    assertEquals(result.candidates.length, 0);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 72);
+    assertEquals(entry?.reason, "pr-blocked");
+    assertEquals(entry?.blockingPr, 913);
+  },
+);
+
 Deno.test(
   "collect_label_candidates - strips a custom_label_prompts label added by an untrusted actor (Issue #847)",
   async () => {
@@ -702,5 +760,136 @@ Deno.test(
     // `grill-me` dispatches the grilling phase, so an untrusted add must be
     // stripped and audited here, not carried forward on the issue record.
     await assertUntrustedLabelStripped(makeConfig(), 61, "grill-me");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #2532 — a busy work stream no longer refuses a top-priority candidate
+// ---------------------------------------------------------------------------
+// `top-priority` is work a human has asked for now, and Issue #2530 already
+// lets such a claim share a busy stream in its own fresh conversation. The
+// selection half is here: the collector must stop refusing the candidate for
+// `milestone-occupied`, or the ladder never reaches the claim.
+
+Deno.test(
+  "collect_label_candidates - a top-priority issue shares the occupied blank stream (Issue #2532)",
+  async () => {
+    // The field case: fleet-assigned low-priority #829 holds the
+    // default-branch stream while unassigned top-priority #849 waits. The
+    // blank stream has no claim-time lock, so this refusal was the only
+    // thing inverting the ladder.
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 849,
+          title: "Top-priority fix on the default branch",
+          url: "https://github.com/owner/repo/issues/849",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-01T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-01T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Top-priority fix on the default branch", body: "" },
+    });
+
+    const repoAllIssues: FilterableIssue[] = [
+      {
+        number: 829,
+        title: "Low-priority chore in flight",
+        url: "https://github.com/owner/repo/issues/829",
+        author: "alice",
+        assignees: ["bot"],
+        labels: ["low-priority"],
+        createdAt: "2024-02-01T00:00:00Z",
+        milestone: "",
+      },
+    ];
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      repoAllIssues,
+      createIssueFetcher(mockGh),
+      [],
+    );
+
+    assertEquals(result.candidates.map((c) => c.number), [849]);
+    assertEquals(
+      result.blockedDetails.filter((b) => b.reason === "milestone-occupied"),
+      [],
+    );
+    assertEquals(result.blocked, []);
+  },
+);
+
+Deno.test(
+  "collect_label_candidates - a top-priority issue shares an occupied milestone stream (Issue #2532)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 824,
+          title: "Top-priority fix in the milestone",
+          url: "https://github.com/owner/repo/issues/824",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-01T00:00:00Z",
+          author: { login: "alice" },
+          milestone: { title: "Priority streams" },
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-01T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Top-priority fix in the milestone", body: "" },
+    });
+
+    const repoAllIssues: FilterableIssue[] = [
+      {
+        number: 837,
+        title: "In flight in the same milestone",
+        url: "https://github.com/owner/repo/issues/837",
+        author: "alice",
+        assignees: ["bot"],
+        labels: ["work-on"],
+        createdAt: "2024-02-01T00:00:00Z",
+        milestone: "Priority streams",
+      },
+    ];
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      repoAllIssues,
+      createIssueFetcher(mockGh),
+      [],
+    );
+
+    assertEquals(result.candidates.map((c) => c.number), [824]);
+    assertEquals(
+      result.blockedDetails.filter((b) => b.reason === "milestone-occupied"),
+      [],
+    );
   },
 );

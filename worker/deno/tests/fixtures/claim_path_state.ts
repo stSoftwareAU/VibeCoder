@@ -59,6 +59,18 @@ export const MODELLED_GATES = [
 /** A modelled gate, or `none` for an issue nothing refuses. */
 export type ModelledGate = typeof MODELLED_GATES[number] | "none";
 
+/**
+ * Gates that no longer refuse the stream-sharing tiers (Issue #2532).
+ *
+ * `top-priority` and `work-on` join a busy stream in their own fresh
+ * conversation, so `milestone-occupied` cannot hold such an issue: a state
+ * pairing that gate with one of those tiers describes a claimable issue, not
+ * a refused one. The gate is unchanged for `low-priority` and `idle-task`.
+ */
+export const STREAM_SHARING_EXEMPT_GATES: readonly ModelledGate[] = [
+  "milestone-occupied",
+] as const;
+
 /** The worker login every fixture scans as. */
 export const WORKER_USER = "bot";
 

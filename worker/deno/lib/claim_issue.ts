@@ -40,7 +40,11 @@ import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { postCooldownComment } from "./shared_cooldown.ts";
 import { checkStreamAffinity } from "./stream_holder.ts";
-import { checkMilestoneStreamBusy, formatStreamBusy } from "./stream_lock.ts";
+import {
+  checkMilestoneStreamBusy,
+  formatStreamBusy,
+  type StreamBusy,
+} from "./stream_lock.ts";
 import { getHostname } from "./worker_identity.ts";
 
 /** The claim marker prefix used in issue comments for tie-breaking. */
@@ -154,6 +158,18 @@ export interface ClaimOptions {
    * never join one and never set it.
    */
   streamLockEnabled?: boolean;
+  /**
+   * Claim into a busy stream instead of waiting for it (Issue #2530). Set for
+   * the tiers `isStreamSharingTier` names — a configured `top-priority` label
+   * or `work-on` — which a human has asked for now. Such a claim proceeds
+   * while another host runs the stream and reports {@link ClaimResult.streamShared}
+   * so the caller keeps a per-issue conversation rather than joining the
+   * stream's. Off (the default) keeps the plain `stream_busy` skip.
+   *
+   * Only read when `streamLockEnabled` is on — with no lock there is nothing
+   * to share.
+   */
+  streamShareable?: boolean;
 }
 
 /** Claim comment parsed from the GitHub API. */
@@ -267,7 +283,18 @@ export interface ClaimResult {
    * stderr so operators can diagnose without log-diving.
    */
   reasonDetail?: string;
+  /**
+   * The stream this claim joined as a **second** holder (Issue #2530). Set
+   * only on a successful claim that a `streamShareable` tier made while
+   * another host was already running the stream. The caller uses it to keep
+   * this run on a per-issue conversation — two runs must never share one
+   * transcript — and to name the holder in its log.
+   */
+  streamShared?: SharedStream;
 }
+
+/** The stream a shareable claim joined while another host held it (#2530). */
+export type SharedStream = Omit<StreamBusy, "busy">;
 
 /** Options for checking claim churn. */
 export interface ClaimChurnOptions {
@@ -535,12 +562,15 @@ async function preClaimFreshnessCheck(
     milestoneTitle?: string;
     affinityHost?: string;
     workDir?: string;
+    /** Claim into a busy stream rather than waiting for it (Issue #2530). */
+    shareable?: boolean;
   },
 ): Promise<
   {
     shouldBailOut: boolean;
     reason?: ClaimFailureReason;
     reasonDetail?: string;
+    streamShared?: SharedStream;
   }
 > {
   // Check 1: Re-fetch current assignees
@@ -642,6 +672,21 @@ async function preClaimFreshnessCheck(
         : {}),
     });
     if (stream.busy) {
+      // Issue #2530: a `top-priority` or `work-on` issue is wanted now, so it
+      // joins the busy stream instead of waiting — in its own per-issue
+      // conversation, so the stream's transcript still carries one run. The
+      // affinity head start below is skipped with it: a second holder has no
+      // conversation to hand over.
+      if (streamLock.shareable) {
+        const { busy: _busy, ...shared } = stream;
+        console.info(
+          `[claim_issue] repo=${repo} issue=#${issueNumber} stream shared: ` +
+            `${shared.streamLabel} held by #${shared.holderIssue} on ` +
+            `${shared.holderHost} — claiming into a per-issue session ` +
+            `(Issue #2527)`,
+        );
+        return { shouldBailOut: false, streamShared: shared };
+      }
       const detail = formatStreamBusy(stream);
       console.info(
         `[claim_issue] repo=${repo} issue=#${issueNumber} ${detail} — ` +
@@ -1193,6 +1238,7 @@ export async function claimIssue(
     wasClosedThisRun = defaultWasClosedThisRun,
     blockingLabels = [LABEL_DEFAULTS.needsHumanLabel],
     streamLockEnabled = false,
+    streamShareable = false,
   } = options;
 
   // Issue #181: the worker closed this issue earlier in this run, so no
@@ -1291,9 +1337,12 @@ export async function claimIssue(
     // head start. The machine id is preferred because that is what the holder
     // marker records; the claiming host's name is the fallback, and the two
     // compare equal because affinity matches on the host part alone.
+    // Issue #2530: `shareable` turns the stream-busy skip into a second
+    // holder on a per-issue conversation, for the tiers a human wants now.
     streamLockEnabled
       ? {
         affinityHost: markerOptions?.machineId ?? claimingHost,
+        shareable: streamShareable,
         ...(milestoneTitle ? { milestoneTitle } : {}),
         ...(markerOptions?.workDir ? { workDir: markerOptions.workDir } : {}),
       }
@@ -1461,8 +1510,8 @@ export async function claimIssue(
   // Common finalisation for a won claim: run the live fleet-PR re-check
   // (Issue #3150) then either abort (fleet PR exists) or seed the marker
   // state and return success.
-  const finalise = (competingWorkerCount: number) =>
-    finaliseWonClaim({
+  const finalise = async (competingWorkerCount: number) => {
+    const won = await finaliseWonClaim({
       repo,
       issueNumber,
       githubUser,
@@ -1478,6 +1527,16 @@ export async function claimIssue(
       initialEpoch,
       markerOptions,
     });
+    // Issue #2530: a claim that shared a busy stream says so, so the caller
+    // keeps this run on its own conversation.
+    if (won.ok && won.value.claimed && freshnessCheck.streamShared) {
+      return {
+        ok: true as const,
+        value: { ...won.value, streamShared: freshnessCheck.streamShared },
+      };
+    }
+    return won;
+  };
 
   // Step 6: Verify exclusive claim (Issue #1090: log race outcomes)
   if (allClaimComments.length <= 1) {

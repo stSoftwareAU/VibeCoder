@@ -100,6 +100,8 @@ Deno.test("classifyIssues - excludes assigned issues as assignee_filter", () => 
 });
 
 Deno.test("classifyIssues - excludes stream_occupied when worker already has an issue in that milestone", () => {
+  // Issue #2532: occupancy serialises the lower tiers only, so the waiting
+  // sibling here is `low-priority` — a `work-on` one shares the stream.
   const verdicts = classifyIssues(
     [
       {
@@ -110,7 +112,7 @@ Deno.test("classifyIssues - excludes stream_occupied when worker already has an 
       },
       {
         number: 101,
-        labels: ["work-on"],
+        labels: ["low-priority"],
         assignees: [],
         milestone: "v2",
       },
@@ -137,7 +139,7 @@ Deno.test("classifyIssues - default branch stream occupancy uses empty milestone
       },
       {
         number: 201,
-        labels: ["top-priority"],
+        labels: ["low-priority"],
         assignees: [],
         milestone: "",
       },
@@ -443,6 +445,8 @@ interface StubIssueRow {
   labels: string[];
   assignees: string[];
   milestone: string;
+  /** Issue #857: the dependency gate reads it; Issue #2533 holds on it. */
+  body?: string;
 }
 
 function makeGhStub(byRepo: Record<string, StubIssueRow[] | Error>) {
@@ -457,6 +461,7 @@ function makeGhStub(byRepo: Record<string, StubIssueRow[] | Error>) {
       labels: row.labels.map((name) => ({ name })),
       assignees: row.assignees.map((login) => ({ login })),
       milestone: row.milestone.length > 0 ? { title: row.milestone } : null,
+      body: row.body ?? "",
     }));
     return Promise.resolve(JSON.stringify(payload));
   };
@@ -1248,3 +1253,214 @@ Deno.test("auditClaimableState - a failing openIssuesFn is a probe_error for tha
   const alpha = logs.find((l) => l.includes("repo=org/alpha"));
   assert(alpha !== undefined && alpha.includes("reason=probe_error"), alpha);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2532: the stream-sharing tiers are claimable in a busy stream
+// ---------------------------------------------------------------------------
+// The audit must agree with the scan, or the `mis_classification` ALERT
+// fires on every tick. Since Issue #2530 a `top-priority`/`work-on` claim
+// joins a busy stream in its own fresh conversation and the collectors no
+// longer refuse it, so neither does this classifier.
+
+Deno.test("classifyIssues - top-priority and work-on issues share an occupied stream (Issue #2532)", () => {
+  const verdicts = classifyIssues(
+    [
+      // #837 is in flight in the milestone stream.
+      {
+        number: 837,
+        labels: ["work-on"],
+        assignees: ["vibebot"],
+        milestone: "Priority streams",
+      },
+      {
+        number: 824,
+        labels: ["top-priority"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
+      {
+        number: 843,
+        labels: ["work-on"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
+      // The lower tier still waits for the stream.
+      {
+        number: 845,
+        labels: ["low-priority"],
+        assignees: [],
+        milestone: "Priority streams",
+      },
+    ],
+    { workerUser: "vibebot" },
+  );
+  assertEquals(verdicts[0]!.excludedBy, "assignee_filter");
+  assertEquals(verdicts[1]!.claimable, true);
+  assertEquals(verdicts[2]!.claimable, true);
+  assertEquals(verdicts[3]!.excludedBy, "stream_occupied");
+});
+
+Deno.test("classifyIssues - the occupied blank stream does not exclude a top-priority issue (Issue #2532)", () => {
+  // The #829→#849 inversion: fleet-assigned #829 holds the default-branch
+  // stream while unassigned top-priority #849 waits behind it.
+  const verdicts = classifyIssues(
+    [
+      {
+        number: 829,
+        labels: ["low-priority"],
+        assignees: ["vibebot"],
+        milestone: "",
+      },
+      { number: 849, labels: ["top-priority"], assignees: [], milestone: "" },
+    ],
+    { workerUser: "vibebot" },
+  );
+  assertEquals(verdicts[1]!.claimable, true);
+  assertEquals(verdicts[1]!.excludedBy, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Cross-milestone dependency hold (Issue #2533)
+// ---------------------------------------------------------------------------
+
+/**
+ * The GRQ-AutoTrader symptom: #738 sits in milestone 34 and depends on #726,
+ * which is *closed* — but closed inside milestone 32, which is still open. The
+ * scan holds #738 until milestone 32 merges, so the audit must too.
+ */
+Deno.test("classifyIssues - a closed dependency in another open milestone holds the issue (Issue #2533)", () => {
+  const verdicts = classifyIssues(
+    [
+      {
+        number: 738,
+        labels: ["top-priority"],
+        assignees: [],
+        milestone: "Milestone 34",
+        body: "Depends on #726",
+      },
+    ],
+    {
+      workerUser: "vibebot",
+      repo: "org/grq",
+      openIssueNumbers: new Set([738]),
+      openMilestones: new Set([
+        "Milestone 34",
+        "Automatic buying from the score sheet",
+      ]),
+    },
+  );
+  assertEquals(verdicts[0]!.claimable, false);
+  assertEquals(verdicts[0]!.excludedBy, "dependency_blocked");
+});
+
+Deno.test("classifyIssues - a closed dependency in the issue's own milestone does not hold it (Issue #2533)", () => {
+  const verdicts = classifyIssues(
+    [
+      {
+        number: 738,
+        labels: ["top-priority"],
+        assignees: [],
+        milestone: "Automatic buying from the score sheet",
+        body: "Depends on #726",
+      },
+    ],
+    {
+      workerUser: "vibebot",
+      repo: "org/grq",
+      openIssueNumbers: new Set([738]),
+      // The only open milestone is the one the issue already sits in.
+      openMilestones: new Set(["Automatic buying from the score sheet"]),
+    },
+  );
+  assertEquals(verdicts[0]!.claimable, true);
+  assertEquals(verdicts[0]!.excludedBy, undefined);
+});
+
+Deno.test("classifyIssues - the hold lifts once the dependency's milestone closes (Issue #2533)", () => {
+  const verdicts = classifyIssues(
+    [
+      {
+        number: 738,
+        labels: ["top-priority"],
+        assignees: [],
+        milestone: "Milestone 34",
+        body: "Depends on #726",
+      },
+    ],
+    {
+      workerUser: "vibebot",
+      repo: "org/grq",
+      openIssueNumbers: new Set([738]),
+      // Milestone 32 has merged, so only the issue's own milestone is open.
+      openMilestones: new Set(["Milestone 34"]),
+    },
+  );
+  assertEquals(verdicts[0]!.claimable, true);
+  assertEquals(verdicts[0]!.excludedBy, undefined);
+});
+
+Deno.test(
+  "auditClaimableState - applies the cross-milestone hold from openMilestonesFn (Issue #2533)",
+  async () => {
+    const result = await auditClaimableState({
+      repos: ["org/grq"],
+      workerUser: "vibebot",
+      tick: 1,
+      scanFoundClaimable: false,
+      ghCommandFn: makeGhStub({
+        "org/grq": [
+          {
+            number: 738,
+            labels: ["top-priority"],
+            assignees: [],
+            milestone: "Milestone 34",
+            body: "Depends on #726",
+          },
+        ],
+      }),
+      openMilestonesFn: () =>
+        Promise.resolve(
+          new Set(["Milestone 34", "Automatic buying from the score sheet"]),
+        ),
+      log: () => {},
+      hostnameFn: () => "host-a",
+      pidFn: () => 1,
+    });
+
+    assertEquals(result.perRepo[0]!.claimable, 0);
+    // The scan was right, so no alert fires against it.
+    assertEquals(result.misClassification, false);
+  },
+);
+
+Deno.test(
+  "auditClaimableState - a rejecting openMilestonesFn applies no hold and does not throw (Issue #2533)",
+  async () => {
+    const result = await auditClaimableState({
+      repos: ["org/grq"],
+      workerUser: "vibebot",
+      tick: 1,
+      scanFoundClaimable: true,
+      ghCommandFn: makeGhStub({
+        "org/grq": [
+          {
+            number: 738,
+            labels: ["top-priority"],
+            assignees: [],
+            milestone: "Milestone 34",
+            body: "Depends on #726",
+          },
+        ],
+      }),
+      openMilestonesFn: () => Promise.reject(new Error("gh milestones failed")),
+      log: () => {},
+      hostnameFn: () => "host-a",
+      pidFn: () => 1,
+    });
+
+    // Fail-open, exactly like `openPRsFn`: no milestone data, no hold, and the
+    // probe is not recorded as an error.
+    assertEquals(result.perRepo[0]!.reason !== "probe_error", true);
+    assertEquals(result.perRepo[0]!.claimable, 1);
+  },
+);

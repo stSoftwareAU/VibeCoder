@@ -12,6 +12,7 @@ import { runGhCommand } from "./github.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import { invalidateTimelineCache } from "./timeline_cache.ts";
 import { fetchTimelineWithCache } from "./issue_query.ts";
+import { LABEL_DEFAULTS } from "./config_defaults.ts";
 
 /**
  * Minimal issue representation for filtering operations.
@@ -120,6 +121,62 @@ export function filterByAssignee(issues: FilterableIssue[]): FilterableIssue[] {
 }
 
 /**
+ * The two discovery tiers whose issues share a busy milestone stream
+ * (Issue #2530) — the configured `top-priority` tier and `work-on`.
+ */
+export interface StreamSharingLabels {
+  /** Configured-label discovery tier — `config.issueLabels`. */
+  issueLabels?: readonly string[];
+  /** The `work-on` label — `config.workOnLabel`. */
+  workOnLabel?: string;
+}
+
+/**
+ * The stream-sharing tiers under the fleet's **default** label names
+ * (Issues #2530, #2532).
+ *
+ * For the readers that hold no operator config: the idle-decision census and
+ * the idle-detect audit, which must apply exactly the rule the collectors do
+ * or the `ALERT mis_classification` line fires on every tick. One constant,
+ * because two copies of this literal is one drift away from that alert.
+ * Callers that do have config (the collectors, the claim phase) pass the
+ * operator's own labels instead.
+ */
+export const DEFAULT_STREAM_SHARING_TIERS: StreamSharingLabels = {
+  issueLabels: [LABEL_DEFAULTS.topPriorityLabel],
+  workOnLabel: LABEL_DEFAULTS.workOnLabel,
+};
+
+/**
+ * Whether an issue's tier may join a milestone stream another host already
+ * holds (Issue #2530).
+ *
+ * The fleet-wide one-run-per-stream lock (Issue #2334) exists so a stream's
+ * shared conversation carries one run at a time. `top-priority` and `work-on`
+ * are the tiers a human has asked for now: they are claimed anyway and run in
+ * their own per-issue conversation, so the stream's transcript is never shared
+ * by two runs. Every other tier (`low-priority`, `idle-task`) still waits.
+ *
+ * Labels are compared case- and whitespace-insensitively, because a label is
+ * operator-typed on both sides of this comparison.
+ *
+ * @param labels - Labels the issue actually carries
+ * @param tiers - The configured tier labels to match against
+ * @returns True when the issue carries a stream-sharing tier label
+ */
+export function isStreamSharingTier(
+  labels: readonly string[],
+  tiers: StreamSharingLabels,
+): boolean {
+  const normalise = (label: string) => label.trim().toLowerCase();
+  const applied = new Set(labels.map(normalise).filter((l) => l.length > 0));
+  return [...(tiers.issueLabels ?? []), tiers.workOnLabel ?? ""]
+    .map(normalise)
+    .filter((label) => label.length > 0)
+    .some((label) => applied.has(label));
+}
+
+/**
  * Check whether a work stream is already occupied by a Vibe Coder.
  *
  * Scheduling exists only **between Vibe Coders**. There is no locking or
@@ -159,16 +216,58 @@ export function isMilestoneOccupied(
   workerUser: string,
   pushCapableAuthors: string[] = [],
 ): boolean {
-  // Case-insensitive fleet set, matching the lowercase convention used by
-  // `filterByAllowedAuthors`. The current host is always included so a
-  // misconfigured fleet list never drops this host's own assignments.
-  const fleetAccounts = new Set(
-    [workerUser, ...pushCapableAuthors].map((a) => a.toLowerCase()),
-  );
+  const fleetAccounts = fleetAccountSet(workerUser, pushCapableAuthors);
   return allIssues.some((issue) => {
     if (issue.milestone !== milestoneTitle) return false;
     return issue.assignees.some((a) => fleetAccounts.has(a.toLowerCase()));
   });
+}
+
+/**
+ * Case-insensitive fleet set, matching the lowercase convention used by
+ * `filterByAllowedAuthors`. The current host is always included so a
+ * misconfigured fleet list never drops this host's own assignments.
+ */
+function fleetAccountSet(
+  workerUser: string,
+  pushCapableAuthors: readonly string[],
+): ReadonlySet<string> {
+  return new Set(
+    [workerUser, ...pushCapableAuthors].map((a) => a.toLowerCase()),
+  );
+}
+
+/**
+ * Whether **this one issue** is already assigned to an account the fleet
+ * operates (Issue #2532).
+ *
+ * The stream-level question is {@link isMilestoneOccupied}; this is the
+ * issue-level one the stream-sharing tiers still have to ask. `work-on` and
+ * `top-priority` candidates share a busy stream, but the single issue a
+ * sibling slot on this host already holds must never be re-offered — and in
+ * the window before the GitHub assignment lands, the only record of that hold
+ * is the overlay `applyInFlightClaims` (`work_stream.ts`) writes onto the
+ * all-issues listing. A human's assignment is ignored here for the same
+ * reason it is ignored there: scheduling exists only between Vibe Coders.
+ *
+ * @param allIssues - All open issues in the repo, with any in-flight overlay
+ * @param issueNumber - The candidate under consideration
+ * @param workerUser - The current host's GitHub login
+ * @param pushCapableAuthors - The accounts the fleet operates, from
+ *   `resolveFleetMaintenanceAuthorSet`. NEVER `config.allowedAuthors`.
+ * @returns True when the fleet already holds this issue
+ */
+export function isIssueFleetAssigned(
+  allIssues: readonly FilterableIssue[],
+  issueNumber: number,
+  workerUser: string,
+  pushCapableAuthors: readonly string[] = [],
+): boolean {
+  const fleetAccounts = fleetAccountSet(workerUser, pushCapableAuthors);
+  return allIssues.some((issue) =>
+    issue.number === issueNumber &&
+    issue.assignees.some((a) => fleetAccounts.has(a.toLowerCase()))
+  );
 }
 
 /**

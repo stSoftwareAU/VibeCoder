@@ -915,6 +915,37 @@ Deno.test("validation - validateIssueStateJson rejects non-object root", () => {
   assertEquals(result.ok, false);
 });
 
+Deno.test("validation - validateIssueStateJson carries the milestone title (Issue #2533)", () => {
+  const result = validateIssueStateJson({
+    number: 726,
+    state: "CLOSED",
+    title: "Test",
+    milestone: { title: "Automatic buying from the score sheet" },
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(
+      result.value.milestone,
+      "Automatic buying from the score sheet",
+    );
+  }
+});
+
+Deno.test("validation - validateIssueStateJson reports no milestone as null (Issue #2533)", () => {
+  for (
+    const milestone of [null, undefined, {}, "a bare string", 7]
+  ) {
+    const result = validateIssueStateJson({
+      number: 1,
+      state: "OPEN",
+      title: "Test",
+      milestone,
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.milestone, null);
+  }
+});
+
 // --- validateGhIssueViewJson ---
 
 Deno.test("validation - validateGhIssueViewJson accepts full issue view", () => {

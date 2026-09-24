@@ -7,8 +7,9 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals, assertExists } from "@std/assert";
+import { assert, assertEquals, assertExists, assertRejects } from "@std/assert";
 import {
+  createDiagnosticIssueFetcher,
   diagnoseIssue,
   formatDiagnosticReport,
 } from "../lib/diagnose_issue.ts";
@@ -338,6 +339,92 @@ Deno.test("diagnose_issue - fails when issue has open dependency", async () => {
   assert(check.detail.includes("#99"));
 });
 
+/**
+ * Drive `diagnose_issue` against a candidate whose dependency #99 is CLOSED in
+ * `depMilestone`, with `openMilestones` the repo's open milestone titles
+ * (Issue #2533).
+ */
+async function diagnoseCrossMilestoneDependency(opts: {
+  candidateMilestone: string;
+  depMilestone: string | null;
+  openMilestones: string[];
+}) {
+  const mockGh = createMockGh({
+    issueView: makeIssueViewData({
+      milestone: { title: opts.candidateMilestone },
+    }),
+    issueBody: "Depends on #99",
+  });
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const command = args.join(" ");
+    if (command.includes("milestones?state=open")) {
+      return JSON.stringify(
+        opts.openMilestones.map((title) => ({ title, closed_issues: 1 })),
+      );
+    }
+    if (
+      command.includes("issue view") && command.includes("state") &&
+      command.includes("99")
+    ) {
+      return JSON.stringify({
+        number: 99,
+        state: "CLOSED",
+        title: "Dependency",
+        milestone: opts.depMilestone ? { title: opts.depMilestone } : null,
+      });
+    }
+    return await mockGh(args);
+  };
+
+  const report = await diagnoseIssue("owner/repo", 42, makeConfig(), {
+    githubUser: "bot",
+    ghCommandFn: ghFn,
+  });
+  return findCheck(report.checks, "not-dependency-blocked");
+}
+
+Deno.test(
+  "diagnose_issue - names the open milestone holding a closed dependency (Issue #2533)",
+  async () => {
+    const check = await diagnoseCrossMilestoneDependency({
+      candidateMilestone: "Milestone 34",
+      depMilestone: "Automatic buying from the score sheet",
+      openMilestones: ["Milestone 34", "Automatic buying from the score sheet"],
+    });
+
+    assertEquals(check.passed, false);
+    assert(check.detail.includes("#99"));
+    assert(check.detail.includes("Automatic buying from the score sheet"));
+  },
+);
+
+Deno.test(
+  "diagnose_issue - a closed dependency in the candidate's own milestone is not held (Issue #2533)",
+  async () => {
+    const check = await diagnoseCrossMilestoneDependency({
+      candidateMilestone: "Milestone 34",
+      depMilestone: "Milestone 34",
+      openMilestones: ["Milestone 34"],
+    });
+
+    assertEquals(check.passed, true);
+  },
+);
+
+Deno.test(
+  "diagnose_issue - a closed dependency in a closed milestone is not held (Issue #2533)",
+  async () => {
+    const check = await diagnoseCrossMilestoneDependency({
+      candidateMilestone: "Milestone 34",
+      depMilestone: "Milestone 32",
+      openMilestones: ["Milestone 34"],
+    });
+
+    assertEquals(check.passed, true);
+  },
+);
+
 // =============================================================================
 // Work-on label author check
 // =============================================================================
@@ -517,6 +604,8 @@ Deno.test("diagnose_issue - fails when milestone is occupied by worker", async (
   const config = makeConfig();
   const issueView = makeIssueViewData({
     milestone: { title: "v2.0" },
+    // `idle-task` waits for a busy stream (Issue #2530).
+    labels: [{ name: "idle-task" }],
   });
   const mockGh = createMockGh({
     issueView,
@@ -539,6 +628,38 @@ Deno.test("diagnose_issue - fails when milestone is occupied by worker", async (
   assertEquals(check.passed, false);
   assert(check.detail.includes("v2.0"));
 });
+
+Deno.test(
+  "diagnose_issue - a stream-sharing tier is not reported as occupied (Issue #2533)",
+  async () => {
+    const config = makeConfig();
+    for (const tier of ["help wanted", "work-on"]) {
+      const mockGh = createMockGh({
+        issueView: makeIssueViewData({
+          milestone: { title: "v2.0" },
+          labels: [{ name: tier }],
+        }),
+        allIssues: [
+          {
+            ...makeIssueViewData({ milestone: { title: "v2.0" } }),
+            number: 99,
+            assignees: [{ login: "bot" }],
+          },
+        ],
+      });
+
+      const report = await diagnoseIssue("owner/repo", 42, config, {
+        githubUser: "bot",
+        ghCommandFn: mockGh,
+      });
+
+      const check = findCheck(report.checks, "milestone-not-occupied");
+      assertEquals(check.passed, true, `${tier} shares the busy stream`);
+      assert(check.detail.includes("shares the stream"));
+      assertEquals(check.suggestion, undefined);
+    }
+  },
+);
 
 Deno.test("diagnose_issue - passes when milestone has only human-assigned issues", async () => {
   const config = makeConfig();
@@ -564,4 +685,69 @@ Deno.test("diagnose_issue - passes when milestone has only human-assigned issues
 
   const check = findCheck(report.checks, "milestone-not-occupied");
   assertEquals(check.passed, true);
+});
+
+// Issue #2533: `commands/diagnose_repo.ts` now reads its dependencies through
+// this same fetcher, so these cover the reads both commands share.
+Deno.test("createDiagnosticIssueFetcher - reads the milestone title in the one issue view", async () => {
+  const calls: string[][] = [];
+  const fetcher = createDiagnosticIssueFetcher((args) => {
+    calls.push(args);
+    return Promise.resolve(JSON.stringify({
+      number: 726,
+      state: "CLOSED",
+      title: "Score sheet parser",
+      milestone: { title: "Automatic buying from the score sheet" },
+    }));
+  });
+
+  const state = await fetcher.getIssueState("owner/repo", 726);
+
+  assertEquals(state.milestone, "Automatic buying from the score sheet");
+  assertEquals(state.state, "CLOSED");
+  assertEquals(calls.length, 1);
+  assert(calls[0]!.includes("number,state,title,milestone"));
+});
+
+Deno.test("createDiagnosticIssueFetcher - a MERGED dependency resolves to CLOSED", async () => {
+  const fetcher = createDiagnosticIssueFetcher(() =>
+    Promise.resolve(
+      JSON.stringify({ number: 7, state: "MERGED", title: "PR-backed" }),
+    )
+  );
+
+  const state = await fetcher.getIssueState("owner/repo", 7);
+
+  assertEquals(state.state, "CLOSED");
+  assertEquals(state.milestone, null);
+});
+
+Deno.test("createDiagnosticIssueFetcher - a malformed issue view fails loud", async () => {
+  const fetcher = createDiagnosticIssueFetcher(() =>
+    Promise.resolve(JSON.stringify({ state: "OPEN", title: "no number" }))
+  );
+
+  await assertRejects(
+    () => fetcher.getIssueState("owner/repo", 7),
+    Error,
+    "Invalid issue state JSON",
+  );
+});
+
+Deno.test("createDiagnosticIssueFetcher - an unreadable body yields no sub-issues", async () => {
+  const fetcher = createDiagnosticIssueFetcher(() =>
+    Promise.reject(new Error("gh api failed"))
+  );
+
+  assertEquals(await fetcher.getSubIssues("owner/repo", 7), []);
+});
+
+Deno.test("createDiagnosticIssueFetcher - sub-issues come from the body references", async () => {
+  const fetcher = createDiagnosticIssueFetcher(() =>
+    Promise.resolve(JSON.stringify({ body: "- [ ] #11\n- [x] #12\n" }))
+  );
+
+  const subs = await fetcher.getSubIssues("owner/repo", 7);
+
+  assertEquals([...subs].sort((a, b) => a - b), [11, 12]);
 });

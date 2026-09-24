@@ -5,9 +5,13 @@
  * fetches matching issues, strips untrusted operational labels,
  * applies filterAndSort, and then enforces label-author authorisation,
  * content-integrity verification (Issue #2967 — parity with the work-on
- * and low-priority collectors), milestone occupancy, recently-closed PR
- * cooldowns, milestone-aware PR blocking, and dependency blocking. Used
- * by `findOldestIssue`.
+ * and low-priority collectors), recently-closed PR cooldowns,
+ * milestone-aware PR blocking, and dependency blocking. Used by
+ * `findOldestIssue`.
+ *
+ * Issue #2532: work-stream occupancy is deliberately *not* one of those
+ * gates. This tier shares a busy stream (Issue #2530); occupancy still
+ * serialises the lower tiers.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -18,7 +22,7 @@ import type { FilterableIssue } from "./issue_filter.ts";
 import {
   cleanStaleLabels,
   filterAndSort,
-  isMilestoneOccupied,
+  isIssueFleetAssigned,
 } from "./issue_filter.ts";
 import {
   fetchIssuesByLabel,
@@ -281,14 +285,23 @@ export async function collectLabelCandidates(
         continue;
       }
 
-      // Check work-stream occupancy. Issue #1064: only the accounts the
-      // fleet operates occupy a stream — `config.allowedAuthors` is a
-      // permission list that legitimately holds humans, and a human
-      // assignee must never stall the worker.
+      // Issue #2532: no work-*stream* occupancy check here. This tier is work
+      // a human has asked for now, and Issue #2530 already lets its claim
+      // join a busy stream in its own fresh conversation, so refusing the
+      // candidate one gate earlier only inverted the ladder — the blank
+      // stream has no claim-time lock, so a fleet-assigned `low-priority`
+      // issue in flight held every `top-priority` issue of the repo behind
+      // it. Occupancy still serialises `low-priority`, `idle-task`, the
+      // self-diagnostic tier and the custom PR-producing labels.
+      //
+      // The issue-level hold survives (Issue #1091): a sibling slot on this
+      // host has its claim overlaid onto `repoAllIssues` by
+      // `applyInFlightClaims` before the GitHub assignment lands, so the
+      // issue it holds must not be re-offered to this scan.
       if (
-        isMilestoneOccupied(
+        isIssueFleetAssigned(
           repoAllIssues,
-          milestoneTitle,
+          issue.number,
           options.githubUser,
           pushCapableAuthors,
         )
@@ -296,15 +309,18 @@ export async function collectLabelCandidates(
         diag?.logIssueSkipped(
           repo,
           issue.number,
-          "milestone-occupied",
+          "slot-in-flight",
           milestoneTitle,
         );
-        blocked.push({ repo, milestone: milestoneTitle });
+        // Deliberately NOT pushed to `blocked`: that array parks the whole
+        // work stream in `selectHighestPriority`, and the stream is precisely
+        // what this tier now shares (Issue #2532). Only this one issue is
+        // held, so only this one issue is recorded.
         blockedDetails.push({
           repo,
           issueNumber: issue.number,
           milestone: milestoneTitle,
-          reason: "milestone-occupied",
+          reason: "slot-in-flight",
         });
         continue;
       }
@@ -382,6 +398,8 @@ export async function collectLabelCandidates(
               issueNumber: issue.number,
               milestone: milestoneTitle,
               reason: "pr-blocked",
+              // Issue #2534: the concrete gate, so a comment can name it.
+              blockingPr: blockingPR.number,
             });
             continue;
           }

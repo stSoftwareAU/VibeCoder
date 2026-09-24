@@ -4,9 +4,12 @@
  * Fetches issues carrying the configured work-on label, strips
  * untrusted operational labels, applies filterAndSort, then enforces
  * label-author authorisation, content-integrity verification (Issue
- * #1341), milestone occupancy, recently-closed PR cooldowns,
- * milestone-aware PR blocking, and dependency blocking. Used by
- * `findOldestIssue`.
+ * #1341), recently-closed PR cooldowns, milestone-aware PR blocking, and
+ * dependency blocking. Used by `findOldestIssue`.
+ *
+ * Issue #2532: work-stream occupancy is deliberately *not* one of those
+ * gates. This tier shares a busy stream (Issue #2530); occupancy still
+ * serialises the lower tiers.
  *
  * Issue #2752: `work-on` issues that can never be progressed are escalated
  * rather than left to dangle. A dependency cycle (A→B→A) and a
@@ -26,7 +29,7 @@ import type { FilterableIssue } from "./issue_filter.ts";
 import {
   cleanStaleLabels,
   filterAndSort,
-  isMilestoneOccupied,
+  isIssueFleetAssigned,
   isMilestoneTrackingIssue,
 } from "./issue_filter.ts";
 import {
@@ -391,16 +394,24 @@ export async function collectWorkOnCandidates(
     issueNumber: number,
     milestone: string,
     reason: SkipReason,
-    /** Issue #2494: the dependencies holding the issue, for a dependency block. */
-    blockers?: DependencyBlocker[],
+    /** The concrete gate holding the issue, when the reason names one. */
+    gate?: {
+      /** Issue #2494: the dependencies holding the issue. */
+      blockers?: DependencyBlocker[];
+      /** Issue #2534: the open PR holding the issue. */
+      blockingPr?: number;
+    },
   ): void => {
-    // The key is omitted, not set to `undefined`, for a non-dependency block.
+    // Each key is omitted, not set to `undefined`, when it does not apply.
     blockedDetails.push({
       repo,
       issueNumber,
       milestone,
       reason,
-      ...(blockers ? { blockers } : {}),
+      ...(gate?.blockers ? { blockers: gate.blockers } : {}),
+      ...(gate?.blockingPr === undefined
+        ? {}
+        : { blockingPr: gate.blockingPr }),
     });
     if (suppressesLowerTiers(reason)) suppressingCount++;
   };
@@ -475,22 +486,30 @@ export async function collectWorkOnCandidates(
 
     const milestoneTitle = issue.milestone;
 
+    // Issue #2532: no work-*stream* occupancy check here. `work-on` is work a
+    // human has asked for now, and Issue #2530 already lets its claim join a
+    // busy stream in its own fresh conversation, so refusing the candidate
+    // one gate earlier only inverted the ladder. Occupancy still serialises
+    // `low-priority`, `idle-task`, the self-diagnostic tier and the custom
+    // PR-producing labels.
+    //
+    // The issue-level hold survives (Issue #1091): a sibling slot on this
+    // host has its claim overlaid onto `repoAllIssues` by
+    // `applyInFlightClaims` before the GitHub assignment lands, so the issue
+    // it holds must not be re-offered to this scan.
     if (
-      isMilestoneOccupied(
+      isIssueFleetAssigned(
         repoAllIssues,
-        milestoneTitle,
+        issue.number,
         options.githubUser,
-        // Issue #1064: only the accounts the fleet operates occupy a work
-        // stream. `config.allowedAuthors` is a permission list and holds
-        // humans, whose assignments must never stall the worker.
         pushCapableAuthors,
       )
     ) {
-      noteBlocked(issue.number, milestoneTitle, "milestone-occupied");
+      noteBlocked(issue.number, milestoneTitle, "slot-in-flight");
       diag?.logIssueSkipped(
         repo,
         issue.number,
-        "milestone-occupied",
+        "slot-in-flight",
         milestoneTitle,
       );
       continue;
@@ -552,7 +571,9 @@ export async function collectWorkOnCandidates(
           options.cache,
         );
         if (!hasIgnore) {
-          noteBlocked(issue.number, milestoneTitle, "pr-blocked");
+          noteBlocked(issue.number, milestoneTitle, "pr-blocked", {
+            blockingPr: blockingPR.number,
+          });
           diag?.logIssueSkipped(
             repo,
             issue.number,
@@ -582,7 +603,9 @@ export async function collectWorkOnCandidates(
       // the close-out sweep, #2537); the label never would, and on a
       // dependency it spread down the chain. The chain-root comment (#2496)
       // reports a root nobody can work without touching labels.
-      noteBlocked(issue.number, milestoneTitle, "dependency-blocked", blockers);
+      noteBlocked(issue.number, milestoneTitle, "dependency-blocked", {
+        blockers,
+      });
       diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
       dependencyBlockedIssues.push(issue.number);
       continue;

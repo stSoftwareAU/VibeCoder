@@ -11,6 +11,7 @@ import {
   getStaleLabelsForReopenedIssue,
   isMilestoneOccupied,
   isMilestoneTrackingIssue,
+  isStreamSharingTier,
   MILESTONE_TRACKING_MARKER,
   wasReopenedAfterLabel,
 } from "../lib/issue_filter.ts";
@@ -531,4 +532,69 @@ Deno.test("issue_filter - filterAndSort excludes issues matching tracking title 
   assertEquals(result.length, 2);
   assertEquals(result[0]?.number, 1);
   assertEquals(result[1]?.number, 3);
+});
+
+// ---------------------------------------------------------------------------
+// isStreamSharingTier (Issue #2530)
+// ---------------------------------------------------------------------------
+
+/** The tier labels as `.config.json` defaults supply them. */
+const STREAM_TIERS = {
+  issueLabels: ["top-priority"],
+  workOnLabel: "work-on",
+};
+
+Deno.test("isStreamSharingTier - a top-priority issue shares a busy stream", () => {
+  assertEquals(
+    isStreamSharingTier(["enhancement", "top-priority"], STREAM_TIERS),
+    true,
+  );
+});
+
+Deno.test("isStreamSharingTier - a work-on issue shares a busy stream", () => {
+  assertEquals(isStreamSharingTier(["work-on"], STREAM_TIERS), true);
+});
+
+Deno.test("isStreamSharingTier - low-priority and idle-task issues wait", () => {
+  assertEquals(isStreamSharingTier(["low-priority"], STREAM_TIERS), false);
+  assertEquals(isStreamSharingTier(["idle-task"], STREAM_TIERS), false);
+  assertEquals(isStreamSharingTier([], STREAM_TIERS), false);
+});
+
+Deno.test("isStreamSharingTier - matching ignores case and surrounding space", () => {
+  assertEquals(isStreamSharingTier([" Top-Priority "], STREAM_TIERS), true);
+  assertEquals(
+    isStreamSharingTier(["WORK-ON"], {
+      issueLabels: ["  Top-Priority  "],
+      workOnLabel: " work-on ",
+    }),
+    true,
+  );
+});
+
+Deno.test("isStreamSharingTier - a blank or absent tier label matches nothing", () => {
+  assertEquals(isStreamSharingTier([""], STREAM_TIERS), false);
+  assertEquals(
+    isStreamSharingTier(["top-priority"], { issueLabels: [], workOnLabel: "" }),
+    false,
+  );
+  assertEquals(isStreamSharingTier(["top-priority"], {}), false);
+});
+
+/** A custom operator tier is honoured — the labels are configuration. */
+Deno.test("isStreamSharingTier - honours operator-configured tier labels", () => {
+  assertEquals(
+    isStreamSharingTier(["urgent"], {
+      issueLabels: ["urgent"],
+      workOnLabel: "please-do",
+    }),
+    true,
+  );
+  assertEquals(
+    isStreamSharingTier(["top-priority"], {
+      issueLabels: ["urgent"],
+      workOnLabel: "please-do",
+    }),
+    false,
+  );
 });

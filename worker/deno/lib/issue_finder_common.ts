@@ -28,6 +28,7 @@ import {
   normaliseIssueState,
 } from "./issue_dependencies.ts";
 import type {
+  DependencyBlocker,
   IssueFetcher,
   IssueState,
   OpenIssueStateMap,
@@ -496,6 +497,53 @@ export function createOpenMilestoneLookup(
 }
 
 /**
+ * One reason an issue is held, as collected by {@link isDependencyBlocked}.
+ *
+ * Canonically declared in `issue_dependencies.ts` and re-exported here so the
+ * diagnose commands can keep importing it alongside
+ * {@link describeDependencyBlockers}.
+ */
+export type { DependencyBlocker };
+
+/**
+ * Render collected {@link DependencyBlocker}s as one human-readable reason
+ * (Issue #2533), shared by `diagnose_issue` and `diagnose_repo` so both
+ * commands name a cross-milestone hold the same way.
+ *
+ * @param repo - The candidate's repo, so only cross-repo blockers are qualified
+ * @param blockers - Blockers collected by {@link isDependencyBlocked}
+ * @returns The reason, or `""` when there are no blockers
+ */
+export function describeDependencyBlockers(
+  repo: string,
+  blockers: readonly DependencyBlocker[],
+): string {
+  if (blockers.length === 0) return "";
+  const lowerRepo = repo.trim().toLowerCase();
+  const ref = (b: DependencyBlocker) =>
+    b.repo.trim().toLowerCase() === lowerRepo
+      ? `#${b.number}`
+      : `${b.repo}#${b.number}`;
+  const parts: string[] = [];
+  const children = blockers.filter((b) => b.kind === "child");
+  if (children.length > 0) {
+    parts.push(
+      `blocked by open sub-issue(s): ${children.map(ref).join(", ")}`,
+    );
+  }
+  for (const dep of blockers.filter((b) => b.kind === "depends-on")) {
+    parts.push(
+      dep.heldByMilestone
+        ? `held: dependency ${
+          ref(dep)
+        } is closed but in open milestone '${dep.heldByMilestone}'`
+        : `depends on ${ref(dep)} which is not resolved`,
+    );
+  }
+  return parts.join("; ");
+}
+
+/**
  * Check if an issue is blocked by dependencies or sub-issues.
  *
  * Issue #1808: when `openStateMap` is supplied, child-issue and
@@ -513,9 +561,6 @@ export function createOpenMilestoneLookup(
  *
  * The hold is same-repo only: milestone titles are per-repository, so another
  * repo's milestone title has no meaning in this repo's open-milestone listing.
- */
-/**
- * Check whether an issue is blocked by its dependencies.
  *
  * When `blockers` is provided, collects all blockers instead of returning
  * early on the first one. Used to classify whether blockers are claimable
@@ -527,9 +572,7 @@ export async function isDependencyBlocked(
   fetcher: IssueFetcher,
   openStateMap?: OpenIssueStateMap,
   milestoneScope?: MilestoneScope,
-  blockers?: Array<
-    { repo: string; number: number; kind: "child" | "depends-on" }
-  >,
+  blockers?: DependencyBlocker[],
 ): Promise<boolean> {
   try {
     // Check parent/child blocking
@@ -613,10 +656,13 @@ export async function isDependencyBlocked(
         try {
           if (await milestoneScope.isMilestoneOpen(depMilestone)) {
             if (blockers) {
+              // Issue #2534: the gate is the *milestone*, not the dependency
+              // itself — record it so a gate comment can name it.
               blockers.push({
                 repo: depRepo,
                 number: dep.number,
                 kind: "depends-on",
+                heldByMilestone: depMilestone,
               });
             } else {
               return true;
@@ -625,12 +671,14 @@ export async function isDependencyBlocked(
           }
         } catch {
           // Unreadable open-milestone listing — fail safe (blocked) rather
-          // than releasing the dependant against unmerged work.
+          // than releasing the dependant against unmerged work. The hold is
+          // still the dependency's milestone, so it is named the same way.
           if (blockers) {
             blockers.push({
               repo: depRepo,
               number: dep.number,
               kind: "depends-on",
+              heldByMilestone: depMilestone,
             });
           } else {
             return true;

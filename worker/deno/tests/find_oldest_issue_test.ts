@@ -13,7 +13,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { findOldestIssue } from "../lib/find_oldest_issue.ts";
-import { buildChainRootUnworkableComment } from "../lib/chain_root_comment.ts";
+import { buildHeldIssueGateComment } from "../lib/held_issue_gate_comment.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createDiagnostics } from "../lib/issue_finder_logger.ts";
@@ -351,11 +351,16 @@ function captureDiagnostics(): {
 Deno.test(
   "findOldestIssue - emits selection-reasoning when work-on selected and top-priority blocked (Issue #1718)",
   async () => {
-    // Top-priority issue lives in milestone v1.0, which is occupied by
-    // another bot-assigned issue. Work-on issue lives in milestone v2.0,
-    // unoccupied. Because the milestones differ, blocked-entry suppression
-    // does not catch the work-on, and `selectHighestPriority` picks it.
-    // The reasoning line must surface the blocked top-priority.
+    // Top-priority issue #1691 is held by its open dependency #1690; the
+    // work-on issue in milestone v2.0 is free. Because the milestones
+    // differ, blocked-entry suppression does not catch the work-on, and
+    // `selectHighestPriority` picks it. The reasoning line must surface the
+    // blocked top-priority.
+    //
+    // Issue #2532: the blocker used to be milestone occupancy. A
+    // `top-priority` issue now shares a busy stream, so the fixture states
+    // the same case with the dependency gate — what is under test is the
+    // reasoning line, not which gate held the issue.
     const config = makeConfig({ repos: ["owner/repo-a"] });
     const mockGh = createPerRepoMockGh({
       "owner/repo-a": {
@@ -369,9 +374,10 @@ Deno.test(
             createdAt: "2024-01-01T00:00:00Z",
             author: ALICE,
             milestone: { title: "v1.0" },
+            body: "Depends on #1690",
           },
           {
-            // Occupies v1.0 — assigned to the worker user "bot".
+            // The open dependency holding #1691.
             number: 1690,
             title: "Already in flight in v1.0",
             url: "https://github.com/owner/repo-a/issues/1690",
@@ -421,7 +427,7 @@ Deno.test(
     assertStringIncludes(reasoningLine!, "source=work-on");
     assertStringIncludes(
       reasoningLine!,
-      "owner/repo-a#1691(milestone-occupied)",
+      "owner/repo-a#1691(dependency-blocked)",
     );
     assertStringIncludes(reasoningLine!, "configured-label-blocked=1");
   },
@@ -433,8 +439,10 @@ Deno.test(
     // Issue #1063: the reasoning line used to be emitted only when a
     // *work-on* candidate won, so a passed-over top-priority stayed silent
     // whenever a lower tier took the slot. Repo A's top-priority is blocked
-    // by milestone occupancy and repo B's low-priority wins — the line must
+    // by its open dependency and repo B's low-priority wins — the line must
     // still name the blocked top-priority, without ISSUE_FINDER_DEBUG.
+    // (Issue #2532: milestone occupancy no longer holds a `top-priority`
+    // issue, so the fixture uses the dependency gate instead.)
     const config = makeConfig();
     const mockGh = createPerRepoMockGh({
       "owner/repo-a": {
@@ -448,9 +456,10 @@ Deno.test(
             createdAt: "2024-01-01T00:00:00Z",
             author: ALICE,
             milestone: { title: "v1.0" },
+            body: "Depends on #1690",
           },
           {
-            // Occupies v1.0 — assigned to the worker user "bot".
+            // The open dependency holding #1691.
             number: 1690,
             title: "Already in flight in v1.0",
             url: "https://github.com/owner/repo-a/issues/1690",
@@ -506,7 +515,7 @@ Deno.test(
     assertStringIncludes(reasoningLine!, "source=low-priority");
     assertStringIncludes(
       reasoningLine!,
-      "owner/repo-a#1691(milestone-occupied)",
+      "owner/repo-a#1691(dependency-blocked)",
     );
   },
 );
@@ -1740,7 +1749,11 @@ Deno.test(
 );
 
 // =============================================================================
-// Unworkable chain-root comment (Issue #2496)
+// Held-issue gate comment (Issues #2496, #2535)
+//
+// #2535 replaced the #2496 chain-root comment with one gate comment per held
+// issue. The chain's unworkable root is now the \`dependency\` gate's
+// sentence, so these tests keep their shapes; the rules that moved are marked.
 // =============================================================================
 
 /** Wraps the per-repo mock so comment reads and writes can be inspected. */
@@ -1868,7 +1881,7 @@ Deno.test(
 );
 
 Deno.test(
-  "findOldestIssue - says nothing while the fleet is working the chain root (Issue #2496)",
+  "findOldestIssue - names the dependency but not the root while the fleet works the root (Issue #2535)",
   async () => {
     const config = makeConfig({
       repos: ["owner/repo-a"],
@@ -1897,12 +1910,21 @@ Deno.test(
       selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
     });
 
-    assertEquals(postedChainComments(calls), []);
+    // #2535: work is happening, so the root sentence is dropped — but the
+    // issue is still told which dependency it waits on.
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "This issue waits on dependency owner/repo-a#200.",
+    );
+    assertEquals((comments[0]?.body ?? "").includes("@sibling-bot"), false);
+    assertEquals(labelMutations(calls), []);
   },
 );
 
 Deno.test(
-  "findOldestIssue - says nothing when the chain root was promoted instead (Issue #2496)",
+  "findOldestIssue - a blocked issue whose root was promoted still names its dependency (Issue #2535)",
   async () => {
     const config = makeConfig({ repos: ["owner/repo-a"] });
     const { calls, ghFn } = createChainCommentGh({
@@ -1930,7 +1952,19 @@ Deno.test(
     });
 
     assertEquals(result.found, true);
-    assertEquals(postedChainComments(calls), []);
+    // #2535: the root is being worked (promoted), and the held issue says
+    // which dependency it waits on — no root sentence, no labels.
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertEquals(
+      comments[0]?.target,
+      "repos/owner/repo-a/issues/100/comments",
+    );
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "This issue waits on dependency owner/repo-a#200.",
+    );
+    assertEquals(labelMutations(calls), []);
   },
 );
 
@@ -1979,7 +2013,7 @@ Deno.test(
 );
 
 Deno.test(
-  "findOldestIssue - a chain-root comment posted within 24 hours is not repeated (Issue #2496)",
+  "findOldestIssue - a gate comment that already names the gate is not rewritten (Issue #2535)",
   async () => {
     const config = makeConfig({ repos: ["owner/repo-a"] });
     const blocked = chainIssue(
@@ -1990,11 +2024,12 @@ Deno.test(
     );
     const root = chainIssue(200, ["low-priority"], "2024-06-01T00:00:00Z");
     root.assignees = [{ login: "carol" }];
-    const alreadyPosted = buildChainRootUnworkableComment({
-      blockedNumber: 100,
+    const alreadyPosted = buildHeldIssueGateComment({
+      kind: "dependency",
+      dependency: { repo: "owner/repo-a", number: 200 },
+      rootReason: "assigned",
       root: { repo: "owner/repo-a", number: 200 },
-      reason: "assigned",
-      detail: "carol",
+      rootDetail: "carol",
     });
     const { calls, ghFn } = createChainCommentGh(
       { "owner/repo-a": { issues: [blocked, root], timeline: CHAIN_TIMELINE } },
@@ -2017,6 +2052,11 @@ Deno.test(
     });
 
     assertEquals(postedChainComments(calls), []);
+    // Unchanged: no edit, and no delete either.
+    assertEquals(
+      calls.filter((a) => a.includes("PATCH") || a.includes("DELETE")),
+      [],
+    );
   },
 );
 
@@ -2065,11 +2105,11 @@ Deno.test(
 );
 
 Deno.test(
-  "findOldestIssue - a chain the fleet is working stays silent even when another branch is unworkable (Issue #2496)",
+  "findOldestIssue - a chain the fleet is working names its dependency without a root sentence (Issue #2535)",
   async () => {
     // #100 depends on two issues: #200 a sibling host already holds, and #300
-    // a human holds. Work is happening on the chain, so the fleet says
-    // nothing rather than adding noise to the thread.
+    // a human holds. Work is happening on the chain, so no root sentence —
+    // but the issue is still told which dependency it waits on (#2535).
     const config = makeConfig({
       repos: ["owner/repo-a"],
       fleetPrAuthors: ["sibling-bot"],
@@ -2102,7 +2142,13 @@ Deno.test(
       selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
     });
 
-    assertEquals(postedChainComments(calls), []);
+    const comments = postedChainComments(calls);
+    assertEquals(comments.length, 1, JSON.stringify(comments));
+    assertStringIncludes(
+      comments[0]?.body ?? "",
+      "This issue waits on dependency owner/repo-a#200.",
+    );
+    assertEquals((comments[0]?.body ?? "").includes("@carol"), false);
   },
 );
 
@@ -2140,5 +2186,77 @@ Deno.test(
     const comments = postedChainComments(calls);
     assertEquals(comments.length, 1, JSON.stringify(comments));
     assertEquals(comments[0]?.target, "repos/owner/repo-a/issues/100/comments");
+  },
+);
+
+// =============================================================================
+// Issue #2532: a busy stream no longer inverts the ladder
+// =============================================================================
+
+Deno.test(
+  "findOldestIssue - selects a top-priority issue whose blank stream holds a low-priority claim (Issue #2532)",
+  async () => {
+    // The field case behind #2527: fleet-assigned `low-priority` #829 holds
+    // the default-branch stream of the repo while unassigned `top-priority`
+    // #849 waits. `isMilestoneOccupied` treating the empty milestone as a
+    // stream was the only thing refusing #849, so the fleet dropped to
+    // `low-priority` work elsewhere instead of the most urgent work here.
+    const config = makeConfig({ repos: ["owner/repo-a", "owner/repo-b"] });
+    const mockGh = createPerRepoMockGh({
+      "owner/repo-a": {
+        issues: [
+          {
+            number: 849,
+            title: "Top-priority fix on the default branch",
+            url: "https://github.com/owner/repo-a/issues/849",
+            assignees: [],
+            labels: [{ name: "top-priority" }],
+            createdAt: "2024-03-01T00:00:00Z",
+            author: ALICE,
+            milestone: null,
+          },
+          {
+            number: 829,
+            title: "Low-priority chore in flight",
+            url: "https://github.com/owner/repo-a/issues/829",
+            assignees: [{ login: "bot" }],
+            labels: [{ name: "low-priority" }],
+            createdAt: "2024-02-01T00:00:00Z",
+            author: ALICE,
+            milestone: null,
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "top-priority" }, actor: ALICE },
+        ],
+      },
+      "owner/repo-b": {
+        issues: [
+          {
+            number: 900,
+            title: "Backlog chore elsewhere",
+            url: "https://github.com/owner/repo-b/issues/900",
+            assignees: [],
+            labels: [{ name: "low-priority" }],
+            createdAt: "2024-01-01T00:00:00Z",
+            author: ALICE,
+            milestone: null,
+          },
+        ],
+        timeline: [
+          { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+        ],
+      },
+    });
+
+    const result = await findOldestIssue(config, {
+      githubUser: "bot",
+      ghCommandFn: mockGh,
+      cache: createTestCache(),
+      selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+    });
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes("|849|"), true);
   },
 );
