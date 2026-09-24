@@ -94,6 +94,12 @@ import {
   forcedFinalTriggerLine,
   type GrillMeStopTrigger,
 } from "./grill_me_stall_guard.ts";
+import type {
+  CollectGraftContextOptions,
+  GraftContextResult,
+} from "./graft_context.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -211,6 +217,14 @@ export interface GrillMeProcessorDeps {
    * worker shares.
    */
   promptsDir?: string;
+  /**
+   * Graft context collector (Issue #2561). Optional: when omitted, Graft
+   * lines in stats report "off". Injected on the deps object directly, not
+   * nested in infrastructure deps (Issue #2102).
+   */
+  collectGraftContext?: (
+    options: CollectGraftContextOptions,
+  ) => Promise<GraftContextResult>;
 }
 
 /** Options for building the grill-me prompt. */
