@@ -1069,7 +1069,7 @@ Planning runs produce a stronger plan and surface silent model degradation.
   sub-issue that run created. It is not in `RESERVED_LABELS`, so it survives
   self-apply; the worker never removes it (a human clears it after triage).
 - **Grill-me extension.** The `grill_me` phase routes to the same
-  Fable 5 top tier as planning, so the stats/verdict helpers are phase-parametric
+  top tier as planning (Opus since #2560), so the stats/verdict helpers are phase-parametric
   and grill-me reuses them — but applies `degraded-model` **on a degraded round**
   only (a healthy interactive round is never labelled).
 - **One stats comment per run.** Every run the worker completes on an issue
@@ -2282,8 +2282,9 @@ for another day and every `--model fable` invocation would fail meanwhile.
 version is below a configured floor.** Floors live in the
 `software_min_versions` config key (defaults in
 `worker/deno/lib/config_defaults.ts`, the single source of truth; default
-`{ claude: "2.1.260" }` — the oldest release that resolves the `fable` alias
-to Fable 5.1 *and* carries its prompt-cache fixes, Issue #1362). The map is
+`{ claude: "2.1.280" }` — the oldest release that resolves the `opus` alias
+to Opus 5.5, Issue #2560; it was 2.1.260, the Fable 5.1 floor from
+Issue #1362). The map is
 generic per tool so `gh`/`deno` floors can be added later.
 
 - **Below floor → immediate update**, bypassing the timestamp gate. At/above
