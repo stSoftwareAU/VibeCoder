@@ -154,10 +154,11 @@ Deno.test("buildGrillMeInvocations - carries the fallbackModel", () => {
 // reportGrillMeDegradation — healthy path
 // ---------------------------------------------------------------------------
 
-// Behaviour change (Issue #3756): a healthy round no longer stays completely
-// silent — it posts the issue's single cost/model stats comment. The "no
-// label" half of the original assertion is unchanged.
-Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no label, one stats comment", async () => {
+// Behaviour (Issue #2717): grill-me is interactive, so healthy rounds stay
+// silent to avoid cluttering the conversation. The degraded-model label is the
+// visible signal; only degraded rounds post the stats block. No label on
+// healthy rounds.
+Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no label, no comment", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -176,12 +177,10 @@ Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no lab
 
   assertEquals(verdict.degraded, false);
   assertEquals(addLabelCalls.length, 0);
-  assertEquals(comments.length, 1);
-  assertStringIncludes(comments[0]!.body, "## Grill-me run model stats");
-  assertStringIncludes(comments[0]!.body, "Estimate only");
+  assertEquals(comments.length, 0);
 });
 
-Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comment per run", async () => {
+Deno.test("reportGrillMeDegradation - healthy round posts no comment (Issue #2717)", async () => {
   resetModelResolution();
   const { ghCommandFn } = fakeGh();
   const { ghClient, comments } = fakeClient({
@@ -207,7 +206,7 @@ Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comm
   assertEquals(comments.length, 0);
 });
 
-Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not hide this round's cost (Issue #797)", async () => {
+Deno.test("reportGrillMeDegradation - healthy rounds do not post even if earlier degraded rounds exist", async () => {
   resetModelResolution();
   const { ghCommandFn } = fakeGh();
   const { ghClient, comments } = fakeClient({
@@ -229,9 +228,7 @@ Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not 
     authorOptions: { fleetAuthors: ["vibe-bot"] },
   });
 
-  assertEquals(comments.length, 1);
-  assertStringIncludes(comments[0]!.body, "## Grill-me run model stats");
-  assertStringIncludes(comments[0]!.body, "Issue total across 2 run-stats");
+  assertEquals(comments.length, 0);
 });
 
 // ---------------------------------------------------------------------------

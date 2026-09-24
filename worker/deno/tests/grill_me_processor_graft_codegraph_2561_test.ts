@@ -23,8 +23,6 @@ import type { GraftContextResult } from "../lib/graft_context.ts";
 import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
 import type { RtkOutputResult } from "../lib/rtk_output.ts";
 
-const FLEET_LOGIN = "testbot";
-
 /** An `ok` Graft collection. */
 function okGraftOutcome(): GraftContextResult {
   return {

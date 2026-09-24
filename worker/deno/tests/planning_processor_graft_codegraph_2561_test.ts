@@ -196,8 +196,7 @@ async function runPlanningWithAllAccelerators(
       }) as never,
       prepareRtkRun: rtkSeamObj.prepare,
       rtkProviderId: () => CLAUDE_PROVIDER_ID,
-      prepareCodegraphContext: () =>
-        Promise.resolve(codegraphOutcome),
+      prepareCodegraphContext: () => Promise.resolve(codegraphOutcome),
     },
     github: {
       runGhCommand: ((args: string[]) => {
