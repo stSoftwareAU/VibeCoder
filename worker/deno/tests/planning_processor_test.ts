@@ -3174,14 +3174,15 @@ Deno.test("processIssuePlanning - retries with explicit prompt when first attemp
   // explicit retry (Issue #2652 added the draft + critique turns).
   assertEquals(claudeCallCount, 3);
   assertEquals(promptsReceived.length, 3);
-  // The explicit retry prompt (call 3) tells Claude it MUST use gh issue create.
+  // The explicit retry prompt (call 3) tells Claude to create the issues with
+  // gh issue create now, and why (reworded without capitals in Issue #2576).
   assertEquals(
     promptsReceived[2]!.includes("gh issue create"),
     true,
     "Retry prompt must mention gh issue create",
   );
   assertEquals(
-    promptsReceived[2]!.includes("MUST"),
+    promptsReceived[2]!.includes("Create them now"),
     true,
     "Retry prompt must be explicit",
   );

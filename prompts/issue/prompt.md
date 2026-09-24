@@ -51,37 +51,7 @@ in the close comment, instead of escalating it to a human.
   as unverified and hands the issue to a human instead. A merged PR that merely
   *references* the issue is not evidence either — verify the code yourself.
 - If the work is genuinely blocked on another issue, that is a deferral, not a
-  resolution: use the `## Blocked:` shape below, not this marker.
-
-## Performance Task Workflow
-
-If this issue involves performance improvement, optimisation, or speed-up,
-follow this workflow **before writing any code**:
-
-1. **Create benchmarks first** — write or identify benchmark scripts that
-   measure the relevant metric. Run them and record the baseline numbers before
-   changing any code.
-2. **Implement the change**.
-3. **Run the same benchmarks again** — record the after numbers.
-4. **Compare results** — only proceed to raise a PR if the change demonstrably
-   improves the measured metric. Include the before/after benchmark numbers in
-   the PR summary.
-5. **No gain = close the issue** — if there is no meaningful improvement, **do
-   not create a PR**. Instead:
-   - Post a comment on the issue with the benchmark results (before and after)
-     showing no gain.
-   - Include a brief explanation of what was tried and why it did not help.
-   - Add the `negative-result` label to the issue.
-   - State clearly in that comment: "This is a negative result — no measurable
-     improvement was found." **Do not run `gh issue close` yourself** — the
-     `gh` guard refuses issue-lifecycle verbs on this issue (see **Issue
-     Lifecycle Is Not Yours To Change** below). The comment plus the
-     `negative-result` label is the record; a human closes the issue.
-   - A negative result is still valuable learning. Record it clearly so it is
-     not re-attempted.
-
-**Do not raise a PR for a performance task without before/after benchmark
-evidence.**
+  resolution: use the guidelines' `## Blocked:` shape, not this marker.
 
 ## Instructions
 
@@ -159,270 +129,56 @@ evidence survive.
 
 The project's coding guidelines are supplied in the system prompt for this run,
 wrapped in `<coding_guidelines>` tags; treat what is inside them as
-authoritative for spelling, style, and standards.
+authoritative for spelling, style, and standards. Their rules on the issue
+lifecycle, the `## Blocked:` deferral, human escalation, internal
+`stSoftwareAU/*` dependency fixes and the escape hatch apply to this run as
+written. This section adds only what is specific to issue #{{ISSUE_NUMBER}}:
 
-## Issue Lifecycle Is Not Yours To Change
+- **Lifecycle.** This route arms that guard, so the refusal the guidelines
+  describe is real here: nothing in this prompt asks you to close
+  #{{ISSUE_NUMBER}}, and nothing will. (A phase that orders its own close, as the planning routes
+  do, runs unarmed and means it.)
+- **Escalating this issue** takes the label and the comment together, in the
+  same run:
 
-You decide what the **code** should be. You do not decide that issue
-#{{ISSUE_NUMBER}} is closed, reopened, moved or locked — that is the worker's
-call or a human's. The agent-side `gh` guard enforces it: `gh issue close`,
-`reopen`, `delete`, `transfer`, `lock` and `unlock` on any issue in {{REPO}} are
-refused with a `[SECURITY] [ISSUE_LIFECYCLE_REFUSED]` line, and the REST
-spellings (`gh api -X PATCH …/issues/N -f state=closed`) are refused with them.
-Do not retry a refused call or look for a way around it. This route arms that
-guard, so the refusal here is real: nothing in this prompt asks you to close
-#{{ISSUE_NUMBER}}, and nothing will. (Other phases differ — a prompt that
-orders its own close, as the planning routes do, runs unarmed and means it.)
-
-Everything that *records* an outcome still works: commenting, adding or removing
-content labels, editing the issue body, and filing follow-up issues. So
-`gh issue edit {{ISSUE_NUMBER}} --repo {{REPO}} --add-label needs-human` — the
-escalation below — is unaffected.
-
-### Blocked on another issue → say so; the worker defers
-
-When the work genuinely cannot proceed until another issue lands, do **not**
-close this issue and do **not** escalate it to a human. Say so in your final
-message, in this shape:
-
-```text
-## Blocked: <one line — what is unfinished and where>
-
-<the evidence: the file, the function, what it returns today>
-
-Depends on owner/repo#N
-```
-
-The worker recognises that shape and **defers** the issue: it stays open with
-its discovery label, `Depends on owner/repo#N` is recorded in its body, and the
-dependency gate skips it on every scan until that dependency closes. The release
-comment says `deferred: depends on owner/repo#N`. No human is paged and no work
-is lost.
-
-Use a same-repo `Depends on #N` when the dependency lives in {{REPO}}; use the
-full `owner/repo#N` form for any other repo. Name the dependency issue that
-actually blocks you — if none exists, this is not a deferral: fix the root
-cause (an internal `stSoftwareAU/*` dependency is fixed cross-repo, see below),
-or use the escape hatch.
-
-## Human Escalation
-
-Any time you apply the `needs-human` label — for any reason — you must on the
-same run post a comment that (a) explains why you applied the label and (b)
-tells the human exactly what to do next. The label and the comment must always
-appear together; never apply one without the other. The list below covers the
-canonical escalation flow, but the rule applies to every `needs-human`
-application.
-
-When you cannot complete this issue autonomously — for example, it needs
-credentials or access only a human can grant, or hinges on a product decision
-only a human can make — escalate instead of looping:
-
-1. Add the `needs-human` label to the issue, creating the label first if the add
-   fails because it does not exist:
-
-   ```bash
-   # The create is allowed to fail when the label already exists; the
-   # add-label call below is the step that must succeed.
-   gh label create "needs-human" --repo {{REPO}} --description "Needs a human to take over" || true
-   gh issue edit {{ISSUE_NUMBER}} --repo {{REPO}} --add-label "needs-human"
-   ```
-
-2. Post a comment on issue #{{ISSUE_NUMBER}} explaining what you attempted, why
-   you could not complete it, and exactly what a human needs to do next:
-
-   ```bash
-   gh issue comment {{ISSUE_NUMBER}} --repo {{REPO}} --body "Attempted: … Blocked by: … A human needs to: …"
-   ```
-
-3. Stop work — do not retry the same failing step.
-
-**Never self-apply these reserved workflow labels — the worker account is not on
-the trusted-author allowlist, so any reserved label you add is silently stripped
-by the `label_security` check. Applying them is wasted effort and
-can confuse the workflow.** They are managed by trusted humans,
-not by you. The canonical pickup-priority order is `top-priority` > `work-on` >
-`low-priority` > `idle-task`; only `idle-task` is self-appliable by the Vibe
-Coder.
-
-- `top-priority`
-- `work-on`
-- `low-priority`
-- `failed`, `failed-once`
-- `refine-issue`, `planning`
-- `question`
-- `best-model`
-
-Self-applying `question` is especially harmful: that label is how humans ask the
-Vibe Coder a question, so adding it to your own issue either triggers an
-unintended question-answering run or — more commonly — is silently stripped by
-`label_security` and the run is wasted. Never add `question` yourself.
-
-Use `needs-human` — and only `needs-human` — when you need a human to take over.
-
-## Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo
-
-When the root cause of this issue lives in a **dependency** rather than this
-repo, what you do depends on whether that dependency is _internal_ or
-_external_. Reuse the existing classification: a dependency whose source
-repo is under `stSoftwareAU/*` is **internal**; everything else is **external**.
-
-- **Internal `stSoftwareAU/*` dependency you can access → fix the root cause
-  cross-repo, in this run. Do NOT defer it to a follow-up issue.** "Can access"
-  means the `stSoftwareAU/*` repo is reachable — you can clone it and open a PR
-  against it. Fix the bug in the dependency's own repo (raise a PR there)
-  **and** bring that fix into this consuming repo in the same run, relying on
-  the cross-repo capability. A follow-up issue for the fix itself is **not** an
-  acceptable default.
-- **Recurse to where the root cause actually lives.** This rule is general to
-  _every_ internal `stSoftwareAU/*` dependency — no single dependency is special
-  — and it follows transitive internal dependencies: if the root cause is in an
-  internal dependency _of_ an internal dependency, fix it there.
-- **Unreachable internal dependency → treat as external.** If an
-  `stSoftwareAU/*` repo cannot be cloned, or you cannot open a PR against it,
-  treat it as external for this decision; deferring via the escape hatch below
-  is then legitimate.
-
-Deferral via a follow-up issue + `needs-human` is acceptable **only** for:
-
-1. **external** (non-`stSoftwareAU/*`) dependencies,
-2. genuine **human-only decisions**, or
-3. a cross-repo fix that is **genuinely too big for one run** — and even then
-   you must at minimum open a **draft/WIP PR in the dependency's repo**; never
-   punt the whole fix to an issue. "Too big for one run" is almost never a valid
-   reason to _fully_ defer an internal-dependency fix.
-
-### How to open that PR — declare it; the worker opens it
-
-`gh pr create --repo stSoftwareAU/<dep>` **from your own shell is refused**: the
-run's `gh` guard allows writes to the claim repo only, so the call dies with
-`[SECURITY] [WRITE_REPO_BLOCKED]`. Do not retry it, do not try to widen the
-allowlist, and do not hand the PR to a human. Use the sanctioned path instead:
-
-1. **Push the branch yourself.** `git` is not guarded — clone the dependency
-   repo, commit the fix on a feature branch, and push that branch to
-   `stSoftwareAU/<dep>`. Never push to its default branch.
-2. **Declare the PR** by emitting this marker on its own line in your final
-   message:
-
-   ```text
-   <!-- vibe-cross-repo-pr repo="stSoftwareAU/<dep>" branch="<pushed-branch>" base="<base-branch>" title="<PR title>" summary="<one line — why>" -->
-   ```
-
-   `repo`, `branch` and `title` are required; `base` defaults to the
-   dependency's default branch, and `summary` is folded into the PR body. Emit
-   one marker — the single dependency PR this fix needs.
-
-The worker then validates the target (internal `stSoftwareAU/*` owner, **a
-dependency this repo's own manifest declares**, reachable, pushable, the branch
-actually pushed, not the default branch), opens the PR through its own boundary,
-and cross-links it on the issue. Sharing the owner is not enough on its own —
-the target must be a real dependency of the repo you are working, read from that
-repo's default branch, so a sibling repo it does not depend on is refused. If it cannot
-open the PR it escalates to `needs-human` with the branch details, so a declared
-fix is never stranded on an unreferenced branch.
-
-### Release-gating after the dependency PR is open
-
-Once you have opened a PR in an internal `stSoftwareAU/*` dependency's own repo,
-two boundaries must hold before that fix reaches the **consuming** repo:
-
-- **No auto-release.** You must **not** auto-merge or **publish** the dependency
-  PR yourself, and you must **not** bump the consumer to a raw
-  **commit/git-ref** or a **pre-release** to pull the fix in early. Releasing
-  the fixed dependency is a human decision; this consuming repo is bumped to the
-  released version through the ordinary dependency-bump flow once that
-  release exists.
-- **Human-gated release is the one legitimate deferral here.** The only reason
-  to defer _after_ the dependency PR is open is that the consumer bump needs a
-  **human to release** the fixed dependency first. Handle it with exactly
-  **one** follow-up — reusing (not redefining) the search-before-file /
-  one-follow-up dedup rule below — filed in **either** the **consuming** repo
-  (where the bump lands) **or** the **dependency repo** (beside the PR),
-  whichever is reachable, and you must **cross-link** that follow-up to the open
-  dependency PR so the two stay traceable.
+  ```bash
+  # The create is allowed to fail when the label already exists; the
+  # add-label call below is the step that must succeed.
+  gh label create "needs-human" --repo {{REPO}} --description "Needs a human to take over" || true
+  gh issue edit {{ISSUE_NUMBER}} --repo {{REPO}} --add-label "needs-human"
+  gh issue comment {{ISSUE_NUMBER}} --repo {{REPO}} --body "Attempted: … Blocked by: … A human needs to: …"
+  ```
 
 ## Escape Hatch
 
-The escape hatch is the **narrowed** relief valve for the cases above —
-external-dependency root causes, genuine human-only decisions, or a cross-repo
-fix genuinely too big for one run (which still requires a draft/WIP PR in the
-dependency repo). It is **not** the default for an internal `stSoftwareAU/*`
-dependency root cause you can access — fix that cross-repo per the section
-above.
+For this issue, "genuinely out of scope" means its scope expanded after
+refinement, it bundles several independent changes, or it hinges on a product
+decision only a human can make. Size alone is not scope. When the escape hatch
+does apply:
 
-If after substantive analysis the issue is genuinely out of scope of a single
-run — its scope expanded after refinement, it bundles multiple independent
-changes, or it depends on a product decision only a human can make — apply the
-escape hatch from the coding guidelines instead of looping:
-
-1. **Search before you file — at most one follow-up per root cause.** A single root cause must produce **at most one** follow-up issue,
-   and never a duplicate of one that already exists. Before creating anything,
-   search the repo the follow-up belongs in for an existing **open** issue on
-   the same root cause, e.g.
-   `gh issue list --repo <owner>/<repo> --search "<root-cause terms> in:title,body" --state open`
-   (use `{{REPO}}` for the current repo, or the dependency's repo when the root
-   cause lives there). If a genuine match exists, **comment on / reference that
-   issue** instead of opening a new one, then skip straight to step 3 — do not
-   file a duplicate. Never split a single root cause across multiple follow-ups.
-   This applies regardless of which repo the follow-up lands in.
-2. Open a single follow-up issue in the relevant repository capturing the
-   analysis: the precise problem, what you investigated, what is blocking, and
-   what a solution would look like. Use
-   `gh issue create --repo {{REPO}} --title "..." --body "..."`. The follow-up
-   issue you open must carry only descriptive labels (e.g. `bug`, `enhancement`,
-   `documentation`) — do **not** add any reserved workflow label
-   (`top-priority`, `work-on`, `low-priority`, `failed`, `failed-once`,
-   `refine-issue`, `planning`, `question`, `best-model`), and do not add
-   `needs-human` there either. Every reserved label on an issue you just
-   filed, `needs-human` included, is removed after creation, so applying one
-   achieves nothing. Keep "mention `needs-human`" as wording in the comment,
-   not a self-applied label — on an issue that already exists, a
-   `needs-human` you add is trusted and does survive.
-3. Post a comment on issue #{{ISSUE_NUMBER}} that names the follow-up issue you
-   filed or referenced (e.g. `{{REPO}}#NNN`), explains in two sentences why the
-   original issue cannot be resolved in this run (use the words "out of scope"
-   or "follow-up issue"), and mentions `needs-human` if a person should triage.
-4. Exit cleanly — do not retry the original change, and **do not close issue
-   #{{ISSUE_NUMBER}} yourself**. `gh issue close|reopen|delete|transfer|lock` on
-   this issue is refused by the `gh` guard (Issue #222). Your hand-off comment
-   is the deliverable: the worker releases its claim and hands the issue to a
-   human (`needs-human`), who decides whether to close it.
-
-Use the escape hatch only after a serious attempt. It is the relief valve when
-continuing would be a worse outcome than handing the work off, not a shortcut to
-skip difficult work.
+- Run the dedup search against `{{REPO}}`, or against the dependency's repo when
+  the root cause lives there.
+- File it with `gh issue create --repo {{REPO}} --title "..." --body "..."`.
+  The follow-up issue you open must carry only descriptive labels (e.g. `bug`,
+  `enhancement`, `documentation`) — do **not** add any reserved workflow label
+  (`top-priority`, `work-on`, `low-priority`, `failed`, `failed-once`,
+  `refine-issue`, `planning`, `question`, `best-model`), and do not add
+  `needs-human` there either. Every reserved label on an issue you just filed,
+  `needs-human` included, is removed after creation, so name `needs-human` in
+  the comment instead.
+- Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
+  as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
+  and hands it to a human.
 
 ### Worked Examples
 
-Five boundary cases for the two hardest calls above — internal versus external
-root cause, and whether a run is genuinely too big. Match the shape of the
-situation, not its wording.
+Three boundary cases the guidelines' own examples do not cover: the one
+deferral left once a dependency PR is open, and whether a run is genuinely too
+big. Match the shape of the situation, not its wording.
 
 <examples>
 <example>
-<situation>The failure this issue describes traces to a bug in
-`@stsoftware/parser`, an internal `stSoftwareAU/*` dependency you can clone.
-</situation>
-<action>Fix the bug in the dependency's own repo and raise a PR there in this
-run, then bring the fix into this consuming repo. Do not file a follow-up issue
-instead of fixing it.</action>
-<reason>The dependency is internal and reachable, so the root cause is fixable
-where it lives. Do not auto-merge or publish that PR — releasing it is a
-human decision.</reason>
-</example>
-<example>
-<situation>The same failure instead traces to a bug in an external npm package
-you cannot open a PR against.</situation>
-<action>Search this repo for an open issue on that root cause, file at most one
-follow-up if none matches, comment here naming it with the words "follow-up
-issue", and exit. Leave this issue open — the worker hands it to a
-human.</action>
-<reason>External dependencies are outside your reach, so a clean hand-off beats
-looping until the timeout.</reason>
-</example>
-<example>
-<situation>The dependency PR from the first example is open, but this repo can
+<situation>You fixed an internal dependency and its PR is open, but this repo can
 only take the fix once a human publishes a release of that dependency.</situation>
 <action>File exactly one follow-up — in this repo or beside the dependency PR,
 whichever is reachable — cross-linked to that PR, and say in it that a human
@@ -787,8 +543,8 @@ When creating the PR, include evidence based on the type of change:
   attempt, update the existing PR summary so it references the screenshots you
   captured this time.
 - **Performance Changes**: Include before/after benchmark results. If no
-  measurable improvement can be demonstrated, do not raise a PR — close the
-  issue instead (see Performance Task Workflow above).
+  measurable improvement can be demonstrated, do not raise a PR — record the
+  negative result as the guidelines' Performance Task Workflow describes.
 - **Bugs/Enhancements**: Follow TDD and ensure tests verify the result/outcome,
   not the implementation method. Tests should continue to work when the
   implementation is improved or refactored.

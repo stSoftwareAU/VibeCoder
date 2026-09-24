@@ -135,6 +135,10 @@ import {
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
 import {
+  renderCostCandidates,
+  scanWorkflowCost,
+} from "../workflow_cost_scanner.ts";
+import {
   checkLinterInCI as defaultCheckLinterInCI,
   type LinterCheckResult,
 } from "../linter_in_ci_check.ts";
@@ -455,6 +459,12 @@ export interface RunScanOptions {
   /** Stable ids the run should suppress (in-source markers, prior triage). */
   suppressedIds: string[];
   /**
+   * Rendered cost and speed leads from `workflow_cost_scanner.ts` (Issue
+   * #2578) for the prompt's checks 37–41 to confirm or reject. Omitted →
+   * `(none)`, and the prompt sweeps the group itself.
+   */
+  costCandidates?: string;
+  /**
    * Model tier the wrapper was filed for (Issue #4010). Passed through as
    * `RunClaudeOptions.model`; omitted leaves the phase default in force.
    */
@@ -494,6 +504,8 @@ export function assembleGitHubActionsAuditPrompt(
      */
     openIssueTitles?: readonly OpenIssueTitle[];
     attributionFooter?: string;
+    /** Rendered cost leads (Issue #2578); omitted renders `(none)`. */
+    costCandidates?: string;
   },
 ): string {
   const suppressed = opts.suppressedIds.length > 0
@@ -509,6 +521,7 @@ export function assembleGitHubActionsAuditPrompt(
     .replaceAll("{{KNOWN_OPEN_FINDING_IDS}}", known)
     .replaceAll("{{OPEN_ISSUE_TITLES}}", openIssues)
     .replaceAll("{{ATTRIBUTION_FOOTER}}", footer)
+    .replaceAll("{{COST_CANDIDATES}}", opts.costCandidates ?? "(none)")
     .replaceAll("{{ACTIONS_CATALOGUE_TABLE}}", renderActionsCatalogueTable())
     .replaceAll("{{EOL_RUNTIMES_TABLE}}", renderEolRuntimesTable());
 }
@@ -728,6 +741,7 @@ export async function runGitHubActionsAuditScan(
     suppressedIds: opts.suppressedIds,
     knownOpenFindingIds: opts.knownOpenFindingIds,
     openIssueTitles: opts.openIssueTitles,
+    costCandidates: opts.costCandidates,
   });
 
   // Always via `runIdleTaskClaude` so the idle-task budget (#3657) is applied;
@@ -1630,12 +1644,29 @@ export function createGitHubActionsAuditTemplate(
       //    create` directly — no JSON parsing here.
       //    Issue #4010: honour the tier the wrapper was filed for; an
       //    unstamped wrapper leaves the phase default in force.
+      // Issue #2578: the cost and speed pre-pass. Its leads go to the
+      // prompt's checks 37–41 as data to confirm or reject — never filed
+      // here, because a missing `paths:` filter or a serial job is often
+      // deliberate, and the prompt reserves the cost group's share of the
+      // cap. A scanner failure leaves the prompt to sweep the group itself.
+      let costCandidates = "(none)";
+      try {
+        costCandidates = renderCostCandidates(scanWorkflowCost(workflowFiles));
+      } catch (err) {
+        logger.warn(
+          `github-actions-audit: cost pre-pass failed for ${opts.repo}: ` +
+            (err instanceof Error ? err.message : String(err)),
+          { repo: opts.repo, template: NAME },
+        );
+      }
+
       const scanResult = await runScanFn({
         repo: opts.repo,
         workDir: opts.workDir,
         knownOpenFindingIds,
         openIssueTitles,
         suppressedIds: [],
+        costCandidates,
         ...(opts.modelTier !== undefined ? { model: opts.modelTier } : {}),
       });
       if (!scanResult.ok) {

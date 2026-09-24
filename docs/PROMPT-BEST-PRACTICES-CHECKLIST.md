@@ -14,7 +14,7 @@ auditing against it never edits a prompt — gaps are filed as issues (see
 
 ```mermaid
 flowchart LR
-    S["📄 Prompt surface<br/>prompt.md or prompt_builder.ts"] --> R["📐 This rubric<br/>22 guide rows + 3 house rows"]
+    S["📄 Prompt surface<br/>prompt.md or prompt_builder.ts"] --> R["📐 This rubric<br/>22 guide rows + 3 house rows<br/>+ 3 model rows"]
     R --> V["🗒️ Verdict table<br/>✅ / ❌ / ➖ + file:line"]
     V --> A["📚 docs/audits/<br/>prompt-audit-&lt;scope&gt;-NNNN.md"]
     V --> G["🐛 One gap issue<br/>per surface"]
@@ -26,8 +26,9 @@ flowchart LR
 
 1. Score **one surface at a time**, as it stands on the commit you audited —
    record that commit, because the template is edited in place.
-2. Give every one of the 22 guide rows and the 3
-   [house rows](#house-additions) a verdict: ✅ pass, ❌ gap, or ➖ n/a. Silence
+2. Give every one of the 22 guide rows, the 3
+   [house rows](#house-additions) and the 3
+   [model rows](#model-specific-additions) a verdict: ✅ pass, ❌ gap, or ➖ n/a. Silence
    is not a verdict; a row you did not check is a gap in the audit, not a pass.
 3. Back every verdict with `file:line` evidence — including ➖, where the
    evidence is what makes the row inapplicable (a size measurement, a
@@ -157,6 +158,38 @@ with the same ✅ / ❌ / ➖ verdicts and need the same `file:line` evidence.
   pass H2 by definition, and H1 keeps them as prohibitions, asking only that
   each be paired with the positive target. A pruning pass never deletes one.
 
+## Model-specific additions
+
+Three rows from Anthropic's per-model prompting pages for the Opus 5
+generation (Issue #2576). The main guide links to those pages rather than
+carrying their advice, so these rows would otherwise go unscored. Each targets
+a behaviour that current models show whatever the router picks, so a verdict
+does not date when the model changes. They carry an `M` prefix for the same
+reason the house rows carry `H`: the 1–22 mapping to guide headings stays
+auditable.
+
+| # | Technique | ✅ Pass | ❌ Gap | ➖ n/a |
+| --- | --- | --- | --- | --- |
+| M1 | No re-verification instructions | The surface leaves checking to the model and the quality gate. It has no "double-check", "re-verify" or "verify with a subagent" step: [Prompting Claude Opus 5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5#task-scope-and-over-verification) says such instructions "cause over-verification" and compound with the model's own self-correction | A final-verification step, a "double-check your answer", or a verifier subagent the task did not need, each of which adds a pass the model already makes | The surface asks for no work that could be verified, for example a pure data fragment, with the absence cited |
+| M2 | No reasoning written into the response | The response carries the answer, and any reasoning the worker needs is read from thinking. [Prompting Claude Opus 5.5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5#prompts-written-for-thinking-disabled) warns that a prompt pushing the model to reproduce its reasoning in the response "can be declined with the `reasoning_extraction` refusal category" | An instruction to "explain your reasoning", "think step by step in your answer", or to write the internal deliberation into the reply as a stand-in for thinking | The surface's output is fixed-form, for example a single word or a marker line, and the format leaves no room for reasoning, with the format line cited |
+| M3 | Unattended stops named | A surface that runs unattended names the early-stop shapes to avoid — a summary that announces the next step instead of taking it, an offer to wait, a non-blocking list of decisions, stopping to report at a milestone — and the stops it does want. Source: [Prompting Claude Opus 5.5 § Unattended agentic runs](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5#unattended-agentic-runs) | A long unattended tool loop with no statement of what ends a turn, so a progress report ends the run with work still owed | The surface is a single-shot call with no tool loop, or a human is in the loop to answer, with that cited |
+
+### Scoring the builder surfaces (Issue #2576)
+
+The four code-assembled surfaces #2576 rewrote are scored here against the rows
+that caught the shouting, rows 2 and 10, and the model rows. The scores are for
+the strings those files emit as #2576 left them; line numbers are from that change. Templates are scored in
+their own audits. The `prompt_delimiter.ts` injection boundary is out of scope:
+its firm wording is a security control.
+
+| # | `prompt_builder.ts` | `planning_processor.ts` | `clarity_assessment.ts` | `claude_runner.ts` (`SUMMARISE_SYSTEM_PROMPT`) | Evidence (file:line) |
+| --- | --- | --- | --- | --- | --- |
+| 2 | ✅ | ✅ | ✅ | ✅ | Every rule that forbids something now says why: `prompt_builder.ts:234` (the gate blocks a PR with no screenshot), `:276` (a missing `--base` bypasses the milestone), `:313` (an unassigned sub-issue is never scheduled with its siblings); `planning_processor.ts:1148` and `:1198`; `clarity_assessment.ts:227` (the decision rules name the stalled issue), `:235`, `:251`; `claude_runner.ts:3763` (the summary stands in for the original) |
+| 10 | ✅ | ✅ | ✅ | ➖ | No `CRITICAL`, `IMPORTANT:`, capitalised `MUST`/`NEVER`/`DO NOT` in any emitted string, pinned by `worker/deno/tests/builder_prompt_deshout_2576_test.ts`. The summarise call names no tools and runs with them disallowed (`claude_runner.ts:3772`) |
+| M1 | ✅ | ✅ | ✅ | ✅ | None of the four emits a double-check, re-verify or verify-with-a-subagent step. The critique turn (`planning_processor.ts:1198`) is a separate stage of the pipeline (row 18), not a re-check of finished work |
+| M2 | ✅ | ✅ | ➖ | ➖ | No emitted string asks for reasoning in the response. The critique fallback keeps the critique out of GitHub (`planning_processor.ts:1198`). Clarity answers `CLEAR` or a question list (`clarity_assessment.ts:221`), and summarise outputs the summary alone (`claude_runner.ts:3769`) |
+| M3 | ❌ | ❌ | ➖ | ➖ | The issue and planning runs are unattended tool loops, but no builder names the early-stop shapes. The keep-working line is tracked in [#2572](https://github.com/stSoftwareAU/VibeCoder/issues/2572). Clarity and summarise are single-shot calls |
+
 ## Verdict table template
 
 One column per surface, one row per checklist item. Copy into the audit
@@ -193,6 +226,9 @@ Legend: ✅ pass · ❌ gap · ➖ n/a
 | H1 | Positive framing |  |  |  |
 | H2 | No-ops |  |  |  |
 | H3 | Leading words |  |  |  |
+| M1 | No re-verification instructions |  |  |  |
+| M2 | No reasoning written into the response |  |  |  |
+| M3 | Unattended stops named |  |  |  |
 |  | **Gaps** |  |  |  |
 ```
 
@@ -231,7 +267,7 @@ reason. Re-check this table when the guide changes.
 
 | Guide heading | Why it is out of scope |
 | --- | --- |
-| Model-specific guidance | A table of links to one prompting page per model — Fable 5.1 / Mythos 5.1, Fable 5 / Mythos 5, Sonnet 5, Opus 5, Opus 4.8 — not a technique. The worker picks its model at run time, so per-model tuning belongs with the model router, not with a prompt surface, and scoring a template against one model's page would date the verdict the next time the router changes. Their concrete carry-overs (verbosity and progress updates, scope, tool triggering, subagent damping) are already rows 7, 20, 10 and 17 |
+| Model-specific guidance | A table of links to one prompting page per model — Fable 5.1 / Mythos 5.1, Fable 5 / Mythos 5, Sonnet 5, Opus 5, Opus 4.8 — not a technique. The worker picks its model at run time, so per-model tuning belongs with the model router, not with a prompt surface, and scoring a template against one model's page would date the verdict the next time the router changes. Their concrete carry-overs (verbosity and progress updates, scope, tool triggering, subagent damping) are already rows 7, 20, 10 and 17, and the three that have no guide row (over-verification, reasoning in the response, unattended stops) are the [model rows](#model-specific-additions) M1–M3 |
 | Model self-knowledge | No surface asks Claude to identify its own model or emit a model string; the model id comes from configuration and the CLI invocation |
 | LaTeX output | No surface produces mathematical or scientific output, so there is no LaTeX default to override |
 | Document creation | No surface asks for a presentation, animation, or visual document; deliverables are code, Markdown, and filed issues |

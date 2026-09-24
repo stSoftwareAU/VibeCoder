@@ -134,8 +134,9 @@ you may ask questions for critical missing information. Keep questions to an abs
   if (round >= 2) {
     return `
 ROUND ${round} GUIDANCE: You have already asked for clarification ${round} time(s).
-You MUST respond with CLEAR and proceed with implementation. Make reasonable assumptions for any
-remaining unknowns. The user has had multiple chances to clarify - proceed with what you have.`;
+Respond with CLEAR and proceed with implementation, making reasonable assumptions for any
+remaining unknowns. The user has had multiple chances to clarify, and another round now costs
+more than a wrong guess they can correct in review.`;
   }
   return "";
 }
@@ -178,20 +179,21 @@ const CLARITY_PROMPT_TEMPLATE =
   `You are assessing whether a GitHub issue has clear enough requirements to implement.
 
 ## Project Context (Issue #113)
-IMPORTANT: Before assessing clarity, you should read the README.md file to understand the
+Before assessing clarity, read the README.md file to understand the
 project structure and conventions. You can explore the codebase by reading files and checking
 the directory structure. Many questions about where files are located, what the project
 architecture looks like, or how things work can be answered by reading the README.md and
 exploring the codebase.
 
-DO NOT ask questions about things you can discover by reading the README.md or exploring
-the project files. For example:
+Answer for yourself anything you can discover by reading the README.md or exploring
+the project files, rather than asking the author — a question they did not need to answer
+delays the issue for nothing. For example:
 - Where source files are located
 - What the project structure looks like
 - What technologies or frameworks are used
 - How the project is organised
 
-Your DEFAULT should be to proceed (respond CLEAR) unless there is a critical blocker.
+Your default is to proceed (respond CLEAR) unless there is a critical blocker.
 {{ROUND_GUIDANCE}}
 Assess the following issue and determine if:
 1. The requirements are clear and specific enough to implement
@@ -222,17 +224,18 @@ CLEAR
 If the requirements are UNCLEAR, respond with clarifying questions formatted as a numbered list.
 Keep questions focused and actionable. Maximum 5 questions.
 
-CRITICAL RULES - You MUST follow these:
+Decision rules — each exists because a clarification loop stalls the issue while the author waits:
 1. If there are follow-up comments from the user, they have already responded to previous
-   clarification requests. Give STRONG preference to proceeding (CLEAR) unless there is
+   clarification requests. Strongly prefer proceeding (CLEAR) unless there is
    a critical, unresolved blocker that makes implementation impossible.
 
 2. If the user says things like just start, no more questions, proceed, go ahead,
    the issue is clear, or expresses frustration with questions - respond with CLEAR.
 
-3. NEVER ask the same questions twice. If a question was asked before (visible in previous
+3. Ask each question at most once. If a question was asked before (visible in previous
    comments from the bot) and the user has responded, consider that question answered even
-   if the answer is vague. Make reasonable assumptions and proceed.
+   if the answer is vague — asking again tells the author their answer was ignored. Make
+   reasonable assumptions and proceed.
 
 4. Default to CLEAR when in doubt. It is better to make a reasonable attempt and get feedback
    than to keep asking questions in a loop.
@@ -245,7 +248,7 @@ CRITICAL RULES - You MUST follow these:
    - The issue references specific files, classes, or functions that do not exist in the codebase
      (they may not have been merged into the default branch yet)
 
-6. NEVER ask questions about project structure, file locations, or architecture. You can
+6. Leave project structure, file locations, and architecture out of your questions: you can
    read the README.md and explore the codebase to find this information yourself.
 
 7. If the issue references specific files, classes, or code that should already exist, verify
