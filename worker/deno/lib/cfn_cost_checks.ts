@@ -60,18 +60,38 @@ function parseTemplate(text: string): Record<string, Resource> | null {
   return resources as Record<string, Resource>;
 }
 
-/** True when `text` mentions `logicalId` as a whole reference token. */
+/** A character that continues a reference token (so is not a boundary). */
+const TOKEN_CHAR = /[\w:]/;
+
+/**
+ * True when `value` mentions `logicalId` as a whole reference token. Plain
+ * string search, not a regex built from the id, so a crafted logical id
+ * cannot shape a pattern.
+ */
 function mentions(value: unknown, logicalId: string): boolean {
-  const escaped = logicalId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w:])${escaped}(?![\\w:])`).test(
-    JSON.stringify(value ?? null),
-  );
+  const text = JSON.stringify(value ?? null);
+  for (
+    let at = text.indexOf(logicalId);
+    at >= 0;
+    at = text.indexOf(logicalId, at + 1)
+  ) {
+    const before = text[at - 1] ?? "";
+    const after = text[at + logicalId.length] ?? "";
+    if (!TOKEN_CHAR.test(before) && !TOKEN_CHAR.test(after)) return true;
+  }
+  return false;
 }
 
+/** 1-based line declaring `logicalId:` (optionally quoted), or 0. */
 function declarationLine(text: string, logicalId: string): number {
-  const escaped = logicalId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`^\\s*"?${escaped}"?\\s*:`);
-  const index = text.split("\n").findIndex((line) => pattern.test(line));
+  const index = text.split("\n").findIndex((line) => {
+    let rest = line.trimStart();
+    if (rest.startsWith('"')) rest = rest.slice(1);
+    if (!rest.startsWith(logicalId)) return false;
+    rest = rest.slice(logicalId.length);
+    if (rest.startsWith('"')) rest = rest.slice(1);
+    return rest.trimStart().startsWith(":");
+  });
   return index + 1;
 }
 
