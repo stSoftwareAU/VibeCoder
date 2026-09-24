@@ -133,14 +133,16 @@ Deno.test("model_fallback - getCheaperModel is case-sensitive (uppercase returns
 });
 
 // =============================================================================
-// Routing-level fallback chain (Issue #2621)
+// Routing-level fallback chain (Issues #2621, #2560)
 //
-// The planning-shaped phases default to fable; a rate-limited fable phase must
-// degrade to opus rather than fail. These tests exercise the full chain:
-// resolve the phase's default model, then take the cheaper fallback.
+// Since #2560 the planning-shaped phases default to opus, so a rate-limited
+// planning phase degrades to sonnet. An operator can still pin a phase back to
+// fable (the documented rollback), and that pinned phase must degrade to opus
+// rather than fail. These tests exercise the full chain both ways: resolve the
+// phase's model, then take the cheaper fallback.
 // =============================================================================
 
-Deno.test("model_fallback - planning phase resolves to fable then degrades to opus (Issue #2621)", () => {
+Deno.test("model_fallback - planning phase resolves to opus by default then degrades to sonnet (Issues #2621, #2560)", () => {
   // The empty environment is injected (Issue #957), so this pins the *designed*
   // planning default rather than whatever the host exports.
   const current = resolveCurrentModel(
@@ -149,8 +151,18 @@ Deno.test("model_fallback - planning phase resolves to fable then degrades to op
     undefined,
     emptyEnv,
   );
-  assertEquals(current, "fable");
+  assertEquals(current, "opus");
   const fallback = attemptModelFallback(current, true, undefined, emptyEnv);
+  assertEquals(fallback, { ok: true, cheaperModel: "sonnet" });
+});
+
+Deno.test("model_fallback - planning pinned back to fable still degrades to opus (Issues #2621, #2560)", () => {
+  // CLAUDE_MODEL_PLANNING=fable is the documented #2560 rollback; the fable →
+  // opus rung of the ladder stays exercised through it.
+  const env = envFrom({ CLAUDE_MODEL_PLANNING: "fable" });
+  const current = resolveCurrentModel(undefined, "planning", undefined, env);
+  assertEquals(current, "fable");
+  const fallback = attemptModelFallback(current, true, undefined, env);
   assertEquals(fallback, { ok: true, cheaperModel: "opus" });
 });
 
@@ -199,15 +211,23 @@ Deno.test("model_fallback - per-repo claude_model:fable base tier resolves to fa
   }
 });
 
-Deno.test("model_fallback - grill_me phase resolves to fable then degrades to opus (Issue #2621)", () => {
+Deno.test("model_fallback - grill_me phase resolves to opus by default then degrades to sonnet (Issues #2621, #2560)", () => {
   const current = resolveCurrentModel(
     undefined,
     "grill_me",
     undefined,
     emptyEnv,
   );
-  assertEquals(current, "fable");
+  assertEquals(current, "opus");
   const fallback = attemptModelFallback(current, true, undefined, emptyEnv);
+  assertEquals(fallback, { ok: true, cheaperModel: "sonnet" });
+});
+
+Deno.test("model_fallback - grill_me pinned back to fable still degrades to opus (Issues #2621, #2560)", () => {
+  const env = envFrom({ CLAUDE_MODEL_GRILL_ME: "fable" });
+  const current = resolveCurrentModel(undefined, "grill_me", undefined, env);
+  assertEquals(current, "fable");
+  const fallback = attemptModelFallback(current, true, undefined, env);
   assertEquals(fallback, { ok: true, cheaperModel: "opus" });
 });
 
