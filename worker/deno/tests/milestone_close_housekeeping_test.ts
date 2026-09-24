@@ -60,7 +60,12 @@ interface Fixture {
  * the milestone branch checked out.
  */
 async function makeFixture(): Promise<Fixture> {
-  const workDir = await Deno.makeTempDir({ prefix: "milestone-close-" });
+  // Canonical path: on macOS the temp dir sits under `/var`, a symlink to
+  // `/private/var`, and `git worktree list` reports the resolved path — so an
+  // unresolved fixture path never equals the path the sweep logs.
+  const workDir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "milestone-close-" }),
+  );
   const remote = `${workDir}/origin.git`;
   await Deno.mkdir(remote, { recursive: true });
   await git(remote, "init", "--bare", "--initial-branch=main", ".");

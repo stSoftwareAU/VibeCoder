@@ -26,7 +26,9 @@
  * ```
  *
  * The degraded verdict is the one {@link buildDegradationReport} gives the
- * run-stats comment, so the two can never disagree about a run. A scope item
+ * run-stats comment, so the two can never disagree about a run — except that
+ * a previous generation of the requested tier (a stale container) does not
+ * count here: the run was not handed to a fallback model. A scope item
  * is delivered only when the PR summary's closure block marks it `met`; a
  * `partial` or `missing` entry, or no entry at all, is a shortfall. A degraded
  * run on an issue that states no scope names the issue itself as unverified,
@@ -118,7 +120,11 @@ export function assessDegradedDelivery(args: {
     phase: IMPLEMENTATION_RUN_STATS_PHASE,
     ...(args.env ? { env: args.env } : {}),
   });
-  if (!verdict.degraded) {
+  // A stale generation of the requested tier (a container whose CLI still
+  // resolves `opus` to Opus 5) is reported by the run-stats comment, but the
+  // run was not handed to a fallback model, so its delivery is not in doubt —
+  // treating it as degraded filed a follow-up on every run (Issue #2560).
+  if (!verdict.degraded || verdict.previousGeneration) {
     return { degraded: false, delivered: [], shortfalls: [] };
   }
 

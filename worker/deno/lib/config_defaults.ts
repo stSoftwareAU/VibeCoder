@@ -524,14 +524,16 @@ export const OPERATIONAL_DEFAULTS = {
    * immediately, bypassing the 7-day interval gate. Generic per-tool map so
    * gh/deno floors can be added later; empty for tools without a floor.
    *
-   * `claude` is pinned to 2.1.260 (Issue #1362) — the oldest release that
-   * resolves the `fable` alias to Fable 5.1 *and* carries its prompt-cache
-   * fixes. The CLI resolves the alias from its own bundled table, so this floor
-   * decides which Fable generation the Fable-preferring phases are served; the
-   * per-version evidence is in
+   * `claude` is pinned to 2.1.280 (Issue #2560) — the oldest release whose
+   * bundled alias table resolves `opus` to Opus 5.5 (`claude-opus-5-5`), the
+   * tier every substantive phase requests. It was 2.1.260 (Issue #1362), the
+   * oldest release serving Fable 5.1 with its prompt-cache fixes; 2.1.280 is
+   * above that, so a Fable-pinned phase keeps both. The CLI resolves each alias
+   * from its own bundled table, so this floor decides which generation the
+   * phases are served; the per-version evidence is in
    * `docs/MODEL-AND-CACHING.md#which-cli-version-actually-serves-51-issue-1362`.
    */
-  softwareMinVersions: { claude: "2.1.260" } as Readonly<
+  softwareMinVersions: { claude: "2.1.280" } as Readonly<
     Record<string, string>
   >,
   /**
