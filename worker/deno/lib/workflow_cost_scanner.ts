@@ -81,10 +81,14 @@ function runText(job: Rec): string {
 function jobLine(rawText: string, job: string): number {
   const lines = rawText.split("\n");
   const jobs = lines.findIndex((l) => /^jobs:\s*$/.test(l));
-  const escaped = job.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`^\\s+["']?${escaped}["']?:\\s*$`);
+  // A string comparison, not a `RegExp` built from the job name: the name
+  // comes from the scanned repo, and a non-literal regex is a ReDoS surface
+  // Semgrep blocks on.
+  const keys = [`${job}:`, `"${job}":`, `'${job}':`];
   for (let i = Math.max(jobs, 0); i < lines.length; i++) {
-    if (re.test(lines[i]!)) return i + 1;
+    const line = lines[i]!;
+    if (!/^\s/.test(line)) continue;
+    if (keys.includes(line.trim())) return i + 1;
   }
   return jobs >= 0 ? jobs + 1 : 1;
 }
