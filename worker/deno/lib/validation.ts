@@ -207,6 +207,8 @@ export interface ConfigFileJson {
   deepseek_phase_model_overrides?: Record<string, string>;
   /** Host-wide issue-executor split (Issue #2341) */
   issue_executor_split?: boolean;
+  /** Host-wide reviewer sub-agents (Issue #2575) */
+  issue_reviewer_agents?: boolean;
   enable_session_resume?: boolean;
   /** Global verbosity level override (Issue #1330) */
   verbosity?: string;
@@ -754,6 +756,8 @@ export function validateConfigFileJson(
     "enable_session_resume",
     // Host-wide issue-executor split (Issue #2341).
     "issue_executor_split",
+    // Host-wide reviewer sub-agents (Issue #2575).
+    "issue_reviewer_agents",
     // Drain the held Claude token to zero (Issue #2474).
     "claude_week_pace_drain",
   ] as const;

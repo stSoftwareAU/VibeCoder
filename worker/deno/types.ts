@@ -458,6 +458,11 @@ export interface WorkerConfig {
    * repository. Default `false` — an unconfigured host is unchanged.
    */
   issueExecutorSplit: boolean;
+  /**
+   * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
+   * defined cheaper sub-agents (Issue #2575). Host-wide only. Default `false`.
+   */
+  issueReviewerAgents: boolean;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -1369,6 +1374,8 @@ export interface ConfigFile {
   deepseek_phase_model_overrides?: Record<string, string>;
   /** Whether `issue`-phase runs use the split executor (Issue #2341) */
   issue_executor_split?: boolean;
+  /** Whether `issue` runs use the defined reviewer sub-agents (Issue #2575) */
+  issue_reviewer_agents?: boolean;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */
