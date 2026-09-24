@@ -50,7 +50,7 @@ import { redactTransformedSecrets } from "./secret_transform_redaction.ts";
  * means and why every quantifier is bounded.
  */
 const SECRET_ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!(?:true|false|null|none|yes|no|on|off)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
+  /\b([A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|APIKEY|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL)[A-Za-z0-9_]*)(["']?\s*[=:]\s*)(?!\s)(?!["']?\*\*\*REDACTED)(?![{[])(?!\$\{\{)(?!(?:true|false|null|none|yes|no|on|off|read|write|inherit)(?![A-Za-z0-9_\-./+=@]))(?!(?:-?\d{1,20}(?:\.\d{1,20})?(?:[eE][+-]?\d{1,4})?|true|false|null)\s{0,32}[,}\]])(?=\S{0,63}[A-Za-z0-9])("[^"]+"|'[^']+'|[^\s"]+)/gi;
 
 /** Replacement token substituted in place of a detected secret. */
 export const REDACTION_PLACEHOLDER = "***REDACTED***";
@@ -127,6 +127,15 @@ const TRAILING_EMPHASIS = /[*_]{1,3}$/;
  */
 const MIN_CROSS_LINE_LENGTH = 8;
 
+/**
+ * A bare mapping key — `DEPLOY_TOKEN:` — captured as the value of a parent key
+ * that ended its line (`secrets:`). Across a line break that is YAML
+ * structure, the parent's first child, never a credential. Bounded and
+ * anchored, so it is constant work per candidate (the Issue #3942 linearity
+ * rule).
+ */
+const MAPPING_KEY_VALUE = /^[A-Za-z0-9_.-]{1,128}:$/;
+
 /** Characters that end a line, so a value found past one is on a later line. */
 const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
 
@@ -150,7 +159,8 @@ const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
  * judging inline values too is what let a fence-wrapped secret through.
  *
  * Across a line break the value must earn the mask: complete Markdown
- * ({@link FENCE_VALUE}, {@link IMAGE_VALUE}) never does, a quoted value always
+ * ({@link FENCE_VALUE}, {@link IMAGE_VALUE}) and a child mapping key
+ * ({@link MAPPING_KEY_VALUE}) never do, a quoted value always
  * does, and anything else needs {@link MIN_CROSS_LINE_LENGTH} characters and a
  * shape that is not a {@link PLAIN_WORD}.
  *
@@ -167,6 +177,7 @@ export function isCredentialShapedValue(
 ): boolean {
   if (sameLine) return true;
   if (FENCE_VALUE.test(value) || IMAGE_VALUE.test(value)) return false;
+  if (MAPPING_KEY_VALUE.test(value)) return false;
   if (QUOTED_VALUE.test(value)) return true;
   if (value.length < MIN_CROSS_LINE_LENGTH) return false;
   // Emphasis markers belong to the rendering, not to the value inside them.
@@ -523,7 +534,14 @@ const RULES: readonly RedactionRule[] = [
   // CREDENTIAL, so the setting was published as the placeholder, and the
   // bare-value branch took the closing backtick and the full stop with it.
   // `true`, `false`, `null`, `none`, `yes`, `no`, `on` and `off` standing
-  // alone as the value are left alone; the inner lookahead requires the word
+  // alone as the value are left alone, and so are `read` and `write`: the
+  // GitHub Actions permission levels, which every `best-practices` wrapper
+  // published as "`id-token: ***REDACTED***`" on 2026-09-24 because the key
+  // contains TOKEN (`none`, the third level, was already a switch word).
+  // `inherit` (`secrets: inherit`) is workflow syntax of the same kind, and a
+  // value opening a `${{ … }}` expression names a secret rather than holding
+  // it; the `github-actions-audit` prompt carries both. The
+  // inner lookahead requires the word
   // to end there, so `PASSWORD=false-Flag-9f8e` and `API_KEY=no1Secret` are
   // still masked. Both lookaheads are fixed-width alternations — constant
   // work per candidate (the Issue #3942 linearity rule).
