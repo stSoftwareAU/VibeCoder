@@ -224,6 +224,20 @@ Deno.test("run failure classifier - precedence: an OOM kill whose message also s
   assertEquals(credit.failureClass, "out-of-credit");
 });
 
+Deno.test("run failure classifier - a payment refusal categorised rate_limit keeps out-of-credit (Issue #2590)", () => {
+  const refusal = classifyRunFailure(
+    "rate_limit",
+    'API Error: 402 {"type":"error","error":{"type":"billing_error"}}',
+  );
+  assertEquals(refusal.failureClass, "out-of-credit");
+  assertEquals(refusal.fixability, "not_code_fixable");
+  // A plain rate limit still reads as a usage limit.
+  assertEquals(
+    classifyRunFailure("rate_limit", "rate limit reached").failureClass,
+    "usage-limit",
+  );
+});
+
 Deno.test("run failure classifier - case-insensitive message matching per message-matched row (Issue #4328)", () => {
   assertEquals(
     classifyRunFailure("unknown", "OUT OF CREDIT — Payment Required")

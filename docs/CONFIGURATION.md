@@ -2060,7 +2060,10 @@ flowchart TD
 - **What counts as fast.** A run whose agent produced no output
   (`zero_output`) at all, or one released inside `fast_failure_seconds`.
   Host-wide causes never count — a rate-limited run dies in seconds on every
-  repository at once, and a scheduled release is a deliberate handover.
+  repository at once, and a scheduled release is a deliberate handover. An
+  agent-API payment refusal (`API Error: 402`, an out-of-credit message) is
+  account state too and is categorised `rate_limit`; before Issue #2590 it
+  read as `internal_error` and backed off a healthy repository.
 - **What the back-off stops.** The repository is excluded from the
   implementation claim scan (`findNextIssue` → `findOldestIssue`), which is
   where the retries Issue #1950 measured were spent. The label-driven lanes
@@ -2077,8 +2080,10 @@ flowchart TD
   git's own summary lines (`error: failed to push some refs to '<url>'`,
   `To <url>`, trailing `hint:` advice) are stepped over, so a run that died
   on a refused push reports the refusal rather than the bare fact that a
-  push failed (Issue #2034). Closing it releases the back-off on the next
-  scan.
+  push failed (Issue #2034). The markdown scaffolding the worker wraps the
+  agent's last output in — the `<details>` and `<summary>` tags and code
+  fences — is stepped over too, so the detail is never a bare `</details>`
+  (Issue #2590). Closing it releases the back-off on the next scan.
 - **Where it is filed.** `stSoftwareAU/VibeCoder` by default, matching the
   run-failure filing policy: a repository failing in its first minute is a
   worker-side environment fault. Set `fast_failure_diagnostics_here` in that

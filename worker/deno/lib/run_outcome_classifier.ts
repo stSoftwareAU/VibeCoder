@@ -31,7 +31,10 @@
  */
 
 import { assertNever } from "./assert_never.ts";
-import type { FailureCategory } from "./failure_diagnosis.ts";
+import {
+  type FailureCategory,
+  isOutOfCreditMessage,
+} from "./failure_diagnosis.ts";
 import { isSecondaryRateLimitMessage } from "./secondary_rate_limit.ts";
 
 /** Whether a code change could stop the failure recurring. */
@@ -73,10 +76,6 @@ export const RUN_FAILURE_CLASSES = [
   "repo-config",
   "unknown",
 ] as const;
-
-/** Out-of-credit / billing signals — account state, not a worker fault. */
-const OUT_OF_CREDIT_RE =
-  /out of credit|credit balance|insufficient (?:balance|credit|funds|quota)|payment required|billing (?:hard )?limit|quota exceeded/i;
 
 /**
  * Memory-pressure evidence beside a kill (Issue #4202).
@@ -181,6 +180,13 @@ export function splitAgentNarration(
   return { worker, agent: agentParts.join("\n") };
 }
 
+/** Out-of-credit / billing — account state, not a worker defect. */
+const OUT_OF_CREDIT: RunFailureClassification = {
+  fixability: "not_code_fixable",
+  failureClass: "out-of-credit",
+  rationale: "The message reports an out-of-credit / billing condition.",
+};
+
 /**
  * Classify a no-PR run failure.
  *
@@ -241,6 +247,9 @@ export function classifyRunFailure(
     };
   }
   if (category === "rate_limit") {
+    // An out-of-credit refusal is categorised rate_limit (Issue #2590) but
+    // keeps its own, more precise failure class.
+    if (isOutOfCreditMessage(message)) return OUT_OF_CREDIT;
     return {
       fixability: "not_code_fixable",
       failureClass: "usage-limit",
@@ -272,13 +281,7 @@ export function classifyRunFailure(
         "The run was released on schedule (cycle ended or run hard cap reached) with its work preserved — not a worker defect.",
     };
   }
-  if (OUT_OF_CREDIT_RE.test(message)) {
-    return {
-      fixability: "not_code_fixable",
-      failureClass: "out-of-credit",
-      rationale: "The message reports an out-of-credit / billing condition.",
-    };
-  }
+  if (isOutOfCreditMessage(message)) return OUT_OF_CREDIT;
 
   // 2. A squash-lineage refusal is the base having moved on (Issue #534),
   //    stated in the worker's own words — and its text quotes a branch name
