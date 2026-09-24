@@ -2092,6 +2092,18 @@
       "paths": [
         "worker/deno/lib/degraded_delivery.ts"
       ]
+    },
+    {
+      "issue": 2578,
+      "chunk": "top-up-2578",
+      "title": "top-up: the GitHub Actions audit cost and speed pre-pass",
+      "ledger": "docs/audits/security-sweep-2578-workflow-cost-scanner.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: workflow_cost_scanner.ts (#2578)",
+      "status": "swept",
+      "sweptAt": "1ca8b9ec0f8a18d405c5b0ddf87cc6ae7460ea9c",
+      "paths": [
+        "worker/deno/lib/workflow_cost_scanner.ts"
+      ]
     }
   ],
   "roots": [
