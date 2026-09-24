@@ -19,7 +19,10 @@ import {
   CODEGRAPH_PROMPT_LINE,
   type CodegraphContextResult,
 } from "../../lib/codegraph_context.ts";
-import { assertCarriesRtkHook, type SpawnOptions } from "./rtk_wiring_asserts.ts";
+import {
+  assertCarriesRtkHook,
+  type SpawnOptions,
+} from "./rtk_wiring_asserts.ts";
 
 /** The bundle text an `ok` collection returns. */
 export const GRAFT_BUNDLE = "export function parseDate() {}";

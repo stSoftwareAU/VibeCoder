@@ -36,8 +36,8 @@ import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import {
   type prepareRtkRun,
   type RtkOutputResult,
-  type RtkRun,
   type rtkProviderId,
+  type RtkRun,
   settingsJsonOption,
 } from "./rtk_output.ts";
 
