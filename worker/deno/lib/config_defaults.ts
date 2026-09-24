@@ -347,8 +347,8 @@ export const OPERATIONAL_DEFAULTS = {
    * Timeout in seconds for a single grill-me round (Issue #1616).
    *
    * Grill-me is an analysis phase, not a code change — a round may need to
-   * investigate the codebase, run a live model probe (e.g. confirm Fable is
-   * actually served), and reason at top-tier model + `max` effort. The old
+   * investigate the codebase, run a live model probe (e.g. confirm the
+   * top-tier model is actually served), and reason at high effort. The old
    * 600s ceiling was borrowed from the lightweight question/clarification
    * phases and starved that work, so heavy rounds died at "Claude timed out"
    * and escalated to `needs-human` (Issue #3154). It now matches the
@@ -750,10 +750,10 @@ export const DEFAULT_EFFORT = "high" as const;
 export const DEFAULT_CLAUDE_EFFORT_PLANNING = "high" as const;
 
 /**
- * Default effort level for the grill-me phase (Issue #2621, #3229).
+ * Default effort level for the grill-me phase (Issue #2621, #3229, #2560).
  * Requirements interrogation shapes every downstream sub-issue — the same
- * plan-quality argument as planning — so it is one of the six planning-shaped
- * phases that run on the Fable 5 top tier at "high" effort. Previously max.
+ * plan-quality argument as planning — so it is one of the planning-shaped
+ * phases that run on the Opus top tier at "high" effort. Previously max.
  */
 export const DEFAULT_CLAUDE_EFFORT_GRILL_ME = "high" as const;
 
@@ -771,10 +771,10 @@ export const DEFAULT_CLAUDE_EFFORT_QUORUM = "high" as const;
 export const DEFAULT_CLAUDE_EFFORT_ISSUE = "high" as const;
 
 /**
- * Default effort level for the question phase (Issue #1402, #2391, #3229).
- * Answering a user's question is one of the six planning-shaped phases — the
- * Vibe Coder interprets the user's words into an implementable state — so it
- * runs on the Fable 5 top tier at "high" effort (see PHASE_MODEL_DEFAULTS).
+ * Default effort level for the question phase (Issue #1402, #2391, #3229,
+ * #2560). Answering a user's question is one of the planning-shaped phases —
+ * the Vibe Coder interprets the user's words into an implementable state — so
+ * it runs on the Opus top tier at "high" effort (see PHASE_MODEL_DEFAULTS).
  * Previously opus + medium.
  */
 export const DEFAULT_CLAUDE_EFFORT_QUESTION = "high" as const;
@@ -798,26 +798,26 @@ export const DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK = "medium" as const;
 export const DEFAULT_CLAUDE_EFFORT_QUALITY_FIX = "medium" as const;
 
 /**
- * Default effort level for the refinement phase (Issue #1402, #3229).
- * Rewording titles/descriptions is one of the six planning-shaped phases —
+ * Default effort level for the refinement phase (Issue #1402, #3229, #2560).
+ * Rewording titles/descriptions is one of the planning-shaped phases —
  * the Vibe Coder interprets the user's words into an implementable state — so
- * it runs on the Fable 5 top tier at "high" effort. Previously medium.
+ * it runs on the Opus top tier at "high" effort. Previously medium.
  */
 export const DEFAULT_CLAUDE_EFFORT_REFINEMENT = "high" as const;
 
 /**
- * Default effort level for the revision phase (Issue #1402, #3229).
- * Review-based rewriting is one of the six planning-shaped phases — the Vibe
+ * Default effort level for the revision phase (Issue #1402, #3229, #2560).
+ * Review-based rewriting is one of the planning-shaped phases — the Vibe
  * Coder interprets the user's words into an implementable state — so it runs
- * on the Fable 5 top tier at "high" effort. Previously medium.
+ * on the Opus top tier at "high" effort. Previously medium.
  */
 export const DEFAULT_CLAUDE_EFFORT_REVISION = "high" as const;
 
 /**
- * Default effort level for the clarification phase (Issue #1402, #3229).
- * Assessing issue clarity is one of the six planning-shaped phases — the Vibe
+ * Default effort level for the clarification phase (Issue #1402, #3229, #2560).
+ * Assessing issue clarity is one of the planning-shaped phases — the Vibe
  * Coder interprets the user's words into an implementable state — so it runs
- * on the Fable 5 top tier at "high" effort. Previously medium.
+ * on the Opus top tier at "high" effort. Previously medium.
  */
 export const DEFAULT_CLAUDE_EFFORT_CLARIFICATION = "high" as const;
 
@@ -846,14 +846,15 @@ export const DEFAULT_CLAUDE_EFFORT_HEALTH = "low" as const;
  * fall back to DEFAULT_EFFORT ("high").
  *
  * Effort-first routing (Issue #2391): effort is the *primary* cost lever
- * and the effort tiers below encode each phase's complexity. Issue #2621
- * adds model tier as a *secondary* lever above Opus (Fable 5), and Issue
- * #3229 extends the Fable tier to all six planning-shaped phases — wherever
- * the Vibe Coder interprets the user's words into an implementable state, use
- * the highest model available (see PHASE_MODEL_DEFAULTS). The effort tiers:
- * - planning / grill_me / refinement / revision / question / clarification →
- *   high (the six planning-shaped phases; their `max` bump is reserved for the
- *   #3217 pre-flight reroute to Opus when Fable is unavailable)
+ * and the effort tiers below encode each phase's complexity. Model tier is
+ * the *secondary* lever, and since Issue #2560 collapsed the top tier onto
+ * Opus it separates only the trivial phases (Haiku) from everything else —
+ * so effort alone distinguishes the eight planning-shaped phases from the
+ * reactive ones (see PHASE_MODEL_DEFAULTS). The effort tiers:
+ * - planning / grill_me / refinement / revision / question / clarification /
+ *   quorum / quorum_judge → high (the eight planning-shaped phases; their
+ *   `max` bump is reserved for the #3217 pre-flight reroute, which fires only
+ *   when a phase has been pinned back to Fable and Fable is unavailable)
  * - issue → high (thorough reasoning for implementation)
  * - ci_fix / pr_feedback / quality_fix → medium (reactive tasks with
  *   structured input)
@@ -898,18 +899,21 @@ export const DEFAULT_CLAUDE_MODEL = "opus" as const;
 // tunable depth dial — instead of routing each phase to a different model
 // family. This also sidesteps the Opus alias→pricing mismatch (#2389).
 //
-// Tier is the *secondary* lever, applied at both extremes. At the cheap
-// extreme the three trivial phases (spelling_fix, summarise, health) stay on
-// Haiku — the Opus↔Haiku gap is still ~5×, summarise can be fed very large
-// inputs, and the large-input escalation in phase_model_escalation.ts (#2393)
-// already lifts a Haiku phase to a 1M-window tier when an input would
-// otherwise truncate. At the top extreme the six planning-shaped phases run on
-// the Fable 5 tier above Opus. Issue #2621 promoted the first two (planning,
-// grill_me); Issue #3229 extended the tier to the other four (refinement,
-// revision, question, clarification) under one guiding rule: wherever the Vibe
-// Coder interprets the user's words into an implementable state, use the
-// highest model available. A better interpretation compounds across every
-// downstream sub-issue and PR, so the ~2× Fable premium is spent there.
+// Tier is the *secondary* lever, and since Issue #2560 it is applied at the
+// cheap extreme only: the three trivial phases (spelling_fix, summarise,
+// health) stay on Haiku — the Opus↔Haiku gap is still ~5×, summarise can be
+// fed very large inputs, and the large-input escalation in
+// phase_model_escalation.ts (#2393) already lifts a Haiku phase to a 1M-window
+// tier when an input would otherwise truncate. The eight planning-shaped
+// phases used to sit on a Fable tier above Opus (#2621 promoted planning and
+// grill_me, #3229 extended it to refinement, revision, question and
+// clarification, #4112 added quorum and quorum_judge) under one guiding rule:
+// wherever the Vibe Coder interprets the user's words into an implementable
+// state, use the highest model available. Opus 5.5 matches or beats Fable 5.1
+// on plan quality at roughly half the price, so #2560 collapsed that tier onto
+// Opus — the rule is unchanged, the highest model available is simply Opus
+// now, and "high" effort is what still separates those phases from the
+// reactive ones.
 //
 // Issue #2390 specifically evaluated whether the reactive phases (ci_fix,
 // pr_feedback, quality_fix) should drop to opus + LOW effort, and whether
@@ -919,10 +923,10 @@ export const DEFAULT_CLAUDE_MODEL = "opus" as const;
 // medium-effort floor on reactive work (the hard cases need the reasoning
 // depth) and let operators override per-repo if they want a cheaper tier.
 // Issue #3229 later re-tiered refinement / revision / question / clarification
-// *up* to Fable + high (not down to Haiku): they are planning-shaped phases
-// where the Vibe Coder interprets the user's words, so they join planning and
-// grill_me on the top tier. The three genuinely reactive phases (ci_fix,
-// pr_feedback, quality_fix) keep opus + medium.
+// *up* (not down to Haiku): they are planning-shaped phases where the Vibe
+// Coder interprets the user's words, so they join planning and grill_me at
+// high effort. The three genuinely reactive phases (ci_fix, pr_feedback,
+// quality_fix) keep opus + medium.
 //
 // The named per-phase constants are retained so the override chain
 // (CLAUDE_MODEL_<PHASE> env vars, phase_model_overrides config) and the
