@@ -2,15 +2,19 @@
  * The Sonnet executor sub-agents an `issue`-phase run delegates to when
  * `issue_executor_split` is on (Issue #2342, part of #2320).
  *
- * The worker passes no `--agents` today, so every sub-agent a run spawns
- * inherits the phase's model — the expensive advisor tier doing work an
- * executor tier does just as well. These definitions are what change that:
- * the **advisor** stays the main session on the phase's model and effort, and
- * hands mechanical edit-and-test work to executors pinned to Sonnet.
+ * A sub-agent with no definition inherits the phase's model — the expensive
+ * advisor tier doing work an executor tier does just as well. These
+ * definitions are what change that: the **advisor** stays the main session on
+ * the phase's model and effort, and hands mechanical edit-and-test work to
+ * executors pinned to Sonnet.
  *
- * Nothing here touches phase routing. The definitions are built only at the
- * call site that has already resolved the key on, so a run with the key off
- * builds the same argv it always has.
+ * A run whose `issue_reviewer_agents` key is on also carries the two
+ * independent reviewers (Issue #2575), pinned to a cheaper tier and effort,
+ * read-only, and unable to spawn further sub-agents — see
+ * {@link buildIssueRunAgents}. The executor is only on a run whose split key
+ * resolved on.
+ *
+ * Nothing here touches phase routing.
  */
 
 import type { AgentDefinition } from "./agent_provider.ts";
@@ -98,5 +102,152 @@ export function buildIssueExecutorAgents(): Readonly<
       tools: ISSUE_EXECUTOR_TOOLS,
       disallowedTools: ISSUE_EXECUTOR_DISALLOWED_TOOLS,
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The independent reviewers (Issue #2575)
+// ---------------------------------------------------------------------------
+
+/** The sub-agent name the issue prompt dispatches the Spec reviewer as. */
+export const SPEC_REVIEWER_AGENT_NAME = "spec-reviewer";
+
+/** The sub-agent name the issue prompt dispatches the Standards reviewer as. */
+export const STANDARDS_REVIEWER_AGENT_NAME = "standards-reviewer";
+
+/**
+ * The Spec reviewer's tier and effort.
+ *
+ * Sonnet at `medium`, against the advisor's Opus at `high`: without a
+ * definition both reviewers inherited the advisor, so two extra contexts on
+ * every criteria-bearing run were billed at the most expensive tier. The
+ * Spec reviewer keeps `medium` because judging whether each criterion is
+ * met is still judgement; its independence comes from its fresh context,
+ * not from its tier.
+ */
+export const SPEC_REVIEWER_MODEL = "sonnet";
+export const SPEC_REVIEWER_EFFORT = "medium";
+
+/**
+ * The Standards reviewer's tier and effort.
+ *
+ * Sonnet at `low`: it checks a diff against one written document, the
+ * "simpler task … such as subagents" Anthropic's effort table names `low`
+ * for.
+ */
+export const STANDARDS_REVIEWER_MODEL = "sonnet";
+export const STANDARDS_REVIEWER_EFFORT = "low";
+
+/**
+ * Read-only tools: a reviewer reads the diff file, the standards and the code
+ * the diff touches, and changes nothing. No `Bash` either — the advisor
+ * writes the diff to a file and hands the reviewer its path.
+ */
+export const ISSUE_REVIEWER_TOOLS: readonly string[] = ["Read", "Grep", "Glob"];
+
+/**
+ * Tools a reviewer must not use. `Agent` is denied so a reviewer cannot spawn
+ * reviewers of its own, whatever {@link ISSUE_REVIEWER_TOOLS} grants.
+ */
+export const ISSUE_REVIEWER_DISALLOWED_TOOLS: readonly string[] = ["Agent"];
+
+/** The Spec reviewer's own system prompt. */
+const SPEC_REVIEWER_PROMPT = [
+  "You are the independent Spec reviewer on an issue-work run. You are " +
+  "given the path of a diff file and the issue body, verbatim, and nothing " +
+  "of the author's reasoning. Judge the diff against the issue body only.",
+  "",
+  "Answer three questions, and only these:",
+  "1. Which stated requirements are missing or partial?",
+  "2. What behaviour is in the diff that was not asked for (scope creep)?",
+  "3. Which requirements look implemented but are implemented wrongly?",
+  "",
+  "Return one `met` / `partial` / `missing` verdict per stated acceptance " +
+  "criterion, with the evidence you saw (a file, a test name), and one " +
+  "`unrequested` entry per change you cannot trace to the issue. Flag only " +
+  "gaps that affect correctness or the stated requirements; do not propose " +
+  "improvements the issue did not ask for.",
+  "",
+  "You are read-only and cannot spawn sub-agents. Do the review yourself.",
+].join("\n");
+
+/** The Standards reviewer's own system prompt. */
+const STANDARDS_REVIEWER_PROMPT = [
+  "You are the independent Standards reviewer on an issue-work run. You are " +
+  "given the path of a diff file; read it and the repository's " +
+  "`CODING-STANDARDS.md`, and nothing of the author's reasoning.",
+  "",
+  "One question: where does the diff depart from a documented standard in " +
+  "a way that affects correctness, security or the stated requirements?",
+  "",
+  "- Return one `violation` entry per such departure, naming the standard " +
+  "and the `file:line` you saw. A `violation` must cite a rule that is " +
+  "written in `CODING-STANDARDS.md` — never a preference of your own.",
+  "- List any other departure (style, naming, taste) under `optional`, one " +
+  "line each. Those are not violations and are not to be chased.",
+  "- Name the `clean` areas you checked and found compliant.",
+  "",
+  "You are read-only and cannot spawn sub-agents. Do the review yourself.",
+].join("\n");
+
+/**
+ * Build the two reviewer definitions (Issue #2575).
+ *
+ * @returns The Spec and Standards reviewer definitions, keyed by name.
+ */
+export function buildIssueReviewerAgents(): Readonly<
+  Record<string, AgentDefinition>
+> {
+  return {
+    [SPEC_REVIEWER_AGENT_NAME]: {
+      description:
+        "Independent Spec reviewer: judges a finished diff against the " +
+        "issue body, one verdict per acceptance criterion.",
+      prompt: SPEC_REVIEWER_PROMPT,
+      model: SPEC_REVIEWER_MODEL,
+      effort: SPEC_REVIEWER_EFFORT,
+      tools: ISSUE_REVIEWER_TOOLS,
+      disallowedTools: ISSUE_REVIEWER_DISALLOWED_TOOLS,
+    },
+    [STANDARDS_REVIEWER_AGENT_NAME]: {
+      description:
+        "Independent Standards reviewer: checks a finished diff against " +
+        "CODING-STANDARDS.md and reports material departures.",
+      prompt: STANDARDS_REVIEWER_PROMPT,
+      model: STANDARDS_REVIEWER_MODEL,
+      effort: STANDARDS_REVIEWER_EFFORT,
+      tools: ISSUE_REVIEWER_TOOLS,
+      disallowedTools: ISSUE_REVIEWER_DISALLOWED_TOOLS,
+    },
+  };
+}
+
+/** The two switches that decide which definitions an `issue` run carries. */
+export interface IssueRunAgentSwitches {
+  /** Whether {@link isIssueExecutorSplitEnabled} resolved true. */
+  executorSplit: boolean;
+  /** Whether the host's `issue_reviewer_agents` key is on (Issue #2575). */
+  reviewerAgents: boolean;
+}
+
+/**
+ * Build every `--agents` definition an `issue`-phase run carries.
+ *
+ * The reviewers ride a run whose `issue_reviewer_agents` key is on; the
+ * executor rides a run whose split is on. The two are independent, so either
+ * can be piloted without the other.
+ *
+ * @param switches - The run's resolved switches.
+ * @returns The definitions keyed by sub-agent name, or `undefined` when both
+ *   switches are off — so such a run emits no `--agents` argument at all and
+ *   is byte-for-byte the argv it always was.
+ */
+export function buildIssueRunAgents(
+  switches: IssueRunAgentSwitches,
+): Readonly<Record<string, AgentDefinition>> | undefined {
+  if (!switches.executorSplit && !switches.reviewerAgents) return undefined;
+  return {
+    ...(switches.reviewerAgents ? buildIssueReviewerAgents() : {}),
+    ...(switches.executorSplit ? buildIssueExecutorAgents() : {}),
   };
 }

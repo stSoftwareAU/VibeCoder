@@ -69,6 +69,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Issue-executor split (Issue #2341). Host-wide, with a same-named
   // per-repository override under `repo_config`.
   "issue_executor_split",
+  // Reviewer sub-agents (Issue #2575). Host-wide only.
+  "issue_reviewer_agents",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both

@@ -13,6 +13,7 @@ the worker.
   - [Phase-Specific Defaults](#phase-specific-defaults)
   - [Model/effort precedence chain](#-modeleffort-precedence-chain)
   - [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase)
+  - [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase)
   - [Codex per-phase routing](#-codex-per-phase-routing)
   - [Gemini per-phase routing](#-gemini-per-phase-routing)
   - [DeepSeek per-phase routing](#-deepseek-per-phase-routing)
@@ -100,6 +101,7 @@ a section without a marker, fails `deno test`.
 | [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
 | [Model/effort precedence chain](#-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
 | [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
+| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
@@ -589,6 +591,67 @@ flowchart TD
     style S fill:#9d0208,stroke:#6a040f,color:#fff
     style D fill:#adb5bd,stroke:#6c757d,color:#000
 ```
+
+### Reviewer sub-agents (issue phase)
+
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns.
+
+Every `issue` run whose body states acceptance criteria dispatches two
+independent reviewers before writing the PR summary (the *Independent Review
+Before the PR* section of [`prompts/issue/prompt.md`](../prompts/issue/prompt.md),
+enforced by
+[`worker/deno/lib/independent_review_gate.ts`](../worker/deno/lib/independent_review_gate.ts)).
+With no definition, both inherit the advisor's model and effort: Opus at
+`high` for two extra contexts on nearly every run.
+
+The `issue_reviewer_agents` key ([CONFIGURATION.md](CONFIGURATION.md),
+Issue #2575) defines them instead, in
+[`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts):
+
+| Agent | Model | Effort | Tools | Inputs |
+| --- | --- | --- | --- | --- |
+| `spec-reviewer` | `sonnet` | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
+| `standards-reviewer` | `sonnet` | `low` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
+
+The reviewers keep what makes them worth running: a fresh context that never
+sees the author's reasoning. The Standards reviewer is also scoped as the
+[Claude Code best practices](https://code.claude.com/docs/en/best-practices#add-an-adversarial-review-step)
+advise: a `violation` must cite a documented standard and affect correctness,
+security or the stated requirements, and anything else is listed as
+`optional` and not chased.
+
+**Expected effect.** Two review contexts move from Opus 5.5 at `high` ($4/$20
+per MTok) to Sonnet ($2/$10) at `medium` and `low`. No fleet figure is
+claimed; the pilot produces it.
+
+**Pilot.** The key is **off by default**. It is measured with the
+[pilot method](#pilot-method) and the
+[default-on decision criteria](#default-on-decision-criteria) above, with
+`issue_reviewer_agents` in place of `issue_executor_split`: pilot hosts turn it
+on host-wide, and control hosts leave it off. Read condition 3 (Standards
+`violation` lines per PR) with the narrower brief in mind: fewer violations on
+the pilot arm is partly the scoping itself, so it cannot on its own show that
+quality held. The owner also asked for the share of PRs later reopened or given
+`needs-revision` for a missed acceptance criterion to be no worse than control.
+Record the figures on Issue #2575 before the default changes.
+
+#### Sub-agent spawn caps
+
+Every `claude` child, on every phase, runs with Claude Code's deterministic
+sub-agent caps set in its spawn environment by
+[`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
+(`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
+the image pins 2.1.281 in [`container/tools.json`](../container/tools.json).
+
+| Variable | Value | CLI default | Effect |
+| --- | --- | --- | --- |
+| `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` | `1` | `3` | The main session may spawn sub-agents; a sub-agent may not spawn its own |
+| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | `4` | `20` | A fifth concurrent spawn is refused with `Concurrent subagent limit reached` until one finishes |
+
+These caps are spawn environment, not an operator setting. A value already in
+the worker's own environment wins, but no `.config.json` key sets them. The
+concurrency cap also bounds a split run's executors, which the split prompt
+itself does not cap.
 
 ### 🤖 Codex per-phase routing
 
