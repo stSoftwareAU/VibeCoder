@@ -94,14 +94,17 @@ import {
   forcedFinalTriggerLine,
   type GrillMeStopTrigger,
 } from "./grill_me_stall_guard.ts";
-import type {
-  CollectGraftContextOptions,
-  GraftContextResult,
+import {
+  collectGraftContext,
+  type CollectGraftContextOptions,
+  describeGraftContext,
+  formatGraftContextSection,
+  type GraftContextResult,
+  graftQueryFor,
 } from "./graft_context.ts";
-import { graftQueryFor } from "./graft_context.ts";
 import { isGraftContextEnabled } from "./graft_context_config.ts";
-import type { CodegraphContextResult } from "./codegraph_context.ts";
 import { prepareCodegraphRun } from "./codegraph_run.ts";
+import { bindGraftRun } from "./graft_run.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
 
 // ---------------------------------------------------------------------------
@@ -985,11 +988,17 @@ export async function buildGrillMePrompt(
   const wrappedHistory =
     `${delimiters.commentsStart}\n${sanitisedHistory}\n${delimiters.commentsEnd}`;
 
-  // When the round prepared a Graft context bundle, thread it between the
-  // issue body and comment history (Issue #2561).
-  const bodyWithGraft = opts.graftContextBundle
-    ? `${wrappedBody}\n${opts.graftContextBundle}`
-    : wrappedBody;
+  // The round's Graft bundle, fenced with this run's boundary and carried
+  // after the issue body (Issue #2561). Repository-derived text is untrusted
+  // data, so it goes through the same formatter the other wired phases use
+  // rather than being pasted in raw. Empty on a round that collected none.
+  const graftContextSection = formatGraftContextSection(
+    opts.graftContextBundle,
+    delimiters.boundaryId,
+  );
+  const bodyWithGraft = graftContextSection === ""
+    ? wrappedBody
+    : `${wrappedBody}\n\n${graftContextSection}`;
 
   const replacements: Record<string, string> = {
     ROUND_NUMBER: String(opts.roundNumber),
@@ -1871,54 +1880,41 @@ async function _processGrillMeWithHeartbeat(
     logger.warn(auditMsg, { repo, issueNumber });
   }
 
-  // 5a) Prepare Graft and CodeGraph contexts (Issue #2561).
-  let graftContextBundle: string | undefined;
-  let graftContextResult: GraftContextResult | undefined;
-  let codegraphContextResult: CodegraphContextResult | undefined;
-  let codegraph: Awaited<ReturnType<typeof prepareCodegraphRun>> | undefined;
+  // 5a) Graft, CodeGraph and RTK, prepared exactly as planning prepares them
+  // (Issue #2561). Each is an accelerator whose collector reports a fault as
+  // `failed` rather than throwing, so losing one never fails the round — the
+  // figure simply reads `failed` on the round's stats comment.
+  const repoName = repo.split("/").pop() ?? repo;
+  const repoDir = `${config.workDir}/${repoName}`;
 
-  if (processorDeps.collectGraftContext) {
-    try {
-      graftContextResult = await processorDeps.collectGraftContext({
-        repoDir: config.workDir,
-        query: graftQueryFor(issueTitle, issueBody),
-        enabled: isGraftContextEnabled(config),
-        logger,
-      });
-      if (graftContextResult.status === "ok" && graftContextResult.bundle) {
-        graftContextBundle = graftContextResult.bundle;
-      }
-    } catch (err) {
-      logger.warn("Graft context collection failed", {
-        repo,
-        issueNumber,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+  const collectGraft = processorDeps.collectGraftContext ?? collectGraftContext;
+  const graftContext = await collectGraft({
+    repoDir,
+    query: graftQueryFor(issueTitle, issueBody),
+    enabled: isGraftContextEnabled(config),
+    logger,
+  });
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, issueNumber });
   }
 
-  try {
-    codegraph = await prepareCodegraphRun({
-      repoDir: config.workDir,
-      enabled: config.codegraphContext.enabled,
-      logger,
-      prepare: deps.claude.prepareCodegraphContext,
-    });
-    codegraphContextResult = codegraph.result;
-  } catch (err) {
-    logger.warn("CodeGraph context preparation failed", {
-      repo,
-      issueNumber,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const codegraph = await prepareCodegraphRun({
+    repoDir,
+    enabled: config.codegraphContext.enabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  // The pull side of Graft beside CodeGraph's: the same MCP entry and prompt
+  // line the planning spawn gets, one tally for the round.
+  const graft = bindGraftRun({ result: graftContext, repoDir, logger });
 
-  // 5b) Prepare RTK output (Issue #2561).
+  // RTK is installed per spawn, so the hook settings have to ride on this
+  // round's invocation options — nothing is written to the shared settings.
   const rtk = await deps.claude.prepareRtkRun({
     enabled: config.rtkOutput.enabled,
     providerId: deps.claude.rtkProviderId(undefined, logger),
     logger,
-    cwd: config.workDir,
+    cwd: repoDir,
   });
 
   const promptResult = await buildGrillMePrompt({
@@ -1938,8 +1934,8 @@ async function _processGrillMeWithHeartbeat(
     // Issue #849: an operator's `grill-me` mapping replaces the template.
     promptOverrides: promptOverrideMappings(config),
     promptsDir,
-    // Issue #2561: Graft context bundle prepared above.
-    graftContextBundle,
+    // Present only on an `ok` collection (Issue #2561).
+    graftContextBundle: graftContext.bundle,
   });
 
   if (!promptResult.ok) {
@@ -1960,9 +1956,10 @@ async function _processGrillMeWithHeartbeat(
   // 6) Invoke Claude with the grill-me timeout.
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      // Issue #2561: apply CodeGraph and RTK prompts (RTK outermost).
+      // Issue #2561: the Graft and CodeGraph rules, with RTK's outermost so it
+      // is the last thing the agent reads — the order planning uses.
       prompt: rtk.applyPrompt(
-        codegraph?.applyPrompt(promptResult.value) ?? promptResult.value,
+        graft.applyPrompt(codegraph.applyPrompt(promptResult.value)),
       ),
       timeoutSeconds: config.grillMeTimeout,
       killAfterSeconds: config.grillMeKillAfter,
@@ -1975,7 +1972,9 @@ async function _processGrillMeWithHeartbeat(
       phase: "grill_me",
       cwd: config.workDir,
       logger,
-      // Issue #2561: RTK settings merged into invocation options.
+      // Issue #2561: the MCP servers (Graft's beside CodeGraph's) and the RTK
+      // hook settings this round's spawn runs with.
+      ...graft.mcpConfigOption(codegraph.mcpConfig()),
       ...settingsJsonOption(undefined, rtk.hookSettings()),
     },
     {
@@ -2014,9 +2013,12 @@ async function _processGrillMeWithHeartbeat(
     );
   }
 
-  // Issue #2561: re-read RTK output after Claude completes successfully
-  // so the figure covers the whole round. Never throws.
+  // Issue #2561: fold the round's figures in once Claude has finished — the
+  // RTK saving, and the query tallies the Graft and CodeGraph lines report.
+  // None of the three throws.
   await rtk.record();
+  codegraph.record(claudeResult.value.runStats);
+  graft.record(claudeResult.value.runStats);
 
   // 7) Verify Claude posted a comment.
   //
@@ -2279,9 +2281,9 @@ async function _processGrillMeWithHeartbeat(
 
   // Issue #2717: grill-me routes to the same Fable 5 top tier as planning, so
   // surface a silent Fable→Opus degradation the same way the #2646 family does
-  // for planning. Unlike planning (stats every run), grill-me posts the stats
-  // block and applies the `degraded-model` label ONLY on a degraded round —
-  // healthy interactive rounds stay clean. Non-fatal: never aborts the round.
+  // for planning. The `degraded-model` label is applied only on a degraded
+  // round; the run's stats block is posted once per run either way
+  // (Issue #3756). Non-fatal: never aborts the round.
   let degraded = false;
   try {
     const verdict = await reportGrillMeDegradation({
@@ -2291,9 +2293,10 @@ async function _processGrillMeWithHeartbeat(
       ghClient,
       runGhCommand: deps.github.runGhCommand,
       logger,
-      // Issue #2561: thread Graft/CodeGraph/RTK status into degradation comment.
-      graftContextResult,
-      codegraphContextResult,
+      // Issue #2561: the round's Graft, CodeGraph and RTK outcomes, so its
+      // stats comment carries the same three lines an issue run's does.
+      graftContextResult: graft.result,
+      codegraphContextResult: codegraph.result,
       rtkOutputResult: rtk.result,
     });
     degraded = verdict.degraded;

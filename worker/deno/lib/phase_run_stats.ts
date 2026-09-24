@@ -178,13 +178,6 @@ export async function reportPhaseDegradation(args: {
    */
   env?: EnvLookup;
   /**
-   * Whether to post the stats comment on healthy rounds (Issue #2717).
-   * Defaults to true (posts on healthy rounds). Grill-me sets this to false
-   * to avoid cluttering the interactive conversation — only degraded rounds
-   * post. Other phases default to the Issue #3756 behaviour (post on both).
-   */
-  postOnHealthyRounds?: boolean;
-  /**
    * What the round's Graft collection did (Issue #2105, part of #2060).
    * Reported on both the healthy and the degraded comment, so the figures are
    * readable on the issue whichever way the round went. Omitted — a phase that
@@ -235,27 +228,22 @@ export async function reportPhaseDegradation(args: {
   const label = phaseDisplayName(phase).toLowerCase();
 
   // Healthy round — post this run's cost/model stats comment, unless this run
-  // already posted one (Issues #3756, #797), or postOnHealthyRounds is false
-  // (Issue #2717 — grill-me doesn't clutter the conversation with stats on
-  // every healthy round).
+  // already posted one (Issues #3756, #797).
   if (!verdict.degraded) {
-    const postOnHealthy = args.postOnHealthyRounds !== false;
-    if (postOnHealthy) {
-      await postIssueRunStatsComment({
-        repo,
-        issueNumber,
-        phase,
-        claudeResults,
-        getIssueComments: args.listIssueComments ??
-          ghIssueCommentLister(runGhCommand),
-        postComment,
-        logger,
-        ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
-        ...graft,
-        ...(args.codegraph ? { codegraph: args.codegraph } : {}),
-        ...rtk,
-      });
-    }
+    await postIssueRunStatsComment({
+      repo,
+      issueNumber,
+      phase,
+      claudeResults,
+      getIssueComments: args.listIssueComments ??
+        ghIssueCommentLister(runGhCommand),
+      postComment,
+      logger,
+      ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
+      ...graft,
+      ...(args.codegraph ? { codegraph: args.codegraph } : {}),
+      ...rtk,
+    });
     return verdict;
   }
 

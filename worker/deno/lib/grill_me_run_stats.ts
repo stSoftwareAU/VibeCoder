@@ -112,8 +112,6 @@ export async function reportGrillMeDegradation(args: {
   // issue itself (no sub-issues), posts only on a degraded round, and now also
   // honours the explicit pre-flight reroute flag alongside the served-model and
   // rate-limit-fallback checks. The comment is posted through the ghClient.
-  // Issue #2717: grill-me is interactive and multi-round, so only degrade posts
-  // to avoid cluttering the conversation with stats on every healthy round.
   return await reportPhaseDegradation({
     phase: GRILL_ME_PHASE,
     repo,
@@ -127,7 +125,6 @@ export async function reportGrillMeDegradation(args: {
     listIssueComments: (r, i) => ghClient.getIssueComments(r, i),
     runGhCommand,
     logger,
-    postOnHealthyRounds: false,
     ...(args.cacheDir ? { cacheDir: args.cacheDir } : {}),
     ...(args.env ? { env: args.env } : {}),
     ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
