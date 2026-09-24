@@ -2,13 +2,19 @@
  * End-to-end wiring test for the pre-flight Fable reroute (Issue #3231).
  *
  * Asserts that when the cached Fable probe says `unavailable`, a
- * Fable-preferring phase dispatched through `runClaudeWithRetry()`:
+ * Fable-routed phase dispatched through `runClaudeWithRetry()`:
  *   - actually invokes `claude` with `--model opus --effort max` (the override
  *     reaches the run options → the CLI args), and
  *   - carries `preflightDegraded: true` + the reason on the run record,
- * while `buildClaudeModelArgs("planning")` STILL resolves to `fable` (the
+ * while `buildClaudeModelArgs("planning", env)` STILL resolves to `fable` (the
  * override lives at the invocation layer, not in PHASE_MODEL_DEFAULTS — the
  * #2720 served-vs-expected check must keep working).
+ *
+ * Since Issue #2560 no phase routes to Fable by default, so each test that
+ * needs a Fable-routed phase states the documented rollback pin
+ * (`CLAUDE_MODEL_PLANNING=fable`) in its injected environment. The reroute
+ * machinery is therefore still covered end to end while being dormant on a
+ * default-routed host.
  *
  * A stub agent — named by path (`agentBinaryPath`, Issue #959) rather than put
  * on the process-wide `PATH` — records the `--model`/`--effort` args and exits
@@ -38,6 +44,13 @@ import { fakeClock } from "./support/fake_clock.ts";
 
 /** Basename of the file the stub records its routing args in. */
 const ARG_LOG = "args.log";
+
+/**
+ * The documented Issue #2560 rollback: an operator pins planning back to the
+ * Fable tier. Since the default tier is Opus, this pin is what puts a phase on
+ * Fable at all — and so what arms the pre-flight reroute.
+ */
+const FABLE_PINNED_ENV = envFrom({ CLAUDE_MODEL_PLANNING: "fable" });
 
 /**
  * A stub agent that records the value following `--model` and `--effort`
@@ -113,7 +126,7 @@ async function readArgs(
 
 Deno.test({
   name:
-    "wiring: unavailable Fable ⇒ planning dispatches --model opus --effort max, run flagged degraded",
+    "wiring: unavailable Fable ⇒ Fable-pinned planning dispatches --model opus --effort max, run flagged degraded",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
@@ -129,7 +142,7 @@ Deno.test({
           phase: "planning",
           cwd: stub.cwd,
           agentBinaryPath: stub.path,
-          env: emptyEnv,
+          env: FABLE_PINNED_ENV,
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -151,17 +164,26 @@ Deno.test({
       FABLE_PREFLIGHT_DEGRADED_REASON,
     );
 
-    // Regression guard: the expected-model derivation is untouched.
-    assertEquals(buildClaudeModelArgs("planning", emptyEnv), [
+    // Regression guard: the expected-model derivation is untouched — the pin
+    // still resolves to fable, so the #2720 served-vs-expected check sees the
+    // operator's tier rather than the reroute's.
+    assertEquals(buildClaudeModelArgs("planning", FABLE_PINNED_ENV), [
       "--model",
       "fable",
+    ]);
+
+    // …and with no pin, planning is on the default Opus tier (Issue #2560), so
+    // the reroute has nothing to arm.
+    assertEquals(buildClaudeModelArgs("planning", emptyEnv), [
+      "--model",
+      "opus",
     ]);
   },
 });
 
 Deno.test({
   name:
-    "wiring: available Fable ⇒ planning dispatches --model fable, no degraded flag",
+    "wiring: available Fable ⇒ Fable-pinned planning dispatches --model fable, no degraded flag",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
@@ -176,7 +198,7 @@ Deno.test({
           phase: "planning",
           cwd: stub.cwd,
           agentBinaryPath: stub.path,
-          env: emptyEnv,
+          env: FABLE_PINNED_ENV,
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -187,7 +209,7 @@ Deno.test({
     assert(result.ok);
     if (!result.ok) return;
 
-    // No reroute: the phase requests its normal Fable tier.
+    // No reroute: the phase requests the pinned Fable tier.
     assertEquals(args.model, "fable");
     // No degraded fields present on a healthy run.
     assertEquals(result.value.preflightDegraded, undefined);
@@ -247,7 +269,10 @@ Deno.test({
           agentBinaryPath: stub.path,
           // An operator pinned planning effort — the probe must not bump to
           // max.
-          env: envFrom({ CLAUDE_EFFORT_PLANNING: "high" }),
+          env: envFrom({
+            CLAUDE_MODEL_PLANNING: "fable",
+            CLAUDE_EFFORT_PLANNING: "high",
+          }),
           timeoutSeconds: 30,
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -258,7 +283,7 @@ Deno.test({
     assert(result.ok);
     if (!result.ok) return;
 
-    // No reroute: model stays on the phase default (fable), effort respected.
+    // No reroute: model stays on the operator's pinned tier, effort respected.
     assertEquals(args.model, "fable");
     assertEquals(args.effort, "high");
     assertEquals(result.value.preflightDegraded, undefined);

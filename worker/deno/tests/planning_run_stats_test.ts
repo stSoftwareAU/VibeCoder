@@ -325,18 +325,18 @@ Deno.test("assessDegradation - an operator who pinned Fable 5 gets what they ask
 });
 
 Deno.test("assessDegradation - a tier with no current-model reference is never flagged stale (Issue #1362)", () => {
-  // Implementation phases route to `opus`; the worker tracks no current Opus
-  // model, so an older Opus served id stays healthy.
+  // The worker tracks no current Sonnet model (only Fable and, since #2560,
+  // Opus), so an older Sonnet served id stays healthy.
   const verdict = assessDegradation(
     [{
       phase: "issue",
       runStats: {
-        servedModels: ["claude-opus-4-8"],
-        requestedModel: "opus",
+        servedModels: ["claude-sonnet-4-5"],
+        requestedModel: "sonnet",
         wallClockMs: 1000,
       },
     }],
-    "opus",
+    "sonnet",
     "issue",
   );
   assertEquals(verdict.degraded, false);
@@ -495,8 +495,8 @@ Deno.test("assessDegradation - unresolved expected model with empty served set i
 Deno.test("resolveExpectedPlanningModel - default planning model when no overrides", () => {
   resetModelResolution();
   try {
-    // PHASE_MODEL_DEFAULTS.planning is the top tier alias.
-    assertEquals(expectedModelIn(), "fable");
+    // PHASE_MODEL_DEFAULTS.planning is the top tier alias (opus since #2560).
+    assertEquals(expectedModelIn(), "opus");
   } finally {
     resetModelResolution();
   }
@@ -538,9 +538,9 @@ Deno.test("resolveExpectedPlanningModel - pinned bestPlanningModel wins over rou
 Deno.test("resolveExpectedPlanningModel - empty/whitespace configured value falls back to routing chain (Issue #2654)", () => {
   resetModelResolution();
   try {
-    assertEquals(expectedModelIn(""), "fable");
-    assertEquals(expectedModelIn("   "), "fable");
-    assertEquals(expectedModelIn(undefined), "fable");
+    assertEquals(expectedModelIn(""), "opus");
+    assertEquals(expectedModelIn("   "), "opus");
+    assertEquals(expectedModelIn(undefined), "opus");
   } finally {
     resetModelResolution();
   }
@@ -647,20 +647,36 @@ Deno.test("assessDegradation - pinned bestPlanningModel drives the verdict (Issu
 });
 
 // Issue #3564: an operator (or the `fable → opus` degrade) that expects `opus`
-// must treat an Opus 5 served id as a match, not as degradation — the served
-// model set now includes `claude-opus-5`.
-Deno.test("assessDegradation - expected opus accepts an Opus 5 served id (Issue #3564)", () => {
+// must treat a current Opus 5-family served id as a match, not as a tier
+// mismatch. Since Issue #2560 the current Opus is tracked (`claude-opus-5-5`),
+// so it is the 5.5 ids that match cleanly.
+Deno.test("assessDegradation - expected opus accepts an Opus 5.5 served id (Issues #3564, #2560)", () => {
   const ok = assessDegradation(
-    [planningInvocation(["claude-opus-5"])],
+    [planningInvocation(["claude-opus-5-5"])],
     "opus",
   );
   assertEquals(ok.degraded, false);
 
   const dated = assessDegradation(
-    [planningInvocation(["claude-opus-5-1-20260901"])],
+    [planningInvocation(["claude-opus-5-5-20260920"])],
     "opus",
   );
   assertEquals(dated.degraded, false);
+});
+
+// Issue #2560: a container whose CLI still resolves `opus` to Opus 5 is on a
+// stale generation of the tier every substantive phase now runs on, so the run
+// is flagged — as a previous generation, not as a tier mismatch.
+Deno.test("assessDegradation - expected opus flags an Opus 5 served id as a previous generation (Issue #2560)", () => {
+  const stale = assessDegradation(
+    [planningInvocation(["claude-opus-5"])],
+    "opus",
+  );
+  assertEquals(stale.degraded, true);
+  assert(
+    !(stale.reason ?? "").includes("does not match"),
+    `a stale generation is not a tier mismatch: ${stale.reason}`,
+  );
 });
 
 // ============================================================================
@@ -938,8 +954,9 @@ Deno.test("buildPlanningStatsSection - default phase keeps the Planning heading"
 Deno.test("resolveExpectedPlanningModel - grill_me phase derives the grill_me tier", () => {
   setPhaseModelConfigOverrides({});
   setActiveRepoModelEffortOverrides(undefined);
-  // grill_me routes to the Fable top tier by default (DEFAULT_CLAUDE_MODEL_GRILL_ME).
-  assertEquals(expectedModelIn(undefined, "grill_me"), "fable");
+  // grill_me routes to the top tier by default (DEFAULT_CLAUDE_MODEL_GRILL_ME),
+  // Opus since #2560.
+  assertEquals(expectedModelIn(undefined, "grill_me"), "opus");
 });
 
 // ============================================================================
@@ -955,10 +972,10 @@ Deno.test("buildDegradationReport - healthy planning run: not degraded, Planning
 
   const report = buildDegradationReport({
     env: emptyEnv,
-    invocations: [planningInvocation(["claude-fable-5-1-20260901"])],
+    invocations: [planningInvocation(["claude-opus-5-5"])],
   });
 
-  assertEquals(report.expectedModel, "fable");
+  assertEquals(report.expectedModel, "opus");
   assertEquals(report.verdict.degraded, false);
   assertStringIncludes(report.section, "## Planning run model stats");
   assertStringIncludes(report.section, "- **Degraded:** no");
@@ -974,8 +991,8 @@ Deno.test("buildDegradationReport - degraded grill_me run: verdict + Grill-me st
       {
         phase: "grill_me",
         runStats: {
-          servedModels: ["claude-opus-4-8"],
-          requestedModel: "fable",
+          servedModels: ["claude-sonnet-5"],
+          requestedModel: "opus",
           wallClockMs: 1,
         },
       },
@@ -983,13 +1000,13 @@ Deno.test("buildDegradationReport - degraded grill_me run: verdict + Grill-me st
     phase: "grill_me",
   });
 
-  assertEquals(report.expectedModel, "fable");
+  assertEquals(report.expectedModel, "opus");
   assert(
     report.verdict.degraded,
-    "opus served when fable expected must degrade",
+    "sonnet served when opus expected must degrade",
   );
   assertStringIncludes(report.section, "## Grill-me run model stats");
-  assertStringIncludes(report.section, "claude-opus-4-8");
+  assertStringIncludes(report.section, "claude-sonnet-5");
   // The planning heading must not leak into a grill_me report.
   assert(!report.section.includes("## Planning run model stats"));
 });

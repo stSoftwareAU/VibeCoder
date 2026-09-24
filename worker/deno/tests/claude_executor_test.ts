@@ -550,9 +550,10 @@ Deno.test("claude executor - buildClaudeModelArgs health phase default overrides
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses refinement phase default (planning-shaped, Issue #3229)", () => {
-  // Issue #3229: refinement is a planning-shaped phase → Fable 5 top tier.
+  // Issue #3229: refinement is a planning-shaped phase → top tier, which
+  // Issue #2560 moved from Fable to Opus.
   const args = buildClaudeModelArgs("refinement", emptyEnv);
-  assertEquals(args, ["--model", "fable"]);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses issue phase default opus (Issue #2709)", () => {
@@ -600,9 +601,10 @@ Deno.test("claude executor - buildClaudeModelArgs ci_fix phase default overrides
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses question phase default (Issue #1071)", () => {
-  // Issue #3229: question is a planning-shaped phase → Fable 5 top tier.
+  // Issue #3229: question is a planning-shaped phase → top tier (Opus since
+  // Issue #2560).
   const args = buildClaudeModelArgs("question", emptyEnv);
-  assertEquals(args, ["--model", "fable"]);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses summarise phase default (Issue #1071)", () => {
@@ -619,11 +621,11 @@ Deno.test("claude executor - buildClaudeModelArgs uses health phase default haik
   assertEquals(args, ["--model", "haiku"]);
 });
 
-Deno.test("claude executor - buildClaudeModelArgs planning phase defaults to fable (Issue #2621)", () => {
-  // Issue #2621 moved planning from opus to the Fable 5 top tier: a better
-  // plan compounds across every downstream sub-issue.
+Deno.test("claude executor - buildClaudeModelArgs planning phase defaults to opus (Issues #2621, #2560)", () => {
+  // Issue #2621 moved planning to the Fable 5 top tier; Issue #2560 moved the
+  // top tier to Opus 5.5, which matches Fable on plan quality at half the price.
   const args = buildClaudeModelArgs("planning", emptyEnv);
-  assertEquals(args, ["--model", "fable"]);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs env override takes precedence over phase default (Issue #1071)", () => {
@@ -636,9 +638,9 @@ Deno.test("claude executor - buildClaudeModelArgs env override takes precedence 
 Deno.test("claude executor - buildClaudeModelArgs refinement phase default overrides CLAUDE_MODEL (Issue #1071)", () => {
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
   const env = envFrom({ CLAUDE_MODEL: "haiku" });
-  // Phase default (Fable top tier) takes priority over CLAUDE_MODEL (#3229)
+  // Phase default (top tier) takes priority over CLAUDE_MODEL (#3229, #2560)
   const args = buildClaudeModelArgs("refinement", env);
-  assertEquals(args, ["--model", "fable"]);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs unknown phase with no env returns empty (Issue #1071)", () => {
@@ -647,9 +649,10 @@ Deno.test("claude executor - buildClaudeModelArgs unknown phase with no env retu
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses revision phase default (effort-first, Issue #2391)", () => {
-  // Issue #3229: revision is a planning-shaped phase → Fable 5 top tier.
+  // Issue #3229: revision is a planning-shaped phase → top tier (Opus since
+  // Issue #2560).
   const args = buildClaudeModelArgs("revision", emptyEnv);
-  assertEquals(args, ["--model", "fable"]);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_REVISION env override (Issue #1081)", () => {
@@ -662,9 +665,9 @@ Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_REVISION env over
 Deno.test("claude executor - buildClaudeModelArgs revision phase default overrides CLAUDE_MODEL (Issue #1081)", () => {
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
   const env = envFrom({ CLAUDE_MODEL: "haiku" });
-  // Phase default (Fable top tier) takes priority over CLAUDE_MODEL (#3229)
+  // Phase default (top tier) takes priority over CLAUDE_MODEL (#3229, #2560)
   const args = buildClaudeModelArgs("revision", env);
-  assertEquals(args, ["--model", "fable"]);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses pr_feedback phase default (effort-first, Issue #2391)", () => {
@@ -694,9 +697,9 @@ Deno.test("claude executor - buildClaudeModelArgs pr_feedback phase default over
 
 Deno.test("claude executor - buildClaudeModelArgs phase default overrides CLAUDE_MODEL (Issue #1270)", () => {
   const env = envFrom({ CLAUDE_MODEL: "haiku" });
-  // Phase default (Fable top tier) should take priority over CLAUDE_MODEL (haiku) (#3229)
+  // Phase default (top tier) should take priority over CLAUDE_MODEL (haiku) (#3229, #2560)
   const args = buildClaudeModelArgs("refinement", env);
-  assertEquals(args, ["--model", "fable"]);
+  assertEquals(args, ["--model", "opus"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs ci_fix phase default overrides CLAUDE_MODEL (Issue #1270)", () => {
@@ -789,9 +792,10 @@ Deno.test("claude executor - buildClaudeModelArgs quality_fix phase default over
 Deno.test("claude executor - buildClaudeModelArgs uses clarification phase default (effort-first, Issue #2391)", () => {
   try {
     setPhaseModelConfigOverrides({});
-    // Issue #3229: clarification is a planning-shaped phase → Fable 5 top tier.
+    // Issue #3229: clarification is a planning-shaped phase → top tier (Opus
+    // since Issue #2560).
     const args = buildClaudeModelArgs("clarification", emptyEnv);
-    assertEquals(args, ["--model", "fable"]);
+    assertEquals(args, ["--model", "opus"]);
   } finally {
     setPhaseModelConfigOverrides({});
   }
@@ -1161,13 +1165,13 @@ Deno.test("claude executor - switching repos replaces overrides without leaking 
 
     // Repo C: no per-repo config — routing falls back to defaults, with no
     // leftover from A or B. "issue" now carries the Opus base-tier default
-    // (Issue #2709); planning carries the Fable 5 top-tier default (Issue
-    // #2621).
+    // (Issue #2709); planning carries the top-tier default (Issue #2621),
+    // Opus since Issue #2560 — not repo A's "fable".
     setActiveRepoModelEffortOverrides(undefined);
     assertEquals(buildClaudeModelArgs("issue", emptyEnv), ["--model", "opus"]);
     assertEquals(buildClaudeModelArgs("planning", emptyEnv), [
       "--model",
-      "fable",
+      "opus",
     ]);
     assertEquals(buildClaudeEffortArgs("issue", emptyEnv), [
       "--effort",
@@ -1187,36 +1191,36 @@ Deno.test("describeRepoBaseTierOverride - empty base tier returns null (Issue #2
   assertEquals(describeRepoBaseTierOverride("   "), null);
 });
 
-Deno.test("describeRepoBaseTierOverride - sonnet base demotes planning and grill_me off Fable (Issue #2716)", () => {
+Deno.test("describeRepoBaseTierOverride - sonnet base demotes planning and grill_me off the top tier (Issues #2716, #2560)", () => {
   const note = describeRepoBaseTierOverride("sonnet");
   if (note === null) throw new Error("expected a note for a sonnet base tier");
-  // The Fable top-tier phases are demoted.
-  assertStringIncludes(note, "planning (fable→sonnet)");
-  assertStringIncludes(note, "grill_me (fable→sonnet)");
+  // The top-tier phases are demoted.
+  assertStringIncludes(note, "planning (opus→sonnet)");
+  assertStringIncludes(note, "grill_me (opus→sonnet)");
   // The Haiku trivial phases are also rerouted.
   assertStringIncludes(note, "health (haiku→sonnet)");
   // The base tier itself is named.
   assertStringIncludes(note, '"sonnet"');
 });
 
-Deno.test("describeRepoBaseTierOverride - fable base promotes Haiku trivial phases (Issue #2716)", () => {
-  const note = describeRepoBaseTierOverride("fable");
-  if (note === null) throw new Error("expected a note for a fable base tier");
-  // The cheap Haiku phases are promoted to Fable (~5× cost).
-  assertStringIncludes(note, "spelling_fix (haiku→fable)");
-  assertStringIncludes(note, "summarise (haiku→fable)");
-  assertStringIncludes(note, "health (haiku→fable)");
-  // planning/grill_me already default to Fable — they are NOT a reroute and
+Deno.test("describeRepoBaseTierOverride - opus base promotes Haiku trivial phases (Issues #2716, #2560)", () => {
+  const note = describeRepoBaseTierOverride("opus");
+  if (note === null) throw new Error("expected a note for an opus base tier");
+  // The cheap Haiku phases are promoted to Opus (~5× cost).
+  assertStringIncludes(note, "spelling_fix (haiku→opus)");
+  assertStringIncludes(note, "summarise (haiku→opus)");
+  assertStringIncludes(note, "health (haiku→opus)");
+  // planning/grill_me already default to Opus — they are NOT a reroute and
   // must be omitted.
   assertEquals(note.includes("planning"), false);
   assertEquals(note.includes("grill_me"), false);
 });
 
 Deno.test("describeRepoBaseTierOverride - comparison is case-insensitive (Issue #2716)", () => {
-  // FABLE (upper) must still recognise planning's lowercase "fable" default as
+  // OPUS (upper) must still recognise planning's lowercase "opus" default as
   // equal, so planning is omitted.
-  const note = describeRepoBaseTierOverride("FABLE");
-  if (note === null) throw new Error("expected a note for a FABLE base tier");
+  const note = describeRepoBaseTierOverride("OPUS");
+  if (note === null) throw new Error("expected a note for an OPUS base tier");
   assertEquals(note.includes("planning"), false);
 });
 
@@ -1230,7 +1234,7 @@ Deno.test("setActiveRepoModelEffortOverrides - logs base-tier reroute once on re
     // A base-tier repo logs exactly one reroute note.
     setActiveRepoModelEffortOverrides({ claudeModel: "sonnet" });
     assertEquals(logged.length, 1);
-    assertStringIncludes(logged[0]!, "planning (fable→sonnet)");
+    assertStringIncludes(logged[0]!, "planning (opus→sonnet)");
 
     // Clearing overrides (no base tier) logs nothing further.
     setActiveRepoModelEffortOverrides(undefined);
@@ -1302,7 +1306,7 @@ Deno.test("claude executor - the injected lookup decides, not the process (Issue
   // ...and an empty lookup falls through to the designed default.
   assertEquals(buildClaudeModelArgs("planning", emptyEnv), [
     "--model",
-    "fable",
+    "opus",
   ]);
 });
 

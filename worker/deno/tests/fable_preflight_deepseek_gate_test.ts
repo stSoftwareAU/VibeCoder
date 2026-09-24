@@ -67,11 +67,18 @@ import {
 } from "../lib/fable_routing.ts";
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
-import { emptyEnv } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
 /** The phase under test: Quorum names its provider per call with no model. */
 const PHASE = "quorum";
+
+/**
+ * The phase pinned back to Fable — the operator rollback, and since Issue
+ * #2560 (which moved the default top tier to Opus) the only way any provider's
+ * routing reaches the Fable tier, so the only way the reroute branch runs.
+ */
+const FABLE_PINNED_ENV = envFrom({ CLAUDE_MODEL_QUORUM: "fable" });
 
 /** Anthropic tier aliases that must never reach a non-Fable provider's argv. */
 const ANTHROPIC_TIER_ALIASES = ["fable", "opus", "sonnet", "haiku"] as const;
@@ -207,7 +214,7 @@ Deno.test({
             timeoutSeconds: 30,
             agentProvider: id,
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: FABLE_PINNED_ENV,
             logger: recordingLogger(warnings),
           },
           { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
@@ -222,7 +229,7 @@ Deno.test({
       if (!result.ok) continue;
 
       // The descriptor decides the expectation — no provider id is named here.
-      if (providerRoutesToFableTier(provider, PHASE, emptyEnv)) {
+      if (providerRoutesToFableTier(provider, PHASE, FABLE_PINNED_ENV)) {
         assertEquals(
           args[args.indexOf("--model") + 1],
           FABLE_PREFLIGHT_MODEL,
@@ -243,7 +250,7 @@ Deno.test({
 
       // A provider without the Fable tier keeps its own routing untouched…
       assertNoAnthropicTier(provider, args);
-      const own = provider.resolveModel(PHASE, emptyEnv);
+      const own = provider.resolveModel(PHASE, FABLE_PINNED_ENV);
       if (own) {
         assertEquals(
           args[args.indexOf("--model") + 1],
@@ -292,8 +299,9 @@ Deno.test({
         "unavailable",
         false,
         provider,
+        FABLE_PINNED_ENV,
       );
-      if (providerRoutesToFableTier(provider, PHASE, emptyEnv)) {
+      if (providerRoutesToFableTier(provider, PHASE, FABLE_PINNED_ENV)) {
         assertEquals(applied.options.model, FABLE_PREFLIGHT_MODEL, id);
         assertEquals(applied.options.effort, FABLE_PREFLIGHT_EFFORT, id);
         assertEquals(applied.routing.degraded, true, id);

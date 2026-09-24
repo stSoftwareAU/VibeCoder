@@ -24,11 +24,13 @@ import { type ModelTier, parseClaudeModernVersion } from "./token_usage.ts";
  * The current (latest) model id per tier, for the tiers whose previous
  * generations the worker flags as degraded.
  *
- * **Fable only, deliberately.** Fable is the tier the eight planning-shaped
- * phases request by alias and the one whose generations differ in what the run
- * costs, so a stale Fable is worth a `degraded-model` label. Adding a row for
- * another tier extends the check to it — with the same consequence, so add one
- * only when a stale generation of that tier is genuinely worth flagging.
+ * **Opus and Fable, deliberately.** Opus is the tier every substantive phase
+ * requests by alias since Issue #2560, and Fable is the tier an operator pins
+ * back to as that switch's documented rollback; both price their generations
+ * differently, so being served a stale one is worth a `degraded-model` label.
+ * Adding a row for another tier extends the check to it — with the same
+ * consequence, so add one only when a stale generation of that tier is
+ * genuinely worth flagging.
  *
  * A row must name a real id of its own tier that is current: the invariant is
  * pinned by `worker/deno/tests/current_models_test.ts`.
@@ -39,6 +41,9 @@ export const CURRENT_TIER_MODELS: ReadonlyMap<ModelTier, string> = new Map<
 >([
   // Fable 5.1 — the latest Fable since 2026-09-01 (Issue #747).
   ["fable", "claude-fable-5-1"],
+  // Opus 5.5 — the latest Opus, and the tier every substantive phase now
+  // requests by alias (Issue #2560).
+  ["opus", "claude-opus-5-5"],
 ]);
 
 /** A model identified as an earlier generation of a tracked tier. */

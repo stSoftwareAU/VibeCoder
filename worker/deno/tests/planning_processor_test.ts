@@ -4317,8 +4317,9 @@ Deno.test("processIssuePlanning - appends stats section to summary comment with 
             exitCode: 0,
             timedOut: false,
             runStats: {
-              servedModels: ["claude-fable-5-1-20260901"],
-              requestedModel: "fable",
+              // The top tier planning requests since #2560.
+              servedModels: ["claude-opus-5-5"],
+              requestedModel: "opus",
               effort: "max",
               wallClockMs: 12_000,
             },
@@ -4347,7 +4348,7 @@ Deno.test("processIssuePlanning - appends stats section to summary comment with 
   const body = record.comments[0]!;
   assertEquals(body.includes("## Planning Complete"), true);
   assertEquals(body.includes("## Planning run model stats"), true);
-  assertEquals(body.includes("claude-fable-5-1-20260901"), true);
+  assertEquals(body.includes("claude-opus-5-5"), true);
   assertEquals(body.includes("Degraded:** no"), true);
 });
 
@@ -4479,8 +4480,8 @@ Deno.test("processIssuePlanning - healthy run applies no degraded-model label (#
             exitCode: 0,
             timedOut: false,
             runStats: {
-              servedModels: ["claude-fable-5-1-20260901"], // matches expected → healthy
-              requestedModel: "fable",
+              servedModels: ["claude-opus-5-5"], // matches expected → healthy
+              requestedModel: "opus",
               wallClockMs: 5_000,
             },
           },

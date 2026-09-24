@@ -2,11 +2,11 @@
  * Tests for grill_me_run_stats.ts — grill-me degraded-model detection,
  * label application, and stats posting (Issue #2717).
  *
- * The grill_me phase routes to the same Fable 5 top tier as planning, so a
- * silent Fable→Opus degradation on a grill-me round must be surfaced the same
- * way planning surfaces it (#2646). These tests assert real behaviour:
- *   - a `fable`-served round is NOT degraded and reports nothing;
- *   - an `opus`-served round IS degraded → labels the issue + posts stats;
+ * The grill_me phase routes to the same top tier as planning (Opus since
+ * #2560), so a silent degradation on a grill-me round must be surfaced the
+ * same way planning surfaces it (#2646). These tests assert real behaviour:
+ *   - an `opus`-served round is NOT degraded and posts only its stats;
+ *   - a lower-tier (`sonnet`) round IS degraded → labels the issue + posts stats;
  *   - a rate-limit `fallbackModel` round IS degraded;
  *   - all GitHub operations are non-fatal.
  *
@@ -157,7 +157,7 @@ Deno.test("buildGrillMeInvocations - carries the fallbackModel", () => {
 // Behaviour change (Issue #3756): a healthy round no longer stays completely
 // silent — it posts the issue's single cost/model stats comment. The "no
 // label" half of the original assertion is unchanged.
-Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no label, one stats comment", async () => {
+Deno.test("reportGrillMeDegradation - an opus-served round (the top tier since #2560) is not degraded; no label, one stats comment", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -166,7 +166,7 @@ Deno.test("reportGrillMeDegradation - fable-served round is not degraded; no lab
   const verdict = await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    claudeResult: { runStats: runStats(["claude-opus-5-5"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -196,7 +196,7 @@ Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comm
   await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    claudeResult: { runStats: runStats(["claude-opus-5-5"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -220,7 +220,7 @@ Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not 
   await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-fable-5-1-20260901"]) },
+    claudeResult: { runStats: runStats(["claude-opus-5-5"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -238,7 +238,7 @@ Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not 
 // reportGrillMeDegradation — degraded paths
 // ---------------------------------------------------------------------------
 
-Deno.test("reportGrillMeDegradation - opus-served round is degraded; labels the issue + posts stats", async () => {
+Deno.test("reportGrillMeDegradation - a sonnet-served round is degraded; labels the issue + posts stats", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -247,7 +247,7 @@ Deno.test("reportGrillMeDegradation - opus-served round is degraded; labels the 
   const verdict = await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 9,
-    claudeResult: { runStats: runStats(["claude-opus-4-8"]) },
+    claudeResult: { runStats: runStats(["claude-sonnet-5"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -255,7 +255,8 @@ Deno.test("reportGrillMeDegradation - opus-served round is degraded; labels the 
     env: emptyEnv,
   });
 
-  assert(verdict.degraded, "opus served when fable expected must be degraded");
+  assert(verdict.degraded, "sonnet served when opus expected must be degraded");
+  assertStringIncludes(verdict.reason ?? "", "does not match");
   // Only the grill-me issue is labelled — no sub-issues on a grill-me round.
   assertEquals(addLabelCalls.length, 1);
   assertEquals(addLabelCalls[0]!.issue, 9);
@@ -264,7 +265,7 @@ Deno.test("reportGrillMeDegradation - opus-served round is degraded; labels the 
   assertEquals(comments.length, 1);
   assertEquals(comments[0]!.issue, 9);
   assertStringIncludes(comments[0]!.body, "## Grill-me run model stats");
-  assertStringIncludes(comments[0]!.body, "claude-opus-4-8");
+  assertStringIncludes(comments[0]!.body, "claude-sonnet-5");
   assertStringIncludes(comments[0]!.body, "Degraded:");
 });
 
@@ -277,9 +278,9 @@ Deno.test("reportGrillMeDegradation - explicit pre-flight flag is degraded even 
   const verdict = await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 21,
-    // Served fable (matches expected), but the pre-flight reroute flag is set.
+    // Served the expected tier, but the pre-flight reroute flag is set.
     claudeResult: {
-      runStats: runStats(["claude-fable-5-1-20260901"]),
+      runStats: runStats(["claude-opus-5-5"]),
       preflightDegraded: true,
       preflightDegradedReason: "fable-unavailable (pre-flight health probe)",
     },
