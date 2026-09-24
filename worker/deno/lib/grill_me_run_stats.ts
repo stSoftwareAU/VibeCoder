@@ -38,10 +38,7 @@ import {
   type PhaseClaudeResult,
   reportPhaseDegradation,
 } from "./phase_run_stats.ts";
-import type {
-  CollectGraftContextOptions,
-  GraftContextResult,
-} from "./graft_context.ts";
+import type { GraftContextResult } from "./graft_context.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
 
