@@ -576,3 +576,61 @@ Deno.test("recordRepoFastFailure - the stored detail names why the push was refu
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Composition (Issue #2598): the message `handle_no_changes` really publishes
+// ---------------------------------------------------------------------------
+//
+// #2598 was the #2590 symptom on stSoftwareAU/GRQ, filed 14 minutes before the
+// #2590 fix merged: a host whose Anthropic credit ran out died in
+// `handle_no_changes` with `API Error: 402`, counted three fast failures and
+// backed the repository off, and the issue's "Last error" read `</details>`.
+// The tests above use a hand-written copy of the message; these build it with
+// the worker's own formatter, so a change to that format cannot quietly move
+// the 402 off a line start or out from under the scaffolding filter.
+
+import { formatDetailedFailureMessage } from "../lib/failure_message.ts";
+import { redactedTail } from "../lib/redacted_text.ts";
+
+function noChangesFailure(lastOutput: string): string {
+  return formatDetailedFailureMessage(
+    "No code changes and no useful output from Claude",
+    {
+      elapsedSeconds: 14,
+      clarityStatus: "clear",
+      outputSize: lastOutput.length,
+      // The phase's own snippet: the last 500 characters, redacted.
+      lastOutputSnippet: redactedTail(lastOutput, 500),
+    },
+  );
+}
+
+Deno.test("composition - a 402 in handle_no_changes' real message is not the repository's fast failure (Issue #2598)", () => {
+  const message = noChangesFailure(
+    'API Error: 402 {"type":"error","error":{"type":"billing_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+  );
+  const category = detectFailureCategory(message);
+  assertEquals(
+    isFastFailure(
+      { category, elapsedSeconds: 14 },
+      resolveRepoFastFailurePolicy(undefined),
+    ),
+    false,
+  );
+  const detail = diagnosticErrorLine(message);
+  assertStringIncludes(detail, "API Error: 402");
+  assert(!/details/i.test(detail), `detail was scaffolding: ${detail}`);
+});
+
+Deno.test("composition - a genuine setup fault in the same message shape still counts (Issue #2598)", () => {
+  const message = noChangesFailure("bash: deno: command not found");
+  const category = detectFailureCategory(message);
+  assertEquals(
+    isFastFailure(
+      { category, elapsedSeconds: 14 },
+      resolveRepoFastFailurePolicy(undefined),
+    ),
+    true,
+  );
+  assertEquals(diagnosticErrorLine(message), "bash: deno: command not found");
+});
