@@ -648,9 +648,11 @@ export function selectHighestPriority(
     return list;
   })();
 
-  // Priority 2: blocked configured-label issues suppress work-on in the same
-  // repo+milestone. Applied before the tier walk so a suppressed work-on
-  // cannot hold the tier against a lower tier elsewhere in the fleet.
+  // Priority 2: PR-blocked configured-label issues suppress work-on in the
+  // same repo+milestone. Applied before the tier walk so a suppressed work-on
+  // cannot hold the tier against a lower tier elsewhere in the fleet. A
+  // dependency-blocked one no longer lands here (Issue #2563): its wait is
+  // its own, not its stream's.
   const eligibleWorkOn = blockedEntries.length > 0
     ? workOnCandidates.filter((candidate) =>
       !blockedEntries.some(
