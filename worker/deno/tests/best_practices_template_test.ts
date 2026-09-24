@@ -1332,3 +1332,76 @@ Deno.test("runTask - a gh failure listing titles degrades to an empty list", asy
   assert(result.ok);
   assertEquals(seen, [[]]);
 });
+
+// ---------------------------------------------------------------------------
+// CloudFormation cost pre-scan (Issue #2579)
+// ---------------------------------------------------------------------------
+
+Deno.test("assembleBestPracticesPrompt - pre-scan candidates render under their own heading (Issue #2579)", () => {
+  const line = "`infra/api.yaml:3` Lambda `ApiFunction` is not on arm64";
+  const out = assembleBestPracticesPrompt(STUB_PROMPT, STUB_GUIDE, {
+    bucket: "aws-cloudformation",
+    suppressedIds: [],
+    knownOpenFindingIds: [],
+    preScanCandidates: [line],
+  });
+  assertStringIncludes(out, "## Deterministic pre-scan candidates");
+  assertStringIncludes(out, `- ${line}`);
+});
+
+Deno.test("assembleBestPracticesPrompt - no candidates, no pre-scan heading (Issue #2579)", () => {
+  const out = assembleBestPracticesPrompt(STUB_PROMPT, STUB_GUIDE, {
+    bucket: "aws-cloudformation",
+    suppressedIds: [],
+    knownOpenFindingIds: [],
+    preScanCandidates: [],
+  });
+  assertEquals(out.includes("pre-scan candidates"), false);
+});
+
+for (
+  const [bucket, expected] of [
+    ["aws-cloudformation", ["cand"]],
+    ["typescript", []],
+  ] as const
+) {
+  Deno.test(
+    `runTask - ${bucket} run ${
+      expected.length ? "passes" : "skips"
+    } the CloudFormation cost pre-scan (Issue #2579)`,
+    async () => {
+      const { gh } = makeGhStub({
+        beforeSnapshot: [],
+        afterSnapshot: [],
+        knownOpen: [],
+        issueView: {
+          number: 50,
+          body: `**Bucket:** \`${bucket}\`\n\n# Best-Practices Review`,
+        },
+      });
+      const scannedPaths: string[] = [];
+      let received: readonly string[] | undefined;
+      const tpl = createBestPracticesTemplate({
+        dedupAuthors: DEDUP_AUTHORS,
+        ghCommandFn: gh,
+        checkLinterInCIFn: stubLinterConfigured,
+        scanCfnCostFn: (path) => {
+          scannedPaths.push(path);
+          return Promise.resolve(["cand"]);
+        },
+        runScanFn: (opts) => {
+          received = opts.preScanCandidates ?? [];
+          return Promise.resolve({ ok: true, value: true });
+        },
+      });
+      const result = await tpl.runTask({
+        repo: "org/repo",
+        workDir: "/tmp/work",
+        idleTaskIssueNumber: 50,
+      });
+      assert(result.ok);
+      assertEquals(received, [...expected]);
+      assertEquals(scannedPaths, expected.length ? ["/tmp/work/repo"] : []);
+    },
+  );
+}

@@ -192,6 +192,35 @@ joins `*.rs` and `Cargo.toml` in the bucket's file scope for this check;
 per repo isolation the manifest edits themselves ride each
 repo's own PR.
 
+### Cost, speed and reliability
+
+The owner's goal for every repo is cheaper, faster and more reliable, so
+seven guides (`aws-cloudformation`, `terraform`, `rust`, `typescript`,
+`react`, `java`, `general`) end with a `## Cost, speed and reliability`
+section ([#2579](https://github.com/stSoftwareAU/VibeCoder/issues/2579)).
+The checks are concrete and cite a file and line: Lambda architecture,
+memory and timeout sizing, log retention, provisioned capacity,
+always-on non-production resources, S3 lifecycle rules and missing
+failure alarms for the infrastructure guides; serial awaits, N+1
+fetches, missing timeouts and unsafe retries, unbounded caches and
+bundle size for the code guides; the Lambda release profile for Rust;
+polling and per-request repeated work for `general`.
+
+Every such finding states an **Estimated effect** (marked estimated,
+e.g. "arm64: about 20% lower compute price") and the **Risk** of the
+change, so cheaper never quietly means less reliable; the Phase 4 body
+template shows both. The findings are `severity:low` or
+`severity:medium`, never `severity:high`, and one of them can take the
+reserved slot described under
+[6-issue cap and priority order](#6-issue-cap-and-priority-order).
+
+Two of the CloudFormation checks are mechanical, so an
+`aws-cloudformation` run also walks the checkout with
+[`cfn_cost_checks.ts`](../worker/deno/lib/cfn_cost_checks.ts) and lists
+each Lambda without `Architectures: [arm64]` or without a retained log
+group under `## Deterministic pre-scan candidates` in the prompt. They
+are candidates, not findings: the scan confirms and triages each one.
+
 ## Idle trigger
 
 ```mermaid
@@ -602,6 +631,13 @@ The cap is enforced in two places:
    > **missing-linter > severity:high > severity:medium > severity:low**
 
 Within the same priority tier the order Claude emitted is preserved.
+
+**Reserved slot.** Phase 3 reserves one of the 6 slots for a cost, speed
+and reliability finding: when one survives triage but misses the cut, the
+highest-priority one replaces the last kept finding, provided that
+finding is below `severity:high`. Correctness and security findings at
+`severity:high` are never displaced. The capper models the same rule
+through the finding's `costSpeedReliability` flag.
 
 A language-targeted run with no linter-in-CI gate gives the
 missing-linter finding the first slot and leaves five slots for the

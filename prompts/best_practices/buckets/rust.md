@@ -443,3 +443,45 @@ future reader does not re-derive them as candidates.
     prompt, which every scan applies regardless of the drawn bucket —
     see there for the full contract and the per-ecosystem quiet
     flags.
+
+## Cost, speed and reliability
+
+Concrete, evidence-cited checks only: skip anything you cannot tie to a
+file and line. Each finding carries an `**Estimated effect:**` line
+derived from the cited source and marked estimated, plus a `**Risk:**`
+line naming what the change could break, and competes for the reserved
+slot in Phase 3. Severity is `severity:low`, or `severity:medium` on a
+production path; never `severity:high`. Each stable id uses the standard
+`BP-<12 hex>` recipe with the title given and the cited file.
+
+Blocking calls on an async runtime stay under check 19.
+
+33. **Lambda release profile.** Gate: the crate depends on
+    `lambda_runtime` or `lambda_http`. Flag a `[profile.release]` with
+    no `strip = true`; when `lto` or `codegen-units` are also missing,
+    fold them into check 27 and do not file both. Effect: a smaller zip
+    and a faster cold start (estimate from the artefact size if the repo
+    records it). Risk: stripped binaries lose symbol names in
+    backtraces. Stable id: title `Lambda crate <name> release profile
+    not size-tuned`.
+34. **Serial awaits over independent calls.** Gate: `has_async`. Flag a
+    loop that `.await`s one remote call per item when no iteration uses
+    another's result; suggest `join_all`, `JoinSet` or
+    `buffer_unordered(n)`. Effect: latency falls from the sum of the
+    calls to about the slowest one. Risk: unbounded fan-out can trip
+    rate limits, so bound it. Stable id: title `Serial awaits in
+    <function>`.
+35. **HTTP client without a timeout, or built per call.** Flag a
+    `reqwest::Client` (or AWS SDK client) built without a timeout, or
+    constructed inside a handler or loop instead of once. Effect: a hung
+    peer can no longer hold the task, and connection reuse saves a TLS
+    handshake per call. Risk: too short a timeout fails slow but healthy
+    calls. Stable id: title `HTTP client in <function> has no timeout or
+    is rebuilt per call`.
+36. **Unbounded growth in a long-lived process.** Flag a `HashMap` used
+    as a cache with no eviction, an `unbounded_channel` fed faster than
+    it drains, or a buffer allocated per iteration of a hot loop whose
+    size is known up front (`with_capacity`, reuse). Unnecessary
+    `clone()` stays under check 2. Effect: flat memory under load. Risk:
+    eviction changes hit rates. Stable id: title `Unbounded growth in
+    <item>`.
