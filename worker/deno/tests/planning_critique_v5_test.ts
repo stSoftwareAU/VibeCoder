@@ -49,7 +49,7 @@ Deno.test("planning_critique v5 - Gap 1: the built prompt agrees with itself on 
   // The mandate renders …
   assertStringIncludes(
     prompt,
-    'Every sub-issue you create MUST include the `--milestone "<milestone>"` flag',
+    "Assign every sub-issue you create to that same milestone with the `--milestone` flag",
   );
   // … and the template's own example now obeys it.
   assertStringIncludes(

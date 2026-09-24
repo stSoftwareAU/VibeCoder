@@ -500,7 +500,7 @@ Deno.test("summarise prompt - system prompt carries the static instructions (Iss
   );
   assertStringIncludes(
     SUMMARISE_SYSTEM_PROMPT,
-    "Output ONLY the summarised content",
+    "Output the summarised content and nothing else",
   );
   // No template hole for content — must be byte-identical across calls.
   assert(!SUMMARISE_SYSTEM_PROMPT.includes("${"));
@@ -515,7 +515,9 @@ Deno.test("summarise prompt - user prompt carries only the dynamic content (Issu
   // … but the static instructions must NOT — otherwise the cacheable prefix
   // would be duplicated and the system prompt becomes redundant overhead.
   assert(!userPrompt.includes("Preserves ALL technical requirements"));
-  assert(!userPrompt.includes("Output ONLY the summarised content"));
+  assert(
+    !userPrompt.includes("Output the summarised content and nothing else"),
+  );
 });
 
 Deno.test("summarise prompt - user prompt is deterministic for a given input (Issue #2395)", () => {

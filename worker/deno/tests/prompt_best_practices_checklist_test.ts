@@ -353,3 +353,61 @@ Deno.test("checklist is linked from the documentation index", async () => {
     `README.md does not link ${CHECKLIST_PATH}`,
   );
 });
+
+// --- model-specific rows (Issue #2576) ---
+
+/** Model-row techniques, in the order the rubric lists them. */
+const MODEL_TECHNIQUES = [
+  "No re-verification instructions",
+  "No reasoning written into the response",
+  "Unattended stops named",
+];
+
+/** Model-specific rows: `M<n> | Technique | Pass | Gap | n/a`. */
+function modelRows(markdown: string): HouseRow[] {
+  return tableRows(section(markdown, "Model-specific additions"))
+    .filter((cells) =>
+      cells.length === 5 && /^M\d+$/.test(plain(cells[0] ?? ""))
+    )
+    .map((cells) => ({
+      id: plain(cells[0] ?? ""),
+      technique: plain(cells[1] ?? ""),
+      pass: cells[2] ?? "",
+      gap: cells[3] ?? "",
+      notApplicable: cells[4] ?? "",
+    }));
+}
+
+/** An Anthropic Opus 5 or Opus 5.5 prompting page. */
+const MODEL_PAGE =
+  /platform\.claude\.com\/docs\/en\/build-with-claude\/prompt-engineering\/prompting-claude-opus-5(-5)?/;
+
+Deno.test("model rows score the Opus 5 and 5.5 techniques, each citing its source (Issue #2576)", async () => {
+  const rows = modelRows(await readChecklist());
+  assertEquals(rows.map((row) => row.technique), MODEL_TECHNIQUES);
+  assertEquals(rows.map((row) => row.id), ["M1", "M2", "M3"]);
+  for (const row of rows) {
+    assert(
+      MODEL_PAGE.test(row.pass),
+      `model row "${row.id}" cites no Anthropic model page`,
+    );
+    for (const cell of [row.gap, row.notApplicable]) {
+      assert(cell.length >= 20, `model row "${row.id}" leaves a cell empty`);
+    }
+  }
+});
+
+Deno.test("verdict table template carries the model rows (Issue #2576)", async () => {
+  const markdown = await readChecklist();
+  const fenced = /```markdown\n([\s\S]*?)```/.exec(
+    section(markdown, "Verdict table template"),
+  )?.[1];
+  assert(fenced, "verdict table template is not in a fenced block");
+  const ids = tableRows(fenced)
+    .filter((cells) => /^M\d+$/.test(plain(cells[0] ?? "")))
+    .map((cells) => `${plain(cells[0] ?? "")} ${plain(cells[1] ?? "")}`);
+  assertEquals(
+    ids,
+    modelRows(markdown).map((row) => `${row.id} ${row.technique}`),
+  );
+});

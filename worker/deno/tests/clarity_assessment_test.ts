@@ -41,7 +41,7 @@ Deno.test("buildRoundGuidance - round 1 returns first-round guidance", () => {
 Deno.test("buildRoundGuidance - round 2 returns proceed guidance", () => {
   const result = buildRoundGuidance(2);
   assertStringIncludes(result, "ROUND 2 GUIDANCE");
-  assertStringIncludes(result, "MUST respond with CLEAR");
+  assertStringIncludes(result, "Respond with CLEAR");
   assertStringIncludes(result, "2 time(s)");
 });
 
@@ -156,7 +156,7 @@ Deno.test("buildClarityAssessmentPrompt - contains critical rules", () => {
     clarificationRound: 0,
   };
   const prompt = buildClarityAssessmentPrompt(params);
-  assertStringIncludes(prompt, "CRITICAL RULES");
+  assertStringIncludes(prompt, "Decision rules");
   assertStringIncludes(prompt, "respond with ONLY the word");
   assertStringIncludes(prompt, "CLEAR");
 });

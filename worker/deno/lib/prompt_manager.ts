@@ -316,7 +316,14 @@ export const OPTIONAL_PLACEHOLDERS: Record<string, readonly string[]> = {
   // scan time.
   test_audit: ["ATTRIBUTION_FOOTER", "COVERAGE_GAPS", "OPEN_ISSUE_TITLES"],
   best_practices: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
-  github_actions_audit: ["ATTRIBUTION_FOOTER", "OPEN_ISSUE_TITLES"],
+  // Issue #2578: `COST_CANDIDATES` carries the deterministic cost and speed
+  // leads (`workflow_cost_scanner.ts`) for checks 37–41, injected at scan
+  // time; the file-time wrapper renders it `(none)`.
+  github_actions_audit: [
+    "ATTRIBUTION_FOOTER",
+    "COST_CANDIDATES",
+    "OPEN_ISSUE_TITLES",
+  ],
   // Issue #536: the supply-chain scans file findings like the rest of the
   // family, so they take the all-open-issues dedup block. Their prompts carry
   // no attribution footer, so that placeholder is not registered for them.

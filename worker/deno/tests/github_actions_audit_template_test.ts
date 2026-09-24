@@ -27,6 +27,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { parse as parseYaml } from "@std/yaml/parse";
 
 import {
   ACTIONS_POLICY_PERMISSION,
@@ -430,6 +431,92 @@ Deno.test(
     });
     assert(!out.includes("{{ATTRIBUTION_FOOTER}}"));
     assertStringIncludes(out, footer);
+  },
+);
+
+Deno.test(
+  "assembleGitHubActionsAuditPrompt - cost leads are substituted, (none) when absent (Issue #2578)",
+  () => {
+    const template =
+      "Leads:\n<cost_candidates>\n{{COST_CANDIDATES}}\n</cost_candidates>";
+    const absent = assembleGitHubActionsAuditPrompt(template, {
+      suppressedIds: [],
+      knownOpenFindingIds: [],
+    });
+    assert(!absent.includes("{{COST_CANDIDATES}}"));
+    assertStringIncludes(
+      absent,
+      "<cost_candidates>\n(none)\n</cost_candidates>",
+    );
+
+    const lead =
+      "- check 39 | .github/workflows/ci.yml:4 | job `build` | no cache";
+    const present = assembleGitHubActionsAuditPrompt(template, {
+      suppressedIds: [],
+      knownOpenFindingIds: [],
+      costCandidates: lead,
+    });
+    assertStringIncludes(present, lead);
+  },
+);
+
+Deno.test(
+  "runTask - the cost pre-pass hands its leads to the scan, never files them (Issue #2578)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+      knownOpen: [],
+      issueCreateNumbers: [],
+    });
+    let received: string | undefined;
+    const ciYml = [
+      "on: workflow_dispatch",
+      "permissions:",
+      "  contents: read",
+      "jobs:",
+      "  build:",
+      "    runs-on: ubuntu-latest",
+      "    permissions:",
+      "      contents: read",
+      "    steps:",
+      "      - run: cargo test --locked",
+    ].join("\n");
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () =>
+        Promise.resolve([
+          {
+            path: ".github/workflows/ci.yml",
+            rawText: ciYml,
+            parsed: parseYaml(ciYml),
+            kind: "workflow" as const,
+          },
+        ]),
+      runScanFn: (opts) => {
+        received = opts.costCandidates;
+        return Promise.resolve({ ok: true, value: true });
+      },
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assert(received !== undefined, "the scan received no cost leads");
+    assertStringIncludes(
+      received!,
+      "- check 39 | .github/workflows/ci.yml:5 | job `build`",
+    );
+    // Leads are for the prompt to confirm; the pre-pass files nothing.
+    assert(!creates.some((c) => c.body.includes("check 39")));
   },
 );
 

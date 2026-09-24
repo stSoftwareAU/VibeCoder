@@ -61,6 +61,7 @@ import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
 import {
   buildCodingGuidelines,
   buildVerbosityBlock,
+  CODING_GUIDELINES_LAYER_BY_PHASE,
 } from "./prompt_builder.ts";
 import {
   buildBoundaryIntegrityInstruction,
@@ -1859,10 +1860,14 @@ async function _processGrillMeWithHeartbeat(
 
   // 5) Build the prompt.
   // The active provider keys the per-model guidelines overlay (Issue #374);
-  // without one authored for it the block is the agnostic baseline.
-  const guidelinesResult = await buildCodingGuidelines(false, promptsDir, {
-    provider: config.agentProvider,
-  });
+  // without one authored for it the block is the agnostic baseline. A
+  // grilling writes no code, so it loads the core layer only (Issue #2574).
+  const guidelinesResult = await buildCodingGuidelines(
+    false,
+    promptsDir,
+    { provider: config.agentProvider },
+    CODING_GUIDELINES_LAYER_BY_PHASE.grill_me,
+  );
   const codingGuidelines = guidelinesResult.ok ? guidelinesResult.value : "";
   const verbosityInstructions = buildVerbosityBlock(config.verbosity);
 
