@@ -94,6 +94,18 @@ import {
   forcedFinalTriggerLine,
   type GrillMeStopTrigger,
 } from "./grill_me_stall_guard.ts";
+import {
+  collectGraftContext,
+  describeGraftContext,
+  formatGraftContextSection,
+  type GraftContextCollector,
+  graftQueryFor,
+} from "./graft_context.ts";
+import { repoCheckoutPath } from "./repo_checkout_path.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
+import { prepareCodegraphRun } from "./codegraph_run.ts";
+import { bindGraftRun } from "./graft_run.ts";
+import { settingsJsonOption } from "./rtk_output.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -211,6 +223,12 @@ export interface GrillMeProcessorDeps {
    * worker shares.
    */
   promptsDir?: string;
+  /**
+   * Graft context collector seam (Issue #2561). Omitted, the real collector
+   * is used — a test names its own. Injected on the deps object directly,
+   * not nested in infrastructure deps (Issue #2102).
+   */
+  collectGraftContext?: GraftContextCollector;
 }
 
 /** Options for building the grill-me prompt. */
@@ -268,6 +286,11 @@ export interface BuildGrillMePromptOptions {
    * {@link forcedFinalTriggerLine} directly under the TL;DR.
    */
   forcedFinal?: GrillMeStopTrigger;
+  /**
+   * The Graft context bundle this round prepared (Issue #2561). When present,
+   * appended to the prompt between the issue body and the comment history.
+   */
+  graftContextBundle?: string;
 }
 
 /**
@@ -963,6 +986,18 @@ export async function buildGrillMePrompt(
   const wrappedHistory =
     `${delimiters.commentsStart}\n${sanitisedHistory}\n${delimiters.commentsEnd}`;
 
+  // The round's Graft bundle, fenced with this run's boundary and carried
+  // after the issue body (Issue #2561). Repository-derived text is untrusted
+  // data, so it goes through the same formatter the other wired phases use
+  // rather than being pasted in raw. Empty on a round that collected none.
+  const graftContextSection = formatGraftContextSection(
+    opts.graftContextBundle,
+    delimiters.boundaryId,
+  );
+  const bodyWithGraft = graftContextSection === ""
+    ? wrappedBody
+    : `${wrappedBody}\n\n${graftContextSection}`;
+
   const replacements: Record<string, string> = {
     ROUND_NUMBER: String(opts.roundNumber),
     MAX_ROUNDS: String(opts.maxRounds),
@@ -972,7 +1007,7 @@ export async function buildGrillMePrompt(
     REPO: opts.repo,
     ISSUE_NUMBER: String(opts.issueNumber),
     ISSUE_TITLE: wrappedTitle,
-    ISSUE_BODY: wrappedBody,
+    ISSUE_BODY: bodyWithGraft,
     COMMENT_HISTORY: wrappedHistory,
     BOUNDARY_INTEGRITY_INSTRUCTION: buildBoundaryIntegrityInstruction(
       delimiters.boundaryId,
@@ -1843,6 +1878,42 @@ async function _processGrillMeWithHeartbeat(
     logger.warn(auditMsg, { repo, issueNumber });
   }
 
+  // 5a) Graft, CodeGraph and RTK, prepared exactly as planning prepares them
+  // (Issue #2561). Each is an accelerator whose collector reports a fault as
+  // `failed` rather than throwing, so losing one never fails the round — the
+  // figure simply reads `failed` on the round's stats comment.
+  const repoDir = repoCheckoutPath(config.workDir, repo);
+
+  const collectGraft = processorDeps.collectGraftContext ?? collectGraftContext;
+  const graftContext = await collectGraft({
+    repoDir,
+    query: graftQueryFor(issueTitle, issueBody),
+    enabled: isGraftContextEnabled(config),
+    logger,
+  });
+  if (graftContext.status !== "off") {
+    logger.info(describeGraftContext(graftContext), { repo, issueNumber });
+  }
+
+  const codegraph = await prepareCodegraphRun({
+    repoDir,
+    enabled: config.codegraphContext.enabled,
+    logger,
+    prepare: deps.claude.prepareCodegraphContext,
+  });
+  // The pull side of Graft beside CodeGraph's: the same MCP entry and prompt
+  // line the planning spawn gets, one tally for the round.
+  const graft = bindGraftRun({ result: graftContext, repoDir, logger });
+
+  // RTK is installed per spawn, so the hook settings have to ride on this
+  // round's invocation options — nothing is written to the shared settings.
+  const rtk = await deps.claude.prepareRtkRun({
+    enabled: config.rtkOutput.enabled,
+    providerId: deps.claude.rtkProviderId(undefined, logger),
+    logger,
+    cwd: repoDir,
+  });
+
   const promptResult = await buildGrillMePrompt({
     roundNumber,
     maxRounds: effectiveMaxRounds,
@@ -1860,6 +1931,8 @@ async function _processGrillMeWithHeartbeat(
     // Issue #849: an operator's `grill-me` mapping replaces the template.
     promptOverrides: promptOverrideMappings(config),
     promptsDir,
+    // Present only on an `ok` collection (Issue #2561).
+    graftContextBundle: graftContext.bundle,
   });
 
   if (!promptResult.ok) {
@@ -1880,7 +1953,11 @@ async function _processGrillMeWithHeartbeat(
   // 6) Invoke Claude with the grill-me timeout.
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt: promptResult.value,
+      // Issue #2561: the Graft and CodeGraph rules, with RTK's outermost so it
+      // is the last thing the agent reads — the order planning uses.
+      prompt: rtk.applyPrompt(
+        graft.applyPrompt(codegraph.applyPrompt(promptResult.value)),
+      ),
       timeoutSeconds: config.grillMeTimeout,
       killAfterSeconds: config.grillMeKillAfter,
       // Issue #3154: grill-me now has the full 1h hard budget so a genuinely
@@ -1892,11 +1969,18 @@ async function _processGrillMeWithHeartbeat(
       phase: "grill_me",
       cwd: config.workDir,
       logger,
+      // Issue #2561: the MCP servers (Graft's beside CodeGraph's) and the RTK
+      // hook settings this round's spawn runs with.
+      ...graft.mcpConfigOption(codegraph.mcpConfig()),
+      ...settingsJsonOption(undefined, rtk.hookSettings()),
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  // Issue #2561: re-read after the invocation, success or not — the hook ran
+  // either way — so the figure covers the whole round. Never throws.
+  await rtk.record();
 
   if (!claudeResult.ok) {
     const errorMsg = claudeResult.error.message;
@@ -1928,6 +2012,11 @@ async function _processGrillMeWithHeartbeat(
       logger,
     );
   }
+
+  // Issue #2561: the query tallies the Graft and CodeGraph lines report.
+  // Neither throws.
+  codegraph.record(claudeResult.value.runStats);
+  graft.record(claudeResult.value.runStats);
 
   // 7) Verify Claude posted a comment.
   //
@@ -2190,9 +2279,9 @@ async function _processGrillMeWithHeartbeat(
 
   // Issue #2717: grill-me routes to the same Fable 5 top tier as planning, so
   // surface a silent Fable→Opus degradation the same way the #2646 family does
-  // for planning. Unlike planning (stats every run), grill-me posts the stats
-  // block and applies the `degraded-model` label ONLY on a degraded round —
-  // healthy interactive rounds stay clean. Non-fatal: never aborts the round.
+  // for planning. The `degraded-model` label is applied only on a degraded
+  // round; the run's stats block is posted once per run either way
+  // (Issue #3756). Non-fatal: never aborts the round.
   let degraded = false;
   try {
     const verdict = await reportGrillMeDegradation({
@@ -2202,6 +2291,11 @@ async function _processGrillMeWithHeartbeat(
       ghClient,
       runGhCommand: deps.github.runGhCommand,
       logger,
+      // Issue #2561: the round's Graft, CodeGraph and RTK outcomes, so its
+      // stats comment carries the same three lines an issue run's does.
+      graftContextResult: graft.result,
+      codegraphContextResult: codegraph.result,
+      rtkOutputResult: rtk.result,
     });
     degraded = verdict.degraded;
   } catch (err) {
