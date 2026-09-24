@@ -35,7 +35,7 @@ import {
 import { buildCiFailureContext, isCiFailureIssue } from "./ci_failure_issue.ts";
 import { isIssueExecutorSplitEnabled } from "./issue_executor_split.ts";
 import {
-  buildIssueExecutorAgents,
+  buildIssueRunAgents,
   ISSUE_EXECUTOR_MODEL,
 } from "./issue_executor_agents.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";
@@ -331,6 +331,12 @@ export interface ExecuteClaudePhaseOptions {
    * carries no `--agents` and is byte-for-byte the argv built today.
    */
   issueExecutorSplit?: boolean;
+  /**
+   * Whether this host dispatches the Spec and Standards reviewers as defined
+   * cheaper sub-agents (Issue #2575, default: false). Threaded from
+   * `config.issueReviewerAgents`; host-wide, no per-repository override.
+   */
+  issueReviewerAgents?: boolean;
   /**
    * Whether to filter this run's shell output through RTK (Issue #2383, part
    * of #2328, default: false).
@@ -1257,6 +1263,12 @@ async function executeClaudePhaseBody(
         `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
     );
   }
+  // The reviewer sub-agents (Issue #2575): host-wide, off by default until
+  // the pilot in docs/MODEL-AND-CACHING.md clears it.
+  const issueRunAgents = buildIssueRunAgents({
+    executorSplit: issueExecutorSplit,
+    reviewerAgents: options.issueReviewerAgents === true,
+  });
 
   const promptResult = await deps.buildCachedIssuePrompt({
     repo,
@@ -1511,14 +1523,14 @@ async function executeClaudePhaseBody(
         // enabled run whose index built; on every other status this is
         // exactly `screenshotRequired`, as before.
         mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
-        // Issue #2342: only a split run carries sub-agent definitions, and
+        // Issue #2342: only a split run carries the executor definition, and
         // only a split run carries the guard that keeps every `Edit`/`Write`
         // inside one of them (Issue #2344). `claude_runner.ts` merges that
         // guard's hooks with the ones below rather than one replacing the
-        // other.
-        ...(issueExecutorSplit
-          ? { agents: buildIssueExecutorAgents(), issueExecutorSplit: true }
-          : {}),
+        // other. Issue #2575: a host with `issue_reviewer_agents` on adds the
+        // Spec and Standards reviewer definitions. Both off, no `agents`.
+        ...(issueRunAgents ? { agents: issueRunAgents } : {}),
+        ...(issueExecutorSplit ? { issueExecutorSplit: true } : {}),
         // This spawn's hooks (Issue #2383), carried on the command line. A run
         // that installs none leaves the key absent, so the argv is the one it
         // always spawned; when the split-executor guard lands on this path its

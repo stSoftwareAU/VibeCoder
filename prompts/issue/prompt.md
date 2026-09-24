@@ -353,6 +353,14 @@ Each reviewer gets the finished diff and nothing else from your context. Do not
 pass your implementation transcript, your reasoning, or your own assessment: a
 reviewer told what to conclude is not a reviewer.
 
+When the run defines the `spec-reviewer` and `standards-reviewer` agents,
+dispatch them by name — `subagent_type: "spec-reviewer"` and
+`subagent_type: "standards-reviewer"`; otherwise use general-purpose sub-agents
+with the same brief. The defined agents are read-only, so write the diff to a
+file outside the checkout
+(`git diff <base>...HEAD > /tmp/review-{{ISSUE_NUMBER}}.diff`) and hand each
+reviewer its path.
+
 - **Spec reviewer** — inputs: `git diff <base>...HEAD` and the issue body,
   verbatim. Three questions, and only these: (1) which stated requirements are
   **missing or partial**; (2) what behaviour is in the diff that **was not asked
@@ -362,9 +370,11 @@ reviewer told what to conclude is not a reviewer.
   trace to the issue. All four are verdicts and all four are recorded the same
   way, so an `unrequested` entry carries `reviewer: unrequested` like the rest.
 - **Standards reviewer** — inputs: the same diff and `CODING-STANDARDS.md`. One
-  question: where does the diff depart from the repo's documented standards?
-  Ask it to return one `violation` entry per departure, with the `file:line` it
-  saw, and the `clean` areas it checked and found compliant.
+  question: where does the diff depart from a documented standard in a way that
+  affects correctness, security or the stated requirements? Ask it to return
+  one `violation` entry per such departure, with the `file:line` it saw, and the
+  `clean` areas it checked and found compliant. Anything else it notices is
+  `optional`: note it on the `clean` line if you like, and do not chase it.
 
 **Never merge or rerank the two.** The Spec verdicts populate the
 `## Acceptance Criteria` block; the Standards findings go under their own
