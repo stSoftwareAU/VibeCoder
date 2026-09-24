@@ -9,7 +9,9 @@
  * end-to-end through the loop when Fable is requested **implicitly** — i.e. not
  * via an explicit `model:` option, but via:
  *
- *   - a top-tier `phase` default (`planning`, `grill_me` → fable), and
+ *   - an operator's per-phase rollback pin (`CLAUDE_MODEL_PLANNING=fable`,
+ *     `CLAUDE_MODEL_GRILL_ME=fable` — the documented way back to Fable since
+ *     Issue #2560 moved the top-tier default to Opus), and
  *   - a per-repo `claude_model: "fable"` base tier (buildClaudeModelArgs step 3).
  *
  * These are exactly the paths #2720 promises self-heal for: every run
@@ -34,7 +36,7 @@ import { assert, assertEquals } from "@std/assert";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import { setActiveRepoModelEffortOverrides } from "../lib/claude_executor.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
-import { emptyEnv } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
 // ---------------------------------------------------------------------------
@@ -157,9 +159,19 @@ function withCleanModelState<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Both top-tier phases: an implicit fable (resolved from the phase default)
-// falls back to opus and the run succeeds there — no explicit model option.
+// Both top-tier phases: an implicit fable (resolved from the operator's
+// per-phase rollback pin, Issue #2560) falls back to opus and the run succeeds
+// there — no explicit model option.
 // ---------------------------------------------------------------------------
+
+/**
+ * The operator rollback to Fable for the top-tier phases (Issue #2560): the
+ * default is Opus now, so Fable is only ever requested through a pin like this.
+ */
+const FABLE_PINNED_ENV = envFrom({
+  CLAUDE_MODEL_PLANNING: "fable",
+  CLAUDE_MODEL_GRILL_ME: "fable",
+});
 
 for (const phase of ["planning", "grill_me"] as const) {
   Deno.test({
@@ -178,7 +190,7 @@ for (const phase of ["planning", "grill_me"] as const) {
                 prompt: "test",
                 phase,
                 agentBinaryPath: stub.path,
-                env: emptyEnv,
+                env: FABLE_PINNED_ENV,
                 enableModelFallback: true,
                 timeoutSeconds: 30,
                 killAfterSeconds: 2,
@@ -266,7 +278,7 @@ Deno.test({
               prompt: "test",
               phase: "planning",
               agentBinaryPath: stub.path,
-              env: emptyEnv,
+              env: FABLE_PINNED_ENV,
               enableModelFallback: true,
               timeoutSeconds: 30,
               killAfterSeconds: 2,
@@ -308,7 +320,7 @@ Deno.test({
               prompt: "test",
               phase: "grill_me",
               agentBinaryPath: stub.path,
-              env: emptyEnv,
+              env: FABLE_PINNED_ENV,
               enableModelFallback: false,
               timeoutSeconds: 30,
               killAfterSeconds: 2,

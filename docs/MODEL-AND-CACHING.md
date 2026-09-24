@@ -159,19 +159,21 @@ post-fix behaviour.
 
 VibeCoder uses **effort-first cost routing**: the worker varies
 **effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
-switching model families per phase. Model tier is the *secondary* lever, applied
-at **both** extremes: the **eight planning-shaped
-phases** (`planning`, `grill_me`, `refinement`, `revision`, `question`,
-`clarification`, `quorum`, `quorum_judge`)
-run on the **Fable** tier above Opus at `high` effort — wherever the Vibe Coder
-interprets the user's words into an implementable state, a better result compounds
-downstream — while the three trivial phases stay on **Haiku**. Everything in
-between runs on **Opus**. The worker passes tier *aliases* (`fable`, `opus`,
-`haiku`) to the Claude CLI, which resolves each to the latest model of that tier;
-combined with the CLI minimum-version floor, the tiers stay current
-with no per-release config change. Since 2026-09-01 the latest Fable is
-**Fable 5.1** (`claude-fable-5-1`), which cut cache reads to $0.25/MTok — see
-[Fable 5.1 — the current top tier](#fable-51--the-current-top-tier-issue-747).
+switching model families per phase. Model tier is the *secondary* lever, and
+since Issue #2560 it is applied at the cheap extreme only: the three trivial
+phases stay on **Haiku**, and every other phase runs on **Opus**. The **eight
+planning-shaped phases** (`planning`, `grill_me`, `refinement`, `revision`,
+`question`, `clarification`, `quorum`, `quorum_judge`) are marked out by `high`
+effort — wherever the Vibe Coder interprets the user's words into an
+implementable state, a better result compounds downstream. They ran on the
+**Fable** tier until Opus 5.5 matched it on plan quality at roughly half the
+price; Fable stays one per-phase override away (`CLAUDE_MODEL_PLANNING=fable`
+and friends). The worker passes tier *aliases* (`fable`, `opus`, `haiku`) to
+the Claude CLI, which resolves each to the latest model of that tier; combined
+with the CLI minimum-version floor, the tiers stay current with no per-release
+config change. See
+[Fable 5.1 — the current top tier](#fable-51--the-current-top-tier-issue-747)
+for the Fable tier an override reaches.
 
 ### Phase-Specific Defaults
 
@@ -182,30 +184,31 @@ guiding rule: **wherever the Vibe Coder interprets the user's words
 into an implementable state, use the highest model available.** That names
 eight *planning-shaped* phases — `planning`, `grill_me`, `refinement`,
 `revision`, `question`, `clarification`, and the two Quorum phases `quorum` and
-`quorum_judge` — each of which defaults to the **Fable** top
-tier at `high` effort. When Fable is unavailable they reroute to **Opus at `max`
-effort** and the run is recorded degraded (see
+`quorum_judge` — each of which defaults to the top tier (**Opus** since
+Issue #2560) at `high` effort. They remain *Fable-preferring*: a phase an operator
+pins back to Fable still reroutes to **Opus at `max` effort** when Fable is
+unavailable, and the run is recorded degraded (see
 [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)).
-Everything else runs on **Opus** (implementation and reactive fixes) or **Haiku**
-(the three trivial phases) and is unaffected by Fable availability.
+With the default routing no phase requests Fable, so none is affected by Fable
+availability.
 
-| Phase | Model | Effort | When Fable unavailable |
+| Phase | Model | Effort | When pinned to Fable and Fable is unavailable |
 |-------|-------|--------|------------------------|
-| planning | Fable | high | Opus @ max, recorded degraded |
-| grill_me | Fable | high | Opus @ max, recorded degraded |
-| refinement | Fable | high | Opus @ max, recorded degraded |
-| revision | Fable | high | Opus @ max, recorded degraded |
-| question | Fable | high | Opus @ max, recorded degraded |
-| clarification | Fable | high | Opus @ max, recorded degraded |
-| quorum | Fable | high | Opus @ max, recorded degraded |
-| quorum_judge | Fable | high | Opus @ max, recorded degraded |
+| planning | Opus | high | Opus @ max, recorded degraded |
+| grill_me | Opus | high | Opus @ max, recorded degraded |
+| refinement | Opus | high | Opus @ max, recorded degraded |
+| revision | Opus | high | Opus @ max, recorded degraded |
+| question | Opus | high | Opus @ max, recorded degraded |
+| clarification | Opus | high | Opus @ max, recorded degraded |
+| quorum | Opus | high | Opus @ max, recorded degraded |
+| quorum_judge | Opus | high | Opus @ max, recorded degraded |
 | issue (implementation) | Opus | high | unchanged |
 | ci_fix | Opus | medium | unchanged |
 | pr_feedback | Opus | medium | unchanged |
 | quality_fix | Opus | medium | unchanged |
 | spelling_fix | Haiku | low | unchanged |
 | summarise | Haiku | low | unchanged (large-input escalation still applies) |
-| health | Haiku | low | unchanged — gains the new Fable probe |
+| health | Haiku | low | unchanged — runs the Fable probe only while a phase routes to Fable |
 
 These defaults are defined in `PHASE_MODEL_DEFAULTS` and `PHASE_EFFORT_DEFAULTS`
 in [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts);

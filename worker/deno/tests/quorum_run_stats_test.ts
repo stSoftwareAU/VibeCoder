@@ -5,11 +5,13 @@
  * Both Quorum phases became Fable-preferring in Issue #4429, so a plan-off
  * served on Opus @ `max` during a Fable outage must leave the same
  * `degraded-model` label and stats comment the six single-call phases post.
- * These tests assert real behaviour through the real recorder:
- *   - a `fable`-served plan-off is not degraded and reports nothing;
+ * Since Issue #2560 their default tier is Opus, so a plan-off served the
+ * current Opus is healthy. These tests assert real behaviour through the real
+ * recorder:
+ *   - an `opus`-served plan-off is not degraded and reports nothing;
  *   - a rerouted invocation — draft *or* judgement — is degraded → one label,
  *     one comment, covering all three invocations;
- *   - an Opus-served round and a rate-limit fallback are degraded too;
+ *   - a lower-tier (Sonnet) round and a rate-limit fallback are degraded too;
  *   - every GitHub operation is non-fatal.
  *
  * Australian English throughout (behaviour, colour, organisation, etc.).
@@ -196,7 +198,7 @@ Deno.test("quorum stats - the whole plan-off is judged under the drafting phase"
 // reportQuorumDegradation — healthy path
 // ---------------------------------------------------------------------------
 
-Deno.test("reportQuorumDegradation - a fable-served plan-off is not degraded and stays quiet", async () => {
+Deno.test("reportQuorumDegradation - an opus-served plan-off is not degraded and stays quiet (Issue #2560)", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -206,9 +208,9 @@ Deno.test("reportQuorumDegradation - a fable-served plan-off is not degraded and
     repo: "owner/repo",
     issueNumber: 4434,
     observations: [
-      draft("A", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
-      draft("B", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
-      judge({ runStats: runStats(["claude-fable-5-1-20260901"]) }),
+      draft("A", { runStats: runStats(["claude-opus-5-5"]) }),
+      draft("B", { runStats: runStats(["claude-opus-5-5"]) }),
+      judge({ runStats: runStats(["claude-opus-5-5"]) }),
     ],
     ghClient,
     runGhCommand: ghCommandFn,
@@ -301,10 +303,10 @@ Deno.test("reportQuorumDegradation - a rerouted judgement is degraded too", asyn
     repo: "owner/repo",
     issueNumber: 78,
     observations: [
-      draft("A", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
-      draft("B", { runStats: runStats(["claude-fable-5-1-20260901"]) }),
+      draft("A", { runStats: runStats(["claude-opus-5-5"]) }),
+      draft("B", { runStats: runStats(["claude-opus-5-5"]) }),
       judge({
-        runStats: runStats(["claude-fable-5-1-20260901"]),
+        runStats: runStats(["claude-opus-5-5"]),
         preflightDegraded: true,
         preflightDegradedReason: FABLE_PREFLIGHT_DEGRADED_REASON,
       }),
@@ -321,7 +323,7 @@ Deno.test("reportQuorumDegradation - a rerouted judgement is degraded too", asyn
   assertEquals(comments.length, 1);
 });
 
-Deno.test("reportQuorumDegradation - an opus-served plan-off is degraded", async () => {
+Deno.test("reportQuorumDegradation - a sonnet-served plan-off is degraded", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -331,8 +333,8 @@ Deno.test("reportQuorumDegradation - an opus-served plan-off is degraded", async
     repo: "owner/repo",
     issueNumber: 79,
     observations: [
-      draft("A", { runStats: runStats(["claude-opus-4-8"]) }),
-      draft("B", { runStats: runStats(["claude-opus-4-8"]) }),
+      draft("A", { runStats: runStats(["claude-sonnet-5"]) }),
+      draft("B", { runStats: runStats(["claude-sonnet-5"]) }),
     ],
     ghClient,
     runGhCommand: ghCommandFn,
@@ -341,7 +343,8 @@ Deno.test("reportQuorumDegradation - an opus-served plan-off is degraded", async
     env: emptyEnv,
   });
 
-  assert(verdict.degraded, "opus served when fable expected must be degraded");
+  assert(verdict.degraded, "sonnet served when opus expected must be degraded");
+  assertStringIncludes(verdict.reason ?? "", "does not match");
   assertEquals(addLabelCalls.length, 1);
   assertEquals(comments.length, 1);
   assertStringIncludes(comments[0]!.body, "**Quorum invocations:** 2");

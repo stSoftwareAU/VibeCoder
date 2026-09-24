@@ -645,8 +645,9 @@ Deno.test("quorum label - is defined for label sync with a human-applied descrip
 });
 
 Deno.test("quorum config - both phases route to the planning-shaped tier", () => {
-  assertEquals(PHASE_MODEL_DEFAULTS["quorum"], "fable");
-  assertEquals(PHASE_MODEL_DEFAULTS["quorum_judge"], "fable");
+  // The planning-shaped tier is Opus since Issue #2560.
+  assertEquals(PHASE_MODEL_DEFAULTS["quorum"], "opus");
+  assertEquals(PHASE_MODEL_DEFAULTS["quorum_judge"], "opus");
   assertEquals(PHASE_EFFORT_DEFAULTS["quorum"], "high");
   assertEquals(PHASE_EFFORT_DEFAULTS["quorum_judge"], "high");
 
@@ -766,7 +767,7 @@ Deno.test("quorum model stats - a healthy plan-off adds no label and no stats co
     deps: mockDepsWithAgents({
       drafts: ["Plan from the first drafter.", "Plan from the second drafter."],
       judge: verdictBlock("B", "Plan B is the smaller change."),
-      model: () => ({ runStats: servedStats("claude-fable-5-1-20260901") }),
+      model: () => ({ runStats: servedStats("claude-opus-5-5") }),
     }, { github: { runGhCommand: gh.runGhCommand } }),
   });
 
@@ -801,7 +802,7 @@ Deno.test("quorum model stats - a degraded run still reports when the judgement 
       model: (phase) =>
         phase === "quorum_judge"
           ? {}
-          : { runStats: servedStats("claude-opus-4-8") },
+          : { runStats: servedStats("claude-sonnet-5") },
     }, { github: { runGhCommand: gh.runGhCommand } }),
   });
 

@@ -12,6 +12,7 @@
 
 import {
   DEFAULT_CLAUDE_MODEL_TOP_TIER,
+  PHASE_EFFORT_DEFAULTS,
   PHASE_MODEL_DEFAULTS,
 } from "../lib/config_defaults.ts";
 import { assert, assertEquals } from "@std/assert";
@@ -32,12 +33,14 @@ import {
 } from "../lib/fable_routing.ts";
 
 /**
- * A provider whose routing carries the Fable tier — Claude's shape, stubbed so
- * the matrix below is independent of the ambient `CLAUDE_MODEL_*` environment.
+ * A provider whose routing carries the Fable tier — Claude with the planning
+ * phases pinned back to Fable, the documented rollback since Issue #2560 moved
+ * the default top tier to Opus. Stubbed so the matrix below is independent of
+ * the ambient `CLAUDE_MODEL_*` environment.
  */
 const FABLE_TIER_PROVIDER: FableRoutingProvider = {
   id: "claude",
-  resolveModel: () => DEFAULT_CLAUDE_MODEL_TOP_TIER,
+  resolveModel: () => "fable",
 };
 
 /** A provider with no Fable tier — Codex's shape (Issue #398). */
@@ -66,12 +69,19 @@ Deno.test("FABLE_PREFERRING_PHASES holds exactly the eight planning-shaped phase
   );
 });
 
-Deno.test("FABLE_PREFERRING_PHASES - every phase whose default model is the Fable top tier is Fable-preferring, and vice versa (Issue #4429)", () => {
-  const fableDefault = Object.entries(PHASE_MODEL_DEFAULTS)
-    .filter(([, model]) => model === DEFAULT_CLAUDE_MODEL_TOP_TIER)
-    .map(([phase]) => phase)
-    .sort();
-  assertEquals([...FABLE_PREFERRING_PHASES].sort(), fableDefault);
+Deno.test("FABLE_PREFERRING_PHASES - every Fable-preferring phase defaults to the top tier at high effort (Issues #4429, #2560)", () => {
+  // Since #2560 the top tier is Opus, shared with `issue`, so the tier alone no
+  // longer identifies the set; the exact membership is pinned by the test
+  // above. What must hold is that no Fable-preferring phase has drifted off
+  // the planning-shaped routing.
+  for (const phase of FABLE_PREFERRING_PHASES) {
+    assertEquals(
+      PHASE_MODEL_DEFAULTS[phase],
+      DEFAULT_CLAUDE_MODEL_TOP_TIER,
+      phase,
+    );
+    assertEquals(PHASE_EFFORT_DEFAULTS[phase], "high", phase);
+  }
 });
 
 Deno.test("isFablePreferringPhase - true for each of the eight phases", () => {
@@ -359,7 +369,7 @@ Deno.test("applyFablePreflightRouting - explicit override on options is respecte
 // ---------------------------------------------------------------------------
 
 Deno.test("anyPhaseRoutesToFableTier - true when provider has Fable tier for any Fable-preferring phase", () => {
-  // Claude provider routes all eight Fable-preferring phases to the Fable tier.
+  // A Fable-pinned Claude provider routes all eight phases to the Fable tier.
   assert(anyPhaseRoutesToFableTier(FABLE_TIER_PROVIDER));
 });
 
