@@ -53,16 +53,13 @@ commit the new tracker and diagnosis tests failed: 4 failed and 113 passed. The
   `</details>`.
 - **Status:** verified. The regression tests reproduce the real release-message
   layout, failed before the fix and pass after it.
-- **Regression tests:**
-  - `repo_fast_failure_tracker_test.ts`:
-    - `isFastFailure - an agent-API payment refusal is not the repository's fault (Issue #2590)`
-    - `diagnosticErrorLine - markdown scaffolding does not displace the agent's error (Issue #2590)`
-    - `diagnosticErrorLine - a fenced block keeps its content, not the fence (Issue #2590)`
-  - `failure_diagnosis_test.ts`:
-    - `failure diagnosis - an agent-API payment refusal is an account limit (Issue #2590)`
-    - `failure diagnosis - a 402 elsewhere in the text is not a payment refusal (Issue #2590)`
-  - `run_outcome_classifier_test.ts`:
-    - `run failure classifier - a payment refusal categorised rate_limit keeps out-of-credit (Issue #2590)`
+- **Regression test:** `worker/deno/tests/repo_fast_failure_tracker_test.ts::isFastFailure - an agent-API payment refusal is not the repository's fault (Issue #2590)`.
+  The other regression tests are:
+  - `repo_fast_failure_tracker_test.ts::diagnosticErrorLine - markdown scaffolding does not displace the agent's error (Issue #2590)`
+  - `repo_fast_failure_tracker_test.ts::diagnosticErrorLine - a fenced block keeps its content, not the fence (Issue #2590)`
+  - `failure_diagnosis_test.ts::failure diagnosis - an agent-API payment refusal is an account limit (Issue #2590)`
+  - `failure_diagnosis_test.ts::failure diagnosis - a 402 elsewhere in the text is not a payment refusal (Issue #2590)`
+  - `run_outcome_classifier_test.ts::run failure classifier - a payment refusal categorised rate_limit keeps out-of-credit (Issue #2590)`
 
 ## Test Plan
 
