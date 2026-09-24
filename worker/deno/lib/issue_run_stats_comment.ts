@@ -162,7 +162,7 @@ function formatIndexSeconds(seconds: number): string {
  * @param codegraph - What this run's CodeGraph step produced
  * @returns The markdown line, ready to append to the stats section
  */
-function buildCodegraphStatsLine(
+export function buildCodegraphStatsLine(
   codegraph: CodegraphContextResult,
 ): string {
   const status = codegraph.status === "unsupported"

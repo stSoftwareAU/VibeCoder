@@ -2196,6 +2196,13 @@ function buildRunStats(
    * stats-free round worth a comment, the rule the issue path follows.
    */
   rtk?: RtkOutputResult,
+  /**
+   * What the round's Graft collection produced (Issue #2561). Rendered ahead
+   * of the CodeGraph and RTK lines, matching the issue-run comment's order.
+   */
+  graft?: GraftContextResult,
+  /** What the round's CodeGraph preparation produced (Issue #2561). */
+  codegraph?: CodegraphContextResult,
 ): { verdict: DegradationVerdict; section: string } {
   const report = buildDegradationReport({
     invocations,
@@ -2203,9 +2210,17 @@ function buildRunStats(
     phase: "planning",
     ...(gate ? { gate } : {}),
   });
-  const section = rtk && report.section.trim() !== ""
-    ? `${report.section.trimEnd()}\n${buildRtkStatsLine(rtk)}\n`
-    : report.section;
+  if (report.section.trim() === "") {
+    return { verdict: report.verdict, section: report.section };
+  }
+  const graftLine = buildGraftStatsLine(graft);
+  const codegraphLine = codegraph
+    ? `\n${buildCodegraphStatsLine(codegraph)}`
+    : "";
+  const rtkLine = rtk ? `\n${buildRtkStatsLine(rtk)}` : "";
+  const section = `${report.section.trimEnd()}${
+    graftLine ? `\n${graftLine}` : ""
+  }${codegraphLine}${rtkLine}\n`;
   return { verdict: report.verdict, section };
 }
 
