@@ -20,9 +20,11 @@
 import type { Result } from "../types.ts";
 import {
   type AgentProviderSelector,
+  selectAgentProvider,
   setConfiguredAgentProviderId,
   setRunProviderOverride,
 } from "./agent_provider.ts";
+import { anyPhaseRoutesToFableTier } from "./fable_routing.ts";
 import {
   classifyProviderBilling,
   type ProviderBillingEvidence,
@@ -6104,7 +6106,16 @@ export async function runCoreLoop(
           // loop, and it does NOT gate this cycle (routing is a later
           // sub-issue). The 15-min cache gate inside limits actual Fable calls
           // to at most one per TTL window.
-          if (deps.checkFableAvailability) {
+          //
+          // Gate on whether any phase routes to the Fable tier under the active
+          // provider: if no phase will ever route to Fable (including
+          // operator-pinned phases), there is no point calling the probe. This
+          // avoids unnecessary Fable calls on Codex and Gemini providers.
+          const activeProvider = selectAgentProvider();
+          if (
+            deps.checkFableAvailability &&
+            anyPhaseRoutesToFableTier(activeProvider)
+          ) {
             try {
               await deps.checkFableAvailability();
             } catch (fableErr) {

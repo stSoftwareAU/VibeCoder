@@ -112,6 +112,28 @@ export function providerRoutesToFableTier(
   return modelFamily(provider.resolveModel(phase, env) ?? "") === "fable";
 }
 
+/**
+ * Whether `provider` routes any Fable-preferring phase to the Fable tier (Issue #3230).
+ *
+ * Used to gate the Fable-availability health probe: if no phase will ever route
+ * to Fable (including operator-pinned phases), there is no point calling the
+ * probe. Checks all eight Fable-preferring phases and returns true if *any*
+ * route to the Fable tier under this provider's current routing.
+ *
+ * @param provider - The provider to check routing for.
+ * @param env - Environment lookup the provider's routing reads through
+ *   (Issue #961); omitted means the process environment.
+ * @returns true if any Fable-preferring phase routes to the Fable tier.
+ */
+export function anyPhaseRoutesToFableTier(
+  provider: FableRoutingProvider,
+  env?: EnvLookup,
+): boolean {
+  return FABLE_PREFERRING_PHASES.some((phase) =>
+    providerRoutesToFableTier(provider, phase, env)
+  );
+}
+
 /** Model the pre-flight reroute selects when Fable is unavailable. */
 export const FABLE_PREFLIGHT_MODEL = "opus" as const;
 

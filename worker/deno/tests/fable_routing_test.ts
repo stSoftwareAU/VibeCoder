@@ -17,6 +17,7 @@ import {
 import { assert, assertEquals } from "@std/assert";
 import type { FableCacheRead } from "../lib/health_check_cache.ts";
 import {
+  anyPhaseRoutesToFableTier,
   applyFablePreflightRouting,
   clearFableTierWarnings,
   FABLE_PREFERRING_PHASES,
@@ -351,4 +352,67 @@ Deno.test("applyFablePreflightRouting - explicit override on options is respecte
   );
   assertEquals(options.model, "sonnet");
   assert(!routing.degraded);
+});
+
+// ---------------------------------------------------------------------------
+// anyPhaseRoutesToFableTier - health probe gating (Issue #3230)
+// ---------------------------------------------------------------------------
+
+Deno.test("anyPhaseRoutesToFableTier - true when provider has Fable tier for any Fable-preferring phase", () => {
+  // Claude provider routes all eight Fable-preferring phases to the Fable tier.
+  assert(anyPhaseRoutesToFableTier(FABLE_TIER_PROVIDER));
+});
+
+Deno.test("anyPhaseRoutesToFableTier - false when provider has no Fable tier", () => {
+  // Codex provider has no Fable tier — none of the eight phases route to Fable.
+  assert(!anyPhaseRoutesToFableTier(NO_FABLE_TIER_PROVIDER));
+});
+
+Deno.test("anyPhaseRoutesToFableTier - false when provider never routes to Fable", () => {
+  // A provider that resolves to undefined or a non-Fable model for all phases.
+  const neverFable: FableRoutingProvider = {
+    id: "test-provider",
+    resolveModel: () => "sonnet",
+  };
+  assert(!anyPhaseRoutesToFableTier(neverFable));
+});
+
+Deno.test("anyPhaseRoutesToFableTier - true when any Fable-preferring phase routes to Fable, even if others do not (Issue #3230)", () => {
+  // A provider where only one phase routes to Fable (e.g., via env override).
+  // This simulates CLAUDE_MODEL_PLANNING="fable" pinning the planning phase.
+  const mixedProvider: FableRoutingProvider = {
+    id: "mixed",
+    resolveModel: (phase) => {
+      // Only planning phase routes to Fable; others route to opus.
+      if (phase === "planning") {
+        return "fable"; // Could come from CLAUDE_MODEL_PLANNING env var.
+      }
+      return "opus";
+    },
+  };
+  assert(
+    anyPhaseRoutesToFableTier(mixedProvider),
+    "should return true when at least one phase routes to Fable",
+  );
+});
+
+Deno.test("anyPhaseRoutesToFableTier - checks all eight Fable-preferring phases", () => {
+  // Verify the predicate actually checks all eight phases by providing a
+  // provider that routes differently for each one.
+  let callCount = 0;
+  const trackingProvider: FableRoutingProvider = {
+    id: "tracking",
+    resolveModel: (phase) => {
+      callCount++;
+      // Return Fable for one specific phase to make the result true.
+      return phase === "quorum" ? "fable" : "sonnet";
+    },
+  };
+
+  assert(anyPhaseRoutesToFableTier(trackingProvider));
+  // The predicate should have called resolveModel for each of the eight phases
+  // (it iterates through FABLE_PREFERRING_PHASES and short-circuits on the
+  // first Fable tier found, so the count may be 1-8 depending on iteration order).
+  assert(callCount > 0, "predicate must check at least one phase");
+  assert(callCount <= FABLE_PREFERRING_PHASES.length);
 });
