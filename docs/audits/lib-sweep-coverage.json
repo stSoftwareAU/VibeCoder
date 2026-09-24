@@ -2116,6 +2116,18 @@
       "paths": [
         "worker/deno/lib/cfn_cost_checks.ts"
       ]
+    },
+    {
+      "issue": 2569,
+      "chunk": "top-up-2569",
+      "title": "top-up: the phase accelerator preparation",
+      "ledger": "docs/audits/security-sweep-2569-phase-accelerators.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: phase_accelerators.ts (#2569)",
+      "status": "swept",
+      "sweptAt": "ed3e95e9e156535b027d57270afa627950ab3427",
+      "paths": [
+        "worker/deno/lib/phase_accelerators.ts"
+      ]
     }
   ],
   "roots": [
