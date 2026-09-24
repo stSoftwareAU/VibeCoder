@@ -63,22 +63,29 @@ decision is not re-litigated from memory:
 ### 1.2 🔌 Where CodeGraph is wired in
 
 An enabled host prepares the index **once per run**, before the agent is
-invoked, on the six run kinds the trial covers — the standalone issue phase
+invoked, on the ten run kinds the trial covers — the standalone issue phase
 (`worker/deno/lib/execute_claude_phase.ts`), the main-loop issue phase
 (`worker/deno/lib/phases/execute_phase.ts`), the planning and question
 processors, the reactive PR paths: PR feedback
 (`worker/deno/lib/pr_feedback_processor.ts`) and CI fix
-(`worker/deno/lib/pr_ci_processor.ts`), and the grill-me rounds
-(`worker/deno/lib/grill_me_processor.ts`, Issue #2561). Planning makes several invocations in
+(`worker/deno/lib/pr_ci_processor.ts`), the grill-me rounds
+(`worker/deno/lib/grill_me_processor.ts`, Issue #2561), and the
+clarification-family runs — clarity assessment
+(`worker/deno/lib/clarity_phase.ts`), refinement
+(`worker/deno/lib/refinement_processor.ts`), revision
+(`worker/deno/lib/revision_processor.ts`) and quorum
+(`worker/deno/lib/quorum_processor.ts`), all through
+`worker/deno/lib/phase_accelerators.ts` (Issue #2569). Planning makes several invocations in
 one round (draft, critique, the explicit retry, the Failure-Detection
-self-repair) and a CI fix makes a second when the post-quality gate asks for
-one; they share one index and their `codegraph_explore` calls are summed into a
+self-repair), a quorum plan-off makes three (two drafts and the judge), and a
+CI fix makes a second when the post-quality gate asks for one; they share one
+index and their `codegraph_explore` calls are summed into a
 single figure for the run.
 
 The server is **rooted at the checkout that was indexed**, by
 `codegraph serve --mcp --path <checkout>` (Issue #2200). Rooting it explicitly
 rather than letting it inherit the agent's working directory is what makes the
-six paths behave alike: the planning and question processors run the agent with
+ten paths behave alike: the planning and question processors run the agent with
 `cwd` set to `config.workDir`, the **parent** of every clone, so an unrooted
 server would resolve a directory with no `.codegraph/` in it while the run
 still reported `status: ok` with real counts. The path rides in the arguments
