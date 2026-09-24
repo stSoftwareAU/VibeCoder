@@ -422,9 +422,15 @@ export async function collectLabelCandidates(
         )
       ) {
         diag?.logIssueSkipped(repo, issue.number, "dependency-blocked");
-        if (repoPRs.length > 0) {
-          blocked.push({ repo, milestone: milestoneTitle });
-        }
+        // Issue #2563: deliberately NOT pushed to `blocked`. That array parks
+        // every `work-on` candidate in this issue's stream, and a dependency
+        // wait belongs to this one issue (Issue #2545) — it says nothing
+        // about its stream. It used to be pushed whenever the repo had any
+        // open fleet PR, even one that blocks nothing here: on
+        // stSoftwareAU/GRQ-AutoTrader a milestone rollup PR plus #846 waiting
+        // on its dependency silently parked four claimable `work-on` issues
+        // for hours, with no skip reason recorded and the census rightly
+        // calling them claimable. Top-priority starves nothing.
         blockedDetails.push({
           repo,
           issueNumber: issue.number,
