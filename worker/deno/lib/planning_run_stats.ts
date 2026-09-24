@@ -122,6 +122,14 @@ export interface DegradationVerdict {
    */
   indeterminate?: boolean;
   /**
+   * True when the only degradation is that the expected tier was served on a
+   * previous generation (Issue #1362) — a stale container, not a fallback to
+   * another model. Still `degraded` for the label and the stats comment, but a
+   * caller judging whether the run's *work* is in doubt ignores it (Issue
+   * #2560, `degraded_delivery.ts`).
+   */
+  previousGeneration?: boolean;
+  /**
    * Human-readable reason, present when {@link degraded} **or**
    * {@link indeterminate} is true.
    */
@@ -325,6 +333,7 @@ function assessPreviousGeneration(
   const { tier, current } = reference;
   return {
     degraded: true,
+    previousGeneration: true,
     reason: unique.length === 1
       ? `served model \`${unique[0]}\` is a previous-generation \`${tier}\` ` +
         `(current: \`${current}\`)`

@@ -15,6 +15,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { extractAcceptedScope } from "../lib/acceptance_criteria_gate.ts";
+import { emptyEnv } from "./support/env_lookup.ts";
 import {
   assessDegradedDelivery,
   buildDegradedFollowUpIssue,
@@ -306,4 +307,45 @@ Deno.test("fileDegradedFollowUp - a failed create is an error, not a silent pass
         : Promise.reject(new Error("HTTP 502")),
   });
   assertEquals(result.ok, false);
+});
+
+// ---------------------------------------------------------------------------
+// A previous generation of the right tier is not a fallback (Issue #2560)
+// ---------------------------------------------------------------------------
+
+Deno.test("assessDegradedDelivery - a run served a previous generation of the expected tier files no follow-up", () => {
+  // A container whose CLI still resolves `opus` to Opus 5 is flagged stale by
+  // the run-stats comment, but the run was not served a fallback model: it
+  // ran on the tier it asked for, so its delivery is not in question.
+  const verdict = assessDegradedDelivery({
+    claudeResults: [{
+      runStats: {
+        servedModels: ["claude-opus-5"],
+        requestedModel: "opus",
+        wallClockMs: 1000,
+      },
+    }],
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: MINIMAL_BODY,
+    env: emptyEnv,
+  });
+  assertEquals(verdict.degraded, false);
+  assertEquals(verdict.shortfalls, []);
+});
+
+Deno.test("assessDegradedDelivery - a run served a lower tier than expected is still degraded", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: [{
+      runStats: {
+        servedModels: ["claude-haiku-4-5-20251001"],
+        requestedModel: "opus",
+        wallClockMs: 1000,
+      },
+    }],
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: MINIMAL_BODY,
+    env: emptyEnv,
+  });
+  assertEquals(verdict.degraded, true);
+  assertEquals(verdict.shortfalls.length, 3);
 });
