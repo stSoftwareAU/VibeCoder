@@ -23,6 +23,7 @@ import {
 import { validateClarifyingQuestions } from "./label_clarification.ts";
 import type { RunStats } from "./run_stats.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import type { PhaseAcceleratorSpawnOptions } from "./phase_accelerators.ts";
 import {
   buildBoundaryIntegrityInstruction,
   createPromptDelimiters,
@@ -100,19 +101,29 @@ export interface ClarityAssessmentOptions {
    * provider's binary name is resolved on `PATH` exactly as before.
    */
   agentBinaryPath?: string;
+  /** Rewrites the built prompt — the Graft, CodeGraph and RTK rules (Issue #2569). */
+  transformPrompt?: (prompt: string) => string;
+  /** `mcpConfig` and `settingsJson` for the spawn (Issue #2569). */
+  spawnOptions?: PhaseAcceleratorSpawnOptions;
+}
+
+/** The options one clarity invocation hands its runner. */
+export interface ClarityRunClaudeOptions extends PhaseAcceleratorSpawnOptions {
+  timeoutSeconds: number;
+  killAfterSeconds: number;
+  phase: string;
+  cwd?: string;
+  /** Explicit agent binary path, when the caller named one (Issue #960). */
+  agentBinaryPath?: string;
 }
 
 /** Dependency injection for testing. */
 export interface ClarityAssessmentDeps {
   /** Override the Claude invocation for testing. */
-  runClaude?: (prompt: string, opts: {
-    timeoutSeconds: number;
-    killAfterSeconds: number;
-    phase: string;
-    cwd?: string;
-    /** Explicit agent binary path, when the caller named one (Issue #960). */
-    agentBinaryPath?: string;
-  }) => Promise<Result<ClaudeExecutionResult>>;
+  runClaude?: (
+    prompt: string,
+    opts: ClarityRunClaudeOptions,
+  ) => Promise<Result<ClaudeExecutionResult>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,19 +391,17 @@ export async function runClarityAssessment(
   options: ClarityAssessmentOptions,
   deps: ClarityAssessmentDeps = {},
 ): Promise<ClarityAssessmentResult> {
-  const prompt = buildClarityAssessmentPrompt(options.params);
+  const built = buildClarityAssessmentPrompt(options.params);
+  const prompt = options.transformPrompt?.(built) ?? built;
   const timeoutSeconds = options.timeoutSeconds ??
     OPERATIONAL_DEFAULTS.clarificationTimeout;
   const killAfterSeconds = options.killAfterSeconds ??
     OPERATIONAL_DEFAULTS.clarificationKillAfter;
 
-  const runClaude = deps.runClaude ?? (async (p: string, opts: {
-    timeoutSeconds: number;
-    killAfterSeconds: number;
-    phase: string;
-    cwd?: string;
-    agentBinaryPath?: string;
-  }): Promise<Result<ClaudeExecutionResult>> => {
+  const runClaude = deps.runClaude ?? (async (
+    p: string,
+    opts: ClarityRunClaudeOptions,
+  ): Promise<Result<ClaudeExecutionResult>> => {
     // Route through runClaudeWithRetry so the clarification phase inherits the
     // model-unavailable (#2724) and rate-limit (#1113) fallback paths — a
     // direct runClaudeWithTimeout call would bypass both (Issue #2739).
@@ -405,6 +414,10 @@ export async function runClarityAssessment(
       cwd: opts.cwd,
       ...(opts.agentBinaryPath
         ? { agentBinaryPath: opts.agentBinaryPath }
+        : {}),
+      ...(opts.mcpConfig !== undefined ? { mcpConfig: opts.mcpConfig } : {}),
+      ...(opts.settingsJson !== undefined
+        ? { settingsJson: opts.settingsJson }
         : {}),
     });
     if (!retryResult.ok) return retryResult;
@@ -448,6 +461,7 @@ export async function runClarityAssessment(
     ...(options.agentBinaryPath
       ? { agentBinaryPath: options.agentBinaryPath }
       : {}),
+    ...options.spawnOptions,
   });
 
   if (!result.ok) {

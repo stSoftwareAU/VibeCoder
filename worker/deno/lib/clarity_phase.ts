@@ -41,6 +41,12 @@ import { releaseClaim, unassignerFromGhCommand } from "./claim_release.ts";
 import { defaultLogger } from "./logger.ts";
 import { reportPhaseDegradation } from "./phase_run_stats.ts";
 import {
+  type PhaseAcceleratorClaudeDeps,
+  preparePhaseAccelerators,
+} from "./phase_accelerators.ts";
+import type { GraftContextCollector } from "./graft_context.ts";
+import type { WorkerConfig } from "../types.ts";
+import {
   buildMaskedInstructionQuestions,
   findMaskedInstructions,
   MASKED_INSTRUCTION_QUESTION_MARKER,
@@ -130,6 +136,15 @@ export interface ClarityPhaseDeps {
    * Tests state the fleet instead of writing a config file.
    */
   dedupAuthors?: AlertDedupAuthorOptions;
+  /**
+   * Graft, CodeGraph and RTK for the assessment spawn (Issue #2569). Omitted,
+   * the assessment runs unaccelerated in `params.cwd`.
+   */
+  accelerators?: {
+    config: WorkerConfig;
+    claude: PhaseAcceleratorClaudeDeps;
+    collectGraftContext?: GraftContextCollector;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +421,19 @@ export async function runClarityPhase(
   // -----------------------------------------------------------------------
 
   if (!skipClarification) {
+    // Issue #2569: one Graft, CodeGraph and RTK preparation per assessment.
+    const accel = deps.accelerators
+      ? await preparePhaseAccelerators({
+        config: deps.accelerators.config,
+        repo: params.repo,
+        issueNumber: params.issueNumber,
+        issueTitle: params.issueTitle,
+        issueBody: params.issueBody,
+        claude: deps.accelerators.claude,
+        logger: defaultLogger,
+        collectGraftContext: deps.accelerators.collectGraftContext,
+      })
+      : undefined;
     const assessmentResult = await runClarityAssessment(
       {
         params: {
@@ -420,10 +448,15 @@ export async function runClarityPhase(
           OPERATIONAL_DEFAULTS.clarificationTimeout,
         killAfterSeconds: deps.clarificationKillAfter ??
           OPERATIONAL_DEFAULTS.clarificationKillAfter,
-        cwd: params.cwd,
+        // The MCP config is written under cwd, so an accelerated run spawns
+        // in the worker's work dir.
+        cwd: deps.accelerators?.config.workDir ?? params.cwd,
+        transformPrompt: accel?.applyPrompt,
+        spawnOptions: accel?.spawnOptions(),
       },
       deps.assessmentDeps,
     );
+    await accel?.afterSpawn();
 
     if (assessmentResult.status === "failed") {
       return {
@@ -435,6 +468,8 @@ export async function runClarityPhase(
       };
     }
 
+    accel?.recordSuccess(assessmentResult.degradation?.runStats);
+
     // Issue #3232: clarification routes through a Fable-preferring
     // planning-shaped phase, so surface a silent Fable→Opus substitution the
     // same way planning and grill-me do — post a stats comment and apply
@@ -445,6 +480,7 @@ export async function runClarityPhase(
     if (assessmentResult.degradation) {
       try {
         await reportPhaseDegradation({
+          ...accel?.report(),
           phase: "clarification",
           repo: params.repo,
           issueNumber: params.issueNumber,

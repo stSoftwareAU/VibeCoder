@@ -26,6 +26,8 @@ import {
   type ClarityPhaseResult,
   runClarityPhase,
 } from "../lib/clarity_phase.ts";
+import { prepareCodegraphContext } from "../lib/codegraph_context.ts";
+import { prepareRtkRun, rtkProviderId } from "../lib/rtk_output.ts";
 
 export const clarityPhaseCommand: Command = {
   name: "clarity-phase",
@@ -95,6 +97,11 @@ export const clarityPhaseCommand: Command = {
         maxClarificationRounds: config.maxClarificationRounds,
         clarificationTimeout: config.clarificationTimeout,
         clarificationKillAfter: config.clarificationKillAfter,
+        // Issue #2569: Graft, CodeGraph and RTK for the assessment spawn.
+        accelerators: {
+          config,
+          claude: { prepareCodegraphContext, prepareRtkRun, rtkProviderId },
+        },
       },
     );
 
