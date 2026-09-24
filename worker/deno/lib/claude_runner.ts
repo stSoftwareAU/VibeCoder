@@ -3762,13 +3762,13 @@ Read the content and create a concise summary that:
 4. Removes verbose explanations, repeated information, and unnecessary context
 5. Uses bullet points for clarity where appropriate
 
-IMPORTANT:
-- Do NOT add any preamble like "Here is a summary" - just output the summary directly
+Output rules:
+- Start with the summary itself, with no preamble such as "Here is a summary": the text stands in for the original content, so any framing reads as part of it
 - Keep all code blocks and technical specifications
 - Preserve any URLs, issue references, or file paths mentioned
 - The summary should be self-contained and actionable
 
-Output ONLY the summarised content, nothing else.`;
+Output the summarised content and nothing else.`;
 
 /**
  * Tools the summarise phase must NEVER call (Issue #1607).
