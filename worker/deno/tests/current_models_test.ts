@@ -63,7 +63,10 @@ Deno.test("previousGenerationOf - an earlier Opus is a previous generation of Op
     tier: "opus",
     current: "claude-opus-5-5",
   });
-  assertEquals(previousGenerationOf("claude-opus-4-8")?.current, "claude-opus-5-5");
+  assertEquals(
+    previousGenerationOf("claude-opus-4-8")?.current,
+    "claude-opus-5-5",
+  );
 });
 
 Deno.test("previousGenerationOf - Opus 5.5 itself and a newer Opus are not stale (Issue #2560)", () => {
