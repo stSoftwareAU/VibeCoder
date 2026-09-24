@@ -145,6 +145,12 @@ import {
 } from "../security_fix_gate_feedback.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
+import {
+  assessDegradedDelivery,
+  buildDegradedPrSection,
+  fileDegradedFollowUp,
+} from "../degraded_delivery.ts";
+import { IDLE_TASK_LABEL } from "../idle_task_issue.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
@@ -1982,6 +1988,70 @@ async function completionBody(
       prBody,
       deps,
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // Degraded-run delivery guard (Issue #2562).
+  //
+  // A run served by a fallback model must not read as complete delivery: on
+  // #2543 a Haiku-fallback run shipped one of seven accepted changes and its
+  // PR closed the issue with the rest recorded nowhere. The PR is still raised
+  // (the work is kept, and a PR that does not close its issue loops — #520),
+  // but every accepted scope item not shown `met` is filed as an `idle-task`
+  // follow-up the fleet picks up, and the PR body names the gap. A healthy
+  // run, or a degraded one that met everything, is untouched.
+  // ---------------------------------------------------------------------
+  const degradedDelivery = assessDegradedDelivery({
+    claudeResults: state.claudeRunStats ?? [],
+    issueBody: ctx.issueBody,
+    prBody,
+  });
+  if (degradedDelivery.shortfalls.length > 0) {
+    const labelled = await deps.github.ensureLabelExists(
+      repo,
+      IDLE_TASK_LABEL,
+    );
+    if (!labelled.ok) {
+      logger.warn(
+        "Could not ensure the idle-task label for the degraded-run follow-up; filing anyway",
+        { error: labelled.error.message },
+      );
+    }
+    const followUp = await fileDegradedFollowUp({
+      repo,
+      parentNumber: issueNumber,
+      parentTitle: issueTitle,
+      verdict: degradedDelivery,
+      runId: getRunId(),
+      gh: deps.github.runGhCommand,
+      dedupAuthors: { fleetAuthors: fleetAuthorsFor(ctx) },
+    });
+    if (!followUp.ok) {
+      // Raising the PR now would close the issue with the residue recorded
+      // nowhere — the exact silent loss this guard exists to stop.
+      logger.error(
+        "Degraded run: could not file the follow-up for its undelivered scope — no PR raised",
+        { error: followUp.error.message },
+      );
+      return {
+        status: "failure",
+        reason:
+          `Degraded run (${degradedDelivery.reason}) left ${degradedDelivery.shortfalls.length} ` +
+          `accepted scope item(s) short of met, and the follow-up recording them ` +
+          `could not be filed: ${followUp.error.message}`,
+      };
+    }
+    logger.warn(
+      "Degraded run delivered partial scope — residue recorded in a follow-up",
+      {
+        reason: degradedDelivery.reason,
+        shortfalls: degradedDelivery.shortfalls.length,
+        followUp: followUp.value.number,
+        reused: followUp.value.reused,
+      },
+    );
+    prBody = buildDegradedPrSection(degradedDelivery, followUp.value.number) +
+      prBody;
   }
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),

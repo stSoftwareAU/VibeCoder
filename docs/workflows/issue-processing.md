@@ -1045,6 +1045,47 @@ flowchart TD
     style X fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+## ⚠️ A degraded run never closes an issue as complete
+
+A run served by a fallback model — a rate-limit fallback down the tier ladder,
+or a pre-flight reroute — is **degraded**, and the run-stats comment already
+says so (`Degraded: ⚠️ yes`). Until Issue #2562 nothing on the PR path read that
+verdict: on #2543 a Haiku-fallback run shipped one of seven accepted changes,
+wrote no PR summary, and its PR closed the issue. The rest had to be
+rediscovered by hand and refiled as #2560.
+
+[`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
+gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+after the summary gates and before the PR is raised:
+
+```mermaid
+flowchart TD
+    R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
+    D -- no --> P["PR as today"]
+    D -- yes --> S{"Every accepted scope<br/>item shown met?"}
+    S -- yes --> P
+    S -- no --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
+    F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
+    F -- "gh failed" --> X["Run fails, no PR —<br/>nothing closes the issue"]
+```
+
+- **The scope** is the issue's `## Acceptance Criteria`, or — for an issue
+  refined by grill-me — its `### Accepted scope so far` list. An issue stating
+  neither is named whole as the one unverified item.
+- **Delivered** means the PR summary's closure block marks the item `met`. A
+  `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
+  is a shortfall.
+- **The follow-up** carries the `idle-task` label — the one work-trigger label
+  the worker may apply itself — so the fleet picks the residue up without a
+  human, and a `finding-id` marker keyed on the parent, so a second degraded run
+  on the same issue reuses the open follow-up. It lists what was delivered too,
+  so the next run checks rather than redoes it.
+- **The PR is still raised** with its closing keyword: the delivered work is
+  kept, and a PR that does not close its issue loops (Issue #520). The residue
+  survives the merge in the follow-up instead.
+- **A healthy run is untouched**, whatever its summary says, and so is a
+  degraded run that showed every item `met`.
+
 ## 🧾 A summary shortfall after the PR is not a failed run
 
 The three summary gates above — acceptance-criteria closure, independent review,
