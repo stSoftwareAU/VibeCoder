@@ -582,6 +582,41 @@ not from whichever sibling prompt happens to be open in the next tab —
 `worker/deno/tests/dedup_placeholder_docs_test.ts` fail a template or a doc that
 skips it.
 
+### Phase-scoped coding-guidelines layers
+
+Not every phase writes code, so not every phase loads every rule
+(Issue #2574). `prompts/coding_guidelines/prompt.md` stays one file — one home
+per rule, one input to `computeStaticPromptHash()` — and marks each block that
+only some phases need:
+
+```markdown
+<!-- guidelines-layer: code -->
+
+## Unit Tests vs Benchmarks
+...
+
+<!-- /guidelines-layer -->
+```
+
+Unmarked text is the **core** layer. A `commit` block adds the rules for
+running commands and committing; a `code` block adds the rules for writing,
+testing and shipping code. `CODING_GUIDELINES_LAYER_BY_PHASE` in
+`lib/prompt_builder.ts` is the one table that says which layer each phase
+loads:
+
+| Layer | Phases | Adds |
+|-------|--------|------|
+| `core` | `planning`, `planning_critique`, `question`, `grill_me` | — |
+| `commit` | `spelling_fix` | Non-interactive execution, streaming reads, commit safety, run-id trailer |
+| `code` | `issue`, `ci_fix`, `pr_feedback`, `merge_conflict`, custom PR, `workflow_setup` | Everything else: Deno tooling, docs, tests, E2E, benchmarks, performance, internal-dependency fixes, bash portability, dependency bumps |
+
+The marker lines never reach a prompt. An unknown layer, a nested or stray
+marker, or a block left open fails the build rather than silently dropping or
+leaking a rule. When you add a section, leave it unmarked if a read-only
+phase needs it; mark it `code` or `commit` only when it governs editing,
+testing or committing. `worker/deno/tests/coding_guidelines_layers_2574_test.ts`
+pins which headings each phase gets.
+
 ### Per-model coding-guidelines overlays
 
 The shared `coding_guidelines` template is model-agnostic, so genuinely
