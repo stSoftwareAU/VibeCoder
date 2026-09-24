@@ -738,12 +738,14 @@ export const EFFORT_LEVELS = {
 export const DEFAULT_EFFORT = "high" as const;
 
 /**
- * Default effort level for the planning phase (Issue #1402, #3229).
- * Planning is one of the six planning-shaped phases — where the Vibe Coder
+ * Default effort level for the planning phase (Issue #1402, #3229, #2560).
+ * Planning is one of the planning-shaped phases — where the Vibe Coder
  * interprets the user's words into an implementable state — that run on the
- * Fable 5 top tier (see PHASE_MODEL_DEFAULTS). The *normal* effort for those
- * phases is "high"; the `max` bump is reserved for the pre-flight reroute to
- * Opus when Fable is unavailable (a separate #3217 sub-issue). Previously max.
+ * Opus top tier (see PHASE_MODEL_DEFAULTS). Since #2560 those phases share
+ * Opus with every other substantive phase, so "high" effort is what marks
+ * them out; the `max` bump is reserved for the #3217 pre-flight reroute that
+ * fires only when an operator has pinned a phase back to Fable and Fable is
+ * unavailable. Previously max.
  */
 export const DEFAULT_CLAUDE_EFFORT_PLANNING = "high" as const;
 
@@ -928,20 +930,23 @@ export const DEFAULT_CLAUDE_MODEL = "opus" as const;
 // ---------------------------------------------------------------------------
 
 /**
- * Top model tier — Fable 5, the tier above Opus (Issues #2619, #2621).
+ * Top model tier — the `opus` alias (Issues #2619, #2621, #2543, #2560).
  *
- * The worker passes the `fable` alias; the Claude CLI resolves it to the
- * latest Fable model (combined with the CLI minimum-version floor in #2622,
- * this keeps the tier current with no per-release config change). Reserved
- * for the six planning-shaped phases (planning, grill_me, refinement,
- * revision, question, clarification) where the Vibe Coder interprets the
- * user's words into an implementable state and a better interpretation
- * compounds across every downstream sub-issue and PR. Fable is ~2× Opus
- * pricing, so the spend is deliberately concentrated on those phases.
+ * The worker passes the `opus` alias; the Claude CLI resolves it to the latest
+ * Opus model (combined with the CLI minimum-version floor in #2622, this keeps
+ * the tier current with no per-release config change). Opus 5.5 matches or
+ * beats Fable 5.1 on plan quality at ~half the price, so Issue #2560 collapsed
+ * the top tier onto the base tier: the planning-shaped phases now share the
+ * `opus` alias with every other substantive phase, and **effort** alone
+ * separates them (high for planning-shaped, medium for reactive).
+ *
+ * The constant is kept — rather than folded into {@link DEFAULT_CLAUDE_MODEL} —
+ * so a future tier above Opus is a one-line change again, and so operators
+ * pinning `CLAUDE_MODEL_PLANNING=fable` keep a documented rollback.
  */
-export const DEFAULT_CLAUDE_MODEL_TOP_TIER = "fable" as const;
+export const DEFAULT_CLAUDE_MODEL_TOP_TIER = "opus" as const;
 
-/** Planning phase model — Fable 5 top tier (effort: high, Issue #2621, #3229). */
+/** Planning phase model — Opus top tier (effort: high, Issues #2621, #3229, #2560). */
 export const DEFAULT_CLAUDE_MODEL_PLANNING = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
 /**
@@ -963,11 +968,11 @@ export const DEFAULT_CLAUDE_MODEL_PLANNING = DEFAULT_CLAUDE_MODEL_TOP_TIER;
  */
 export const DEFAULT_BEST_PLANNING_MODEL = "" as const;
 
-/** Grill-me phase model — Fable 5 top tier (effort: high, Issue #2621, #3229). */
+/** Grill-me phase model — Opus top tier (effort: high, Issues #2621, #3229, #2560). */
 export const DEFAULT_CLAUDE_MODEL_GRILL_ME = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
 /**
- * Quorum phase model — Fable 5 top tier (effort: high, Issue #4112).
+ * Quorum phase model — Opus top tier (effort: high, Issues #4112, #2560).
  *
  * Quorum decides *what the plan is* before the planning phase splits it into
  * sub-issues, so both its phases are planning-shaped and take the same tier as
@@ -1010,9 +1015,9 @@ export function defaultQuorumJudge(): string {
 export const DEFAULT_CLAUDE_MODEL_ISSUE = DEFAULT_CLAUDE_MODEL;
 
 /**
- * Refinement phase model — Fable 5 top tier (effort: high, Issue #3229).
+ * Refinement phase model — Opus top tier (effort: high, Issues #3229, #2560).
  * A planning-shaped phase: the Vibe Coder interprets the user's words into an
- * implementable state. Previously opus.
+ * implementable state. Effort, not tier, is what marks it out.
  */
 export const DEFAULT_CLAUDE_MODEL_REFINEMENT = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
@@ -1020,9 +1025,9 @@ export const DEFAULT_CLAUDE_MODEL_REFINEMENT = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 export const DEFAULT_CLAUDE_MODEL_CI_FIX = DEFAULT_CLAUDE_MODEL;
 
 /**
- * Revision phase model — Fable 5 top tier (effort: high, Issue #3229).
+ * Revision phase model — Opus top tier (effort: high, Issues #3229, #2560).
  * A planning-shaped phase: the Vibe Coder interprets the user's words into an
- * implementable state. Previously opus.
+ * implementable state. Effort, not tier, is what marks it out.
  */
 export const DEFAULT_CLAUDE_MODEL_REVISION = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
@@ -1033,16 +1038,16 @@ export const DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = DEFAULT_CLAUDE_MODEL;
 export const DEFAULT_CLAUDE_MODEL_QUALITY_FIX = DEFAULT_CLAUDE_MODEL;
 
 /**
- * Question phase model — Fable 5 top tier (effort: high, Issue #3229).
+ * Question phase model — Opus top tier (effort: high, Issues #3229, #2560).
  * A planning-shaped phase: the Vibe Coder interprets the user's words into an
- * implementable state. Previously opus.
+ * implementable state. Effort, not tier, is what marks it out.
  */
 export const DEFAULT_CLAUDE_MODEL_QUESTION = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
 /**
- * Clarification phase model — Fable 5 top tier (effort: high, Issue #3229).
+ * Clarification phase model — Opus top tier (effort: high, Issues #3229, #2560).
  * A planning-shaped phase: the Vibe Coder interprets the user's words into an
- * implementable state. Previously opus.
+ * implementable state. Effort, not tier, is what marks it out.
  */
 export const DEFAULT_CLAUDE_MODEL_CLARIFICATION = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
@@ -1113,18 +1118,19 @@ export function getCheaperModel(currentModel: string): string | null {
  * Maps phase names to their default model. Phases not listed here
  * fall back to the base CLAUDE_MODEL env var (or no model args).
  *
- * Routing (Issues #2391, #2621, #3229): effort (PHASE_EFFORT_DEFAULTS) is the
- * *primary* cost lever; model tier is the *secondary* lever applied at both
- * extremes. The six planning-shaped phases (planning, grill_me, refinement,
- * revision, question, clarification) run on the Fable 5 top tier — wherever
- * the Vibe Coder interprets the user's words into an implementable state, use
- * the highest model available, because a better interpretation compounds
- * across every downstream sub-issue and PR (#2621, #3229). The three trivial
- * phases (spelling_fix, summarise, health) stay on the cheaper Haiku tier. The
- * remaining phases (issue, ci_fix, pr_feedback, quality_fix) resolve to Opus
- * (DEFAULT_CLAUDE_MODEL), differentiated by effort. The map stays populated
- * (rather than empty) so each phase is explicitly pinned regardless of the
- * CLI's own default, while the override chain keeps tier fully tunable.
+ * Routing (Issues #2391, #2621, #3229, #2560): effort (PHASE_EFFORT_DEFAULTS)
+ * is the *primary* cost lever; model tier is the *secondary* lever, and since
+ * #2560 it is applied at one extreme only. Every substantive phase runs on
+ * Opus — the eight planning-shaped phases (planning, grill_me, refinement,
+ * revision, question, clarification, quorum, quorum_judge) at "high" effort,
+ * because wherever the Vibe Coder interprets the user's words into an
+ * implementable state a better interpretation compounds across every
+ * downstream sub-issue and PR (#2621, #3229); the reactive phases (ci_fix,
+ * pr_feedback, quality_fix) at "medium". The three trivial phases
+ * (spelling_fix, summarise, health) stay on the cheaper Haiku tier. The map
+ * stays populated (rather than empty) so each phase is explicitly pinned
+ * regardless of the CLI's own default, while the override chain keeps tier
+ * fully tunable.
  */
 export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
   planning: DEFAULT_CLAUDE_MODEL_PLANNING,
