@@ -171,6 +171,8 @@ export const executeClaudePhaseCommand: Command = {
       // The advisor/executor split switch (Issue #2342, part of #2320); off
       // on every host that has not opted in.
       issueExecutorSplit: config.issueExecutorSplit,
+      // The reviewer sub-agent switch (Issue #2575); off by default.
+      issueReviewerAgents: config.issueReviewerAgents,
       // Context budget thresholds, including the hard ceiling (Issue #3713)
       contextBudgetWarningPercent: config.contextBudgetWarningPercent,
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,

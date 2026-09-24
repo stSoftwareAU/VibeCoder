@@ -16,7 +16,11 @@ import {
   type ExecuteClaudePhaseOptions,
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
-import { ISSUE_EXECUTOR_AGENT_NAME } from "../lib/issue_executor_agents.ts";
+import {
+  ISSUE_EXECUTOR_AGENT_NAME,
+  SPEC_REVIEWER_AGENT_NAME,
+  STANDARDS_REVIEWER_AGENT_NAME,
+} from "../lib/issue_executor_agents.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 
 /** What one phase run handed the runner and the prompt builder. */
@@ -172,4 +176,43 @@ Deno.test("execute_claude_phase - the key reaches the prompt build as well as th
   const off = await observeRun({});
   assertEquals(off.promptOptions?.issueExecutorSplit, false);
   assertEquals(off.runOptions?.agents, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// The reviewer sub-agents (Issue #2575)
+// ---------------------------------------------------------------------------
+
+Deno.test("execute_claude_phase - issue_reviewer_agents on hands the runner both reviewers and no executor (Issue #2575)", async () => {
+  const runOptions = await runWith({ issueReviewerAgents: true });
+
+  const agents = runOptions?.agents;
+  assert(agents, "the reviewer run must carry sub-agent definitions");
+  assertEquals(
+    Object.keys(agents).sort(),
+    [SPEC_REVIEWER_AGENT_NAME, STANDARDS_REVIEWER_AGENT_NAME].sort(),
+  );
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "low");
+  assertEquals(
+    runOptions?.issueExecutorSplit,
+    undefined,
+    "reviewers alone configure no advisor edit guard",
+  );
+});
+
+Deno.test("execute_claude_phase - reviewers and the split together carry all three definitions (Issue #2575)", async () => {
+  const runOptions = await runWith({
+    issueExecutorSplit: true,
+    issueReviewerAgents: true,
+  });
+
+  assertEquals(
+    Object.keys(runOptions?.agents ?? {}).sort(),
+    [
+      ISSUE_EXECUTOR_AGENT_NAME,
+      SPEC_REVIEWER_AGENT_NAME,
+      STANDARDS_REVIEWER_AGENT_NAME,
+    ].sort(),
+  );
+  assertEquals(runOptions?.issueExecutorSplit, true);
 });

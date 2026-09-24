@@ -185,6 +185,30 @@ export function withholdNonSubscriptionCredentials(
 }
 
 /**
+ * Deterministic sub-agent spawn caps for every `claude` child (Issue #2575).
+ *
+ * Claude Opus 5 delegates more readily than earlier models, and a sub-agent
+ * may spawn sub-agents of its own, so one prompt can grow into a tree. These
+ * are the two caps Claude Code enforces however the model decides to
+ * delegate (documented at code.claude.com/docs/en/agent-sdk/subagents,
+ * "Cap subagent depth, concurrency, and spend"; honoured from Claude Code
+ * 2.1.217 — the image pins 2.1.281 in `container/tools.json`):
+ *
+ * - `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` — the main session may spawn
+ *   sub-agents, but a sub-agent may not spawn its own. The CLI default is 3.
+ * - `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=4` — at most four running at once
+ *   (the two reviewers, or a handful of split-run executors). The CLI
+ *   default is 20; a spawn past the cap is refused, not queued.
+ *
+ * Spawn environment, not an operator setting: an explicit value already in
+ * the parent environment wins, exactly as `CLAUDE_CONFIG_DIR` does below.
+ */
+export const CLAUDE_SUBAGENT_CAP_ENV: Readonly<Record<string, string>> = {
+  CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1",
+  CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "4",
+};
+
+/**
  * Build the environment for the `claude` child subprocess.
  *
  * Returns a copy of `parentEnv` with every denied variable removed — the
@@ -211,6 +235,11 @@ export function buildClaudeChildEnv(
       secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST,
     }),
   );
+
+  // Sub-agent spawn caps (Issue #2575); an explicit parent value wins.
+  for (const [name, value] of Object.entries(CLAUDE_SUBAGENT_CAP_ENV)) {
+    if (env[name] === undefined) env[name] = value;
+  }
 
   // Durable transcripts inside the container (Issue #4170): claude stores
   // the session transcripts `--resume` replays under CLAUDE_CONFIG_DIR.

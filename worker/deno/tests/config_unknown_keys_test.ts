@@ -30,6 +30,7 @@ Deno.test("config_unknown_keys - KNOWN_CONFIG_KEYS includes core fields", () => 
     "phase_model_overrides",
     "agent_provider_mode",
     "issue_executor_split",
+    "issue_reviewer_agents",
   ];
   for (const field of coreFields) {
     assertEquals(
