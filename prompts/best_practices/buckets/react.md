@@ -110,3 +110,34 @@ file) so re-runs deduplicate.
     prompt, which every scan applies regardless of the drawn bucket —
     see there for the full contract and the per-ecosystem quiet
     flags.
+
+## Cost, speed and reliability
+
+Concrete, evidence-cited checks only: skip anything you cannot tie to a
+file and line. Each finding carries an `**Estimated effect:**` line
+derived from the cited source and marked estimated, plus a `**Risk:**`
+line naming what the change could break, and competes for the reserved
+slot in Phase 3. Severity is `severity:low`, or `severity:medium` on a
+production path; never `severity:high`. Each stable id uses the standard
+`BP-<12 hex>` recipe with the title given and the cited file.
+
+15. **Request waterfalls.** Flag sequential awaits or chained effects
+    that fetch independent data one after another (in components,
+    loaders or server components); suggest starting them together.
+    Effect: load time falls from the sum of the requests to about the
+    slowest one. Risk: more concurrent requests at load. Stable id:
+    title `Request waterfall in <component>`.
+16. **N+1 fetches from list items.** Flag a list whose item component
+    fetches its own data in an effect when the API offers a batch form.
+    Effect: one request instead of one per row. Risk: a larger first
+    response. Stable id: title `N+1 fetches in <component>`.
+17. **Fetch without a timeout.** Flag a data fetch with no timeout
+    (`AbortSignal.timeout(ms)`) or retry cap; missing cleanup stays
+    under check 8. Effect: a hung request no longer leaves the view
+    spinning. Risk: too short a timeout fails slow networks. Stable id:
+    title `Fetch in <component> has no timeout`.
+18. **Bundle size.** Flag heavy routes or components loaded eagerly
+    with no `React.lazy` or dynamic `import()`, and whole-library
+    imports where a per-function import exists. Effect: estimate the
+    saving from the library's published size. Risk: a loading state
+    where there was none. Stable id: title `Eager load of <module>`.

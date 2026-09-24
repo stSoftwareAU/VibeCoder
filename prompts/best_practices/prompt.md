@@ -466,6 +466,11 @@ Apply these rules in order to every candidate from Phase 2:
    best-practices runs. Where the bucket guide sets a **tighter** cap or
    a severity ceiling of its own (the `design` guide caps a run at three
    findings, none above `severity:medium`), the guide's limit wins.
+7. **Reserve one of the 6 slots for cost, speed and reliability.** When
+   a finding from the guide's `## Cost, speed and reliability` section
+   survives but did not make the cut, the highest-priority one replaces
+   the last kept finding, unless that finding is `severity:high`; a
+   `severity:high` correctness or security finding is never displaced.
 
 <examples>
 
@@ -631,6 +636,11 @@ needed.
    - `## Why this matters` is one paragraph of rationale;
    - `## Suggested fix` is a concrete, diff-shaped suggestion where
      possible;
+   - a cost, speed or reliability finding adds two lines after the
+     `## Why this matters` paragraph, so cheaper never quietly means
+     less reliable:
+     `**Estimated effect:** ~20% lower Lambda compute price (estimated)`
+     and `**Risk:** native dependencies must be rebuilt for arm64`;
    - a `Rejected suppression: <file>:<line> <id> — <failed check>` line
      is added (Phase 3 rule 4) when an ungoverned marker was refused;
    - the literal **attribution footer** line from the Inputs section is

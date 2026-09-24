@@ -424,3 +424,34 @@ test asserts belongs to the `test-audit` scan, not here.
     prompt, which every scan applies regardless of the drawn bucket —
     see there for the full contract and the per-ecosystem quiet
     flags.
+
+## Cost, speed and reliability
+
+Concrete, evidence-cited checks only: skip anything you cannot tie to a
+file and line. Each finding carries an `**Estimated effect:**` line
+derived from the cited source and marked estimated, plus a `**Risk:**`
+line naming what the change could break, and competes for the reserved
+slot in Phase 3. Severity is `severity:low`, or `severity:medium` on a
+production path; never `severity:high`. Each stable id uses the standard
+`BP-<12 hex>` recipe with the title given and the cited file.
+
+20. **External calls without a timeout.** Flag an HTTP, database or
+    queue call on a production path with no timeout, whatever the
+    language. Effect: a hung peer can no longer hold the caller. Risk:
+    too short a timeout fails slow but healthy calls. Stable id: title
+    `External call in <file> has no timeout`.
+21. **Retries without backoff or idempotency.** Flag a retry loop with
+    no backoff, jitter or attempt cap, and a retried non-idempotent
+    write with no idempotency key. Effect: no retry storm, no duplicate
+    writes. Risk: longer worst-case latency. Stable id: title `Unsafe
+    retry in <file>`.
+22. **Polling that could be event-driven.** Flag a sleep loop or tight
+    schedule polling a source that offers a webhook, notification or
+    queue. Effect: estimate the calls saved from the poll interval.
+    Risk: an event path needs its own delivery guarantee. Stable id:
+    title `Polling in <file> could be event-driven`.
+23. **Work repeated per request.** Flag config parsing, client
+    construction or secret fetching repeated on every request when the
+    input does not change between requests. Effect: estimate from the
+    per-call cost cited. Risk: a cached value goes stale, so bound it.
+    Stable id: title `Per-request work in <file> could be cached`.
