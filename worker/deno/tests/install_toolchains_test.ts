@@ -40,6 +40,44 @@ interface InstallerRun {
 const TOOLCHAIN_MANIFEST_MARKER = "${TOOLCHAIN_MANIFEST:-unset}";
 
 /**
+ * The machine name the fragments would see inside the Linux build container.
+ *
+ * The fragments run `uname -m` and accept only `x86_64` and `aarch64`, the
+ * Linux names. A developer Mac on Apple silicon reports `arm64` for the same
+ * architecture, so every fragment test aborted there with "Unsupported build
+ * architecture: arm64" before reaching the behaviour it asserts — the suite
+ * passed on the Linux CI runner and failed on the laptop.
+ */
+async function containerMachine(): Promise<string> {
+  const arch = new Deno.Command("uname", { args: ["-m"], stdout: "piped" });
+  const machine = new TextDecoder().decode((await arch.output()).stdout).trim();
+  return machine === "arm64" ? "aarch64" : machine;
+}
+
+/**
+ * The PATH a fragment runs under: the test's `${dir}/bin` stubs first, with a
+ * `uname` that reports {@link containerMachine} unless the test wrote its own
+ * (the unsupported-architecture test stubs `mips64` deliberately).
+ */
+async function containerPath(dir: string): Promise<string> {
+  await Deno.mkdir(`${dir}/bin`, { recursive: true });
+  const stub = `${dir}/bin/uname`;
+  try {
+    await Deno.stat(stub);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    await Deno.writeTextFile(
+      stub,
+      `#!/bin/sh
+if [ "$1" = "-m" ]; then echo ${await containerMachine()}; else exec /usr/bin/uname "$@"; fi
+`,
+    );
+    await Deno.chmod(stub, 0o755);
+  }
+  return `${dir}/bin:${Deno.env.get("PATH") ?? ""}`;
+}
+
+/**
  * A fragment directory holding a stub fragment per given id, beside a
  * manifest that pins each id the caller asks to be pinned.
  *
@@ -319,8 +357,7 @@ Deno.test("container/toolchains/rust.sh - a missing component pin aborts before 
   // installer and only surface later as an unformatted-checksum error naming
   // no pin. Drop the checksum this architecture needs and the fragment must
   // stop at the lookup instead.
-  const arch = new Deno.Command("uname", { args: ["-m"], stdout: "piped" });
-  const machine = new TextDecoder().decode((await arch.output()).stdout).trim();
+  const machine = await containerMachine();
   const key = machine === "aarch64" ? "clippy_arm64" : "clippy_amd64";
 
   const dir = await Deno.makeTempDir();
@@ -352,7 +389,7 @@ Deno.test("container/toolchains/rust.sh - a missing component pin aborts before 
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/rust.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${dir}/tools.json`,
         CURL_RETRY: "",
       },
@@ -419,7 +456,7 @@ async function runFragmentWithBrokenManifest(
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/${fragment}`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${dir}/tools.json`,
         CURL_RETRY: "",
         PIP_RETRY: "",
@@ -486,9 +523,7 @@ Deno.test("container/toolchains/bats-core.sh - a missing manifest aborts, naming
 
 /** The manifest digest key for the architecture the tests run on. */
 async function currentDigestKey(): Promise<"amd64" | "arm64"> {
-  const arch = new Deno.Command("uname", { args: ["-m"], stdout: "piped" });
-  const machine = new TextDecoder().decode((await arch.output()).stdout).trim();
-  return machine === "aarch64" ? "arm64" : "amd64";
+  return (await containerMachine()) === "aarch64" ? "arm64" : "amd64";
 }
 
 Deno.test("container/toolchains/pyyaml.sh - a missing pin aborts before downloading", async () => {
@@ -596,7 +631,7 @@ Deno.test("container/toolchains/pyyaml.sh - a tampered download aborts before in
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/pyyaml.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
         CURL_RETRY: "",
         PIP_RETRY: "",
@@ -677,7 +712,7 @@ Deno.test("container/toolchains/codespell.sh - a tampered download aborts before
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/codespell.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
         CURL_RETRY: "",
         PIP_RETRY: "",
@@ -754,7 +789,7 @@ Deno.test("container/toolchains/codegraph.sh - an unsupported architecture abort
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/codegraph.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
         CURL_RETRY: "",
       },
@@ -815,7 +850,7 @@ Deno.test("container/toolchains/codegraph.sh - a tampered download aborts before
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/codegraph.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
         CURL_RETRY: "",
       },
@@ -903,7 +938,7 @@ Deno.test("container/toolchains/rtk.sh - an unsupported architecture aborts, nam
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/rtk.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
         CURL_RETRY: "",
       },
@@ -963,7 +998,7 @@ Deno.test("container/toolchains/rtk.sh - a tampered download aborts before extra
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/rtk.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
         CURL_RETRY: "",
       },
@@ -1024,7 +1059,7 @@ Deno.test("container/toolchains/rtk.sh - an archive without rtk at its top level
     const result = await new Deno.Command("bash", {
       args: [`${REPO_ROOT}/container/toolchains/rtk.sh`],
       env: {
-        PATH: `${dir}/bin:${Deno.env.get("PATH") ?? ""}`,
+        PATH: await containerPath(dir),
         TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
         CURL_RETRY: "",
       },
