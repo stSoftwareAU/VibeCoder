@@ -109,6 +109,65 @@ specific file/line-range in the current source tree.
 | **Duplicate logical check, cross-file** (#20,) | The same logical check duplicated across two or more workflow files. Advisory — `severity:low`. | Cross-file only; complements #8 and #19. |
 | **Obsolete / dead refs** (#21,) | A step referencing a script, file, job, or local action that no longer exists. Advisory — `severity:low`. | Delete or repoint. |
 
+### Cost and speed (#37–#41)
+
+Issue #2578. The audit never raised CI cost or speed on GRQ-AutoTrader:
+cargo caching (GRQ-AutoTrader#451), parallel deploy jobs (#453) and
+reusing an unchanged Rust build (#531) were each found by hand, and the
+owner's direct question on 2026-09-24 turned up roughly half the Actions
+spend. The catalogue had no check for those levers, security findings
+filled the 6-finding cap first, and a static read of the YAML could not
+see what anything cost. The group is the owner's four questions, plus
+build-once:
+
+| Check | Asks | Typical finding |
+| ----- | ---- | --------------- |
+| 37 | Runs only when relevant? | `push` / `pull_request` with no `paths:` / `paths-ignore:` and no job-level change detection, in a repo with separate areas. On a required check the fix is job-level gating plus an always-run aggregator, never workflow-level `paths:`. |
+| 38 | Duplicate or overlapping work? | Beyond #19 and #20: two workflows building the same commit, `push` plus `pull_request` on the same branch, deploy rebuilding what CI built, an over-frequent `schedule:`. |
+| 39 | Cached from previous runs? | `setup-*` with no `cache:`, cargo with no `Swatinem/rust-cache` / `actions/cache`, Docker with no `cache-from`; keys that never hit (no `restore-keys`, run-unique keys). |
+| 40 | Runs in parallel? | One job linting, testing and building back to back; `needs:` with no data dependency; an unsharded long suite; wasteful `fail-fast`. |
+| 41 | Build once, deploy the artefact? | Deploy rebuilding instead of downloading the verified CI artefact, or rebuilding components that did not change. |
+
+Each check carries a no-false-positive note and files under
+`BP-CI-COST-<check>-<12 hex>`, the hex from `(check, sorted workflow
+paths)`.
+
+**Cost signal.** The audit may make two read-only calls, and nothing
+else touching Actions: `gh run list --workflow <file> --limit 20 --json
+databaseId,conclusion,createdAt,updatedAt,event` once per workflow, and
+`gh api repos/{owner}/{repo}/actions/runs/{id}/timing` (a GET) when the
+token permits. Every cost finding states the median duration, the runs
+per week and an estimated saving in minutes per week — or `unmeasured`
+when no run data came back — and the group is ranked by that saving.
+Each finding also names, in one `Risk:` line, what the change could
+break: a skipped required check, cache poisoning (#28), or a deploy
+using a stale artefact. The agent `gh` guard classifies both calls as
+reads, and `gh run rerun` / `cancel` / `delete` and the `POST` rerun
+endpoint as mutations
+([`gh_guard_actions_cost_signal_2578_test.ts`](../worker/deno/tests/gh_guard_actions_cost_signal_2578_test.ts)
+pins both directions).
+
+**Severity.** `severity:medium` when the measured saving is at least 30
+min/week; `severity:low` otherwise, including every `unmeasured` finding.
+
+**Reserved slots.** When any cost finding survives triage, Phase 3 keeps
+at least **2 of the 6** slots for the group's highest-ranked findings. A
+`severity:high` security finding still comes first; a cost finding only
+displaces the lowest-priority medium or low one.
+
+**Pre-pass leads.** [`workflow_cost_scanner.ts`](../worker/deno/lib/workflow_cost_scanner.ts)
+reads the workflow files the template already parsed and lists the
+cheap-to-detect leads for 37, 39, 40 and 41 into the prompt's
+`<cost_candidates>` block. The leads are data for the agent to confirm or
+reject; the pre-pass files nothing, because a missing `paths:` filter or
+a serial job is often deliberate. Check 38 has no lead: telling
+overlapping scope from distinct scope needs reading. The regression
+fixture in
+[`workflow_cost_scanner_test.ts`](../worker/deno/tests/workflow_cost_scanner_test.ts)
+is GRQ-AutoTrader's workflows before #451, #453 and #531 (leads for 37,
+39, 40 and 41), next to the same repository with caching, path gating and
+parallel jobs (no leads).
+
 ### Privileged-trigger family (#6 and #10,)
 
 Checks #6 and #10 used to name `pull_request_target` only. From v3 of the
@@ -328,11 +387,13 @@ operational label cannot persist.
   missing `timeout-minutes`, EOL runtime, stale action major, missing
   concurrency on a pile-up-prone workflow, a privileged trigger
   declared without a justification comment, **action cache poisoning** —
-  a cache write reachable from a fork or privileged trigger (#28), and a
-  limited-exposure **AI coding action** hardening gap (#29)).
+  a cache write reachable from a fork or privileged trigger (#28), a
+  limited-exposure **AI coding action** hardening gap (#29), and a
+  **cost and speed** finding (#37–#41) with a measured saving of at least
+  30 min/week).
 - **`severity:low`** — advisory hygiene (duplicate logical check,
-  obsolete ref, deprecated action, copy-paste block) that does not block
-  merges.
+  obsolete ref, deprecated action, copy-paste block, a cost and speed
+  finding saving less or `unmeasured`) that does not block merges.
 
 ## Stable finding ID recipe
 
@@ -373,6 +434,7 @@ back-compatibility with findings filed by the retired best-practices
 | `BP-OBSOLETE-REF-<12 hex>` | #21 obsolete ref | hash of `(workflow path, dead reference, job/step coordinates)`. |
 | `BP-CONTAINER-PIN-<image-slug>` | #35 untrackable container pin (v17) | The image path (registry host included when written out) lower-cased with non-alphanumeric runs collapsed to a single hyphen — e.g. `BP-CONTAINER-PIN-semgrep-semgrep`. One finding per image per repo. |
 | `BP-CONTAINER-STALE-<image-slug>` | #36 stale container digest (v17) | Same slug shape as #35 — e.g. `BP-CONTAINER-STALE-semgrep-semgrep`. One finding per image per repo. |
+| `BP-CI-COST-<check>-<12 hex>` | #37–#41 cost and speed (Issue #2578) | hash of `(check, sorted workflow paths)`. |
 
 Ten further prefixes are produced by the template's pre-filers (below),
 not by Claude:
@@ -1139,7 +1201,10 @@ an operator command, not a fleet task. Applied to VibeCoder on 2026-08-18
 A single GitHub Actions audit run files **at most 6 standalone
 findings**, ordered `severity:high` > `severity:medium` >
 `severity:low`. The cap is enforced in Phase 3 of the prompt: Claude
-sorts surviving findings by severity and keeps the top 6.
+sorts surviving findings by severity and keeps the top 6 — except that
+when a cost and speed finding (#37–#41) survives, at least 2 of the 6
+slots go to the cost group's highest-ranked findings, below any
+`severity:high` security finding (Issue #2578).
 
 The pre-filers consume slots first: the actionlint pre-finding, each
 runner-deprecation finding, each native SHA-pin finding, each native
