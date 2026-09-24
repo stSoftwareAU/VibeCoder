@@ -38,6 +38,12 @@ import {
   type PhaseClaudeResult,
   reportPhaseDegradation,
 } from "./phase_run_stats.ts";
+import type {
+  CollectGraftContextOptions,
+  GraftContextResult,
+} from "./graft_context.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 
 /** The phase token used for grill-me degradation detection. */
 export const GRILL_ME_PHASE = "grill_me";
@@ -95,6 +101,12 @@ export async function reportGrillMeDegradation(args: {
    * finding 12). Omitted reads the configured fleet.
    */
   authorOptions?: AlertDedupAuthorOptions;
+  /** Graft context result to include in degradation comment (Issue #2561). */
+  graftContextResult?: GraftContextResult;
+  /** CodeGraph context result to include in degradation comment (Issue #2561). */
+  codegraphContextResult?: CodegraphContextResult;
+  /** RTK output result to include in degradation comment (Issue #2561). */
+  rtkOutputResult?: RtkOutputResult;
 }): Promise<DegradationVerdict> {
   const { repo, issueNumber, claudeResult, ghClient, runGhCommand, logger } =
     args;
@@ -119,5 +131,15 @@ export async function reportGrillMeDegradation(args: {
     ...(args.cacheDir ? { cacheDir: args.cacheDir } : {}),
     ...(args.env ? { env: args.env } : {}),
     ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
+    // Issue #2561: thread Graft/CodeGraph/RTK into the stats comment.
+    ...(args.graftContextResult
+      ? { graftContextResult: args.graftContextResult }
+      : {}),
+    ...(args.codegraphContextResult
+      ? { codegraphContextResult: args.codegraphContextResult }
+      : {}),
+    ...(args.rtkOutputResult
+      ? { rtkOutputResult: args.rtkOutputResult }
+      : {}),
   });
 }

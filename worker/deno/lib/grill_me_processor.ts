@@ -98,8 +98,11 @@ import type {
   CollectGraftContextOptions,
   GraftContextResult,
 } from "./graft_context.ts";
+import { graftQueryFor } from "./graft_context.ts";
+import { isGraftContextEnabled } from "./graft_context_config.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
-import type { RtkOutputResult } from "./rtk_output.ts";
+import { prepareCodegraphRun } from "./codegraph_run.ts";
+import { settingsJsonOption } from "./rtk_output.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -282,6 +285,11 @@ export interface BuildGrillMePromptOptions {
    * {@link forcedFinalTriggerLine} directly under the TL;DR.
    */
   forcedFinal?: GrillMeStopTrigger;
+  /**
+   * The Graft context bundle this round prepared (Issue #2561). When present,
+   * appended to the prompt between the issue body and the comment history.
+   */
+  graftContextBundle?: string;
 }
 
 /**
@@ -977,6 +985,12 @@ export async function buildGrillMePrompt(
   const wrappedHistory =
     `${delimiters.commentsStart}\n${sanitisedHistory}\n${delimiters.commentsEnd}`;
 
+  // When the round prepared a Graft context bundle, thread it between the
+  // issue body and comment history (Issue #2561).
+  const bodyWithGraft = opts.graftContextBundle
+    ? `${wrappedBody}\n${opts.graftContextBundle}`
+    : wrappedBody;
+
   const replacements: Record<string, string> = {
     ROUND_NUMBER: String(opts.roundNumber),
     MAX_ROUNDS: String(opts.maxRounds),
@@ -986,7 +1000,7 @@ export async function buildGrillMePrompt(
     REPO: opts.repo,
     ISSUE_NUMBER: String(opts.issueNumber),
     ISSUE_TITLE: wrappedTitle,
-    ISSUE_BODY: wrappedBody,
+    ISSUE_BODY: bodyWithGraft,
     COMMENT_HISTORY: wrappedHistory,
     BOUNDARY_INTEGRITY_INSTRUCTION: buildBoundaryIntegrityInstruction(
       delimiters.boundaryId,
@@ -1857,6 +1871,56 @@ async function _processGrillMeWithHeartbeat(
     logger.warn(auditMsg, { repo, issueNumber });
   }
 
+  // 5a) Prepare Graft and CodeGraph contexts (Issue #2561).
+  let graftContextBundle: string | undefined;
+  let graftContextResult: GraftContextResult | undefined;
+  let codegraphContextResult: CodegraphContextResult | undefined;
+  let codegraph: Awaited<ReturnType<typeof prepareCodegraphRun>> | undefined;
+
+  if (processorDeps.collectGraftContext) {
+    try {
+      graftContextResult = await processorDeps.collectGraftContext({
+        repoDir: config.workDir,
+        query: graftQueryFor(issueTitle, issueBody),
+        enabled: isGraftContextEnabled(config),
+        logger,
+      });
+      if (graftContextResult.status === "ok" && graftContextResult.bundle) {
+        graftContextBundle = graftContextResult.bundle;
+      }
+    } catch (err) {
+      logger.warn("Graft context collection failed", {
+        repo,
+        issueNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  try {
+    codegraph = await prepareCodegraphRun({
+      repoDir: config.workDir,
+      enabled: config.codegraphContext.enabled,
+      logger,
+      prepare: deps.claude.prepareCodegraphContext,
+    });
+    codegraphContextResult = codegraph.result;
+  } catch (err) {
+    logger.warn("CodeGraph context preparation failed", {
+      repo,
+      issueNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // 5b) Prepare RTK output (Issue #2561).
+  const rtk = await deps.claude.prepareRtkRun({
+    enabled: config.rtkOutput.enabled,
+    providerId: deps.claude.rtkProviderId(undefined, logger),
+    logger,
+    cwd: config.workDir,
+  });
+
   const promptResult = await buildGrillMePrompt({
     roundNumber,
     maxRounds: effectiveMaxRounds,
@@ -1874,6 +1938,8 @@ async function _processGrillMeWithHeartbeat(
     // Issue #849: an operator's `grill-me` mapping replaces the template.
     promptOverrides: promptOverrideMappings(config),
     promptsDir,
+    // Issue #2561: Graft context bundle prepared above.
+    graftContextBundle,
   });
 
   if (!promptResult.ok) {
@@ -1894,7 +1960,10 @@ async function _processGrillMeWithHeartbeat(
   // 6) Invoke Claude with the grill-me timeout.
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt: promptResult.value,
+      // Issue #2561: apply CodeGraph and RTK prompts (RTK outermost).
+      prompt: rtk.applyPrompt(
+        codegraph?.applyPrompt(promptResult.value) ?? promptResult.value,
+      ),
       timeoutSeconds: config.grillMeTimeout,
       killAfterSeconds: config.grillMeKillAfter,
       // Issue #3154: grill-me now has the full 1h hard budget so a genuinely
@@ -1906,6 +1975,8 @@ async function _processGrillMeWithHeartbeat(
       phase: "grill_me",
       cwd: config.workDir,
       logger,
+      // Issue #2561: RTK settings merged into invocation options.
+      ...settingsJsonOption(undefined, rtk.hookSettings()),
     },
     {
       maxRetries: config.maxRateLimitRetries,
@@ -1942,6 +2013,10 @@ async function _processGrillMeWithHeartbeat(
       logger,
     );
   }
+
+  // Issue #2561: re-read RTK output after Claude completes successfully
+  // so the figure covers the whole round. Never throws.
+  await rtk.record();
 
   // 7) Verify Claude posted a comment.
   //
@@ -2216,6 +2291,10 @@ async function _processGrillMeWithHeartbeat(
       ghClient,
       runGhCommand: deps.github.runGhCommand,
       logger,
+      // Issue #2561: thread Graft/CodeGraph/RTK status into degradation comment.
+      graftContextResult,
+      codegraphContextResult,
+      rtkOutputResult: rtk.result,
     });
     degraded = verdict.degraded;
   } catch (err) {
