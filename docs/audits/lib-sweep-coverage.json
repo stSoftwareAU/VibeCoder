@@ -2104,6 +2104,18 @@
       "paths": [
         "worker/deno/lib/workflow_cost_scanner.ts"
       ]
+    },
+    {
+      "issue": 2579,
+      "chunk": "top-up-2579",
+      "title": "top-up: the CloudFormation cost pre-scan",
+      "ledger": "docs/audits/security-sweep-2579-cfn-cost-checks.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: cfn_cost_checks.ts (#2579)",
+      "status": "swept",
+      "sweptAt": "1ca8b9ec0f8a18d405c5b0ddf87cc6ae7460ea9c",
+      "paths": [
+        "worker/deno/lib/cfn_cost_checks.ts"
+      ]
     }
   ],
   "roots": [

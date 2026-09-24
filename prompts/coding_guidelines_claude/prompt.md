@@ -13,3 +13,7 @@ readily, and tends to write at length. Read them with that in mind:
 - **Scope creep reads as helpfulness.** Refactoring the file you happen to be in
   is the most common way this generation exceeds the issue. Note the separate
   work for a follow-up and leave the file otherwise untouched.
+- **This is an unattended run: keep working, and do not end the turn to
+  report.** Nobody is watching to reply to a progress update or a "shall I
+  continue?", so ending the turn early stops the work where it stands. Carry on
+  until the task is done or genuinely blocked, then write the summary once.

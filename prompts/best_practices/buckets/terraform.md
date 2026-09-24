@@ -73,3 +73,54 @@ Apply these checks to `*.tf` and `*.tfvars` files.
    evidence (CI workflow) is the only signal. Suggested fix:
    add a `tfsec`/`trivy config`/`checkov` step to the existing
    Terraform CI job. **Severity:** `severity:medium`.
+
+## Cost, speed and reliability
+
+Concrete, evidence-cited checks only: skip anything you cannot tie to a
+file and line. Each finding carries an `**Estimated effect:**` line
+derived from the cited source and marked estimated, plus a `**Risk:**`
+line naming what the change could break, and competes for the reserved
+slot in Phase 3. Severity is `severity:low`, or `severity:medium` on a
+production path; never `severity:high`. Each stable id uses the standard
+`BP-<12 hex>` recipe with the title given and the cited file.
+
+10. **Lambda on x86_64.** Flag `aws_lambda_function` without
+    `architectures = ["arm64"]`. Effect: arm64 is about 20% cheaper per
+    GB-second. Risk: native dependencies and images must be rebuilt for
+    arm64. Stable id: title `Lambda <resource name> runs on x86_64`.
+11. **Lambda memory and timeout sizing.** Flag `memory_size` of 3008 or
+    more with no tuning evidence, and `timeout` above 29 seconds on a
+    function behind API Gateway. Effect: cost scales linearly with
+    memory. Risk: less memory also means less CPU. Stable id: title
+    `Lambda <resource name> memory or timeout oversized`.
+12. **Logs kept for ever.** Flag a Lambda with no
+    `aws_cloudwatch_log_group` for `/aws/lambda/<name>`, and any
+    `aws_cloudwatch_log_group` without `retention_in_days` (or set to
+    `0`). Effect: storage cost stops growing without bound. Risk: older
+    logs are gone, so match any audit requirement. Stable id: title
+    `<resource name> has no log retention`.
+13. **Provisioned capacity without scaling.** Flag
+    `aws_dynamodb_table` with `billing_mode = "PROVISIONED"` and no
+    `aws_appautoscaling_target` for it. Effect: pay for use rather than
+    the provisioned peak. Risk: on-demand costs more under steady high
+    load, so cite the traffic evidence. Stable id: title `DynamoDB
+    <resource name> provisioned without scaling`.
+14. **Always-on resources in non-production.** Flag `aws_nat_gateway`,
+    `aws_db_instance` and similar hourly-billed resources that no
+    `count` or `for_each` gates on the environment, in a module deployed
+    to non-production. Effect: a NAT gateway alone is roughly USD 30 a
+    month plus data charges (region-dependent). Risk: non-production
+    diverges from production. Stable id: title `<resource name> always
+    on in non-production`.
+15. **S3 bucket without lifecycle rules.** Flag an `aws_s3_bucket`
+    holding logs, artefacts or uploads with no
+    `aws_s3_bucket_lifecycle_configuration`. Effect: storage stops
+    growing without bound. Risk: expired objects are gone. Stable id:
+    title `S3 bucket <resource name> has no lifecycle rules`.
+16. **No alarm or dead-letter queue on async work.** Flag an
+    `aws_sqs_queue` or `aws_lambda_event_source_mapping` with no
+    `redrive_policy` or failure destination, and cost-bearing resources
+    with no `aws_cloudwatch_metric_alarm` on errors, throttles or queue
+    depth. Effect: failures surface instead of retrying silently. Risk:
+    alarm noise until thresholds are tuned. Stable id: title `<resource
+    name> has no failure alarm or dead-letter queue`.

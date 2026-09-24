@@ -59,6 +59,7 @@ import {
   type RepoLanguages,
 } from "../language_detector.ts";
 import { runGhCommand as defaultGhCommand } from "../github.ts";
+import { scanCfnCostCandidates } from "../cfn_cost_checks.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
 import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
 import {
@@ -249,6 +250,11 @@ export interface BestPracticesTemplateDeps {
    * structured error in the wrapper close summary.
    */
   runScanFn?: (opts: RunScanOptions) => Promise<Result<true, ScanError>>;
+  /**
+   * CloudFormation cost pre-scan for `aws-cloudformation` runs (Issue
+   * #2579) — defaults to {@link scanCfnCostCandidates} over the checkout.
+   */
+  scanCfnCostFn?: (repoPath: string) => Promise<string[]>;
 }
 
 /** Inputs to a best-practices Claude run. */
@@ -265,6 +271,8 @@ export interface RunScanOptions {
   openIssueTitles: OpenIssueTitle[];
   /** Stable ids the run should suppress (in-source markers, prior triage). */
   suppressedIds: string[];
+  /** Deterministic pre-scan evidence lines for Claude to triage (#2579). */
+  preScanCandidates?: readonly string[];
 }
 
 /** Discriminated failure mode from `runScanFn`. */
@@ -337,6 +345,11 @@ export function assembleBestPracticesPrompt(
      */
     openIssueTitles?: readonly OpenIssueTitle[];
     attributionFooter?: string;
+    /**
+     * Deterministic pre-scan evidence (Issue #2579), rendered under its own
+     * heading only when non-empty so other runs carry no extra prompt text.
+     */
+    preScanCandidates?: readonly string[];
   },
 ): string {
   const suppressed = opts.suppressedIds.length > 0
@@ -369,7 +382,19 @@ export function assembleBestPracticesPrompt(
     "",
   ].join("\n");
 
-  return [bucketLine, "", body.trim(), guideSection].join("\n");
+  const candidates = opts.preScanCandidates ?? [];
+  const preScan = candidates.length === 0 ? [] : [
+    "",
+    "## Deterministic pre-scan candidates",
+    "",
+    "Mechanically detected in this checkout. Each is a Phase 2 candidate " +
+    "for the guide's cost, speed and reliability checks: confirm it at the " +
+    "cited line, then triage it like any other.",
+    "",
+    ...candidates.map((line) => `- ${line}`),
+  ];
+
+  return [bucketLine, "", body.trim(), guideSection, ...preScan].join("\n");
 }
 
 /**
@@ -560,6 +585,7 @@ async function defaultRunScan(
     suppressedIds: opts.suppressedIds,
     knownOpenFindingIds: opts.knownOpenFindingIds,
     openIssueTitles: opts.openIssueTitles,
+    preScanCandidates: opts.preScanCandidates,
   });
 
   const result = await runIdleTaskClaude({
@@ -651,6 +677,7 @@ export function createBestPracticesTemplate(
     ((path, lang) => defaultCheckLinterInCI(path, lang));
   const runScanFn = deps.runScanFn ??
     ((opts) => defaultRunScan(opts, loadPromptFn, readBucketGuideFn));
+  const scanCfnCostFn = deps.scanCfnCostFn ?? scanCfnCostCandidates;
 
   async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // 1. Detect languages.
@@ -830,6 +857,12 @@ export function createBestPracticesTemplate(
 
       // 5. Invoke Claude. It files surviving findings via `gh issue
       //    create` directly — no JSON parsing here.
+      // 4b. CloudFormation cost pre-scan (Issue #2579): mechanical
+      //     evidence for the bucket's cost checks, triaged by Claude.
+      const preScanCandidates = bucket === "aws-cloudformation"
+        ? await scanCfnCostFn(repoCheckoutPath(opts.workDir, opts.repo))
+        : [];
+
       const scanResult = await runScanFn({
         repo: opts.repo,
         workDir: opts.workDir,
@@ -837,6 +870,7 @@ export function createBestPracticesTemplate(
         knownOpenFindingIds,
         openIssueTitles,
         suppressedIds: [],
+        preScanCandidates,
       });
       if (!scanResult.ok) {
         return {
