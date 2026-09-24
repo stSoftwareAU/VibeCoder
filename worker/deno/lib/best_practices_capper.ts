@@ -19,6 +19,10 @@
  *   3. `medium`         — severity:medium findings.
  *   4. `low`            — severity:low findings.
  *
+ * One slot is reserved (Issue #2579): when no finding flagged
+ * `costSpeedReliability` made the cut, the highest-priority one replaces the
+ * last kept finding, provided that finding is below `severity:high`.
+ *
  * Within the same priority bucket the original input order is preserved
  * (stable sort) — the issue spec is explicit that "within the same
  * priority preserve the order Claude emitted".
@@ -45,6 +49,11 @@ export interface Finding {
   title: string;
   /** Markdown finding body (used verbatim as the issue body). */
   body: string;
+  /**
+   * True for a finding from a bucket guide's "Cost, speed and reliability"
+   * section (Issue #2579) — eligible for the one reserved slot.
+   */
+  costSpeedReliability?: boolean;
 }
 
 /**
@@ -86,5 +95,19 @@ export function cap(findings: Finding[], max: number): Finding[] {
     if (sa !== sb) return sa - sb;
     return a.i - b.i;
   });
-  return indexed.slice(0, max).map(({ f }) => f);
+  const sorted = indexed.map(({ f }) => f);
+  const kept = sorted.slice(0, max);
+  // Reserved slot (Issue #2579): when no cost, speed or reliability finding
+  // made the cut, the best one takes the last slot — unless that slot holds
+  // a severity:high (or missing-linter) finding, which it never displaces.
+  const last = kept[kept.length - 1];
+  const reserved = sorted.slice(max).find((f) => f.costSpeedReliability);
+  if (
+    reserved !== undefined && last !== undefined &&
+    !kept.some((f) => f.costSpeedReliability) &&
+    SEVERITY_PRIORITY[last.severity] > SEVERITY_PRIORITY.high
+  ) {
+    kept[kept.length - 1] = reserved;
+  }
+  return kept;
 }

@@ -53,3 +53,62 @@ containing `AWSTemplateFormatVersion`, plus CDK-emitted templates.
    `DeletionPolicy: Retain` (or `Snapshot` for RDS) so a stack
    teardown does not vaporise the data. Flag missing
    `DeletionPolicy` on data resources.
+
+## Cost, speed and reliability
+
+Concrete, evidence-cited checks only: skip anything you cannot tie to a
+file and line. Each finding carries an `**Estimated effect:**` line
+derived from the cited source and marked estimated, plus a `**Risk:**`
+line naming what the change could break, and competes for the reserved
+slot in Phase 3. Severity is `severity:low`, or `severity:medium` on a
+production path; never `severity:high`. Each stable id uses the standard
+`BP-<12 hex>` recipe with the title given and the cited file.
+
+9. **Lambda on x86_64.** Flag an `AWS::Lambda::Function` (or
+   `AWS::Serverless::Function` with no `Globals` override) without
+   `Architectures: [arm64]`. Effect: arm64 is about 20% cheaper per
+   GB-second. Risk: native dependencies and container images must be
+   rebuilt for arm64. Stable id: title `Lambda <LogicalId> runs on
+   x86_64`.
+10. **Lambda memory and timeout sizing.** Flag `MemorySize` of 3008 or
+    more with no tuning evidence (a Power Tuning result or comment), and
+    a `Timeout` above 29 seconds on a function behind API Gateway, which
+    stops waiting at 29 seconds. Effect: cost scales linearly with
+    `MemorySize`. Risk: less memory also means less CPU, so latency may
+    rise. Stable id: title `Lambda <LogicalId> memory or timeout
+    oversized`.
+11. **Lambda logs kept for ever.** Flag a function with no
+    `AWS::Logs::LogGroup` carrying `RetentionInDays` for it (by
+    `/aws/lambda/<name>` or `LoggingConfig.LogGroup`). Effect: storage
+    cost stops growing without bound. Risk: logs older than the period
+    are gone, so match any audit requirement. Stable id: title `Lambda
+    <LogicalId> has no log retention`.
+12. **Provisioned capacity without scaling.** Flag
+    `AWS::DynamoDB::Table` with `BillingMode: PROVISIONED` and no
+    `AWS::ApplicationAutoScaling::ScalableTarget` for it. Effect: pay
+    for use rather than the provisioned peak. Risk: on-demand costs more
+    under steady high load, so cite the traffic evidence. Stable id:
+    title `DynamoDB <LogicalId> provisioned without scaling`.
+13. **Always-on resources in non-production.** Flag
+    `AWS::EC2::NatGateway`, RDS instances and similar hourly-billed
+    resources not gated by a `Condition` in a template whose parameters
+    or conditions define a non-production environment. Effect: a NAT
+    gateway alone is roughly USD 30 a month plus data charges
+    (region-dependent). Risk: non-production diverges from production.
+    Stable id: title `<LogicalId> always on in non-production`.
+14. **S3 bucket without lifecycle rules.** Flag an `AWS::S3::Bucket`
+    holding logs, artefacts or uploads with no `LifecycleConfiguration`
+    (expiry, storage-class transition, or
+    `AbortIncompleteMultipartUpload`). Effect: storage stops growing
+    without bound. Risk: expired objects are gone. Stable id: title `S3
+    bucket <LogicalId> has no lifecycle rules`.
+15. **No alarm or dead-letter queue on async work.** Flag a Lambda
+    event source or SQS queue with no `RedrivePolicy` or
+    `DestinationConfig.OnFailure`, and cost-bearing resources with no
+    `AWS::CloudWatch::Alarm` on errors, throttles or queue depth.
+    Effect: failures surface instead of retrying silently. Risk: alarm
+    noise until thresholds are tuned. Stable id: title `<LogicalId> has
+    no failure alarm or dead-letter queue`.
+
+Checks 9 and 11 are also detected mechanically: an `aws-cloudformation`
+run lists any hits under `## Deterministic pre-scan candidates` below.

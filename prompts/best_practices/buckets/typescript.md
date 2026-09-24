@@ -368,3 +368,41 @@ state it touches.
     prompt, which every scan applies regardless of the drawn bucket —
     see there for the full contract and the per-ecosystem quiet
     flags.
+
+## Cost, speed and reliability
+
+Concrete, evidence-cited checks only: skip anything you cannot tie to a
+file and line. Each finding carries an `**Estimated effect:**` line
+derived from the cited source and marked estimated, plus a `**Risk:**`
+line naming what the change could break, and competes for the reserved
+slot in Phase 3. Severity is `severity:low`, or `severity:medium` on a
+production path; never `severity:high`. Each stable id uses the standard
+`BP-<12 hex>` recipe with the title given and the cited file.
+
+29. **Serial awaits over independent calls.** Flag a loop that
+    `await`s one remote call per item when no iteration uses another's
+    result; suggest `Promise.all` with a concurrency bound. Effect:
+    latency falls from the sum of the calls to about the slowest one.
+    Risk: unbounded fan-out can trip rate limits. Stable id: title
+    `Serial awaits in <function>`.
+30. **N+1 fetches.** Flag a query or fetch per item of a list when the
+    same API or database offers a batch form (`IN`, a bulk endpoint);
+    cite both the loop and the batch API. Effect: one round trip instead
+    of N. Risk: a large batch can hit payload limits, so chunk it.
+    Stable id: title `N+1 fetches in <function>`.
+31. **External calls without a timeout or with unsafe retries.** Flag
+    `fetch` with no `signal` (e.g. `AbortSignal.timeout(ms)`), clients
+    with no timeout, retries with no backoff or cap, and retried
+    non-idempotent writes with no idempotency key. Effect: a hung peer
+    can no longer hold the request. Risk: too short a timeout fails slow
+    but healthy calls. Stable id: title `External call in <function>
+    has no timeout or safe retry`.
+32. **Unbounded in-memory cache.** Flag a module-level `Map` or object
+    used as a cache in a long-lived server with no size limit or TTL.
+    Effect: flat memory under load. Risk: eviction changes hit rates.
+    Stable id: title `Unbounded cache <name>`.
+33. **Browser bundle size.** Gate: the code ships to a browser. Flag
+    whole-library imports where a per-function import or a platform API
+    exists (`lodash`, `moment`). Effect: estimate the saving from the
+    library's published size. Risk: behaviour differences in the
+    replacement. Stable id: title `Whole-library import of <package>`.

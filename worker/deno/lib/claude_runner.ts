@@ -3744,11 +3744,13 @@ export async function checkFableAvailability(
  *
  * Carries the standardised summarisation instructions that are byte-identical
  * across every invocation, so the Claude CLI can route them through the
- * `--system-prompt` cache breakpoint. Opus 4.8 lowered the prompt-cache
- * minimum to 1,024 tokens; this constant is below that floor on its own, but
+ * `--system-prompt` cache breakpoint. `summarise` runs on Haiku 4.5, whose
+ * minimum cacheable prefix is 4,096 tokens (the Opus tier's is 512 since
+ * Opus 5, and Opus 4.8's was 1,024 — see `docs/MODEL-AND-CACHING.md`, Issue
+ * #2572). This constant is well below the Haiku floor on its own, but
  * structuring the call this way keeps the dynamic `content` out of the cached
  * prefix and lets the prefix cache as soon as it grows past the threshold or
- * the model in use lowers it further.
+ * the phase moves to a tier with a lower one.
  */
 export const SUMMARISE_SYSTEM_PROMPT =
   `You are summarising a large GitHub issue or comment to reduce token usage.
