@@ -485,17 +485,18 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_SUMMARISE stays haiku (effort-
   assertEquals(DEFAULT_CLAUDE_MODEL_SUMMARISE, "haiku");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PLANNING is the Fable 5 top tier (Issue #2621)", () => {
-  // Issue #2621: planning moved from opus to fable — plan quality compounds
-  // across every downstream sub-issue, so the top tier is spent here.
-  assertEquals(DEFAULT_CLAUDE_MODEL_PLANNING, "fable");
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PLANNING is the Opus top tier (Issues #2621, #2560)", () => {
+  // Issue #2621: planning moved off opus to the tier above it. Issue #2560:
+  // Opus 5.5 matches Fable 5.1's plan quality at a fifth of the price, so the
+  // top tier is the opus alias again.
+  assertEquals(DEFAULT_CLAUDE_MODEL_PLANNING, "opus");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_TOP_TIER is the fable alias (Issue #2621)", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_TOP_TIER, "fable");
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_TOP_TIER is the opus alias (Issue #2560)", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_TOP_TIER, "opus");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_GRILL_ME is the Fable 5 top tier (Issue #2621)", () => {
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_GRILL_ME is the Opus top tier (Issues #2621, #2560)", () => {
   // Same plan-quality argument as planning: requirements interrogation shapes
   // everything downstream.
   assertEquals(DEFAULT_CLAUDE_MODEL_GRILL_ME, "fable");
