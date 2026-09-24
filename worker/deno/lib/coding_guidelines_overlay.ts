@@ -154,3 +154,91 @@ export async function loadCodingGuidelinesOverlay(
 
   return { ok: true, value: undefined };
 }
+
+/**
+ * How much of the shared guidelines a phase loads (Issue #2574).
+ *
+ * - `core` — the rules every phase needs: working style, fail loud, secure
+ *   coding, the `gh` and lifecycle rules, escalation and the escape hatch.
+ *   Phases that read and report but write no code (`planning`,
+ *   `planning_critique`, `question`, `grill_me`) stop here.
+ * - `commit` — core plus the rules for running commands and committing:
+ *   non-interactive execution, streaming reads, commit safety and the run-id
+ *   trailer. `spelling_fix` commits dictionary and prose edits, so it needs
+ *   these but not the code-writing layer.
+ * - `code` — everything, for the phases that edit, test and commit code.
+ */
+export type CodingGuidelinesLayer = "core" | "commit" | "code";
+
+/** Layers in load order: each includes every layer before it. */
+const LAYER_ORDER: readonly CodingGuidelinesLayer[] = [
+  "core",
+  "commit",
+  "code",
+];
+
+/** Opens a block that the named layer and above load, on a line of its own. */
+const LAYER_OPEN_RE = /^<!-- guidelines-layer: ([a-z-]+) -->$/;
+/** Closes the open block. */
+const LAYER_CLOSE = "<!-- /guidelines-layer -->";
+
+/**
+ * Keep the parts of the guidelines a layer loads (Issue #2574).
+ *
+ * The template marks each block that not every phase needs with a
+ * `<!-- guidelines-layer: commit|code -->` line and closes it with
+ * `<!-- /guidelines-layer -->`. Unmarked text is core. A block is kept when the
+ * requested layer includes its layer; the marker lines themselves are always
+ * removed, so a code-writing phase sees the template exactly as authored.
+ *
+ * One template file keeps each rule in one place and keeps
+ * `computeStaticPromptHash()` covering both layers: an edit to either changes
+ * the file, and so the hash.
+ *
+ * @param text - The guidelines template
+ * @param layer - The layer the phase loads
+ * @returns The selected text, or an error for an unknown layer, a nested or
+ *   stray marker, or a block left open — an authoring mistake that would
+ *   otherwise silently drop or leak a rule.
+ */
+export function selectCodingGuidelinesLayer(
+  text: string,
+  layer: CodingGuidelinesLayer,
+): Result<string> {
+  const rank = LAYER_ORDER.indexOf(layer);
+  const output: string[] = [];
+  let open: CodingGuidelinesLayer | undefined;
+  const fail = (lineNo: number, why: string): Result<string> => ({
+    ok: false,
+    error: new Error(
+      `coding_guidelines layer marker at line ${lineNo}: ${why}`,
+    ),
+  });
+
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    const opened = LAYER_OPEN_RE.exec(line.trim());
+    if (opened) {
+      if (open) return fail(i + 1, "a layer block cannot nest inside another");
+      const named = opened[1] as CodingGuidelinesLayer;
+      if (named === "core" || !LAYER_ORDER.includes(named)) {
+        return fail(i + 1, `unknown layer '${opened[1]}'`);
+      }
+      open = named;
+      continue;
+    }
+    if (line.trim() === LAYER_CLOSE) {
+      if (!open) return fail(i + 1, "closes a block that was never opened");
+      open = undefined;
+      continue;
+    }
+    if (open && LAYER_ORDER.indexOf(open) > rank) continue;
+    output.push(line);
+  }
+  if (open) return fail(lines.length, `the '${open}' block is never closed`);
+
+  // A marker sits between blank lines, so removing it (or its block) leaves a
+  // double blank line behind; the template itself never carries one.
+  return { ok: true, value: output.join("\n").replace(/\n{3,}/g, "\n\n") };
+}

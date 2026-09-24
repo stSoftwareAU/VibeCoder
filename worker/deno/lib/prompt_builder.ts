@@ -23,7 +23,9 @@ import { loadPrompt } from "./prompt_manager.ts";
 import { resolvePromptTemplate } from "./prompt_override_resolver.ts";
 import {
   type AgentIdentity,
+  type CodingGuidelinesLayer,
   loadCodingGuidelinesOverlay,
+  selectCodingGuidelinesLayer,
 } from "./coding_guidelines_overlay.ts";
 import { formatCodebaseMapSection } from "./codebase_map.ts";
 import { formatGraftContextSection } from "./graft_context.ts";
@@ -104,7 +106,29 @@ export { stripPlaywrightSection, stripScreenshotInstructions };
 
 // The overlay seam lives in coding_guidelines_overlay.ts (Issue #374); the
 // identity type is re-exported so callers building prompts need one import.
-export type { AgentIdentity };
+export type { AgentIdentity, CodingGuidelinesLayer };
+
+/**
+ * The guidelines layer each phase loads (Issue #2574).
+ *
+ * Phases that read and report but write no code get the core layer only;
+ * `spelling_fix` commits prose and dictionary edits, so it adds the commit
+ * layer; everything that edits, tests and commits code loads every layer.
+ * One table, so a phase's scope is decided in one place.
+ */
+export const CODING_GUIDELINES_LAYER_BY_PHASE = {
+  issue: "code",
+  ci_fix: "code",
+  pr_feedback: "code",
+  merge_conflict: "code",
+  custom_pr: "code",
+  workflow_setup: "code",
+  spelling_fix: "commit",
+  planning: "core",
+  planning_critique: "core",
+  question: "core",
+  grill_me: "core",
+} as const satisfies Record<string, CodingGuidelinesLayer>;
 
 /**
  * Build coding guidelines from versioned template.
@@ -121,23 +145,33 @@ export type { AgentIdentity };
  * identity — or no overlay authored for it — the output is exactly the
  * baseline, which is the common path.
  *
+ * Phases load only the layers they need (Issue #2574): a phase that writes no
+ * code is not sent the rules for testing, committing and bumping dependencies.
+ * See {@link CODING_GUIDELINES_LAYER_BY_PHASE}.
+ *
  * @param skipScreenshots - If true, strip Playwright/screenshot instructions
  * @param promptsDir - Path to the prompts directory
  * @param identity - Active provider and, where known, model (Issue #374)
+ * @param layer - The guidelines layer this phase loads (Issue #2574,
+ *   default: every layer)
  * @returns Coding guidelines text, XML-delimited
  */
 export async function buildCodingGuidelines(
   skipScreenshots: boolean = false,
   promptsDir?: string,
   identity?: AgentIdentity,
+  layer: CodingGuidelinesLayer = "code",
 ): Promise<Result<string>> {
   const result = await loadPrompt("coding_guidelines", promptsDir);
   if (!result.ok) return result;
 
+  const selected = selectCodingGuidelinesLayer(result.value, layer);
+  if (!selected.ok) return selected;
+
   const overlay = await loadCodingGuidelinesOverlay(identity, promptsDir);
   if (!overlay.ok) return overlay;
 
-  let guidelines = result.value;
+  let guidelines = selected.value;
   const overlayText = overlay.value?.trim();
   if (overlayText) {
     guidelines = `${guidelines.trim()}\n\n${overlayText}`;
@@ -649,6 +683,7 @@ export async function buildIssuePrompt(
     skipScreenshotCheck,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.issue,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -970,6 +1005,7 @@ export async function buildPlanningPrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.planning,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -1172,6 +1208,7 @@ export async function buildPlanningCritiquePrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.planning_critique,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -1353,6 +1390,7 @@ export async function buildQuestionPrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.question,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -1602,6 +1640,7 @@ export async function buildPrFeedbackPrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.pr_feedback,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -1744,6 +1783,7 @@ export async function buildCustomPrPrompt(
     false,
     options.promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.custom_pr,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -1863,6 +1903,7 @@ export async function buildSpellingFixPrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.spelling_fix,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -1975,6 +2016,7 @@ export async function buildWorkflowSetupPrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.workflow_setup,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -2155,6 +2197,7 @@ export async function buildCiFixPrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.ci_fix,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 
@@ -2465,6 +2508,7 @@ export async function buildMergeConflictPrompt(
     false,
     promptsDir,
     options.agentIdentity,
+    CODING_GUIDELINES_LAYER_BY_PHASE.merge_conflict,
   );
   if (!guidelinesResult.ok) return guidelinesResult;
 

@@ -24,6 +24,7 @@ import {
   stripScreenshotInstructions,
 } from "../lib/prompt_builder.ts";
 import { loadPrompt, PROMPT_FILENAME } from "../lib/prompt_manager.ts";
+import { selectCodingGuidelinesLayer } from "../lib/coding_guidelines_overlay.ts";
 import { WIND_DOWN_NOTICE_FILENAME } from "../lib/wind_down_notice.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -100,8 +101,13 @@ Deno.test("prompt builder - no identity is byte-identical to the un-overlaid bas
   const template = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assertEquals(template.ok, true);
   if (!template.ok) return;
+  // The default layer is every layer, with the layer markers removed
+  // (Issue #2574).
+  const selected = selectCodingGuidelinesLayer(template.value, "code");
+  assertEquals(selected.ok, true);
+  if (!selected.ok) return;
   const expected =
-    `<coding_guidelines>\n${template.value.trim()}\n</coding_guidelines>`;
+    `<coding_guidelines>\n${selected.value.trim()}\n</coding_guidelines>`;
 
   const noIdentity = await buildCodingGuidelines(false, PROMPTS_DIR);
   assertEquals(noIdentity.ok, true);
