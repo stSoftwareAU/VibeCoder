@@ -1981,13 +1981,24 @@ consecutive requests. VibeCoder maximises cache hits by:
 cost a fraction of regular input tokens (see
 [Model Pricing](#model-pricing)).
 
-**Minimum cacheable prefix (Opus 4.8,).** Opus 4.8 lowered
-the prompt-cache minimum to **1,024 tokens**, so shorter system
-prompts now qualify for cache reuse. Every short-prompt Haiku phase
-the worker drives — `summarise`, `spelling_fix`, and so on — should
-route its static guidance through `--system-prompt` so the prefix
-caches as soon as it crosses the threshold. The per-phase audit and
-the specific change for the `summarise` phase are documented in
+**Minimum cacheable prefix.** A prefix shorter than the model's minimum
+silently never caches — no error, just `cache_creation_input_tokens: 0`. The
+minimum depends on the model, and it is not monotonic across generations
+(Issue #2572):
+
+| Model the worker routes to | Minimum cacheable prefix |
+|---|---:|
+| Opus 5.5 (`opus`, every substantive phase), Opus 5, Fable 5.1 | 512 tokens |
+| Sonnet 5, Opus 4.8 | 1,024 tokens |
+| Haiku 4.5 (`haiku`: `summarise`, `spelling_fix`, `health`) | 4,096 tokens |
+
+So the Opus phases' stable prefix caches almost at once, while a short Haiku
+prompt does not cache at all until its static part passes 4,096 tokens. Every
+short-prompt Haiku phase should still route its static guidance through
+`--system-prompt`, so the dynamic content stays out of the prefix and the
+prefix caches once it grows past the threshold. (Opus 4.8 lowered its own
+minimum to 1,024; the Haiku tier never followed.) The per-phase audit and the
+specific change for the `summarise` phase are documented in
 `docs/audits/prompt-cache-audit-2395.md`.
 
 Implementation:
@@ -2080,7 +2091,8 @@ Implementation:
 > **Not the same as the disk cache.** `Prompt cache: repo=… status=hit`
 > (Layer 1) says the worker did not re-assemble the prompt string.
 > `Anthropic prompt cache: …%` says the API served the prefix from its own
-> cache at ~10% of the input price.
+> cache at a fraction of the input price: 0.1× on most models, 0.05× on
+> Opus 5.5 ($0.20 per MTok) and 0.025× on Fable 5.1 ($0.25 per MTok).
 
 ### SHA-256 Invalidation
 
