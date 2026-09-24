@@ -514,7 +514,7 @@ Deno.test({
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: GRILL_ME_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -524,7 +524,11 @@ Deno.test({
         const models = await readModelSequence(stub.modelLog);
         assert(result.ok);
         const flag = result.ok
-          ? await flagGrillMe(result.value, { repo: "owner/repo", issue: 400 })
+          ? await flagGrillMe(result.value, {
+            repo: "owner/repo",
+            issue: 400,
+            env: GRILL_ME_FABLE_PIN,
+          })
           : undefined;
         return { result, models, flag };
       })
@@ -559,7 +563,7 @@ Deno.test({
             prompt: "plan",
             phase: "planning",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: PLANNING_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -573,6 +577,7 @@ Deno.test({
             repo: "owner/repo",
             parentIssue: 500,
             subIssues: [501],
+            env: PLANNING_FABLE_PIN,
           })
           : undefined;
         return { result, models, flag };
@@ -605,7 +610,7 @@ Deno.test({
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: GRILL_ME_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -615,7 +620,11 @@ Deno.test({
         const models = await readModelSequence(stub.modelLog);
         assert(result.ok);
         const flag = result.ok
-          ? await flagGrillMe(result.value, { repo: "owner/repo", issue: 600 })
+          ? await flagGrillMe(result.value, {
+            repo: "owner/repo",
+            issue: 600,
+            env: GRILL_ME_FABLE_PIN,
+          })
           : undefined;
         return { result, models, flag };
       })
