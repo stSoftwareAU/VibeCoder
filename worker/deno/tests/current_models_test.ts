@@ -51,9 +51,28 @@ Deno.test("previousGenerationOf - a newer generation than the reference is not s
 });
 
 Deno.test("previousGenerationOf - untracked tiers are never flagged (Issue #1362)", () => {
-  assertEquals(previousGenerationOf("claude-opus-4-8"), undefined);
   assertEquals(previousGenerationOf("claude-sonnet-4-6"), undefined);
   assertEquals(previousGenerationOf("claude-haiku-4-5"), undefined);
+});
+
+Deno.test("previousGenerationOf - an earlier Opus is a previous generation of Opus 5.5 (Issue #2560)", () => {
+  // Every substantive phase now requests the `opus` alias, so a container whose
+  // CLI still resolves it to Opus 5 must be reported degraded rather than
+  // healthy — the same silent downgrade Issue #1362 caught for Fable.
+  assertEquals(previousGenerationOf("claude-opus-5"), {
+    tier: "opus",
+    current: "claude-opus-5-5",
+  });
+  assertEquals(
+    previousGenerationOf("claude-opus-4-8")?.current,
+    "claude-opus-5-5",
+  );
+});
+
+Deno.test("previousGenerationOf - Opus 5.5 itself and a newer Opus are not stale (Issue #2560)", () => {
+  assertEquals(previousGenerationOf("claude-opus-5-5"), undefined);
+  assertEquals(previousGenerationOf("claude-opus-5-6"), undefined);
+  assertEquals(previousGenerationOf("opus"), undefined);
 });
 
 Deno.test("previousGenerationOf - a bare tier alias carries no generation (Issue #1362)", () => {
@@ -74,6 +93,10 @@ Deno.test("previousGenerationOf - unparseable and empty ids are not flagged (Iss
 
 Deno.test("CURRENT_TIER_MODELS - Fable's current model is Fable 5.1 (Issue #1362, #747)", () => {
   assertEquals(CURRENT_TIER_MODELS.get("fable"), "claude-fable-5-1");
+});
+
+Deno.test("CURRENT_TIER_MODELS - Opus's current model is Opus 5.5 (Issues #1362, #2560)", () => {
+  assertEquals(CURRENT_TIER_MODELS.get("opus"), "claude-opus-5-5");
 });
 
 Deno.test("CURRENT_TIER_MODELS - every row names a priced model of its own tier (Issue #1362)", () => {

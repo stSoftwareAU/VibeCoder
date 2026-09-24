@@ -64,6 +64,12 @@ export interface AcceptanceClosureResult {
 const ACCEPTANCE_HEADING_RE =
   /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*:?\s*$/i;
 
+// A grill-me "Accepted scope so far" heading (Issue #2562). Grill-me states the
+// scope it settled under this heading rather than "Acceptance Criteria", so an
+// issue refined by grill-me carried no criteria as far as this gate could see.
+const ACCEPTED_SCOPE_HEADING_RE =
+  /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?\s*:?\s*$/i;
+
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
 
@@ -74,14 +80,19 @@ const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+(.*)$/;
 const CHECKBOX_RE = /^\[[ xX~]?\]\s*/;
 
 /**
- * Extract the `## Acceptance Criteria` section body from a markdown document.
+ * Extract a section body from a markdown document — by default the
+ * `## Acceptance Criteria` section.
  *
+ * @param heading - The heading that opens the section.
  * @returns the raw lines of the section, or `null` when no such heading exists.
  */
-function extractSection(markdown: string): string[] | null {
+function extractSection(
+  markdown: string,
+  heading: RegExp = ACCEPTANCE_HEADING_RE,
+): string[] | null {
   const lines = markdown.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
-    if (!ACCEPTANCE_HEADING_RE.test(lines[i]!)) continue;
+    if (!heading.test(lines[i]!)) continue;
     const collected: string[] = [];
     for (let j = i + 1; j < lines.length; j++) {
       if (ANY_HEADING_RE.test(lines[j]!)) break;
@@ -136,7 +147,31 @@ function collectListItems(sectionLines: string[]): string[] {
  * @returns The criterion texts, in body order (empty when there are none).
  */
 export function extractAcceptanceCriteria(issueBody: string): string[] {
-  const section = extractSection(issueBody);
+  return listItemsUnder(issueBody, ACCEPTANCE_HEADING_RE);
+}
+
+/**
+ * Extract the scope an issue settled on (Issue #2562): its acceptance criteria
+ * when it states them, otherwise the list under a grill-me
+ * `### Accepted scope so far` heading.
+ *
+ * Deliberately separate from {@link extractAcceptanceCriteria}: the closure
+ * gate keeps reading only the planner's criteria, and this wider reading is
+ * used where a run's delivery is judged against everything the issue accepted
+ * — a degraded run (`degraded_delivery.ts`).
+ *
+ * @param issueBody - The raw issue body.
+ * @returns The scope items, in body order (empty when the issue states none).
+ */
+export function extractAcceptedScope(issueBody: string): string[] {
+  const criteria = extractAcceptanceCriteria(issueBody);
+  if (criteria.length > 0) return criteria;
+  return listItemsUnder(issueBody, ACCEPTED_SCOPE_HEADING_RE);
+}
+
+/** The checkbox-stripped list items under `heading`, or none. */
+function listItemsUnder(markdown: string, heading: RegExp): string[] {
+  const section = extractSection(markdown, heading);
   if (section === null) return [];
   return collectListItems(section)
     .map((item) => item.replace(CHECKBOX_RE, "").trim())

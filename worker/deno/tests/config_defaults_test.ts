@@ -469,7 +469,7 @@ Deno.test("config_defaults - loadConfig loads shuffle_repos true from config", a
 // PHASE_EFFORT_DEFAULTS. These tests previously asserted per-phase model
 // families (sonnet/haiku) — updated for the single-tier model.
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_REFINEMENT is the Fable 5 top tier (planning-shaped, Issue #3229)", () => {
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_REFINEMENT is the top tier (planning-shaped, Issues #3229, #2560)", () => {
   assertEquals(DEFAULT_CLAUDE_MODEL_REFINEMENT, DEFAULT_CLAUDE_MODEL_TOP_TIER);
 });
 
@@ -477,7 +477,7 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_SPELLING_FIX stays haiku (effo
   assertEquals(DEFAULT_CLAUDE_MODEL_SPELLING_FIX, "haiku");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_QUESTION is the Fable 5 top tier (planning-shaped, Issue #3229)", () => {
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_QUESTION is the top tier (planning-shaped, Issues #3229, #2560)", () => {
   assertEquals(DEFAULT_CLAUDE_MODEL_QUESTION, DEFAULT_CLAUDE_MODEL_TOP_TIER);
 });
 
@@ -485,20 +485,21 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_SUMMARISE stays haiku (effort-
   assertEquals(DEFAULT_CLAUDE_MODEL_SUMMARISE, "haiku");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PLANNING is the Fable 5 top tier (Issue #2621)", () => {
-  // Issue #2621: planning moved from opus to fable — plan quality compounds
-  // across every downstream sub-issue, so the top tier is spent here.
-  assertEquals(DEFAULT_CLAUDE_MODEL_PLANNING, "fable");
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PLANNING is the Opus top tier (Issues #2621, #2560)", () => {
+  // Issue #2621: planning moved off opus to the tier above it. Issue #2560:
+  // Opus 5.5 matches Fable 5.1's plan quality at a fifth of the price, so the
+  // top tier is the opus alias again.
+  assertEquals(DEFAULT_CLAUDE_MODEL_PLANNING, "opus");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_TOP_TIER is the fable alias (Issue #2621)", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_TOP_TIER, "fable");
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_TOP_TIER is the opus alias (Issue #2560)", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_TOP_TIER, "opus");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_GRILL_ME is the Fable 5 top tier (Issue #2621)", () => {
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_GRILL_ME is the Opus top tier (Issues #2621, #2560)", () => {
   // Same plan-quality argument as planning: requirements interrogation shapes
   // everything downstream.
-  assertEquals(DEFAULT_CLAUDE_MODEL_GRILL_ME, "fable");
+  assertEquals(DEFAULT_CLAUDE_MODEL_GRILL_ME, "opus");
 });
 
 Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_GRILL_ME is high (Issue #3229)", () => {
@@ -509,12 +510,12 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_GRILL_ME is high (Issue #3229
 
 Deno.test("config_defaults - grill_me has explicit model and effort entries, no longer fallback-dependent (Issues #2621, #3229)", () => {
   // Before #2621 grill_me had no entry and silently rode the global fallbacks
-  // (opus + high). It pins fable explicitly; #3229 set effort to high.
-  assertEquals(PHASE_MODEL_DEFAULTS["grill_me"], "fable");
+  // (opus + high). It pins the top tier explicitly; #3229 set effort to high.
+  assertEquals(PHASE_MODEL_DEFAULTS["grill_me"], "opus");
   assertEquals(PHASE_EFFORT_DEFAULTS["grill_me"], "high");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_REVISION is the Fable 5 top tier (planning-shaped, Issue #3229)", () => {
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_REVISION is the top tier (planning-shaped, Issues #3229, #2560)", () => {
   assertEquals(DEFAULT_CLAUDE_MODEL_REVISION, DEFAULT_CLAUDE_MODEL_TOP_TIER);
 });
 
@@ -526,11 +527,11 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PR_FEEDBACK is top tier (effor
   assertEquals(DEFAULT_CLAUDE_MODEL_PR_FEEDBACK, DEFAULT_CLAUDE_MODEL);
 });
 
-Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases to fable, reactive to opus, trivial to haiku (Issues #2391, #2621, #3229)", () => {
-  // Issue #2621/#3229: model tier is the secondary lever at both extremes —
-  // the six planning-shaped phases on Fable 5 (top), trivial phases on Haiku
-  // (cheap), everything in between on Opus.
-  const fablePhases = new Set([
+Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases to opus, reactive to opus, trivial to haiku (Issues #2391, #2621, #3229, #2560)", () => {
+  // Issue #2560: Opus 5.5 is the top tier, so model tier is the secondary
+  // lever at one extreme only — trivial phases on Haiku (cheap), every
+  // substantive phase on Opus, differentiated by effort.
+  const topTierPhases = new Set([
     "planning",
     "grill_me",
     // Issue #4112: the two Quorum phases are planning-shaped — Quorum decides
@@ -544,11 +545,11 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases 
   ]);
   const haikuPhases = new Set(["spelling_fix", "summarise", "health"]);
   for (const [phase, model] of Object.entries(PHASE_MODEL_DEFAULTS)) {
-    if (fablePhases.has(phase)) {
+    if (topTierPhases.has(phase)) {
       assertEquals(
         model,
-        "fable",
-        `Planning-shaped phase "${phase}" should run on the Fable 5 top tier`,
+        "opus",
+        `Planning-shaped phase "${phase}" should run on the Opus top tier`,
       );
     } else if (haikuPhases.has(phase)) {
       assertEquals(
@@ -608,7 +609,7 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_QUALITY_FIX is top tier (effor
 // Clarification Phase Model Default (Issue #1265)
 // =============================================================================
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_CLARIFICATION is the Fable 5 top tier (planning-shaped, Issue #3229)", () => {
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_CLARIFICATION is the top tier (planning-shaped, Issues #3229, #2560)", () => {
   assertEquals(
     DEFAULT_CLAUDE_MODEL_CLARIFICATION,
     DEFAULT_CLAUDE_MODEL_TOP_TIER,
@@ -743,7 +744,7 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_ISSUE is high (Issue #1402)",
 });
 
 Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_QUESTION is high (planning-shaped, Issue #3229)", () => {
-  // Issue #3229: question is a planning-shaped phase — Fable 5 top tier at high.
+  // Issue #3229: question is a planning-shaped phase — top tier at high.
   assertEquals(DEFAULT_CLAUDE_EFFORT_QUESTION, "high");
 });
 
@@ -871,30 +872,14 @@ Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS has exactly 15 phases (Issues
 // Effort-first routing invariant (Issue #2391)
 // =============================================================================
 
-Deno.test("config_defaults - routing: planning-shaped phases on fable, trivial on haiku, rest on opus (Issues #2391, #2621, #3229)", () => {
-  // Effort is the primary lever; model tier is the secondary lever at both
-  // extremes. The six planning-shaped phases run on Fable 5, trivial phases on
-  // Haiku, everything else on the Opus tier.
-  const fablePhases = new Set([
-    "planning",
-    "grill_me",
-    // Issue #4112: the two Quorum phases are planning-shaped — Quorum decides
-    // what the plan is before planning splits it into sub-issues.
-    "quorum",
-    "quorum_judge",
-    "refinement",
-    "revision",
-    "question",
-    "clarification",
-  ]);
+Deno.test("config_defaults - routing: trivial phases on haiku, every substantive phase on opus (Issues #2391, #2621, #3229, #2560)", () => {
+  // Effort is the primary lever; model tier is the secondary lever at the
+  // cheap extreme only (Issue #2560). Trivial phases run on Haiku, every
+  // substantive phase — planning-shaped and reactive alike — on the Opus tier.
   const haikuPhases = new Set(["spelling_fix", "summarise", "health"]);
   for (const phase of Object.keys(PHASE_EFFORT_DEFAULTS)) {
     if (phase === "issue") continue; // issue has no model-default entry (base tier)
-    const expected = fablePhases.has(phase)
-      ? "fable"
-      : haikuPhases.has(phase)
-      ? "haiku"
-      : DEFAULT_CLAUDE_MODEL;
+    const expected = haikuPhases.has(phase) ? "haiku" : DEFAULT_CLAUDE_MODEL;
     assertEquals(
       PHASE_MODEL_DEFAULTS[phase],
       expected,
@@ -947,23 +932,23 @@ Deno.test("config_defaults - effort-first: effort tiers rank by phase complexity
 // Full fifteen-phase model + effort table (Issues #3229, #4112)
 //
 // A single exhaustive table so any future drift in either map is caught at
-// once. The eight planning-shaped phases run on fable + high; the three
+// once. The eight planning-shaped phases run on opus + high; the three
 // trivial phases on haiku + low; the remaining four (issue, ci_fix,
-// pr_feedback, quality_fix) on opus, differentiated by effort.
+// pr_feedback, quality_fix) on opus too, differentiated by effort.
 // =============================================================================
 
-Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues #3229, #4112)", () => {
+Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues #3229, #4112, #2560)", () => {
   const table: Record<string, { model: string; effort: string }> = {
-    // Eight planning-shaped phases → Fable 5 top tier at high.
-    planning: { model: "fable", effort: "high" },
-    grill_me: { model: "fable", effort: "high" },
+    // Eight planning-shaped phases → Opus top tier at high (Issue #2560).
+    planning: { model: "opus", effort: "high" },
+    grill_me: { model: "opus", effort: "high" },
     // Issue #4112: Quorum drafts and judges a plan — planning-shaped work.
-    quorum: { model: "fable", effort: "high" },
-    quorum_judge: { model: "fable", effort: "high" },
-    refinement: { model: "fable", effort: "high" },
-    revision: { model: "fable", effort: "high" },
-    question: { model: "fable", effort: "high" },
-    clarification: { model: "fable", effort: "high" },
+    quorum: { model: "opus", effort: "high" },
+    quorum_judge: { model: "opus", effort: "high" },
+    refinement: { model: "opus", effort: "high" },
+    revision: { model: "opus", effort: "high" },
+    question: { model: "opus", effort: "high" },
+    clarification: { model: "opus", effort: "high" },
     // Implementation phase → Opus base tier at high.
     issue: { model: "opus", effort: "high" },
     // Genuinely reactive phases → Opus base tier at medium.

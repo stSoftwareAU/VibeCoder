@@ -308,9 +308,11 @@ A `top-priority` issue is **not** automatically picked just because the label is
 
    **Exact-form `Depends on` lines are outside the signed content** (Issue #1616). The worker's own blocked-deferral path appends `Depends on owner/repo#N` to an approved body as the fleet login, which this gate read as an untrusted edit on every scan. The digest (`content-approval/v3`) is therefore taken over the body with whole lines of exactly the form `Depends on owner/repo#N` / `Depends on #N` removed, so adding one verifies as `unchanged` whoever made the edit — no label change and no comment. Nothing wider is tolerated: prose around the ref, a second ref on the line, a different case, a changed title or any other added or altered text is still `changed`, and so is *removing* a dependency line that was present at approval, because the refs approved with the snapshot are recorded alongside the digest. Snapshots stamped `content-approval/v2` (or unstamped) are re-checked against the normalised body as well, so a host holding a pre-fix snapshot migrates silently on its next scan rather than needing a fleet-wide re-baseline.
 
-### Blocked configured-label suppresses `work-on` in the same repo + milestone
+### PR-blocked configured-label suppresses `work-on` in the same repo + milestone
 
-Even when tier 1 yields no *selectable* candidate, [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not blindly fall through to tier 2. If a configured-label candidate was found but blocked (e.g. a `top-priority` issue is waiting on a dependency), every `work-on` candidate in the same `repo + milestone` is dropped before the tier 2 pool is considered. The intent is to keep work serialised on the same work stream — a blocked higher-priority issue means the work stream is "occupied by a known higher-priority intent", and the worker should wait rather than race ahead with a lower-priority issue on the same branch. Surviving `work-on` candidates from other repos / milestones remain eligible. If suppression empties tier 2 entirely, selection falls through to tier 3 (`low-priority`) under the same global gate.
+Even when tier 1 yields no *selectable* candidate, [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not blindly fall through to tier 2. If a configured-label candidate was found but held by an open PR on its work stream, every `work-on` candidate in the same `repo + milestone` is dropped before the tier 2 pool is considered. The intent is to keep work serialised on the same work stream — the stream's branch already has a PR in flight, and the worker should wait rather than race ahead with a lower-priority issue on the same branch. Surviving `work-on` candidates from other repos / milestones remain eligible. If suppression empties tier 2 entirely, selection falls through to tier 3 (`low-priority`) under the same global gate.
+
+A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream — so the `work-on` issues beside it stay eligible: top priority starves nothing, and a tier that is truly blocked means working elsewhere. Until #2563 the dependency wait parked the stream whenever the repo had any open fleet PR, even a milestone rollup PR that blocks nothing in the stream. On stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed for hours with no skip reason recorded, while the idle-decision census rightly counted them as claimable and filed an idle-inversion issue.
 
 ```mermaid
 flowchart TD
@@ -1044,6 +1046,47 @@ flowchart TD
     style B fill:#c45858,stroke:#6b2020,color:#fff
     style X fill:#c45858,stroke:#6b2020,color:#fff
 ```
+
+## ⚠️ A degraded run never closes an issue as complete
+
+A run served by a fallback model — a rate-limit fallback down the tier ladder,
+or a pre-flight reroute — is **degraded**, and the run-stats comment already
+says so (`Degraded: ⚠️ yes`). Until Issue #2562 nothing on the PR path read that
+verdict: on #2543 a Haiku-fallback run shipped one of seven accepted changes,
+wrote no PR summary, and its PR closed the issue. The rest had to be
+rediscovered by hand and refiled as #2560.
+
+[`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
+gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+after the summary gates and before the PR is raised:
+
+```mermaid
+flowchart TD
+    R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
+    D -- no --> P["PR as today"]
+    D -- yes --> S{"Every accepted scope<br/>item shown met?"}
+    S -- yes --> P
+    S -- no --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
+    F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
+    F -- "gh failed" --> X["Run fails, no PR —<br/>nothing closes the issue"]
+```
+
+- **The scope** is the issue's `## Acceptance Criteria`, or — for an issue
+  refined by grill-me — its `### Accepted scope so far` list. An issue stating
+  neither is named whole as the one unverified item.
+- **Delivered** means the PR summary's closure block marks the item `met`. A
+  `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
+  is a shortfall.
+- **The follow-up** carries the `idle-task` label — the one work-trigger label
+  the worker may apply itself — so the fleet picks the residue up without a
+  human, and a `finding-id` marker keyed on the parent, so a second degraded run
+  on the same issue reuses the open follow-up. It lists what was delivered too,
+  so the next run checks rather than redoes it.
+- **The PR is still raised** with its closing keyword: the delivered work is
+  kept, and a PR that does not close its issue loops (Issue #520). The residue
+  survives the merge in the follow-up instead.
+- **A healthy run is untouched**, whatever its summary says, and so is a
+  degraded run that showed every item `met`.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 

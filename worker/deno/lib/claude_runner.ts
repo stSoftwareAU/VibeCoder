@@ -3147,6 +3147,7 @@ async function runRetryLadder(
           currentOptions.model,
           currentOptions.phase,
           currentOptions.agentProvider,
+          currentOptions.env,
         );
         const fallbackResult = attemptModelFallback(
           currentModel,
@@ -3320,6 +3321,7 @@ async function runRetryLadder(
             currentOptions.model,
             currentOptions.phase,
             currentOptions.agentProvider,
+            currentOptions.env,
           );
           const fallbackResult = attemptModelFallback(
             currentModel,

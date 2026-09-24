@@ -15,7 +15,9 @@
  *     not flagged degraded, while its own top-tier routing still reaches the
  *     CLI, and the skipped reroute is reported loudly;
  *   - the Claude invocation of the same phase is still rerouted, so the gate
- *     narrowed the behaviour rather than removing it.
+ *     narrowed the behaviour rather than removing it. Since Issue #2560 the
+ *     phase defaults to Opus, so that run pins it back to Fable — the
+ *     documented rollback, and the only way the reroute is reached now.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -40,7 +42,7 @@ import {
 } from "../lib/fable_routing.ts";
 import { recordFableAvailability } from "../lib/health_check_cache.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
-import { emptyEnv } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
 /** Basename of the file the stub records its argv in. */
@@ -201,7 +203,8 @@ Deno.test({
           timeoutSeconds: 30,
           agentProvider: "claude",
           agentBinaryPath: stub.path,
-          env: emptyEnv,
+          // The operator rollback to Fable (Issue #2560).
+          env: envFrom({ CLAUDE_MODEL_QUORUM: "fable" }),
         },
         { maxRetries: 0, maxWaitSeconds: 1, initialWaitInterval: 0 },
       );

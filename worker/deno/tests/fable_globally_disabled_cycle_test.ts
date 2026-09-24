@@ -40,8 +40,15 @@ import {
 } from "../lib/planning_degraded_label.ts";
 import { reportGrillMeDegradation } from "../lib/grill_me_run_stats.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
-import { emptyEnv } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+
+// Issue #2560: planning/grill_me no longer default to Fable, so this cycle is
+// exercised via the documented operator pin (`CLAUDE_MODEL_PLANNING` /
+// `CLAUDE_MODEL_GRILL_ME` = "fable") rather than relying on a Fable default.
+const PLANNING_FABLE_PIN = envFrom({ CLAUDE_MODEL_PLANNING: "fable" });
+const GRILL_ME_FABLE_PIN = envFrom({ CLAUDE_MODEL_GRILL_ME: "fable" });
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (`agentBinaryPath`, Issue #959)
@@ -268,6 +275,7 @@ async function flagPlanning(
     parentIssue: number;
     subIssues: number[];
     phase?: string;
+    env?: EnvLookup;
   },
 ): Promise<FlagOutcome> {
   const phase = opts.phase ?? "planning";
@@ -279,7 +287,7 @@ async function flagPlanning(
       fallbackModel: result.fallbackModel,
     }],
     phase,
-    env: emptyEnv,
+    env: opts.env ?? emptyEnv,
   });
   if (report.verdict.degraded) {
     await applyDegradedModelLabel({
@@ -302,7 +310,7 @@ async function flagPlanning(
 /** Run the REAL grill_me flagging (reportGrillMeDegradation). */
 async function flagGrillMe(
   result: ClaudeResultSlice,
-  opts: { repo: string; issue: number },
+  opts: { repo: string; issue: number; env?: EnvLookup },
 ): Promise<FlagOutcome> {
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -314,7 +322,7 @@ async function flagGrillMe(
     runGhCommand: ghCommandFn,
     logger: recordingLogger(),
     cacheDir: await Deno.makeTempDir({ prefix: "fable_cycle_grill_" }),
-    env: emptyEnv,
+    env: opts.env ?? emptyEnv,
   });
   return { verdict, section: "", labelledIssues: addLabelCalls, comments };
 }
@@ -344,7 +352,7 @@ Deno.test({
             prompt: "plan",
             phase: "planning",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: PLANNING_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -358,6 +366,7 @@ Deno.test({
             repo: "owner/repo",
             parentIssue: 100,
             subIssues: [101, 102],
+            env: PLANNING_FABLE_PIN,
           })
           : undefined;
         return { result, models, flag };
@@ -399,7 +408,7 @@ Deno.test({
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: GRILL_ME_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -409,7 +418,11 @@ Deno.test({
         const models = await readModelSequence(stub.modelLog);
         assert(result.ok);
         const flag = result.ok
-          ? await flagGrillMe(result.value, { repo: "owner/repo", issue: 200 })
+          ? await flagGrillMe(result.value, {
+            repo: "owner/repo",
+            issue: 200,
+            env: GRILL_ME_FABLE_PIN,
+          })
           : undefined;
         return { result, models, flag };
       })
@@ -449,7 +462,7 @@ Deno.test({
             prompt: "plan",
             phase: "planning",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: PLANNING_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -463,6 +476,7 @@ Deno.test({
             repo: "owner/repo",
             parentIssue: 300,
             subIssues: [301],
+            env: PLANNING_FABLE_PIN,
           })
           : undefined;
         return { result, models, flag };
@@ -500,7 +514,7 @@ Deno.test({
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: GRILL_ME_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -510,7 +524,11 @@ Deno.test({
         const models = await readModelSequence(stub.modelLog);
         assert(result.ok);
         const flag = result.ok
-          ? await flagGrillMe(result.value, { repo: "owner/repo", issue: 400 })
+          ? await flagGrillMe(result.value, {
+            repo: "owner/repo",
+            issue: 400,
+            env: GRILL_ME_FABLE_PIN,
+          })
           : undefined;
         return { result, models, flag };
       })
@@ -545,7 +563,7 @@ Deno.test({
             prompt: "plan",
             phase: "planning",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: PLANNING_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -559,6 +577,7 @@ Deno.test({
             repo: "owner/repo",
             parentIssue: 500,
             subIssues: [501],
+            env: PLANNING_FABLE_PIN,
           })
           : undefined;
         return { result, models, flag };
@@ -591,7 +610,7 @@ Deno.test({
             prompt: "grill",
             phase: "grill_me",
             agentBinaryPath: stub.path,
-            env: emptyEnv,
+            env: GRILL_ME_FABLE_PIN,
             enableModelFallback: true,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
@@ -601,7 +620,11 @@ Deno.test({
         const models = await readModelSequence(stub.modelLog);
         assert(result.ok);
         const flag = result.ok
-          ? await flagGrillMe(result.value, { repo: "owner/repo", issue: 600 })
+          ? await flagGrillMe(result.value, {
+            repo: "owner/repo",
+            issue: 600,
+            env: GRILL_ME_FABLE_PIN,
+          })
           : undefined;
         return { result, models, flag };
       })
