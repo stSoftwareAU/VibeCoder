@@ -40,8 +40,15 @@ import {
 } from "../lib/planning_degraded_label.ts";
 import { reportGrillMeDegradation } from "../lib/grill_me_run_stats.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
-import { emptyEnv } from "./support/env_lookup.ts";
+import { emptyEnv, envFrom } from "./support/env_lookup.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+
+// Issue #2560: planning/grill_me no longer default to Fable, so this cycle is
+// exercised via the documented operator pin (`CLAUDE_MODEL_PLANNING` /
+// `CLAUDE_MODEL_GRILL_ME` = "fable") rather than relying on a Fable default.
+const PLANNING_FABLE_PIN = envFrom({ CLAUDE_MODEL_PLANNING: "fable" });
+const GRILL_ME_FABLE_PIN = envFrom({ CLAUDE_MODEL_GRILL_ME: "fable" });
 
 // ---------------------------------------------------------------------------
 // Stub harness — a fake agent, named by path (`agentBinaryPath`, Issue #959)
