@@ -49,7 +49,7 @@ pointing at deleted files is worse than none.
 | [OWASP Top 10 (2025)](https://owasp.org/Top10/2025/) | The ten web-application risk categories the security scan enumerates, and the coverage matrix that maps each to an idle task | `prompts/security_scan/`, `docs/OWASP-TOP-10-2025-COVERAGE-MATRIX.md` |
 | [OWASP GenAI / LLM Top 10](https://genai.owasp.org/llm-top-10/) | The LLM-specific risk classes — prompt injection, excessive agency, misinformation — that a worker made of prompts has to scan itself for | `prompts/security_scan/` |
 | [CWE (MITRE)](https://cwe.mitre.org/) | The `CWE-NNN` vocabulary, so a finding names a weakness class everyone already knows instead of inventing a taxonomy | `prompts/security_scan/`, `docs/THREAT-MODEL.md` |
-| [GitHub Actions security hardening](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions) | SHA-pinned actions, least-privilege `permissions:`, and the untrusted-input script-injection sinks the workflow audit hunts for | `prompts/github_actions_audit/`, `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` |
+| [GitHub Actions secure use reference](https://docs.github.com/en/actions/reference/security/secure-use) | SHA-pinned actions, least-privilege `permissions:`, and the untrusted-input script-injection sinks the workflow audit hunts for. GitHub renamed the page from "Security hardening for GitHub Actions"; the old URL redirects here | `prompts/github_actions_audit/`, `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` |
 | [Corgea GitHub Actions security checklist](https://corgea.com/learn/github-actions-security-checklist) | Extra workflow checks we were missing, including the whole-workspace artefact upload that ships `.git/` and its token to anyone | `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` |
 | [cloudflare/security-audit-skill](https://github.com/cloudflare/security-audit-skill) | A detection-class taxonomy to grade our own scans against, class by class, rather than guessing at coverage | `docs/security/cloudflare-security-audit-gap-analysis.md` |
 | [anthropics/defending-code-reference-harness](https://github.com/anthropics/defending-code-reference-harness) | The phased agentic security-review shape — discovery, modelling, then targeted hunting — that our scan pipeline was measured against | `docs/security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md` |
@@ -60,8 +60,13 @@ pointing at deleted files is worse than none.
 
 | Source | What we took | Where it shows up |
 | ------ | ------------ | ----------------- |
-| [Anthropic's Claude prompting best practices](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices) | The 22-row rubric every prompt surface is audited against, so two audits a year apart are comparable. Three house rows sit beside it, numbered H1–H3 so the guide mapping stays intact | `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` |
-| [Anthropic's Claude Code memory and best-practices guidance](https://code.claude.com/docs/en/memory) | What an agent instruction file should contain and how long it should be — the seven include items, the seven exclude items, and the "target under 200 lines" budget check 14 of the documentation audit measures a repo against | `prompts/documentation_audit/prompt.md`, `docs/DOCUMENTATION-AUDIT-SCAN.md` |
+| [Anthropic's Claude prompting best practices](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices) | The 22-row rubric every prompt surface is audited against, so two audits a year apart are comparable. Three house rows sit beside it, numbered H1–H3 so the guide mapping stays intact. The page now opens with per-model guidance that links out to a page per model; the Opus pages we took ideas from have their own rows below | `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md` |
+| [Anthropic's Claude Code memory guidance](https://code.claude.com/docs/en/memory) | How long an agent instruction file should be — the "target under 200 lines per `CLAUDE.md` file" budget check 14 of the documentation audit measures a repo against | `prompts/documentation_audit/prompt.md`, `docs/DOCUMENTATION-AUDIT-SCAN.md` |
+| [Anthropic's Claude Code best practices](https://code.claude.com/docs/en/best-practices) | What an agent instruction file should contain — the seven include items and the seven exclude items the same audit check scores content against. The include/exclude table lives on this page, not the memory page the row above links | `prompts/documentation_audit/prompt.md`, `docs/DOCUMENTATION-AUDIT-SCAN.md` |
+| [Prompting Claude Opus 5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5) | The four standing directives calibrated to this model generation — stay in scope, cap delegation, keep deliverables tight, trust the quality gate — and the Claude overlay that explains them: the model self-verifies, delegates readily and writes at length, so re-verification rounds and verify-with-a-subagent instructions are dropped rather than added | `prompts/coding_guidelines/prompt.md`, `prompts/coding_guidelines_claude/prompt.md` |
+| [Migrating to Claude Opus 5.5](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide) | The Opus 5.5 rates the worker prices runs by — $4 / $20 per MTok, a $5 cache write and a $0.20 cache read, so a hit costs 0.05× base input rather than the usual 0.1× — and the model id the `opus` tier is expected to serve | `worker/deno/lib/token_usage.ts`, `worker/deno/lib/current_models.ts`, `docs/MODEL-AND-CACHING.md` |
+| [Anthropic effort parameter](https://platform.claude.com/docs/en/build-with-claude/effort) | The five effort levels one model spans, which is what makes effort-first routing possible: one tier, a per-phase depth dial, and `low` for the trivial phases | `worker/deno/lib/config_defaults.ts`, `docs/MODEL-AND-CACHING.md` |
+| [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) | Caching as a longest-identical-prefix match in `tools` → `system` → `messages` order, the per-model minimum lengths, and the read/write/uncached usage fields the hit-rate telemetry is computed from | `worker/deno/lib/prompt_prefix.ts`, `worker/deno/lib/prompt_cache_telemetry.ts`, `docs/MODEL-AND-CACHING.md` |
 | [GitHub spec-kit](https://github.com/github/spec-kit) | Five ideas adopted natively (one since removed by design) — and five judged and deliberately rejected, which is the more useful half of that assessment | `docs/SPEC-KIT-COMPARISON.md` |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | The grilling session — interviewing the requester round by round, with a recommended answer beside every question, until no branch of the design tree is left unanswered. Our grill-me workflow came from here. Also the three house rows of the prompt rubric — prompt the positive, the no-op test, and leading words — and the idea of a fixed design-smell baseline that applies when a repo documents no standards of its own, with the repo's own standards overriding it and every smell reported as a judgement call; the reproduction-loop discipline that now gates a CI fix: a red-capable command before any hypothesis, minimise before fixing, ranked falsifiable hypotheses, tagged `[DEBUG-…]` instrumentation; and the two-axis code review from `skills/engineering/code-review/SKILL.md`: an independent Spec reviewer sub-agent judging the acceptance criteria from the diff and the issue body alone, a Standards reviewer judging the diff against the documented standards, reported under separate headings and never merged or reranked | `prompts/grill-me/`, `prompts/ci_fix/`, `prompts/issue/`, `docs/workflows/grill-me.md`, `docs/workflows/ci-fix.md`, `docs/workflows/issue-processing.md`, `docs/PROMPT-BEST-PRACTICES-CHECKLIST.md`, `prompts/best_practices/buckets/design.md` |
 | [Caveman](https://github.com/JuliusBrussee/caveman) | Verbosity as a configurable dial rather than a constant: a repo that wants "done" configures `minimal`, one that wants the architecture configures `verbose` | `docs/MODEL-AND-CACHING.md` |
@@ -102,6 +107,20 @@ to know whether it has moved on.
 | [Open Source Guides](https://opensource.guide/) | The community-health file set — README, CONTRIBUTING, SECURITY, licence — a public repo is expected to carry | `prompts/best_practices/buckets/general.md` |
 | [Mermaid](https://mermaid.js.org/) | Diagrams as committed text that GitHub renders, which is why "a picture tells a thousand words" is affordable here | `prompts/documentation_audit/`, `docs/OVERVIEW.md` |
 
+## Read, not yet adopted
+
+Sources a maintainer has read whose ideas have **not** landed yet. Rule 3
+still holds: each idea is tracked as an issue for a human to decide on, and a
+source moves up into a credit table only once its idea is in a prompt or doc
+in our own words. This table has its own header, so the credit-list tests and
+the refresh sweep ignore it.
+
+| Source | What it proposes for us | Tracked in |
+| ------ | ----------------------- | ---------- |
+| [Prompting Claude Opus 5.5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5-5) | Calibrate effort afresh rather than carry Opus 5 settings; a standing instruction naming the early-stop shapes an unattended run should avoid | [#2572](https://github.com/stSoftwareAU/VibeCoder/issues/2572), [#2573](https://github.com/stSoftwareAU/VibeCoder/issues/2573) |
+| [Claude Code — manage costs](https://code.claude.com/docs/en/costs) | Keep the always-loaded instructions small and load specialised guidance only where it applies; put simple sub-agents on a cheaper model | [#2574](https://github.com/stSoftwareAU/VibeCoder/issues/2574), [#2575](https://github.com/stSoftwareAU/VibeCoder/issues/2575) |
+| [Anthropic context editing](https://platform.claude.com/docs/en/build-with-claude/context-editing) | Clearing old tool results server-side once a threshold is crossed. Not actionable today: the worker drives the Claude Code CLI, which manages its own context and compaction | — |
+
 ## What is deliberately not on this page
 
 - **Tools we run** — ShellCheck, Semgrep, CodeQL, gitleaks, trufflehog, Deno,
@@ -116,7 +135,7 @@ to know whether it has moved on.
 
 ## How to refresh our good ideas
 
-Going back to thirty sources by hand needs somebody to remember. This does not:
+Going back to forty-odd sources by hand needs somebody to remember. This does not:
 
 ```bash
 cd worker/deno
