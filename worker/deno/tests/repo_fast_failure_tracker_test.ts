@@ -21,6 +21,7 @@ import {
   resolveRepoFastFailurePolicy,
 } from "../lib/repo_fast_failure_tracker.ts";
 import { isRepoLevelBranchRejection } from "../lib/milestone_branch_rejection.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 
 const HOST = "test-host";
 const REPO = "stSoftwareAU/example";
@@ -519,6 +520,50 @@ Deno.test("diagnosticErrorLine - an all-summary tail still records its last line
   const summaryOnly = "error: failed to push some refs to 'origin'";
   assertEquals(diagnosticErrorLine(summaryOnly), summaryOnly);
   assertEquals(diagnosticErrorLine(""), "");
+});
+
+// The release message a GRQ-AutoTrader run left when the agent API refused it
+// for payment (Issue #2590): the agent's last output is fenced inside a
+// collapsible block, so the text's final lines are markdown scaffolding.
+const PAYMENT_REFUSAL = [
+  "No code changes and no useful output from Claude",
+  "",
+  "### Diagnostics",
+  "- Elapsed: 13s",
+  "- Clarity: assessed as clear",
+  "",
+  "<details>",
+  "<summary>Last output from Claude (click to expand)</summary>",
+  "",
+  "```",
+  'API Error: 402 {"type":"error","error":{"type":"billing_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+  "```",
+  "",
+  "</details>",
+].join("\n");
+
+Deno.test("diagnosticErrorLine - markdown scaffolding does not displace the agent's error (Issue #2590)", () => {
+  const detail = diagnosticErrorLine(PAYMENT_REFUSAL);
+  assertStringIncludes(detail, "API Error: 402");
+  assertEquals(detail.includes("</details>"), false);
+});
+
+Deno.test("diagnosticErrorLine - a fenced block keeps its content, not the fence (Issue #2590)", () => {
+  assertEquals(
+    diagnosticErrorLine("```text\ndeno: command not found\n```"),
+    "deno: command not found",
+  );
+});
+
+Deno.test("isFastFailure - an agent-API payment refusal is not the repository's fault (Issue #2590)", () => {
+  const category = detectFailureCategory(PAYMENT_REFUSAL);
+  assertEquals(
+    isFastFailure(
+      { category, elapsedSeconds: 13 },
+      resolveRepoFastFailurePolicy(),
+    ),
+    false,
+  );
 });
 
 Deno.test("recordRepoFastFailure - the stored detail names why the push was refused (Issue #2034)", async () => {

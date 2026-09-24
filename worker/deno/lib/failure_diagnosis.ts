@@ -17,6 +17,20 @@ import {
   formatTimeoutExtensionSummary,
 } from "./timeout_extension_telemetry.ts";
 
+/**
+ * Out-of-credit / billing signals — account state, not a worker or repository
+ * fault. `API Error: 402` is the agent CLI's own line when the API refuses a
+ * run for payment (Issue #2590); anchored to a line start so prose quoting a
+ * 402 does not match.
+ */
+const OUT_OF_CREDIT_RE =
+  /out of credit|credit balance|insufficient (?:balance|credit|funds|quota)|payment required|billing (?:hard )?limit|quota exceeded|^\s*api error:\s*402\b/im;
+
+/** Whether `message` reports an out-of-credit / billing refusal. */
+export function isOutOfCreditMessage(message: string): boolean {
+  return OUT_OF_CREDIT_RE.test(message);
+}
+
 /** Failure category string — returned by detectFailureCategory(). */
 export type FailureCategory =
   | "timeout"
@@ -233,7 +247,10 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   if (
     lowered.includes("rate limit") ||
     lowered.includes("rate-limited") ||
-    lowered.includes("usage limit")
+    lowered.includes("usage limit") ||
+    // Out of credit is an account state too (Issue #2590): counted as
+    // internal_error it backed off a healthy repository as a fast failure.
+    isOutOfCreditMessage(failureMessage)
   ) {
     return "rate_limit";
   }

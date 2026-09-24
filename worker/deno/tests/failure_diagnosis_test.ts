@@ -56,6 +56,26 @@ Deno.test("failure diagnosis - detects rate-limited variant", () => {
   assertEquals(detectFailureCategory("Claude was rate-limited"), "rate_limit");
 });
 
+Deno.test("failure diagnosis - an agent-API payment refusal is an account limit (Issue #2590)", () => {
+  assertEquals(
+    detectFailureCategory(
+      'No code changes and no useful output from Claude\n\n```\nAPI Error: 402 {"type":"error","error":{"type":"billing_error"}}\n```',
+    ),
+    "rate_limit",
+  );
+  assertEquals(
+    detectFailureCategory("Credit balance is too low"),
+    "rate_limit",
+  );
+});
+
+Deno.test("failure diagnosis - a 402 elsewhere in the text is not a payment refusal (Issue #2590)", () => {
+  assertEquals(
+    detectFailureCategory("Error: fixture expected 402 rows"),
+    "internal_error",
+  );
+});
+
 Deno.test("failure diagnosis - detects missing_tools from 'command not found'", () => {
   assertEquals(
     detectFailureCategory("npm: command not found"),
