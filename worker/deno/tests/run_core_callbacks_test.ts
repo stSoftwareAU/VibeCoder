@@ -703,3 +703,28 @@ Deno.test("run_core callbacks - a run that reported no RTK outcome carries none 
 
   assertEquals(runs[0]?.rtk, undefined);
 });
+
+Deno.test("run_core callbacks - the terminal run carries the run's brief outcome (Issue #2603)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: true,
+        value: {
+          success: true,
+          brief: { enabled: true, status: "ok" as const, seconds: 2 },
+        },
+      });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.brief, { enabled: true, status: "ok", seconds: 2 });
+  assertEquals(runs[0]?.rtk, undefined);
+});

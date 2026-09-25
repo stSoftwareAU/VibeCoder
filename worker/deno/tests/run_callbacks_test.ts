@@ -27,6 +27,9 @@ import {
   MAX_CAPTURED_OUTPUT_CHARS,
 } from "../lib/run_callbacks.ts";
 import type { CallbacksConfig } from "../lib/run_callbacks_config.ts";
+import { workOnIssue } from "../lib/issue_worker.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import type { Result } from "../types.ts";
 
@@ -667,3 +670,45 @@ Deno.test("run_callbacks - VIBECODER_BRIEF_ENABLED follows the switch", () => {
   );
   assertEquals(off.VIBECODER_BRIEF_ENABLED, "false");
 });
+
+for (const enabled of [false, true]) {
+  Deno.test({
+    name:
+      `run_callbacks - an issue run that built no map reports brief off with the host switch (${enabled})`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      const config = buildDefaultWorkerConfig();
+      config.briefToolchain = { enabled };
+      const result = await workOnIssue(
+        {
+          repo: "stSoftwareAU/VibeCoder",
+          issueNumber: 2603,
+          issueTitle: "Report brief",
+          issueBody: "Fix the bug in `src/auth/login.ts:45`",
+          issueLabels: [],
+          issueComments: "",
+          githubUser: "testbot",
+          config,
+        },
+        createMockDeps({
+          github: {
+            runGhCommand: () =>
+              Promise.resolve("https://github.com/org/repo/pull/1"),
+          },
+          pr: {
+            findExistingPrForIssue: () =>
+              Promise.resolve({ ok: false, error: new Error("No PR found") }),
+          },
+        }),
+      );
+
+      assertEquals(result.brief, { status: "off", enabled });
+      const document = buildCallbackContextDocument(
+        context({ ...(result.brief ? { brief: result.brief } : {}) }),
+        "always",
+      );
+      assertEquals(document.brief, { enabled, status: "off" });
+    },
+  });
+}
