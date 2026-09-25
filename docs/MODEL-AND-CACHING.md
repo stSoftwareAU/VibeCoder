@@ -53,102 +53,103 @@ the worker.
 ## Provider Applicability
 
 This page is the **behaviour** reference for whichever coding agent a run uses.
-The worker supports four providers — `claude`, `codex`, `gemini` and
-`deepseek` — and most of what follows was designed around Claude, so a reader
-running `agent_provider: codex` needs to know, behaviour by behaviour, what
-they still get. That is what this section is for.
+The worker supports four providers — `claude`, `codex`, `gemini` and `deepseek`
+— and most of what follows was designed around Claude, so a reader running
+`agent_provider: codex` needs to know, behaviour by behaviour, what they still
+get. That is what this section is for.
 
 **Legend**
 
-| Symbol | Meaning |
-|--------|---------|
-| ✅ | Applies to that provider as documented |
-| ⚠️ | Partly applies — a different mechanism, or only part of the behaviour |
-| ❌ | Does not apply to that provider; the row says what happens instead |
-| ➖ | Not applicable to any provider (the behaviour is not wired for anyone) |
+| Symbol | Meaning                                                                |
+| ------ | ---------------------------------------------------------------------- |
+| ✅     | Applies to that provider as documented                                 |
+| ⚠️     | Partly applies — a different mechanism, or only part of the behaviour  |
+| ❌     | Does not apply to that provider; the row says what happens instead     |
+| ➖     | Not applicable to any provider (the behaviour is not wired for anyone) |
 
-`deepseek` is the one entry a reader cannot infer from its id: DeepSeek ships
-no CLI of its own, so the provider is the **Anthropic CLI pointed at DeepSeek's
+`deepseek` is the one entry a reader cannot infer from its id: DeepSeek ships no
+CLI of its own, so the provider is the **Anthropic CLI pointed at DeepSeek's
 Anthropic-compatible endpoint** (`https://api.deepseek.com/anthropic`). That
 single fact explains most of its column — why its credential is a DeepSeek key
-and not an Anthropic one, why Anthropic's own credentials are *withheld* from
+and not an Anthropic one, why Anthropic's own credentials are _withheld_ from
 its child environment even though the binary is Anthropic's, why its command is
 `deepseek` rather than `claude`, and why the CLI-shaped behaviours below
 (`--system-prompt`, `--session-id`, `stream-json` usage) apply to it while the
-Anthropic-*service* behaviours (the Fable tier, the tier ladder, server-side
+Anthropic-_service_ behaviours (the Fable tier, the tier ladder, server-side
 prompt caching, Claude pricing) do not.
 
-For **how to select** a provider (the
-`agent_provider` / `agent_providers` keys, credentials, the container image),
-see [Choose your coding agent (README)](../README.md#-choose-your-coding-agent),
+For **how to select** a provider (the `agent_provider` / `agent_providers` keys,
+credentials, the container image), see
+[Choose your coding agent (README)](../README.md#-choose-your-coding-agent),
 [Configuration Reference](CONFIGURATION.md#-configuration-defaults) and
 [Container Image — the coding-agent provider layer](CONTAINER.md#the-coding-agent-provider-layer);
 this page does not repeat them.
 
 Every behaviour section below — every `##` and `###` heading outside this one —
 also carries a one-line `> **Applies to:** …` marker, so a reader who lands
-mid-document on an anchor is never misled. `worker/deno/tests/docs_provider_matrix_test.ts` asserts that the
-markers and this matrix stay complete: registering a further provider, or adding
-a section without a marker, fails `deno test`.
+mid-document on an anchor is never misled.
+`worker/deno/tests/docs_provider_matrix_test.ts` asserts that the markers and
+this matrix stay complete: registering a further provider, or adding a section
+without a marker, fails `deno test`.
 
 ### Matrix
 
-| Behaviour | `claude` | `codex` | `gemini` | `deepseek` | What the non-applying providers do instead |
-|-----------|:--------:|:-------:|:--------:|:----------:|--------------------------------------------|
-| **[Model Selection](#model-selection)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Each routes phases through its own table; effort exists on Claude and Codex only, and the Fable tier, its ladder and the degraded-model machinery are Claude's |
-| [Phase-Specific Defaults](#phase-specific-defaults) | ✅ | ❌ | ❌ | ❌ | `CODEX_` / `GEMINI_` / `DEEPSEEK_PHASE_MODEL_DEFAULTS` cover the same phase keys with their own model ids |
-| [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first) | ✅ | ⚠️ | ❌ | ❌ | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone |
-| [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
-| [Model/effort precedence chain](#-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
-| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
-| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables |
-| [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
-| [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
-| [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
-| [Model Fallback on Rate Limit](#model-fallback-on-rate-limit) | ✅ | ❌ | ❌ | ❌ | No `cheaperModel()` ladder: the attempt returns `no-ladder-for-provider` and warns once, naming the provider (#365). `deepseek-flash` is a different model, not a cheaper rung of `deepseek-v4-pro` |
-| [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow) | ✅ | ✅ | ✅ | ✅ | — |
-| [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) | ✅ | ⚠️ | ⚠️ | ✅ | The comment still posts, and the expected model comes from the invocation's *own* provider routing ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)), so DeepSeek is judged `deepseek-v4-pro` vs `deepseek-v4-pro`. Codex and Gemini expose no served model, so the verdict stays `❓ unknown` |
-| [Session ID — a UUID (Issue #204)](#session-id--a-uuid-issue-204) | ✅ | ❌ | ❌ | ✅ | Codex and Gemini name their own sessions; the worker supplies no id. DeepSeek runs the same CLI, so it takes the same worker-generated id |
-| [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal) | ✅ | ❌ | ❌ | ❌ | No Fable tier exists for them; the probe run on their CLI fails and is read optimistically as `available` |
-| [Pre-flight Fable reroute](#pre-flight-fable-reroute) | ✅ | ❌ | ❌ | ❌ | Nothing to reroute, and the chokepoint is **gated off** for them (#398): their invocations keep their own routing, are never flagged degraded, and the skipped reroute is logged once per provider. The gate matters most for DeepSeek, whose Anthropic CLI would accept `--model opus` and fail at the endpoint ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)) |
-| **[Session Management](#session-management)** | ✅ | ⚠️ | ⚠️ | ⚠️ | The store holds `.claude/` only, so Codex's and Gemini's CLI state lives in their own home directories; DeepSeek writes that same `.claude/`, on its own `CLAUDE_CONFIG_DIR` |
-| [Per-Repository Session Persistence](#per-repository-session-persistence) | ✅ | ❌ | ❌ | ✅ | Nothing of Codex's or Gemini's is saved or restored per repository |
-| [Session Persistence Allowlist](#session-persistence-allowlist) | ✅ | ❌ | ❌ | ✅ | Nothing of Codex's or Gemini's is copied, so there is nothing to filter |
-| [Milestone-Aware Session Branching](#milestone-aware-session-branching) | ✅ | ❌ | ❌ | ✅ | One CLI state per container for Codex and Gemini — no milestone branch, no copy-on-first-use |
-| [Session Compaction](#session-compaction) | ✅ | ❌ | ❌ | ✅ | Codex's and Gemini's state is outside `.claude-sessions/` and is bounded only by the container's lifetime |
-| [Session Resume](#session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Different mechanism: Codex captures the CLI thread and resumes with `codex exec resume <SESSION_ID>` (never `--last`). Gemini uses `--resume latest`. DeepSeek takes Claude's `--session-id` / `--resume <id>`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross |
-| [Issue Claiming](#issue-claiming) | ✅ | ✅ | ✅ | ✅ | — |
-| [Heartbeat Tracking](#heartbeat-tracking) | ✅ | ✅ | ✅ | ✅ | — |
-| [Processing Phases](#processing-phases) | ✅ | ⚠️ | ⚠️ | ✅ | The pipeline is shared; for Codex and Gemini the system prompt is folded into one prompt string and no `.claude/` session is restored |
-| **[Prompt Caching](#prompt-caching)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Layer 1 applies to everyone; Layer 2 is Anthropic's service, so a third-party endpoint does not earn it either |
-| [Layer 1: Prompt Compilation Cache (Disk)](#layer-1-prompt-compilation-cache-disk) | ✅ | ✅ | ✅ | ✅ | — |
-| [Layer 2: Claude Built-in Prompt Caching](#layer-2-claude-built-in-prompt-caching) | ✅ | ❌ | ❌ | ⚠️ | Codex and Gemini have no `--system-prompt` channel, so `composeAgentPrompt` folds it in. DeepSeek does carry the channel, but the 70–90% saving is Anthropic's server-side cache, which its endpoint neither promises nor reports |
-| [Stable Prefix Ordering](#stable-prefix-ordering) | ✅ | ⚠️ | ⚠️ | ⚠️ | The prompt is still ordered and volatility is still warned about, but no non-Anthropic prefix cache rewards it |
-| [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry) | ✅ | ❌ | ❌ | ⚠️ | Codex reports cached input tokens, but they are not Anthropic's prefix cache, so no Anthropic hit rate is logged. Gemini's usage parses since [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938), but it reports a context-cache read count only — no Anthropic prefix cache and no write counter — so no Anthropic hit rate is logged for it either. DeepSeek's usage block parses, but the read/write counts are Anthropic-cache fields, so the rate covers only what its endpoint populates |
-| [SHA-256 Invalidation](#sha-256-invalidation) | ✅ | ✅ | ✅ | ✅ | — |
-| [Codebase Map](#codebase-map) | ✅ | ✅ | ✅ | ✅ | — |
-| **[Batch API](#batch-api)** | ➖ | ➖ | ➖ | ➖ | Not wired for any provider |
-| [Why it was rejected](#why-it-was-rejected) | ➖ | ➖ | ➖ | ➖ | The async/bounded-run mismatch is the worker's, not a vendor's |
-| [What remains in the code](#what-remains-in-the-code) | ➖ | ➖ | ➖ | ➖ | Offline estimation helpers only; nothing calls them at run time |
-| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ✅ | ✅ | ✅ | Logged with a `provider` id. Codex and DeepSeek usage parses and is priced from the id's own row at the vendor's API-equivalent list price. Gemini's usage now decodes too ([#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938)), and its ids carry the same API-equivalent rows |
-| [Token Extraction](#token-extraction) | ✅ | ✅ | ✅ | ✅ | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini usage is decoded from its terminal `result` event's `stats.models` (#1938); a run that reports none is still warned about once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
-| [Model Pricing](#model-pricing) | ✅ | ✅ | ✅ | ✅ | Claude rows are the rate Anthropic bills. The eight routable Codex/Gemini/DeepSeek ids carry **API-equivalent** rows — the vendor's API list price for the same tokens — never a bill, because those providers run on a fixed-price subscription — and the run-stats sub-bullet says `(API-equivalent)` so the basis travels with the figure. An id outside the table is still charged at the upper bound and named in `unpricedModels` |
-| [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost comes from the model id's own row — API-equivalent for a non-Claude id — and is an upper bound only when the id has no row at all |
-| [Context Window Budget Monitoring](#context-window-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex GPT-5 ids use a 400k `MODEL_CONTEXT_WINDOWS` row; Gemini (and unrecognised ids) still fall back to the 200,000-token default ceiling |
-| **[Token Saving Strategies](#token-saving-strategies)** | ✅ | ⚠️ | ⚠️ | ⚠️ | Prompt-level strategies apply to everyone; the session-store ones reach DeepSeek but not Codex or Gemini, and the Anthropic-cache ones are Claude's alone |
-| [1. Prompt Caching (Two-Layer)](#1-prompt-caching-two-layer) | ✅ | ⚠️ | ⚠️ | ⚠️ | Layer 1 only |
-| [2. Session Persistence](#2-session-persistence) | ✅ | ❌ | ❌ | ✅ | No per-repo state is stored for Codex or Gemini |
-| [3. Session Resume](#3-session-resume) | ✅ | ⚠️ | ⚠️ | ⚠️ | Codex resumes the captured per-issue thread (`exec resume <SESSION_ID>`); Gemini resumes its own most recent session (`--resume latest`); DeepSeek resumes a worker-named one from its own config directory |
-| [4. Session Compaction](#4-session-compaction) | ✅ | ❌ | ❌ | ✅ | No Codex or Gemini store to compact |
-| [5. Verbosity Configuration](#5-verbosity-configuration) | ✅ | ✅ | ✅ | ✅ | — |
-| [6. Batch API (considered, not wired)](#6-batch-api-considered-not-wired) | ➖ | ➖ | ➖ | ➖ | No provider submits batch work |
-| [7. Context Budget Monitoring](#7-context-budget-monitoring) | ✅ | ⚠️ | ⚠️ | ⚠️ | Runs; Codex GPT-5 ids are measured against a 400k window, other non-Claude ids against the default ceiling |
-| [8. Effort-First Routing by Phase](#8-effort-first-routing-by-phase) | ✅ | ✅ | ❌ | ❌ | Codex varies its own four effort levels; Gemini and DeepSeek have no effort lever, so both vary tier alone and warn once per phase |
-| **[Configuration](#configuration)** | ✅ | ⚠️ | ⚠️ | ⚠️ | `codex_*` / `gemini_*` / `deepseek_*` keys instead; the session-store keys are Claude's and DeepSeek's. Any provider can be pinned per repository via `repo_config.<repo>.agent_provider` (Issue #2048) |
+| Behaviour                                                                                      | `claude` | `codex` | `gemini` | `deepseek` | What the non-applying providers do instead                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------------------------- | :------: | :-----: | :------: | :--------: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **[Model Selection](#model-selection)**                                                        |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Each routes phases through its own table; effort exists on Claude and Codex only, and the Fable tier, its ladder and the degraded-model machinery are Claude's                                                                                                                                                                                                                                                                                                                                             |
+| [Phase-Specific Defaults](#phase-specific-defaults)                                            |    ✅    |   ❌    |    ❌    |     ❌     | `CODEX_` / `GEMINI_` / `DEEPSEEK_PHASE_MODEL_DEFAULTS` cover the same phase keys with their own model ids                                                                                                                                                                                                                                                                                                                                                                                                  |
+| [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first)           |    ✅    |   ⚠️    |    ❌    |     ❌     | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone                                                                                                                                                                                                                                                                                                                                                             |
+| [Per-phase decision log](#per-phase-decision-log)                                              |    ✅    |   ❌    |    ❌    |     ❌     | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung                                                                                                                                                                                                                                                                                                                                                         |
+| [Model/effort precedence chain](#-modeleffort-precedence-chain)                                |    ✅    |   ✅    |    ⚠️    |     ⚠️     | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only                                                                                                                                                                                                                                                                                                                                                                  |
+| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase)            |    ✅    |   ❌    |    ❌    |     ❌     | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns                                                                                                                                                                                                                                                                                                                                                      |
+| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase)                          |    ✅    |   ❌    |    ❌    |     ❌     | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables                                                                                                                                                                                                                                                                                                               |
+| [Codex per-phase routing](#-codex-per-phase-routing)                                           |    ❌    |   ✅    |    ❌    |     ❌     | Claude uses the precedence chain; Gemini and DeepSeek use their own sections                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| [Gemini per-phase routing](#-gemini-per-phase-routing)                                         |    ❌    |   ❌    |    ✅    |     ❌     | Claude uses the precedence chain; Codex and DeepSeek use their own sections                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| [DeepSeek per-phase routing](#-deepseek-per-phase-routing)                                     |    ❌    |   ❌    |    ❌    |     ✅     | Claude uses the precedence chain; Codex and Gemini use their own sections                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| [Model Fallback on Rate Limit](#model-fallback-on-rate-limit)                                  |    ✅    |   ❌    |    ❌    |     ❌     | No `cheaperModel()` ladder: the attempt returns `no-ladder-for-provider` and warns once, naming the provider (#365). `deepseek-flash` is a different model, not a cheaper rung of `deepseek-v4-pro`                                                                                                                                                                                                                                                                                                        |
+| [Two-stage planning self-critique flow](#two-stage-planning-self-critique-flow)                |    ✅    |   ✅    |    ✅    |     ✅     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| [Planning-run stats + degraded-model detection](#planning-run-stats--degraded-model-detection) |    ✅    |   ⚠️    |    ⚠️    |     ✅     | The comment still posts, and the expected model comes from the invocation's _own_ provider routing ([#441](https://github.com/stSoftwareAU/VibeCoder/issues/441)), so DeepSeek is judged `deepseek-v4-pro` vs `deepseek-v4-pro`. Codex and Gemini expose no served model, so the verdict stays `❓ unknown`                                                                                                                                                                                                |
+| [Session ID — a UUID (Issue #204)](#session-id--a-uuid-issue-204)                              |    ✅    |   ❌    |    ❌    |     ✅     | Codex and Gemini name their own sessions; the worker supplies no id. DeepSeek runs the same CLI, so it takes the same worker-generated id                                                                                                                                                                                                                                                                                                                                                                  |
+| [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)     |    ✅    |   ❌    |    ❌    |     ❌     | No Fable tier exists for them; the probe run on their CLI fails and is read optimistically as `available`                                                                                                                                                                                                                                                                                                                                                                                                  |
+| [Pre-flight Fable reroute](#pre-flight-fable-reroute)                                          |    ✅    |   ❌    |    ❌    |     ❌     | Nothing to reroute, and the chokepoint is **gated off** for them (#398): their invocations keep their own routing, are never flagged degraded, and the skipped reroute is logged once per provider. The gate matters most for DeepSeek, whose Anthropic CLI would accept `--model opus` and fail at the endpoint ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417))                                                                                                                            |
+| **[Session Management](#session-management)**                                                  |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | The store holds `.claude/` only, so Codex's and Gemini's CLI state lives in their own home directories; DeepSeek writes that same `.claude/`, on its own `CLAUDE_CONFIG_DIR`                                                                                                                                                                                                                                                                                                                               |
+| [Per-Repository Session Persistence](#per-repository-session-persistence)                      |    ✅    |   ❌    |    ❌    |     ✅     | Nothing of Codex's or Gemini's is saved or restored per repository                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| [Session Persistence Allowlist](#session-persistence-allowlist)                                |    ✅    |   ❌    |    ❌    |     ✅     | Nothing of Codex's or Gemini's is copied, so there is nothing to filter                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| [Milestone-Aware Session Branching](#milestone-aware-session-branching)                        |    ✅    |   ❌    |    ❌    |     ✅     | One CLI state per container for Codex and Gemini — no milestone branch, no copy-on-first-use                                                                                                                                                                                                                                                                                                                                                                                                               |
+| [Session Compaction](#session-compaction)                                                      |    ✅    |   ❌    |    ❌    |     ✅     | Codex's and Gemini's state is outside `.claude-sessions/` and is bounded only by the container's lifetime                                                                                                                                                                                                                                                                                                                                                                                                  |
+| [Session Resume](#session-resume)                                                              |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Different mechanism: Codex captures the CLI thread and resumes with `codex exec resume <SESSION_ID>` (never `--last`). Gemini uses `--resume latest`. DeepSeek takes Claude's `--session-id` / `--resume <id>`, but out of its own `CLAUDE_CONFIG_DIR`, so the two transcripts never cross                                                                                                                                                                                                                 |
+| [Issue Claiming](#issue-claiming)                                                              |    ✅    |   ✅    |    ✅    |     ✅     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| [Heartbeat Tracking](#heartbeat-tracking)                                                      |    ✅    |   ✅    |    ✅    |     ✅     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| [Processing Phases](#processing-phases)                                                        |    ✅    |   ⚠️    |    ⚠️    |     ✅     | The pipeline is shared; for Codex and Gemini the system prompt is folded into one prompt string and no `.claude/` session is restored                                                                                                                                                                                                                                                                                                                                                                      |
+| **[Prompt Caching](#prompt-caching)**                                                          |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Layer 1 applies to everyone; Layer 2 is Anthropic's service, so a third-party endpoint does not earn it either                                                                                                                                                                                                                                                                                                                                                                                             |
+| [Layer 1: Prompt Compilation Cache (Disk)](#layer-1-prompt-compilation-cache-disk)             |    ✅    |   ✅    |    ✅    |     ✅     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| [Layer 2: Claude Built-in Prompt Caching](#layer-2-claude-built-in-prompt-caching)             |    ✅    |   ❌    |    ❌    |     ⚠️     | Codex and Gemini have no `--system-prompt` channel, so `composeAgentPrompt` folds it in. DeepSeek does carry the channel, but the 70–90% saving is Anthropic's server-side cache, which its endpoint neither promises nor reports                                                                                                                                                                                                                                                                          |
+| [Stable Prefix Ordering](#stable-prefix-ordering)                                              |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | The prompt is still ordered and volatility is still warned about, but no non-Anthropic prefix cache rewards it                                                                                                                                                                                                                                                                                                                                                                                             |
+| [Cache Hit-Rate Telemetry](#cache-hit-rate-telemetry)                                          |    ✅    |   ❌    |    ❌    |     ⚠️     | Codex reports cached input tokens, but they are not Anthropic's prefix cache, so no Anthropic hit rate is logged. Gemini's usage parses since [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938), but it reports a context-cache read count only — no Anthropic prefix cache and no write counter — so no Anthropic hit rate is logged for it either. DeepSeek's usage block parses, but the read/write counts are Anthropic-cache fields, so the rate covers only what its endpoint populates |
+| [SHA-256 Invalidation](#sha-256-invalidation)                                                  |    ✅    |   ✅    |    ✅    |     ✅     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| [Codebase Map](#codebase-map)                                                                  |    ✅    |   ✅    |    ✅    |     ✅     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **[Batch API](#batch-api)**                                                                    |    ➖    |   ➖    |    ➖    |     ➖     | Not wired for any provider                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| [Why it was rejected](#why-it-was-rejected)                                                    |    ➖    |   ➖    |    ➖    |     ➖     | The async/bounded-run mismatch is the worker's, not a vendor's                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| [What remains in the code](#what-remains-in-the-code)                                          |    ➖    |   ➖    |    ➖    |     ➖     | Offline estimation helpers only; nothing calls them at run time                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **[Token Usage & Cost Tracking](#token-usage--cost-tracking)**                                 |    ✅    |   ✅    |    ✅    |     ✅     | Logged with a `provider` id. Codex and DeepSeek usage parses and is priced from the id's own row at the vendor's API-equivalent list price. Gemini's usage now decodes too ([#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938)), and its ids carry the same API-equivalent rows                                                                                                                                                                                                                |
+| [Token Extraction](#token-extraction)                                                          |    ✅    |   ✅    |    ✅    |     ✅     | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini usage is decoded from its terminal `result` event's `stats.models` (#1938); a run that reports none is still warned about once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads                                                                                                                                                                    |
+| [Model Pricing](#model-pricing)                                                                |    ✅    |   ✅    |    ✅    |     ✅     | Claude rows are the rate Anthropic bills. The eight routable Codex/Gemini/DeepSeek ids carry **API-equivalent** rows — the vendor's API list price for the same tokens — never a bill, because those providers run on a fixed-price subscription — and the run-stats sub-bullet says `(API-equivalent)` so the basis travels with the figure. An id outside the table is still charged at the upper bound and named in `unpricedModels`                                                                    |
+| [Credit Logging](#credit-logging)                                                              |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost comes from the model id's own row — API-equivalent for a non-Claude id — and is an upper bound only when the id has no row at all                                                                                                                                                                                                                                        |
+| [Context Window Budget Monitoring](#context-window-budget-monitoring)                          |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Codex GPT-5 ids use a 400k `MODEL_CONTEXT_WINDOWS` row; Gemini (and unrecognised ids) still fall back to the 200,000-token default ceiling                                                                                                                                                                                                                                                                                                                                                                 |
+| **[Token Saving Strategies](#token-saving-strategies)**                                        |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Prompt-level strategies apply to everyone; the session-store ones reach DeepSeek but not Codex or Gemini, and the Anthropic-cache ones are Claude's alone                                                                                                                                                                                                                                                                                                                                                  |
+| [1. Prompt Caching (Two-Layer)](#1-prompt-caching-two-layer)                                   |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Layer 1 only                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| [2. Session Persistence](#2-session-persistence)                                               |    ✅    |   ❌    |    ❌    |     ✅     | No per-repo state is stored for Codex or Gemini                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| [3. Session Resume](#3-session-resume)                                                         |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Codex resumes the captured per-issue thread (`exec resume <SESSION_ID>`); Gemini resumes its own most recent session (`--resume latest`); DeepSeek resumes a worker-named one from its own config directory                                                                                                                                                                                                                                                                                                |
+| [4. Session Compaction](#4-session-compaction)                                                 |    ✅    |   ❌    |    ❌    |     ✅     | No Codex or Gemini store to compact                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| [5. Verbosity Configuration](#5-verbosity-configuration)                                       |    ✅    |   ✅    |    ✅    |     ✅     | —                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| [6. Batch API (considered, not wired)](#6-batch-api-considered-not-wired)                      |    ➖    |   ➖    |    ➖    |     ➖     | No provider submits batch work                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| [7. Context Budget Monitoring](#7-context-budget-monitoring)                                   |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | Runs; Codex GPT-5 ids are measured against a 400k window, other non-Claude ids against the default ceiling                                                                                                                                                                                                                                                                                                                                                                                                 |
+| [8. Effort-First Routing by Phase](#8-effort-first-routing-by-phase)                           |    ✅    |   ✅    |    ❌    |     ❌     | Codex varies its own four effort levels; Gemini and DeepSeek have no effort lever, so both vary tier alone and warn once per phase                                                                                                                                                                                                                                                                                                                                                                         |
+| **[Configuration](#configuration)**                                                            |    ✅    |   ⚠️    |    ⚠️    |     ⚠️     | `codex_*` / `gemini_*` / `deepseek_*` keys instead; the session-store keys are Claude's and DeepSeek's. Any provider can be pinned per repository via `repo_config.<repo>.agent_provider` (Issue #2048)                                                                                                                                                                                                                                                                                                    |
 
 **Gaps with a fix issue.** #363 (Codex phase routing), #364 (Gemini phase
-routing), #365 (provider-aware rate-limit fallback), #366 (provider token
-usage recorded UNKNOWN, never zero) and
+routing), #365 (provider-aware rate-limit fallback), #366 (provider token usage
+recorded UNKNOWN, never zero) and
 [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) (provider-gated
 pre-flight Fable reroute) have **landed** — every row above describes the
 post-fix behaviour.
@@ -157,11 +158,16 @@ post-fix behaviour.
 
 ## Model Selection
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — all four route each phase to a model through their own tables, but only Claude and Codex carry a reasoning-effort lever, and the Fable tier, its rate-limit ladder and the degraded-model machinery below are Claude's alone. DeepSeek routes every phase through `DEEPSEEK_PHASE_MODEL_DEFAULTS` and carries no effort lever at all, because its endpoint implements none.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — all
+> four route each phase to a model through their own tables, but only Claude and
+> Codex carry a reasoning-effort lever, and the Fable tier, its rate-limit
+> ladder and the degraded-model machinery below are Claude's alone. DeepSeek
+> routes every phase through `DEEPSEEK_PHASE_MODEL_DEFAULTS` and carries no
+> effort lever at all, because its endpoint implements none.
 
-VibeCoder uses **effort-first cost routing**: the worker varies
-**effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
-switching model families per phase. Model tier is the *secondary* lever, and
+VibeCoder uses **effort-first cost routing**: the worker varies **effort**
+(`max`/`xhigh`/`high`/`medium`/`low`) as the _primary_ cost lever rather than
+switching model families per phase. Model tier is the _secondary_ lever, and
 since Issue #2560 it is applied at the cheap extreme only: the three trivial
 phases stay on **Haiku**, and every other phase runs on **Opus**. The **eight
 planning-shaped phases** (`planning`, `grill_me`, `refinement`, `revision`,
@@ -170,66 +176,77 @@ effort — wherever the Vibe Coder interprets the user's words into an
 implementable state, a better result compounds downstream. They ran on the
 **Fable** tier until Opus 5.5 matched it on plan quality at roughly half the
 price; Fable stays one per-phase override away (`CLAUDE_MODEL_PLANNING=fable`
-and friends). The worker passes tier *aliases* (`fable`, `opus`, `haiku`) to
-the Claude CLI, which resolves each to the latest model of that tier; combined
-with the CLI minimum-version floor, the tiers stay current with no per-release
-config change. See
+and friends). The worker passes tier _aliases_ (`fable`, `opus`, `haiku`) to the
+Claude CLI, which resolves each to the latest model of that tier; combined with
+the CLI minimum-version floor, the tiers stay current with no per-release config
+change. See
 [Fable 5.1 — the current top tier](#fable-51--the-current-top-tier-issue-747)
 for the Fable tier an override reaches.
 
 ### Phase-Specific Defaults
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — this table is `PHASE_MODEL_DEFAULTS`/`PHASE_EFFORT_DEFAULTS`, Claude tiers only; Codex and Gemini route the same phase keys through their own tables in [Codex per-phase routing](#-codex-per-phase-routing) and [Gemini per-phase routing](#-gemini-per-phase-routing). DeepSeek does the same through `DEEPSEEK_PHASE_MODEL_DEFAULTS` — see [DeepSeek per-phase routing](#-deepseek-per-phase-routing).
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — this
+> table is `PHASE_MODEL_DEFAULTS`/`PHASE_EFFORT_DEFAULTS`, Claude tiers only;
+> Codex and Gemini route the same phase keys through their own tables in
+> [Codex per-phase routing](#-codex-per-phase-routing) and
+> [Gemini per-phase routing](#-gemini-per-phase-routing). DeepSeek does the same
+> through `DEEPSEEK_PHASE_MODEL_DEFAULTS` — see
+> [DeepSeek per-phase routing](#-deepseek-per-phase-routing).
 
 Each phase has a hardcoded default model **and** a default effort level. The
-guiding rule: **wherever the Vibe Coder interprets the user's words
-into an implementable state, use the highest model available.** That names
-eight *planning-shaped* phases — `planning`, `grill_me`, `refinement`,
-`revision`, `question`, `clarification`, and the two Quorum phases `quorum` and
-`quorum_judge` — each of which defaults to the top tier (**Opus** since
-Issue #2560) at `high` effort. They remain *Fable-preferring*: a phase an operator
+guiding rule: **wherever the Vibe Coder interprets the user's words into an
+implementable state, use the highest model available.** That names eight
+_planning-shaped_ phases — `planning`, `grill_me`, `refinement`, `revision`,
+`question`, `clarification`, and the two Quorum phases `quorum` and
+`quorum_judge` — each of which defaults to the top tier (**Opus** since Issue
+#2560) at `high` effort. They remain _Fable-preferring_: a phase an operator
 pins back to Fable still reroutes to **Opus at `max` effort** when Fable is
 unavailable, and the run is recorded degraded (see
 [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)).
 With the default routing no phase requests Fable, so none is affected by Fable
 availability.
 
-| Phase | Model | Effort | When pinned to Fable and Fable is unavailable |
-|-------|-------|--------|------------------------|
-| planning | Opus | high | Opus @ max, recorded degraded |
-| grill_me | Opus | high | Opus @ max, recorded degraded |
-| refinement | Opus | high | Opus @ max, recorded degraded |
-| revision | Opus | high | Opus @ max, recorded degraded |
-| question | Opus | high | Opus @ max, recorded degraded |
-| clarification | Opus | high | Opus @ max, recorded degraded |
-| quorum | Opus | high | Opus @ max, recorded degraded |
-| quorum_judge | Opus | high | Opus @ max, recorded degraded |
-| issue (implementation) | Opus | high | unchanged |
-| ci_fix | Opus | medium | unchanged |
-| pr_feedback | Opus | medium | unchanged |
-| quality_fix | Opus | medium | unchanged |
-| spelling_fix | Haiku | low | unchanged |
-| summarise | Haiku | low | unchanged (large-input escalation still applies) |
-| health | Haiku | low | unchanged — runs the Fable probe only while a phase routes to Fable |
+| Phase                  | Model | Effort | When pinned to Fable and Fable is unavailable                       |
+| ---------------------- | ----- | ------ | ------------------------------------------------------------------- |
+| planning               | Opus  | high   | Opus @ max, recorded degraded                                       |
+| grill_me               | Opus  | high   | Opus @ max, recorded degraded                                       |
+| refinement             | Opus  | high   | Opus @ max, recorded degraded                                       |
+| revision               | Opus  | high   | Opus @ max, recorded degraded                                       |
+| question               | Opus  | high   | Opus @ max, recorded degraded                                       |
+| clarification          | Opus  | high   | Opus @ max, recorded degraded                                       |
+| quorum                 | Opus  | high   | Opus @ max, recorded degraded                                       |
+| quorum_judge           | Opus  | high   | Opus @ max, recorded degraded                                       |
+| issue (implementation) | Opus  | high   | unchanged                                                           |
+| ci_fix                 | Opus  | medium | unchanged                                                           |
+| pr_feedback            | Opus  | medium | unchanged                                                           |
+| quality_fix            | Opus  | medium | unchanged                                                           |
+| spelling_fix           | Haiku | low    | unchanged                                                           |
+| summarise              | Haiku | low    | unchanged (large-input escalation still applies)                    |
+| health                 | Haiku | low    | unchanged — runs the Fable probe only while a phase routes to Fable |
 
 These defaults are defined in `PHASE_MODEL_DEFAULTS` and `PHASE_EFFORT_DEFAULTS`
-in [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts);
+in
+[`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts);
 `worker/deno/tests/model_routing_docs_test.ts` keeps this table in step with
 them.
 
-> **Note — the two Quorum phases.** `quorum` and
-> `quorum_judge` are Fable-preferring like the other six, so the pre-flight
-> reroute below applies to them. Because one plan-off is three invocations
-> across both phases, the orchestrator carries each invocation's served-model
-> observation on its result and `quorum_run_stats.ts` reports the **round** —
-> one `degraded-model` label and one `## Quorum run model stats` comment
-> covering all three invocations, not one per agent. A healthy
-> plan-off stays quiet: the result comment it already posts is the round's
-> output.
+> **Note — the two Quorum phases.** `quorum` and `quorum_judge` are
+> Fable-preferring like the other six, so the pre-flight reroute below applies
+> to them. Because one plan-off is three invocations across both phases, the
+> orchestrator carries each invocation's served-model observation on its result
+> and `quorum_run_stats.ts` reports the **round** — one `degraded-model` label
+> and one `## Quorum run model stats` comment covering all three invocations,
+> not one per agent. A healthy plan-off stays quiet: the result comment it
+> already posts is the round's output.
 
 ### Design note — effort-first vs tier-first
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ❌ · `deepseek` ❌ — Codex applies the same effort-first design over its own four reasoning-effort levels (no `xhigh`/`max`); the Gemini CLI has no effort option at all, so its routing varies tier only and a resolved effort is warned about rather than applied. DeepSeek is the Gemini case with one rung fewer: no effort control on its endpoint, and two model tiers rather than three.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ❌ · `deepseek` ❌ — Codex
+> applies the same effort-first design over its own four reasoning-effort levels
+> (no `xhigh`/`max`); the Gemini CLI has no effort option at all, so its routing
+> varies tier only and a resolved effort is warned about rather than applied.
+> DeepSeek is the Gemini case with one rung fewer: no effort control on its
+> endpoint, and two model tiers rather than three.
 
 Earlier routing was **tier-first**: each phase was assigned a different model
 family (Opus / Sonnet / Haiku) and effort was a secondary tweak. Two changes
@@ -240,9 +257,9 @@ made that model worth revisiting:
   complexity spectrum via effort alone.
 - **The Opus↔Sonnet price gap shrank to ~1.7×** ($5 vs $3 per Mtok input, the
   rates when this decision was taken; Sonnet 5 has since reopened the gap to
-  ~2.5× at $2 — see [Model Pricing](#model-pricing)).
-  At that gap, routing reactive phases to Sonnet saves little, while
-  maintaining two model families with different behaviours costs clarity.
+  ~2.5× at $2 — see [Model Pricing](#model-pricing)). At that gap, routing
+  reactive phases to Sonnet saves little, while maintaining two model families
+  with different behaviours costs clarity.
 
 **Decision: adopt effort-first, with tier as a secondary lever at both
 extremes.**
@@ -251,67 +268,70 @@ extremes.**
   (`high` → implementation, `medium` → the reactive fixes `ci_fix`,
   `pr_feedback`, `quality_fix`) on **Opus**. This gives one quality bar with a
   tunable depth dial and sidesteps the Opus alias→pricing mismatch fixed in.
-- The planning-shaped phases ran on the **Fable 5** tier above Opus (
-  extended from two phases at `max` effort to six phases at `high` effort by
-  ). A better result compounds across every downstream sub-issue or run, so
-  the ~2× Fable premium was spent only on these phases — see the and
-  decision-log rows below. **Since Issue #2560 they run on Opus 5.5 at `high`**:
-  it matches Fable 5.1 on plan quality at roughly half the price, so the tier
-  lever now applies at the cheap extreme only and effort alone marks these
-  phases out. `CLAUDE_MODEL_PLANNING=fable` (and the matching per-phase
-  variables) is the rollback.
-- The three trivial phases (**spelling_fix**, **summarise**, **health**) stay
-  on **Haiku**. The Opus↔Haiku gap is still ~5×; these tasks are mechanical;
+- The planning-shaped phases ran on the **Fable 5** tier above Opus ( extended
+  from two phases at `max` effort to six phases at `high` effort by ). A better
+  result compounds across every downstream sub-issue or run, so the ~2× Fable
+  premium was spent only on these phases — see the and decision-log rows below.
+  **Since Issue #2560 they run on Opus 5.5 at `high`**: it matches Fable 5.1 on
+  plan quality at roughly half the price, so the tier lever now applies at the
+  cheap extreme only and effort alone marks these phases out.
+  `CLAUDE_MODEL_PLANNING=fable` (and the matching per-phase variables) is the
+  rollback.
+- The three trivial phases (**spelling_fix**, **summarise**, **health**) stay on
+  **Haiku**. The Opus↔Haiku gap is still ~5×; these tasks are mechanical;
   `summarise` in particular is fed the largest inputs, so the cheaper tier
   matters most there. The large-input escalation
   ([`phase_model_escalation.ts`](../worker/deno/lib/phase_model_escalation.ts),
-  ) still lifts a Haiku phase to a 1M-window tier whenever an input
-  would otherwise truncate.
+  ) still lifts a Haiku phase to a 1M-window tier whenever an input would
+  otherwise truncate.
 
 Tier remains fully tunable through the override chain below, so an operator can
 pin any phase to a different tier without code changes.
 
 ### Per-phase decision log
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the log records the Claude tier/effort decisions and the prices behind them; the Codex and Gemini tables mirror its *shape* (top / base / cheap tier per phase) with their own model ids, re-pinned through configuration rather than through this log. DeepSeek's table copies the shape too — `deepseek-v4-pro` over `deepseek-flash`, with no cheap rung to copy.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the
+> log records the Claude tier/effort decisions and the prices behind them; the
+> Codex and Gemini tables mirror its _shape_ (top / base / cheap tier per phase)
+> with their own model ids, re-pinned through configuration rather than through
+> this log. DeepSeek's table copies the shape too — `deepseek-v4-pro` over
+> `deepseek-flash`, with no cheap rung to copy.
 
- asked, after the Opus↔Sonnet premium collapsed from ~5× to ~1.7×,
-whether the phases previously parked on Sonnet for cost should move to
-**Opus at low effort** instead, and whether `refinement` / `clarification` /
-`question` should drop from Sonnet to Haiku now that Haiku 4.5 is far stronger
-than the 3.5-Haiku those defaults were tuned for. The effort-first
-consolidation in answered both questions — this log records the
-per-candidate-phase decision so the rationale is explicit alongside the
-defaults.
+asked, after the Opus↔Sonnet premium collapsed from ~5× to ~1.7×, whether the
+phases previously parked on Sonnet for cost should move to **Opus at low
+effort** instead, and whether `refinement` / `clarification` / `question` should
+drop from Sonnet to Haiku now that Haiku 4.5 is far stronger than the 3.5-Haiku
+those defaults were tuned for. The effort-first consolidation in answered both
+questions — this log records the per-candidate-phase decision so the rationale
+is explicit alongside the defaults.
 
-| Candidate phase | Before (pre-) | Proposal in | Decision (post-) | Why |
-|---|---|---|---|---|
-| `ci_fix` | sonnet + medium | opus + low | **opus + medium** | Reactive but not trivial — CI failures cover the full diagnostic spectrum (flaky tests, build breaks, lint regressions). Raising tier without dropping effort keeps quality on the harder cases; an effort downgrade to `low` would have lost reasoning depth right when it matters most. |
-| `pr_feedback` | sonnet + medium | opus + low | **opus + medium** | Reviewer feedback often demands non-trivial rework (re-architecting a function, tightening a contract). Same logic as `ci_fix` — preserve effort, raise tier. |
-| `quality_fix` | sonnet + medium | opus + low | **opus + medium** | Quality-gate fixes are structured but range from one-line typos to multi-file lint refactors. Effort at `medium` is the right floor; `low` regresses on the hard end. |
-| `refinement` | sonnet + medium | haiku (evaluate) | **opus + medium** | Demoting to Haiku was tempting on price, but refinement rewords titles/descriptions that drive every downstream decision — quality dominates. Effort-first routing lets `refinement` share the reactive-phase dial and the operator can override to Haiku per-repo if they want. |
-| `clarification` | sonnet + medium | haiku (evaluate) | **opus + medium** | Same reasoning as `refinement`. Clarification feeds straight into the planning/issue phases; a poor clarification is paid for many times over. |
-| `question` | sonnet + medium | haiku (evaluate) | **opus + medium** | Codebase questions are open-ended and often span multiple files. Keeping a reasoning-heavy tier is cheap insurance against a wrong answer that wastes the asker's time. |
+| Candidate phase | Before (pre-)   | Proposal in      | Decision (post-)  | Why                                                                                                                                                                                                                                                                                       |
+| --------------- | --------------- | ---------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci_fix`        | sonnet + medium | opus + low       | **opus + medium** | Reactive but not trivial — CI failures cover the full diagnostic spectrum (flaky tests, build breaks, lint regressions). Raising tier without dropping effort keeps quality on the harder cases; an effort downgrade to `low` would have lost reasoning depth right when it matters most. |
+| `pr_feedback`   | sonnet + medium | opus + low       | **opus + medium** | Reviewer feedback often demands non-trivial rework (re-architecting a function, tightening a contract). Same logic as `ci_fix` — preserve effort, raise tier.                                                                                                                             |
+| `quality_fix`   | sonnet + medium | opus + low       | **opus + medium** | Quality-gate fixes are structured but range from one-line typos to multi-file lint refactors. Effort at `medium` is the right floor; `low` regresses on the hard end.                                                                                                                     |
+| `refinement`    | sonnet + medium | haiku (evaluate) | **opus + medium** | Demoting to Haiku was tempting on price, but refinement rewords titles/descriptions that drive every downstream decision — quality dominates. Effort-first routing lets `refinement` share the reactive-phase dial and the operator can override to Haiku per-repo if they want.          |
+| `clarification` | sonnet + medium | haiku (evaluate) | **opus + medium** | Same reasoning as `refinement`. Clarification feeds straight into the planning/issue phases; a poor clarification is paid for many times over.                                                                                                                                            |
+| `question`      | sonnet + medium | haiku (evaluate) | **opus + medium** | Codebase questions are open-ended and often span multiple files. Keeping a reasoning-heavy tier is cheap insurance against a wrong answer that wastes the asker's time.                                                                                                                   |
 
-The decision is *consolidate-and-tune-effort* rather than *split-and-tune-tier*:
-one quality bar (Opus) with a tunable depth dial (effort), instead of two
-model families that drift apart in behaviour. Any operator who wants to push
-a specific phase down — e.g. `clarification` to Haiku on a low-stakes repo —
-can do so with a one-line override in `phase_model_overrides` without
-touching code.
+The decision is _consolidate-and-tune-effort_ rather than _split-and-tune-tier_:
+one quality bar (Opus) with a tunable depth dial (effort), instead of two model
+families that drift apart in behaviour. Any operator who wants to push a
+specific phase down — e.g. `clarification` to Haiku on a low-stakes repo — can
+do so with a one-line override in `phase_model_overrides` without touching code.
 
 #### Fable 5 for top-tier phases
 
-Once Fable 5 (`claude-fable-5`, the tier above Opus —) and its
-fallback plumbing landed, the per-phase routing gained a *top* tier as well as
-the existing Haiku floor. The effort-first design is unchanged; tier becomes a
-second lever spent only where plan quality compounds.
+Once Fable 5 (`claude-fable-5`, the tier above Opus —) and its fallback plumbing
+landed, the per-phase routing gained a _top_ tier as well as the existing Haiku
+floor. The effort-first design is unchanged; tier becomes a second lever spent
+only where plan quality compounds.
 
-| Phase | Before | Decision | Why |
-|---|---|---|---|
-| `planning` | opus + max | **fable + max** | The best plan is the highest-leverage spend — a planning error cascades into every sub-issue. Fable is ~2× Opus pricing ($10/$50 vs $5/$25 per MTok), but the spend is confined to this one phase. |
-| `grill_me` | *(no entry — silently rode the global fallbacks, opus + high)* | **fable + max** | Same plan-quality argument: requirements interrogation shapes everything after it. Now has explicit `PHASE_MODEL_DEFAULTS` / `PHASE_EFFORT_DEFAULTS` entries instead of depending on the global fallback. |
-| `issue` (coding) | opus + high | **opus + high (unchanged)** | The `xhigh` effort level is now plumbed in — the worker recognises `low`/`medium`/`high`/`xhigh`/`max` and an operator can set `opus + xhigh` via `phase_effort_overrides` today. The **default** stays `high`: deliberately landed the vocabulary without changing any per-phase default; the `opus + xhigh` (or `fable + xhigh`) default bump is now tracked in the Opus 5 effort-sweep sub-issue, to be decided on measured runs rather than deferred indefinitely. |
+| Phase            | Before                                                         | Decision                    | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------- | -------------------------------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `planning`       | opus + max                                                     | **fable + max**             | The best plan is the highest-leverage spend — a planning error cascades into every sub-issue. Fable is ~2× Opus pricing ($10/$50 vs $5/$25 per MTok), but the spend is confined to this one phase.                                                                                                                                                                                                                                                                     |
+| `grill_me`       | _(no entry — silently rode the global fallbacks, opus + high)_ | **fable + max**             | Same plan-quality argument: requirements interrogation shapes everything after it. Now has explicit `PHASE_MODEL_DEFAULTS` / `PHASE_EFFORT_DEFAULTS` entries instead of depending on the global fallback.                                                                                                                                                                                                                                                              |
+| `issue` (coding) | opus + high                                                    | **opus + high (unchanged)** | The `xhigh` effort level is now plumbed in — the worker recognises `low`/`medium`/`high`/`xhigh`/`max` and an operator can set `opus + xhigh` via `phase_effort_overrides` today. The **default** stays `high`: deliberately landed the vocabulary without changing any per-phase default; the `opus + xhigh` (or `fable + xhigh`) default bump is now tracked in the Opus 5 effort-sweep sub-issue, to be decided on measured runs rather than deferred indefinitely. |
 
 > **Routing fix.** The coding run now passes `phase: "issue"` to
 > `runClaudeWithRetry`, and `PHASE_MODEL_DEFAULTS` gained an explicit `issue`
@@ -326,11 +346,10 @@ second lever spent only where plan quality compounds.
 
 The reactive phases (`refinement`, `revision`, `ci_fix`, `pr_feedback`,
 `quality_fix`, `question`, `clarification`) and the trivial phases
-(`spelling_fix`, `summarise`, `health`) were left **unchanged** by — their
-cost profile did not justify the top tier at that time. (later
-promoted `refinement`, `revision`, `question`, and `clarification` to Fable — see
-the [decision-log row](#planning-shaped-phases-promoted-to-fable)
-below.)
+(`spelling_fix`, `summarise`, `health`) were left **unchanged** by — their cost
+profile did not justify the top tier at that time. (later promoted `refinement`,
+`revision`, `question`, and `clarification` to Fable — see the
+[decision-log row](#planning-shaped-phases-promoted-to-fable) below.)
 
 **Rate-limit fallback.** A fable phase that exhausts its rate-limit retries
 degrades to **opus** (then `sonnet` → `haiku`) via `MODEL_FALLBACK_MAP`
@@ -340,22 +359,22 @@ in `model_fallback_test.ts`.
 
 #### Planning-shaped phases promoted to Fable
 
- applied one guiding rule — *wherever the Vibe Coder interprets the
-user's words into an implementable state, use the highest model available* — and
-found the four **reactive** planning-shaped phases share the same plan-quality
-profile as `planning` and `grill_me`. They were promoted to the Fable 5 top tier,
-and the two original top-tier phases had their effort re-set from `max` to `high`
-(the `max` spend now lands on the Opus fallback when Fable is unavailable). This
+applied one guiding rule — _wherever the Vibe Coder interprets the user's words
+into an implementable state, use the highest model available_ — and found the
+four **reactive** planning-shaped phases share the same plan-quality profile as
+`planning` and `grill_me`. They were promoted to the Fable 5 top tier, and the
+two original top-tier phases had their effort re-set from `max` to `high` (the
+`max` spend now lands on the Opus fallback when Fable is unavailable). This
 **supersedes** the corresponding `opus + medium` rows in the log above.
 
-| Phase | Before | Decision | Why |
-|---|---|---|---|
-| `refinement` | opus + medium | **fable + high** | Rewords the issue title/description into an implementable state — the same plan-quality argument as planning. |
-| `revision` | opus + medium | **fable + high** | Rewrites a PR from review feedback into the intended change — interprets the reviewer's words. |
-| `question` | opus + medium | **fable + high** | Codebase answers are open-ended interpretation of the asker's intent. |
+| Phase           | Before        | Decision         | Why                                                                                                                                  |
+| --------------- | ------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `refinement`    | opus + medium | **fable + high** | Rewords the issue title/description into an implementable state — the same plan-quality argument as planning.                        |
+| `revision`      | opus + medium | **fable + high** | Rewrites a PR from review feedback into the intended change — interprets the reviewer's words.                                       |
+| `question`      | opus + medium | **fable + high** | Codebase answers are open-ended interpretation of the asker's intent.                                                                |
 | `clarification` | opus + medium | **fable + high** | Runs on **every** `work-on` pickup, so every issue run now makes a Fable call (or its degraded Opus fallback) before implementation. |
-| `planning` | fable + max | **fable + high** | Effort re-set from `max` to `high`; `max` is now where the Opus fallback is spent when Fable is unavailable. |
-| `grill_me` | fable + max | **fable + high** | Same effort re-set as planning. |
+| `planning`      | fable + max   | **fable + high** | Effort re-set from `max` to `high`; `max` is now where the Opus fallback is spent when Fable is unavailable.                         |
+| `grill_me`      | fable + max   | **fable + high** | Same effort re-set as planning.                                                                                                      |
 
 All eight phases share the pre-flight Fable probe described in
 [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal),
@@ -365,12 +384,17 @@ and [Pre-flight Fable reroute](#pre-flight-fable-reroute).
 
 ### 🎚️ Model/effort precedence chain
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ⚠️ · `deepseek` ⚠️ — all four share the same six-step chain in `phase_routing.ts` with `CLAUDE_`/`CODEX_`/`GEMINI_`-named keys; Gemini has a model chain only, because an effort key its CLI could never apply would be dead surface. `DEEPSEEK_`-named keys run the same six steps, and like Gemini it is a model chain only.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ⚠️ · `deepseek` ⚠️ — all
+> four share the same six-step chain in `phase_routing.ts` with
+> `CLAUDE_`/`CODEX_`/`GEMINI_`-named keys; Gemini has a model chain only,
+> because an effort key its CLI could never apply would be dead surface.
+> `DEEPSEEK_`-named keys run the same six steps, and like Gemini it is a model
+> chain only.
 
 Model **and** effort selection follow a strict precedence chain (most specific
-wins). Per-repo overrides slot between the operator escape-hatch
-env vars and the global config / built-in defaults, so a high-value repo can be
-routed to the best tier while a filler repo stays cheap — see
+wins). Per-repo overrides slot between the operator escape-hatch env vars and
+the global config / built-in defaults, so a high-value repo can be routed to the
+best tier while a filler repo stays cheap — see
 [Per-repository model/effort routing](CONFIGURATION.md#-per-repository-modeleffort-routing).
 
 **Model** (`buildClaudeModelArgs()`):
@@ -387,15 +411,14 @@ routed to the best tier while a filler repo stays cheap — see
    Claude CLI uses its own default
 
 > **⚠️ A per-repo `claude_model` base tier demotes the Fable planning/grill-me
-> tiers (audit
-> F2/F3).** Level 3 (per-repo base `claude_model`) sits **above** level 5
-> (`PHASE_MODEL_DEFAULTS`). So setting `claude_model` in a repo's `repo_config`
-> to cheapen its ordinary phases **also silently reroutes `planning` and
-> `grill_me` off the Fable 5 top tier** — and, conversely, setting it to `fable`
-> silently promotes the trivial Haiku phases (`spelling_fix`/`summarise`/
-> `health`) to Fable (~5× their cost). To keep planning and grill-me on Fable
-> while demoting the base, re-pin them explicitly in the same `repo_config`
-> entry:
+> tiers (audit F2/F3).** Level 3 (per-repo base `claude_model`) sits **above**
+> level 5 (`PHASE_MODEL_DEFAULTS`). So setting `claude_model` in a repo's
+> `repo_config` to cheapen its ordinary phases **also silently reroutes
+> `planning` and `grill_me` off the Fable 5 top tier** — and, conversely,
+> setting it to `fable` silently promotes the trivial Haiku phases
+> (`spelling_fix`/`summarise`/ `health`) to Fable (~5× their cost). To keep
+> planning and grill-me on Fable while demoting the base, re-pin them explicitly
+> in the same `repo_config` entry:
 >
 > ```jsonc
 > "repo_config": {
@@ -409,14 +432,14 @@ routed to the best tier while a filler repo stays cheap — see
 > }
 > ```
 >
-> This interaction is **internally consistent**: `resolveExpectedPlanningModel()`
-> reads the same precedence chain, so the degraded-model detector does **not**
-> false-flag a base-tier demotion as a Fable→Opus regression. It is documented
-> here because the lost Fable escalation is an easy routing surprise to trip
-> over.
+> This interaction is **internally consistent**:
+> `resolveExpectedPlanningModel()` reads the same precedence chain, so the
+> degraded-model detector does **not** false-flag a base-tier demotion as a
+> Fable→Opus regression. It is documented here because the lost Fable escalation
+> is an easy routing surprise to trip over.
 >
-> **Observability.** When a repo's `claude_model` base tier
-> reroutes one or more phases off their `PHASE_MODEL_DEFAULTS` entry,
+> **Observability.** When a repo's `claude_model` base tier reroutes one or more
+> phases off their `PHASE_MODEL_DEFAULTS` entry,
 > `setActiveRepoModelEffortOverrides()` logs a single informational line on the
 > repo switch naming each rerouted phase and its `default→base` change (e.g.
 > `planning (fable→sonnet)`). It is logged once per repo switch — not per phase
@@ -429,7 +452,8 @@ of `claude_model`; a repo tunes effort per phase only:
 1. **Phase-specific environment variable** — `CLAUDE_EFFORT_<PHASE>`
 2. **Per-repo phase override** — `phase_effort_overrides` in the repo's
    `repo_config` entry
-3. **Global config phase overrides** — `phase_effort_overrides` in `.config.json`
+3. **Global config phase overrides** — `phase_effort_overrides` in
+   `.config.json`
 4. **Phase-specific hardcoded defaults** — `PHASE_EFFORT_DEFAULTS` (table above)
 5. **Global environment variable** — `CLAUDE_EFFORT`
 6. **`DEFAULT_EFFORT`** — the hardcoded `high` fallback
@@ -444,7 +468,11 @@ override is visible in the cost logs. The resolution logic lives in
 
 ### Advisor and executor split (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the
+> split is built from the Claude CLI's `--agents` definitions, so only the
+> `claude` provider ever assembles them; `codex` and `gemini` never build the
+> arguments, and `deepseek` (the same binary against another endpoint) strips
+> them and warns.
 
 The `issue_executor_split` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md)) changes **who** does the work on an
@@ -461,9 +489,9 @@ gets revisited.
   `medium` effort, fixed as `ISSUE_EXECUTOR_MODEL` and `ISSUE_EXECUTOR_EFFORT`
   in
   [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts).
-  Each gets exactly the tools it needs to edit files and run the tests —
-  `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash` — and **no `Agent` tool**, so
-  the topology is one level deep by construction and an executor cannot fan out
+  Each gets exactly the tools it needs to edit files and run the tests — `Read`,
+  `Grep`, `Glob`, `Edit`, `Write`, `Bash` — and **no `Agent` tool**, so the
+  topology is one level deep by construction and an executor cannot fan out
   further.
 
 ```mermaid
@@ -490,29 +518,29 @@ its routing does not.
 
 The split **lifts the delegation cap**, and it does so for the `issue` phase
 only, while `issue_executor_split` is on. The baseline tells a run to prefer
-doing the work itself — the *Cap delegation* bullet in
+doing the work itself — the _Cap delegation_ bullet in
 [`prompts/coding_guidelines/prompt.md`](../prompts/coding_guidelines/prompt.md)
-and the *Delegate sparingly* bullet in
+and the _Delegate sparingly_ bullet in
 [`prompts/issue/prompt.md`](../prompts/issue/prompt.md). The split prompt in
 [`worker/deno/lib/issue_executor_split_prompt.ts`](../worker/deno/lib/issue_executor_split_prompt.ts)
 states that it governs delegation for that run and wins where it and the
-*Delegate sparingly* bullet differ, and it puts no cap on how many executors run
+_Delegate sparingly_ bullet differ, and it puts no cap on how many executors run
 concurrently.
 
 That is a deliberate, **bounded** reversal of the durable negative result
 recorded under
-[Model-generation prompt tuning](#model-generation-prompt-tuning): the
-Opus 4.8-era tuning *encouraged* subagent delegation, and that encouragement
-was measured as harmful once Opus 5 served the `opus` phases. The measurement
-was taken with sub-agents running on the **same tier as their parent**, which
-is the condition the split removes — executors here are a cheaper tier with a
-narrower tool set and no ability to fan out.
+[Model-generation prompt tuning](#model-generation-prompt-tuning): the Opus
+4.8-era tuning _encouraged_ subagent delegation, and that encouragement was
+measured as harmful once Opus 5 served the `opus` phases. The measurement was
+taken with sub-agents running on the **same tier as their parent**, which is the
+condition the split removes — executors here are a cheaper tier with a narrower
+tool set and no ability to fan out.
 
 The reversal is scoped to exactly that: the `issue` phase, with
-`issue_executor_split` on, with Sonnet executors. **Everywhere else the
-negative result stands unchanged** — on every non-split run, and on every other
-phase whether or not the key is on, delegation stays capped and the 4.8-era
-delegation encouragement must not be re-added.
+`issue_executor_split` on, with Sonnet executors. **Everywhere else the negative
+result stands unchanged** — on every non-split run, and on every other phase
+whether or not the key is on, delegation stays capped and the 4.8-era delegation
+encouragement must not be re-added.
 
 #### Pilot method
 
@@ -523,9 +551,9 @@ numbers.
 **Groups**
 
 - **Pilot** — one or two Vibe Coder hosts with `issue_executor_split` on
-  host-wide, so every repository they serve is in the pilot. Turning it on for
-  a subset of a host's repos would mix both arms into the same per-host
-  counters and make the host's numbers unreadable.
+  host-wide, so every repository they serve is in the pilot. Turning it on for a
+  subset of a host's repos would mix both arms into the same per-host counters
+  and make the host's numbers unreadable.
 - **Control** — every non-pilot host's `issue`-phase runs on Claude in the same
   window.
 - **Excluded from both sides** — runs on any other provider. The key does
@@ -537,13 +565,13 @@ comes first.
 
 **Where each reported number comes from**
 
-| Reported number | Source |
-| --- | --- |
-| Success rate | Fleet telemetry's per-host `successes` and `failures` in [`worker/deno/lib/fleet_telemetry.ts`](../worker/deno/lib/fleet_telemetry.ts) — `successRate` is `successes / (successes + failures)`, and `null` until a run has ended. |
-| Estimated USD per implementation run | The per-host `issue`-phase counters: `issuePhaseUsd` divided by `issuePhaseRuns`. |
-| First-attempt quality-gate pass rate | `issuePhaseFirstAttemptGatePasses` divided by `issuePhaseRuns`. The per-run record behind the counter is the `quality gate: passed on attempt N` line a run-stats comment carries when a gate outcome exists ([`worker/deno/lib/issue_run_stats_comment.ts`](../worker/deno/lib/issue_run_stats_comment.ts)), so a disputed figure can be audited run by run. |
+| Reported number                             | Source                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Success rate                                | Fleet telemetry's per-host `successes` and `failures` in [`worker/deno/lib/fleet_telemetry.ts`](../worker/deno/lib/fleet_telemetry.ts) — `successRate` is `successes / (successes + failures)`, and `null` until a run has ended.                                                                                                                                         |
+| Estimated USD per implementation run        | The per-host `issue`-phase counters: `issuePhaseUsd` divided by `issuePhaseRuns`.                                                                                                                                                                                                                                                                                         |
+| First-attempt quality-gate pass rate        | `issuePhaseFirstAttemptGatePasses` divided by `issuePhaseRuns`. The per-run record behind the counter is the `quality gate: passed on attempt N` line a run-stats comment carries when a gate outcome exists ([`worker/deno/lib/issue_run_stats_comment.ts`](../worker/deno/lib/issue_run_stats_comment.ts)), so a disputed figure can be audited run by run.             |
 | Standards-reviewer `violation` lines per PR | Counted from the `## Standards Review` block of each pilot PR body. The block's shape — every entry carrying `violation` or `clean`, every `violation` naming its evidence and a reason — is enforced by [`worker/deno/lib/independent_review_gate.ts`](../worker/deno/lib/independent_review_gate.ts), so the count is well defined rather than a reading of free prose. |
-| Run duration | `issuePhaseDurationSeconds` divided by `issuePhaseRuns`. |
+| Run duration                                | `issuePhaseDurationSeconds` divided by `issuePhaseRuns`.                                                                                                                                                                                                                                                                                                                  |
 
 `issuePhaseSplitRuns` is not one of the five, but read it first: on a pilot host
 it should equal `issuePhaseRuns`, and on a control host it should be zero. Any
@@ -551,14 +579,14 @@ other reading means a host is half-configured and its numbers belong to neither
 arm.
 
 An **effort** arm (the Opus 5.5 effort sweep, Issue #2573) has no per-host
-counter of its own. The per-host counters accumulate across the override
-change, so read them as the difference between two snapshots — one taken when
-the override lands, one at the end of the window. Each run's post-run callback
+counter of its own. The per-host counters accumulate across the override change,
+so read them as the difference between two snapshots — one taken when the
+override lands, one at the end of the window. Each run's post-run callback
 carries `telemetry.effort`, the effort the run was actually started with
 ([CALLBACKS.md](CALLBACKS.md)), so the archive separates pilot runs from control
 runs run by run and shows any run that did not use the arm's effort.
 
-**What no number measures.** Unit-test *quality* has no metric of its own here —
+**What no number measures.** Unit-test _quality_ has no metric of its own here —
 none of the five distinguishes a meaningful regression test from one that
 asserts nothing. The control for it is the existing review path rather than a
 new counter: the Spec reviewer must name evidence for each criterion — the file,
@@ -571,12 +599,12 @@ favour either.
 Enable the split by default **only if all four of these hold**. They are
 conjunctive — three out of four is not a pass.
 
-| # | Condition | Threshold |
-| --- | --- | --- |
-| 1 | Pilot success rate vs control | **≥** control |
-| 2 | Pilot first-attempt quality-gate pass rate vs control | **≥** control |
-| 3 | Average Standards-reviewer `violation` lines per pilot PR vs control | **≤** control |
-| 4 | Estimated USD per implementation run vs control | at least **15%** lower |
+| # | Condition                                                            | Threshold              |
+| - | -------------------------------------------------------------------- | ---------------------- |
+| 1 | Pilot success rate vs control                                        | **≥** control          |
+| 2 | Pilot first-attempt quality-gate pass rate vs control                | **≥** control          |
+| 3 | Average Standards-reviewer `violation` lines per pilot PR vs control | **≤** control          |
+| 4 | Estimated USD per implementation run vs control                      | at least **15%** lower |
 
 **Quality is a gate, not a tie-break. A cheaper run that produces worse code is
 a false saving and does not qualify.** Any regression in conditions 1, 2 or 3
@@ -602,35 +630,38 @@ flowchart TD
 
 ### Reviewer sub-agents (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the
+> reviewers are Claude CLI `--agents` definitions, built the same way as the
+> split's executors; `codex` and `gemini` never build the argument, and
+> `deepseek` strips it and warns.
 
 Every `issue` run whose body states acceptance criteria dispatches two
-independent reviewers before writing the PR summary (the *Independent Review
-Before the PR* section of [`prompts/issue/prompt.md`](../prompts/issue/prompt.md),
-enforced by
+independent reviewers before writing the PR summary (the _Independent Review
+Before the PR_ section of
+[`prompts/issue/prompt.md`](../prompts/issue/prompt.md), enforced by
 [`worker/deno/lib/independent_review_gate.ts`](../worker/deno/lib/independent_review_gate.ts)).
-With no definition, both inherit the advisor's model and effort: Opus at
-`high` for two extra contexts on nearly every run.
+With no definition, both inherit the advisor's model and effort: Opus at `high`
+for two extra contexts on nearly every run.
 
-The `issue_reviewer_agents` key ([CONFIGURATION.md](CONFIGURATION.md),
-Issue #2575) defines them instead, in
+The `issue_reviewer_agents` key ([CONFIGURATION.md](CONFIGURATION.md), Issue
+#2575) defines them instead, in
 [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts):
 
-| Agent | Model | Effort | Tools | Inputs |
-| --- | --- | --- | --- | --- |
-| `spec-reviewer` | `sonnet` | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
-| `standards-reviewer` | `sonnet` | `low` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
+| Agent                | Model    | Effort   | Tools                                  | Inputs                                  |
+| -------------------- | -------- | -------- | -------------------------------------- | --------------------------------------- |
+| `spec-reviewer`      | `sonnet` | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body        |
+| `standards-reviewer` | `sonnet` | `low`    | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
 
 The reviewers keep what makes them worth running: a fresh context that never
 sees the author's reasoning. The Standards reviewer is also scoped as the
 [Claude Code best practices](https://code.claude.com/docs/en/best-practices#add-an-adversarial-review-step)
 advise: a `violation` must cite a documented standard and affect correctness,
-security or the stated requirements, and anything else is listed as
-`optional` and not chased.
+security or the stated requirements, and anything else is listed as `optional`
+and not chased.
 
 **Expected effect.** Two review contexts move from Opus 5.5 at `high` ($4/$20
-per MTok) to Sonnet ($2/$10) at `medium` and `low`. No fleet figure is
-claimed; the pilot produces it.
+per MTok) to Sonnet ($2/$10) at `medium` and `low`. No fleet figure is claimed;
+the pilot produces it.
 
 **Pilot.** The key is **off by default**. It is measured with the
 [pilot method](#pilot-method) and the
@@ -648,13 +679,13 @@ Record the figures on Issue #2575 before the default changes.
 Every `claude` child, on every phase, runs with Claude Code's deterministic
 sub-agent caps set in its spawn environment by
 [`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
-(`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
-the image pins 2.1.281 in [`container/tools.json`](../container/tools.json).
+(`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217; the
+image pins 2.1.281 in [`container/tools.json`](../container/tools.json).
 
-| Variable | Value | CLI default | Effect |
-| --- | --- | --- | --- |
-| `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` | `1` | `3` | The main session may spawn sub-agents; a sub-agent may not spawn its own |
-| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | `4` | `20` | A fifth concurrent spawn is refused with `Concurrent subagent limit reached` until one finishes |
+| Variable                               | Value | CLI default | Effect                                                                                          |
+| -------------------------------------- | ----- | ----------- | ----------------------------------------------------------------------------------------------- |
+| `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` | `1`   | `3`         | The main session may spawn sub-agents; a sub-agent may not spawn its own                        |
+| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | `4`   | `20`        | A fifth concurrent spawn is refused with `Concurrent subagent limit reached` until one finishes |
 
 These caps are spawn environment, not an operator setting. A value already in
 the worker's own environment wins, but no `.config.json` key sets them. The
@@ -663,33 +694,35 @@ itself does not cap.
 
 ### 🤖 Codex per-phase routing
 
-> **Applies to:** `claude` ❌ · `codex` ✅ · `gemini` ❌ · `deepseek` ❌ — this is Codex's own chain: Claude's is the precedence chain above and Gemini's is the section below. DeepSeek uses its own section below.
+> **Applies to:** `claude` ❌ · `codex` ✅ · `gemini` ❌ · `deepseek` ❌ — this
+> is Codex's own chain: Claude's is the precedence chain above and Gemini's is
+> the section below. DeepSeek uses its own section below.
 
 The Codex CLI has both levers Claude has — `--model` and
-`-c model_reasoning_effort="…"` — so the same effort-first cost design applies to
-it (Issue #363). Until that issue the Codex descriptor forwarded only an
-*explicit* model/effort, and because the worker relies on phase defaults, every
+`-c model_reasoning_effort="…"` — so the same effort-first cost design applies
+to it (Issue #363). Until that issue the Codex descriptor forwarded only an
+_explicit_ model/effort, and because the worker relies on phase defaults, every
 Codex phase — the cheapest `summarise` and the most expensive `planning` alike —
 ran on whatever the CLI happened to be configured with.
 
-Codex now routes `phase` through its own tables,
-`CODEX_PHASE_MODEL_DEFAULTS` and `CODEX_PHASE_EFFORT_DEFAULTS` in
+Codex now routes `phase` through its own tables, `CODEX_PHASE_MODEL_DEFAULTS`
+and `CODEX_PHASE_EFFORT_DEFAULTS` in
 [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts).
 They cover the same phase keys as the Claude tables with Codex model ids and the
 four reasoning-effort levels Codex accepts (`minimal`, `low`, `medium`, `high` —
 there is no Codex equivalent of Claude's `xhigh`/`max`, so the planning-shaped
 phases top out at `high`):
 
-| Phase | Codex model | Codex effort |
-|-------|-------------|--------------|
-| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gpt-5-codex` (top tier) | `high` |
-| `issue` (implementation) | `gpt-5` (base tier) | `high` |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `gpt-5` (base tier) | `medium` |
-| `spelling_fix`, `summarise`, `health` | `gpt-5-mini` (cheap tier) | `low` |
+| Phase                                                                                                   | Codex model               | Codex effort |
+| ------------------------------------------------------------------------------------------------------- | ------------------------- | ------------ |
+| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gpt-5-codex` (top tier)  | `high`       |
+| `issue` (implementation)                                                                                | `gpt-5` (base tier)       | `high`       |
+| `ci_fix`, `pr_feedback`, `quality_fix`                                                                  | `gpt-5` (base tier)       | `medium`     |
+| `spelling_fix`, `summarise`, `health`                                                                   | `gpt-5-mini` (cheap tier) | `low`        |
 
 The model ids are an implementation choice over the current Codex-capable
-line-up, not a fixed contract: a deployment on a different line-up re-pins a tier
-through configuration rather than a code change.
+line-up, not a fixed contract: a deployment on a different line-up re-pins a
+tier through configuration rather than a code change.
 
 **Precedence** is Claude's chain with Codex-named keys — the six steps
 themselves are stated once, in
@@ -713,11 +746,11 @@ premium repo's Codex tier cannot leak into a filler repo.
 
 **Fail loud.** Unlike Claude's effort chain there is no hardcoded terminal
 fallback: a phase that resolves to nothing leaves Codex on its own configured
-default, which would be invisible. So a non-empty phase that resolves to no model
-(or no effort) emits **one** `console.warn` naming the phase and the table that
-is missing an entry, exactly as `buildClaudeModelArgs` does — a typo or a new
-phase whose author forgot a default is caught rather than shipping silently. A
-phase-less invocation is deliberate and stays quiet.
+default, which would be invisible. So a non-empty phase that resolves to no
+model (or no effort) emits **one** `console.warn` naming the phase and the table
+that is missing an entry, exactly as `buildClaudeModelArgs` does — a typo or a
+new phase whose author forgot a default is caught rather than shipping silently.
+A phase-less invocation is deliberate and stays quiet.
 
 ```mermaid
 flowchart LR
@@ -731,25 +764,26 @@ flowchart LR
 
 ### ✨ Gemini per-phase routing
 
-> **Applies to:** `claude` ❌ · `codex` ❌ · `gemini` ✅ · `deepseek` ❌ — this is Gemini's own chain: Claude's is the precedence chain above and Codex's is the section directly above it. DeepSeek's is the section directly below.
+> **Applies to:** `claude` ❌ · `codex` ❌ · `gemini` ✅ · `deepseek` ❌ — this
+> is Gemini's own chain: Claude's is the precedence chain above and Codex's is
+> the section directly above it. DeepSeek's is the section directly below.
 
-The Gemini CLI has **one** of the two levers: `--model`, but no
-reasoning-effort option at all. Until Issue #364 the Gemini descriptor
-discarded `request.phase` entirely, so every Gemini phase ran on whatever the
-CLI happened to be configured with, and a configured `request.effort` was
-dropped without a word.
+The Gemini CLI has **one** of the two levers: `--model`, but no reasoning-effort
+option at all. Until Issue #364 the Gemini descriptor discarded `request.phase`
+entirely, so every Gemini phase ran on whatever the CLI happened to be
+configured with, and a configured `request.effort` was dropped without a word.
 
-Gemini now routes `phase` through its own table,
-`GEMINI_PHASE_MODEL_DEFAULTS` in
+Gemini now routes `phase` through its own table, `GEMINI_PHASE_MODEL_DEFAULTS`
+in
 [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts).
 It covers the same phase keys as the Claude table, with Gemini model ids:
 
-| Phase | Gemini model |
-|-------|--------------|
-| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gemini-2.5-pro` (top tier) |
-| `issue` (implementation) | `gemini-2.5-flash` (base tier) |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `gemini-2.5-flash` (base tier) |
-| `spelling_fix`, `summarise`, `health` | `gemini-2.5-flash-lite` (cheap tier) |
+| Phase                                                                                                   | Gemini model                         |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gemini-2.5-pro` (top tier)          |
+| `issue` (implementation)                                                                                | `gemini-2.5-flash` (base tier)       |
+| `ci_fix`, `pr_feedback`, `quality_fix`                                                                  | `gemini-2.5-flash` (base tier)       |
+| `spelling_fix`, `summarise`, `health`                                                                   | `gemini-2.5-flash-lite` (cheap tier) |
 
 The model ids are an implementation choice over the current Gemini line-up, not
 a fixed contract: a deployment on a different line-up re-pins a tier through
@@ -773,12 +807,12 @@ overrides are **replaced** — never merged — on every repo switch. There is
 deliberately **no** effort counterpart to any of these keys: configuration the
 CLI could never apply would be dead surface.
 
-**Fail loud — the missing effort lever is reported, not swallowed.** An
-operator who pins an effort for a phase, or simply relies on
-`PHASE_EFFORT_DEFAULTS`, would otherwise get no signal that the lever does
-nothing under Gemini. So when an effort is resolved for a Gemini invocation —
-explicitly on the request, or from the phase effort design — the executor emits
-**one** `console.warn` naming the provider, the phase and the requested effort:
+**Fail loud — the missing effort lever is reported, not swallowed.** An operator
+who pins an effort for a phase, or simply relies on `PHASE_EFFORT_DEFAULTS`,
+would otherwise get no signal that the lever does nothing under Gemini. So when
+an effort is resolved for a Gemini invocation — explicitly on the request, or
+from the phase effort design — the executor emits **one** `console.warn` naming
+the provider, the phase and the requested effort:
 
 ```text
 [gemini] Reasoning effort "high" requested for phase "planning" but the Gemini
@@ -806,29 +840,30 @@ flowchart LR
 
 ### 🐋 DeepSeek per-phase routing
 
-> **Applies to:** `claude` ❌ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — this is DeepSeek's own chain: Claude's is the precedence chain above, and Codex's and Gemini's are the two sections directly above it.
+> **Applies to:** `claude` ❌ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — this
+> is DeepSeek's own chain: Claude's is the precedence chain above, and Codex's
+> and Gemini's are the two sections directly above it.
 
-DeepSeek ships no CLI of its own. The provider is the **Anthropic CLI pointed
-at DeepSeek's Anthropic-compatible endpoint**, installed as the `deepseek`
-command from `container/providers/deepseek.sh` and pinned independently of
-`claude`. That is what makes its routing table mandatory rather than a
-nicety: every Claude default is a **tier alias** (`opus`, `sonnet`, `haiku`,
-`fable`) that DeepSeek's endpoint cannot resolve, so a provider with no table
-of its own would send an Anthropic alias to a third-party endpoint and fail
-mid-run.
+DeepSeek ships no CLI of its own. The provider is the **Anthropic CLI pointed at
+DeepSeek's Anthropic-compatible endpoint**, installed as the `deepseek` command
+from `container/providers/deepseek.sh` and pinned independently of `claude`.
+That is what makes its routing table mandatory rather than a nicety: every
+Claude default is a **tier alias** (`opus`, `sonnet`, `haiku`, `fable`) that
+DeepSeek's endpoint cannot resolve, so a provider with no table of its own would
+send an Anthropic alias to a third-party endpoint and fail mid-run.
 
 DeepSeek therefore routes `phase` through its own table,
 `DEEPSEEK_PHASE_MODEL_DEFAULTS` in
 [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts).
-It covers the same phase keys as the Claude table, pinned to real DeepSeek
-model ids:
+It covers the same phase keys as the Claude table, pinned to real DeepSeek model
+ids:
 
-| Phase | DeepSeek model |
-|-------|----------------|
+| Phase                                                                                                   | DeepSeek model               |
+| ------------------------------------------------------------------------------------------------------- | ---------------------------- |
 | `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `deepseek-v4-pro` (top tier) |
-| `issue` (implementation) | `deepseek-flash` (base tier) |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `deepseek-flash` (base tier) |
-| `spelling_fix`, `summarise`, `health` | `deepseek-flash` (base tier) |
+| `issue` (implementation)                                                                                | `deepseek-flash` (base tier) |
+| `ci_fix`, `pr_feedback`, `quality_fix`                                                                  | `deepseek-flash` (base tier) |
+| `spelling_fix`, `summarise`, `health`                                                                   | `deepseek-flash` (base tier) |
 
 **There is no cheap rung, and that is deliberate.** Claude, Codex and Gemini
 each drop the trivial trio (`spelling_fix`, `summarise`, `health`) onto a third,
@@ -857,10 +892,10 @@ overrides are **replaced** — never merged — on every repo switch.
 `--effort` flag, but DeepSeek's endpoint does not implement Anthropic's effort
 control, so the flag is never emitted. There is deliberately **no**
 `DEEPSEEK_PHASE_EFFORT_DEFAULTS` and no DeepSeek effort configuration key:
-either would be dead surface. This is the Gemini treatment (#364), and an
-effort resolved for a DeepSeek invocation is **reported, not swallowed** — the
-executor emits one `console.warn` naming the provider, the phase and the
-requested effort:
+either would be dead surface. This is the Gemini treatment (#364), and an effort
+resolved for a DeepSeek invocation is **reported, not swallowed** — the executor
+emits one `console.warn` naming the provider, the phase and the requested
+effort:
 
 ```text
 [deepseek] Reasoning effort "high" requested for phase "planning" but
@@ -875,14 +910,13 @@ warning is the fix.
 
 **The Fable machinery is gated off, not merely absent.** DeepSeek has no Fable
 tier, no rate-limit ladder (`deepseek-flash` is a different model, not a cheaper
-rung of `deepseek-v4-pro`) and no degraded-model reroute. The gate matters
-more here than for Codex or Gemini: `--model opus` is a *well-formed* flag to
-the Anthropic CLI DeepSeek runs, so an ungated pre-flight reroute would be
-accepted locally and fail at the endpoint as an unresolvable model mid-run.
+rung of `deepseek-v4-pro`) and no degraded-model reroute. The gate matters more
+here than for Codex or Gemini: `--model opus` is a _well-formed_ flag to the
+Anthropic CLI DeepSeek runs, so an ungated pre-flight reroute would be accepted
+locally and fail at the endpoint as an unresolvable model mid-run.
 [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) provider-gates the
-chokepoint and
-[#417](https://github.com/stSoftwareAU/VibeCoder/issues/417) carries the
-regression tests that keep it gated.
+chokepoint and [#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)
+carries the regression tests that keep it gated.
 
 ```mermaid
 flowchart LR
@@ -895,9 +929,15 @@ flowchart LR
     F["Fable reroute / rate-limit ladder"] -->|provider-gated| G["⛔ skipped, logged once"]
     style G fill:#c9184a,stroke:#800f2f,color:#fff
 ```
+
 ### Model Fallback on Rate Limit
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — only Claude's descriptor defines `cheaperModel()`, so under Codex or Gemini no downgrade is attempted; the attempt returns `no-ladder-for-provider` and the worker warns once, naming the provider. DeepSeek defines no `cheaperModel()` either — `deepseek-flash` is a different model, not a cheaper rung of `deepseek-v4-pro` — so it takes the same `no-ladder-for-provider` path.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — only
+> Claude's descriptor defines `cheaperModel()`, so under Codex or Gemini no
+> downgrade is attempted; the attempt returns `no-ladder-for-provider` and the
+> worker warns once, naming the provider. DeepSeek defines no `cheaperModel()`
+> either — `deepseek-flash` is a different model, not a cheaper rung of
+> `deepseek-v4-pro` — so it takes the same `no-ladder-for-provider` path.
 
 When the worker is rate-limited after exhausting retries, it automatically
 downgrades to a cheaper model instead of failing:
@@ -908,38 +948,42 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
 
 - Enabled by default; disable via `enable_model_fallback: false` in
   `.config.json`
-- **The ladder is the active provider's, not always Claude's** (Issue #365).
-  The current model is resolved through the running provider's own chain, and
-  the cheaper tier through that provider's ladder. Only Claude defines one
-  today: under **Codex or Gemini** the attempt returns the distinct reason
+- **The ladder is the active provider's, not always Claude's** (Issue #365). The
+  current model is resolved through the running provider's own chain, and the
+  cheaper tier through that provider's ladder. Only Claude defines one today:
+  under **Codex or Gemini** the attempt returns the distinct reason
   `no-ladder-for-provider` — never `already-cheapest`, which would read as "the
   run was already on the cheapest tier" — and the worker warns **once**, naming
   the provider, so an operator sees that no downgrade was attempted rather than
-  inferring it from silence. Give a provider a ladder by adding
-  `cheaperModel()` to its descriptor in `agent_provider.ts`.
-- **Model-unavailable (export-control) downgrade.** When
-  the requested tier is *unavailable or not permitted* — rather than
-  rate-limited — `detectModelUnavailable()` matches the error tail (403 /
-  `permission_error`, "disabled", "not available", and the export-control
-  "restricted"/"export control" wording naming the tier) and the loop downgrades
-  **immediately, with no wait**, resolving the same `fable → opus` (Opus 4.8)
-  hop. This fires for the requested tier however Fable was selected — the
-  `planning`/`grill_me` phase defaults *and* a per-repo `claude_model: "fable"`
-  base tier. The substitution is **per-run and config keeps pointing at Fable**,
-  so once Fable returns the next run requests it again with no manual change
-  (self-heal) — there is no persistent "Fable is down" circuit-breaker.
-- Fallback transitions are recorded in credit logs as `fallbackFrom`: `runClaudeWithRetry` threads the pre-fallback model into the
-  re-invocation via the `fallbackFrom` option, so the post-fallback
-  `logInvocation()` records the original→cheaper transition and the
-  daily-summary `byFallback` map (e.g. `opus→sonnet: 1`) is populated. This
-  covers both the rate-limit and the model-unavailable fallback paths.
+  inferring it from silence. Give a provider a ladder by adding `cheaperModel()`
+  to its descriptor in `agent_provider.ts`.
+- **Model-unavailable (export-control) downgrade.** When the requested tier is
+  _unavailable or not permitted_ — rather than rate-limited —
+  `detectModelUnavailable()` matches the error tail (403 / `permission_error`,
+  "disabled", "not available", and the export-control "restricted"/"export
+  control" wording naming the tier) and the loop downgrades **immediately, with
+  no wait**, resolving the same `fable → opus` (Opus 4.8) hop. This fires for
+  the requested tier however Fable was selected — the `planning`/`grill_me`
+  phase defaults _and_ a per-repo `claude_model: "fable"` base tier. The
+  substitution is **per-run and config keeps pointing at Fable**, so once Fable
+  returns the next run requests it again with no manual change (self-heal) —
+  there is no persistent "Fable is down" circuit-breaker.
+- Fallback transitions are recorded in credit logs as `fallbackFrom`:
+  `runClaudeWithRetry` threads the pre-fallback model into the re-invocation via
+  the `fallbackFrom` option, so the post-fallback `logInvocation()` records the
+  original→cheaper transition and the daily-summary `byFallback` map (e.g.
+  `opus→sonnet: 1`) is populated. This covers both the rate-limit and the
+  model-unavailable fallback paths.
 - Implementation:
   [`worker/deno/lib/model_fallback.ts`](../worker/deno/lib/model_fallback.ts),
   [`worker/deno/lib/claude_runner.ts`](../worker/deno/lib/claude_runner.ts)
 
 ### Two-stage planning self-critique flow
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — both turns are ordinary phase invocations, so they run on whichever provider is active; only the continuity between them differs (see [Session Resume](#session-resume)).
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — both
+> turns are ordinary phase invocations, so they run on whichever provider is
+> active; only the continuity between them differs (see
+> [Session Resume](#session-resume)).
 
 Planning runs **attack their own answer** before publishing. Rather than a
 single agentic Claude call that creates sub-issues directly, a planning run is
@@ -950,24 +994,24 @@ to criticise rather than anchoring on the reasoning that produced it:
 1. **Draft turn.** Claude produces the complete plan (sub-issue titles, bodies,
    acceptance criteria, dependency edges) as **text only** — it is explicitly
    forbidden from running `gh issue create` or closing the parent issue.
-2. **Critique → revise → execute turn.** Resuming the same Claude session
-  , the worker embeds the stage-1 draft as a **sanitised**
-   artefact (the draft derives from untrusted issue text, so it is framed and
-   passed through `sanitiseDelimiterPatterns`,) and instructs
-   Claude to adversarially critique the draft — *what is wrong with this
-   approach: missing work, mis-scoping, wrong dependencies, over-engineering,
-   duplication, weak acceptance criteria* — revise the plan **once** (single
-   iteration, KISS — no critique loop), and only then create the final
-   sub-issues, post one summary comment, and close the parent. The critique
-   text stays internal: **it is never posted** to any comment or issue body.
+2. **Critique → revise → execute turn.** Resuming the same Claude session , the
+   worker embeds the stage-1 draft as a **sanitised** artefact (the draft
+   derives from untrusted issue text, so it is framed and passed through
+   `sanitiseDelimiterPatterns`,) and instructs Claude to adversarially critique
+   the draft — _what is wrong with this approach: missing work, mis-scoping,
+   wrong dependencies, over-engineering, duplication, weak acceptance criteria_
+   — revise the plan **once** (single iteration, KISS — no critique loop), and
+   only then create the final sub-issues, post one summary comment, and close
+   the parent. The critique text stays internal: **it is never posted** to any
+   comment or issue body.
 
 The flow is **never worse than the pre-two-stage single call**. If the draft
 turn fails, times out, or returns an empty draft, the run falls back to the
 original single-invocation planning prompt. If the draft turn disobeys and
 creates real sub-issues despite the text-only instruction, those are accepted
 and the critique turn is skipped. The existing three-tier sub-issue detection,
-the zero-sub-issue retry, and `closePlanningIssue` all apply to
-the publish turn's output unchanged.
+the zero-sub-issue retry, and `closePlanningIssue` all apply to the publish
+turn's output unchanged.
 
 ```mermaid
 sequenceDiagram
@@ -990,8 +1034,8 @@ sequenceDiagram
 ```
 
 Each turn is one planning-phase invocation, so a normal run records **two**
-invocations (draft + publish), or **three** when the retry fires — the
-list the stats section below aggregates over. The prompt assets live in
+invocations (draft + publish), or **three** when the retry fires — the list the
+stats section below aggregates over. The prompt assets live in
 [`prompts/planning/`](../prompts/planning/); the worker always loads the latest
 version at runtime.
 
@@ -1000,12 +1044,22 @@ version at runtime.
 
 ### Planning-run stats + degraded-model detection
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the stats comment is posted for every provider, and since [#441](https://github.com/stSoftwareAU/VibeCoder/issues/441) the expected model is derived from the **invocation's own** provider routing (`provider.resolveModel(phase)`), not from Claude's chain. DeepSeek runs the Claude CLI with `--output-format stream-json`, so its served model **is** observed and is now judged against `deepseek-v4-pro` rather than `fable`; a genuinely wrong DeepSeek tier (`deepseek-flash` for `planning`) still flags. The served model is read from those same `stream-json` assistant lines, which Codex and Gemini do not emit, so their runs observe no served model and report `❓ unknown` rather than a degraded verdict.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the
+> stats comment is posted for every provider, and since
+> [#441](https://github.com/stSoftwareAU/VibeCoder/issues/441) the expected
+> model is derived from the **invocation's own** provider routing
+> (`provider.resolveModel(phase)`), not from Claude's chain. DeepSeek runs the
+> Claude CLI with `--output-format stream-json`, so its served model **is**
+> observed and is now judged against `deepseek-v4-pro` rather than `fable`; a
+> genuinely wrong DeepSeek tier (`deepseek-flash` for `planning`) still flags.
+> The served model is read from those same `stream-json` assistant lines, which
+> Codex and Gemini do not emit, so their runs observe no served model and report
+> `❓ unknown` rather than a degraded verdict.
 
-Every planning run posts a short model-usage stats block on the parent issue
-and computes a **degradation verdict**. The block reports the requested model,
-the served model(s) the API declared, effort, token counts, turn count and
-duration (when the CLI reports them), the number of planning invocations, and
+Every planning run posts a short model-usage stats block on the parent issue and
+computes a **degradation verdict**. The block reports the requested model, the
+served model(s) the API declared, effort, token counts, turn count and duration
+(when the CLI reports them), the number of planning invocations, and
 `degraded: yes/no`.
 
 A run is **degraded** when **no** planning-phase response was served by the
@@ -1017,25 +1071,25 @@ configured best planning model, or an explicit rate-limit fallback fired:
   empty — the default — the expected model is derived from the `planning` phase
   resolution chain of **the provider the invocation ran on**, by reusing that
   provider descriptor's
-  [`resolveModel(phase)`](../worker/deno/lib/agent_provider.ts) (single source of
-  truth, no duplicated chain), so a repo that deliberately routes planning to a
-  different tier via `repo_config` is never falsely flagged. Set it to expect an
-  exact model regardless of routing.
+  [`resolveModel(phase)`](../worker/deno/lib/agent_provider.ts) (single source
+  of truth, no duplicated chain), so a repo that deliberately routes planning to
+  a different tier via `repo_config` is never falsely flagged. Set it to expect
+  an exact model regardless of routing.
 - **The chain is the provider's own, not Claude's** (Issue #441). Reading
   Claude's chain unconditionally was harmless while only Claude exposed a served
   model, but DeepSeek is carried on the Anthropic CLI: a `planning` run under
   `agent_provider: deepseek` compared served `deepseek-v4-pro` against expected
   `fable` and flagged itself degraded for a tier the operator never requested.
-  The gate is the descriptor, never a `provider.id === "claude"` equality check —
-  the same shape [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398)
+  The gate is the descriptor, never a `provider.id === "claude"` equality check
+  — the same shape [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398)
   established for the pre-flight reroute, one layer up.
 - **Served-model match** is prefix/alias-aware: requested `fable` (or
   `claude-fable-5`) vs served `claude-fable-5-<date>` is **OK**; a served
   `claude-opus-*` alone is **degraded**.
-- **The served-model rule is lenient at run level**. The verdict
-  looks at the union of served models across every judged invocation: the run is
-  degraded only when **none** of them match. A **mixed** run — Fable served part
-  of the work, another tier served the rest — is therefore **not** degraded; the
+- **The served-model rule is lenient at run level**. The verdict looks at the
+  union of served models across every judged invocation: the run is degraded
+  only when **none** of them match. A **mixed** run — Fable served part of the
+  work, another tier served the rest — is therefore **not** degraded; the
   expected tier was still in play. This is the same rule `isMismatch()` in
   [`planning_run_aggregation.ts`](../worker/deno/lib/planning_run_aggregation.ts)
   applies to the fleet aggregate, so the per-run verdict and the aggregate can
@@ -1043,23 +1097,23 @@ configured best planning model, or an explicit rate-limit fallback fired:
   so partial service by a lower tier stays visible.
 - **Explicit signals stay unconditional.** A recorded `fallbackModel`
   (rate-limit downgrade,) or `preflightDegraded` flag (pre-flight Fable
-  reroute,) flags the run even on a mixed run where Fable also served.
-  These are out-of-band signals the served-model data cannot contradict —
-  silencing a known downgrade would report it as clean (fail-loud,).
+  reroute,) flags the run even on a mixed run where Fable also served. These are
+  out-of-band signals the served-model data cannot contradict — silencing a
+  known downgrade would report it as clean (fail-loud,).
 - Only `phase: "planning"` invocations are judged — auxiliary calls (e.g.
   `summarise`/haiku helpers) never trigger the flag.
 
-The served `model` field captured per-run is the only observable source
-of truth. Stats land on the parent on **every** planning run: folded into the
+The served `model` field captured per-run is the only observable source of
+truth. Stats land on the parent on **every** planning run: folded into the
 existing summary comment on closure (one comment, less noise), or posted
 standalone on a run that failed after at least one invocation. Posting is
 non-fatal — a comment failure never fails the planning run.
 
 The **effort** line is shown verbatim from the value the worker requested —
 `max`/`xhigh`/`high`/`medium`/`low`, including the `xhigh` level from Issue 2620
-— so an operator sees both *which model* and *at what effort* generated the plan.
-Token counts are summed across every planning invocation in the run; turns and
-duration appear only when the CLI reports them.
+— so an operator sees both _which model_ and _at what effort_ generated the
+plan. Token counts are summed across every planning invocation in the run; turns
+and duration appear only when the CLI reports them.
 
 #### Example stats comment
 
@@ -1075,32 +1129,34 @@ routing (Issue #2560) the requested model reads `opus` and the served model
 - **Served model(s):** `claude-fable-5-20250115`
 - **Effort:** `high`
 - **Planning invocations:** 2
-- **Tokens:** input 48,210 · output 6,540 · cache write 12,800 · cache read 31,400
+- **Tokens:** input 48,210 · output 6,540 · cache write 12,800 · cache read
+  31,400
 - **Turns:** 14
 - **Duration:** 3m 12s
 - **Estimated cost (USD, estimate only):** ~$0.8500
-  - `claude-fable-5-20250115`: $0.8500 — input $0.4800 · output $0.3300 · cache write $0.0300 · cache read $0.0100
+  - `claude-fable-5-20250115`: $0.8500 — input $0.4800 · output $0.3300 · cache
+    write $0.0300 · cache read $0.0100
 - **Degraded:** no
-- **Failure-Detection gate:** published 3 · offenders 0 · repaired 0 · still offending 0 · deferred 0
+- **Failure-Detection gate:** published 3 · offenders 0 · repaired 0 · still
+  offending 0 · deferred 0
 - **Failure-Detection repair:** 0ms
 ```
 
-The two **Failure-Detection** lines (Issue #63) record what the
-presence gate and its
-model-driven self-repair did on this run: how many sub-issues were published and
-gated, how many offended, how many the repair fixed, how many it could not, how
-many it deferred out of budget, and the wall-clock it
-spent. They are emitted on **every** gate path — clean, fully repaired, and
-partially repaired — with explicit zeros on a clean run, because a metric only
-emitted on the unhappy path cannot distinguish "healthy" from "not reporting".
-That is why the systemic scale of the missing-criterion defect was previously
-findable only by grepping worker logs. A run that gated sub-issues but produced
-no model stats (a recovery close that skipped Claude) still posts the block
-carrying these counts.
+The two **Failure-Detection** lines (Issue #63) record what the presence gate
+and its model-driven self-repair did on this run: how many sub-issues were
+published and gated, how many offended, how many the repair fixed, how many it
+could not, how many it deferred out of budget, and the wall-clock it spent. They
+are emitted on **every** gate path — clean, fully repaired, and partially
+repaired — with explicit zeros on a clean run, because a metric only emitted on
+the unhappy path cannot distinguish "healthy" from "not reporting". That is why
+the systemic scale of the missing-criterion defect was previously findable only
+by grepping worker logs. A run that gated sub-issues but produced no model stats
+(a recovery close that skipped Claude) still posts the block carrying these
+counts.
 
-The **estimate-only** cost block prices the recorded tokens
-against the shared `MODEL_PRICING` table (`worker/deno/lib/token_usage.ts`) — the
-single source of truth for rates — via `formatCostEstimateLines()`
+The **estimate-only** cost block prices the recorded tokens against the shared
+`MODEL_PRICING` table (`worker/deno/lib/token_usage.ts`) — the single source of
+truth for rates — via `formatCostEstimateLines()`
 (`worker/deno/lib/cost_estimate.ts`). Currency is USD: a Claude sub-bullet is
 the rate Anthropic bills, while a non-Claude sub-bullet is the vendor's API
 **list** price for the same tokens — labelled `(API-equivalent)` and never a
@@ -1112,49 +1168,56 @@ are summed:
 
 ```markdown
 - **Estimated cost (USD, estimate only):** ~$0.9100
-  - `claude-fable-5-20250115`: $0.8500 — input $0.4800 · output $0.3300 · cache write $0.0300 · cache read $0.0100
-  - `gpt-5-codex`: $0.0600 (API-equivalent) — input $0.0400 · output $0.0200 · cache write $0.0000 · cache read $0.0000
+  - `claude-fable-5-20250115`: $0.8500 — input $0.4800 · output $0.3300 · cache
+    write $0.0300 · cache read $0.0100
+  - `gpt-5-codex`: $0.0600 (API-equivalent) — input $0.0400 · output $0.0200 ·
+    cache write $0.0000 · cache read $0.0000
 ```
 
 Every figure runs through `formatUsd`, which uses four decimals below $1 and
 two at or above it. The four columns are identical for every provider, so a
 column the vendor does not bill — none of the three non-Claude vendors charges
-a per-token cache write — renders `$0.0000` rather than being dropped, and the
+a per-token cache write — renders `$0.0000`rather than being dropped, and the
 four columns always sum to the per-model total. When a served model has no
-pricing row at all its sub-bullet reads `_pricing unknown_` and the summary is
-marked `(partial …)` rather than silently costed at zero (fail-loud,
-Issue #3234). The block is omitted entirely when no priced tokens were
-recorded.
+pricing row at all its sub-bullet reads`
+_pricing unknown_ `and the summary is
+marked`(partial …)` rather than silently
+costed at zero (fail-loud, Issue #3234). The block is omitted entirely when no
+priced tokens were recorded.
 
 When the same run is served by a different tier — and the expected tier served
 **none** of it — the verdict line flips and names the reason:
 
 ```markdown
-- **Degraded:** ⚠️ yes — served model `claude-opus-4-7` does not match expected `claude-fable-5`
+- **Degraded:** ⚠️ yes — served model `claude-opus-4-7` does not match expected
+  `claude-fable-5`
 ```
 
 When several non-matching tiers served the run, all of them are named:
 
 ```markdown
-- **Degraded:** ⚠️ yes — no served model matches expected `claude-fable-5` (served: `claude-opus-4-7`, `claude-sonnet-4-5`)
+- **Degraded:** ⚠️ yes — no served model matches expected `claude-fable-5`
+  (served: `claude-opus-4-7`, `claude-sonnet-4-5`)
 ```
 
 An explicit rate-limit downgrade reads instead:
 
 ```markdown
-- **Degraded:** ⚠️ yes — explicit rate-limit fallback to `claude-opus` (expected `claude-fable-5`)
+- **Degraded:** ⚠️ yes — explicit rate-limit fallback to `claude-opus` (expected
+  `claude-fable-5`)
 ```
 
 When a planning invocation ran and produced output but **no** served model could
 be observed (older Claude CLI versions omit `message.model`, or every assistant
 line fails to parse), the verdict is **indeterminate** rather than a clean
-`Degraded: no`. The verdict cannot legitimately assert health when
-it observed no served model, so it reports `unknown` and the served-model line
-reads `_none reported_`:
+`Degraded: no`. The verdict cannot legitimately assert health when it observed
+no served model, so it reports `unknown` and the served-model line reads
+`_none reported_`:
 
 ```markdown
 - **Served model(s):** _none reported_
-- **Degraded:** ❓ unknown — no served model observed (expected `claude-fable-5`); cannot confirm the run was served by the expected model
+- **Degraded:** ❓ unknown — no served model observed (expected
+  `claude-fable-5`); cannot confirm the run was served by the expected model
 ```
 
 An indeterminate verdict is **not** a confirmed degradation: `degraded` stays
@@ -1172,7 +1235,7 @@ label, so silent model degradation is visible at a glance:
 - **Not reserved.** `degraded-model` is a plain workflow-state label defined in
   [`label_definitions.ts`](../worker/deno/setup/label_definitions.ts) (colour
   `e99695`). It is **not** in `RESERVED_LABELS`, so `label_security.ts` does not
-  strip it when the worker self-applies it. (`best-model` *is* reserved and
+  strip it when the worker self-applies it. (`best-model` _is_ reserved and
   stripped on self-apply, which is why it cannot carry this signal —
   `degraded-model` is its non-reserved replacement.)
 - **Create-if-missing.** The label is ensured once per degraded run (the same
@@ -1187,10 +1250,10 @@ label, so silent model degradation is visible at a glance:
 
 The **expected** model is whatever the `planning` phase resolution chain
 requests (env var > per-repo `phase_model_overrides` > per-repo `claude_model` >
-global overrides > `PHASE_MODEL_DEFAULTS.planning`), unless `best_planning_model`
-pins an exact model. Because operators already steer per-repo model and effort
-through `repo_config` and per-phase effort overrides,
-a repo that *deliberately* routes planning to a different tier is judged against
+global overrides > `PHASE_MODEL_DEFAULTS.planning`), unless
+`best_planning_model` pins an exact model. Because operators already steer
+per-repo model and effort through `repo_config` and per-phase effort overrides,
+a repo that _deliberately_ routes planning to a different tier is judged against
 **its own** configured model and is never falsely flagged. Pin
 `best_planning_model` only when you want a run flagged whenever it deviates from
 one specific model regardless of routing.
@@ -1206,29 +1269,29 @@ one specific model regardless of routing.
 
 The `grill_me` phase routes to the **same** Fable top tier as planning
 (`DEFAULT_CLAUDE_MODEL_GRILL_ME = DEFAULT_CLAUDE_MODEL_TOP_TIER`) with the same
-"plan-quality compounds across every downstream sub-issue" rationale, so
-a silent Fable→Opus degradation on a requirements-interrogation round is exactly
+"plan-quality compounds across every downstream sub-issue" rationale, so a
+silent Fable→Opus degradation on a requirements-interrogation round is exactly
 the failure class this family surfaces. The detection helpers in
 `planning_run_stats.ts` are therefore **phase-parametric**:
 `resolveExpectedPlanningModel`, `assessDegradation`, and
-`buildPlanningStatsSection` take a `phase` argument (default `"planning"`, so the
-planning behaviour and the `## Planning run model stats` heading that
+`buildPlanningStatsSection` take a `phase` argument (default `"planning"`, so
+the planning behaviour and the `## Planning run model stats` heading that
 `planning_run_aggregation.ts` parses are unchanged). The grill-me path passes
 `"grill_me"`, deriving its expected model from the `grill_me` routing chain — so
 a repo that deliberately routes grill-me elsewhere is never falsely flagged, and
 **no new config key** (`best_grill_me_model`) is introduced.
 
-**Deliberate scoping difference.** Planning posts a stats block on **every** run.
-Grill-me is an interactive, multi-round, human-facing clarification flow, so a
-model-stats block after every healthy round would clutter the conversation the
-developer is reading. Grill-me therefore applies the `degraded-model` label
+**Deliberate scoping difference.** Planning posts a stats block on **every**
+run. Grill-me is an interactive, multi-round, human-facing clarification flow,
+so a model-stats block after every healthy round would clutter the conversation
+the developer is reading. Grill-me therefore applies the `degraded-model` label
 **only on a degraded round**, and its stats block posts under a
 `## Grill-me run model stats` heading. There are no sub-issues on a grill-me
 round, so only the grill-me issue itself is labelled. Every GitHub operation is
 non-fatal and never aborts the round.
 
-> **Superseded in part by.** Healthy rounds no longer report
-> *nothing*: they post the stats block **once per run**. See
+> **Superseded in part by.** Healthy rounds no longer report _nothing_: they
+> post the stats block **once per run**. See
 > [One cost/model stats comment per run](#one-costmodel-stats-comment-per-run).
 
 - Implementation:
@@ -1242,12 +1305,12 @@ non-fatal and never aborts the round.
 The same grill-me shape now covers **all six** Fable-preferring planning-shaped
 phases — the four reactive single-issue phases `refinement`, `revision`,
 `question`, and `clarification` join `planning` and `grill_me`. A silent
-Fable→Opus substitution on any of them was previously invisible; each now posts a
-`## <Phase> run model stats` comment and applies the `degraded-model` label to
+Fable→Opus substitution on any of them was previously invisible; each now posts
+a `## <Phase> run model stats` comment and applies the `degraded-model` label to
 **the issue itself** (no sub-issue fan-out) **only on a degraded round** —
-healthy Fable-served rounds apply no label, exactly like grill-me. (Since
- a healthy round still posts its stats block once per run; only
-the label is degraded-only.)
+healthy Fable-served rounds apply no label, exactly like grill-me. (Since a
+healthy round still posts its stats block once per run; only the label is
+degraded-only.)
 
 The verdict helpers are **not** forked: the four phases call the generic
 [`reportPhaseDegradation`](../worker/deno/lib/phase_run_stats.ts), which reuses
@@ -1257,21 +1320,21 @@ one recorder.
 
 **Two trigger paths, both honoured:**
 
-- **Explicit pre-flight reroute** (the probe said Fable was unavailable,
-  so the phase was dispatched on Opus @ `max`). The run carries an explicit
+- **Explicit pre-flight reroute** (the probe said Fable was unavailable, so the
+  phase was dispatched on Opus @ `max`). The run carries an explicit
   `preflightDegraded` flag + reason, which `assessDegradation` now treats as a
   first-class degraded cause — flagged **even when the served model matches the
   (fable) expected model**, since the reroute deliberately leaves
   `buildClaudeModelArgs(phase)` resolving to `fable`.
-- **Mid-run fallback** (the probe said available but the live call
-  fell back to Opus @ `high`). Recorded via the existing served-model /
-  `fallbackModel` checks now that these phases run the verdict. This path is an
-  FYI only — no effort bump, no cache flip.
+- **Mid-run fallback** (the probe said available but the live call fell back to
+  Opus @ `high`). Recorded via the existing served-model / `fallbackModel`
+  checks now that these phases run the verdict. This path is an FYI only — no
+  effort bump, no cache flip.
 
 `planning`/`grill_me` recording is unchanged for the served-model and
-rate-limit-fallback paths, and additionally honours the explicit pre-flight flag.
-All recording is non-fatal: a `gh`/label failure logs a warning and never aborts
-the phase.
+rate-limit-fallback paths, and additionally honours the explicit pre-flight
+flag. All recording is non-fatal: a `gh`/label failure logs a warning and never
+aborts the phase.
 
 - Implementation:
   [`worker/deno/lib/phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts)
@@ -1283,8 +1346,8 @@ the phase.
   [`clarity_phase.ts`](../worker/deno/lib/clarity_phase.ts) /
   [`clarity_assessment.ts`](../worker/deno/lib/clarity_assessment.ts). The
   explicit pre-flight signal originates in
-  [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) and is carried
-  on the run record by `claude_runner.ts`.
+  [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) and is carried on
+  the run record by `claude_runner.ts`.
 
 #### One cost/model stats comment per run
 
@@ -1302,7 +1365,7 @@ $1.34 grill-me round, so the `work-on` run that actually completed the issue —
 reported: the cost of the completed issue was invisible.
 
 The guard is therefore **run-scoped** (Issue #797): the marker carries the run
-id, and a post is suppressed only when *this run* already posted. Every
+id, and a post is suppressed only when _this run_ already posted. Every
 completed run reports what it cost, a repeat post inside one run is still
 suppressed, and from the second stats comment onward each block carries the
 cumulative issue total so the issue's cost is readable without adding comments
@@ -1342,10 +1405,12 @@ flowchart TD
   comments visible on the issue.
 - **The run's Graft figures.** When the run collected a Graft bundle
   ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection)),
-  one extra bullet — `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714
-  nodes, 22,908 call edges` — is appended to the rendered block (Issue #2105).
-  It carries no cost figure and is omitted entirely by a caller that has no
-  outcome, so a run without Graft posts exactly the bytes it posted before.
+  one extra bullet —
+  `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714
+  nodes, 22,908 call edges`
+  — is appended to the rendered block (Issue #2105). It carries no cost figure
+  and is omitted entirely by a caller that has no outcome, so a run without
+  Graft posts exactly the bytes it posted before.
 - **The run's quality-gate attempt.** An implementation run appends one more
   bullet — `- quality gate: passed on attempt 1`, `passed on attempt 2`, or
   `- quality gate: failed` — naming which of the gate's two bounded attempts
@@ -1359,11 +1424,10 @@ flowchart TD
   more — `- executors dispatched: 3`, `- re-tasks issued: 1` and
   `- advisor edit calls: 0 (2 denied)` — read off that run's own stream-json
   (Issue #2344). Advisor edit calls are the violations (the `PreToolUse` guard
-  denies them, so a healthy run reads `0`); denials, dispatches and re-tasks
-  are how the pilot is measured. A `split: off` run carries the `split:` line
-  and nothing else. Stable and greppable by contract, exactly like the
-  quality-gate line above. A phase other than the implementation run renders no
-  such line.
+  denies them, so a healthy run reads `0`); denials, dispatches and re-tasks are
+  how the pilot is measured. A `split: off` run carries the `split:` line and
+  nothing else. Stable and greppable by contract, exactly like the quality-gate
+  line above. A phase other than the implementation run renders no such line.
 - **A split run's executor tokens are costed at Sonnet rates.** The advisor
   (Opus) and its executor sub-agents (Sonnet) share one CLI invocation, so the
   run's `modelUsage` breakdown is attributed per served model rather than
@@ -1371,10 +1435,10 @@ flowchart TD
   two or more models therefore lists each model's own token counts and its own
   cost line, and the estimated USD — and so the cumulative issue total — is
   their sum. The breakdown prices the run only when it **reconciles** against
-  the run's own recorded totals: an entry that is not a usable object, a
-  counter that is present but not a number, or a sum exceeding the totals in
-  any bucket discards the breakdown whole and charges the run to its primary
-  model, so a malformed breakdown can never over-report the pilot's spend. An
+  the run's own recorded totals: an entry that is not a usable object, a counter
+  that is present but not a number, or a sum exceeding the totals in any bucket
+  discards the breakdown whole and charges the run to its primary model, so a
+  malformed breakdown can never over-report the pilot's spend. An
   under-attributed remainder is charged to the primary model as a residual, so
   no token is lost either.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
@@ -1400,57 +1464,61 @@ flowchart TD
 
 #### One-off vs systemic: the fable→Opus mismatch was systemic
 
-FLEET was the first planning run to post model stats, so a single
-data point could not tell whether the `fable`→`claude-opus-4-8` substitution was
-a one-off blip (transient capacity) or systemic. As more runs reported, the
-answer became unambiguous: **systemic**.
+FLEET was the first planning run to post model stats, so a single data point
+could not tell whether the `fable`→`claude-opus-4-8` substitution was a one-off
+blip (transient capacity) or systemic. As more runs reported, the answer became
+unambiguous: **systemic**.
 
 Observed planning runs (requested `fable`, served model the API declared):
 
-| When (UTC) | Repo / issue | Requested | Served | Degraded |
-| --- | --- | --- | --- | --- |
-| 2026-06-12 22:32 | `stSoftwareAU/private-repo-1` | `fable` | `claude-opus-4-8` | yes |
-| 2026-06-13 00:04 | `stSoftwareAU/private-repo-1` | `fable` | `claude-opus-4-8` | yes |
-| 2026-06-13 06:55 | `stSoftwareAU/VibeCoder` | `fable` | `claude-opus-4-8` | yes |
+| When (UTC)       | Repo / issue                  | Requested | Served            | Degraded |
+| ---------------- | ----------------------------- | --------- | ----------------- | -------- |
+| 2026-06-12 22:32 | `stSoftwareAU/private-repo-1` | `fable`   | `claude-opus-4-8` | yes      |
+| 2026-06-13 00:04 | `stSoftwareAU/private-repo-1` | `fable`   | `claude-opus-4-8` | yes      |
+| 2026-06-13 06:55 | `stSoftwareAU/VibeCoder`      | `fable`   | `claude-opus-4-8` | yes      |
 
 Three of three `fable` planning runs across two repos were served
-`claude-opus-4-8` (100% mismatch). The **root cause is external and documented**:
-on 2026-06-12 Anthropic globally disabled Fable 5 (and Mythos 5) under a US
-government export-control directive. VibeCoder routes its top-tier
-phases (`planning`, `grill_me`) to Fable 5, so every such run is served
-Opus for the duration of the outage — not a transient capacity blip. The
-host-level fix reflects this severity: completes the automatic
-Fable-unavailable → Opus 4.8 fallback with self-heal once Fable is
-restored, documents the behaviour, and adds the regression test.
+`claude-opus-4-8` (100% mismatch). The **root cause is external and
+documented**: on 2026-06-12 Anthropic globally disabled Fable 5 (and Mythos 5)
+under a US government export-control directive. VibeCoder routes its top-tier
+phases (`planning`, `grill_me`) to Fable 5, so every such run is served Opus for
+the duration of the outage — not a transient capacity blip. The host-level fix
+reflects this severity: completes the automatic Fable-unavailable → Opus 4.8
+fallback with self-heal once Fable is restored, documents the behaviour, and
+adds the regression test.
 
 The verdict is reproducible from the existing per-run stats with the lightweight
 aggregator
 [`worker/deno/lib/planning_run_aggregation.ts`](../worker/deno/lib/planning_run_aggregation.ts):
-`parsePlanningStatsComment()` reads a "Planning run model stats" comment body and
-`summarisePlanningRuns()` folds a list into a one-off-vs-systemic verdict
+`parsePlanningStatsComment()` reads a "Planning run model stats" comment body
+and `summarisePlanningRuns()` folds a list into a one-off-vs-systemic verdict
 (`systemic` when ≥2 `fable` runs mismatch at ≥80%, `inconclusive` on a single
-mismatch, `one-off` when isolated, `none` when all served `fable`). It reuses the
-existing comment format and the daily credit summary — it does **not** add a new
-dashboard.
+mismatch, `one-off` when isolated, `none` when all served `fable`). It reuses
+the existing comment format and the daily credit summary — it does **not** add a
+new dashboard.
 
 ### Fable-unavailable auto-fallback + self-heal
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — Fable is an Anthropic tier with no Codex or Gemini equivalent; under those providers the probe runs their own CLI with `--model fable`, fails, and is classified optimistically as `available`, so nothing is rerouted or flagged. DeepSeek has no Fable tier either — its endpoint cannot resolve the alias, so the probe fails there too and is read optimistically as `available`.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — Fable
+> is an Anthropic tier with no Codex or Gemini equivalent; under those providers
+> the probe runs their own CLI with `--model fable`, fails, and is classified
+> optimistically as `available`, so nothing is rerouted or flagged. DeepSeek has
+> no Fable tier either — its endpoint cannot resolve the alias, so the probe
+> fails there too and is read optimistically as `available`.
 
 The eight **Fable-preferring** planning-shaped phases — `planning`, `grill_me`,
 `refinement`, `revision`, `question`, `clarification`, `quorum` and
-`quorum_judge` — request
-**Fable 5** (`claude-fable-5`) because plan quality compounds across every
-downstream sub-issue or run. When Fable 5 is **globally unavailable** —
-the export-control suspension documented in the [one-off vs systemic](#one-off-vs-systemic-the-fableopus-mismatch-was-systemic)
+`quorum_judge` — request **Fable 5** (`claude-fable-5`) because plan quality
+compounds across every downstream sub-issue or run. When Fable 5 is **globally
+unavailable** — the export-control suspension documented in the
+[one-off vs systemic](#one-off-vs-systemic-the-fableopus-mismatch-was-systemic)
 section above, an account suspension, an HTTP `403`, or a silent server-side
 substitution — the worker does **not** fail those runs and does **not** need an
 operator to repoint the config. It serves the run on **Opus 4.8**, flags it, and
 self-heals the moment Fable returns. The behaviour is assembled from existing
-parts — the pre-flight probe, the in-run model-unavailable
-fallback, and degraded detection (extended to `grill_me` in
-and to the four reactive phases in) — so this section ties them into one
-coherent story.
+parts — the pre-flight probe, the in-run model-unavailable fallback, and
+degraded detection (extended to `grill_me` in and to the four reactive phases
+in) — so this section ties them into one coherent story.
 
 #### Three manifestations, all covered
 
@@ -1464,13 +1532,12 @@ reroute bumps effort to `max`**; both **mid-run fallbacks keep the requested
    `unavailable`, the phase is rerouted **before dispatch** onto **Opus at `max`
    effort** and flagged degraded via an explicit signal, so no first Fable call
    is wasted. This is the deliberate `high` → `max` "request the higher effort"
-   bump. Full rules in
-   [Pre-flight Fable reroute](#pre-flight-fable-reroute).
+   bump. Full rules in [Pre-flight Fable reroute](#pre-flight-fable-reroute).
 2. **Outright unavailable / `403` / suspended error (during the run).** The CLI
-   exits non-zero with model-access wording. `detectModelUnavailable()` (matching
-   `MODEL_UNAVAILABLE_RE` over the error tail in
+   exits non-zero with model-access wording. `detectModelUnavailable()`
+   (matching `MODEL_UNAVAILABLE_RE` over the error tail in
    [`claude_executor.ts`](../worker/deno/lib/claude_executor.ts)) recognises it
-   *before* the rate-limit path — this error is terminal for the current model,
+   _before_ the rate-limit path — this error is terminal for the current model,
    so retrying Fable is futile. The run falls back **immediately, with no wait**
    to the next tier via `attemptModelFallback()`
    ([`model_fallback.ts`](../worker/deno/lib/model_fallback.ts),
@@ -1482,10 +1549,10 @@ reroute bumps effort to `max`**; both **mid-run fallbacks keep the requested
    the API serves a different model than requested (requested `fable`, served
    `claude-opus-4-8`). No error fires, so the fallback path is never taken —
    instead the **degraded-model served-model check** catches it: no per-response
-   served `model` field in the run passes the prefix/alias-aware match
-   against the expected top-tier model, and the run is flagged degraded (see
-   below). A run the expected tier served *part* of is not flagged.
-   Effort is left unchanged.
+   served `model` field in the run passes the prefix/alias-aware match against
+   the expected top-tier model, and the run is flagged degraded (see below). A
+   run the expected tier served _part_ of is not flagged. Effort is left
+   unchanged.
 
 #### Flagging — `degraded-model` label + model-stats comment
 
@@ -1497,19 +1564,19 @@ planning-shaped phases (extended from planning + grill_me by):
 - A **model-stats comment** is posted on the issue under a
   `## <Phase> run model stats` heading — e.g. `## Planning run model stats`,
   `## Grill-me run model stats`, `## Refinement run model stats` — naming the
-  requested model, the served model(s), and a `Degraded: ⚠️ yes — …` verdict line
-  that states the reason (a pre-flight reroute, a served-model mismatch, or an
-  explicit fallback to a cheaper tier).
+  requested model, the served model(s), and a `Degraded: ⚠️ yes — …` verdict
+  line that states the reason (a pre-flight reroute, a served-model mismatch, or
+  an explicit fallback to a cheaper tier).
 - The non-reserved **`degraded-model` label** is applied — for `planning`, the
   parent plus every sub-issue it created; for `grill_me` and the four reactive
-  phases (`refinement`, `revision`, `question`, `clarification`), the issue itself
-  and only on a degraded round. It is not in `RESERVED_LABELS`, so it survives
-  self-apply; the worker never removes it — a human clears it after triage. The
-  verdict and label logic is the phase-parametric detection in
-  [`planning_run_stats.ts`](../worker/deno/lib/planning_run_stats.ts), reused for
-  `grill_me` via
-  [`grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts) and
-  for the four reactive phases via
+  phases (`refinement`, `revision`, `question`, `clarification`), the issue
+  itself and only on a degraded round. It is not in `RESERVED_LABELS`, so it
+  survives self-apply; the worker never removes it — a human clears it after
+  triage. The verdict and label logic is the phase-parametric detection in
+  [`planning_run_stats.ts`](../worker/deno/lib/planning_run_stats.ts), reused
+  for `grill_me` via
+  [`grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts) and for
+  the four reactive phases via
   [`phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts).
 
 #### Self-heal — no persistent "Fable down" switch
@@ -1527,14 +1594,15 @@ the outage, which a human clears once they have confirmed the cause.
 The **pre-flight probe is best-effort** and never gets in the way:
 
 - Fable unavailability never fails the health check or blocks the worker — the
-  probe only *routes*, it does not gate.
+  probe only _routes_, it does not gate.
 - A transient probe error is treated as **"available"**, so a Fable-preferring
   phase still attempts Fable and the mid-run fallback (manifestations 2 and 3
   above) remains the safety net.
-- A **stale `available`** verdict self-corrects the same way — the phase requests
-  Fable, the live call falls back, and the run is still flagged degraded.
-- There remains **no persistent "Fable down" switch**: routing self-heals as soon
-  as the next probe (or the next live call) sees Fable return.
+- A **stale `available`** verdict self-corrects the same way — the phase
+  requests Fable, the live call falls back, and the run is still flagged
+  degraded.
+- There remains **no persistent "Fable down" switch**: routing self-heals as
+  soon as the next probe (or the next live call) sees Fable return.
 
 ```mermaid
 flowchart TD
@@ -1549,41 +1617,48 @@ flowchart TD
     G -.->|"next run, Fable restored"| A
 ```
 
-- Implementation:
-  [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts) (retry loop +
-  model-unavailable branch),
+- Implementation: [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts)
+  (retry loop + model-unavailable branch),
   [`claude_executor.ts`](../worker/deno/lib/claude_executor.ts)
   (`detectModelUnavailable` / `MODEL_UNAVAILABLE_RE`),
   [`model_fallback.ts`](../worker/deno/lib/model_fallback.ts)
   (`attemptModelFallback`, `MODEL_FALLBACK_MAP`),
   [`planning_run_stats.ts`](../worker/deno/lib/planning_run_stats.ts) and
-  [`grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts)
-  (degraded verdict + flagging).
+  [`grill_me_run_stats.ts`](../worker/deno/lib/grill_me_run_stats.ts) (degraded
+  verdict + flagging).
 
 ### Pre-flight Fable reroute
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — neither has a Fable tier to reroute off, and since [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) the chokepoint is **provider-gated**: a Codex or Gemini invocation keeps its own routing under a Fable outage, is never flagged `preflightDegraded`, and the skipped reroute is logged once per provider. The gate matters most for DeepSeek: `--model opus` is a well-formed flag to the Anthropic CLI it runs, so an ungated reroute would reach DeepSeek's endpoint as a mid-run unresolvable-model error ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)).
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ —
+> neither has a Fable tier to reroute off, and since
+> [#398](https://github.com/stSoftwareAU/VibeCoder/issues/398) the chokepoint is
+> **provider-gated**: a Codex or Gemini invocation keeps its own routing under a
+> Fable outage, is never flagged `preflightDegraded`, and the skipped reroute is
+> logged once per provider. The gate matters most for DeepSeek: `--model opus`
+> is a well-formed flag to the Anthropic CLI it runs, so an ungated reroute
+> would reach DeepSeek's endpoint as a mid-run unresolvable-model error
+> ([#417](https://github.com/stSoftwareAU/VibeCoder/issues/417)).
 
 The mid-run fallback above self-corrects **after** a wasted first Fable call. A
-**pre-flight** reroute avoids even that wasted call: when the cached Fable
-probe ([`health_check_cache.ts`](../worker/deno/lib/health_check_cache.ts)
-→ `readFableAvailability`) already says Fable is **unavailable**, a
+**pre-flight** reroute avoids even that wasted call: when the cached Fable probe
+([`health_check_cache.ts`](../worker/deno/lib/health_check_cache.ts) →
+`readFableAvailability`) already says Fable is **unavailable**, a
 Fable-preferring phase is dispatched straight onto **Opus at `max` effort** for
 that one invocation, and the run is flagged **degraded** with the reason
 `fable-unavailable (pre-flight health probe)`.
 
 - **The eight Fable-preferring phases** — `planning`, `grill_me`, `refinement`,
   `revision`, `question`, `clarification`, `quorum`, `quorum_judge` — are the
-  only phases eligible. Every
-  other phase (issue, ci_fix, pr_feedback, health, …) is never rerouted.
+  only phases eligible. Every other phase (issue, ci_fix, pr_feedback, health,
+  …) is never rerouted.
 - **Provider-gated** (Issue #398). `opus` is an Anthropic tier alias, so the
-  reroute fires only when the **invocation's** provider routes that phase to
-  the Fable tier. A Quorum draft naming `agentProvider: "codex"` — or any
-  invocation under Gemini — keeps its own routing and is **not** flagged
-  degraded for a tier it never requested. The gate is on the resolved tier, not
-  on the provider id, so a fourth provider carrying a Fable tier needs no edit.
-  Skipping the reroute is logged once per provider per worker process
-  (`[fable-routing] …`), never in silence.
+  reroute fires only when the **invocation's** provider routes that phase to the
+  Fable tier. A Quorum draft naming `agentProvider: "codex"` — or any invocation
+  under Gemini — keeps its own routing and is **not** flagged degraded for a
+  tier it never requested. The gate is on the resolved tier, not on the provider
+  id, so a fourth provider carrying a Fable tier needs no edit. Skipping the
+  reroute is logged once per provider per worker process (`[fable-routing] …`),
+  never in silence.
 - **The gate, not the CLI, is the defence** (Issue #417). Codex and Gemini
   reject an unresolvable `--model` at their own CLI's argument layer, which
   masks how much the gate carries. A provider carried on the **Anthropic CLI**
@@ -1591,8 +1666,7 @@ that one invocation, and the run is flagged **degraded** with the reason
   backstop: `--model opus` is a well-formed flag that the CLI forwards happily,
   so an ungated reroute would surface as a remote unresolvable-model error
   mid-run, attributed to a tier the operator never requested. The
-  descriptor-derived gate is therefore exercised once per registered provider
-  in
+  descriptor-derived gate is therefore exercised once per registered provider in
   [`fable_preflight_deepseek_gate_test.ts`](../worker/deno/tests/fable_preflight_deepseek_gate_test.ts),
   so a provider registered without it fails `deno test` rather than the next
   Fable outage.
@@ -1603,16 +1677,16 @@ that one invocation, and the run is flagged **degraded** with the reason
   operator has moved the phase off the Fable tier (its resolved model is no
   longer `fable`) or pinned an explicit effort, the probe does not second-guess
   the pin — no reroute. The default `CLAUDE_MODEL_<PHASE>=fable` env export is
-  *not* treated as an operator override, since it merely surfaces the built-in
+  _not_ treated as an operator override, since it merely surfaces the built-in
   default; the reliable signal is the **resolved model tier**.
 - **Regression guard.** The override is applied at the **invocation layer** (an
   explicit `model`/`effort` on the run options passed to `runClaudeWithRetry`),
-  never by rewriting `PHASE_MODEL_DEFAULTS`. So `buildClaudeModelArgs("planning")`
-  still resolves to `fable` and the served-vs-expected degraded check
-  keeps working. The pre-flight degraded flag is threaded onto the run record
-  (`ClaudeRunResult.preflightDegraded` / `preflightDegradedReason`) as an
-  **explicit** signal the recording sub-issue consumes — it never depends on a
-  served-model mismatch.
+  never by rewriting `PHASE_MODEL_DEFAULTS`. So
+  `buildClaudeModelArgs("planning")` still resolves to `fable` and the
+  served-vs-expected degraded check keeps working. The pre-flight degraded flag
+  is threaded onto the run record (`ClaudeRunResult.preflightDegraded` /
+  `preflightDegradedReason`) as an **explicit** signal the recording sub-issue
+  consumes — it never depends on a served-model mismatch.
 
 ```mermaid
 flowchart TD
@@ -1625,36 +1699,43 @@ flowchart TD
     D -- "no (default routing)" --> E["Reroute: --model opus --effort max<br/>run flagged degraded (pre-flight)"]
 ```
 
-- Implementation:
-  [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts)
+- Implementation: [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts)
   (`resolveFablePreflightRouting`, `applyFablePreflightRouting`,
   `providerRoutesToFableTier`, `warnProviderHasNoFableTier`,
   `FABLE_PREFERRING_PHASES`), wired at the single `runClaudeWithRetry`
-  chokepoint in
-  [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts), with the
-  explicit-effort predicate `hasExplicitEffortOverride` in
+  chokepoint in [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts), with
+  the explicit-effort predicate `hasExplicitEffortOverride` in
   [`claude_executor.ts`](../worker/deno/lib/claude_executor.ts).
 
 ---
 
 ## Session Management
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the per-repo session store holds `.claude/` only, so persistence, allowlisting, milestone branching and compaction are Claude's; Codex and Gemini keep their own CLI state in their own home directories and get CLI-level continuity through their own resume flags. DeepSeek runs the Claude CLI, so the per-repo `.claude/` store applies to it as written; its transcripts sit in its own `CLAUDE_CONFIG_DIR`, kept apart from Claude's so `--resume` cannot cross the two.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the
+> per-repo session store holds `.claude/` only, so persistence, allowlisting,
+> milestone branching and compaction are Claude's; Codex and Gemini keep their
+> own CLI state in their own home directories and get CLI-level continuity
+> through their own resume flags. DeepSeek runs the Claude CLI, so the per-repo
+> `.claude/` store applies to it as written; its transcripts sit in its own
+> `CLAUDE_CONFIG_DIR`, kept apart from Claude's so `--resume` cannot cross the
+> two.
 
-VibeCoder maintains persistent Claude sessions per repository and per
-work stream. Each phase invocation is a subprocess call to the Claude CLI,
-but the `.claude/` session directory is preserved between invocations so
-that context from previous work (learnt conventions, codebase familiarity)
-carries forward.
+VibeCoder maintains persistent Claude sessions per repository and per work
+stream. Each phase invocation is a subprocess call to the Claude CLI, but the
+`.claude/` session directory is preserved between invocations so that context
+from previous work (learnt conventions, codebase familiarity) carries forward.
 
 ### Per-Repository Session Persistence
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the store saves and restores `${repoPath}/.claude` alone; no Codex or Gemini state is copied per repository, so those agents carry only whatever their own CLI persists in the container home. DeepSeek writes the same `${repoPath}/.claude`, so its session state is saved and restored unchanged.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the
+> store saves and restores `${repoPath}/.claude` alone; no Codex or Gemini state
+> is copied per repository, so those agents carry only whatever their own CLI
+> persists in the container home. DeepSeek writes the same
+> `${repoPath}/.claude`, so its session state is saved and restored unchanged.
 
-Claude session state (the `.claude/` directory) is stored in a per-repo
-session store, isolated so that sessions are never shared across
-repositories. This replaced the earlier blanket deletion of `.claude/`
-on every invocation.
+Claude session state (the `.claude/` directory) is stored in a per-repo session
+store, isolated so that sessions are never shared across repositories. This
+replaced the earlier blanket deletion of `.claude/` on every invocation.
 
 **Directory structure:**
 
@@ -1669,15 +1750,14 @@ ${workDir}/.claude-sessions/
 
 **Session lifecycle:**
 
-1. **Restore** — Before Claude runs, the stored session is copied from
-   the per-repo store into `${repoPath}/.claude`. If no stored session
-   exists, Claude starts with a clean state.
-2. **Execute** — Claude CLI runs with the restored session context
-   available.
-3. **Save** — After Claude finishes, the `.claude/` directory is copied
-   back to the per-repo store, preserving any new context for the next
-   invocation. Both the restore and the save copy only allowlisted session
-   data (see [Session Persistence Allowlist](#session-persistence-allowlist)).
+1. **Restore** — Before Claude runs, the stored session is copied from the
+   per-repo store into `${repoPath}/.claude`. If no stored session exists,
+   Claude starts with a clean state.
+2. **Execute** — Claude CLI runs with the restored session context available.
+3. **Save** — After Claude finishes, the `.claude/` directory is copied back to
+   the per-repo store, preserving any new context for the next invocation. Both
+   the restore and the save copy only allowlisted session data (see
+   [Session Persistence Allowlist](#session-persistence-allowlist)).
 4. **Cleanup** — Size and age limits are enforced on each save (see
    [Session Compaction](#session-compaction)).
 
@@ -1686,22 +1766,25 @@ Implementation:
 
 ### Session Persistence Allowlist
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the allowlist filters the `.claude/` copy on both legs; nothing of Codex's or Gemini's state is copied by the worker, so there is nothing for it to filter. The same copy, and the same filter, apply to a DeepSeek run.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the
+> allowlist filters the `.claude/` copy on both legs; nothing of Codex's or
+> Gemini's state is copied by the worker, so there is nothing for it to filter.
+> The same copy, and the same filter, apply to a DeepSeek run.
 
-`.claude/` sits inside the working tree the Claude CLI runs in, so the model
-can write anything there — including `settings.json`, whose `hooks` entries
-are shell commands the CLI executes. Copying the directory wholesale gave
-model-authored content a foothold that survived across runs and never
-appeared in a pull request diff.
+`.claude/` sits inside the working tree the Claude CLI runs in, so the model can
+write anything there — including `settings.json`, whose `hooks` entries are
+shell commands the CLI executes. Copying the directory wholesale gave
+model-authored content a foothold that survived across runs and never appeared
+in a pull request diff.
 
-Every leg of the copy — save, restore, milestone seeding and old-style
-migration — now carries **only allowlisted session data**:
+Every leg of the copy — save, restore, milestone seeding and old-style migration
+— now carries **only allowlisted session data**:
 
-| Allowed | Blocked |
-|---------|---------|
-| Top-level `session*.json`, `projects*.json`, `history*.jsonl`, `todos*.json`, `memory*.json` | `settings.json`, `settings.local.json`, any `settings*` file at any depth |
+| Allowed                                                                                             | Blocked                                                                                        |
+| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Top-level `session*.json`, `projects*.json`, `history*.jsonl`, `todos*.json`, `memory*.json`        | `settings.json`, `settings.local.json`, any `settings*` file at any depth                      |
 | `projects/`, `sessions/`, `todos/`, `history/`, `memory/` and their `.json`, `.jsonl`, `.txt` files | `hooks/`, `agents/`, `commands/`, `skills/`, `shell-snapshots/`, any other top-level directory |
-| Plain names (`[A-Za-z0-9._-]`) | Dotfiles, `..` traversal, symlinks, and any other extension (`.sh`, `.ts`, `.md`, …) |
+| Plain names (`[A-Za-z0-9._-]`)                                                                      | Dotfiles, `..` traversal, symlinks, and any other extension (`.sh`, `.ts`, `.md`, …)           |
 
 ```mermaid
 flowchart LR
@@ -1721,49 +1804,55 @@ Implementation:
 
 ### Milestone-Aware Session Branching
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the per-milestone directories hold Claude sessions; a Codex or Gemini run has no milestone branch and no copy-on-first-use, keeping one CLI state per container instead. DeepSeek shares the same per-milestone directories.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the
+> per-milestone directories hold Claude sessions; a Codex or Gemini run has no
+> milestone branch and no copy-on-first-use, keeping one CLI state per container
+> instead. DeepSeek shares the same per-milestone directories.
 
-Each work stream gets its own session directory. This ensures milestone
-work does not pollute the default branch session with milestone-specific
-context, while still giving milestones a useful starting point.
+Each work stream gets its own session directory. This ensures milestone work
+does not pollute the default branch session with milestone-specific context,
+while still giving milestones a useful starting point.
 
 - **Default branch work** — session stored in `${owner}/${repo}/default/`
 - **Milestone work** — session stored in
   `${owner}/${repo}/milestone-${milestoneId}/`
 
-**Copy-on-first-use:** When the worker first processes an issue for a
-milestone, it copies the default branch session to create the milestone's
-initial session. Subsequent milestone invocations use the milestone's own
-session independently — no re-copy from default.
+**Copy-on-first-use:** When the worker first processes an issue for a milestone,
+it copies the default branch session to create the milestone's initial session.
+Subsequent milestone invocations use the milestone's own session independently —
+no re-copy from default.
 
 If no default branch session exists when a milestone starts, the milestone
 begins with a clean session.
 
-**Migration:** Sessions created before (stored directly in
-`${owner}/${repo}/` without a `default/` subdirectory) are automatically
-migrated to the new `default/` location on first access.
+**Migration:** Sessions created before (stored directly in `${owner}/${repo}/`
+without a `default/` subdirectory) are automatically migrated to the new
+`default/` location on first access.
 
 ### Session Compaction
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the size and age limits are enforced over the `.claude-sessions/` store; Codex and Gemini state sits outside it and is bounded only by the container's own lifetime. DeepSeek's copy is bounded by the same size and age limits.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the
+> size and age limits are enforced over the `.claude-sessions/` store; Codex and
+> Gemini state sits outside it and is bounded only by the container's own
+> lifetime. DeepSeek's copy is bounded by the same size and age limits.
 
 Session stores grow over time as Claude accumulates context. To prevent
-unbounded growth, VibeCoder implements a **three-tier progressive
-compaction** strategy that automatically escalates from least to most
-aggressive until the session is under the size threshold.
+unbounded growth, VibeCoder implements a **three-tier progressive compaction**
+strategy that automatically escalates from least to most aggressive until the
+session is under the size threshold.
 
-| Limit | Default | Config Key |
-|-------|---------|------------|
+| Limit            | Default        | Config Key            |
+| ---------------- | -------------- | --------------------- |
 | **Maximum size** | 50 MB per repo | `maxSessionSizeBytes` |
-| **Maximum age** | 7 days | `maxSessionAgeDays` |
+| **Maximum age**  | 7 days         | `maxSessionAgeDays`   |
 
 #### Compaction Levels
 
-| Level | Name | What It Removes |
-|-------|------|----------------|
-| **1** | **Soft** | Cache and temporary directories: `tmp/`, `temp/`, `cache/`, `.cache/`, `.tmp/`, `tool-outputs/`, `intermediate/` |
+| Level | Name         | What It Removes                                                                                                    |
+| ----- | ------------ | ------------------------------------------------------------------------------------------------------------------ |
+| **1** | **Soft**     | Cache and temporary directories: `tmp/`, `temp/`, `cache/`, `.cache/`, `.tmp/`, `tool-outputs/`, `intermediate/`   |
 | **2** | **Moderate** | Soft cleanup first, then files older than `maxSessionAgeDays`, then oldest files by size until under the threshold |
-| **3** | **Hard** | Deletes the entire session directory for a fresh start |
+| **3** | **Hard**     | Deletes the entire session directory for a fresh start                                                             |
 
 #### Auto-Escalation
 
@@ -1784,87 +1873,96 @@ Measure session size
 
 #### Age-Based Cleanup
 
-When `compactAllSessions()` runs against the session store, it first
-checks each work stream session's age. If the newest file in a session
-directory is older than `maxSessionAgeDays`, the entire session is
-removed — regardless of size. This prevents stale sessions from
-accumulating for repositories the worker no longer processes.
+When `compactAllSessions()` runs against the session store, it first checks each
+work stream session's age. If the newest file in a session directory is older
+than `maxSessionAgeDays`, the entire session is removed — regardless of size.
+This prevents stale sessions from accumulating for repositories the worker no
+longer processes.
 
-**Trigger:** Compaction runs automatically before session restore during
-the git setup phase. It also runs when `compactAllSessions()` is called
-against the full `.claude-sessions/` store.
+**Trigger:** Compaction runs automatically before session restore during the git
+setup phase. It also runs when `compactAllSessions()` is called against the full
+`.claude-sessions/` store.
 
-**Empty directory cleanup:** After file removal, any empty directories
-left behind are cleaned up automatically (bottom-up traversal).
+**Empty directory cleanup:** After file removal, any empty directories left
+behind are cleaned up automatically (bottom-up traversal).
 
 Implementation:
 [`worker/deno/lib/session_compaction.ts`](../worker/deno/lib/session_compaction.ts)
 
 ### Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one worker-level switch and phase count drives all four, but the mechanism differs: Claude starts a phase under `--session-id <uuid>` and continues it with `--resume <uuid>`, Codex captures the CLI thread and continues it with `codex exec resume <SESSION_ID>` (never `--last`), and Gemini with `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` / `--resume <uuid>` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a Claude transcript is never replayed into a DeepSeek run and back.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — one
+> worker-level switch and phase count drives all four, but the mechanism
+> differs: Claude starts a phase under `--session-id <uuid>` and continues it
+> with `--resume <uuid>`, Codex captures the CLI thread and continues it with
+> `codex exec resume <SESSION_ID>` (never `--last`), and Gemini with
+> `--resume latest`. DeepSeek takes Claude's `--session-id <uuid>` /
+> `--resume <uuid>` — the same mechanism, on its own `CLAUDE_CONFIG_DIR`, so a
+> Claude transcript is never replayed into a DeepSeek run and back.
 
 While [per-repository session persistence](#per-repository-session-persistence)
 preserves the `.claude/` directory between invocations (file-system-level
-state), **session resume** provides **CLI-level session continuity**
-across the phases of one issue and, for implementation and planning runs,
-across the successive issues of a **stream**. This allows subsequent phases
-(e.g., quality check after implementation) — and the next issue of the same
-milestone — to build on conversation context already established, rather
-than starting from scratch.
+state), **session resume** provides **CLI-level session continuity** across the
+phases of one issue and, for implementation and planning runs, across the
+successive issues of a **stream**. This allows subsequent phases (e.g., quality
+check after implementation) — and the next issue of the same milestone — to
+build on conversation context already established, rather than starting from
+scratch.
 
 #### How It Works
 
-Session resume uses the Claude CLI's `--session-id` and `--resume`
-flags:
+Session resume uses the Claude CLI's `--session-id` and `--resume` flags:
 
-| Phase | CLI Flags | Effect |
-|-------|-----------|--------|
-| **First phase** (e.g., clarification) | `--session-id <id>` | Creates a new named session |
-| **Subsequent phases** (e.g., implementation, quality) | `--resume <id>` | Resumes the existing session |
+| Phase                                                 | CLI Flags           | Effect                       |
+| ----------------------------------------------------- | ------------------- | ---------------------------- |
+| **First phase** (e.g., clarification)                 | `--session-id <id>` | Creates a new named session  |
+| **Subsequent phases** (e.g., implementation, quality) | `--resume <id>`     | Resumes the existing session |
 
 The two flags name two different things: `--session-id` is the id a **new**
 conversation is created under, `--resume <id>` continues an existing one.
-Pairing them (`--session-id <id> --resume`) asks the CLI for a fork, and
-Claude Code 2.1.261 refuses it at start-up unless `--fork-session` is also
-given — every resumed phase died 0.1 s after spawn until the worker sent the
+Pairing them (`--session-id <id> --resume`) asks the CLI for a fork, and Claude
+Code 2.1.261 refuses it at start-up unless `--fork-session` is also given —
+every resumed phase died 0.1 s after spawn until the worker sent the
 continuation form (Issue #1580).
 
-Codex names its own thread. The first phase of an issue is a plain
-`codex exec`; later phases send `codex exec resume <SESSION_ID>` with the
-id captured from the previous run of **this** issue. `--last` is never used:
-concurrent slots share a working directory and would otherwise resume each
-other's sessions (Issue #1699). A stored Claude UUID is never fed to Codex,
-and a Codex thread is never passed as Claude's `--resume`.
+Codex names its own thread. The first phase of an issue is a plain `codex exec`;
+later phases send `codex exec resume <SESSION_ID>` with the id captured from the
+previous run of **this** issue. `--last` is never used: concurrent slots share a
+working directory and would otherwise resume each other's sessions (Issue
+#1699). A stored Claude UUID is never fed to Codex, and a Codex thread is never
+passed as Claude's `--resume`.
 
 #### Session ID — a UUID (Issue #204)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the worker supplies a session id to Claude only; Codex and Gemini name their own sessions, so there is no id for the worker to generate, validate or have rejected. DeepSeek is handed the same worker-generated id: it is the same CLI.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the
+> worker supplies a session id to Claude only; Codex and Gemini name their own
+> sessions, so there is no id for the worker to generate, validate or have
+> rejected. DeepSeek is handed the same worker-generated id: it is the same CLI.
 
-`generateSessionId()` returns a `crypto.randomUUID()`. The Claude CLI
-validates `--session-id` as a UUID and refuses anything else:
+`generateSessionId()` returns a `crypto.randomUUID()`. The Claude CLI validates
+`--session-id` as a UUID and refuses anything else:
 
 ```
 Error: Invalid session ID. Must be a valid UUID.
 ```
 
-It exits ~0.2 s after spawn, before reaching a model call. The worker
-previously generated `{sanitised-repo}-{issue-number}-{timestamp}`, so
-**every** planning draft and publish turn died instantly and only the
-legacy sessionless retry did any work.
+It exits ~0.2 s after spawn, before reaching a model call. The worker previously
+generated `{sanitised-repo}-{issue-number}-{timestamp}`, so **every** planning
+draft and publish turn died instantly and only the legacy sessionless retry did
+any work.
 
 The repository/issue identity lives in the resume-state **file name**
-(`.claude-sessions/resume/<owner>-<repo>-<issue>.json`), not in the session
-ID. A persisted entry whose `sessionId` is not a UUID was written before
-this fix: `loadResumeState()` drops the ID and keeps the entry, so the
-checkpointed branch still resumes but without `--resume`.
+(`.claude-sessions/resume/<owner>-<repo>-<issue>.json`), not in the session ID.
+A persisted entry whose `sessionId` is not a UUID was written before this fix:
+`loadResumeState()` drops the ID and keeps the entry, so the checkpointed branch
+still resumes but without `--resume`.
 
 #### Recovering from a rejected session ID
 
-If the CLI ever refuses a session ID again, `runClaudeWithRetry()`
-recognises the refusal, drops the session flags and retries once, at
-`WARNING` — the run continues without CLI session continuity rather than
-failing, and never silently.
+If the CLI ever refuses a session ID again, `runClaudeWithRetry()` recognises
+the refusal, drops the session flags and retries once, at `WARNING` — the run
+continues without CLI session continuity rather than failing, and never
+silently.
 
 ```mermaid
 flowchart TD
@@ -1884,18 +1982,18 @@ flowchart TD
 A `SessionResumeState` object tracks the current phase count:
 
 1. `createSessionResumeState()` — initialises state with `phaseCount: 0`
-2. First phase: `buildSessionResumeFlags()` returns `--session-id` only
-   (since `phaseCount === 0`)
-3. `recordPhaseCompletion()` — increments `phaseCount` after each
-   successful phase
-4. Subsequent phases: `buildSessionResumeFlags()` returns both
-   `--session-id` and `--resume` (since `phaseCount > 0`)
+2. First phase: `buildSessionResumeFlags()` returns `--session-id` only (since
+   `phaseCount === 0`)
+3. `recordPhaseCompletion()` — increments `phaseCount` after each successful
+   phase
+4. Subsequent phases: `buildSessionResumeFlags()` returns both `--session-id`
+   and `--resume` (since `phaseCount > 0`)
 
 #### Configuration
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enable_session_resume` | boolean | `true` | Per-stream conversations, the stream locks and the per-issue compaction |
+| Key                     | Type    | Default | Description                                                             |
+| ----------------------- | ------- | ------- | ----------------------------------------------------------------------- |
+| `enable_session_resume` | boolean | `true`  | Per-stream conversations, the stream locks and the per-issue compaction |
 
 Session resume is **enabled by default** (Issue #2339): the stream machinery is
 in place, so a host with no explicit value runs with it on. Turn it off in
@@ -1907,19 +2005,19 @@ in place, so a host with no explicit value runs with it on. Turn it off in
 }
 ```
 
-**Benefit:** Preserves conversation context between clarification →
-planning → implementation → quality check phases, and across the successive
-issues of one stream, reducing redundant context rebuilding and improving
-response quality as later phases can reference earlier decisions.
+**Benefit:** Preserves conversation context between clarification → planning →
+implementation → quality check phases, and across the successive issues of one
+stream, reducing redundant context rebuilding and improving response quality as
+later phases can reference earlier decisions.
 
 **What it turns on:** one conversation per **stream** — per (repository,
 milestone), plus one blank stream per repository, never shared between
 repositories — joined by implementation and planning runs only; the fleet-wide
-milestone lock and the per-host blank lock; stream affinity with its
-five-minute grace; and the per-issue compaction below. Turning it off returns
-every run to a per-issue session with no stream record, no stream lock and no
-compaction; milestone-close housekeeping still sweeps worktrees and branches
-either way. The full model is in
+milestone lock and the per-host blank lock; stream affinity with its five-minute
+grace; and the per-issue compaction below. Turning it off returns every run to a
+per-issue session with no stream record, no stream lock and no compaction;
+milestone-close housekeeping still sweeps worktrees and branches either way. The
+full model is in
 [CONFIGURATION.md § Session Resume](CONFIGURATION.md#-session-resume).
 
 #### Compaction behaviour by provider
@@ -1928,11 +2026,11 @@ A resumed stream conversation has carried every issue of that stream so far, so
 it is compacted before each new issue's first phase (Issue #2337). What that
 costs depends on the provider:
 
-| Provider | Behaviour | Logged as |
-|----------|-----------|-----------|
-| `claude`, `deepseek` | One CLI, so one pair of levers: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **measured**. Smaller means it worked. | `compaction: /compact` |
-| `claude`, `deepseek` (unproven) | Anything short of that proof — an unchanged or larger transcript, a non-zero `/compact` run, a transcript that cannot be measured, a spawn that failed — is treated as uncompacted, and every agent run of the issue instead carries `--autocompact 100000`, the smallest window the CLI accepts, so its own compaction happens earliest. | `compaction: autocompact 100000` |
-| `codex`, `gemini` | No compaction control is exposed, so the full transcript is carried. | `compaction unavailable` (naming the provider) |
+| Provider                        | Behaviour                                                                                                                                                                                                                                                                                                                                 | Logged as                                      |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `claude`, `deepseek`            | One CLI, so one pair of levers: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **measured**. Smaller means it worked.                                                                                                                                           | `compaction: /compact`                         |
+| `claude`, `deepseek` (unproven) | Anything short of that proof — an unchanged or larger transcript, a non-zero `/compact` run, a transcript that cannot be measured, a spawn that failed — is treated as uncompacted, and every agent run of the issue instead carries `--autocompact 100000`, the smallest window the CLI accepts, so its own compaction happens earliest. | `compaction: autocompact 100000`               |
+| `codex`, `gemini`               | No compaction control is exposed, so the full transcript is carried.                                                                                                                                                                                                                                                                      | `compaction unavailable` (naming the provider) |
 
 A `new` or `reset` stream session has no conversation to compact and logs
 `compaction skipped: new stream session` without spending a CLI call. Every run
@@ -1944,29 +2042,30 @@ Implementation:
 
 ### Issue Claiming
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — claiming is GitHub work the worker does itself, with no agent CLI involved.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ —
+> claiming is GitHub work the worker does itself, with no agent CLI involved.
 
 When the worker finds an eligible issue:
 
 1. **Self-assign** — the worker assigns itself via the GitHub API
-2. **Verify claim** — waits briefly, then re-reads assignees to detect
-   races with other workers
-3. **Deterministic tie-break** — if multiple workers claim simultaneously,
-   the one with the alphabetically first login wins
+2. **Verify claim** — waits briefly, then re-reads assignees to detect races
+   with other workers
+3. **Deterministic tie-break** — if multiple workers claim simultaneously, the
+   one with the alphabetically first login wins
 
 Implementation:
 [`worker/deno/lib/claim_issue.ts`](../worker/deno/lib/claim_issue.ts)
 
 ### Heartbeat Tracking
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the worker writes heartbeats around whichever agent is running.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the
+> worker writes heartbeats around whichever agent is running.
 
 While working on an issue, the worker writes periodic heartbeat updates:
 
-- **Stuck detection** — if no heartbeat for 30+ minutes, the issue is
-  considered stuck and can be recovered
-- **Background updates** — heartbeats continue during long Claude
-  invocations
+- **Stuck detection** — if no heartbeat for 30+ minutes, the issue is considered
+  stuck and can be recovered
+- **Background updates** — heartbeats continue during long Claude invocations
 - **Rapid recovery** — other workers can detect and recover orphaned issues
   without waiting for the full timeout
 
@@ -1975,18 +2074,22 @@ Implementation:
 
 ### Processing Phases
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the phase pipeline itself is provider-agnostic, but the `--system-prompt` channel and the restored `.claude/` session are Claude's; the other agents receive the same guidance folded into one prompt string by `composeAgentPrompt`. DeepSeek takes the `--system-prompt` channel and the restored `.claude/` session too, because it is the same CLI.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ✅ — the
+> phase pipeline itself is provider-agnostic, but the `--system-prompt` channel
+> and the restored `.claude/` session are Claude's; the other agents receive the
+> same guidance folded into one prompt string by `composeAgentPrompt`. DeepSeek
+> takes the `--system-prompt` channel and the restored `.claude/` session too,
+> because it is the same CLI.
 
-Each issue moves through a pipeline of phases. Each phase invokes Claude
-as a subprocess, with the restored session providing continuity between
-phases for the same repository and work stream:
+Each issue moves through a pipeline of phases. Each phase invokes Claude as a
+subprocess, with the restored session providing continuity between phases for
+the same repository and work stream:
 
 ```
 Clarification → Planning (if needed) → Implementation → Quality checks → PR creation
 ```
 
-- System prompt passed via `--system-prompt` flag (optimised for prompt
-  caching)
+- System prompt passed via `--system-prompt` flag (optimised for prompt caching)
 - Session state restored before each phase, saved after each phase
 - Prompt SHA tracked for cache effectiveness monitoring
 
@@ -1994,26 +2097,30 @@ Clarification → Planning (if needed) → Implementation → Quality checks →
 
 ## Prompt Caching
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Layer 1 (the worker's own disk cache) is provider-agnostic; Layer 2 is Anthropic's server-side cache, which neither other CLI exposes or reports on. DeepSeek gets Layer 1; Layer 2 is Anthropic's server-side cache and its requests go to DeepSeek's endpoint, so no Layer 2 saving is requested of it or measured.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Layer
+> 1 (the worker's own disk cache) is provider-agnostic; Layer 2 is Anthropic's
+> server-side cache, which neither other CLI exposes or reports on. DeepSeek
+> gets Layer 1; Layer 2 is Anthropic's server-side cache and its requests go to
+> DeepSeek's endpoint, so no Layer 2 saving is requested of it or measured.
 
-VibeCoder uses a two-layer caching strategy to minimise costs and
-latency.
+VibeCoder uses a two-layer caching strategy to minimise costs and latency.
 
 ### Layer 1: Prompt Compilation Cache (Disk)
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the cache stores the compiled prompt before any CLI is invoked, so every provider is served from it.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the
+> cache stores the compiled prompt before any CLI is invoked, so every provider
+> is served from it.
 
 Static prompt components (coding guidelines, issue templates, per-repo
-instructions) are assembled once and cached on disk, keyed by SHA-256
-hash.
+instructions) are assembled once and cached on disk, keyed by SHA-256 hash.
 
-| Property | Value |
-|----------|-------|
-| **Location** | `${TMPDIR}/vibe-prompt-cache-deno-<user>/` (configurable via `promptCacheDir`), created `0700` and ownership-checked — a shared-tmp directory another account could write to disables the cache (Issue #1215) |
-| **File format** | `{repo_name}_{sha}.cache.txt` — JSON metadata header + content |
-| **TTL** | 24 hours (configurable) |
-| **Invalidation** | SHA change or TTL expiry |
-| **Concurrency** | Atomic writes (temp file + rename) |
+| Property         | Value                                                                                                                                                                                                         |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Location**     | `${TMPDIR}/vibe-prompt-cache-deno-<user>/` (configurable via `promptCacheDir`), created `0700` and ownership-checked — a shared-tmp directory another account could write to disables the cache (Issue #1215) |
+| **File format**  | `{repo_name}_{sha}.cache.txt` — JSON metadata header + content                                                                                                                                                |
+| **TTL**          | 24 hours (configurable)                                                                                                                                                                                       |
+| **Invalidation** | SHA change or TTL expiry                                                                                                                                                                                      |
+| **Concurrency**  | Atomic writes (temp file + rename)                                                                                                                                                                            |
 
 **Cache flow:**
 
@@ -2026,56 +2133,58 @@ PromptCache.getOrSet(repo, sha, assembler)
 ```
 
 Key files:
-- [`worker/deno/lib/prompt_cache.ts`](../worker/deno/lib/prompt_cache.ts)
-  — disk cache with SHA invalidation
-- [`worker/deno/lib/prompt_hash.ts`](../worker/deno/lib/prompt_hash.ts)
-  — SHA-256 computation
+
+- [`worker/deno/lib/prompt_cache.ts`](../worker/deno/lib/prompt_cache.ts) — disk
+  cache with SHA invalidation
+- [`worker/deno/lib/prompt_hash.ts`](../worker/deno/lib/prompt_hash.ts) —
+  SHA-256 computation
 - [`worker/deno/lib/prompt_builder_cache.ts`](../worker/deno/lib/prompt_builder_cache.ts)
   — integration layer
 
 ### Layer 2: Claude Built-in Prompt Caching
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — neither CLI takes a separate system prompt, so `composeAgentPrompt` folds it into the single prompt string; whatever caching a vendor does server-side is neither requested nor measured by the worker. DeepSeek does carry a separate `--system-prompt`, but the 70–90% saving is Anthropic's server-side cache, which a third-party endpoint neither promises nor reports.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ —
+> neither CLI takes a separate system prompt, so `composeAgentPrompt` folds it
+> into the single prompt string; whatever caching a vendor does server-side is
+> neither requested nor measured by the worker. DeepSeek does carry a separate
+> `--system-prompt`, but the 70–90% saving is Anthropic's server-side cache,
+> which a third-party endpoint neither promises nor reports.
 
-The Claude API caches system prompts that are byte-identical across
-consecutive requests. VibeCoder maximises cache hits by:
+The Claude API caches system prompts that are byte-identical across consecutive
+requests. VibeCoder maximises cache hits by:
 
-1. **Separating static from dynamic content** — the system prompt
-   (coding guidelines, templates) is passed via `--system-prompt`,
-   while issue-specific content goes in the user message. Repository
-   `CLAUDE.md`/`AGENTS.md` is deliberately **not** in the system prompt:
-   it is repository-supplied and therefore untrusted, so it is fenced in
-   the user turn instead.
-   That costs its tokens per invocation rather than at cache-read rates —
-   an accepted trade for not letting branch-supplied text outrank the task
-2. **Consistent prompt assembly** — the disk cache (Layer 1) ensures
-   the same bytes are sent each time for the same repo + template
-   version
-3. **SHA tracking** — the first 12 characters of the prompt SHA are
-   logged, making it easy to verify cache effectiveness
+1. **Separating static from dynamic content** — the system prompt (coding
+   guidelines, templates) is passed via `--system-prompt`, while issue-specific
+   content goes in the user message. Repository `CLAUDE.md`/`AGENTS.md` is
+   deliberately **not** in the system prompt: it is repository-supplied and
+   therefore untrusted, so it is fenced in the user turn instead. That costs its
+   tokens per invocation rather than at cache-read rates — an accepted trade for
+   not letting branch-supplied text outrank the task
+2. **Consistent prompt assembly** — the disk cache (Layer 1) ensures the same
+   bytes are sent each time for the same repo + template version
+3. **SHA tracking** — the first 12 characters of the prompt SHA are logged,
+   making it easy to verify cache effectiveness
 
-**Cost reduction:** 70–90% on cached input tokens. Cache-read tokens
-cost a fraction of regular input tokens (see
-[Model Pricing](#model-pricing)).
+**Cost reduction:** 70–90% on cached input tokens. Cache-read tokens cost a
+fraction of regular input tokens (see [Model Pricing](#model-pricing)).
 
-**Minimum cacheable prefix.** A prefix shorter than the model's minimum
-silently never caches — no error, just `cache_creation_input_tokens: 0`. The
-minimum depends on the model, and it is not monotonic across generations
-(Issue #2572):
+**Minimum cacheable prefix.** A prefix shorter than the model's minimum silently
+never caches — no error, just `cache_creation_input_tokens: 0`. The minimum
+depends on the model, and it is not monotonic across generations (Issue #2572):
 
-| Model the worker routes to | Minimum cacheable prefix |
-|---|---:|
-| Opus 5.5 (`opus`, every substantive phase), Opus 5, Fable 5.1 | 512 tokens |
-| Sonnet 5, Opus 4.8 | 1,024 tokens |
-| Haiku 4.5 (`haiku`: `summarise`, `spelling_fix`, `health`) | 4,096 tokens |
+| Model the worker routes to                                    | Minimum cacheable prefix |
+| ------------------------------------------------------------- | -----------------------: |
+| Opus 5.5 (`opus`, every substantive phase), Opus 5, Fable 5.1 |               512 tokens |
+| Sonnet 5, Opus 4.8                                            |             1,024 tokens |
+| Haiku 4.5 (`haiku`: `summarise`, `spelling_fix`, `health`)    |             4,096 tokens |
 
 So the Opus phases' stable prefix caches almost at once, while a short Haiku
 prompt does not cache at all until its static part passes 4,096 tokens. Every
 short-prompt Haiku phase should still route its static guidance through
-`--system-prompt`, so the dynamic content stays out of the prefix and the
-prefix caches once it grows past the threshold. (Opus 4.8 lowered its own
-minimum to 1,024; the Haiku tier never followed.) The per-phase audit and the
-specific change for the `summarise` phase are documented in
+`--system-prompt`, so the dynamic content stays out of the prefix and the prefix
+caches once it grows past the threshold. (Opus 4.8 lowered its own minimum to
+1,024; the Haiku tier never followed.) The per-phase audit and the specific
+change for the `summarise` phase are documented in
 `docs/audits/prompt-cache-audit-2395.md`.
 
 Implementation:
@@ -2083,16 +2192,19 @@ Implementation:
 
 ### Stable Prefix Ordering
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — `orderStablePrefix()` runs before the provider is chosen, so every agent gets the same ordered prompt, but no non-Anthropic prefix cache rewards that ordering; only the volatile-token warnings carry across. Same for DeepSeek — the ordering is free, the Anthropic prefix cache that would reward it is not.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ —
+> `orderStablePrefix()` runs before the provider is chosen, so every agent gets
+> the same ordered prompt, but no non-Anthropic prefix cache rewards that
+> ordering; only the volatile-token warnings carry across. Same for DeepSeek —
+> the ordering is free, the Anthropic prefix cache that would reward it is not.
 
 Anthropic prompt caching reuses the **longest byte-identical prefix** of a
-request. Everything from the first differing byte onwards is re-read at
-full input price, so one volatile token near the top — a timestamp, a run
-id, a reordered section — throws the cache away for the whole prompt
-behind it.
+request. Everything from the first differing byte onwards is re-read at full
+input price, so one volatile token near the top — a timestamp, a run id, a
+reordered section — throws the cache away for the whole prompt behind it.
 
-The issue prompt therefore leads with everything that is stable for a
-repository and defers everything that changes per issue:
+The issue prompt therefore leads with everything that is stable for a repository
+and defers everything that changes per issue:
 
 ```mermaid
 flowchart TD
@@ -2112,104 +2224,112 @@ flowchart TD
     A --> B --> C --> D --> E --> F --> G --> H --> I
 ```
 
-[`orderStablePrefix()`](../worker/deno/lib/prompt_prefix.ts) owns that
-order, so the prefix depends on section *content* only — never on the
-order a caller happened to assemble the sections in.
+[`orderStablePrefix()`](../worker/deno/lib/prompt_prefix.ts) owns that order, so
+the prefix depends on section _content_ only — never on the order a caller
+happened to assemble the sections in.
 
 Three things are deliberately **not** stable:
 
-- **The untrusted-content fence nonce** is randomised per invocation on
-  purpose.
-  It sits inside the fenced repo context, so the *user turn* re-caches per
-  run; it is constant within a session, which is where the many-turn win
-  lives. The `--system-prompt` block carries no nonce and caches across
-  runs.
+- **The untrusted-content fence nonce** is randomised per invocation on purpose.
+  It sits inside the fenced repo context, so the _user turn_ re-caches per run;
+  it is constant within a session, which is where the many-turn win lives. The
+  `--system-prompt` block carries no nonce and caches across runs.
 - **The issue template** is substituted with the issue number, so it is
   per-issue by construction and stays in the tail.
-- **The Graft code bundle** ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection),
-  Issue #2101) is selected by a per-task query, so it is rendered *after*
+- **The Graft code bundle**
+  ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection),
+  Issue #2101) is selected by a per-task query, so it is rendered _after_
   `orderStablePrefix()` rather than inside it. It joins neither the stable
   prefix nor `computeStaticPromptHash()`, so a bundle that differs on every
   issue leaves the cacheable bytes ahead of it untouched — and a run with no
   bundle produces exactly the prompt bytes it did before.
 
-`warnOnVolatileSystemPrompt()` scans the assembled system prompt on every
-build and names any token that cannot repeat (ISO timestamps, UUIDs, epoch
-milliseconds, stray fence nonces, bare dates), so a newly introduced
-volatile token is a warning at the run that caused it rather than a silent
-doubling of token spend.
+`warnOnVolatileSystemPrompt()` scans the assembled system prompt on every build
+and names any token that cannot repeat (ISO timestamps, UUIDs, epoch
+milliseconds, stray fence nonces, bare dates), so a newly introduced volatile
+token is a warning at the run that caused it rather than a silent doubling of
+token spend.
 
 The CLI invocation itself passes nothing per-turn that busts the cache:
-`buildInvocation()` emits a fixed flag order with `--system-prompt` ahead
-of `-p`, and identical requests produce byte-identical argument lists.
+`buildInvocation()` emits a fixed flag order with `--system-prompt` ahead of
+`-p`, and identical requests produce byte-identical argument lists.
 
 ### Cache Hit-Rate Telemetry
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — the read/write/uncached counts that make an Anthropic hit rate are Claude's. Codex reports `cached_input_tokens`, but they are not Anthropic's prefix cache, so no hit rate is logged for them. A Gemini run reports a context-cache read count and no write counter, and it is not Anthropic's prefix cache either, so no hit rate is logged for it. DeepSeek's output is the Claude CLI's, so the usage block parses; the read/write counts a hit rate is computed from are Anthropic-cache fields, so a DeepSeek run reports a rate only over whatever its endpoint populates.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ⚠️ — the
+> read/write/uncached counts that make an Anthropic hit rate are Claude's. Codex
+> reports `cached_input_tokens`, but they are not Anthropic's prefix cache, so
+> no hit rate is logged for them. A Gemini run reports a context-cache read
+> count and no write counter, and it is not Anthropic's prefix cache either, so
+> no hit rate is logged for it. DeepSeek's output is the Claude CLI's, so the
+> usage block parses; the read/write counts a hit rate is computed from are
+> Anthropic-cache fields, so a DeepSeek run reports a rate only over whatever
+> its endpoint populates.
 
 The API reports, per invocation, how many prompt tokens were read from the
 cache, written to it, and charged as plain input. The cached share of those
 three is the hit rate, and it is aggregated onto three surfaces:
 
-| Surface | Where it appears |
-|---------|------------------|
+| Surface        | Where it appears                                                                                      |
+| -------------- | ----------------------------------------------------------------------------------------------------- |
 | Per invocation | `Anthropic prompt cache: 90.0% (read 180,000 · write 15,000 · uncached 5,000) owner/repo phase=issue` |
-| Per run | `- **Prompt cache:** …` in the run model stats comment |
-| Per day | `Prompt cache hit rate: …` in the credit summary |
+| Per run        | `- **Prompt cache:** …` in the run model stats comment                                                |
+| Per day        | `Prompt cache hit rate: …` in the credit summary                                                      |
 
 Below a **50% floor** — and only once a run has seen at least 50,000 prompt
-tokens, so a cache-warming first turn is never flagged — the line is
-accompanied by a warning naming the likely cause: a volatile token has
-entered the stable prefix.
+tokens, so a cache-warming first turn is never flagged — the line is accompanied
+by a warning naming the likely cause: a volatile token has entered the stable
+prefix.
 
 Implementation:
 [`worker/deno/lib/prompt_cache_telemetry.ts`](../worker/deno/lib/prompt_cache_telemetry.ts)
 
 > **Not the same as the disk cache.** `Prompt cache: repo=… status=hit`
 > (Layer 1) says the worker did not re-assemble the prompt string.
-> `Anthropic prompt cache: …%` says the API served the prefix from its own
-> cache at a fraction of the input price: 0.1× on most models, 0.05× on
-> Opus 5.5 ($0.20 per MTok) and 0.025× on Fable 5.1 ($0.25 per MTok).
+> `Anthropic prompt cache: …%` says the API served the prefix from its own cache
+> at a fraction of the input price: 0.1× on most models, 0.05× on Opus 5.5
+> ($0.20 per MTok) and 0.025× on Fable 5.1 ($0.25 per MTok).
 
 ### SHA-256 Invalidation
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the hash keys the Layer 1 disk cache, which every provider reads.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the
+> hash keys the Layer 1 disk cache, which every provider reads.
 
 The prompt hash includes:
 
 - Repository name (per-repo differentiation)
-- The content of the static prompt components (`coding_guidelines`,
-  `issue` templates)
+- The content of the static prompt components (`coding_guidelines`, `issue`
+  templates)
 - Custom per-repo instructions (from `.config.json` `repo_config`)
 
-When any of these inputs change, the SHA changes, the disk cache is
-invalidated, and Claude receives a new system prompt (causing a cache
-miss on Layer 2).
+When any of these inputs change, the SHA changes, the disk cache is invalidated,
+and Claude receives a new system prompt (causing a cache miss on Layer 2).
 
 The worker logs SHA changes:
+
 ```
 Prompt SHA changed for org/repo: abc123... → def456... (cache invalidated)
 ```
 
 ### Codebase Map
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the map is generated from the repository and injected into the prompt before invocation, so every agent receives it.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the
+> map is generated from the repository and injected into the prompt before
+> invocation, so every agent receives it.
 
-Every session used to start with no memory of the repository. The
-agent-progress telemetry from
- caught a run
-spending its first ~7 minutes on `ls`/`grep`/`sed` calls just to locate the
-code it had been asked to change — a rediscovery tax paid once per session,
-every session.
+Every session used to start with no memory of the repository. The agent-progress
+telemetry from caught a run spending its first ~7 minutes on `ls`/`grep`/`sed`
+calls just to locate the code it had been asked to change — a rediscovery tax
+paid once per session, every session.
 
 The worker now generates a **codebase map** from the repository itself and
 injects it into the stable prefix beside `CLAUDE.md`/`AGENTS.md`:
 
-| Section | Source | Bound |
-|---------|--------|-------|
-| Layout | `git ls-files` aggregated to two directory levels | 40 entries |
-| Commands | `deno.json` tasks, `package.json` scripts, `quality.sh`, `Makefile` — root or the shallowest nested manifest | all, one line each |
-| Modules | leading docstring of each source file in the top source directories | 3 directories × 40 files, and whatever the 8,000-character guard allows |
+| Section  | Source                                                                                                       | Bound                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Layout   | `git ls-files` aggregated to two directory levels                                                            | 40 entries                                                              |
+| Commands | `deno.json` tasks, `package.json` scripts, `quality.sh`, `Makefile` — root or the shallowest nested manifest | all, one line each                                                      |
+| Modules  | leading docstring of each source file in the top source directories                                          | 3 directories × 40 files, and whatever the 8,000-character guard allows |
 
 ```mermaid
 flowchart LR
@@ -2228,14 +2348,13 @@ Invalidation has two triggers, because one is not enough:
 - **Cadence refresh** — a 6-hour TTL bounds the drift the tree hash cannot see,
   such as an edited docstring inside an unchanged tree.
 
-The map is **repo-derived and therefore untrusted**: a docstring is checked
-into the branch under work, so whoever authored that branch controls it. It is
-fenced in the run's boundary markers exactly as `CLAUDE.md` is
-, scrubbed of
+The map is **repo-derived and therefore untrusted**: a docstring is checked into
+the branch under work, so whoever authored that branch controls it. It is fenced
+in the run's boundary markers exactly as `CLAUDE.md` is , scrubbed of
 delimiter-shaped patterns at extraction time, and wrapped in a code fence it
 cannot close.
 
-The *paths* are untrusted for the same reason: `git ls-files -co` lists
+The _paths_ are untrusted for the same reason: `git ls-files -co` lists
 committed and untracked **symlinks** like any other path, so
 `src/aaa.ts -> ~/.config/gh/hosts.yml` would otherwise have its head read into
 the prompt and the map cache. Every file the map reads — each module docstring
@@ -2243,15 +2362,15 @@ and each `deno.json`/`package.json` manifest — is therefore resolved with
 `Deno.realPath` and refused unless the result sits at or below the clone's real
 root — the containment check `container_extension_digest.ts` already applies to
 synced extension directories. A refused path is still listed (the file exists),
-and the refusal is logged
-`⚠️  Codebase map refused …`, so the skipped read is never silent. A symlink
-that stays inside the clone is read as normal.
+and the refusal is logged `⚠️  Codebase map refused …`, so the skipped read is
+never silent. A symlink that stays inside the clone is read as normal.
 
-Both caps announce what they dropped (`… 33 more entries`, `[... module index
-bounded — 542 further source files not listed ...]`) — a silently capped index
-reads as "this is everything" when it is not. A generation fault logs
-`WARN: codebase map unavailable …` and the run continues unmapped rather than
-shipping a silently blank index.
+Both caps announce what they dropped (`… 33 more entries`,
+`[... module index
+bounded — 542 further source files not listed ...]`) — a
+silently capped index reads as "this is everything" when it is not. A generation
+fault logs `WARN: codebase map unavailable …` and the run continues unmapped
+rather than shipping a silently blank index.
 
 **Cargo commands from brief (#2581 trial, off by default).** A caller of
 `getOrGenerateCodebaseMap` may pass a brief runner and its version
@@ -2259,14 +2378,15 @@ shipping a silently blank index.
 repository with a root `Cargo.toml` the runner spawns `brief --json <repo>` —
 fixed argv, no shell, offline scan only, bounded by `runWithTimeout` — and a
 `## Cargo commands (from brief)` block follows the Commands section. Only
-`cargo …` strings survive, free of control and invisible characters, at most
-200 characters each and 20 in all. The cache key then also carries brief's
-version; a failed brief run logs a warning, renders the map without the block
-and is not cached. With no runner the map and its tree-hash key are unchanged.
-The `execute-claude-phase` path passes the runner only while the host's
+`cargo …` strings survive, free of control and invisible characters, at most 200
+characters each and 20 in all. The cache key then also carries brief's version;
+a failed brief run logs a warning, renders the map without the block and is not
+cached. With no runner the map and its tree-hash key are unchanged. Both
+implementation paths — the `execute-claude-phase` CLI and the main-loop issue
+phase (Issue #2621) — build the map, pass the runner only while the host's
 `brief_toolchain.enabled` switch is on (Issue #2603; see
 [Configuration](CONFIGURATION.md)), keyed on the brief version the container
-pins, and reports the outcome as the run-stats `Brief:` line and the callback's
+pins, and report the outcome as the run-stats `Brief:` line and the callback's
 `brief` block. The [brief trial](BRIEF-TRIAL.md) judges whether the block earns
 its place.
 
@@ -2279,7 +2399,9 @@ off. Implementation:
 
 ## Batch API
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — nothing is submitted to any batch API under any provider; the path evaluated here was Anthropic's and was never wired in.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ —
+> nothing is submitted to any batch API under any provider; the path evaluated
+> here was Anthropic's and was never wired in.
 
 > **Status: considered and NOT wired in.** The worker runs on the Claude CLI
 > exclusively. It does **not** submit any work to the Anthropic Batch API, and
@@ -2289,14 +2411,16 @@ off. Implementation:
 
 The Anthropic Batch API offers a **50% cost discount** for requests that can
 tolerate up to **24 hours** of asynchronous processing (results often arrive
-sooner, but the deadline is the design constraint). During a batch
-client was built and its phase-eligibility was analysed, but the live
-submission lifecycle was **never wired into the run loop** and was later removed
-as dead code. No batch function is called from the worker.
+sooner, but the deadline is the design constraint). During a batch client was
+built and its phase-eligibility was analysed, but the live submission lifecycle
+was **never wired into the run loop** and was later removed as dead code. No
+batch function is called from the worker.
 
 ### Why it was rejected
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — the async/bounded-run mismatch is the worker's, not a vendor's, so the rejection stands whichever provider runs.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — the
+> async/bounded-run mismatch is the worker's, not a vendor's, so the rejection
+> stands whichever provider runs.
 
 The Batch API is asynchronous with an up-to-24h turnaround. VibeCoder processes
 each issue inside a **bounded, interactive ~1h run**: every phase's output feeds
@@ -2310,15 +2434,17 @@ the async/bounded-run mismatch.
 
 The eligibility analysis (retained only as an estimation helper, see below)
 judged four phases — `health`, `summarise`, `spelling_fix`, `clarification` — as
-*theoretically* latency-tolerant, and the rest (`execute`, `planning`, `ci_fix`,
-`pr_feedback`, `quality_fix`, `refinement`, `revision`, `question`) as
-blocking. Even the "eligible" four are not batched in practice: the worker keeps
-them on the CLI and instead drives their cost down with cheaper models and lower
-effort (see [Effort-First Routing by Phase](#8-effort-first-routing-by-phase)).
+_theoretically_ latency-tolerant, and the rest (`execute`, `planning`, `ci_fix`,
+`pr_feedback`, `quality_fix`, `refinement`, `revision`, `question`) as blocking.
+Even the "eligible" four are not batched in practice: the worker keeps them on
+the CLI and instead drives their cost down with cheaper models and lower effort
+(see [Effort-First Routing by Phase](#8-effort-first-routing-by-phase)).
 
 ### What remains in the code
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — the retained helpers are offline, Anthropic-shaped estimators; no provider calls them at run time.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — the
+> retained helpers are offline, Anthropic-shaped estimators; no provider calls
+> them at run time.
 
 [`worker/deno/lib/batch_api.ts`](../worker/deno/lib/batch_api.ts) now exports
 only **pure, offline helpers** — request/response builders, NDJSON parsers,
@@ -2326,36 +2452,49 @@ phase-eligibility assessment (`getBatchEligiblePhases`), and cost-savings
 estimation (`estimateBatchSavings`). These do **not** perform any network I/O;
 they exist for analysis and the `batch-api` CLI sub-command
 ([`worker/deno/commands/batch_api.ts`](../worker/deno/commands/batch_api.ts)),
-which only *reports* what a hypothetical discount would be. No
+which only _reports_ what a hypothetical discount would be. No
 `ANTHROPIC_API_KEY` is required, because no HTTP request is ever made.
 
 ---
 
 ## Token Usage & Cost Tracking
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — every invocation is credit-logged with its provider id. Codex usage is measured when the CLI reports it and priced from its API-equivalent row. DeepSeek's counts do parse — same CLI, same `stream-json` — and price the same way. Gemini's own `stream-json` stats are decoded since [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938) and price the same API-equivalent way; a Gemini run that reports no stats is still recorded UNKNOWN, never zero.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — every
+> invocation is credit-logged with its provider id. Codex usage is measured when
+> the CLI reports it and priced from its API-equivalent row. DeepSeek's counts
+> do parse — same CLI, same `stream-json` — and price the same way. Gemini's own
+> `stream-json` stats are decoded since
+> [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938) and price the
+> same API-equivalent way; a Gemini run that reports no stats is still recorded
+> UNKNOWN, never zero.
 
 ### Token Extraction
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — Codex usage is decoded from `turn.completed` / `token_count` by `CODEX_OUTPUT_ADAPTER`, and Gemini's from its terminal `result` event by `decodeGeminiTokenUsage()`. A run of either that reports nothing is warned about once and flagged `usageUnknown` by `extractProviderTokenUsage()` rather than recorded as a silent zero. DeepSeek emits the Claude CLI's `stream-json`, so the shared extractor parses it and no `usageUnknown` flag is raised.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — Codex
+> usage is decoded from `turn.completed` / `token_count` by
+> `CODEX_OUTPUT_ADAPTER`, and Gemini's from its terminal `result` event by
+> `decodeGeminiTokenUsage()`. A run of either that reports nothing is warned
+> about once and flagged `usageUnknown` by `extractProviderTokenUsage()` rather
+> than recorded as a silent zero. DeepSeek emits the Claude CLI's `stream-json`,
+> so the shared extractor parses it and no `usageUnknown` flag is raised.
 
 After each Claude CLI invocation, the worker extracts token usage from the
 stream-json output:
 
-| Field | Description |
-|-------|-------------|
-| `inputTokens` | Input tokens consumed |
-| `outputTokens` | Output tokens generated |
+| Field                 | Description                        |
+| --------------------- | ---------------------------------- |
+| `inputTokens`         | Input tokens consumed              |
+| `outputTokens`        | Output tokens generated            |
 | `cacheCreationTokens` | Tokens written to the prompt cache |
-| `cacheReadTokens` | Tokens read from the prompt cache |
+| `cacheReadTokens`     | Tokens read from the prompt cache  |
 
 Implementation:
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts)
 
 #### Non-Claude providers: measured, or unknown — never zero
 
-Extraction reads the **Claude** `stream-json` shape by default. Codex emits
-its own JSONL under `--json`; that stream is decoded by
+Extraction reads the **Claude** `stream-json` shape by default. Codex emits its
+own JSONL under `--json`; that stream is decoded by
 [`worker/deno/lib/codex_output_adapter.ts`](../worker/deno/lib/codex_output_adapter.ts)
 and the counts reach the credit log as measured usage (Issue #1701). Gemini
 emits its own `--output-format stream-json` events, decoded by
@@ -2371,15 +2510,15 @@ which dispatches on the active provider descriptor:
   `TokenUsage` shape. A run that reports none is still `usageUnknown`.
 - **Gemini** — the terminal `result` event's `stats.models` counters are summed
   onto the same shape: prompt less cached is the input count, candidates the
-  output count, `cached` the cache-read count, and the cache-write count stays
-  0 because Gemini reports none. **Thinking tokens are not in that event.** CLI
+  output count, `cached` the cache-read count, and the cache-write count stays 0
+  because Gemini reports none. **Thinking tokens are not in that event.** CLI
   0.55.1 projects five per-model fields onto the stream and `thoughts` is not
   among them, so a thinking-heavy Gemini run's output count is its candidates
   alone; the deficit is not inferred from `total_tokens`, because an inferred
-  number is a guess. Under-counting is the safe direction for a spend guard,
-  and the decoder honours a `thoughts` count wherever a CLI does report one.
-  A run that reports no stats, omits a billable counter, or states one
-  unusably — a string, or a count below zero — is still `usageUnknown`.
+  number is a guess. Under-counting is the safe direction for a spend guard, and
+  the decoder honours a `thoughts` count wherever a CLI does report one. A run
+  that reports no stats, omits a billable counter, or states one unusably — a
+  string, or a count below zero — is still `usageUnknown`.
 - **Any other provider** — the shared extractor is tried first (a CLI whose
   output happens to be Claude-compatible is parsed normally); when nothing is
   parseable the run is warned about once, naming the provider, repo, phase and
@@ -2389,13 +2528,14 @@ An `usageUnknown` invocation contributes **no** tokens or cost to the daily
 totals and is counted separately, so `credit summary` ends with a line such as
 `WARNING: 2 invocation(s) reported no parseable token usage (provider(s):
 gemini) — their tokens and cost are UNKNOWN, not zero, and are NOT
-counted in the totals above.` Codex model ids are priced: each carries an
-API-equivalent row, so spend-ceiling accounting reads the rate from the row
-rather than over-charging the run at the conservative upper bound. The figure is
-still not a bill — ChatGPT subscription usage never is — which is why the
-run-stats sub-bullet labels it `(API-equivalent)`. The daily `credit summary`
-and the spend ceiling consume the same figure without that label, because both
-exist to guard a budget rather than to reconcile an invoice.
+counted in the totals above.`
+Codex model ids are priced: each carries an API-equivalent row, so spend-ceiling
+accounting reads the rate from the row rather than over-charging the run at the
+conservative upper bound. The figure is still not a bill — ChatGPT subscription
+usage never is — which is why the run-stats sub-bullet labels it
+`(API-equivalent)`. The daily `credit summary` and the spend ceiling consume the
+same figure without that label, because both exist to guard a budget rather than
+to reconcile an invoice.
 
 ```mermaid
 flowchart LR
@@ -2415,39 +2555,48 @@ flowchart LR
 
 ### Model Pricing
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — `MODEL_PRICING` carries the Claude rows Anthropic bills **and** an **API-equivalent** row for each of the eight routable Codex, Gemini and DeepSeek ids (`gpt-5-codex`, `gpt-5-mini`, `gpt-5`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `deepseek-v4-pro`, `deepseek-flash`). An API-equivalent figure is the vendor's API list price for the same tokens, labelled `(API-equivalent)` on its run-stats sub-bullet — never a bill, because each provider runs on a fixed-price subscription. An id outside the table is still charged at the dearest known rate and named in `unpricedModels`.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ —
+> `MODEL_PRICING` carries the Claude rows Anthropic bills **and** an
+> **API-equivalent** row for each of the eight routable Codex, Gemini and
+> DeepSeek ids (`gpt-5-codex`, `gpt-5-mini`, `gpt-5`, `gemini-2.5-pro`,
+> `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `deepseek-v4-pro`,
+> `deepseek-flash`). An API-equivalent figure is the vendor's API list price for
+> the same tokens, labelled `(API-equivalent)` on its run-stats sub-bullet —
+> never a bill, because each provider runs on a fixed-price subscription. An id
+> outside the table is still charged at the dearest known rate and named in
+> `unpricedModels`.
 
 Approximate list prices (USD per million tokens, as of September 2026):
 
-| Model | Input | Output | Cache Write | Cache Read |
-|-------|------:|-------:|------------:|-----------:|
-| Claude Fable 5.1 | $10.00 | $50.00 | $12.50 | $0.25 |
-| Claude Fable 5 | $10.00 | $50.00 | $12.50 | $1.00 |
-| Claude Opus 5.5 | $4.00 | $20.00 | $5.00 | $0.20 |
-| Claude Opus 5.0–5.4 | $5.00 | $25.00 | $6.25 | $0.50 |
-| Claude Opus 4.5–4.8 | $5.00 | $25.00 | $6.25 | $0.50 |
-| Claude Opus 4.0/4.1 | $15.00 | $75.00 | $18.75 | $1.50 |
-| Claude Sonnet 5 | $2.00 | $10.00 | $2.50 | $0.20 |
-| Claude Sonnet 4.6 | $3.00 | $15.00 | $3.75 | $0.30 |
-| Claude Haiku 4.5 | $1.00 | $5.00 | $1.25 | $0.10 |
+| Model               |  Input | Output | Cache Write | Cache Read |
+| ------------------- | -----: | -----: | ----------: | ---------: |
+| Claude Fable 5.1    | $10.00 | $50.00 |      $12.50 |      $0.25 |
+| Claude Fable 5      | $10.00 | $50.00 |      $12.50 |      $1.00 |
+| Claude Opus 5.5     |  $4.00 | $20.00 |       $5.00 |      $0.20 |
+| Claude Opus 5.0–5.4 |  $5.00 | $25.00 |       $6.25 |      $0.50 |
+| Claude Opus 4.5–4.8 |  $5.00 | $25.00 |       $6.25 |      $0.50 |
+| Claude Opus 4.0/4.1 | $15.00 | $75.00 |      $18.75 |      $1.50 |
+| Claude Sonnet 5     |  $2.00 | $10.00 |       $2.50 |      $0.20 |
+| Claude Sonnet 4.6   |  $3.00 | $15.00 |       $3.75 |      $0.30 |
+| Claude Haiku 4.5    |  $1.00 |  $5.00 |       $1.25 |      $0.10 |
 
 The non-Claude rows below are **API-equivalent list prices** (USD per million
 tokens, read from the vendor pricing pages and **checked on 2026-09-11** — the
-DeepSeek rows **re-checked on 2026-09-14**), not
-bills — every one of these providers runs on a fixed-price subscription, so the
-figure is what the same tokens would have cost on that vendor's API and the
-run-stats sub-bullet says `(API-equivalent)`:
+DeepSeek rows **re-checked on 2026-09-14**), not bills — every one of these
+providers runs on a fixed-price subscription, so the figure is what the same
+tokens would have cost on that vendor's API and the run-stats sub-bullet says
+`(API-equivalent)`:
 
-| Model | Input | Output | Cache Write | Cache Read | Source |
-|-------|------:|-------:|------------:|-----------:|--------|
-| `gpt-5-codex` | $1.25 | $10.00 | $0.00 | $0.1250 | [OpenAI](https://developers.openai.com/api/docs/models/gpt-5-codex) |
-| `gpt-5-mini` | $0.25 | $2.00 | $0.00 | $0.0250 | [OpenAI](https://developers.openai.com/api/docs/pricing) |
-| `gpt-5` | $1.25 | $10.00 | $0.00 | $0.1250 | [OpenAI](https://developers.openai.com/api/docs/pricing) |
-| `gemini-2.5-pro` | $1.25 | $10.00 | $0.00 | $0.1250 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
-| `gemini-2.5-flash` | $0.30 | $2.50 | $0.00 | $0.0300 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
-| `gemini-2.5-flash-lite` | $0.10 | $0.40 | $0.00 | $0.0100 | [Google](https://ai.google.dev/gemini-api/docs/pricing) |
-| `deepseek-v4-pro` | $1.32 | $3.96 | $0.00 | $0.0440 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
-| `deepseek-flash` | $0.30 | $1.20 | $0.00 | $0.0060 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing) |
+| Model                   | Input | Output | Cache Write | Cache Read | Source                                                              |
+| ----------------------- | ----: | -----: | ----------: | ---------: | ------------------------------------------------------------------- |
+| `gpt-5-codex`           | $1.25 | $10.00 |       $0.00 |    $0.1250 | [OpenAI](https://developers.openai.com/api/docs/models/gpt-5-codex) |
+| `gpt-5-mini`            | $0.25 |  $2.00 |       $0.00 |    $0.0250 | [OpenAI](https://developers.openai.com/api/docs/pricing)            |
+| `gpt-5`                 | $1.25 | $10.00 |       $0.00 |    $0.1250 | [OpenAI](https://developers.openai.com/api/docs/pricing)            |
+| `gemini-2.5-pro`        | $1.25 | $10.00 |       $0.00 |    $0.1250 | [Google](https://ai.google.dev/gemini-api/docs/pricing)             |
+| `gemini-2.5-flash`      | $0.30 |  $2.50 |       $0.00 |    $0.0300 | [Google](https://ai.google.dev/gemini-api/docs/pricing)             |
+| `gemini-2.5-flash-lite` | $0.10 |  $0.40 |       $0.00 |    $0.0100 | [Google](https://ai.google.dev/gemini-api/docs/pricing)             |
+| `deepseek-v4-pro`       | $1.32 |  $3.96 |       $0.00 |    $0.0440 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing)       |
+| `deepseek-flash`        | $0.30 |  $1.20 |       $0.00 |    $0.0060 | [DeepSeek](https://api-docs.deepseek.com/quick_start/pricing)       |
 
 Basis for each group, stated because the vendor publishes more than one rate:
 
@@ -2462,35 +2611,35 @@ Basis for each group, stated because the vendor publishes more than one rate:
   applied (off-peak is half price, so a row never under-states). Each row is
   that model's own peak rate: `deepseek-v4-pro` ($1.32 / $3.96 / $0.044) and
   `deepseek-flash` ($0.30 / $1.20 / $0.006). The retired `deepseek-chat` /
-  `deepseek-reasoner` ids the worker previously routed to (Issue #1941) keep
-  no rows: the page no longer names them, and a historical credit log that
-  still does is priced at the conservative upper bound rather than a rate the
-  vendor no longer publishes.
+  `deepseek-reasoner` ids the worker previously routed to (Issue #1941) keep no
+  rows: the page no longer names them, and a historical credit log that still
+  does is priced at the conservative upper bound rather than a rate the vendor
+  no longer publishes.
 - **Cache write is $0.00 for every row** — none of these three vendors bills a
   per-token cache write the way Anthropic does (Codex reports no cache-write
   counter at all, and Gemini's explicit-cache *storage* is charged hourly,
   which is not modelled). The column is still rendered, as `$0.0000`, so the
   breakdown reconciles.
 
-Opus 5.0–5.4 (model id `claude-opus-5`) lands at the **same** price point
-as the modern Opus 4.5–4.8 line ($5 / $25 per MTok, cache $6.25 / $0.50) — a
-step-change in capability over Opus 4.8 for free. The `claude-opus-5` pricing row
-and the 5-family fallback parser were added together so Opus 5 traffic is
+Opus 5.0–5.4 (model id `claude-opus-5`) lands at the **same** price point as the
+modern Opus 4.5–4.8 line ($5 / $25 per MTok, cache $6.25 / $0.50) — a
+step-change in capability over Opus 4.8 for free. The `claude-opus-5` pricing
+row and the 5-family fallback parser were added together so Opus 5 traffic is
 never dropped from cost tracking.
 
 **Opus 5.5** (model id `claude-opus-5-5`, and what the alias `opus` now resolves
 to) is cheaper again on every rate — $4 / $20 per MTok, cache $5.00 / $0.20 —
-with cache hits at 0.05× the base input rate rather than the usual 0.1×
-(Issue #2543). Its row precedes the broader `claude-opus-5` key so the ordered
-prefix walk in `batch_api.ts` reaches it, and `lookupModelPricing` prices any
+with cache hits at 0.05× the base input rate rather than the usual 0.1× (Issue
+#2543). Its row precedes the broader `claude-opus-5` key so the ordered prefix
+walk in `batch_api.ts` reaches it, and `lookupModelPricing` prices any
 5.5-or-later id at this rate while 5.0–5.4 keep the row above. These rows mirror
 `MODEL_PRICING` in
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts).
 
-Fable (alias `fable`) is the top tier above Opus with a 1M-token context
-window. It is the default for the eight planning-shaped phases: `planning`,
-`grill_me`, `refinement`, `revision`, `question`, `clarification`, `quorum`
-and `quorum_judge`.
+Fable (alias `fable`) is the top tier above Opus with a 1M-token context window.
+It is the default for the eight planning-shaped phases: `planning`, `grill_me`,
+`refinement`, `revision`, `question`, `clarification`, `quorum` and
+`quorum_judge`.
 
 Sonnet 5 (model id `claude-sonnet-5`, alias `sonnet`) is **cheaper** than the
 Sonnet 4.x line it replaces: $2 / $10 rather than $3 / $15 per MTok. That looks
@@ -2518,8 +2667,8 @@ it: `modelsMatch()` passes both on the `claude-fable-5` prefix and on the
 `fable` tier family, so a healthy 5.1 run reports `Degraded: no`
 (`worker/deno/tests/planning_run_stats_test.ts`).
 
-What changed for the worker is the **cache-read rate**: 5.1 prices cache hits
-at 0.025× base input — **$0.25 / MTok, a quarter of the Fable 5 rate** — while
+What changed for the worker is the **cache-read rate**: 5.1 prices cache hits at
+0.025× base input — **$0.25 / MTok, a quarter of the Fable 5 rate** — while
 input, output and cache writes are unchanged. Since the eight planning-shaped
 phases replay a large cached prefix, that is where the saving lands.
 `claude-fable-5` keeps its own $1.00 row so a run whose **served** model was
@@ -2545,23 +2694,23 @@ The floor was `2.1.170` — the `--model fable` release — which is well below 
 5.1 alias table, so Fable-preferring phases went on being served Fable 5 while
 the floor read as satisfied. Read out of the shipped CLI bundles:
 
-| CLI | `fable` alias resolves to | Notes |
-|-----|---------------------------|-------|
-| ≤ 2.1.256 | `claude-fable-5` | 5.1 is not in the alias table at all |
-| 2.1.257 | `claude-fable-5-1` | "Added Claude Fable 5.1 (`claude-fable-5-1`), now the default Fable model" |
-| 2.1.258–2.1.259 | `claude-fable-5-1` | 5.1 served, but its prompt caching is still broken |
-| **2.1.260+** | `claude-fable-5-1` | Fixes context after tool results being re-sent uncached on every tool-call turn, and a mid-session effort change invalidating the cache |
+| CLI             | `fable` alias resolves to | Notes                                                                                                                                   |
+| --------------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| ≤ 2.1.256       | `claude-fable-5`          | 5.1 is not in the alias table at all                                                                                                    |
+| 2.1.257         | `claude-fable-5-1`        | "Added Claude Fable 5.1 (`claude-fable-5-1`), now the default Fable model"                                                              |
+| 2.1.258–2.1.259 | `claude-fable-5-1`        | 5.1 served, but its prompt caching is still broken                                                                                      |
+| **2.1.260+**    | `claude-fable-5-1`        | Fixes context after tool results being re-sent uncached on every tool-call turn, and a mid-session effort change invalidating the cache |
 
 2.1.261 and 2.1.263 carry `fable: {default: "claude-fable-5-1"}` and
 `latest_per_family: {fable: "claude-fable-5-1"}` in that table; 2.1.223 contains
 no `claude-fable-5-1` string at all. The floor is therefore **2.1.260**, not
 2.1.257: the entire saving of 5.1 is in cache reads, so a CLI that serves 5.1
 while re-sending the cached prefix uncached defeats the reason for the bump. No
-phase default pins `claude-fable-5-1` — the alias still does the work, exactly as
-the alias-follows-the-latest rule intends.
+phase default pins `claude-fable-5-1` — the alias still does the work, exactly
+as the alias-follows-the-latest rule intends.
 
 **Both levers had to move.** Inside the image `skipSoftwareUpdateFromEnv()`
-suppresses the software-update step entirely — the image *is* the update
+suppresses the software-update step entirely — the image _is_ the update
 mechanism — so the floor alone could never pull a running container forward.
 `container/tools.json` now pins **2.1.261** (checksum-verified per architecture,
 24h quarantine cleared), which is what makes a fleet run report
@@ -2579,9 +2728,9 @@ resolves `opus` to `claude-opus-5-5` (2.1.261 resolved it to `claude-opus-5`).
 2.1.280 is above 2.1.260, so a phase pinned back to Fable still gets Fable 5.1
 with its cache fixes. `CURRENT_TIER_MODELS` gained an `opus` row at the same
 time, so a container still serving `claude-opus-5` is reported as a previous
-generation — but only for the label and the stats comment: the
-degraded-delivery guard (Issue #2562) ignores a stale generation, since the run
-was not handed to a fallback model.
+generation — but only for the label and the stats comment: the degraded-delivery
+guard (Issue #2562) ignores a stale generation, since the run was not handed to
+a fallback model.
 
 **A previous-generation Fable is now degraded.** `modelsMatch()` matches at
 tier-family level, so a run served `claude-fable-5` while `claude-fable-5-1` is
@@ -2611,10 +2760,10 @@ Opus 5 does **not** change the tier ordering. Fable 5 remains the top tier at
 $10 / $50 per MTok; Opus 5 is a step-change over Opus 4.8 at **half** Fable 5's
 price. The existing `fable > opus` ordering — encoded in
 `DEFAULT_CLAUDE_MODEL_TOP_TIER`, `MODEL_FALLBACK_MAP` (`fable → opus`), and
-`fable_routing.ts` — stays valid, so the eight planning-shaped phases still prefer
-Fable and degrade to Opus. The only change is that the `fable → opus` fallback
-now lands on a strictly better model (Opus 5 rather than Opus 4.8) at no extra
-cost. No code change is required; this row records the confirmation.
+`fable_routing.ts` — stays valid, so the eight planning-shaped phases still
+prefer Fable and degrade to Opus. The only change is that the `fable → opus`
+fallback now lands on a strictly better model (Opus 5 rather than Opus 4.8) at
+no extra cost. No code change is required; this row records the confirmation.
 
 #### Rate-limit bucket after Opus 5 (ops watch, no code)
 
@@ -2645,22 +2794,22 @@ persists past the initial bucket warm-up.
 #### Model-generation prompt tuning
 
 Prompt templates are tuned to the behaviour of the generation that runs them, so
-a tuning that helped one generation can *harm* the next. Opus 5 behaves
+a tuning that helped one generation can _harm_ the next. Opus 5 behaves
 differently from Opus 4.8 in four ways, and the shared `coding_guidelines`
 template (v34 onward) plus the `issue` template (v29 onward) were re-tuned to
 match:
 
-| Opus 5 behaviour | Prompt response |
-|------------------|-----------------|
+| Opus 5 behaviour                      | Prompt response                                                                                                                                    |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Self-verifies as it works, unprompted | **Deleted** the `Self-Verification Checkpoint` section from the `issue` template — the ritual re-check pass was redundant and encouraged over-work |
-| Delegates to subagents readily | **Capped** delegation — spawn a subagent only for genuine isolated parallel exploration, not routine edits or searches |
-| Can expand the task scope | Added scope-discipline wording — implement exactly what the issue asks |
-| Writes longer responses and files | Added output-length guidance — match deliverable length to the work |
+| Delegates to subagents readily        | **Capped** delegation — spawn a subagent only for genuine isolated parallel exploration, not routine edits or searches                             |
+| Can expand the task scope             | Added scope-discipline wording — implement exactly what the issue asks                                                                             |
+| Writes longer responses and files     | Added output-length guidance — match deliverable length to the work                                                                                |
 
 The delegation line is a deliberate **reversal**: the Opus 4.8-era tuning
-*encouraged* subagent delegation, and that encouragement was measured as harmful
-once Opus 5 served the `opus` phases. Recorded here as a durable negative
-result — do **not** re-add the 4.8-era delegation encouragement or the
+_encouraged_ subagent delegation, and that encouragement was measured as harmful
+once Opus 5 served the `opus` phases. Recorded here as a durable negative result
+— do **not** re-add the 4.8-era delegation encouragement or the
 self-verification checkpoint while Opus 5 (or a later generation with the same
 behaviours) serves those phases. The one bounded exception — the `issue` phase
 while `issue_executor_split` is on, where the sub-agents run on a cheaper tier —
@@ -2669,18 +2818,17 @@ is described in
 
 ##### Where the framing lives
 
-`coding_guidelines` once carried the four responses above under a section
-headed **`Opus 5 Working Style`**, opening "You self-verify as you work,
-delegate readily, and tend to write at length." `buildCodingGuidelines()` loads
-that one shared template for **every** run, including the Codex and Gemini
-providers, so that framing asserted one generation's traits to models that do
-not share them. The shared `coding_guidelines` template is now model-agnostic:
-the section is titled `Working Style` and states the four directives as rules,
-with
-"Trust the quality gate" replacing the "you already check your work as you go"
-premise. The behaviours themselves are prior tuning results and are retained in
-the table above — this section, not the template, is where a generation's
-observed behaviour is recorded.
+`coding_guidelines` once carried the four responses above under a section headed
+**`Opus 5 Working Style`**, opening "You self-verify as you work, delegate
+readily, and tend to write at length." `buildCodingGuidelines()` loads that one
+shared template for **every** run, including the Codex and Gemini providers, so
+that framing asserted one generation's traits to models that do not share them.
+The shared `coding_guidelines` template is now model-agnostic: the section is
+titled `Working Style` and states the four directives as rules, with "Trust the
+quality gate" replacing the "you already check your work as you go" premise. The
+behaviours themselves are prior tuning results and are retained in the table
+above — this section, not the template, is where a generation's observed
+behaviour is recorded.
 
 ##### Where tuning is applied (Issue #374)
 
@@ -2690,11 +2838,11 @@ an optional agent identity — the active provider from `lib/agent_provider.ts`
 and, where the caller knows it, the resolved model — and appends
 `prompts/coding_guidelines_<provider>[_<model>]/` behind the agnostic baseline,
 inside the one `<coding_guidelines>` wrapper. The worked example is
-`prompts/coding_guidelines_claude/`, which restates the four directives'
-premise for Claude runs. A caller with no identity, or an identity with no
-overlay authored, gets the agnostic baseline unchanged — so a Claude tuning
-can never reach a Codex or Gemini run. The mechanics (naming, precedence,
-the `skip_screenshot_check` interaction) are documented in
+`prompts/coding_guidelines_claude/`, which restates the four directives' premise
+for Claude runs. A caller with no identity, or an identity with no overlay
+authored, gets the agnostic baseline unchanged — so a Claude tuning can never
+reach a Codex or Gemini run. The mechanics (naming, precedence, the
+`skip_screenshot_check` interaction) are documented in
 [EXTENDING.md § Per-model coding-guidelines overlays](EXTENDING.md#per-model-coding-guidelines-overlays).
 
 Prompt-authoring guidance in
@@ -2702,29 +2850,35 @@ Prompt-authoring guidance in
 model-generation-agnostic by design; anything that depends on the generation
 belongs in this section so the two cannot drift.
 
-**Note:** Cache-read tokens are significantly cheaper than regular input
-tokens — this is why prompt caching delivers such large savings.
+**Note:** Cache-read tokens are significantly cheaper than regular input tokens
+— this is why prompt caching delivers such large savings.
 
 ### Credit Logging
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an entry is written for every invocation and carries the `provider` id. Codex token fields are measured when the CLI reports them, and the cost is read from the id's API-equivalent row (the vendor's API list price, not a bill). Gemini token fields are measured the same way from its own `stream-json` stats, and read `usageUnknown` only when the run reported none. A DeepSeek entry carries real token fields, costed the same API-equivalent way.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — an
+> entry is written for every invocation and carries the `provider` id. Codex
+> token fields are measured when the CLI reports them, and the cost is read from
+> the id's API-equivalent row (the vendor's API list price, not a bill). Gemini
+> token fields are measured the same way from its own `stream-json` stats, and
+> read `usageUnknown` only when the run reported none. A DeepSeek entry carries
+> real token fields, costed the same API-equivalent way.
 
-Every Claude invocation is logged to a daily credit log file (newline-
-delimited JSON):
+Every Claude invocation is logged to a daily credit log file (newline- delimited
+JSON):
 
-| Field | Description |
-|-------|-------------|
-| `workerName` | Which worker made the call (e.g. `worker-1`) |
-| `phase` | Processing phase (e.g. `planning`, `spelling_fix`) |
-| `repo` | Repository (e.g. `org/repo`) |
-| `model` | Model used (e.g. `claude-sonnet-4-7`) |
-| `timestamp` | ISO 8601 timestamp |
-| `fallbackFrom` | Original model before fallback (if applicable) |
-| `effort` | Effort level used (e.g. `high`, `max`) (if applicable) |
-| `inputTokens` | Input tokens consumed |
-| `outputTokens` | Output tokens generated |
-| `cacheCreationTokens` | Tokens written to prompt cache |
-| `cacheReadTokens` | Tokens read from prompt cache |
+| Field                 | Description                                            |
+| --------------------- | ------------------------------------------------------ |
+| `workerName`          | Which worker made the call (e.g. `worker-1`)           |
+| `phase`               | Processing phase (e.g. `planning`, `spelling_fix`)     |
+| `repo`                | Repository (e.g. `org/repo`)                           |
+| `model`               | Model used (e.g. `claude-sonnet-4-7`)                  |
+| `timestamp`           | ISO 8601 timestamp                                     |
+| `fallbackFrom`        | Original model before fallback (if applicable)         |
+| `effort`              | Effort level used (e.g. `high`, `max`) (if applicable) |
+| `inputTokens`         | Input tokens consumed                                  |
+| `outputTokens`        | Output tokens generated                                |
+| `cacheCreationTokens` | Tokens written to prompt cache                         |
+| `cacheReadTokens`     | Tokens read from prompt cache                          |
 
 **Log location:** `creditLogDir` (configurable) — files named
 `.credit_log_YYYY-MM-DD.json`, defaulting to the worker-private
@@ -2732,6 +2886,7 @@ delimited JSON):
 [Where the credit logs live](CONFIGURATION.md#where-the-credit-logs-live-issue-1239))
 
 **Daily summary** aggregates:
+
 - Total invocations by worker, phase, and model
 - Fallback transitions (e.g. `opus → sonnet: 5`)
 - Total, per-phase, and per-model token usage
@@ -2752,31 +2907,31 @@ guarded a smaller budget than the operator configured. Unpriced tokens are now
 charged at a conservative **upper bound** (the dearest rate of every known row)
 and reported separately:
 
-| Summary field | Meaning |
-|---------------|---------|
-| `unpricedModels` | Model ids with no pricing row, sorted |
-| `unpricedTokens` | Tokens billed under those ids |
-| `unpricedEstimatedCost` | Upper-bound USD included in `totalEstimatedCost` |
-| `unknownUsageInvocations` | Runs whose token usage could not be parsed |
-| `unknownUsageProviders` | Providers those runs ran under, sorted |
-| `malformedLogLines` | Log lines that could not be parsed and were skipped |
+| Summary field             | Meaning                                             |
+| ------------------------- | --------------------------------------------------- |
+| `unpricedModels`          | Model ids with no pricing row, sorted               |
+| `unpricedTokens`          | Tokens billed under those ids                       |
+| `unpricedEstimatedCost`   | Upper-bound USD included in `totalEstimatedCost`    |
+| `unknownUsageInvocations` | Runs whose token usage could not be parsed          |
+| `unknownUsageProviders`   | Providers those runs ran under, sorted              |
+| `malformedLogLines`       | Log lines that could not be parsed and were skipped |
 
 **Any id with no row lands here, whatever its vendor.** The eight routable
-Codex, Gemini and DeepSeek ids now carry
-[API-equivalent rows](#model-pricing), so they are priced from the row and stay
-out of `unpricedModels`. An id outside the table — a Claude release newer than
-the table, or a non-Claude id the worker does not route to such as `gpt-4.1` or
-`gemini-3-pro` — has no pricing row, so its tokens are charged at the upper
-bound and it is named in `unpricedModels`: an over-estimate an operator can
-see, never a `$0`. A run whose usage could not be parsed at all has no tokens
-to charge, so it is counted in `unknownUsageInvocations` instead
+Codex, Gemini and DeepSeek ids now carry [API-equivalent rows](#model-pricing),
+so they are priced from the row and stay out of `unpricedModels`. An id outside
+the table — a Claude release newer than the table, or a non-Claude id the worker
+does not route to such as `gpt-4.1` or `gemini-3-pro` — has no pricing row, so
+its tokens are charged at the upper bound and it is named in `unpricedModels`:
+an over-estimate an operator can see, never a `$0`. A run whose usage could not
+be parsed at all has no tokens to charge, so it is counted in
+`unknownUsageInvocations` instead
 ([above](#non-claude-providers-unknown-never-zero)).
 
 `formatSummary` prints both an `Unpriced models` line and a `WARNING:` line for
 malformed log lines, and the spend-ceiling hook logs a `[SPEND_CEILING]` line
 naming the ids — the fix is to add the missing row to `MODEL_PRICING`. A run
-whose routing chain resolves no `--model` argument now logs the model id the
-API reported serving, rather than the unpriceable `"default"` sentinel.
+whose routing chain resolves no `--model` argument now logs the model id the API
+reported serving, rather than the unpriceable `"default"` sentinel.
 
 **Retention:** 7 days by default (configurable). Old logs are cleaned up
 automatically.
@@ -2786,31 +2941,35 @@ Implementation:
 
 ### Context Window Budget Monitoring
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the chars ÷ 4 estimate and the thresholds run for every provider, but a non-Claude model id has no row in `MODEL_CONTEXT_WINDOWS`, so it is measured against the 200,000-token default ceiling rather than its real window. `deepseek-v4-pro` and `deepseek-flash` have no `MODEL_CONTEXT_WINDOWS` row either, so they are measured against the same 200,000-token default.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the
+> chars ÷ 4 estimate and the thresholds run for every provider, but a non-Claude
+> model id has no row in `MODEL_CONTEXT_WINDOWS`, so it is measured against the
+> 200,000-token default ceiling rather than its real window. `deepseek-v4-pro`
+> and `deepseek-flash` have no `MODEL_CONTEXT_WINDOWS` row either, so they are
+> measured against the same 200,000-token default.
 
-VibeCoder monitors how much of each model's context window is consumed
-by the assembled prompt, providing early warning when prompts grow too
-large for effective responses.
+VibeCoder monitors how much of each model's context window is consumed by the
+assembled prompt, providing early warning when prompts grow too large for
+effective responses.
 
 #### Token Estimation
 
-Token counts are estimated using a lightweight **characters ÷ 4**
-heuristic for English text. This avoids external tokeniser dependencies
-while maintaining sufficient accuracy for budget monitoring (not
-billing). The heuristic matches the estimate used in `claude_executor.ts`
-for consistency.
+Token counts are estimated using a lightweight **characters ÷ 4** heuristic for
+English text. This avoids external tokeniser dependencies while maintaining
+sufficient accuracy for budget monitoring (not billing). The heuristic matches
+the estimate used in `claude_executor.ts` for consistency.
 
 #### Context Window Sizes
 
 As of the Claude 5 generation, Fable, Opus and Sonnet have 1M-token context
 windows, while Haiku retains the original 200k window:
 
-| Model | Context Window |
-|-------|---------------|
-| Claude Fable 5 | 1,000,000 tokens |
-| Claude Opus 5 | 1,000,000 tokens |
+| Model             | Context Window   |
+| ----------------- | ---------------- |
+| Claude Fable 5    | 1,000,000 tokens |
+| Claude Opus 5     | 1,000,000 tokens |
 | Claude Sonnet 4.6 | 1,000,000 tokens |
-| Claude Haiku 4.5 | 200,000 tokens |
+| Claude Haiku 4.5  | 200,000 tokens   |
 
 #### Component Breakdown
 
@@ -2821,18 +2980,18 @@ Context budget: system=12,450 dynamic=3,200 issue=1,800 custom_instructions=500
                 total=17,950/200,000 (9.0%)
 ```
 
-Components include: `system` (coding guidelines and templates),
-`dynamic` (phase-specific instructions), `issue` (issue description and
-comments), `custom_instructions` (per-repo `.config.json` `repo_config`
-configuration), and others.
+Components include: `system` (coding guidelines and templates), `dynamic`
+(phase-specific instructions), `issue` (issue description and comments),
+`custom_instructions` (per-repo `.config.json` `repo_config` configuration), and
+others.
 
 #### Threshold Alerts
 
-| Threshold | Default | Effect |
-|-----------|---------|--------|
-| **Warning** | 50% | Logs a warning — prompt is large but functional |
-| **Error** | 80% | Logs an error — risk of degraded responses |
-| **Block** | 95% | Stops the execution phase before the billed invocation and escalates to `needs-human` |
+| Threshold   | Default | Effect                                                                                |
+| ----------- | ------- | ------------------------------------------------------------------------------------- |
+| **Warning** | 50%     | Logs a warning — prompt is large but functional                                       |
+| **Error**   | 80%     | Logs an error — risk of degraded responses                                            |
+| **Block**   | 95%     | Stops the execution phase before the billed invocation and escalates to `needs-human` |
 
 These thresholds are configurable via `contextBudgetWarningPercent`,
 `contextBudgetErrorPercent` and `contextBudgetBlockPercent` in `.config.json`.
@@ -2855,24 +3014,24 @@ Each invocation's budget data is logged to a daily budget log file
 (newline-delimited JSON):
 
 - **File format:** `.context_budget_YYYY-MM-DD.json`
-- **Entry fields:** timestamp, repo, phase, model, component breakdowns,
-  total tokens, usage percentage, warning/error messages, and `blocked` when
-  the hard ceiling stopped the phase
+- **Entry fields:** timestamp, repo, phase, model, component breakdowns, total
+  tokens, usage percentage, warning/error messages, and `blocked` when the hard
+  ceiling stopped the phase
 
 #### Aggregated Statistics
 
-The `aggregateBudgetStats()` function computes summary statistics from
-budget log entries for inclusion in the daily credit summary:
+The `aggregateBudgetStats()` function computes summary statistics from budget
+log entries for inclusion in the daily credit summary:
 
-| Statistic | Description |
-|-----------|-------------|
-| **Total invocations** | Number of Claude calls in the period |
-| **Average context tokens** | Mean estimated tokens per invocation |
-| **Maximum context tokens** | Highest single-invocation token estimate |
-| **Average usage** | Mean context window usage percentage |
-| **Maximum usage** | Peak context window usage percentage |
-| **Warning count** | Invocations exceeding the warning threshold |
-| **Error count** | Invocations exceeding the error threshold |
+| Statistic                  | Description                                 |
+| -------------------------- | ------------------------------------------- |
+| **Total invocations**      | Number of Claude calls in the period        |
+| **Average context tokens** | Mean estimated tokens per invocation        |
+| **Maximum context tokens** | Highest single-invocation token estimate    |
+| **Average usage**          | Mean context window usage percentage        |
+| **Maximum usage**          | Peak context window usage percentage        |
+| **Warning count**          | Invocations exceeding the warning threshold |
+| **Error count**            | Invocations exceeding the error threshold   |
 
 Implementation:
 [`worker/deno/lib/context_budget.ts`](../worker/deno/lib/context_budget.ts)
@@ -2881,114 +3040,129 @@ Implementation:
 
 ## Token Saving Strategies
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the prompt-level strategies (Layer 1 cache, codebase map, verbosity) apply to every provider; the session-store and Anthropic-cache strategies do not. DeepSeek keeps the session-store strategies — it is the Claude CLI — and loses the Anthropic-cache ones.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the
+> prompt-level strategies (Layer 1 cache, codebase map, verbosity) apply to
+> every provider; the session-store and Anthropic-cache strategies do not.
+> DeepSeek keeps the session-store strategies — it is the Claude CLI — and loses
+> the Anthropic-cache ones.
 
-VibeCoder employs multiple complementary strategies to minimise token
-usage and cost. Each targets a different layer of the token lifecycle:
+VibeCoder employs multiple complementary strategies to minimise token usage and
+cost. Each targets a different layer of the token lifecycle:
 
 ### 1. Prompt Caching (Two-Layer)
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Layer 1 saves re-assembly for every provider; the 70–90% Layer 2 saving is Anthropic-only. DeepSeek likewise earns Layer 1 only.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Layer
+> 1 saves re-assembly for every provider; the 70–90% Layer 2 saving is
+> Anthropic-only. DeepSeek likewise earns Layer 1 only.
 
-Static prompt components are cached on disk (keyed by SHA-256 hash) so
-they are assembled once and reused. Claude's built-in prompt caching then
-further reduces cost — cache-read tokens are 90% cheaper than regular
-input tokens. See [Prompt Caching](#prompt-caching) for details.
+Static prompt components are cached on disk (keyed by SHA-256 hash) so they are
+assembled once and reused. Claude's built-in prompt caching then further reduces
+cost — cache-read tokens are 90% cheaper than regular input tokens. See
+[Prompt Caching](#prompt-caching) for details.
 
 **Saving:** 70–90% reduction on cached input tokens.
 
 ### 2. Session Persistence
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the worker stores no Codex or Gemini state per repository, so neither earns this cold-start saving. DeepSeek earns the same cold-start saving from the same store.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — the
+> worker stores no Codex or Gemini state per repository, so neither earns this
+> cold-start saving. DeepSeek earns the same cold-start saving from the same
+> store.
 
 Per-repository session directories (`.claude/`) are preserved between
-invocations, so Claude retains learned codebase conventions and context
-from previous work. This avoids rebuilding context from scratch on every
-phase.
+invocations, so Claude retains learned codebase conventions and context from
+previous work. This avoids rebuilding context from scratch on every phase.
 
 **Saving:** Eliminates cold-start context rebuilding across invocations.
 
 ### 3. Session Resume
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Codex resumes the captured per-issue thread (`codex exec resume <SESSION_ID>`, never `--last`); Gemini resumes its own most recent session (`--resume latest`) rather than one the worker names, so continuity is per-container rather than per-issue. DeepSeek resumes a worker-named session as Claude does, but out of its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — Codex
+> resumes the captured per-issue thread (`codex exec resume <SESSION_ID>`, never
+> `--last`); Gemini resumes its own most recent session (`--resume latest`)
+> rather than one the worker names, so continuity is per-container rather than
+> per-issue. DeepSeek resumes a worker-named session as Claude does, but out of
+> its own `CLAUDE_CONFIG_DIR`, so the continuity never crosses the two.
 
-CLI-level session continuity uses `--session-id` and `--resume` flags to
-carry conversation context across the phases of one issue, and across the
-successive issues of a stream for the run kinds that join one. Later phases —
-and the next issue of the same milestone — can reference earlier decisions
-without re-explaining them.
+CLI-level session continuity uses `--session-id` and `--resume` flags to carry
+conversation context across the phases of one issue, and across the successive
+issues of a stream for the run kinds that join one. Later phases — and the next
+issue of the same milestone — can reference earlier decisions without
+re-explaining them.
 
 **Saving:** Reduces redundant context across clarification → planning →
 implementation → quality phases.
 
 ### 4. Session Compaction
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — there is no Codex or Gemini session store for the worker to compact. DeepSeek's store is compacted by the same rules.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ✅ — there
+> is no Codex or Gemini session store for the worker to compact. DeepSeek's
+> store is compacted by the same rules.
 
-Progressive three-tier compaction prevents session directories from
-growing unbounded (50 MB default limit). By keeping sessions lean,
-subsequent restores are faster and avoid wasting tokens on stale context.
+Progressive three-tier compaction prevents session directories from growing
+unbounded (50 MB default limit). By keeping sessions lean, subsequent restores
+are faster and avoid wasting tokens on stale context.
 
 **Saving:** Prevents token waste from bloated session state.
 
 ### 5. Verbosity Configuration
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — verbosity is injected into the prompt template, so every agent receives the same instruction.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ —
+> verbosity is injected into the prompt template, so every agent receives the
+> same instruction.
 
 Output verbosity is configurable, reducing output tokens where detailed
 explanations add nothing. Inspired by the
-[Caveman](https://github.com/JuliusBrussee/caveman) approach to
-controlling LLM output verbosity, VibeCoder injects the configured level
-into the prompt template. The level comes from configuration only — there
-are no automatic per-phase levels (Issue #798), so an unconfigured worker
-renders `standard` everywhere.
+[Caveman](https://github.com/JuliusBrussee/caveman) approach to controlling LLM
+output verbosity, VibeCoder injects the configured level into the prompt
+template. The level comes from configuration only — there are no automatic
+per-phase levels (Issue #798), so an unconfigured worker renders `standard`
+everywhere.
 
 **Four verbosity levels:**
 
-| Level | Behaviour |
-|-------|-----------|
-| `minimal` | One sentence naming what changed; that sentence is the whole response. |
-| `concise` | Brief response (2–3 sentences). Key changes and rationale only. |
-| `standard` | Balanced detail — the default. End-of-run summary, no running commentary. |
-| `verbose` | Standard summary plus a short section per genuinely close decision — the option taken, the alternative rejected, and the fact that settled it. |
+| Level      | Behaviour                                                                                                                                      |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `minimal`  | One sentence naming what changed; that sentence is the whole response.                                                                         |
+| `concise`  | Brief response (2–3 sentences). Key changes and rationale only.                                                                                |
+| `standard` | Balanced detail — the default. End-of-run summary, no running commentary.                                                                      |
+| `verbose`  | Standard summary plus a short section per genuinely close decision — the option taken, the alternative rejected, and the fact that settled it. |
 
 **Which override reaches which surface:**
 
 The two overrides are read by different code paths, so neither applies
 everywhere:
 
-| Surface | Level used |
-|---------|------------|
-| `issue` phase | Per-repo `verbosity` override in `repo_config`, else `standard` |
-| `grill_me` and `quorum` rounds | Global `verbosity` in `.config.json`, else `standard` |
-| Every other phase | `standard` |
+| Surface                        | Level used                                                      |
+| ------------------------------ | --------------------------------------------------------------- |
+| `issue` phase                  | Per-repo `verbosity` override in `repo_config`, else `standard` |
+| `grill_me` and `quorum` rounds | Global `verbosity` in `.config.json`, else `standard`           |
+| Every other phase              | `standard`                                                      |
 
-**How it works:** the resolved level's instruction is injected into the
-prompt template via the `{{VERBOSITY_INSTRUCTIONS}}` placeholder. Every
-level gets a block, including `standard` (Issue #3813) — a `minimal` run
-receives *"Produce a single sentence naming what you changed. That
-sentence is the whole response."*
+**How it works:** the resolved level's instruction is injected into the prompt
+template via the `{{VERBOSITY_INSTRUCTIONS}}` placeholder. Every level gets a
+block, including `standard` (Issue #3813) — a `minimal` run receives _"Produce a
+single sentence naming what you changed. That sentence is the whole response."_
 
 **Resolution priority** for the `issue` phase (highest to lowest):
 
 1. Per-repo override in `repo_config` — allows different verbosity per
-   repository (e.g., `minimal` for a docs site, `verbose` for a
-   platform repo)
+   repository (e.g., `minimal` for a docs site, `verbose` for a platform repo)
 2. Hard-coded default (`standard`)
 
 **Approximate token savings** compared to `standard`:
 
-| Level | Output Token Impact |
-|-------|-------------------|
-| `minimal` | ~60–80% fewer output tokens |
-| `concise` | ~30–50% fewer output tokens |
-| `standard` | Baseline |
-| `verbose` | ~20–40% more output tokens |
+| Level      | Output Token Impact         |
+| ---------- | --------------------------- |
+| `minimal`  | ~60–80% fewer output tokens |
+| `concise`  | ~30–50% fewer output tokens |
+| `standard` | Baseline                    |
+| `verbose`  | ~20–40% more output tokens  |
 
 **Saving:** ~30–80% fewer output tokens where a lower level is configured;
 nothing is saved by default, since the default level is `standard`. See
-[Verbosity Configuration](CONFIGURATION.md#-verbosity-configuration)
-for full configuration options.
+[Verbosity Configuration](CONFIGURATION.md#-verbosity-configuration) for full
+configuration options.
 
 Implementation:
 [`worker/deno/lib/verbosity.ts`](../worker/deno/lib/verbosity.ts),
@@ -2996,7 +3170,8 @@ Implementation:
 
 ### 6. Batch API (considered, not wired)
 
-> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — no provider submits batch work, so the saving is zero for all four.
+> **Applies to:** `claude` ➖ · `codex` ➖ · `gemini` ➖ · `deepseek` ➖ — no
+> provider submits batch work, so the saving is zero for all four.
 
 The Anthropic Batch API was evaluated as a cost lever but **deliberately not
 wired in** — its up-to-24h async turnaround is incompatible with the worker's
@@ -3007,23 +3182,30 @@ earned. See [Batch API](#batch-api) for the full negative-result note.
 
 ### 7. Context Budget Monitoring
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — monitoring runs for every provider. Codex GPT-5 ids are measured against a 400k window; Gemini and unrecognised ids fall back to the 200,000-token default ceiling. DeepSeek is measured against the default ceiling too.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ —
+> monitoring runs for every provider. Codex GPT-5 ids are measured against a
+> 400k window; Gemini and unrecognised ids fall back to the 200,000-token
+> default ceiling. DeepSeek is measured against the default ceiling too.
 
-Real-time monitoring of context window usage alerts the system when
-prompts grow too large. This enables proactive prompt trimming and
-prevents degraded responses from over-stuffed context windows.
+Real-time monitoring of context window usage alerts the system when prompts grow
+too large. This enables proactive prompt trimming and prevents degraded
+responses from over-stuffed context windows.
 
 **Saving:** Awareness-based — enables informed decisions about prompt
 composition.
 
 ### 8. Effort-First Routing by Phase
 
-> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ❌ · `deepseek` ❌ — Codex varies effort over its own four levels; the Gemini CLI has no effort option, so it varies model tier alone and warns once per phase that the requested effort cannot be applied. DeepSeek has no effort lever at all: it varies model tier alone, over two rungs, and warns once per phase.
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ❌ · `deepseek` ❌ — Codex
+> varies effort over its own four levels; the Gemini CLI has no effort option,
+> so it varies model tier alone and warns once per phase that the requested
+> effort cannot be applied. DeepSeek has no effort lever at all: it varies model
+> tier alone, over two rungs, and warns once per phase.
 
-Under effort-first routing the worker stays on one top tier
-(Opus) and varies **effort** as the primary cost lever; tier is the secondary
-lever, keeping the three trivial phases (spelling, summarise, health) on Haiku.
-See [Phase-Specific Defaults](#phase-specific-defaults) and the
+Under effort-first routing the worker stays on one top tier (Opus) and varies
+**effort** as the primary cost lever; tier is the secondary lever, keeping the
+three trivial phases (spelling, summarise, health) on Haiku. See
+[Phase-Specific Defaults](#phase-specific-defaults) and the
 [design note](#design-note--effort-first-vs-tier-first).
 
 **Saving:** Lower effort cuts output tokens (the dominant cost) on every Opus
@@ -3033,7 +3215,12 @@ phase; the trivial phases retain the ~5× Haiku-vs-Opus per-token saving.
 
 ## Configuration
 
-> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the keys listed here are Claude-named; Codex and Gemini take the `codex_*` / `gemini_*` equivalents from their routing sections and [CONFIGURATION.md](CONFIGURATION.md), and the session-store keys apply to Claude alone. DeepSeek takes the `deepseek_*` keys — model only, with no effort counterpart.
+> **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — the
+> keys listed here are Claude-named; Codex and Gemini take the `codex_*` /
+> `gemini_*` equivalents from their routing sections and
+> [CONFIGURATION.md](CONFIGURATION.md), and the session-store keys apply to
+> Claude alone. DeepSeek takes the `deepseek_*` keys — model only, with no
+> effort counterpart.
 
 Model selection and caching behaviour can be customised in `.config.json`:
 
@@ -3052,20 +3239,21 @@ Model selection and caching behaviour can be customised in `.config.json`:
 }
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `claude_model` | string | `"opus"` | Global default model |
-| `phase_model_overrides` | object | `{}` | Per-phase model overrides |
-| `claude_timeout` | number | `3600` | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while the agent is still producing output — a tool call or a stdout chunk inside the stall window (Issue #767) — and something is progressing — the working tree, or a descendant process doing work (Issue #508) — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
-| `claude_kill_after` | number | `30` | Grace period (seconds) before SIGKILL |
-| `enable_model_fallback` | boolean | `true` | Auto-downgrade model on rate limit |
-| `enable_session_resume` | boolean | `true` | Per-stream conversations, the stream locks and the per-issue compaction — see [CONFIGURATION.md § Session Resume](CONFIGURATION.md#-session-resume) |
-| `maxSessionSizeBytes` | number | `52428800` (50 MB) | Maximum session store size before compaction |
-| `maxSessionAgeDays` | number | `7` | Maximum session age before cleanup |
-| `contextBudgetWarningPercent` | number | `50` | Context usage warning threshold |
-| `contextBudgetErrorPercent` | number | `80` | Context usage error threshold |
+| Key                           | Type    | Default            | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------------- | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude_model`                | string  | `"opus"`           | Global default model                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `phase_model_overrides`       | object  | `{}`               | Per-phase model overrides                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `claude_timeout`              | number  | `3600`             | Max seconds per Claude invocation (1 hour — lowered from 4 hours by). Issue-work runs may extend it while the agent is still producing output — a tool call or a stdout chunk inside the stall window (Issue #767) — and something is progressing — the working tree, or a descendant process doing work (Issue #508) — see `progress_extension_enabled`, `progress_extension_grant_seconds`, `progress_extension_stall_seconds` and `progress_extension_check_seconds` in [CONFIGURATION.md](CONFIGURATION.md#-progress-extended-deadline) |
+| `claude_kill_after`           | number  | `30`               | Grace period (seconds) before SIGKILL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `enable_model_fallback`       | boolean | `true`             | Auto-downgrade model on rate limit                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `enable_session_resume`       | boolean | `true`             | Per-stream conversations, the stream locks and the per-issue compaction — see [CONFIGURATION.md § Session Resume](CONFIGURATION.md#-session-resume)                                                                                                                                                                                                                                                                                                                                                                                         |
+| `maxSessionSizeBytes`         | number  | `52428800` (50 MB) | Maximum session store size before compaction                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `maxSessionAgeDays`           | number  | `7`                | Maximum session age before cleanup                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `contextBudgetWarningPercent` | number  | `50`               | Context usage warning threshold                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `contextBudgetErrorPercent`   | number  | `80`               | Context usage error threshold                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Environment variables:
+
 - `CLAUDE_MODEL` — global model override
 - `CLAUDE_MODEL_<PHASE>` — per-phase override (highest priority)
 

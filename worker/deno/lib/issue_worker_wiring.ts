@@ -173,6 +173,7 @@ import {
   collectGraftContext,
   type GraftContextCollector,
 } from "./graft_context.ts";
+import { getOrGenerateCodebaseMap } from "./codebase_map_cache.ts";
 import { loadPrompt } from "./prompt_manager.ts";
 import { shuffleArray } from "./array_utils.ts";
 import { evaluateRunGuard } from "./run_entrypoint.ts";
@@ -401,6 +402,11 @@ export interface InfrastructureDeps {
    * #2060). Spawns nothing while the host switch is off.
    */
   collectGraftContext: GraftContextCollector;
+  /**
+   * Generate (or reuse) the per-repo codebase map (Issue #4281), handing it
+   * the brief runner while the brief trial is on (Issue #2621).
+   */
+  getCodebaseMap: typeof getOrGenerateCodebaseMap;
   loadPrompt: typeof loadPrompt;
   shuffleArray: typeof shuffleArray;
   evaluateRunGuard: typeof evaluateRunGuard;
@@ -685,6 +691,7 @@ export function createDefaultDeps(
       checkAndRotateLog,
       buildPrompt: buildIssuePrompt,
       collectGraftContext,
+      getCodebaseMap: getOrGenerateCodebaseMap,
       loadPrompt,
       shuffleArray,
       evaluateRunGuard,
@@ -1281,6 +1288,18 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     // `graft` and injects no bundle unless a test says otherwise.
     collectGraftContext: mockFn<InfrastructureDeps["collectGraftContext"]>(() =>
       Promise.resolve({ status: "off", enabled: false })
+    ),
+    // Issue #2621: a mocked run gets an empty map and never spawns git or brief.
+    getCodebaseMap: mockFn<InfrastructureDeps["getCodebaseMap"]>(() =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          content: "",
+          treeHash: "mock",
+          cacheHit: true,
+          brief: { status: "off", reason: "no runner" },
+        },
+      })
     ),
     shuffleArray: mockFn<InfrastructureDeps["shuffleArray"]>(<T>(
       items: readonly T[],
