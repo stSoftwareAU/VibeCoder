@@ -35,6 +35,11 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import type { GraftContextCollector } from "./graft_context.ts";
+import {
+  type PhaseAcceleratorReport,
+  preparePhaseAccelerators,
+} from "./phase_accelerators.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,6 +76,8 @@ export interface RefinementProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /** Graft collection seam (Issue #2569); defaults to the real collector. */
+  collectGraftContext?: GraftContextCollector;
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +572,7 @@ async function reportRefinementDegradation(
   repo: string,
   issueNumber: number,
   claudeResult: PhaseClaudeResult,
+  accelerators: PhaseAcceleratorReport,
 ): Promise<void> {
   const { ghClient, logger, deps } = processorDeps;
   try {
@@ -573,6 +581,7 @@ async function reportRefinementDegradation(
       repo,
       issueNumber,
       claudeResult,
+      ...accelerators,
       postComment: async (r, i, b) => {
         await ghClient.postComment(r, i, b);
       },
@@ -730,18 +739,34 @@ async function _processRefinementWithHeartbeat(
     truncation.feedbackText,
   );
 
+  // Issue #2569: Graft, CodeGraph and RTK, prepared once for this run.
+  const accel = await preparePhaseAccelerators({
+    config,
+    repo,
+    issueNumber,
+    issueTitle,
+    issueBody,
+    claude: deps.claude,
+    logger,
+    collectGraftContext: processorDeps.collectGraftContext,
+  });
+
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt,
+      prompt: accel.applyPrompt(prompt),
       timeoutSeconds: config.refinementTimeout,
       killAfterSeconds: config.refinementKillAfter,
       phase: "refinement",
       logger,
+      // The MCP config is written under `cwd`.
+      cwd: config.workDir,
+      ...accel.spawnOptions(),
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  await accel.afterSpawn();
 
   if (!claudeResult.ok) {
     const errorMsg = claudeResult.error.message;
@@ -786,11 +811,13 @@ async function _processRefinementWithHeartbeat(
   // and grill-me do. Posts a stats comment and applies `degraded-model` to the
   // issue ONLY on a degraded round (explicit pre-flight flag, served-model
   // mismatch, or rate-limit fallback); healthy rounds stay quiet. Non-fatal.
+  accel.recordSuccess(claudeResult.value.runStats);
   await reportRefinementDegradation(
     processorDeps,
     repo,
     issueNumber,
     claudeResult.value,
+    accel.report(),
   );
 
   // Parse Claude's response

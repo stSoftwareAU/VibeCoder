@@ -27,10 +27,12 @@ The switch is `rtk_output.enabled` — one boolean, per host, default `true`
 parsed by [#2380](https://github.com/stSoftwareAU/VibeCoder/issues/2380), turned
 into a hook run by
 [#2382](https://github.com/stSoftwareAU/VibeCoder/issues/2382), wired
-into the six spawn paths by
+into the ten spawn paths by
 [#2383](https://github.com/stSoftwareAU/VibeCoder/issues/2383),
-[#2384](https://github.com/stSoftwareAU/VibeCoder/issues/2384) and
-[#2561](https://github.com/stSoftwareAU/VibeCoder/issues/2561) (grill-me), and
+[#2384](https://github.com/stSoftwareAU/VibeCoder/issues/2384),
+[#2561](https://github.com/stSoftwareAU/VibeCoder/issues/2561) (grill-me) and
+[#2569](https://github.com/stSoftwareAU/VibeCoder/issues/2569) (clarity
+assessment, refinement, revision and quorum), and
 documented
 in the [Configuration Reference](CONFIGURATION.md). The binary
 itself is a pinned container toolchain fragment

@@ -31,6 +31,9 @@
 
 import type { GitHubClient, Logger } from "../types.ts";
 import type { EnvLookup } from "./env_lookup.ts";
+import type { CodegraphContextResult } from "./codegraph_context.ts";
+import type { GraftContextResult } from "./graft_context.ts";
+import type { RtkOutputResult } from "./rtk_output.ts";
 import {
   buildDegradationReport,
   type DegradationVerdict,
@@ -112,6 +115,10 @@ export async function reportQuorumDegradation(args: {
    * (Issue #944); defaults to the process environment.
    */
   env?: EnvLookup;
+  /** The plan-off's Graft, CodeGraph and RTK outcomes (Issue #2569). */
+  graft?: GraftContextResult;
+  codegraph?: CodegraphContextResult;
+  rtk?: RtkOutputResult;
 }): Promise<DegradationVerdict> {
   const { repo, issueNumber, ghClient, runGhCommand, logger } = args;
 
@@ -141,5 +148,8 @@ export async function reportQuorumDegradation(args: {
     logger,
     ...(args.cacheDir ? { cacheDir: args.cacheDir } : {}),
     ...(args.env ? { env: args.env } : {}),
+    ...(args.graft ? { graft: args.graft } : {}),
+    ...(args.codegraph ? { codegraph: args.codegraph } : {}),
+    ...(args.rtk ? { rtk: args.rtk } : {}),
   });
 }

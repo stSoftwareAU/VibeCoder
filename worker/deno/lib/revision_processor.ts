@@ -18,6 +18,8 @@ import type { GitHubClient, GitHubComment, Logger, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import type { IssueContext } from "./issue_worker.ts";
 import { releaseClaim } from "./claim_release.ts";
+import type { GraftContextCollector } from "./graft_context.ts";
+import { preparePhaseAccelerators } from "./phase_accelerators.ts";
 import { reportPhaseDegradation } from "./phase_run_stats.ts";
 import {
   buildBoundaryIntegrityInstruction,
@@ -61,6 +63,8 @@ export interface RevisionProcessorDeps {
   logger: Logger;
   /** Worker deps for cross-cutting concerns. */
   deps: WorkerDeps;
+  /** Graft collection seam (Issue #2569); defaults to the real collector. */
+  collectGraftContext?: GraftContextCollector;
 }
 
 // ---------------------------------------------------------------------------
@@ -349,18 +353,33 @@ export async function processIssueRevision(
   // Build and execute revision prompt
   const prompt = buildRevisionPrompt(issueTitle, issueBody, feedbackText);
 
+  // Issue #2569: Graft, CodeGraph and RTK, prepared once for this run.
+  const accel = await preparePhaseAccelerators({
+    config,
+    repo,
+    issueNumber,
+    issueTitle,
+    issueBody,
+    claude: deps.claude,
+    logger,
+    collectGraftContext: processorDeps.collectGraftContext,
+  });
+
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
-      prompt,
+      prompt: accel.applyPrompt(prompt),
       timeoutSeconds: config.refinementTimeout,
       killAfterSeconds: config.refinementKillAfter,
       phase: "revision",
       logger,
+      cwd: config.workDir,
+      ...accel.spawnOptions(),
     },
     {
       maxRetries: config.maxRateLimitRetries,
     },
   );
+  await accel.afterSpawn();
 
   if (!claudeResult.ok) {
     // Issue #2730: release the self-assignment on this terminal-failure exit so
@@ -374,6 +393,7 @@ export async function processIssueRevision(
       ),
     };
   }
+  accel.recordSuccess(claudeResult.value.runStats);
 
   // Issue #3232: revision routes through a Fable-preferring planning-shaped
   // phase, so surface a silent Fable→Opus substitution the same way planning
@@ -385,6 +405,7 @@ export async function processIssueRevision(
       repo,
       issueNumber,
       claudeResult: claudeResult.value,
+      ...accel.report(),
       postComment: async (r, i, b) => {
         await ghClient.postComment(r, i, b);
       },
