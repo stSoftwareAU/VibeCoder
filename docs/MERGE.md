@@ -495,22 +495,21 @@ log marker rather than withholding the arming.
   unreadable route does (Issue #477). "I could not read it" is never actioned.
 - **Who holds the merge.** GitHub does, not the worker. Once `--auto` is
   issued the merge is GitHub's to release, and nothing the worker decides
-  afterwards is consulted — which is exactly why arming over a behind base is
-  safe: the milestone ruleset's strict up-to-date policy is the thing that
-  keeps a stale child from landing.
-- **A ruleset without that policy is reported, not assumed.** Because the
-  arming rests on it, `assessMilestoneRuleset` in
+  afterwards is consulted. The `milestone/**` ruleset holds the merge until
+  the child's required checks pass; it does **not** require the branch to be
+  up to date. Setup writes every `milestone/**` ruleset to the GRQ-AutoTrader
+  template, whose `strict_required_status_checks_policy` is `false` (Issue
+  #2623), so an armed child whose base is still behind lands on green checks
+  and the 1.72 sweep levels the milestone branch afterwards.
+- **The strict policy is no longer a finding.** Issue #2461 made
+  `assessMilestoneRuleset` in
   [`worker/deno/lib/milestone_ruleset_check.ts`](../worker/deno/lib/milestone_ruleset_check.ts)
-  raises an **error** finding, `non-strict-checks`, on any `milestone/**`
-  ruleset whose `required_status_checks` rule does not set
-  `strict_required_status_checks_policy` (Issue #2461). It sits beside the
-  other findings that report a `milestone/**` ruleset the fleet cannot rely on
-  — `no-required-checks`, `create-blocked` and `unreportable-checks` — and,
-  like them, is printed per repository by `setup`'s ruleset pass
-  (`reportMilestoneRuleset`). An absent parameter reads as `false`, which is
-  how GitHub evaluates it. The
-  ruleset the fleet writes itself (`buildMilestoneRulesetBody`) sets it, so
-  only a hand-written or pre-Issue #2461 ruleset trips this.
+  raise a `non-strict-checks` error on a ruleset without the strict policy.
+  Issue #2623 removed it: setup writes that policy as `false` itself, and must
+  not report the ruleset it just wrote as broken. The findings that remain for
+  a `milestone/**` ruleset the fleet cannot rely on — `no-required-checks`,
+  `create-blocked` and `unreportable-checks` — are printed per repository by
+  `setup`'s ruleset pass (`reportMilestoneRuleset`).
 
 Two callers deliberately do **not** require a synced base. The post-merge
 landing check (`merge_landing.ts`) asks a different question — that PR has

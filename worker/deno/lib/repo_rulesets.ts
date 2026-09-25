@@ -67,6 +67,18 @@ export interface RulesetBypassActorBody {
 }
 
 /**
+ * One required check. `integration_id` pins the check to the app that reports
+ * it; omitted, any reporter of that context name satisfies it.
+ */
+export interface RequiredStatusCheckBody {
+  context: string;
+  integration_id?: number;
+}
+
+/** A ruleset's enforcement status, as GitHub accepts it. */
+export type RulesetEnforcement = "active" | "disabled" | "evaluate";
+
+/**
  * One rule this module models and writes.
  *
  * A rule the module does *not* model — anything an admin added to the live
@@ -78,7 +90,7 @@ export type RulesetRuleBody =
     type: "required_status_checks";
     parameters: {
       strict_required_status_checks_policy: boolean;
-      required_status_checks: Array<{ context: string }>;
+      required_status_checks: RequiredStatusCheckBody[];
       /**
        * When true the checks gate the MERGE but not branch creation. A branch
        * that does not exist yet has no check runs, so without this the push
@@ -112,7 +124,7 @@ export interface RulesetDetail {
 export interface RulesetBody {
   name: string;
   target: "branch";
-  enforcement: "active";
+  enforcement: RulesetEnforcement;
   conditions: { ref_name: { include: string[]; exclude: string[] } };
   rules: Array<RulesetRuleBody | OpaqueRulesetRule>;
   /** Actors exempt from the rules. Omitted when nothing is exempt. */
@@ -399,7 +411,8 @@ export function buildDefaultBranchRulesetUpdateBody(
 export const MILESTONE_REF_PATTERN = "refs/heads/milestone/**";
 
 /**
- * Build the body for the `milestone/**` ruleset.
+ * Build the body for the `milestone/**` ruleset — GRQ-AutoTrader's "milestone
+ * branches" template (Issue #2623).
  *
  * Deliberately carries NO `pull_request` rule: milestone branches are the
  * fleet's own collection branches, and a review gate there would put a human
@@ -409,42 +422,52 @@ export const MILESTONE_REF_PATTERN = "refs/heads/milestone/**";
  *
  * `deletion` and `non_fast_forward` mirror the default-branch ruleset: a
  * collection branch that can be force-pushed or deleted loses the chain.
+ * With no checks to mirror those two are the whole ruleset — a guessed check
+ * would block every milestone PR on a context that never reports.
  *
  * The checks are exempt on **creation** (Issue #2067). GitHub evaluates
  * `required_status_checks` against the pushed commit, and a branch that does
  * not exist yet has no check runs — so a ruleset written without
  * `do_not_enforce_on_create` refuses the very push that would open the
- * milestone branch it exists to protect. GRQ-FX-validation carried such a
- * ruleset, created by this builder, and every run there died in `setup` with
- * "push declined due to repository rule violations". The flag is the remedy
- * rather than dropping the rule: the checks still gate every merge, and
+ * milestone branch it exists to protect. The flag is the remedy rather than
+ * dropping the rule: the checks still gate every merge, and
  * `required_status_checks` must stay present because that is what makes the
  * base protected enough for auto-merge to be armed (`pr_auto_merge.ts`).
+ *
+ * The strict up-to-date policy is off, as the template has it (Issue #2623).
+ *
+ * @param checks - Required checks, each keeping its `integration_id` if any.
+ * @param enforcement - Kept from an existing ruleset when aligning one; a
+ *   human's `disabled` or `evaluate` is never overridden.
  */
 export function buildMilestoneRulesetBody(
   name: string,
-  contexts: string[],
+  checks: readonly RequiredStatusCheckBody[],
   bypassActors: RulesetBypassActorBody[] = [],
+  enforcement: RulesetEnforcement = "active",
 ): RulesetBody {
+  const rules: RulesetRuleBody[] = [
+    { type: "deletion" },
+    { type: "non_fast_forward" },
+  ];
+  if (checks.length > 0) {
+    rules.push({
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: false,
+        do_not_enforce_on_create: true,
+        required_status_checks: checks.map((check) => ({ ...check })),
+      },
+    });
+  }
   return {
     name,
     target: "branch",
-    enforcement: "active",
+    enforcement,
     conditions: {
       ref_name: { include: [MILESTONE_REF_PATTERN], exclude: [] },
     },
-    rules: [
-      { type: "deletion" },
-      { type: "non_fast_forward" },
-      {
-        type: "required_status_checks",
-        parameters: {
-          strict_required_status_checks_policy: true,
-          do_not_enforce_on_create: true,
-          required_status_checks: contexts.map((context) => ({ context })),
-        },
-      },
-    ],
+    rules,
     ...(bypassActors.length > 0 ? { bypass_actors: bypassActors } : {}),
   };
 }

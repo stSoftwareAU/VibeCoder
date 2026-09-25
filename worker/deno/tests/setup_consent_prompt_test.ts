@@ -17,7 +17,6 @@ import {
   isAffirmative,
   readConsentLine,
 } from "../setup/consent_prompt.ts";
-import { askCreateMilestoneRuleset } from "../setup/setup_cli.ts";
 
 /** A reader that hands back one scripted chunk per `read`, then EOF. */
 function chunkReader(chunks: readonly string[]): ConsentReader {
@@ -111,49 +110,4 @@ Deno.test("readConsentLine - a pasted answer longer than the cap still declines"
   assertEquals(isAffirmative(first), false);
   // The whole over-long line is consumed, so nothing leaks to the next prompt.
   assertEquals(await readConsentLine(reader), null);
-});
-
-Deno.test("askCreateMilestoneRuleset - one long answer cannot approve the next repo", async () => {
-  const reader = chunkReader(["nnnnnnnnnnnnnnnny\n"]);
-  const written: string[] = [];
-  const seams = {
-    reader,
-    isTerminal: () => true,
-    write: (chunk: Uint8Array) => {
-      written.push(new TextDecoder().decode(chunk));
-      return Promise.resolve(chunk.length);
-    },
-  };
-
-  const first = await askCreateMilestoneRuleset("org/repo-one", seams);
-  const second = await askCreateMilestoneRuleset("org/repo-two", seams);
-
-  assertEquals(first, false);
-  assertEquals(second, false);
-  assertEquals(written.length, 2);
-});
-
-Deno.test("askCreateMilestoneRuleset - a yes on its own line approves", async () => {
-  const approved = await askCreateMilestoneRuleset("org/repo-one", {
-    reader: chunkReader(["yes\n"]),
-    isTerminal: () => true,
-    write: (chunk: Uint8Array) => Promise.resolve(chunk.length),
-  });
-
-  assertEquals(approved, true);
-});
-
-Deno.test("askCreateMilestoneRuleset - never asks without a terminal", async () => {
-  let asked = false;
-  const approved = await askCreateMilestoneRuleset("org/repo-one", {
-    reader: chunkReader(["y\n"]),
-    isTerminal: () => false,
-    write: (chunk: Uint8Array) => {
-      asked = true;
-      return Promise.resolve(chunk.length);
-    },
-  });
-
-  assertEquals(approved, false);
-  assertEquals(asked, false);
 });

@@ -135,13 +135,26 @@ background service is offered, where files land — is covered in
      trusted-author refresh lists collaborators, which needs push), filing an
      issue where it has not.
    - `branch-protection-sync` — applies the default-branch ruleset to every
-     monitored repository, then reports each repository's `milestone/**`
-     ruleset. On a terminal it offers to create a missing one, mirroring the
-     default-branch checks — but only when an answer could change something
-     (Issue #678). It stays quiet when a `milestone/**` ruleset already exists,
-     says so and asks nothing when there is no default-branch gate to mirror
-     (nothing could be created), and warns with the read error — never
-     "missing" — when the repository's rulesets cannot be read at all.
+     monitored repository, then **creates or aligns** each repository's
+     `milestone/**` ruleset to the GRQ-AutoTrader template, with no prompt on
+     any run (Issue #2623), and reports what is still wrong with it. The
+     template is named "Vibe Coder milestone branches" and carries exactly
+     `deletion`, `non_fast_forward` and `required_status_checks` — the checks
+     mirrored from the default branch, each keeping its `integration_id`, with
+     `strict_required_status_checks_policy: false` and
+     `do_not_enforce_on_create: true`; bypass actors are mirrored from the
+     default-branch ruleset. With no default-branch checks to mirror it
+     carries the first two rules only. A missing ruleset is created `active`.
+     A ruleset whose include is exactly `refs/heads/milestone/**` and which
+     differs in name, rules, checks, strict policy, create exemption or bypass
+     actors is rewritten to match — any other rule is removed, and a later
+     hand edit is reverted on the next run — but its enforcement is never
+     changed: a `disabled` or `evaluate` ruleset keeps it, with a warning. A
+     broader ruleset that merely also covers milestone branches is left
+     alone. Each write prints one success line, each failure one warning;
+     an already-aligned ruleset gets neither. The write runs as the operator,
+     re-reading the rulesets under that identity (Issue #595), and a read
+     that fails is a warning — never "missing" (Issue #678).
      Every ruleset failure is non-fatal and named: a **private repository on
      a free plan** cannot take a ruleset at all — GitHub answers HTTP 403,
      because rulesets there need GitHub Pro — and setup says exactly that,
