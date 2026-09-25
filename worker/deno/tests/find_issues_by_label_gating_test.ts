@@ -232,7 +232,13 @@ Deno.test(
   "find_issues_by_label - a gated scan honours the ignore-open-prs escape hatch (Issue #937)",
   async () => {
     const gh = createGh({
-      issues: [customIssue({ labels: [{ name: CUSTOM_LABEL }] })],
+      // Issue #2662: the listing carries the label, as GitHub's does — the
+      // scan reads it from there rather than viewing the issue again.
+      issues: [
+        customIssue({
+          labels: [{ name: CUSTOM_LABEL }, { name: "ignore-open-prs" }],
+        }),
+      ],
       openPRs: [
         {
           number: 88,
