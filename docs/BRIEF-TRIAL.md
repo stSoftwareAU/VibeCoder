@@ -67,8 +67,6 @@ A miss on any one clause is a miss.
 
 ## 4. 🪟 The window and the switch
 
-<!-- brief-trial-host: TRIAL-HOST-NOT-YET-NAMED -->
-
 **Trial host:** `TRIAL-HOST-NOT-YET-NAMED` — no host was named in
 [#2581](https://github.com/stSoftwareAU/VibeCoder/issues/2581). While this
 placeholder stands the window is **not open**, whatever else is true. A human
@@ -102,8 +100,8 @@ open the window or to close it.
 - **What is reported separately.** Runs showing `- **Brief:** failed` do not
   count towards the 20 and are not compared; their number is reported in §8 so a
   flaky binary cannot hide inside the margin.
-- **What is ignored.** Runs showing `off` — no `Cargo.toml`, or no runner on
-  that path — carry no Cargo commands block and are neither trial nor control.
+- **What is ignored.** Runs showing `off` — no `Cargo.toml` — carry no Cargo
+  commands block and are neither trial nor control.
 - **The control.** Rust-repository implementation runs on the control hosts,
   where the switch is off, over the **same dates** as the window.
 - **Fleet-wide changes.** The effort re-sweep of
@@ -142,11 +140,14 @@ block on every run, and the scalar `VIBECODER_BRIEF_ENABLED`:
 ```text
 {"enabled":true,"status":"ok","seconds":1.5}
 {"enabled":true,"status":"ok","seconds":0,"cached":true}
-{"enabled":true,"status":"failed","reason":"brief exited 1"}
+{"enabled":true,"status":"failed","reason":"brief exited with code 1"}
+{"enabled":true,"status":"off"}
 {"enabled":false,"status":"off"}
 ```
 
 A cached `ok` spent no brief time on that run: the map came from the cache.
+`{"enabled":true,"status":"off"}` is a switched-on run with no `Cargo.toml`;
+`{"enabled":false,"status":"off"}` is a run with the switch off.
 
 ## 7. 🔐 Security posture
 

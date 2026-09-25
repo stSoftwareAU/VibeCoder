@@ -32,7 +32,7 @@ import {
   BRIEF_STATS_PREFIX,
   buildBriefStatsLine,
 } from "../lib/issue_run_stats_comment.ts";
-import { BRIEF_OFF } from "../lib/run_callbacks.ts";
+import { BRIEF_OFF, briefNotRun } from "../lib/run_callbacks.ts";
 import { readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const TRIAL_PAGE = "docs/BRIEF-TRIAL.md";
@@ -70,17 +70,26 @@ Deno.test("the trial page is linked from every doc that names the switch", async
       docs.push(`docs/${entry.name}`);
     }
   }
-  const naming = [];
   for (const doc of docs) {
     if (doc === TRIAL_PAGE) continue;
     const text = await readRepoDoc(doc);
     if (!text.includes("brief_toolchain")) continue;
-    naming.push(doc);
     const target = doc.startsWith("docs/") ? "BRIEF-TRIAL.md" : TRIAL_PAGE;
     assert(text.includes(`](${target})`), `${doc} must link ${target}`);
   }
-  for (const doc of ["docs/CONFIGURATION.md", "docs/CALLBACKS.md"]) {
-    assert(naming.includes(doc), `${doc} must document brief_toolchain`);
+  // The switch's own reference sections, not merely somewhere in each file.
+  for (
+    const [doc, heading] of [
+      ["docs/CONFIGURATION.md", "Operational Defaults"],
+      ["docs/CALLBACKS.md", "What a hook receives"],
+    ] as const
+  ) {
+    const reference = section(await readRepoDoc(doc), heading);
+    assert(
+      reference.includes("brief_toolchain") &&
+        reference.includes("](BRIEF-TRIAL.md)"),
+      `${doc} "${heading}" must document brief_toolchain and link the page`,
+    );
   }
   for (
     const doc of ["docs/RTK-OUTPUT-TRIAL.md", "docs/REPO-CONTEXT-TRIAL.md"]
@@ -101,6 +110,7 @@ Deno.test("the candidate section names the live switch, version and block", asyn
   }
   assert(candidate.includes(BRIEF_VERSION), "the pinned version is named");
   assert(candidate.includes("container/tools.json"), "the pin's home is named");
+  // The heading is private to codebase_map.ts; its own tests pin it there.
   assert(
     candidate.includes("## Cargo commands (from brief)") &&
       candidate.includes("Cargo.toml"),
@@ -183,6 +193,10 @@ Deno.test("the figure-sources section quotes the shapes the code renders", async
   assertEquals(buildBriefStatsLine(BRIEF_OFF), undefined);
   assert(sources.includes(JSON.stringify(reports.ok)), "the ok callback block");
   assert(sources.includes(JSON.stringify(BRIEF_OFF)), "the off callback block");
+  assert(
+    sources.includes(JSON.stringify(briefNotRun(true))),
+    "the switched-on, no-Cargo.toml callback block",
+  );
   assert(
     sources.includes("`brief`") && /callback/i.test(sources),
     "the figure-sources section must name the `brief` callback field",
