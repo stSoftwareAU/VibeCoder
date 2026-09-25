@@ -2128,6 +2128,18 @@
       "paths": [
         "worker/deno/lib/phase_accelerators.ts"
       ]
+    },
+    {
+      "issue": 2606,
+      "chunk": "top-up-2606",
+      "title": "top-up: the CODEOWNERS parser",
+      "ledger": "docs/audits/security-sweep-2606-codeowners.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: codeowners.ts (#2606)",
+      "status": "swept",
+      "sweptAt": "cb328358866cc29ffd3062427bd8108cda362eb0",
+      "paths": [
+        "worker/deno/lib/codeowners.ts"
+      ]
     }
   ],
   "roots": [

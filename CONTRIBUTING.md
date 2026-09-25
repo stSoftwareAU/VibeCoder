@@ -70,8 +70,12 @@ unattended worker run:
 
 Until those steps are complete, the requirement stays off by design. The
 surrounding controls already close most of the workflow-tampering chain:
-`.github/CODEOWNERS` mandates code-owner review on workflow and action
-paths (with the worker bot excluded from self-approval), and the default
+`.github/CODEOWNERS` names the human repository admins as owners of
+`/.github/` (workflows, actions and CI scripts) and `/infra/rulesets/`, and
+the main ruleset's `require_code_owner_review` makes a PR touching those
+paths wait for an owner's approval. The worker bot identities are not
+owners, so the fleet cannot approve its own CI or ruleset changes — pinned
+by `worker/deno/tests/codeowners_test.ts` (Issue #2606). The default
 branch carries required status checks plus the direct-merge wall
 documented in [docs/MERGE.md](docs/MERGE.md). Signed commits would add
 provenance verification on top; this note records why that final link is

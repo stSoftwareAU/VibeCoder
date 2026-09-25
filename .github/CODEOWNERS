@@ -1,0 +1,17 @@
+# Code owners for privileged paths (Issue #2606).
+#
+# The main ruleset (infra/rulesets/main.json) sets require_code_owner_review,
+# so a PR touching any path below cannot merge until a listed owner approves.
+# Owners are the human repository admins only: the worker bot identities
+# (stservice, VibeCoderST) are deliberately absent, so the fleet can never
+# satisfy code-owner review on its own changes to CI or ruleset config.
+# Every other path has no owner and merges through the normal gate.
+#
+# Last matching pattern wins. Guarded by worker/deno/tests/codeowners_test.ts.
+
+# Workflows, composite actions, CI scripts and scanner config — every
+# change here can alter what runs with repository credentials.
+/.github/                @nleck @Green-Beret
+
+# Branch ruleset definitions — the merge policy itself.
+/infra/rulesets/         @nleck @Green-Beret
