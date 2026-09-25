@@ -51,19 +51,26 @@ tests only.
 
 ## Reproduction
 
-- **Symptom:** On `main`, `deno task test tests/run_core_test.ts` fails 28 of
+- **symptom** — on `main`, `deno task test tests/run_core_test.ts` fails 28 of
   67 tests with
   `Fatal error in main loop: The running container image did not install the "codex" coding-agent provider.`
-  The unconditional `selectAgentProvider()` call in the cycle throws, and the
-  cycle aborts.
-- **Status:** verified
-- **Regression tests** in `worker/deno/tests/run_core_test.ts`:
-  - `run_core - an unresolvable provider does not abort the cycle when the Fable probe is unwired (Issue #2586)`
-  - `run_core - an unresolvable provider skips the Fable probe loudly and the cycle continues (Issue #2586)`
-
-  Both drive `runCoreLoop` with a resolver that throws. Against the old code the
-  cycle ends with `fatalError: true`; with the fix it continues, and the fault
-  is logged.
+  The cycle calls `selectAgentProvider()` every time, even with no Fable probe
+  wired. When that call throws, the whole cycle aborts.
+- **status** — `verified` — the regression test was observed failing against the
+  unfixed code and passing after the fix. The run swapped in `origin/main`'s
+  `worker/deno/lib/run_core.ts` and ran
+  `deno test -A --no-check --filter "Issue #2586" tests/run_core_test.ts`. The
+  test failed with
+  `AssertionError: the resolution fault must be logged, got: []`. With the fixed
+  `run_core.ts` both #2586 tests pass.
+- **regression test** —
+  `worker/deno/tests/run_core_test.ts::run_core - an unresolvable provider skips the Fable probe loudly and the cycle continues (Issue #2586)`
+- **companion test** —
+  `worker/deno/tests/run_core_test.ts::run_core - an unresolvable provider does not abort the cycle when the Fable probe is unwired (Issue #2586)`
+  pins the short-circuit: no provider is resolved when the probe is unwired. Run
+  alone, it also passes against the unfixed code, because the old code never
+  calls the injected resolver. It guards the fix but does not reproduce the
+  symptom by itself.
 
 ## Test Plan
 
