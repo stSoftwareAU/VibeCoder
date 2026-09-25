@@ -24,7 +24,10 @@ import type { RollbackOutcome } from "../lib/milestone_rollback.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import { conflictEscalationKey } from "../lib/milestone_conflict_dedup.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
-import { AGENT_RUN_ENDED_BY_WORKER } from "../lib/milestone_conflict_ladder.ts";
+import {
+  AGENT_PROVIDER_UNAVAILABLE,
+  AGENT_RUN_ENDED_BY_WORKER,
+} from "../lib/milestone_conflict_ladder.ts";
 import { mergeGateFailureError } from "../lib/milestone_merge_gate.ts";
 import { stuckSyncDiagnosticTitle } from "../lib/milestone_sync_diagnostic_closeout.ts";
 import { GATE_WEDGE_DIAGNOSTIC_REPO } from "../lib/milestone_gate_wedge.ts";
@@ -1209,6 +1212,8 @@ type LedgerFailure =
   | "agent-timeout"
   /** The worker killed the run at the cycle deadline (Issues #1693, #2305). */
   | "agent-killed"
+  /** The provider refused the agent run — a 402, say (Issue #2613). */
+  | "agent-provider-outage"
   | "gate"
   | "resolution-gate"
   | "ruleset"
@@ -1277,6 +1282,20 @@ function ledgerOutcome(
           [{
             ...analysis,
             reason: `agent: ${AGENT_RUN_ENDED_BY_WORKER} (Issue #1693)`,
+          }],
+          [],
+          LEDGER_SHA,
+        ),
+      };
+    case "agent-provider-outage":
+      return {
+        ok: false,
+        error: new MilestoneConflictEscalation(
+          "every rung left it undecided",
+          [{
+            ...analysis,
+            reason: `agent: ${AGENT_PROVIDER_UNAVAILABLE} — API Error: 402 ` +
+              `Insufficient Balance (Issue #2613)`,
           }],
           [],
           LEDGER_SHA,
@@ -1722,6 +1741,42 @@ Deno.test("syncMilestoneBranches - an agent timeout is charged, a deadline kill 
   } finally {
     await Deno.remove(charged, { recursive: true });
     await Deno.remove(uncharged, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a provider outage charges nothing, rolls nothing back and files no fallback (Issue #2613)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2613-outage-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const calls: string[][] = [];
+    const rollbacks: string[] = [];
+    // More cycles than the attempt budget: a charged failure would have
+    // spent it and rolled the branch back by now.
+    for (let cycle = 0; cycle <= MILESTONE_CONFLICT_ATTEMPT_BUDGET; cycle++) {
+      await syncMilestoneBranches(ledgerDeps(calls, {
+        milestones: [{
+          title: LEDGER_TITLE,
+          branch: LEDGER_BRANCH,
+          failure: "agent-provider-outage",
+        }],
+        streakPath,
+        nowMs: 10_000 + cycle * 1_000,
+        rollbacks,
+      }));
+    }
+
+    const entry = await readLedger(streakPath);
+    assertEquals(entry?.conflictAttempts ?? 0, 0, "no ladder attempt spent");
+    assertEquals(entry?.lastAttempt?.outcome, "disrupted");
+    assertStringIncludes(entry?.lastAttempt?.reason ?? "", "provider");
+    assertEquals(rollbacks, [], "the branch is left where it is");
+    assertEquals(
+      calls.filter((c) => c[0] === "issue" && c[1] === "create"),
+      [],
+      "no merge-fallback issue is filed",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
 
@@ -2483,6 +2538,16 @@ Deno.test("judgeSyncFailure - an agent timeout is charged, a worker kill is disr
   );
   assertEquals(killed.outcome, "disrupted");
   assertStringIncludes(killed.reason, "ended by the worker");
+  // The provider refused the run (Issue #2613): no verdict either.
+  const refused = judgeSyncFailure(
+    escalation(
+      `agent: ${AGENT_PROVIDER_UNAVAILABLE} — API Error: 402 Insufficient ` +
+        `Balance (Issue #2613)`,
+    ),
+    true,
+  );
+  assertEquals(refused.outcome, "disrupted");
+  assertStringIncludes(refused.reason, "402 Insufficient Balance");
 });
 
 Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged and, once it repeats, is reported as a worker diagnostic (Issues #1778, #2388)", async () => {

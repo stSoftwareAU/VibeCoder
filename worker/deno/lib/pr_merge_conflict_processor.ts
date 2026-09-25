@@ -1370,7 +1370,8 @@ async function resolveConflict(
           timer,
         );
       }
-      if (agentOutcome.value.terminated) {
+      const { terminated, providerUnavailable } = agentOutcome.value;
+      if (terminated || providerUnavailable !== undefined) {
         await abortMerge(run, workDir);
         return await withdrawCutShortAttempt(
           input,
@@ -1379,6 +1380,9 @@ async function resolveConflict(
           conflictedFiles,
           attemptNumber,
           timer,
+          providerUnavailable === undefined
+            ? CUT_SHORT_BY_RUN_END
+            : cutShortByProvider(providerUnavailable),
         );
       }
     } else {
@@ -2518,7 +2522,28 @@ async function withdrawRulesetRefusedAttempt(
   };
 }
 
-/** * Withdraw an attempt the worker itself cut short (Issue #1693).
+/** Why an attempt was cut short, as the log and the summary word it. */
+interface CutShortCause {
+  /** Recorded against the withdrawn marker. */
+  markerReason: string;
+  /** Completes "cut short by …" in the log line and the summary. */
+  phrase: string;
+}
+
+const CUT_SHORT_BY_RUN_END: CutShortCause = {
+  markerReason: "the run ended under the agent (Issue #1693)",
+  phrase: "the run ending",
+};
+
+function cutShortByProvider(detail: string): CutShortCause {
+  return {
+    markerReason: "the agent provider was unavailable (Issue #2613)",
+    phrase: `the agent provider being unavailable (${detail})`,
+  };
+}
+
+/**
+ * Withdraw an attempt the worker itself cut short (Issue #1693).
  *
  * The maintenance-lane watchdog SIGTERMs the agent when the handler is
  * abandoned at the cycle deadline. The tree it leaves is half-resolved, and
@@ -2531,6 +2556,10 @@ async function withdrawRulesetRefusedAttempt(
  * would spend the three-disruption budget). A marker that cannot be deleted
  * is left and said out loud: the PR then reads as disrupted on the next scan,
  * which is retried rather than judged, and that bound still holds.
+ *
+ * A provider that refused the agent run (a 402, an auth failure, an exhausted
+ * 429/5xx) is withdrawn the same way: the conflict was never looked at, and
+ * every later PR in the drain would hit the same wall (Issue #2613).
  */
 async function withdrawCutShortAttempt(
   input: MergeConflictInput,
@@ -2539,6 +2568,7 @@ async function withdrawCutShortAttempt(
   conflictedFiles: readonly string[],
   attemptNumber: number,
   timer: ConflictStageTimer,
+  cause: CutShortCause,
 ): Promise<Result<MergeConflictResult>> {
   const { logger, deps } = processorDeps;
   const { repo, prNumber } = input;
@@ -2554,11 +2584,11 @@ async function withdrawCutShortAttempt(
     repo,
     attemptCommentId,
     logger,
-    "the run ended under the agent (Issue #1693)",
+    cause.markerReason,
   );
 
   logger.warn(
-    "Merge-conflict resolution cut short by the run ending — no attempt " +
+    `Merge-conflict resolution cut short by ${cause.phrase} — no attempt ` +
       "spent, the PR will be retried at the same attempt number",
     {
       repo,
@@ -2581,7 +2611,7 @@ async function withdrawCutShortAttempt(
       runEnded: true,
       summary:
         `Merge-conflict resolution on PR #${prNumber} was cut short by ` +
-        `the run ending — the attempt was withdrawn, not spent`,
+        `${cause.phrase} — the attempt was withdrawn, not spent`,
     },
   };
 }

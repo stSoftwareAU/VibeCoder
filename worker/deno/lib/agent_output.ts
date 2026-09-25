@@ -265,6 +265,35 @@ export function isTerminalFailureCategory(
   return TERMINAL_CATEGORIES.has(category);
 }
 
+/**
+ * Categories that mean the provider refused to serve at all — a spent
+ * balance (402), a rejected credential (401/403), or throttling and server
+ * errors that outlasted the retry budget. Nothing about the task is known.
+ */
+const PROVIDER_UNAVAILABLE_CATEGORIES: ReadonlySet<AgentFailureCategory> =
+  new Set([
+    "authentication",
+    "quota-exhausted",
+    "rate-limit",
+    "network",
+    "model-unavailable",
+  ]);
+
+/**
+ * Whether a failed run ended because the provider was unavailable, not
+ * because the task failed (Issue #2613). Callers must not charge such a run
+ * to a streak, a back-off or a conflict ladder attempt.
+ *
+ * @param failure - The run's normalised failure, when it had one.
+ * @returns True for a provider outage.
+ */
+export function isProviderUnavailableFailure(
+  failure: AgentFailure | undefined,
+): boolean {
+  return failure !== undefined &&
+    PROVIDER_UNAVAILABLE_CATEGORIES.has(failure.category);
+}
+
 /** Read a string field, or undefined when it is absent or another type. */
 export function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
@@ -285,6 +314,19 @@ export function readObject(
     ? value as Record<string, unknown>
     : undefined;
 }
+
+/**
+ * A provider refusing every request because the account's balance or credit
+ * is spent (Issue #2613): `API Error: 402 Insufficient Balance`, `402 Payment
+ * Required`, `credit balance is too low`. Like an exhausted subscription
+ * window it is account-wide — retrying or downgrading the model cannot help,
+ * and the task that happened to be running is not at fault. Shared so both
+ * adapters read it the same way. Anchored to the provider's own phrasing so
+ * a task that merely talks about payments ("insufficient funds") is not read
+ * as an outage.
+ */
+export const BALANCE_EXHAUSTED_RE =
+  /\b(?:api )?error:?\s*(?:402\b|insufficient (?:balance|credits?)\b)|\b402\s+(?:insufficient (?:balance|credits?)|payment required)\b|\bcredit balance is too low\b/i;
 
 /**
  * HTTP statuses that mean the transport failed, not the credential, the model
@@ -400,7 +442,7 @@ export function redactedEvidence(
 }
 
 /** HTTP statuses worth naming; anything else is not inferred from digits. */
-const HTTP_STATUS_RE = /\b(401|403|404|408|409|429|500|502|503|504|529)\b/;
+const HTTP_STATUS_RE = /\b(401|402|403|404|408|409|429|500|502|503|504|529)\b/;
 
 /**
  * The HTTP status a message names, when it names one.

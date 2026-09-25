@@ -304,3 +304,20 @@ Deno.test("claude adapter - an envelope-only stream is never reported as the age
   assertEquals(decoded.status, "failed");
   assert(decoded.text.includes('"type":"result"'), "the raw stream is kept");
 });
+
+Deno.test("claude adapter - a 402 Insufficient Balance is an exhausted allowance naming its status (Issue #2613)", () => {
+  const streams = {
+    stdout: "",
+    stderr: "API Error: 402 Insufficient Balance",
+    exitCode: 1,
+  };
+  const failure = CLAUDE_OUTPUT_ADAPTER.classify(
+    streams,
+    CLAUDE_OUTPUT_ADAPTER.decode(streams.stdout),
+  );
+
+  assertEquals(failure?.category, "quota-exhausted");
+  assertEquals(failure?.httpStatus, 402);
+  assertEquals(failure?.terminal, true);
+  assertStringIncludes(failure?.message ?? "", "Insufficient Balance");
+});

@@ -275,7 +275,11 @@ automatic ladder is the whole answer:
    wait between them (Issue #2305) — and when the budget is spent, **roll
    back** the PRs that introduced the conflict and reopen their issues for the
    fleet to redo (Issue #1781). A run the worker itself cuts short is not one
-   of the two: only a run that judged the conflict is charged.
+   of the two: only a run that judged the conflict is charged. Neither is a run
+   the provider refused (a spent balance, a refused credential, a usage limit,
+   or a 429/5xx that outlasted its retries).
+   That is an outage, not a conflict: no fallback, no roll-back, and the branch
+   waits (Issue #2613).
 5. **Flag the fallback, ask nobody** (Issues #2304, #2310, #2311). Every
    fallback files or appends exactly one `merge-fallback` issue — both spent
    runs, the conflicted files, what was reverted — and that flag is the only

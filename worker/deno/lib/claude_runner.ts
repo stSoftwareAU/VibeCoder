@@ -160,6 +160,7 @@ import {
   clearAutomaticProviderOutage,
   recordAutomaticProviderOutage,
 } from "./provider_auto_state.ts";
+import { noteProviderRunOutcome } from "./provider_outage_alert.ts";
 
 // Re-export for convenience
 export {
@@ -2409,11 +2410,17 @@ export async function runClaudeWithTimeout(
           ? {}
           : { retryAt: normalisedFailure.quota.resetEpochMs }),
       });
+      // One pinned alert per outage, not one failure per task (Issue #2613).
+      await noteProviderRunOutcome(provider.id, {
+        succeeded: false,
+        failure: normalisedFailure,
+      });
     } else if (
       status.code === 0 && !timedOut && !terminated &&
       scheduledRelease === undefined
     ) {
       clearAutomaticProviderOutage(provider.id);
+      await noteProviderRunOutcome(provider.id, { succeeded: true });
     }
     const externalSigterm = gotSigterm && !ourShutdown;
     // The child died from outside, or our kill never settled: collect the

@@ -40,6 +40,7 @@ import { assertSafeGitRef } from "./git_ref_args.ts";
 import {
   isMilestoneSyncBranch,
   isRuleViolationPush,
+  isStaleInfoPush,
   raiseMilestoneSyncPr,
 } from "./milestone_sync_pr.ts";
 
@@ -615,12 +616,18 @@ async function commitAndPushMerge(
     },
   );
   if (!raised.ok) {
+    // A stale-info sync push is another actor racing this one, not a rule
+    // refusing the roll-back (Issue #2613).
+    const reason = isStaleInfoPush(raised.error.message)
+      ? `could not land through its sync PR because another actor updated ` +
+        `the sync branch (Issue #2613)`
+      : `was refused by a repository rule and the sync PR could not be ` +
+        `raised (Issues #589, #1771)`;
     return {
       ok: false,
       error: new Error(
-        `Milestone roll-back of '${deps.milestoneBranch}' was refused by a ` +
-          `repository rule and the sync PR could not be raised ` +
-          `(Issues #589, #1771): ${raised.error.message}`,
+        `Milestone roll-back of '${deps.milestoneBranch}' ${reason}: ` +
+          raised.error.message,
       ),
     };
   }

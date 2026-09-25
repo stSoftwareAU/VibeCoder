@@ -259,3 +259,17 @@ Deno.test("codex adapter - a refusal that states no window takes the window the 
   assertEquals(failure?.quota?.resetEpochMs, NOW_MS + 600_000);
   assertEquals(failure?.quota?.usedFraction, 1);
 });
+
+Deno.test("codex adapter - a 402 Insufficient Balance is an exhausted allowance, not a task failure (Issue #2613)", () => {
+  const failure = CODEX_OUTPUT_ADAPTER.classify(
+    {
+      stdout: "",
+      stderr: "API Error: 402 Insufficient Balance",
+      exitCode: 1,
+    },
+    CODEX_OUTPUT_ADAPTER.decode(""),
+  );
+
+  assertEquals(failure?.category, "quota-exhausted");
+  assertEquals(failure?.httpStatus, 402);
+});

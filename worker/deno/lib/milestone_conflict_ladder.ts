@@ -53,6 +53,15 @@ import type { ConflictStageTimer } from "./conflict_stage_timer.ts";
 export const AGENT_RUN_ENDED_BY_WORKER =
   "the run was ended by the worker before it finished";
 
+/**
+ * Why the agent rung stopped when the provider refused the run — a 402
+ * insufficient balance, an auth failure or an exhausted 429/5xx. Read back by
+ * `judgeSyncFailure`, which concludes it `disrupted`: nothing is charged, no
+ * roll-back runs and the next cycle retries once the provider answers
+ * (Issue #2613).
+ */
+export const AGENT_PROVIDER_UNAVAILABLE = "the agent provider was unavailable";
+
 /** One agent run asked for by the milestone sync. */
 export interface MilestoneConflictAgentRequest {
   /** Paths the triage and the dependency rules both left undecided. */
@@ -406,6 +415,17 @@ export async function climbConflictLadder(
       resolved,
       escalations: stillEscalated(() =>
         `agent: ${AGENT_RUN_ENDED_BY_WORKER} (Issue #1693)`
+      ),
+    };
+  }
+  const providerError = outcome.value.providerUnavailable;
+  if (providerError !== undefined) {
+    // The provider refused the run, so the conflict was never looked at. Not
+    // a verdict either — leave the branch and retry later (Issue #2613).
+    return {
+      resolved,
+      escalations: stillEscalated(() =>
+        `agent: ${AGENT_PROVIDER_UNAVAILABLE} — ${providerError} (Issue #2613)`
       ),
     };
   }

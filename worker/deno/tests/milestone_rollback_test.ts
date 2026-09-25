@@ -525,6 +525,69 @@ Deno.test("executeRollback - a ruleset-rejected push lands through the sync PR",
   }
 });
 
+Deno.test("executeRollback - a sync push lost to another actor reports stale info, not a repository rule (Issue #2613)", async () => {
+  const fixture = await makeFixture("milestone_rollback_stale_");
+  try {
+    const shaB = await commitFiles(fixture.clone, "child B", {
+      "shared.txt": "child B\n",
+    });
+    await runGit(["push", "origin", MILESTONE_BRANCH], fixture.clone);
+    await advanceDefaultBranch(fixture, { "shared.txt": "default\n" });
+
+    // The milestone ref is gated; every sync-branch push loses the lease race.
+    const pushes: string[] = [];
+    const git = (args: string[]): Promise<GitResult> => {
+      if (args[0] === "push") {
+        const ref = args[args.length - 1]!;
+        pushes.push(ref);
+        if (ref.includes("refs/heads/milestone/")) {
+          return Promise.resolve({
+            code: 1,
+            stdout: "",
+            stderr: "! [remote rejected] HEAD -> " + MILESTONE_BRANCH +
+              " (push declined due to repository rule violations)",
+          });
+        }
+        return Promise.resolve({
+          code: 1,
+          stdout: "",
+          stderr: "! [rejected] HEAD -> sync/milestone-x (stale info)",
+        });
+      }
+      return runGit(args, fixture.clone);
+    };
+    const gh = ghStub([
+      {
+        number: 31,
+        title: "Child B",
+        mergedAt: "2026-09-02T10:00:00Z",
+        headRefName: "issue-31-shared",
+        sha: shaB,
+      },
+    ], []);
+
+    const result = await executeRollback(
+      depsFor(fixture, gh, { conflictingPaths: ["shared.txt"], git }),
+    );
+
+    assert(!result.ok, "a sync push that never landed is not a roll-back");
+    const message = result.error.message;
+    assertStringIncludes(message, "stale info");
+    assertStringIncludes(message, "refetched and retried");
+    assert(
+      !message.includes("refused by a repository rule"),
+      `stale info is a race, not a rule: ${message}`,
+    );
+    assertEquals(
+      pushes.filter((ref) => ref.includes("sync/milestone-")).length,
+      2,
+      "the stale sync push was retried once after a refetch",
+    );
+  } finally {
+    await Deno.remove(fixture.tmp, { recursive: true });
+  }
+});
+
 Deno.test("executeRollback - a branch that already merges cleanly reverts nothing", async () => {
   const fixture = await makeFixture("milestone_rollback_clean_");
   try {

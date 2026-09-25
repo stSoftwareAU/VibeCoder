@@ -12,6 +12,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   AGENT_FAILURE_CATEGORIES,
   agentFailure,
+  BALANCE_EXHAUSTED_RE,
   classifyProcessOutcome,
   detectQuotaScope,
   extractHttpStatus,
@@ -204,4 +205,31 @@ Deno.test("classifyProcessOutcome - the worker's own facts, and nothing else", (
     classifyProcessOutcome({ stdout: "", stderr: "boom", exitCode: 1 }),
     undefined,
   );
+});
+
+Deno.test("BALANCE_EXHAUSTED_RE - the provider's own spent-balance phrasings match (Issue #2613)", () => {
+  for (
+    const text of [
+      "API Error: 402 Insufficient Balance",
+      "API Error: 402 Payment Required",
+      "api error insufficient credits",
+      "HTTP 402 Payment Required",
+      "Your credit balance is too low to access the API",
+    ]
+  ) {
+    assert(BALANCE_EXHAUSTED_RE.test(text), text);
+  }
+});
+
+Deno.test("BALANCE_EXHAUSTED_RE - task prose about payments is not an outage (Issue #2613)", () => {
+  for (
+    const text of [
+      "Added a test that handles insufficient funds on checkout",
+      "Render the payment required page for lapsed subscribers",
+      "Fixed the insufficient balance warning in the wallet UI",
+      "Issue #402 is still open",
+    ]
+  ) {
+    assert(!BALANCE_EXHAUSTED_RE.test(text), text);
+  }
 });
