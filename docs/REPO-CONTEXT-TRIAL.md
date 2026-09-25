@@ -285,3 +285,5 @@ _Template — fill in when the CodeGraph window closes._
   `codegraph`/`graft` blocks are carried on.
 - **[RTK output trial](RTK-OUTPUT-TRIAL.md)** — the sibling protocol for the
   `rtk_output.enabled` switch: same shape, a different candidate.
+- **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for the
+  `brief_toolchain.enabled` switch: Cargo commands in the codebase map.

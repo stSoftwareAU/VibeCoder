@@ -289,6 +289,8 @@ starts from a list rather than a search.
 
 - **[Repo-context Trial](REPO-CONTEXT-TRIAL.md)** — the sibling protocol, same
   bar shape, different candidates and host.
+- **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for the
+  `brief_toolchain.enabled` switch, on a host of its own.
 - **[Configuration Reference](CONFIGURATION.md)** — the `rtk_output` switch row,
   and every other `.config.json` key.
 - **[Container Image](CONTAINER.md)** — the pinned RTK toolchain fragment and
