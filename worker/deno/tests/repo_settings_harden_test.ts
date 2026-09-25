@@ -14,12 +14,15 @@ import {
   allowListCovers,
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
+  findCodeownersOnDefaultBranch,
+  hardenRepo,
   isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
   needsPaidSecretProtection,
   planRepoSettingsHardening,
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
+  SECRET_PROTECTION_SKIP_NOTE,
 } from "../lib/repo_settings_harden.ts";
 
 const OPEN = {
@@ -702,4 +705,427 @@ Deno.test("planRepoSettingsHardening - a milestone ruleset with no status checks
   };
   const plan = planRepoSettingsHardening({ rulesets: [noChecks] }, PLAN_OPTS);
   assertEquals(plan.filter((s) => s.kind === "milestone-branch-create"), []);
+});
+
+// ---------------------------------------------------------------------------
+// hardenRepo + findCodeownersOnDefaultBranch (Issue #2626)
+// ---------------------------------------------------------------------------
+
+interface RecordedWrite {
+  method: string;
+  endpoint: string;
+  body?: unknown;
+}
+
+const NOT_FOUND = () => new Error("gh: Not Found (HTTP 404)");
+const SERVER_ERROR = () => new Error("HTTP 500: server error");
+
+/**
+ * A routing `gh` stub: answers each read endpoint from `routes` (a value is
+ * returned as JSON, an Error is thrown, an unknown endpoint is a 404) and
+ * records every write, reading the `--input` body while the call is live.
+ */
+function makeGh(routes: Record<string, unknown>) {
+  const writes: RecordedWrite[] = [];
+  const reads: string[] = [];
+  const gh = async (args: string[]): Promise<string> => {
+    const m = args.indexOf("--method");
+    if (m >= 0) {
+      const i = args.indexOf("--input");
+      writes.push({
+        method: args[m + 1] ?? "",
+        endpoint: args[m + 2] ?? "",
+        body: i >= 0
+          ? JSON.parse(await Deno.readTextFile(args[i + 1] ?? ""))
+          : undefined,
+      });
+      return "{}";
+    }
+    if (args.includes("--jq") && args.includes(".default_branch")) {
+      return "main";
+    }
+    const endpoint = args[1] ?? "";
+    reads.push(endpoint);
+    const value = routes[endpoint];
+    if (value instanceof Error) throw value;
+    if (value === undefined) throw NOT_FOUND();
+    return JSON.stringify(value);
+  };
+  return { gh, writes, reads };
+}
+
+/** A temp directory; with `checkout`, a `.git` and one pinned workflow. */
+async function makeWorkDir(checkout: boolean): Promise<string> {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-harden-" });
+  if (checkout) {
+    await Deno.mkdir(`${dir}/.git`);
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/ci.yml`,
+      "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@0000000000000000000000000000000000000000\n",
+    );
+  }
+  return dir;
+}
+
+// Keeps the default-branch lookup off the worker's real disk cache.
+const BRANCH_CACHE = await Deno.makeTempFile({ prefix: "vibe-harden-cache-" });
+
+let repoCounter = 0;
+/** Unique per test: the default-branch lookup is memory-cached by repo. */
+function uniqueRepo(): string {
+  repoCounter += 1;
+  return `harden-test/repo-${Date.now()}-${repoCounter}`;
+}
+
+/** Every surface already hardened, as the read endpoints return them. */
+function hardenedRoutes(repo: string): Record<string, unknown> {
+  return {
+    [`repos/${repo}`]: {
+      visibility: "public",
+      private: false,
+      security_and_analysis: {
+        secret_scanning: { status: "enabled" },
+        secret_scanning_push_protection: { status: "enabled" },
+      },
+    },
+    [`repos/${repo}/actions/permissions/workflow`]: {
+      default_workflow_permissions: "read",
+      can_approve_pull_request_reviews: false,
+    },
+    [`repos/${repo}/actions/permissions`]: {
+      enabled: true,
+      allowed_actions: "selected",
+      sha_pinning_required: true,
+    },
+    [`repos/${repo}/actions/permissions/selected-actions`]: {
+      github_owned_allowed: true,
+      verified_allowed: false,
+      patterns_allowed: [],
+    },
+    [`repos/${repo}/rules/branches/main`]: [{
+      type: "pull_request",
+      parameters: { require_code_owner_review: true },
+    }],
+    [`repos/${repo}/rulesets`]: [],
+  };
+}
+
+const VIBE_RULESET = {
+  id: 7,
+  name: "Vibe Coder default branch",
+  target: "branch",
+  enforcement: "active",
+  conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+  rules: [
+    {
+      type: "pull_request",
+      parameters: {
+        require_code_owner_review: false,
+        required_approving_review_count: 0,
+        dismiss_stale_reviews_on_push: true,
+      },
+    },
+    {
+      type: "required_status_checks",
+      parameters: { required_status_checks: [{ context: "quality" }] },
+    },
+  ],
+};
+
+/** Routes for a repo whose default branch lacks code-owner review. */
+function codeOwnerRoutes(
+  repo: string,
+  rulesets: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/rules/branches/main`] = [{
+    type: "pull_request",
+    parameters: { require_code_owner_review: false },
+  }];
+  routes[`repos/${repo}/rulesets`] = rulesets.map((r) => ({
+    id: r["id"],
+    name: r["name"],
+    target: r["target"],
+    enforcement: r["enforcement"],
+  }));
+  for (const r of rulesets) routes[`repos/${repo}/rulesets/${r["id"]}`] = r;
+  return routes;
+}
+
+Deno.test("hardenRepo - a Vibe-only ruleset gets exactly one write turning on code-owner review (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [VIBE_RULESET]));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+    requireCodeOwnerReview: true,
+  });
+  assertEquals(writes.length, 1);
+  assertEquals(writes[0]?.method, "PUT");
+  assertEquals(writes[0]?.endpoint, `repos/${repo}/rulesets/7`);
+  const expected = structuredClone(VIBE_RULESET.rules);
+  expected[0]!.parameters = {
+    ...expected[0]!.parameters,
+    require_code_owner_review: true,
+  } as typeof expected[0]["parameters"];
+  assertEquals(writes[0]?.body, { rules: expected });
+  assertEquals(report.results.map((r) => r.status), ["applied"]);
+});
+
+Deno.test("hardenRepo - the Vibe ruleset is preferred over the branch-named one (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const legacy = { ...VIBE_RULESET, id: 3, name: "main" };
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [legacy, VIBE_RULESET]));
+  await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+    requireCodeOwnerReview: true,
+  });
+  assertEquals(writes.map((w) => w.endpoint), [`repos/${repo}/rulesets/7`]);
+});
+
+Deno.test("hardenRepo - the branch-named ruleset is still used when no Vibe ruleset exists (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const legacy = { ...VIBE_RULESET, id: 3, name: "main" };
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [legacy]));
+  await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+    requireCodeOwnerReview: true,
+  });
+  assertEquals(writes.map((w) => w.endpoint), [`repos/${repo}/rulesets/3`]);
+});
+
+Deno.test("hardenRepo - no matching ruleset fails naming both the branch and the Vibe ruleset (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const other = { ...VIBE_RULESET, id: 9, name: "legacy" };
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [other]));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+    requireCodeOwnerReview: true,
+  });
+  assertEquals(writes, []);
+  const reviews = report.results.find((r) => r.step.kind === "ruleset-reviews");
+  assertEquals(reviews?.status, "failed");
+  assert(reviews?.detail?.includes("main"), reviews?.detail);
+  assert(
+    reviews?.detail?.includes("Vibe Coder default branch"),
+    reviews?.detail,
+  );
+});
+
+Deno.test("hardenRepo - review requirement stays off without requireReviews (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [VIBE_RULESET]));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+    requireCodeOwnerReview: true,
+  });
+  const body = writes[0]?.body as {
+    rules: Array<{ parameters?: Record<string, unknown> }>;
+  };
+  assertEquals(body.rules[0]?.parameters?.required_approving_review_count, 0);
+  assertEquals(report.results.length, 1);
+});
+
+Deno.test("hardenRepo - without a local checkout the allow-list is skipped, never written (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/actions/permissions`] = {
+    enabled: true,
+    allowed_actions: "all",
+    sha_pinning_required: true,
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(false),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  const allowList = report.results.filter((r) =>
+    r.step.kind === "actions-allow-list"
+  );
+  assertEquals(allowList.length, 1);
+  assertEquals(allowList[0]?.status, "skipped");
+  assertEquals(allowList[0]?.detail, "no local checkout");
+});
+
+Deno.test("hardenRepo - a missing checkout records the skip even when nothing else is planned (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(hardenedRoutes(repo));
+  const report = await hardenRepo(repo, {
+    apply: false,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(false),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(
+    report.results.map((r) => [r.step.kind, r.status, r.detail]),
+    [["actions-allow-list", "skipped", "no local checkout"]],
+  );
+});
+
+Deno.test("hardenRepo - a failed workflow-permissions read is a failure naming the endpoint, with no write (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/actions/permissions/workflow`] = SERVER_ERROR();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  const failed = report.results.filter((r) => r.status === "failed");
+  assertEquals(failed.length, 1);
+  assertEquals(failed[0]?.step.kind, "workflow-token");
+  assert(
+    failed[0]?.detail?.includes(`repos/${repo}/actions/permissions/workflow`),
+    failed[0]?.detail,
+  );
+});
+
+Deno.test("hardenRepo - a 404 surface is absent, not a failure (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/actions/permissions/workflow`] = NOT_FOUND();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(report.results, []);
+});
+
+Deno.test("hardenRepo - an already-hardened repo makes zero writes under apply (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(hardenedRoutes(repo));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+    requireCodeOwnerReview: true,
+  });
+  assertEquals(writes, []);
+  assertEquals(report.results, []);
+  assertEquals(report.skipNote, undefined);
+});
+
+Deno.test("hardenRepo - never throws when every read fails (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh({});
+  const failing = async (args: string[]): Promise<string> => {
+    if (args.includes(".default_branch")) return await gh(args);
+    throw SERVER_ERROR();
+  };
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: failing,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assert(report.results.length > 0);
+  assert(report.results.every((r) => r.status === "failed"));
+});
+
+Deno.test("hardenRepo - an unknown default branch is one failed result, not a throw (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: () => Promise.reject(SERVER_ERROR()),
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(report.results.length, 1);
+  assertEquals(report.results[0]?.status, "failed");
+  assert(
+    report.results[0]?.detail?.startsWith("default branch unknown"),
+    report.results[0]?.detail,
+  );
+});
+
+Deno.test("hardenRepo - a private repo with scanning off returns the paid-add-on skip note (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}`] = {
+    visibility: "private",
+    private: true,
+    security_and_analysis: {
+      secret_scanning: { status: "disabled" },
+      secret_scanning_push_protection: { status: "disabled" },
+    },
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(report.skipNote, SECRET_PROTECTION_SKIP_NOTE);
+});
+
+for (const path of ["CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS"]) {
+  Deno.test(`findCodeownersOnDefaultBranch - present at ${path} (Issue #2626)`, async () => {
+    const repo = "harden-test/codeowners";
+    const { gh } = makeGh({
+      [`repos/${repo}/contents/${path}`]: { path, type: "file" },
+    });
+    assertEquals(await findCodeownersOnDefaultBranch(repo, gh), {
+      state: "present",
+      path,
+    });
+  });
+}
+
+Deno.test("findCodeownersOnDefaultBranch - absent when every location is a 404 (Issue #2626)", async () => {
+  const repo = "harden-test/codeowners";
+  const { gh, reads } = makeGh({});
+  assertEquals(await findCodeownersOnDefaultBranch(repo, gh), {
+    state: "absent",
+  });
+  assertEquals(reads.length, 3);
+});
+
+Deno.test("findCodeownersOnDefaultBranch - a non-404 error is an error, never absent (Issue #2626)", async () => {
+  const repo = "harden-test/codeowners";
+  const { gh } = makeGh({
+    [`repos/${repo}/contents/.github/CODEOWNERS`]: SERVER_ERROR(),
+  });
+  const result = await findCodeownersOnDefaultBranch(repo, gh);
+  assertEquals(result.state, "error");
+  assert(
+    result.state === "error" && result.message.includes("HTTP 500"),
+    JSON.stringify(result),
+  );
+});
+
+Deno.test("findCodeownersOnDefaultBranch - an invalid repo is an error without a call (Issue #2626)", async () => {
+  const { gh, reads } = makeGh({});
+  const result = await findCodeownersOnDefaultBranch("not a repo", gh);
+  assertEquals(result.state, "error");
+  assertEquals(reads, []);
 });
