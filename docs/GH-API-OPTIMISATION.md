@@ -116,8 +116,9 @@ through `gh api graphql` — REST `gh search prs` cannot return
 `baseRefName`, `headRefOid`, `autoMergeRequest` or `mergeable`, and the
 consumers need all four — and
 `worker/deno/lib/fleet_pr_prefetch.ts` writes the answer into the very cache
-entries above. `run_core` calls it once per iteration, after the
-trusted-author refresh that decides which logins to search for.
+entries above. `run_core` calls it at the start of every iteration, after
+the trusted-author refresh that decides which logins to search for, and again
+before every issue scan and the post-scan auto-merge pass (Issue #2662).
 
 ```mermaid
 flowchart LR
@@ -158,6 +159,49 @@ Three boundaries keep this from trading correctness for calls:
   against a 1,000-result search ceiling (~1,240 in the last 30 days alone).
   A windowed cross-repo search would silently drop older merged PRs and
   weaken the duplicate-PR guard.
+
+### When the search fails — reuse, never storm (Issue #2662)
+
+Falling back to the per-repo listings turned one failed search into
+`repos × authors` GraphQL calls, at exactly the moment the budget was gone:
+GRQ-23 spent 3,281 calls on 2026-09-25 on `pr list --author … --state=open`
+alone, on an account four hosts share. So a failed search now degrades in
+this order:
+
+1. **Reuse the last good result.** Every successful search is also kept as
+   the owner's *last good* result. A failed search inside
+   `PREFETCH_REUSE_WINDOW_SECONDS` (**3,600 s**, GitHub's primary GraphQL
+   quota window) fills the guard and maintenance entries from it — only the
+   ones that are missing, so a newer live listing always wins — and writes
+   no marker, so the next pass searches again. The invitation listing is
+   never served from a reused result: a human PR is admitted only on a
+   current reading of its conversation, so it fails closed to its own
+   per-repo path. The window is longer than the 600 s listing cache on
+   purpose — the search only runs once that cache has expired, so an equal
+   window would never reuse anything.
+2. **Rate-limited with nothing to reuse: wait.** The prefetch reports the
+   owner in `ownersRateLimited`, the production dep throws the primary rate
+   limit, and `run_core` re-throws it into the cycle's existing pause until
+   the quota resets (Issue #1780). No consumer lists per repo.
+3. **Any other failure with nothing to reuse: per-repo, once.** The per-repo
+   listings run as before; each is cached, so it runs at most once per repo
+   and author per 600 s window.
+
+The prefetch is also refreshed **before every issue scan** and **before the
+post-scan auto-merge pass**, not only at the start of the cycle. Inside the
+TTL that is one marker read; after a run that outlived the 600 s cache it is
+one search per owner where every consumer would otherwise list every repo.
+Concurrent slots share one pass. The post-scan pass itself lists live only
+the repos the cycle claimed from (`EnsureAutoMergeOptions.refreshRepos`) —
+the only repos it can have raised a PR in — instead of every repo per fleet
+author. And the prefetched `prs_<login>` entry now carries `isDraft`, which
+the auto-merge sweep reads to leave a draft alone (Issue #1800).
+
+The closed-PR listing (`fetchClosedPRsByUser`, `--state=closed …
+mergedAt,closedAt,body`) needed no new cache: it is already a *settled
+listing* (Issue #2409), served for up to 3,600 s while every open PR seen
+since it was cached is still open. It learns that open set from
+`prs_<login>`, so it is kept warm by the prefetch — including a reused one.
 
 Measured on the three-repo, two-author fixture in
 `worker/deno/tests/iteration_call_budget_test.ts`: `pr list` falls from 12 to

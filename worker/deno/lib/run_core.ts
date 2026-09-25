@@ -470,6 +470,33 @@ export interface EnsureAutoMergeOptions {
    * PRs missing — and would attempt nothing.
    */
   refreshOpenPrs?: boolean;
+  /**
+   * With {@link refreshOpenPrs}, the only repos listed live (Issue #2662).
+   *
+   * The post-scan pass exists for the PRs this cycle raised, and a cycle
+   * raises PRs only in the repos it claimed from. Every other repo's open-PR
+   * set is what the cross-repo prefetch already holds, so listing each of
+   * them live per fleet author cost `repos x authors` GraphQL calls a cycle
+   * for no new answer. Absent, every repo is listed live, as before.
+   */
+  refreshRepos?: readonly string[];
+}
+
+/**
+ * Whether an auto-merge sweep lists `repo`'s open PRs live rather than from
+ * the prefetch-served cache (Issues #1136, #2662).
+ *
+ * @param opts - The sweep's options.
+ * @param repo - Repository in "owner/repo" format.
+ */
+export function refreshesRepoLive(
+  opts: EnsureAutoMergeOptions | undefined,
+  repo: string,
+): boolean {
+  if (opts?.refreshOpenPrs !== true) return false;
+  if (opts.refreshRepos === undefined) return true;
+  const key = repo.toLowerCase();
+  return opts.refreshRepos.some((r) => r.toLowerCase() === key);
 }
 
 /**
@@ -1308,11 +1335,15 @@ export interface RunCoreDeps {
    * `gh pr list` fan-out: the result is written into the same per-cycle cache
    * entries the duplicate guard, the maintenance scans and the invitation
    * lookup already read, so those passes are served without a call each.
-   * Called once per iteration, after the trusted-author refresh whose
-   * `allowed_authors` decide which logins to search for.
+   * Called at the start of every iteration, after the trusted-author
+   * refresh whose `allowed_authors` decide which logins to search for, and
+   * again before every issue scan and the post-scan auto-merge pass (Issue
+   * #2662) - a no-op inside the listing cache's TTL.
    *
    * A failure is logged and the iteration continues on the per-repo path;
-   * the saving is forfeited, never the correctness. Optional so existing
+   * the saving is forfeited, never the correctness. The exception is a
+   * primary rate limit with no last good result to reuse (Issue #2662): that
+   * is re-thrown so the cycle pauses for the quota. Optional so existing
    * test deps can omit it.
    */
   prefetchFleetOpenPrs?: () => Promise<void>;
@@ -2648,6 +2679,9 @@ async function runIssueScanLoop(
     }
     iteration++;
 
+    // Issue #2662: keep the prefetch-served listings current for this scan.
+    await refreshFleetPrPrefetch(deps);
+
     // Find next issue
     const findResult = await deps.findNextIssue({
       excludeIssues: deferredClaims,
@@ -3818,6 +3852,24 @@ async function runSlot(
         return;
       }
 
+      // Issue #2662: keep the prefetch-served listings current for this
+      // scan - a sibling's long run has usually outlived the 600 s listing
+      // cache. A rate limit with nothing to reuse is pool-wide, exactly as
+      // the claim path below treats it.
+      try {
+        await refreshFleetPrPrefetch(deps);
+      } catch (err) {
+        pool.draining = true;
+        pool.rateLimitError ??= err instanceof Error
+          ? err
+          : new Error(String(err));
+        log(
+          "primary rate limit hit refreshing the PR prefetch — draining the " +
+            "pool before the cycle pauses.",
+        );
+        return;
+      }
+
       // Find the next issue outside the work streams siblings hold.
       let scanSummary: DiagnosticSummary | undefined;
       // Issue #898: kept, because it is the census's only record of what this
@@ -4780,6 +4832,38 @@ interface IdleHookOutcome {
 }
 
 /**
+ * Run the cross-repo open-PR prefetch, if wired (Issues #1486, #2662).
+ *
+ * Called at the start of every cycle, before every issue scan and before the
+ * post-scan auto-merge pass. Inside the listing cache's TTL it is a marker
+ * read and costs no call; past it - a cycle that ran work for longer than
+ * 600 s - it is one search per owner where each consumer would otherwise
+ * list every repo per author.
+ *
+ * An ordinary failure is logged and the caller carries on: the consumers
+ * still have the per-repo path. A primary rate limit is re-thrown - the
+ * prefetch raises one only when it had no result to reuse, and answering
+ * that with per-repo listings is the storm Issue #2662 removed.
+ */
+async function refreshFleetPrPrefetch(deps: RunCoreDeps): Promise<void> {
+  const prefetchOpenPrs = deps.prefetchFleetOpenPrs;
+  if (!prefetchOpenPrs) return;
+  try {
+    // Issue #1587: one `gh search` per owner, outside dispatch.
+    await withPriorityContext("Fleet PR Prefetch", () => prefetchOpenPrs());
+  } catch (prefetchErr) {
+    const message = prefetchErr instanceof Error
+      ? prefetchErr.message
+      : String(prefetchErr);
+    if (isPrimaryRateLimitMessage(message)) throw prefetchErr;
+    deps.logError(
+      `[fleet-pr-prefetch] cross-repo prefetch failed: ${message} - ` +
+        "falling back to per-repo listings this cycle",
+    );
+  }
+}
+
+/**
  * Sweep auto-merge again once the issue-scan pool has drained (Issue #1136).
  *
  * The priority 1.65 sweep runs at the top of the cycle and the Priority 2
@@ -4830,7 +4914,15 @@ function runPostScanAutoMerge(
     try {
       // Live listing, not the cache the 1.65 sweep filled before these PRs
       // existed (see {@link EnsureAutoMergeOptions.refreshOpenPrs}).
-      const result = await deps.ensureAutoMerge({ refreshOpenPrs: true });
+      // Issue #2662: live only where this cycle claimed - the only repos it
+      // can have raised a PR in. The rest are served by the prefetch, which
+      // is refreshed first: a cycle that ran work has usually outlived the
+      // 600 s listing cache its start-of-cycle prefetch filled.
+      await refreshFleetPrPrefetch(deps);
+      const result = await deps.ensureAutoMerge({
+        refreshOpenPrs: true,
+        refreshRepos: [...tracker.claimedRepos],
+      });
       if (!result.ok) {
         deps.logError(
           `[post-scan-auto-merge] sweep failed: ${result.error.message}`,
@@ -5784,24 +5876,10 @@ export async function runCoreLoop(
           // after the trust refresh because `allowed_authors` decides which
           // logins are searched. A failure is reported and the cycle
           // continues on the per-repo path.
-          const prefetchOpenPrs = deps.prefetchFleetOpenPrs;
-          if (prefetchOpenPrs) {
-            try {
-              // Issue #1587: one `gh search` per owner, outside dispatch.
-              await withPriorityContext(
-                "Fleet PR Prefetch",
-                () => prefetchOpenPrs(),
-              );
-            } catch (prefetchErr) {
-              deps.logError(
-                `[fleet-pr-prefetch] cross-repo prefetch failed: ${
-                  prefetchErr instanceof Error
-                    ? prefetchErr.message
-                    : String(prefetchErr)
-                } - falling back to per-repo listings this cycle`,
-              );
-            }
-          }
+          // Issue #2662: a rate-limited search with no last good result to
+          // reuse re-throws here, so the inner catch pauses the cycle until
+          // the quota resets instead of every consumer listing per repo.
+          await refreshFleetPrPrefetch(deps);
 
           // --- Daily spend ceiling (Issue #3648) ---
           // The credit log was append-only and never compared against a

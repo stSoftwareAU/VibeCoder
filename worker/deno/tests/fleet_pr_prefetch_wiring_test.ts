@@ -31,6 +31,7 @@ import {
 } from "./support/github_graphql_fake.ts";
 import type { TrustedAuthors } from "../lib/derived_authors.ts";
 import type { WorkerConfig } from "../types.ts";
+import { isPrimaryRateLimitMessage } from "../lib/primary_quota_latch.ts";
 
 const REPO_A = "org/repo-a";
 const REPO_B = "org/repo-b";
@@ -76,6 +77,7 @@ async function withDeps(
   body: (
     prefetch: () => Promise<void>,
     cache: IssueCache,
+    cacheDir: string,
   ) => Promise<void>,
 ): Promise<void> {
   const workDir = await Deno.makeTempDir({ prefix: "fleet-prefetch-wiring-" });
@@ -105,8 +107,9 @@ async function withDeps(
       "the factory must wire prefetchFleetOpenPrs",
     );
     // The same cache the factory built, at the same location.
-    const cache = new IssueCache(`${workDir}/.gh-scan-cache`);
-    await body(deps.prefetchFleetOpenPrs, cache);
+    const cacheDir = `${workDir}/.gh-scan-cache`;
+    const cache = new IssueCache(cacheDir);
+    await body(deps.prefetchFleetOpenPrs, cache, cacheDir);
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
@@ -211,4 +214,55 @@ Deno.test("production deps - a failed search leaves the per-repo path in place (
       assertEquals(listings[0]![0], "pr");
     },
   );
+});
+
+Deno.test("production deps - a rate-limited search with nothing to reuse surfaces the rate limit (Issue #2662)", async () => {
+  await withDeps(
+    () => Promise.reject(new Error("gh: API rate limit exceeded for user")),
+    async (prefetch) => {
+      // run_core re-throws a primary rate limit from here into its pause, so
+      // no consumer lists per repo into the spent quota.
+      const err = await prefetch().then(() => null, (e: unknown) => e);
+      assert(err instanceof Error, "the refusal must surface");
+      assert(isPrimaryRateLimitMessage(err.message), err.message);
+    },
+  );
+});
+
+Deno.test("production deps - a rate-limited search reuses the last good result (Issue #2662)", async () => {
+  const fake = fakeGithubPrSearch(PRS);
+  let limited = false;
+  const gh = (args: string[]) =>
+    limited
+      ? Promise.reject(new Error("gh: API rate limit exceeded for user"))
+      : fake.gh(args);
+  await withDeps(gh, async (prefetch, cache, cacheDir) => {
+    await prefetch();
+    // The listing cache and its marker expire; the quota is now gone.
+    for (const entry of Deno.readDirSync(cacheDir)) {
+      if (!entry.name.includes("last_good")) {
+        Deno.removeSync(`${cacheDir}/${entry.name}`);
+      }
+    }
+    limited = true;
+    await prefetch();
+
+    const listings: string[][] = [];
+    const inA = await fetchOpenPRsForFleet(
+      REPO_A,
+      [WORKER_USER, SIBLING],
+      cache,
+      recordingGh(listings),
+    );
+    assertEquals(listings, [], "served from the last good result");
+    assertEquals(inA.map((pr) => pr.number).sort(), [11, 12]);
+  });
+});
+
+Deno.test("production deps - concurrent prefetch calls share one search (Issue #2662)", async () => {
+  const fake: FakeGh = fakeGithubPrSearch(PRS);
+  await withDeps(fake.gh, async (prefetch) => {
+    await Promise.all([prefetch(), prefetch(), prefetch()]);
+    assertEquals(fake.queries.length, 1, "slots scanning together search once");
+  });
 });

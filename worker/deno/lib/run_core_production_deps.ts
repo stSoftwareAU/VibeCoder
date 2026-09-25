@@ -28,7 +28,7 @@ import type {
   RunCoreConfig,
   RunCoreDeps,
 } from "./run_core.ts";
-import { createDefaultRunCoreConfig } from "./run_core.ts";
+import { createDefaultRunCoreConfig, refreshesRepoLive } from "./run_core.ts";
 import { acquireMaintenanceRepoLease } from "./maintenance_lane.ts";
 import {
   claimMilestoneSync,
@@ -1564,6 +1564,55 @@ export async function createProductionRunCoreDeps(
     return { processed };
   }
 
+  // Issue #1486: one cross-repo search per owner fills the per-repo
+  // per-author open-PR listings the duplicate guard, the PR-maintenance
+  // scans and the invitation lookup read, collapsing ~130 GraphQL-backed
+  // `gh pr list` calls per cold cycle into one call per owner. Each
+  // consumer keeps its own author set - they are resolved differently, and
+  // populating one from another's set would leave an entry a scan reads
+  // empty. A failed search reuses the last good result inside its window
+  // (Issue #2662); failing that, an ordinary failure writes nothing and the
+  // scans run their per-repo listings as before.
+  const runFleetPrPrefetch = async (): Promise<void> => {
+    const guardAuthors = resolveFleetPrAuthorSet(fleetPrAuthorInput);
+    const maintenanceKeys = new Set(
+      maintenanceAuthors.map((a) => a.toLowerCase()),
+    );
+    const invitationAuthors = (config.allowedAuthors ?? []).filter((a) =>
+      !maintenanceKeys.has(a.trim().toLowerCase())
+    );
+    const outcome = await prefetchFleetOpenPrs({
+      repos: config.repos ?? [],
+      guardAuthors,
+      maintenanceAuthors,
+      invitationAuthors,
+      cache: issueCache,
+      ghCommandFn: options.fleetPrefetchGhCommandFn ?? runGhCommand,
+      log: (message: string) => logger.info(message),
+    });
+    logger.info(
+      `[fleet-pr-prefetch] owners=${outcome.ownersServed.length} ` +
+        `searches=${outcome.searchCalls} ` +
+        `entries=${outcome.entriesWritten} ` +
+        `listings-avoided=${outcome.listingsAvoided} ` +
+        `reused=${outcome.ownersReused.length} ` +
+        `rate-limited=${outcome.ownersRateLimited.length} ` +
+        `skipped=${outcome.ownersSkipped.length}`,
+    );
+    // Issue #2662: rate-limited with nothing to reuse. Every consumer would
+    // otherwise list per repo into the same spent quota, so surface the
+    // refusal and let the cycle wait for the reset (run_core re-throws a
+    // primary rate limit from here into its pause).
+    const limited = outcome.ownersRateLimited[0];
+    if (limited !== undefined) {
+      throw new Error(
+        `[fleet-pr-prefetch] ${limited.owner}: ${limited.reason}`,
+      );
+    }
+  };
+  /** The prefetch pass in flight, shared by concurrent callers (#2662). */
+  let fleetPrefetchInFlight: Promise<void> | null = null;
+
   const deps: RunCoreDeps = {
     // -- Logging --
     log: (msg) => logger.info(msg),
@@ -2934,6 +2983,8 @@ export async function createProductionRunCoreDeps(
       // single-login sweep left a sibling account's PR unattended, and with
       // it every issue that PR blocked.
       const refreshOpenPrs = opts?.refreshOpenPrs === true;
+      // Issue #2662: the post-scan pass names the repos it claimed from;
+      // only those are listed live, the rest read the prefetch-served cache.
       const sweep = await sweepAutoMerge({
         repos,
         isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
@@ -2950,7 +3001,7 @@ export async function createProductionRunCoreDeps(
             issueCache,
             runGhCommand,
             undefined,
-            refreshOpenPrs,
+            refreshesRepoLive(opts, repo),
           ),
         // Issue #1774: a PR closed since the cached listing receives no
         // merge attempt — and an unreadable state is never assumed open.
@@ -4724,38 +4775,14 @@ export async function createProductionRunCoreDeps(
       resetBehindSyncComments();
     },
 
-    // Issue #1486: one cross-repo search per owner fills the per-repo
-    // per-author open-PR listings the duplicate guard, the PR-maintenance
-    // scans and the invitation lookup read, collapsing ~130 GraphQL-backed
-    // `gh pr list` calls per cold cycle into one call per owner. Each
-    // consumer keeps its own author set - they are resolved differently, and
-    // populating one from another's set would leave an entry a scan reads
-    // empty. A failed or truncated search writes nothing, so those scans
-    // simply run their per-repo listings as before.
-    prefetchFleetOpenPrs: async () => {
-      const guardAuthors = resolveFleetPrAuthorSet(fleetPrAuthorInput);
-      const maintenanceKeys = new Set(
-        maintenanceAuthors.map((a) => a.toLowerCase()),
-      );
-      const invitationAuthors = (config.allowedAuthors ?? []).filter((a) =>
-        !maintenanceKeys.has(a.trim().toLowerCase())
-      );
-      const outcome = await prefetchFleetOpenPrs({
-        repos: config.repos ?? [],
-        guardAuthors,
-        maintenanceAuthors,
-        invitationAuthors,
-        cache: issueCache,
-        ghCommandFn: options.fleetPrefetchGhCommandFn ?? runGhCommand,
-        log: (message: string) => logger.info(message),
+    // Issue #1486: see `runFleetPrPrefetch` above.
+    prefetchFleetOpenPrs: () => {
+      // Issue #2662: the cycle start, every slot's scan and the post-scan
+      // pass all refresh the prefetch; concurrent slots share one pass.
+      fleetPrefetchInFlight ??= runFleetPrPrefetch().finally(() => {
+        fleetPrefetchInFlight = null;
       });
-      logger.info(
-        `[fleet-pr-prefetch] owners=${outcome.ownersServed.length} ` +
-          `searches=${outcome.searchCalls} ` +
-          `entries=${outcome.entriesWritten} ` +
-          `listings-avoided=${outcome.listingsAvoided} ` +
-          `skipped=${outcome.ownersSkipped.length}`,
-      );
+      return fleetPrefetchInFlight;
     },
 
     // Issue #256, #1066: the per-cycle trusted-author refresh. There is no
