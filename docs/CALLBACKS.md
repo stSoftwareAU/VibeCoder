@@ -638,7 +638,8 @@ before the trial, and is not marked failed), or `off`. A switched-on run that
 did not use brief — no root `Cargo.toml`, or it ended before the map was built —
 is the bare `{ "enabled": true, "status": "off" }`; a switched-off host is
 `{ "enabled": false, "status": "off" }`. Only `VIBECODER_BRIEF_ENABLED` is
-exported as a scalar. Nothing else moved: `schemaVersion` stays at 2.
+exported as a scalar. Nothing else moved: `schemaVersion` stays at 2. The
+[brief trial](BRIEF-TRIAL.md) reads its figures from this block.
 
 `workerVersion` and `workerCommit` are **additive** scalars (Issue #2444, part of
 \#2327) that identify the worker binary and its source that produced this run.

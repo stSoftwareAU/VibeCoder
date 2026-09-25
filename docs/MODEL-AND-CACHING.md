@@ -2267,7 +2267,8 @@ The `execute-claude-phase` path passes the runner only while the host's
 `brief_toolchain.enabled` switch is on (Issue #2603; see
 [Configuration](CONFIGURATION.md)), keyed on the brief version the container
 pins, and reports the outcome as the run-stats `Brief:` line and the callback's
-`brief` block.
+`brief` block. The [brief trial](BRIEF-TRIAL.md) judges whether the block earns
+its place.
 
 Set `include_codebase_map` to `false` in `.config.json` to switch the injection
 off. Implementation:
