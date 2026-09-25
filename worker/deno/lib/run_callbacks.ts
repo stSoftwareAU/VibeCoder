@@ -702,8 +702,10 @@ function briefBlock(
     if (brief.seconds !== undefined) block.seconds = brief.seconds;
     if (brief.cached) block.cached = true;
   }
+  // The reason is brief's own stderr line, so it is redacted before a hook
+  // can forward it anywhere.
   if (brief.status === "failed" && brief.reason !== undefined) {
-    block.reason = brief.reason;
+    block.reason = redactSecrets(brief.reason);
   }
   return block;
 }

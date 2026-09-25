@@ -10,6 +10,8 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   BRIEF_BINARY,
+  BRIEF_VERSION,
+  briefRunReport,
   briefScanArgs,
   type BriefSpawn,
   createBriefRunner,
@@ -17,8 +19,6 @@ import {
   MAX_BRIEF_COMMAND_LENGTH,
   MAX_BRIEF_COMMANDS,
   sanitiseCargoCommands,
-  BRIEF_VERSION,
-  briefRunReport,
 } from "../lib/brief_toolchain.ts";
 import {
   DEFAULT_SUBPROCESS_TIMEOUT_MS,

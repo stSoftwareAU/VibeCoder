@@ -2140,6 +2140,18 @@
       "paths": [
         "worker/deno/lib/brief_toolchain.ts"
       ]
+    },
+    {
+      "issue": 2603,
+      "chunk": "top-up-2603",
+      "title": "top-up: the brief toolchain switch",
+      "ledger": "docs/audits/security-sweep-2603-brief-toolchain-config.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: brief_toolchain_config.ts (#2603)",
+      "status": "swept",
+      "sweptAt": "a0b3fd6c5e78f050ae473bfd8e1bae694b547d25",
+      "paths": [
+        "worker/deno/lib/brief_toolchain_config.ts"
+      ]
     }
   ],
   "roots": [

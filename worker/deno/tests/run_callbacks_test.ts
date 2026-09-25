@@ -712,3 +712,16 @@ for (const enabled of [false, true]) {
     },
   });
 }
+
+Deno.test("run_callbacks - a failed brief reason is redacted before it is published", () => {
+  const token = "ghp_" + "a".repeat(36);
+  const document = buildCallbackContextDocument(
+    context({
+      brief: { enabled: true, status: "failed", reason: `auth ${token}` },
+    }),
+    "always",
+  );
+  const reason = (document.brief as { reason: string }).reason;
+  assert(!reason.includes(token), reason);
+  assert(reason.startsWith("auth "), reason);
+});
