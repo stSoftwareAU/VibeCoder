@@ -73,11 +73,14 @@ import {
 import {
   activeAgentProvider,
   type AgentProviderSelector,
-  setConfiguredAgentProviderId,
-  setRunProviderOverride,
+  CLAUDE_PROVIDER_ID,
+  resolveAgentProvider,
 } from "./agent_provider.ts";
-import { classifyProviderBilling } from "./provider_billing.ts";
-import { paceFallbackProviderId } from "./pace_provider_fallback.ts";
+import {
+  type ClaudeCredentialPool,
+  createClaudeCredentialPool,
+  primeClaudePoolFromUsageSignal,
+} from "./claude_credential_pool.ts";
 import { checkGhAuth as ghAuthCheck } from "./gh_auth.ts";
 import {
   createSpendCeilingCheck,
@@ -94,7 +97,10 @@ import {
 } from "./health_check_cache.ts";
 
 // Issue finding
-import { createClaudeWeekPaceGate } from "./claude_week_pace.ts";
+import {
+  type ClaudeWeekPaceGate,
+  createClaudeWeekPaceGate,
+} from "./claude_week_pace.ts";
 import { findIssuesByLabel, findOldestIssue } from "./issue_finder.ts";
 import { IssueCache } from "./issue_cache.ts";
 import { ensureStateDir, sharedTmpStateDir } from "./private_cache_dir.ts";
@@ -557,6 +563,31 @@ export interface ProductionDepsOptions {
    * prefetch, not factory-wide.
    */
   fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * The weekly-pace gate (Issue #1885). Production leaves it unset and gets
+   * one probing the held Claude token; a wiring test injects a verdict
+   * (Issue #2637) so it can prove an engaged guard switches no provider.
+   */
+  weekPaceGate?: ClaudeWeekPaceGate;
+
+  /**
+   * The Claude credential pool the health gate rotates through before any
+   * fallback provider (Issue #2637). Production leaves it unset and gets one
+   * reading the credential directory; a wiring test injects one with known
+   * figures.
+   */
+  claudeCredentialPool?: Pick<
+    ClaudeCredentialPool,
+    "recordExhaustion" | "candidateCount" | "selectAvailable" | "applySelection"
+  >;
+
+  /**
+   * Establishes a variable in the run environment when the pool rotates the
+   * held Claude token (Issue #2637). Defaults to `Deno.env.set`; a test hands
+   * in a recorder rather than mutating the environment every test shares.
+   */
+  setEnv?: (name: string, value: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -710,7 +741,7 @@ export async function createProductionRunCoreDeps(
   // per scan cycle; the reading behind it is re-probed only once it is older
   // than the credential pool's ten-minute snapshot age, and a host with no
   // Claude subscription token makes no request at all.
-  const weekPaceGate = createClaudeWeekPaceGate({
+  const weekPaceGate = options.weekPaceGate ?? createClaudeWeekPaceGate({
     // Declared here rather than read ambiently inside the gate (Issue #1177):
     // the one environment value it depends on is visible at the wiring site,
     // and a test factory's `options.env` reaches it like every other lookup.
@@ -729,50 +760,63 @@ export async function createProductionRunCoreDeps(
         "budget remains on the held token (Issue #2474)",
     );
   }
-  // Issue #2470: the guard parks the backlog while the operator's fallback
-  // provider sits idle. Once per run, when the guard engages and the fallback
-  // policy names an alternative, switch the active provider to it — the same
-  // shape as the health gate's switch (Issue #2055, set both records so the
-  // switch survives the in-process config reloads) — and keep the low tiers
-  // eligible, routed to the alternative. The billing mode is stated loudly,
-  // never silently (Issue #1923).
-  let paceFallbackId: string | null = null;
-  async function ensurePaceFallback(): Promise<string | null> {
-    if (paceFallbackId !== null) return paceFallbackId;
-    if (!(await weekPaceGate.isEngaged())) return null;
-    const wanted = paceFallbackProviderId({
-      paceEngaged: true,
-      policy: providerFallback,
+  // Issue #2637: the owner drains Claude completely before flipping to a
+  // fallback provider. The health gate asks this pool for another Claude
+  // credential with budget before it probes `agent_provider_fallback`, and
+  // while a fallback stands in it asks again so the run can switch back.
+  // Built lazily: a host that never exhausts a credential never reads the
+  // credential directory or probes a token for it.
+  let claudePool = options.claudeCredentialPool;
+  const setRunEnv = options.setEnv ??
+    ((name: string, value: string) => Deno.env.set(name, value));
+  async function selectPreferredClaudeCredential(
+    excludeHeld: boolean,
+  ): Promise<string | null> {
+    // The pool is Claude's; another preferred provider keeps the pre-#2637
+    // behaviour (fall back once its one credential is exhausted).
+    if (providerFallback.preferred !== CLAUDE_PROVIDER_ID) return null;
+    claudePool ??= createClaudeCredentialPool({
+      log: (message) => logger.info(message),
+      provider: resolveAgentProvider(CLAUDE_PROVIDER_ID),
+      env,
     });
-    if (wanted === null) return null;
-    const billing = classifyProviderBilling(wanted, {
-      workDir: config.workDir || workDir,
-    });
-    if (billing.billingMode !== "fixed-subscription") {
-      const consequence = billing.billingMode === "metered"
-        ? "so work switched to it is billed per token"
-        : "so what work switched to it costs cannot be established from here";
-      logger.warn(
-        `[pace-fallback] ${wanted} billing=${billing.billingMode} ` +
-          `(${billing.reason}) — this configured alternative is not a ` +
-          `proved fixed-price subscription, ${consequence} (Issue #2470)`,
-      );
-    }
-    logger.info(
-      `[pace-fallback] week pace engaged — switching the active provider ` +
-        `to ${wanted} and keeping the low tiers eligible ` +
-        `(billing=${billing.billingMode}, Issue #2470)`,
+    // The health check's usage signal names the credential that was just
+    // refused; record it as spent before asking who has budget left.
+    await primeClaudePoolFromUsageSignal(
+      claudePool,
+      config.workDir || workDir,
+      {
+        log: (message) => logger.info(message),
+      },
     );
-    setConfiguredAgentProviderId(wanted);
-    setRunProviderOverride(wanted);
-    paceFallbackId = wanted;
-    return wanted;
+    const held = heldProviderCredentialLabel(CLAUDE_PROVIDER_ID);
+    // A run whose token came from the environment rather than a pool file
+    // cannot say which credential was refused, so rotating could hand it
+    // straight back; the pre-#2637 fallback path stands.
+    if (excludeHeld && held === undefined) return null;
+    const token = await claudePool.selectAvailable(
+      excludeHeld ? { exclude: held } : {},
+    );
+    if (token === null) {
+      logger.info(
+        `[provider-fallback] every Claude credential is exhausted on its ` +
+          `five-hour window or weekly limit (Issue #2637)`,
+      );
+      return null;
+    }
+    try {
+      claudePool.applySelection(token, setRunEnv);
+    } catch (error) {
+      logger.warn(
+        `[provider-fallback] could not switch to Claude credential ` +
+          `${token.label}: ${
+            error instanceof Error ? error.message : String(error)
+          } (Issue #2637)`,
+      );
+      return null;
+    }
+    return token.label;
   }
-  // The adjusted verdict every consumer of the guard must share (Issue
-  // #2470): the tiers drop only while the guard holds AND no fallback took
-  // the backlog. The scan, the census and the filer all read this.
-  const weekPaceTierDrop = () =>
-    weekPaceGate.lastEngaged() && paceFallbackId === null;
 
   // --- Daily spend ceiling (Issue #3684) ---
   // Opt-in: unset or `0` leaves the hook unwired and behaviour unchanged. A
@@ -1735,6 +1779,10 @@ export async function createProductionRunCoreDeps(
     // routing. Operator pins always win (the resolver substitutes only the
     // designed defaults), and providers without the seam return
     // { adapted: false }.
+    // (Issue #2637) Rotate to a Claude credential with budget before any
+    // fallback provider, and find the way back once one reopens.
+    selectPreferredCredential: ({ excludeHeld }) =>
+      selectPreferredClaudeCredential(excludeHeld),
     async tryModelAdaptation() {
       const provider = activeAgentProvider();
       const failedModel = provider.resolveModel("health");
@@ -3478,13 +3526,11 @@ export async function createProductionRunCoreDeps(
       // its window resets, so this scan claims no `low-priority` or
       // `idle-task` issue and the quota left goes to `top-priority` and
       // `work-on` work. An unknown reading never refuses work.
-      // Issue #2470: first give the configured fallback provider the chance
-      // to take the backlog; the tiers drop only when no fallback did.
-      await ensurePaceFallback();
-      // Once a fallback took the backlog the probe is pointless — the
-      // tiers stay eligible for the rest of the run either way.
-      const weekPaceEngaged = paceFallbackId === null &&
-        await weekPaceGate.isEngaged();
+      // Issue #2637: a pace *projection* never moves work to the fallback
+      // provider — Claude is drained first, and only the health gate's
+      // all-credentials-exhausted path switches provider. So an engaged
+      // guard drops the backlog tiers here and switches nothing.
+      const weekPaceEngaged = await weekPaceGate.isEngaged();
       // Issue #1950: repositories whose runs keep dying at setup are not
       // claimed again until the window lapses or their diagnostic issue is
       // closed. The probe runs first so a repaired repository is released
@@ -4771,9 +4817,9 @@ export async function createProductionRunCoreDeps(
     // filing is deferred while the pace guard is engaged — an idle-task the
     // filer raises could not be picked up before the weekly window resets,
     // and deciding where to raise it walks every monitored repository.
-    // Issue #2470: the adjusted verdict — once a fallback provider took the
-    // backlog, filing is useful again and the deferral must stop with it.
-    weekPaceEngaged: weekPaceTierDrop,
+    // `lastEngaged` is the recorded verdict: no probe, no request, no line —
+    // the one verdict the scan, the census and the filer all share.
+    weekPaceEngaged: () => weekPaceGate.lastEngaged(),
 
     runIdleTaskFiler: async () => {
       try {
@@ -4904,7 +4950,7 @@ export async function createProductionRunCoreDeps(
           // mysteriously passed over — counting GRQ-25's 87 pace-suppressed
           // `low-priority` issues as claimable is what made every cycle a
           // disagreement and drove the idle-task filer through its bound.
-          weekPaceEngaged: weekPaceTierDrop(),
+          weekPaceEngaged: weekPaceGate.lastEngaged(),
           ghCommandFn: auditGh,
           // The audit used to list every repo's open issues itself, uncached,
           // on every idle tick — a full duplicate of the scan's read. Serve it
@@ -5153,7 +5199,7 @@ export async function createProductionRunCoreDeps(
           // Issue #1885: the scan's own verdict, read without a probe or a
           // log line. A tier the pace gate refused is a modelled refusal, not
           // claimable work the scan mysteriously passed over.
-          weekPaceEngaged: weekPaceTierDrop(),
+          weekPaceEngaged: weekPaceGate.lastEngaged(),
         });
         const censusLines = formatIdleDecisionCensus(census, host);
         for (const line of censusLines) {
@@ -5291,7 +5337,7 @@ export async function createProductionRunCoreDeps(
               openIdleTasks,
               // Issue #1915: filing is deferred while the pace guard holds,
               // so an empty idle-task set is the policy, not starvation.
-              weekPaceEngaged: weekPaceTierDrop(),
+              weekPaceEngaged: weekPaceGate.lastEngaged(),
               // Issue #1083: one wrapper is health beside one idle slot and
               // a shortfall beside six.
               expectedIdleTasks: getIdleSlotCapacity(),
@@ -5303,7 +5349,7 @@ export async function createProductionRunCoreDeps(
                   // Issue #1915: the refusal that outranks both — while the
                   // pace guard holds, the filer is deferred whatever the
                   // other two say, so the evidence must name it.
-                  weekPaceEngaged: weekPaceTierDrop(),
+                  weekPaceEngaged: weekPaceGate.lastEngaged(),
                 }),
                 claimableTotal: lastAuditClaimableTotal,
                 censusLines,
