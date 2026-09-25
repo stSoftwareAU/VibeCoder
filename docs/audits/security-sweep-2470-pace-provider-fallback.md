@@ -3,6 +3,11 @@
 **Issue:** [#2470](https://github.com/stSoftwareAU/VibeCoder/issues/2470)
 (chunk top-up-2470) · **Parent:** #1209
 
+> **Retired under [#2637](https://github.com/stSoftwareAU/VibeCoder/issues/2637).**
+> The module was deleted and its slice removed from
+> `lib-sweep-coverage.json`: a pace projection no longer switches provider.
+> This record is kept for history.
+
 This is the written record for the one module that entered
 `worker/deno/lib/` under #2470:
 

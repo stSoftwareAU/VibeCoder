@@ -2009,18 +2009,6 @@
       ]
     },
     {
-      "issue": 2470,
-      "chunk": "top-up-2470",
-      "title": "top-up: the pace-aware provider fallback",
-      "ledger": "docs/audits/security-sweep-2470-pace-provider-fallback.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pace_provider_fallback.ts (#2470)",
-      "status": "swept",
-      "sweptAt": "eb668d4a4e828d100858e9cfb6d398bd604aa631",
-      "paths": [
-        "worker/deno/lib/pace_provider_fallback.ts"
-      ]
-    },
-    {
       "issue": 2496,
       "chunk": "top-up-2496",
       "title": "top-up: the unworkable chain-root report",
