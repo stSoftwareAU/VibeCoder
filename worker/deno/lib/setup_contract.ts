@@ -42,6 +42,7 @@ export const SHARED_SETUP_SUBCOMMANDS: readonly string[] = [
   "gitignore-sync",
   "verify-monitored-collaborator",
   "branch-protection-sync",
+  "repo-settings-harden",
   "backfill-idle-task-labels",
   "hooks",
   "screenshot",

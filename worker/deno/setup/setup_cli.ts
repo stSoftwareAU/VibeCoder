@@ -24,6 +24,7 @@
  *   gitignore-sync     Apply canonical .gitignore + .gitattributes safety blocks to monitored repos
  *   verify-monitored-collaborator  Precheck worker collaborator access on every repo
  *   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
+ *   repo-settings-harden  Harden every monitored repo's GitHub settings (drift only)
  *   repos              List monitored repositories; --add / --remove one (Issue #672)
  *   update-mode        Ask for the update mode, pinned ref and tool versions (Issue #626)
  *   hooks              Install pre-commit hook and git exclude patterns
@@ -96,6 +97,8 @@ import {
   rulesetReadFailedFinding,
 } from "../lib/milestone_ruleset_check.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
+import { runRepoSettingsHarden } from "./repo_settings_harden_sync.ts";
+import { closeFixedRepoSettingsFindings } from "./repo_settings_audit_close.ts";
 import { explainRulesetFailure } from "../lib/ruleset_failure.ts";
 import {
   backfillIdleTaskLabels,
@@ -104,7 +107,8 @@ import {
 } from "../lib/idle_task_backfill.ts";
 import { resolveSetupAgentProviderIds } from "./agent_providers.ts";
 import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
-import { loadExistingConfig } from "./config_setup.ts";
+import { loadExistingConfig, resolveCodeownersOwners } from "./config_setup.ts";
+import { syncCodeowners } from "./codeowners_sync.ts";
 import { runUpdateModeSetup } from "./update_mode_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { runGhOrThrow } from "../lib/gh_spawn.ts";
@@ -141,6 +145,16 @@ function printWarning(msg: string): void {
  * published through none of the write-repo allowlist, `redactGhBodyArgs` or
  * the audit journal.
  */
+/**
+ * The `WORK_DIR` the repo-side setup steps read local clones from, defaulting
+ * to `$HOME/auto-issue-work` (Issue #134). One place, so every step agrees and
+ * the host work-dir guard counts a single construction (Issue #2628).
+ */
+function setupWorkDir(): string {
+  return Deno.env.get("WORK_DIR") ??
+    `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+}
+
 function createSetupGhJson(ghConfigDir?: string) {
   const dir = expandHome(ghConfigDir);
   return (args: string[], stdin?: string): Promise<string> =>
@@ -742,8 +756,7 @@ async function runWorkflowSync(configPath: string): Promise<boolean> {
     // Pass `workDir` so the auditor reads workflow files from the local
     // clone where one exists (Issue #1811). Falls back to `gh api` for
     // repos that have not been cloned yet.
-    const workDir = Deno.env.get("WORK_DIR") ??
-      `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+    const workDir = setupWorkDir();
     const results = await syncWorkflowsForAllRepos(repos, {
       ghConfigDir,
       workDir,
@@ -786,8 +799,7 @@ async function runBestPracticesSync(configPath: string): Promise<boolean> {
     const ghConfigDir = config.gh_config_dir
       ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
       : undefined;
-    const workDir = Deno.env.get("WORK_DIR") ??
-      `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+    const workDir = setupWorkDir();
 
     const results = await syncBestPracticesForAllRepos({
       repos,
@@ -908,8 +920,7 @@ async function runGitignoreSync(configPath: string): Promise<boolean> {
       return true;
     }
 
-    const workDir = Deno.env.get("WORK_DIR") ??
-      `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+    const workDir = setupWorkDir();
 
     const summary = await syncGitignoreForAllRepos(repos, workDir);
     for (const r of summary.results) {
@@ -1390,6 +1401,73 @@ async function runBackfillIdleTaskLabels(configPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Harden every monitored repo's GitHub settings, writing only what drifted
+ * (Issue #2628). Same admin `gh_config_dir` seam as the ruleset sync, same
+ * `WORK_DIR` as the gitignore sync. Non-fatal: `false` when a repo failed.
+ */
+async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
+  printInfo("Hardening repository settings on monitored repositories...");
+
+  try {
+    const config = await loadExistingConfig(configPath);
+    const repos = config.repos ?? [];
+    if (repos.length === 0) {
+      printWarning("No repos configured — skipping repo-settings hardening");
+      return true;
+    }
+    const ghConfigDir = config.gh_config_dir
+      ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
+      : undefined;
+    const workDir = setupWorkDir();
+
+    return await runRepoSettingsHarden(config, {
+      ghCommandFn: createSetupGhJson(ghConfigDir),
+      workDir,
+      owners: resolveCodeownersOwners(config, configPath),
+      syncCodeowners,
+      closeFixedFindings: closeFixedRepoSettingsFindings,
+      runLabel: `setup run ${new Date().toISOString()}`,
+      log: printSuccess,
+      warn: printWarning,
+    });
+  } catch (error) {
+    printWarning(
+      `Repo-settings hardening failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return false;
+  }
+}
+
+/**
+ * The non-fatal repo-side steps `runAll` runs, in order (Issue #2628). One
+ * table, so the order is a fact a test can read rather than a comment.
+ */
+export const RUN_ALL_REPO_STEPS: ReadonlyArray<{
+  name: string;
+  run(configPath: string): Promise<boolean>;
+}> = [
+  // Label sync, workflow sync, best-practices sync (Issue #2102) and the
+  // gitignore + gitattributes sync (Issues #1774, #2340).
+  { name: "label-sync", run: (p) => runLabelSync(p) },
+  { name: "workflow-sync", run: runWorkflowSync },
+  { name: "best-practices-sync", run: runBestPracticesSync },
+  { name: "gitignore-sync", run: runGitignoreSync },
+  // Collaborator precheck (Issue #2326). Setup-time only; never in the
+  // per-iteration loop (rate-limit budget).
+  { name: "verify-monitored-collaborator", run: runVerifyCollaborator },
+  // Default-branch ruleset sync (Issue #2588), after the precheck that
+  // validates access. Setup-time only.
+  { name: "branch-protection-sync", run: runBranchProtectionSync },
+  // Repo-settings hardening (Issue #2628), once the ruleset it may add
+  // code-owner review to exists. Setup-time only.
+  { name: "repo-settings-harden", run: runRepoSettingsHardenStep },
+  // Back-fill the `idle-task` label on security-scan wrappers (Issue #2131).
+  { name: "backfill-idle-task-labels", run: runBackfillIdleTaskLabels },
+];
+
 async function runAll(
   scriptDir: string,
   configPath: string,
@@ -1402,30 +1480,8 @@ async function runAll(
   // 2. Config
   await runConfig(configPath);
 
-  // 3. Label sync (non-fatal)
-  await runLabelSync(configPath);
-
-  // 4. Workflow sync (non-fatal)
-  await runWorkflowSync(configPath);
-
-  // 5. Best-practices sync (non-fatal — Issue #2102)
-  await runBestPracticesSync(configPath);
-
-  // 6. Gitignore + gitattributes sync (non-fatal — Issues #1774, #2340)
-  await runGitignoreSync(configPath);
-
-  // 6b. Collaborator precheck (non-fatal — Issue #2326). Runs once at setup
-  //     time only; never in the per-iteration loop (rate-limit budget).
-  await runVerifyCollaborator(configPath);
-
-  // 6c. Default-branch ruleset sync (non-fatal — Issue #2588). Runs after the
-  //     collaborator precheck (which validates access). Setup-time only;
-  //     never in the per-iteration loop (rate-limit budget).
-  await runBranchProtectionSync(configPath);
-
-  // 7. Back-fill the `idle-task` label on existing security-scan wrappers
-  //    (non-fatal — Issue #2131).
-  await runBackfillIdleTaskLabels(configPath);
+  // 3–7. Repository sync phases, each non-fatal, in RUN_ALL_REPO_STEPS order.
+  for (const step of RUN_ALL_REPO_STEPS) await step.run(configPath);
 
   // 8. Hooks
   await runHooks(scriptDir);
@@ -1549,6 +1605,7 @@ Subcommands:
   gitignore-sync  Apply canonical .gitignore + .gitattributes safety blocks to monitored repos
   verify-monitored-collaborator  Precheck worker collaborator access on every repo
   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
+  repo-settings-harden  Harden every monitored repo's GitHub settings, writing only drift
   backfill-idle-task-labels  Apply idle-task label to existing security-scan wrappers
   repos           List monitored repositories (--add owner/repo, --remove owner/repo)
   update-mode     Ask for the update mode (dynamic/frozen) and, when frozen,
@@ -1666,6 +1723,9 @@ if (import.meta.main) {
       break;
     case "branch-protection-sync":
       ok = await runBranchProtectionSync(configPath);
+      break;
+    case "repo-settings-harden":
+      ok = await runRepoSettingsHardenStep(configPath);
       break;
     case "backfill-idle-task-labels":
       ok = await runBackfillIdleTaskLabels(configPath);

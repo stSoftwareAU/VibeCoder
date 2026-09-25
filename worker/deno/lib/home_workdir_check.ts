@@ -80,12 +80,13 @@ export const HOME_WORKDIR_ALLOWLIST: ReadonlyMap<string, number> = new Map<
   // must receive an explicit work dir (see commands/disk_space.ts).
   ["worker/deno/lib/config.ts", 1],
 
-  // Read-only workDir hint for the setup sync auditors (workflow-sync,
-  // best-practices-sync, gitignore-sync): they READ workflow files from a
-  // local clone when one exists and fall back to `gh api` otherwise — none
-  // of them creates the directory, and setup removes a work dir that holds
-  // only its own cache (Issue #134).
-  ["worker/deno/setup/setup_cli.ts", 3],
+  // Read-only workDir hint for the setup sync steps (workflow-sync,
+  // best-practices-sync, gitignore-sync, repo-settings-harden), built once in
+  // `setupWorkDir` (Issue #2628): they use a local clone when one exists and
+  // skip or fall back to `gh api` otherwise — none of them creates the
+  // directory, and setup removes a work dir that holds only its own cache
+  // (Issue #134).
+  ["worker/deno/setup/setup_cli.ts", 1],
 ]);
 
 /**

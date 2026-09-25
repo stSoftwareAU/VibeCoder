@@ -2188,6 +2188,18 @@
       "paths": [
         "worker/deno/setup/codeowners_sync.ts"
       ]
+    },
+    {
+      "issue": 2628,
+      "chunk": "top-up-2628",
+      "title": "top-up: setup repo-settings hardening step",
+      "ledger": "docs/audits/security-sweep-2628-repo-settings-harden-sync.md",
+      "definition": "modules added to worker/deno/setup/ after 12a-12af recorded their coverage: repo_settings_harden_sync.ts (#2628)",
+      "status": "swept",
+      "sweptAt": "20cd3f5b2b7ec719640e445cba2b27191ba65fcf",
+      "paths": [
+        "worker/deno/setup/repo_settings_harden_sync.ts"
+      ]
     }
   ],
   "roots": [
