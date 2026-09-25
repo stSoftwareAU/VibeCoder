@@ -48,6 +48,7 @@ import {
 } from "./prompt_delimiter.ts";
 import { computePromptHash } from "./prompt_hash.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { sanitiseCargoCommands } from "./brief_toolchain.ts";
 
 /** Default maximum size of the rendered map (in characters). */
 export const DEFAULT_MAX_CODEBASE_MAP_CHARS = 8_000;
@@ -118,6 +119,11 @@ export interface CodebaseMapOptions {
   maxModuleDirs?: number;
   /** Maximum files listed per indexed directory (default: 40). */
   maxFilesPerDir?: number;
+  /**
+   * Cargo commands reported by brief (Issue #2602). Absent or empty renders
+   * no block, so the map stays byte-identical to a brief-less one.
+   */
+  briefCommands?: string[];
 }
 
 /** A generated codebase map. */
@@ -268,6 +274,7 @@ export async function renderCodebaseMap(
   const head = [
     renderLayout(files, options.maxLayoutEntries ?? DEFAULT_MAX_LAYOUT_ENTRIES),
     await renderCommands(realRoot, files),
+    renderBriefCommands(options.briefCommands),
   ].filter((s) => s.length > 0).join("\n\n");
 
   // Reserve room for the section separator and the "index bounded" notice so
@@ -464,6 +471,20 @@ async function renderCommands(
 
   if (lines.length === 0) return "";
   return `## Commands\n\n${lines.join("\n")}`;
+}
+
+/**
+ * Render the Cargo commands brief reported (Issue #2602).
+ *
+ * The runner already applies the allowlist; it is re-applied here because the
+ * map is injected into the prompt and this function cannot know its caller.
+ */
+function renderBriefCommands(commands: string[] | undefined): string {
+  const kept = sanitiseCargoCommands(commands ?? []);
+  if (kept.length === 0) return "";
+  return `## Cargo commands (from brief)\n\n${
+    kept.map((c) => `- \`${c}\``).join("\n")
+  }`;
 }
 
 // ---------------------------------------------------------------------------
