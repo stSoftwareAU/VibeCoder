@@ -23,10 +23,14 @@ import { fakeClock } from "./support/fake_clock.ts";
 
 const FIXTURE_DIR = new URL("./fixtures/agent_output/", import.meta.url);
 
-Deno.test("provider descriptor - Claude and DeepSeek share the Claude adapter; Codex has its own", () => {
-  assertEquals(resolveAgentProvider("claude").output?.providerId, "claude");
-  // DeepSeek runs the same Claude Code binary, so it reads the same events.
-  assertEquals(resolveAgentProvider("deepseek").output?.providerId, "claude");
+Deno.test("provider descriptor - Claude and DeepSeek decode the same CLI events under their own names; Codex has its own", () => {
+  const claude = resolveAgentProvider("claude").output;
+  const deepseek = resolveAgentProvider("deepseek").output;
+  assertEquals(claude?.providerId, "claude");
+  // DeepSeek runs the same Claude Code binary, so it reads the same events —
+  // but a refusal names DeepSeek, not Claude (Issue #2633).
+  assertEquals(deepseek?.providerId, "deepseek");
+  assertEquals(deepseek?.decode, claude?.decode);
   assertEquals(resolveAgentProvider("codex").output?.providerId, "codex");
 });
 

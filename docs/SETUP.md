@@ -827,6 +827,27 @@ would stall on its first call is worse than staying put. A *start* never
 refuses: with every token low the run still begins, on the one whose five-hour
 window refills first.
 
+**Claude is drained before any fallback provider** (Issue #2637). When the
+cycle-start health check reports the held token usage-limited, the health
+gate asks the pool for another token that still has budget on **both** its
+five-hour window and its weekly limit, and switches the run to it; the
+`agent_provider_fallback` alternatives are probed only once every token in
+the pool is exhausted. A token is exhausted while one of its windows reads
+zero and has not yet reset; a token whose budget could not be measured is
+not switched to, so a failed probe cannot bounce the run between two spent
+subscriptions. While a fallback stands in, the gate re-checks the pool at
+most once every ten minutes and switches back as soon as one token's window
+has reopened. The log names each step:
+
+```text
+[provider-fallback] the held credential is exhausted but provider-3 still has budget — rotating to it rather than switching provider (Issue #2637)
+[provider-fallback] every Claude credential is exhausted on its five-hour window or weekly limit (Issue #2637)
+[provider-fallback] claude/provider has budget again — switching back from the fallback provider (Issue #2637)
+```
+
+The weekly pace projection below never takes part in this: an engaged pace
+gate drops the backlog tiers and switches nothing.
+
 With **fewer than two** subscription tokens there is nothing to choose between,
 so nothing is done — no request, no delay, no log line, and the same token file
 the worker has always used. That covers every single-token host and every other
@@ -1105,8 +1126,9 @@ most left.
 **The remaining gap: a spawn is not yet quota-gated.** The runner now has a
 route back to the decision — the credential pool above re-ranks on demand,
 records an exhausted window from a usage-limit result without a probe, and
-switches the run's token in one call — but nothing consults it *before* an
-agent spawn yet. So a subscription that runs out mid-run still takes the retry
+switches the run's token in one call, and the cycle-start health gate now
+uses it to rotate off a spent token (Issue #2637) — but nothing consults it
+*before* an agent spawn yet. So a subscription that runs out mid-run still takes the retry
 ladder (two retries, roughly five then ten minutes) and then fails the run,
 even when another token in the pool is untouched. The next worker start
 reselects, ranks the spent token last and picks a fresh one, so the fleet
