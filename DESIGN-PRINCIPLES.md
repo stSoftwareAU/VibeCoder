@@ -116,6 +116,15 @@ at once.
   time only. F2a is what makes this safe —
   a milestone branch carries no approval gate mid-flight, so a second pull
   request on it buries no reviewer.
+- **F2c — a stream conversation belongs to the provider that created it**
+  (Issue #2638). A session's model ids, thinking blocks and size budget are
+  its creator's. The stream record keeps one session per provider, and each
+  entry records its creator. A run never resumes another provider's session and
+  never compacts one. It opens its own, and the skip is logged naming both
+  providers and the session id. The other provider's session is kept, so
+  switching back resumes it. An entry written before the creator was recorded
+  is presumed to be the configured preferred provider's (the repository's pin,
+  else `agent_provider`), never the pace fallback's.
 - **F3 — eight slots need eight work streams.** Because of F2, eight
   concurrent issues require **eight work streams** with startable work — not
   eight repositories. One repository with several open milestones can supply

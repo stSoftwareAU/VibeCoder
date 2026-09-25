@@ -1349,6 +1349,25 @@ export function resolveAgentProviderId(
 }
 
 /**
+ * The configured preferred provider — {@link resolveAgentProviderId} without
+ * the per-run fallback override (Issue #2638).
+ *
+ * A stream session recorded before its creator was stored is presumed to be
+ * this provider's: the fallback only ever stood in for it, so the preferred
+ * provider is the one that built every conversation the record could hold.
+ *
+ * @param selection - Configured value and environment lookup.
+ * @returns The preferred provider id.
+ * @throws When a set value names an unsupported provider.
+ */
+export function preferredAgentProviderId(
+  selection: AgentProviderSelection = {},
+): string {
+  const env = selection.env ?? ((name: string) => Deno.env.get(name));
+  return resolveSelectedProviderId(selection, env, { honourOverride: false });
+}
+
+/**
  * The id configuration, the environment, or the default selects.
  *
  * The order is `resolveSetting`'s, not this module's own (Issue #1032): the
@@ -1365,14 +1384,18 @@ export function resolveAgentProviderId(
 function resolveSelectedProviderId(
   selection: AgentProviderSelection,
   env: (name: string) => string | undefined,
+  options: { honourOverride?: boolean } = {},
 ): string {
   // The per-run override (Issue #2062) beats the file and the recorded
   // configured value: the health gate's fallback switch must survive every
   // in-process config reload, which would otherwise reset the choice to
   // the file's preferred id (Issue #2065's crash came from the file
   // variant). An explicit per-invocation selector never reaches here.
+  const override = options.honourOverride === false
+    ? undefined
+    : _runProviderOverrideId;
   const configured = (
-    _runProviderOverrideId ?? selection.configured ?? configuredProviderId
+    override ?? selection.configured ?? configuredProviderId
   )?.trim();
   const resolved = resolveSetting<string>({
     configKey: AGENT_PROVIDER_CONFIG_KEY,
