@@ -40,6 +40,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "author_source",
   "exclusion_team",
   "service_accounts",
+  // Default CODEOWNERS owners written by setup (Issue #2627).
+  "codeowners_owners",
   "trusted_review_bots",
   "fleet_pr_authors",
   "repo_config",
