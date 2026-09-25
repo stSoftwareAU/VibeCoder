@@ -99,4 +99,4 @@ jobs:
       # links and heading anchors.
       - if: steps.detect-deno.outputs.present == 'true'
         name: Validate threat-model links and traceability
-        run: deno test --frozen --lock=worker/deno/deno.lock --config worker/deno/deno.json --allow-read worker/deno/tests/threat_model_docs_test.ts
+        run: deno test --frozen --lock=worker/deno/deno.lock --config worker/deno/deno.json --allow-read --reporter=dot worker/deno/tests/threat_model_docs_test.ts
