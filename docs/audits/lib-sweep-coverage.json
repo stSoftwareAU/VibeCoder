@@ -2166,6 +2166,18 @@
       ]
     },
     {
+      "issue": 2629,
+      "chunk": "top-up-2629",
+      "title": "top-up: the repo-settings audit-issue close-out",
+      "ledger": "docs/audits/security-sweep-2629-repo-settings-audit-close.md",
+      "definition": "modules added to worker/deno/setup/ after 12a-12af recorded their coverage: repo_settings_audit_close.ts (#2629)",
+      "status": "swept",
+      "sweptAt": "334b8925cf8bf7bbf628f268b70e1906c8c4ab1d",
+      "paths": [
+        "worker/deno/setup/repo_settings_audit_close.ts"
+      ]
+    },
+    {
       "issue": 2627,
       "chunk": "top-up-2627",
       "title": "top-up: the default CODEOWNERS writer",
