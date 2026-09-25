@@ -29,6 +29,11 @@ import {
   graftQueryFor,
 } from "../graft_context.ts";
 import { isGraftContextEnabled } from "../graft_context_config.ts";
+import {
+  BRIEF_VERSION,
+  briefRunReport,
+  createBriefRunner,
+} from "../brief_toolchain.ts";
 import { isIssueExecutorSplitEnabled } from "../issue_executor_split.ts";
 import {
   buildIssueRunAgents,
@@ -450,6 +455,41 @@ async function executeClaudeBody(
     );
   }
 
+  // Codebase map (Issue #4281). Built here too, not only on the CLI path, so
+  // `include_codebase_map` and the brief trial reach the fleet's main-loop
+  // runs (Issue #2621). Brief gets a runner only while its host switch is on;
+  // a map fault is logged and the run proceeds unmapped.
+  let codebaseMap: string | undefined;
+  if (config.includeCodebaseMap) {
+    const briefEnabled = config.briefToolchain.enabled;
+    const mapResult = await deps.infrastructure.getCodebaseMap({
+      repo,
+      repoDir: state.repoPath,
+      ...(briefEnabled
+        ? {
+          brief: { runner: createBriefRunner(), version: BRIEF_VERSION },
+          warn: (message: string) => logger.warn(message),
+        }
+        : {}),
+    });
+    if (mapResult.ok) {
+      codebaseMap = mapResult.value.content;
+      state.brief = briefRunReport(briefEnabled, mapResult.value.brief);
+      logger.info(
+        `Codebase map: ${codebaseMap.length} chars, tree=${
+          mapResult.value.treeHash.slice(0, 12)
+        }... ${mapResult.value.cacheHit ? "(cached)" : "(generated)"}`,
+        { repo, issueNumber },
+      );
+    } else {
+      logger.warn(
+        `Codebase map unavailable for ${state.repoPath} (non-fatal, ` +
+          `Issue #4281): ${mapResult.error.message}`,
+        { repo, issueNumber },
+      );
+    }
+  }
+
   // Graft repo-context bundle (Issue #2102, part of #2060). Off on a host
   // that has not opted in — the collector returns `off` without spawning. A
   // `failed` collection is reported on the phase state and the run proceeds
@@ -510,6 +550,7 @@ async function executeClaudeBody(
     issueLabels: ctx.issueLabels.join(","),
     // Present only on an `ok` collection (Issue #2102).
     graftContextBundle: graftContext.bundle,
+    codebaseMap,
     // The issue's comments (Issue #1910). Selected and trust-annotated where
     // the context was built, fenced by the builder: a maintainer who narrows
     // scope in a reply is now visible to the agent without the description

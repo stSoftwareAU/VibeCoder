@@ -27,62 +27,19 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { runGhCommand } from "../lib/github.ts";
-import { getRepoDefaultBranch } from "../lib/shell_helpers.ts";
+import { isValidRepoSlug } from "../lib/repo_rulesets.ts";
 import {
-  applyRepoSettingsPlan,
-  buildAllowedActionPatterns,
+  collectUsesReferences,
+  hardenRepo,
   type HardenResult,
-  isSecretScanningSkipped,
   isValidActionCoordinate,
-  planRepoSettingsHardening,
-  type RepoSettingsSnapshot,
-  resolveTransitiveActionCoordinates,
-  SECRET_PROTECTION_SKIP_NOTE,
 } from "../lib/repo_settings_harden.ts";
-import { readWorkflowFiles } from "../lib/workflow_scan_common.ts";
-import { extractUsesValue } from "../lib/action_pin_scanner.ts";
 
 /** What the command reports. */
 export interface RepoSettingsHardenReport {
   repo: string;
   applied: boolean;
   results: HardenResult[];
-}
-
-async function readJson<T>(
-  gh: (args: string[]) => Promise<string>,
-  endpoint: string,
-): Promise<T | undefined> {
-  try {
-    return JSON.parse(await gh(["api", endpoint])) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Every repository `uses:` reference in the checkout's workflows, with its
- * ref (`owner/repo@sha`), so composite manifests can be read at the pinned
- * revision (Issue #4424). Local and docker steps are not repository actions.
- */
-export async function collectUsesReferences(
-  workDir: string,
-): Promise<string[]> {
-  const files = await readWorkflowFiles(workDir);
-  const out = new Set<string>();
-  for (const file of files) {
-    for (const line of file.rawText.split("\n")) {
-      const value = extractUsesValue(line);
-      if (!value || value.startsWith(".") || value.startsWith("docker://")) {
-        continue;
-      }
-      const at = value.indexOf("@");
-      const path = at >= 0 ? value.slice(0, at) : value;
-      const [owner, repo] = path.split("/");
-      if (owner && repo) out.add(value);
-    }
-  }
-  return [...out].sort();
 }
 
 /** Coordinates (`owner/repo`) of every `uses:` in the checkout's workflows. */
@@ -136,7 +93,7 @@ export const repoSettingsHardenCommand: Command = {
     _config: WorkerConfig,
   ): Promise<CommandResult<RepoSettingsHardenReport>> {
     const repo = typeof args["repo"] === "string" ? args["repo"] : "";
-    if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+    if (!isValidRepoSlug(repo)) {
       return {
         success: false,
         message: "repo-settings-harden requires --repo owner/name",
@@ -157,114 +114,37 @@ export const repoSettingsHardenCommand: Command = {
         message: err instanceof Error ? err.message : String(err),
       };
     }
-    const gh = runGhCommand;
-
-    const defaultBranch = await getRepoDefaultBranch(repo, gh);
-    if (!defaultBranch.ok) {
-      return {
-        success: false,
-        message: `default branch unknown: ${defaultBranch.error.message}`,
-      };
-    }
-    // One read of the repository serves both the security settings and the
-    // visibility that decides whether hardening them is free (Issue #2225).
-    const repoInfo = await readJson<{
-      security_and_analysis?: RepoSettingsSnapshot["security"];
-      visibility?: string;
-      private?: boolean;
-    }>(gh, `repos/${repo}`);
-    const snapshot: RepoSettingsSnapshot = {
-      workflow: await readJson(
-        gh,
-        `repos/${repo}/actions/permissions/workflow`,
-      ),
-      actions: await readJson(gh, `repos/${repo}/actions/permissions`),
-      security: repoInfo?.security_and_analysis,
-      visibility: repoInfo?.visibility,
-      private: repoInfo?.private,
-      rules: await readJson(
-        gh,
-        `repos/${repo}/rules/branches/${
-          encodeURIComponent(defaultBranch.value)
-        }`,
-      ),
-    };
-    // The repo's branch rulesets, each expanded (Issue #3912 follow-up). The
-    // listing gives ids and names only; the planner needs the whole object
-    // because the rulesets API takes a complete ruleset on write. Only
-    // milestone-targeting rulesets are expanded, so an ordinary repo pays one
-    // listing call and nothing more.
-    const rulesetList = await readJson<
-      Array<{ id?: number; target?: string }>
-    >(gh, `repos/${repo}/rulesets`);
-    if (Array.isArray(rulesetList) && rulesetList.length > 0) {
-      const expanded: NonNullable<RepoSettingsSnapshot["rulesets"]> = [];
-      for (const entry of rulesetList) {
-        if (typeof entry.id !== "number") continue;
-        if (entry.target !== undefined && entry.target !== "branch") continue;
-        const full = await readJson<
-          NonNullable<RepoSettingsSnapshot["rulesets"]>[number]
-        >(gh, `repos/${repo}/rulesets/${entry.id}`);
-        if (full) expanded.push(full);
-      }
-      if (expanded.length > 0) snapshot.rulesets = expanded;
-    }
-
-    // The allow-list must cover what the workflows run, including the
-    // actions their composite steps pull in (Issue #4424).
-    if (snapshot.actions?.allowed_actions === "selected") {
-      snapshot.selectedActions = await readJson(
-        gh,
-        `repos/${repo}/actions/permissions/selected-actions`,
-      );
-    }
-    let references: string[] = [];
-    try {
-      references = await collectUsesReferences(workDir);
-    } catch {
-      references = [];
-    }
-    const transitive = await resolveTransitiveActionCoordinates(
-      references,
-      gh,
-    );
-    const coordinates = [
-      ...new Set([...transitive.coordinates, ...extraCoordinates]),
-    ].sort();
-    const plan = planRepoSettingsHardening(snapshot, {
-      thirdPartyPatterns: buildAllowedActionPatterns(coordinates),
+    const outcome = await hardenRepo(repo, {
+      apply,
+      ghCommandFn: runGhCommand,
+      workDir,
       requireReviews,
       requireCodeOwnerReview,
-      defaultBranch: defaultBranch.value,
+      extraCoordinates,
     });
-    const results = await applyRepoSettingsPlan(repo, plan, {
-      apply,
-      ghCommandFn: gh,
-    });
+    const { results, coordinates, referenceCount, unreadable } = outcome;
     const lines = results.map((r) =>
       `- [${r.status}] ${r.step.kind}: ${r.step.title}` +
       (r.step.warning ? ` — ⚠ ${r.step.warning}` : "") +
       (r.detail ? ` — ${r.detail}` : "")
     );
     // The exempted step is stated in the output, never silently absent.
-    const skipNote = isSecretScanningSkipped(snapshot)
-      ? `\n${SECRET_PROTECTION_SKIP_NOTE}`
-      : "";
+    const skipNote = outcome.skipNote ? `\n${outcome.skipNote}` : "";
     const message =
-      (plan.length === 0
+      (results.length === 0
         ? `${repo}: nothing to harden — every checked setting already holds.`
         : `${repo}: ${
           apply ? "applied" : "planned (dry run; add --apply)"
-        } ${plan.length} step(s):\n${lines.join("\n")}` +
+        } ${results.length} step(s):\n${lines.join("\n")}` +
           (coordinates.length > 0
-            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${references.length} workflow reference(s) in ${workDir}` +
+            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${referenceCount} workflow reference(s) in ${workDir}` +
               (extraCoordinates.length > 0
                 ? ` plus --allow-action ${extraCoordinates.join(", ")}`
                 : "")
             : "") +
-          (transitive.unreadable.length > 0
-            ? `\n⚠ Could not read the manifest of ${transitive.unreadable.length} action(s) — the allow-list may be incomplete: ${
-              transitive.unreadable.join("; ")
+          (unreadable.length > 0
+            ? `\n⚠ Could not read the manifest of ${unreadable.length} action(s) — the allow-list may be incomplete: ${
+              unreadable.join("; ")
             }`
             : "")) + skipNote;
     const failed = results.some((r) => r.status === "failed");

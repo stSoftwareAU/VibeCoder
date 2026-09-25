@@ -1056,6 +1056,23 @@ log:
 [2026-09-10 04:31:12Z] INFO: claude-week-pace: engaged — used=62.0% elapsed=50.0% projected=124.0% at reset 2026-09-13T12:00:00.000Z; skipping low-priority and idle-task pickup so the remaining weekly quota goes to top-priority and work-on issues (Issue #1885)
 ```
 
+On a host with **two or more** Claude subscriptions the gate judges the
+**pool**, not the token this run holds (Issue #2647): one nearly spent token
+beside another with budget, or beside one that reopens within hours, is no
+reason to park the backlog. It sums each credential's burn rate
+(`used share ÷ elapsed hours` of its own window), walks the pool's remaining
+capacity forward through the reset times — adding a full window as each week
+reopens — and engages only if capacity reaches zero before the next reopening
+would refill it. The readings are the credential pool's own ten-minute
+snapshots, so the pool costs no requests beyond the ones selection already
+makes; a single-token host is judged on its one token exactly as above, and
+the five-hour window plays no part in either. The pool line reports the
+figures, never a token:
+
+```text
+[2026-09-25 06:54:56Z] INFO: claude-week-pace: engaged — pool counted=3/3 rated=3 remaining=43.0% burn=2.95%/h runs-out=2026-09-27T07:26:49.497Z next-reopen=2026-09-29T01:00:00.000Z; the pool runs out before capacity reopens, so low-priority and idle-task pickup is skipped and the remaining weekly quota goes to top-priority and work-on issues (Issues #1885, #2647)
+```
+
 The line is emitted when the verdict or the figures behind it change, not once
 per scan cycle per slot — the state is what an operator needs, and
 repeating one sentence thousands of times over an engaged week buries it. A

@@ -2263,6 +2263,25 @@ fixed argv, no shell, offline scan only, bounded by `runWithTimeout` — and a
 200 characters each and 20 in all. The cache key then also carries brief's
 version; a failed brief run logs a warning, renders the map without the block
 and is not cached. With no runner the map and its tree-hash key are unchanged.
+Both implementation paths — the `execute-claude-phase` CLI and the main-loop
+issue phase (Issue #2621) — build the map, pass the runner only while the
+host's `brief_toolchain.enabled` switch is on (Issue #2603; see
+[Configuration](CONFIGURATION.md)), keyed on the brief version the container
+pins, and report the outcome as the run-stats `Brief:` line and the callback's
+`brief` block. The [brief trial](BRIEF-TRIAL.md) judges whether the block earns
+its place.
+
+**Cargo commands from brief (#2581 trial, not yet switched on).** A caller of
+`getOrGenerateCodebaseMap` may pass a brief runner and its version
+([`brief_toolchain.ts`](../worker/deno/lib/brief_toolchain.ts)). For a
+repository with a root `Cargo.toml` the runner spawns `brief --json <repo>` —
+fixed argv, no shell, offline scan only, bounded by `runWithTimeout` — and a
+`## Cargo commands (from brief)` block follows the Commands section. Only
+`cargo …` strings survive, free of control and invisible characters, at most
+200 characters each and 20 in all. The cache key then also carries brief's
+version; a failed brief run logs a warning, renders the map without the block
+and is not cached. With no runner the map and its tree-hash key are unchanged.
+
 The `execute-claude-phase` path passes the runner only while the host's
 `brief_toolchain.enabled` switch is on (Issue #2603; see
 [Configuration](CONFIGURATION.md)), keyed on the brief version the container
