@@ -191,7 +191,6 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_auto_merge: "skipAutoMerge",
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
-  fast_failure_diagnostics_here: "fastFailureDiagnosticsHere",
   skip_security_fix_check: "skipSecurityFixCheck",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",

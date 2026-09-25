@@ -94,12 +94,10 @@ export interface SelfDiagnosticFamily {
  * gate rejects them anyway); the heartbeat and claim-lock markers ride
  * comments, not issue bodies.
  *
- * `repo_fast_failure_issue.ts` (Issue #1950) files a marker-carrying,
- * attested diagnostic into the worker's own repo and is still deliberately
- * absent: it may be redirected to the affected repository by
- * `fast_failure_diagnostics_here`, and whether a repository the fleet has
- * just backed off should also self-schedule its own diagnostic is a
- * scheduling decision, not a provenance one.
+ * `repo_fast_failure_issue.ts` (Issue #1950) is deliberately absent too:
+ * since Issue #2592 it files its diagnostic into the monitored repository
+ * the fault is about, never the worker's own repo, so — like the streak
+ * filers above — it is out of scope by construction.
  */
 export const SELF_DIAGNOSTIC_FAMILIES: readonly SelfDiagnosticFamily[] = [
   {

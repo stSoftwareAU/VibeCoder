@@ -2088,13 +2088,29 @@ flowchart TD
   agent's last output in — the `<details>` and `<summary>` tags and code
   fences — is stepped over too, so the detail is never a bare `</details>`
   (Issue #2590). Closing it releases the back-off on the next scan.
-- **Where it is filed.** `stSoftwareAU/VibeCoder` by default, matching the
-  run-failure filing policy: a repository failing in its first minute is a
-  worker-side environment fault. Set `fast_failure_diagnostics_here` in that
-  repository's `repo_config` to file it beside the code instead.
+- **Where it is filed.** In the monitored repository the fault is about —
+  the diagnostic for `owner/repo` lands in `owner/repo`, never in
+  `stSoftwareAU/VibeCoder`, and there is no opt-out (Issue #2592). The fault
+  is almost always repository-owned (a refused push, a missing branch), so
+  the report belongs beside the code its owners can fix. If the repository
+  refuses the `bug` label, the create is retried once without it; if that
+  fails too, a `catch_block_warning` fault is recorded and nothing is filed
+  anywhere else.
+
+  ```mermaid
+  flowchart LR
+      F["owner/repo backed off"] --> C["gh issue create<br/>--repo owner/repo --label bug"]
+      C -->|ok| D["Diagnostic in owner/repo"]
+      C -->|refused| R["Retry once without --label"]
+      R -->|ok| D
+      R -->|refused| W["catch_block_warning fault<br/>suppressed:gh_failed"]
+      style D fill:#2d6a4f,stroke:#1b4332,color:#fff
+      style W fill:#9d0208,stroke:#6a040f,color:#fff
+  ```
+
 - **What an operator sees.** One cycle-summary line naming every tracked
   repository:
-  `repo-fast-failures: owner/repo: 5 fast failures, backed off until 2026-09-12T04:05Z (stSoftwareAU/VibeCoder#8123)`.
+  `repo-fast-failures: owner/repo: 5 fast failures, backed off until 2026-09-12T04:05Z (owner/repo#123)`.
 
 ### 🕰️ The cycle-deadline model
 
@@ -4253,7 +4269,6 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `ci_failure_job_path`   | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
 | `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
-| `fast_failure_diagnostics_here` | boolean | When `true`, this repository's fast-failure diagnostic issue is filed **here** rather than in the worker repository (Issue #1950). See [Fast-failure repository back-off](#-fast-failure-repository-back-off). |
 | `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                          |
 | `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
 | `phase_model_overrides` | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                           |
