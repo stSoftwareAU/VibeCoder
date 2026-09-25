@@ -6111,21 +6111,36 @@ export async function runCoreLoop(
           // provider: if no phase will ever route to Fable (including
           // operator-pinned phases), there is no point calling the probe. This
           // avoids unnecessary Fable calls on Codex and Gemini providers.
-          const activeProvider = selectAgentProvider();
-          if (
-            deps.checkFableAvailability &&
-            anyPhaseRoutesToFableTier(activeProvider)
-          ) {
+          //
+          // Issue #2586: resolve the provider only when the probe is wired,
+          // and a resolution fault skips the probe loudly — it must never
+          // abort the cycle, like the other best-effort per-cycle steps.
+          const probeFable = deps.checkFableAvailability;
+          if (probeFable) {
+            let routesToFable = false;
             try {
-              await deps.checkFableAvailability();
-            } catch (fableErr) {
+              routesToFable = anyPhaseRoutesToFableTier(selectAgentProvider());
+            } catch (resolveErr) {
               deps.logError(
-                `Fable availability probe failed (continuing): ${
-                  fableErr instanceof Error
-                    ? fableErr.message
-                    : String(fableErr)
+                `Fable probe skipped: could not resolve the agent provider (continuing): ${
+                  resolveErr instanceof Error
+                    ? resolveErr.message
+                    : String(resolveErr)
                 }`,
               );
+            }
+            if (routesToFable) {
+              try {
+                await probeFable();
+              } catch (fableErr) {
+                deps.logError(
+                  `Fable availability probe failed (continuing): ${
+                    fableErr instanceof Error
+                      ? fableErr.message
+                      : String(fableErr)
+                  }`,
+                );
+              }
             }
           }
 
