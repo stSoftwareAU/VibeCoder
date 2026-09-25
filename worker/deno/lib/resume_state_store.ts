@@ -240,6 +240,14 @@ export interface PersistedStreamSession {
   credentialScope?: string;
   /** Fleet host that owns the durable transcript. */
   holderHost?: string;
+  /**
+   * Provider whose CLI created the session (Issue #2638). A session is bound
+   * to its creator — its model ids, its thinking blocks and its size budget
+   * are that provider's — so it is never resumed by another. Absent on
+   * records written before this field existed; a reader treats those as the
+   * configured preferred provider's.
+   */
+  providerId?: string;
 }
 
 /** Path of one stream's session record. Throws when `stream.repo` is not `owner/name`. */
@@ -278,6 +286,7 @@ export async function saveStreamSession(
   sessions[session.providerId] = {
     sessionId: session.sessionId,
     savedAtEpochMs: nowEpochMs,
+    providerId: session.providerId,
     ...(session.credentialScope !== undefined
       ? { credentialScope: session.credentialScope }
       : {}),
@@ -302,10 +311,27 @@ export type StreamSessionLookup =
   /** A session this provider may resume. */
   | { status: "usable"; session: PersistedStreamSession }
   /** A session recorded for this provider that its CLI would refuse (#204). */
-  | { status: "unusable"; sessionId: string; reason: string };
+  | { status: "unusable"; sessionId: string; reason: string }
+  /**
+   * A session in this provider's slot that another provider created
+   * (Issue #2638). Never resumed and never deleted: it is not this
+   * provider's to replay, and the slot is overwritten by the session this
+   * provider opens instead.
+   */
+  | { status: "foreign"; sessionId: string; createdBy: string };
+
+/** How {@link lookupStreamSession} reads a record. */
+export interface StreamSessionLookupOptions {
+  /**
+   * The provider a record with no recorded creator is presumed to belong to
+   * (Issue #2638) — the configured preferred provider. Omitted, such a
+   * record is presumed to belong to the provider whose slot holds it.
+   */
+  legacyProviderId?: string;
+}
 
 /**
- * Look up one provider's session on a stream, saying which of the three
+ * Look up one provider's session on a stream, saying which of the four
  * states above the record is in. Throws when `stream.repo` is malformed.
  *
  * There is deliberately no clock parameter: a stream session never expires.
@@ -314,12 +340,18 @@ export async function lookupStreamSession(
   workDir: string,
   stream: StreamId,
   providerId: string,
+  options: StreamSessionLookupOptions = {},
 ): Promise<StreamSessionLookup> {
   const sessions = await readStreamSessions(
     streamSessionPath(workDir, stream),
   );
   const session = sessions?.[providerId];
   if (session === undefined) return { status: "none" };
+  const createdBy = session.providerId ?? options.legacyProviderId ??
+    providerId;
+  if (createdBy !== providerId) {
+    return { status: "foreign", sessionId: session.sessionId, createdBy };
+  }
   if (!isPersistableSessionId(session.sessionId, providerId)) {
     return {
       status: "unusable",
@@ -334,7 +366,8 @@ export async function lookupStreamSession(
 /**
  * Load one provider's session for a stream. Returns null when the record is
  * missing, unreadable, unparseable, holds no session for that provider, or
- * holds an id the provider's CLI would refuse (#204). Throws when
+ * holds an id the provider's CLI would refuse (#204) or a session another
+ * provider created (#2638). Throws when
  * `stream.repo` is malformed.
  *
  * There is deliberately no clock parameter: a stream session never expires.
@@ -343,8 +376,14 @@ export async function loadStreamSession(
   workDir: string,
   stream: StreamId,
   providerId: string,
+  options: StreamSessionLookupOptions = {},
 ): Promise<PersistedStreamSession | null> {
-  const lookup = await lookupStreamSession(workDir, stream, providerId);
+  const lookup = await lookupStreamSession(
+    workDir,
+    stream,
+    providerId,
+    options,
+  );
   return lookup.status === "usable" ? lookup.session : null;
 }
 
@@ -467,6 +506,9 @@ function parseStreamSessions(
         : {}),
       ...(typeof record.holderHost === "string"
         ? { holderHost: record.holderHost }
+        : {}),
+      ...(typeof record.providerId === "string" && record.providerId !== ""
+        ? { providerId: record.providerId }
         : {}),
     };
   }
