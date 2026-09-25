@@ -48,11 +48,6 @@ function trialPage(): Promise<string> {
   return readRepoDoc(TRIAL_PAGE);
 }
 
-/** `\*\*`-safe pattern for a literal string. */
-function literal(text: string): RegExp {
-  return new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-}
-
 /** Every status the live report builder really produces, keyed by name. */
 function liveReports(): Record<string, BriefRunReport> {
   const reports = {
@@ -155,11 +150,11 @@ Deno.test("the comparison rule uses the live prefix and statuses", async () => {
   const reports = liveReports();
   const comparison = section(await trialPage(), "The comparison rule");
   assert(
-    literal(`${BRIEF_STATS_PREFIX} ok`).test(comparison),
+    comparison.includes(`${BRIEF_STATS_PREFIX} ok`),
     "only `Brief: ok` runs count",
   );
   assert(
-    literal(`${BRIEF_STATS_PREFIX} failed`).test(comparison),
+    comparison.includes(`${BRIEF_STATS_PREFIX} failed`),
     "`Brief: failed` runs are reported separately",
   );
   for (const status of Object.keys(reports)) {
