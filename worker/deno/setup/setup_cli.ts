@@ -97,10 +97,8 @@ import {
   rulesetReadFailedFinding,
 } from "../lib/milestone_ruleset_check.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
-import {
-  type CloseFixedFindingsFn,
-  runRepoSettingsHarden,
-} from "./repo_settings_harden_sync.ts";
+import { runRepoSettingsHarden } from "./repo_settings_harden_sync.ts";
+import { closeFixedRepoSettingsFindings } from "./repo_settings_audit_close.ts";
 import { explainRulesetFailure } from "../lib/ruleset_failure.ts";
 import {
   backfillIdleTaskLabels,
@@ -1396,10 +1394,6 @@ async function runBackfillIdleTaskLabels(configPath: string): Promise<boolean> {
   }
 }
 
-// Until #2629 lands the closer closes nothing rather than guess.
-const closeFixedFindingsNotWired: CloseFixedFindingsFn = () =>
-  Promise.resolve({ closed: [], warnings: [] });
-
 /**
  * Harden every monitored repo's GitHub settings, writing only what drifted
  * (Issue #2628). Same admin `gh_config_dir` seam as the ruleset sync, same
@@ -1426,7 +1420,7 @@ async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
       workDir,
       owners: resolveCodeownersOwners(config, configPath),
       syncCodeowners,
-      closeFixedFindings: closeFixedFindingsNotWired,
+      closeFixedFindings: closeFixedRepoSettingsFindings,
       runLabel: `setup run ${new Date().toISOString()}`,
       log: printSuccess,
       warn: printWarning,

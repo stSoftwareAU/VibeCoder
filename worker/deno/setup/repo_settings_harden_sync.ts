@@ -43,6 +43,11 @@ import type {
   CodeownersSyncResult,
 } from "./codeowners_sync.ts";
 
+import type {
+  CloseFixedFindingsOptions,
+  CloseFixedFindingsResult,
+} from "./repo_settings_audit_close.ts";
+
 export type { CodeownersSyncResult };
 
 type GhCommandFn = (args: string[]) => Promise<string>;
@@ -53,14 +58,9 @@ export type SyncCodeownersFn = (
 ) => Promise<CodeownersSyncResult>;
 
 /** The audit-issue closer (#2629's `closeFixedRepoSettingsFindings`). */
-export type CloseFixedFindingsFn = (opts: {
-  repo: string;
-  outcome: HardenRepoOutcome;
-  ghCommandFn: GhCommandFn;
-  fleetLogins: readonly string[];
-  runLabel: string;
-  log(line: string): void;
-}) => Promise<{ closed: number[]; warnings: string[] }>;
+export type CloseFixedFindingsFn = (
+  opts: CloseFixedFindingsOptions,
+) => Promise<CloseFixedFindingsResult>;
 
 /** The slice of the setup config this step reads. */
 export interface RepoSettingsHardenConfig {

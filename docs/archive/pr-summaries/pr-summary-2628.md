@@ -33,7 +33,11 @@ back-fill.
 - **Wiring.** `setup_cli.ts` gets a `repo-settings-harden` subcommand. It uses
   the ruleset sync's `createSetupGhJson(gh_config_dir)` seam (with `~`
   expanded), the gitignore sync's `WORK_DIR ?? $HOME/auto-issue-work`, and
-  `resolveCodeownersOwners` for the `codeowners_owners` key. `runAll` now walks
+  `resolveCodeownersOwners` for the `codeowners_owners` key. Its production
+  dependencies are the real `syncCodeowners` (#2627) and
+  `closeFixedRepoSettingsFindings` (#2629), both merged into the milestone
+  branch. The closer gets `service_accounts` as its fleet logins; when that
+  list is empty, the closer warns and closes nothing. `runAll` now walks
   an exported, ordered `RUN_ALL_REPO_STEPS` table, so a test can read the
   order directly.
 
@@ -89,6 +93,7 @@ Run from `worker/deno`:
   `requireReviews: true`, requiring code-owner review unless the lookup said
   `absent`, and returning `true` unconditionally made 7 tests fail.
 - `tests/setup_parity_test.ts` and `tests/setup_ps1_test.ts`: **43 passed**.
+- After wiring the merged siblings, the new suite together with `setup_repo_settings_audit_close_test.ts`, `codeowners_sync_test.ts`, `lib_sweep_coverage_test.ts` and `setup_parity_test.ts`: **107 passed, 0 failed**.
 - `tests/lib_sweep_coverage_test.ts`: **31 passed**.
 - `tests/setup_cli_container_repair_test.ts` and
   `tests/milestone_ruleset_check_test.ts`: **35 passed**.
