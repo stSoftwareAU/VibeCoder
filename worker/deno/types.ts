@@ -898,16 +898,6 @@ export interface RepoConfig {
   /** When true, skips screenshot validation in PR completion (Issue #1185) */
   skipScreenshotCheck?: boolean;
   /**
-   * File this repository's fast-failure diagnostic here rather than in the
-   * worker repository (Issue #1950).
-   *
-   * A repository whose runs keep dying in their first minute is normally a
-   * worker-side environment fault, so `repo_fast_failure_issue.ts` files
-   * the diagnostic in `stSoftwareAU/VibeCoder` by default. Set this when
-   * the report belongs beside the code instead.
-   */
-  fastFailureDiagnosticsHere?: boolean;
-  /**
    * When true, skips the security-fix patch-verification gate on PRs that
    * close a `security`-labelled finding (Issue #3540).
    */

@@ -7,13 +7,14 @@
  * sub-minute failures in one week, clustered in two repositories, and not
  * one issue filed.
  *
- * It follows the same filing policy as `run_failure_issue.ts`:
+ * Filing policy:
  *
- * - **The worker repository is the default target** — a repository failing
- *   in its first minute is a worker-side environment fault, and the
- *   affected repository is named in the body. `repo_config`'s
- *   `fast_failure_diagnostics_here` files it in the affected repository
- *   instead, for operators who want the report beside the code.
+ * - **Filed in the monitored repository** (Issue #2592) — the diagnostic
+ *   for `owner/repo` lands in `owner/repo`, beside the code and in front of
+ *   the people who can fix its setup, never in the worker repository. There
+ *   is no opt-out.
+ * - **A refused `bug` label is retried once without it** — a repository
+ *   that lacks the label must still get its diagnostic.
  * - **Dedup on a machine-readable body marker**, never the title:
  *   `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`. A marker in a body is
  *   text anyone can write, so a match only counts when a fleet account
@@ -25,18 +26,18 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { RepoConfig } from "../types.ts";
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupAuthorOptions,
   type AlertDedupRow,
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
-import { recordFaultEvent } from "./fault_tolerance_counters.ts";
+import {
+  type FaultEvent,
+  recordFaultEvent,
+} from "./fault_tolerance_counters.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import type { RepoFastFailureState } from "./repo_fast_failure_tracker.ts";
-import { getRepoConfig } from "./repo_config.ts";
-import { RUN_FAILURE_TARGET_REPO } from "./run_failure_issue.ts";
 import {
   recordSelfDiagnosticFiling,
   type SelfDiagnosticFiling,
@@ -83,15 +84,9 @@ function safeForBody(text: string): string {
     .replace(/```/g, "'''");
 }
 
-/** Where a repository's diagnostic issue is filed. */
-export function resolveRepoFastFailureTarget(
-  repo: string,
-  repoConfigs: Record<string, RepoConfig> | undefined,
-): string {
-  return getRepoConfig(repoConfigs, repo, "fastFailureDiagnosticsHere") ===
-      "true"
-    ? repo
-    : RUN_FAILURE_TARGET_REPO;
+/** Where a repository's diagnostic issue is filed: the repository itself (Issue #2592). */
+export function resolveRepoFastFailureTarget(repo: string): string {
+  return repo;
 }
 
 /** Issue body: marker first, then the diagnosis a human needs. */
@@ -160,13 +155,13 @@ export interface FileRepoFastFailureIssueOptions
   machineId: string;
   /** gh runner: resolves stdout, rejects on failure. */
   ghFn: (args: string[]) => Promise<string>;
-  /** Per-repo config, for `fast_failure_diagnostics_here`. */
-  repoConfigs?: Record<string, RepoConfig>;
   /** Target repo override (tests). */
   targetRepo?: string;
   log?: (message: string) => void;
   /** Records the filing attestation (Issue #1277). Injected by tests. */
   recordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
+  /** Fault-event recorder; defaults to `recordFaultEvent`. Injected by tests. */
+  recordFault?: (event: FaultEvent, context?: string) => void;
 }
 
 /**
@@ -180,6 +175,7 @@ export async function fileRepoFastFailureIssue(
   opts: FileRepoFastFailureIssueOptions,
 ): Promise<RepoFastFailureFilingDecision> {
   const log = opts.log ?? (() => {});
+  const recordFault = opts.recordFault ?? recordFaultEvent;
   const repo = opts.state.repo;
   const decide = (
     decision: RepoFastFailureFilingDecision,
@@ -198,8 +194,7 @@ export async function fileRepoFastFailureIssue(
     return decide({ action: "suppressed", reason: "not_backed_off" });
   }
 
-  const targetRepo = opts.targetRepo ??
-    resolveRepoFastFailureTarget(repo, opts.repoConfigs);
+  const targetRepo = opts.targetRepo ?? resolveRepoFastFailureTarget(repo);
 
   try {
     // 1. An open diagnostic a fleet account authored already covers this
@@ -235,7 +230,7 @@ export async function fileRepoFastFailureIssue(
         });
       }
     } catch (err) {
-      recordFaultEvent(
+      recordFault(
         "catch_block_warning",
         `repo fast-failure issue search failed (${repo}): ${err}`,
       );
@@ -255,18 +250,29 @@ export async function fileRepoFastFailureIssue(
       opts.policy,
       opts.machineId,
     );
+    const createArgs = [
+      "issue",
+      "create",
+      "--repo",
+      targetRepo,
+      "--title",
+      title,
+      "--body",
+      body,
+    ];
     try {
-      const raw = await opts.ghFn([
-        "issue",
-        "create",
-        "--repo",
-        targetRepo,
-        "--title",
-        title,
-        "--body",
-        body,
-        ...labelArgs,
-      ]);
+      let raw: string;
+      try {
+        raw = await opts.ghFn([...createArgs, ...labelArgs]);
+      } catch (labelled) {
+        // The monitored repository may not have a `bug` label: retry exactly
+        // once without it rather than lose the diagnostic (Issue #2592).
+        log(
+          `repo-fast-failure filing: create with label failed (${repo}), ` +
+            `retrying without --label: ${labelled}`,
+        );
+        raw = await opts.ghFn(createArgs);
+      }
       const m = /\/issues\/(\d+)\s*$/.exec(raw.trim());
       const issueNumber = m ? parseInt(m[1]!, 10) : 0;
       const recordFiling = opts.recordFiling ??
@@ -282,7 +288,7 @@ export async function fileRepoFastFailureIssue(
       });
       return decide({ action: "filed", issueNumber, targetRepo });
     } catch (err) {
-      recordFaultEvent(
+      recordFault(
         "catch_block_warning",
         `repo fast-failure issue create failed (${repo}): ${err}`,
       );
@@ -290,7 +296,7 @@ export async function fileRepoFastFailureIssue(
     }
   } catch (err) {
     // Belt and braces: the release path must never see an exception here.
-    recordFaultEvent(
+    recordFault(
       "catch_block_warning",
       `repo fast-failure filing threw (${repo}): ${err}`,
     );

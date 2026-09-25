@@ -275,7 +275,9 @@ Deno.test("config - loadConfig defaults the fast-failure back-off keys (Issue #1
   });
 });
 
-Deno.test("config - loadConfig maps fast_failure_diagnostics_here to camelCase (Issue #1950)", async () => {
+// Issue #2592 replaced the #1950 mapping test: the key is removed, so it no
+// longer maps to a RepoConfig field and nothing reads it.
+Deno.test("config - loadConfig no longer maps fast_failure_diagnostics_here (Issue #2592)", async () => {
   const testConfig = {
     allowed_authors: ["testuser"],
     repos: ["org/repo1"],
@@ -286,10 +288,10 @@ Deno.test("config - loadConfig maps fast_failure_diagnostics_here to camelCase (
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(
-      config.repoConfig?.["org/repo1"]?.fastFailureDiagnosticsHere,
-      true,
-    );
+    const repoConfig = config.repoConfig?.["org/repo1"] as
+      | Record<string, unknown>
+      | undefined;
+    assertEquals(repoConfig?.["fastFailureDiagnosticsHere"], undefined);
   });
 });
 
