@@ -6,10 +6,13 @@
  * failing search cannot take the cycle down with it. Both facts live in
  * `runCoreLoop` and nowhere else, so they are asserted here:
  *
- *   (a) the hook fires once per scan cycle, after the trusted-author refresh
- *       whose `allowed_authors` decide which logins are searched;
+ *   (a) the hook fires at the start of every scan cycle, after the
+ *       trusted-author refresh whose `allowed_authors` decide which logins
+ *       are searched, and again before every re-scan (Issue #2662);
  *   (b) a throw from the hook is logged and the cycle carries on, because the
- *       per-repo listings still answer every consumer.
+ *       per-repo listings still answer every consumer;
+ *   (c) except a primary rate limit (Issue #2662), which pauses the cycle
+ *       rather than let every consumer list per repo into a spent quota.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -178,7 +181,14 @@ Deno.test(
 
     await runCoreLoop(config, deps);
 
-    assertEquals(prefetchCalls, 3, "expected one prefetch per scan cycle");
+    // Issue #2662: every cycle opens with a prefetch straight after the
+    // trust refresh, and each scan refreshes it again (a marker read inside
+    // the cache TTL), so there are at least as many calls as cycles.
+    const afterTrust = order.filter((step, i) =>
+      step === "prefetch" && order[i - 1] === "trust"
+    );
+    assertEquals(afterTrust.length, 3, "expected a prefetch every cycle");
+    assert(prefetchCalls >= 3);
     // The author sets it searches for come from the refresh, so the order
     // matters: a prefetch before the refresh would search the empty seed.
     assertEquals(order.slice(0, 2), ["trust", "prefetch"]);
@@ -217,5 +227,103 @@ Deno.test(
       issuesScanned > 0,
       "the cycle must carry on scanning via the per-repo listings",
     );
+  },
+);
+
+Deno.test(
+  "run_core - the prefetch is refreshed before every issue scan (Issue #2662)",
+  async () => {
+    const nowRef = { value: 0 };
+    const order: string[] = [];
+    let scanCount = 0;
+    const deps = createMockDeps({
+      now: () => nowRef.value,
+      sleep: makeCycleLimitedSleep(2, nowRef),
+      prefetchFleetOpenPrs: () => {
+        order.push("prefetch");
+        return Promise.resolve();
+      },
+      // The first scan claims an issue, so the cycle scans again after its
+      // run - by then the start-of-cycle listings have usually expired.
+      findNextIssue: () => {
+        order.push("scan");
+        scanCount++;
+        return Promise.resolve({
+          ok: true,
+          value: scanCount === 1
+            ? {
+              repo: "org/repo",
+              issueNumber: 2662,
+              issueTitle: "An issue whose run outlives the listing cache",
+              milestoneTitle: "",
+            }
+            : null,
+        });
+      },
+      processIssue: () => {
+        order.push("run");
+        return Promise.resolve({ ok: true, value: { success: true } });
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    // Slots re-scan inside one cycle; the serial loop restarts the cycle.
+    config.maxConcurrentIssues = 2;
+
+    await runCoreLoop(config, deps);
+
+    // The slot that ran the issue scans again inside the same cycle; a
+    // prefetch must come between its run and that re-scan.
+    const run = order.indexOf("run");
+    assert(run >= 0, `expected a claimed run: ${order.join(",")}`);
+    const rescan = order.indexOf("scan", run);
+    assert(rescan > run, `expected a re-scan after the run: ${order}`);
+    assert(
+      order.slice(run, rescan).includes("prefetch"),
+      `the re-scan was not preceded by a prefetch: ${order.join(",")}`,
+    );
+  },
+);
+
+Deno.test(
+  "run_core - a rate-limited prefetch pauses the cycle instead of scanning per repo (Issue #2662)",
+  async () => {
+    const nowRef = { value: 0 };
+    const logs: string[] = [];
+    let issuesScanned = 0;
+    let prefetchCalls = 0;
+    const deps = createMockDeps({
+      now: () => nowRef.value,
+      sleep: makeCycleLimitedSleep(1, nowRef),
+      log: (message: string) => logs.push(message),
+      // Only the first pass is refused: the cycle must wait for the reset
+      // rather than let every consumer list per repo into a spent quota.
+      prefetchFleetOpenPrs: () => {
+        prefetchCalls++;
+        return prefetchCalls === 1
+          ? Promise.reject(
+            new Error("[fleet-pr-prefetch] fleet: API rate limit exceeded"),
+          )
+          : Promise.resolve();
+      },
+      findNextIssue: () => {
+        issuesScanned++;
+        return Promise.resolve({ ok: true, value: null });
+      },
+      getRateLimitReset: () => {
+        nowRef.value += 4000 * 1000;
+        return Promise.resolve(Math.floor(nowRef.value / 1000) + 1);
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    assert(
+      logs.some((line) => line.includes("Primary rate limit hit mid-cycle")),
+      `the cycle must pause for the quota; got: ${logs.join(" | ")}`,
+    );
+    assertEquals(issuesScanned, 0, "no scan ran on the refused prefetch");
   },
 );
