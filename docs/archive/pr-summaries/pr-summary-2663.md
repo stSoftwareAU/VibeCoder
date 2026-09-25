@@ -108,6 +108,11 @@ stream" in these files:
 | Tests cover both directions: below cap claims, at cap holds, human never counts, other fleet account counts, milestones unaffected. | met | `worker/deno/tests/fleet_pr_slots_test.ts` (12 tests). |
 | `docs/workflows/issue-processing.md` is updated to the per-slot rule. | met | "Open PR blocking" and the guard stack are rewritten. |
 
+Self-scheduled diagnostics (tier 2b) follow the same per-slot cap on purpose.
+They are work on the same default-branch stream as `work-on`.
+`collect_self_diagnostic_candidates_test.ts` asserts both directions: below the
+cap the diagnostic is scheduled, and at the cap it is deferred.
+
 Existing tests that pin other behaviour behind a single open PR now set a cap of
 `1`. This keeps their original meaning (one PR fills the stream), so their
 assertions are unchanged.
