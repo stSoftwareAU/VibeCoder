@@ -232,6 +232,10 @@ export async function workOnIssue(
       // archive a switched-on host's early exit as a control run.
       rtk: state.rtkOutput ??
         { status: "off", enabled: ctx.config.rtkOutput.enabled },
+      // Issue #2603: brief's outcome for the codebase map, read the same way:
+      // a run that recorded none states the host's real switch and `off`.
+      brief: state.brief ??
+        { status: "off", enabled: ctx.config.briefToolchain.enabled },
     };
   } catch (err) {
     outcome = withRunOutcomeNotes(

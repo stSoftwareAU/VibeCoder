@@ -1086,3 +1086,213 @@ Deno.test("container/toolchains/rtk.sh - an archive without rtk at its top level
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+/**
+ * Run container/toolchains/brief.sh past its download (Issue #2601): a stub
+ * `curl` writes placeholder bytes, `sha256sum` and `install` are stubbed as
+ * given, `tar` unpacks a bare `brief` unless `layout` says otherwise, and a
+ * stub `brief` on the PATH reports `reported` as the installed binary would.
+ */
+async function runBriefFragment(options: {
+  version?: string;
+  reported?: string;
+  verified?: boolean;
+  layout?: "bare" | "directory";
+}): Promise<
+  { code: number; stderr: string; extracted: boolean; installed: boolean }
+> {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const manifest = JSON.parse(
+      await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
+    );
+    const brief = manifest.toolchains.find((t: { id: string }) =>
+      t.id === "brief"
+    );
+    assert(brief !== undefined, "container/tools.json must pin brief");
+    if (options.version !== undefined) brief.version = options.version;
+    await Deno.writeTextFile(`${dir}/tools.json`, JSON.stringify(manifest));
+
+    await Deno.mkdir(`${dir}/bin`);
+    const stubs: Record<string, string> = {
+      curl: `out=""\nwhile [ $# -gt 0 ]; do\n` +
+        `  case "$1" in -o) shift; out="$1" ;; esac\n  shift\ndone\n` +
+        `printf 'archive\\n' > "\${out}"\n`,
+      tar: `echo "$@" >> "${dir}/tar.log"\ndest=""\n` +
+        `while [ $# -gt 0 ]; do\n` +
+        `  case "$1" in -C) shift; dest="$1" ;; esac\n  shift\ndone\n` +
+        (options.layout === "directory"
+          ? `mkdir -p "\${dest}/brief-bundle"\n`
+          : `printf 'binary\\n' > "\${dest}/brief"\n`),
+      install: `echo "$@" >> "${dir}/install.log"\n`,
+      brief: `echo "${options.reported ?? "brief 0.13.0"}"\n`,
+    };
+    // Unverified runs keep the real sha256sum, so the bytes fail the pin.
+    if (options.verified !== false) stubs.sha256sum = `exit 0\n`;
+    for (const [name, body] of Object.entries(stubs)) {
+      await Deno.writeTextFile(`${dir}/bin/${name}`, `#!/bin/sh\n${body}`);
+      await Deno.chmod(`${dir}/bin/${name}`, 0o755);
+    }
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/brief.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: `${dir}/tools.json`,
+        CURL_RETRY: "",
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    const exists = async (path: string): Promise<boolean> => {
+      try {
+        await Deno.stat(path);
+        return true;
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        return false;
+      }
+    };
+    return {
+      code: result.code,
+      stderr: new TextDecoder().decode(result.stderr),
+      extracted: await exists(`${dir}/tar.log`),
+      installed: await exists(`${dir}/install.log`),
+    };
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("container/toolchains/brief.sh - a verified archive reporting the pinned version installs", async () => {
+  const run = await runBriefFragment({});
+
+  assertEquals(run.code, 0, run.stderr);
+  assert(run.extracted, "the fragment never unpacked the verified archive");
+  assert(run.installed, "the fragment never installed brief onto the PATH");
+});
+
+Deno.test("container/toolchains/brief.sh - a missing pin aborts before downloading", async () => {
+  const run = await runFragmentWithBrokenManifest("brief.sh", (manifest) => {
+    const brief = manifest.toolchains.find((t) => t.id === "brief");
+    assert(brief !== undefined, "container/tools.json must pin brief");
+    brief.sha256 = {};
+  });
+
+  assert(run.code !== 0, "an unpinned checksum must fail the build");
+  assertStringIncludes(run.stderr, "[brief] the sha256 pin for");
+  assert(!run.downloaded, "the fragment downloaded before resolving its pin");
+});
+
+Deno.test("container/toolchains/brief.sh - a missing version pin aborts, naming it", async () => {
+  const run = await runFragmentWithBrokenManifest("brief.sh", (manifest) => {
+    const brief = manifest.toolchains.find((t) => t.id === "brief");
+    assert(brief !== undefined, "container/tools.json must pin brief");
+    delete brief.version;
+  });
+
+  assert(run.code !== 0, "an unpinned version must fail the build");
+  assertStringIncludes(run.stderr, "[brief] the version pin is missing from");
+  assert(
+    !run.downloaded,
+    "the fragment downloaded before resolving its version",
+  );
+});
+
+Deno.test("container/toolchains/brief.sh - an unsupported architecture aborts, naming it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    await Deno.mkdir(`${dir}/bin`);
+    await Deno.writeTextFile(`${dir}/bin/uname`, `#!/bin/sh\necho mips64\n`);
+    await Deno.writeTextFile(
+      `${dir}/bin/curl`,
+      `#!/bin/sh\necho called >> "${dir}/curl.log"\nexit 0\n`,
+    );
+    for (const stub of ["uname", "curl"]) {
+      await Deno.chmod(`${dir}/bin/${stub}`, 0o755);
+    }
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/brief.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        CURL_RETRY: "",
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(
+      result.code !== 0,
+      "an unsupported architecture must fail the build",
+    );
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "[brief] Unsupported build architecture: mips64",
+    );
+    let downloaded = true;
+    try {
+      await Deno.stat(`${dir}/curl.log`);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      downloaded = false;
+    }
+    assert(!downloaded, "the fragment fetched an asset with no pinned digest");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/brief.sh - a checksum mismatch aborts before extracting, naming brief", async () => {
+  // The real sha256sum checks placeholder bytes against the committed pin,
+  // exactly as an altered pin would fail against the real release asset.
+  const run = await runBriefFragment({ verified: false });
+
+  assert(run.code !== 0, "a checksum mismatch must fail the build");
+  assertStringIncludes(run.stderr, "did NOT match");
+  assertStringIncludes(run.stderr, "[brief] Checksum mismatch");
+  assert(
+    !run.extracted,
+    "the fragment unpacked bytes that failed verification",
+  );
+  assert(
+    !run.installed,
+    "the fragment installed bytes that failed verification",
+  );
+});
+
+Deno.test("container/toolchains/brief.sh - an archive without brief at its top level aborts", async () => {
+  const run = await runBriefFragment({ layout: "directory" });
+
+  assert(run.code !== 0, "an unexpected layout must fail the build");
+  assertStringIncludes(
+    run.stderr,
+    "[brief] Archive does not carry brief at its top level",
+  );
+  assert(!run.installed, "the fragment installed from an unexpected layout");
+});
+
+Deno.test("container/toolchains/brief.sh - an altered version pin fails the post-install assertion", async () => {
+  // The release binary reports 0.13.0; a manifest pinning anything else must
+  // fail the build rather than ship a binary the pin does not describe.
+  const run = await runBriefFragment({ version: "0.12.0" });
+
+  assert(run.code !== 0, "a version mismatch must fail the build");
+  assertStringIncludes(
+    run.stderr,
+    '[brief] Installed binary reports "brief 0.13.0", expected 0.12.0',
+  );
+});
+
+Deno.test("container/toolchains/brief.sh - a pin matching only part of the reported version fails", async () => {
+  // "3.0" is a substring of "0.13.0" but not the version: the assertion
+  // compares whole tokens, as the start-up self-check does.
+  const run = await runBriefFragment({ version: "3.0" });
+
+  assert(run.code !== 0, "a partial version match must fail the build");
+  assertStringIncludes(run.stderr, "expected 3.0");
+});

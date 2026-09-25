@@ -587,7 +587,7 @@ jobs:
               set -euo pipefail
               mkdir -p "${DENO_DIR}"
               deno check --frozen --lock=deno.lock mod.ts
-              deno task test \
+              deno task test --reporter=dot \
                 tests/container_entrypoint_test.ts \
                 tests/container_launch_test.ts \
                 tests/container_runtime_test.ts \
@@ -614,7 +614,7 @@ jobs:
           # their read-only/read-write modes, and the published-port set the
           # runtime reports.
           cd worker/deno
-          deno test --frozen --lock=deno.lock \
+          deno test --frozen --lock=deno.lock --reporter=dot \
             --allow-read --allow-env --allow-run --allow-write \
             tests/container_containment_test.ts < /dev/null
 

@@ -116,8 +116,10 @@ first. Tiers 3 and 4 work against that when the week is burning too fast: the
 last hours of a spent week went on backlog and busywork while `top-priority`
 issues waited for the reset.
 
-Issue #1885 adds a pace gate over those two tiers only. Once per scan cycle the
-worker reads the seven-day window of the token this run selected — through the
+Issue #1885 adds a pace gate over those two tiers only. Once per scan cycle a
+single-token host reads the seven-day window of the token this run selected —
+a pooled host reads every credential's, see
+[below](#a-credential-pool-is-judged-as-a-pool-issue-2647) — through the
 existing budget probe, re-measured only when the reading is older than the
 credential pool's **ten-minute** snapshot age — and projects it linearly:
 
@@ -144,6 +146,41 @@ flowchart TD
     style O fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style W fill:#e0a050,stroke:#8b4500,color:#1a1a1a
 ```
+
+#### A credential pool is judged as a pool (Issue #2647)
+
+The table above is how a **single-token** host is judged, unchanged. On a host
+with two or more Claude subscriptions (GRQ-23 has three) one nearly spent
+token says nothing about whether the host lasts: another may have plenty left,
+or reopen within hours. There, "will not last" is judged across **every**
+credential the pool holds, from the pool's own ten-minute snapshots
+([`claudePoolWeekPaceVerdict`](../../worker/deno/lib/claude_week_pace.ts)):
+
+1. **Burn rate** — the sum over credentials of `used share ÷ elapsed hours`
+   of each one's own window, in windows per hour. A credential inside its
+   24 h grace, or whose window has rolled over, gives no rate.
+2. **Capacity walk** — start from the sum of every credential's remaining
+   share and step through the reset times in order, drawing capacity down at
+   the burn rate (soonest-expiring credential first) and adding a full window
+   as each credential's week reopens. The walk ends at the latest reset in
+   the pool, at most 168 h out.
+3. **Verdict** — **engaged** if capacity reaches zero before the next
+   reopening would refill it; **off** otherwise. A credential whose reading
+   is unknown is left out of both the rate and the capacity (headroom has to
+   be evidenced); no usable reading at all is **unknown**, with a WARNING.
+
+The five-hour window takes no part in it — it keeps its role in token
+selection only. The pool line names the figures, never a token:
+
+```text
+claude-week-pace: engaged — pool counted=3/3 rated=3 remaining=43.0% burn=2.95%/h runs-out=2026-09-27T07:26:49.497Z next-reopen=2026-09-29T01:00:00.000Z; the pool runs out before capacity reopens, …
+```
+
+That is GRQ-23's reading on 2026-09-25 at 06:54Z: 68 %, 90 % and 99 % used,
+the last reopening at 09:00Z. Even with that credential's fresh window
+counted, the pool burns about 2.95 % of a window an hour, so the capacity is
+spent around 07:27Z on the 27th — some 42 hours before the next credential
+reopens — and the guard stays engaged on the pool's own figures.
 
 Boundaries worth stating:
 

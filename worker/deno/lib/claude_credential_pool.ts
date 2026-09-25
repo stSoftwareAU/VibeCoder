@@ -207,6 +207,21 @@ export interface ClaudeCredentialPool {
   ): Promise<ProviderTokenFile | null>;
 
   /**
+   * Every pool candidate's budget, for judging the weekly pace across the
+   * whole pool (Issue #2647), or null when the host holds fewer than two
+   * candidates — a single-token host keeps judging its one token exactly as
+   * before, and makes no request here.
+   *
+   * Refreshes only the snapshots older than
+   * {@link CLAUDE_BUDGET_SNAPSHOT_MAX_AGE_MS}, sharing any probe already in
+   * flight, and logs nothing: this is a reading, not a selection.
+   *
+   * @param now - Current time in epoch milliseconds; defaults to the clock.
+   * @returns One budget per candidate, labelled by file stem, or null.
+   */
+  readPoolBudgets(now?: number): Promise<readonly ClaudeTokenBudget[] | null>;
+
+  /**
    * How many subscription tokens this host's pool holds, discovered at most
    * once and shared with every selection (Issue #2024).
    */
@@ -371,6 +386,13 @@ export function createClaudeCredentialPool(
         hasBudgetLeft(candidate.budget, now)
       );
       return winner === undefined ? null : pool[winner.index] ?? null;
+    },
+
+    async readPoolBudgets(now = clock()) {
+      const pool = await candidates();
+      // A single token is judged on its own, as it always was.
+      if (pool.length < 2) return null;
+      return await Promise.all(pool.map((token) => budgetFor(token, now)));
     },
 
     async candidateCount() {

@@ -23,6 +23,7 @@ import {
 import {
   type AgentProviderSelector,
   runProviderOverrideId,
+  setConfiguredAgentProviderId,
   setRunProviderOverride,
 } from "../lib/agent_provider.ts";
 import type { ProviderBillingEvidence } from "../lib/provider_billing.ts";
@@ -976,8 +977,10 @@ Deno.test("run_core - every Claude credential exhausted: the fallback provider t
 });
 
 Deno.test("run_core - once a Claude credential's window resets the run switches back from the fallback (Issue #2637)", async () => {
-  // An earlier test's switch must not leak into this one.
+  // An earlier test's switch must not leak into this one — neither the run
+  // override nor the configured provider the fallback switch also sets.
   setRunProviderOverride(undefined);
+  setConfiguredAgentProviderId(undefined);
   const logs: string[] = [];
   const asked: boolean[] = [];
   let nowValue = 0;
@@ -1031,6 +1034,7 @@ Deno.test("run_core - once a Claude credential's window resets the run switches 
     );
   } finally {
     setRunProviderOverride(undefined);
+    setConfiguredAgentProviderId(undefined);
   }
 });
 

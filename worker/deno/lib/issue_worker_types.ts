@@ -22,6 +22,7 @@ import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import type { BriefRunReport } from "./brief_toolchain.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
@@ -300,6 +301,12 @@ export interface PhaseState {
    */
   rtkOutput?: RtkOutputResult;
   /**
+   * What brief did for this run's codebase map (Issue #2603, part of #2581),
+   * for the run-stats `Brief:` line and the post-run callback. Unset on a
+   * run whose phases built no codebase map.
+   */
+  brief?: BriefRunReport;
+  /**
    * The PR this run raised or recovered (Issue #4325): set by the
    * completion phase so the run outcome can name it at claim release.
    */
@@ -484,6 +491,11 @@ export interface WorkOnIssueResult {
    * context; absent on a run that ended before the preparation.
    */
   rtk?: RtkOutputResult;
+  /**
+   * What brief did for this run's codebase map (Issue #2603), read from
+   * {@link PhaseState.brief}. Carried to the post-run callback context.
+   */
+  brief?: BriefRunReport;
 }
 
 /**

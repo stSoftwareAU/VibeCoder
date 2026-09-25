@@ -1312,7 +1312,9 @@ wired into the idle gate in
 Every gate above asks *is there work the scan could claim?* The week-pace
 guard (Issue #1885) asks a different question — *will the weekly Claude quota
 last?* — and while it is engaged the scan drops tiers 3 and 4, `low-priority`
-and `idle-task`, from its ladder until the window resets.
+and `idle-task`, from its ladder until the window resets. On a host with a
+credential pool the question is asked of the whole pool (Issue #2647), counting
+windows that reopen soon; the filer reads the same one verdict either way.
 
 Draining is the default (Issue #2474): the guard stays off while the held
 token has any budget, so the pool's token selection, the pool-exhaustion

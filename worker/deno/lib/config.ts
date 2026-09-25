@@ -35,6 +35,7 @@ import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
 import { parseCodegraphContext } from "./codegraph_context_config.ts";
 import { parseRtkOutput } from "./rtk_output_config.ts";
+import { parseBriefToolchain } from "./brief_toolchain_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
@@ -1011,6 +1012,16 @@ export async function loadConfig(
   }
   const rtkOutput = parsedRtkOutput.value;
 
+  // brief toolchain (Issue #2603, part of #2581). Off unless the host opts
+  // in; a malformed block or an unknown key fails the load loudly.
+  const parsedBriefToolchain = parseBriefToolchain(file.brief_toolchain);
+  if (!parsedBriefToolchain.ok) {
+    throw new Error(
+      `Config file ${configPath} is invalid: ${parsedBriefToolchain.error}`,
+    );
+  }
+  const briefToolchain = parsedBriefToolchain.value;
+
   const config: WorkerConfig = {
     allowedAuthors,
     allowedAuthor,
@@ -1119,6 +1130,7 @@ export async function loadConfig(
     includeCodebaseMap,
     codegraphContext,
     rtkOutput,
+    briefToolchain,
     recentActivityMergedPrLimit,
     recentActivityCommitLimit,
     recentActivityMaxTokens,

@@ -16,6 +16,24 @@
  * map (Issue #3234): the caller logs it and runs without the map, which is the
  * pre-#4281 behaviour rather than a silently blank index.
  *
+ * An optional brief runner (Issue #2602) adds Cargo commands for a repository
+ * with a root `Cargo.toml`. With no runner the map, the cache key and the
+ * behaviour are exactly the pre-#2602 ones:
+ *
+ * ```mermaid
+ * flowchart TD
+ *   A[list files, tree hash] --> B{runner passed?}
+ *   B -- no --> K1["key = treeHash · brief off: no runner"]
+ *   B -- yes --> C{root Cargo.toml?}
+ *   C -- no --> K2["key = treeHash · brief off: no Cargo.toml"]
+ *   C -- yes --> K3["key = hash(treeHash, brief on, version)"]
+ *   K3 --> H{cache hit?}
+ *   H -- yes --> O1["brief ok · cached, 0s — brief not spawned"]
+ *   H -- no --> R[run brief]
+ *   R -- ok --> O2[render with Cargo block, cache, brief ok · seconds]
+ *   R -- failed --> O3[warn, render today's map, do NOT cache]
+ * ```
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -28,6 +46,9 @@ import {
 } from "./codebase_map.ts";
 import { PromptCache } from "./prompt_cache.ts";
 import { sharedTmpStateDir } from "./private_cache_dir.ts";
+import type { BriefRunner, BriefRunResult } from "./brief_toolchain.ts";
+import { computePromptHash } from "./prompt_hash.ts";
+import { createLogger } from "./logger.ts";
 
 /**
  * Default cache directory for generated codebase maps (Issue #1215).
@@ -61,6 +82,20 @@ export interface CachedCodebaseMap {
   treeHash: string;
   /** Whether the map came from cache rather than being generated. */
   cacheHit: boolean;
+  /** What brief contributed to this map (Issue #2602), for run reporting. */
+  brief: BriefOutcome;
+}
+
+/** brief's part in one map (Issue #2602). */
+export type BriefOutcome =
+  | { status: "ok"; seconds: number; cached?: true }
+  | { status: "failed"; reason: string }
+  | { status: "off"; reason: "no runner" | "no Cargo.toml" };
+
+/** The brief runner and the version it runs — the version keys the cache. */
+export interface BriefMapSource {
+  runner: BriefRunner;
+  version: string;
 }
 
 /** Options for {@link getOrGenerateCodebaseMap}. */
@@ -75,6 +110,10 @@ export interface GetOrGenerateCodebaseMapOptions extends CodebaseMapOptions {
   cacheDir?: string;
   /** Cadence refresh in seconds when no instance is supplied. */
   ttlSeconds?: number;
+  /** brief runner and version (Issue #2602). Omit for today's map. */
+  brief?: BriefMapSource;
+  /** Warning sink for a failed brief run (default: the worker logger). */
+  warn?: (message: string) => void;
 }
 
 /**
@@ -86,7 +125,16 @@ export interface GetOrGenerateCodebaseMapOptions extends CodebaseMapOptions {
 export async function getOrGenerateCodebaseMap(
   options: GetOrGenerateCodebaseMapOptions,
 ): Promise<Result<CachedCodebaseMap>> {
-  const { repo, repoDir, cache, cacheDir, ttlSeconds, ...mapOptions } = options;
+  const {
+    repo,
+    repoDir,
+    cache,
+    cacheDir,
+    ttlSeconds,
+    brief,
+    warn,
+    ...mapOptions
+  } = options;
 
   const filesResult = await listRepoFiles(repoDir);
   if (!filesResult.ok) return filesResult;
@@ -99,24 +147,87 @@ export async function getOrGenerateCodebaseMap(
     ttlSeconds: ttlSeconds ?? DEFAULT_CODEBASE_MAP_TTL_SECONDS,
   });
 
-  const cached = await store.get(repo, treeHash);
+  // brief runs only for a repository with a root Cargo.toml; otherwise its
+  // map is today's, so it shares today's bare tree-hash key.
+  const briefOn = brief !== undefined && files.includes("Cargo.toml");
+  const off: BriefOutcome = {
+    status: "off",
+    reason: brief === undefined ? "no runner" : "no Cargo.toml",
+  };
+  const cacheKey = briefOn
+    ? await computePromptHash(
+      `${treeHash}\nbrief=on\nversion=${brief.version}`,
+    )
+    : treeHash;
+
+  const cached = await store.get(repo, cacheKey);
   if (cached.ok && cached.value !== null) {
     return {
       ok: true,
-      value: { content: cached.value, treeHash, cacheHit: true },
+      value: {
+        content: cached.value,
+        treeHash,
+        cacheHit: true,
+        brief: briefOn ? { status: "ok", cached: true, seconds: 0 } : off,
+      },
     };
   }
 
-  const rendered = await renderCodebaseMap(repoDir, files, mapOptions);
+  let outcome: BriefOutcome = off;
+  let briefCommands: string[] | undefined;
+  if (briefOn) {
+    const run = await runBrief(brief.runner, repoDir);
+    if (run.status === "ok") {
+      briefCommands = run.commands;
+      outcome = { status: "ok", seconds: run.seconds };
+    } else {
+      (warn ?? ((m) => createLogger().warn(m)))(
+        `brief failed for ${repo} (codebase map falls back to no Cargo commands): ${run.reason}`,
+      );
+      outcome = { status: "failed", reason: run.reason };
+    }
+  }
+
+  const rendered = await renderCodebaseMap(
+    repoDir,
+    files,
+    briefCommands === undefined ? mapOptions : { ...mapOptions, briefCommands },
+  );
   if (!rendered.ok) return rendered;
 
-  // Drop superseded entries for this repo before writing the new one, so a
-  // long-lived worker does not accumulate a map per tree hash on disk.
-  await store.cleanupRepo(repo);
-  await store.set(repo, treeHash, rendered.value.content);
+  // A map rendered after brief failed is never cached, so the next run tries
+  // brief again rather than serving the fallback for the whole TTL.
+  if (outcome.status !== "failed") {
+    // Drop superseded entries for this repo before writing the new one, so a
+    // long-lived worker does not accumulate a map per tree hash on disk.
+    await store.cleanupRepo(repo);
+    await store.set(repo, cacheKey, rendered.value.content);
+  }
 
   return {
     ok: true,
-    value: { content: rendered.value.content, treeHash, cacheHit: false },
+    value: {
+      content: rendered.value.content,
+      treeHash,
+      cacheHit: false,
+      brief: outcome,
+    },
   };
+}
+
+/** Call the runner, turning a throw from a non-conforming runner into `failed`. */
+async function runBrief(
+  runner: BriefRunner,
+  repoDir: string,
+): Promise<BriefRunResult> {
+  try {
+    return await runner(repoDir);
+  } catch (err) {
+    return {
+      status: "failed",
+      reason: `brief runner threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
 }
