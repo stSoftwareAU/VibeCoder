@@ -375,3 +375,7 @@ Deno.test("config_unknown_keys - a non-object codegraph_context block yields no 
   assertEquals(detectUnknownConfigKeys({ codegraph_context: null }), []);
   assertEquals(detectUnknownConfigKeys({ codegraph_context: [1] }), []);
 });
+
+Deno.test("config_unknown_keys - codeowners_owners is a known key (Issue #2627)", () => {
+  assertEquals(KNOWN_CONFIG_KEYS.has("codeowners_owners"), true);
+});

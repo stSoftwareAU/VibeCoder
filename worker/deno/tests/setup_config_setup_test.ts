@@ -14,13 +14,14 @@
  * 6. runNonInteractive orchestrates the full non-interactive flow
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   buildOverridesOnly,
   dedupeConfigRepos,
   loadExistingConfig,
   mergeNonInteractive,
   parseCsv,
+  resolveCodeownersOwners,
   runNonInteractive,
   stripRemovedConfigKeys,
   writeConfigFile,
@@ -1006,4 +1007,78 @@ Deno.test("dedupeConfigRepos - repo_config on the kept spelling needs no extra w
     repo_config: { "org/Repo": { max_auto_fix_attempts: 2 } },
   });
   assertEquals(result.warnings.length, 1);
+});
+
+// =============================================================================
+// codeowners_owners (Issue #2627)
+// =============================================================================
+
+Deno.test("resolveCodeownersOwners - a missing key yields the default owners", () => {
+  assertEquals(resolveCodeownersOwners({}), ["@nleck", "@Green-Beret"]);
+});
+
+Deno.test("resolveCodeownersOwners - configured owners are returned as set", () => {
+  assertEquals(
+    resolveCodeownersOwners({ codeowners_owners: ["@alice", "@org/team"] }),
+    ["@alice", "@org/team"],
+  );
+});
+
+for (
+  const bad of ["@foo[bot]", "@stservice", "@stSoftwareAU/developers", "nleck"]
+) {
+  Deno.test(`resolveCodeownersOwners - rejects ${bad}, naming it`, () => {
+    const error = assertThrows(
+      () => resolveCodeownersOwners({ codeowners_owners: ["@nleck", bad] }),
+      Error,
+    );
+    assert(error.message.includes(bad), error.message);
+    assert(error.message.includes("codeowners_owners"), error.message);
+  });
+}
+
+Deno.test("resolveCodeownersOwners - rejects a non-array and an empty list", () => {
+  assertThrows(
+    () =>
+      resolveCodeownersOwners({
+        codeowners_owners: "@nleck" as unknown as string[],
+      }),
+    Error,
+    "codeowners_owners",
+  );
+  assertThrows(
+    () => resolveCodeownersOwners({ codeowners_owners: [] }),
+    Error,
+    "codeowners_owners",
+  );
+});
+
+Deno.test("loadExistingConfig - refuses a bot in codeowners_owners (Issue #2627)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  const configPath = `${tempDir}/.config.json`;
+  try {
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({ codeowners_owners: ["@VibeCoderST"] }),
+    );
+    await assertRejects(
+      () => loadExistingConfig(configPath),
+      Error,
+      "@VibeCoderST",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("buildOverridesOnly - omits codeowners_owners when it matches the default", () => {
+  const result = buildOverridesOnly({
+    codeowners_owners: ["@nleck", "@Green-Beret"],
+  });
+  assertEquals(result.codeowners_owners, undefined);
+});
+
+Deno.test("buildOverridesOnly - keeps codeowners_owners when it differs", () => {
+  const result = buildOverridesOnly({ codeowners_owners: ["@alice"] });
+  assertEquals(result.codeowners_owners, ["@alice"]);
 });
