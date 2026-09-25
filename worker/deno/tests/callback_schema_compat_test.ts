@@ -730,9 +730,11 @@ Deno.test(
     assertEquals(document.graft, FULL_CONTEXT.graft);
     assertEquals(document.codegraph, FULL_CONTEXT.codegraph);
     // Appended after every earlier key, so a consumer that reads the document
-    // in order sees nothing it knew move.
-    assertEquals(Object.keys(document).at(-1), "rtk");
-    assertEquals(Object.keys(document).at(-2), "codegraph");
+    // in order sees nothing it knew move. The `brief` block (Issue #2603) is
+    // appended after it the same way.
+    assertEquals(Object.keys(document).at(-1), "brief");
+    assertEquals(Object.keys(document).at(-2), "rtk");
+    assertEquals(Object.keys(document).at(-3), "codegraph");
 
     const env = buildCallbackEnv(
       FULL_CONTEXT,
@@ -823,9 +825,11 @@ Deno.test(
     assertEquals(CALLBACK_SCHEMA_VERSION, 2);
     assertEquals(document.schemaVersion, 2);
 
-    // Key order: rtk at -1, codegraph at -2, confirming no earlier key moved
-    assertEquals(Object.keys(document).at(-1), "rtk");
-    assertEquals(Object.keys(document).at(-2), "codegraph");
+    // Key order: brief at -1 (Issue #2603), rtk at -2, codegraph at -3,
+    // confirming no earlier key moved
+    assertEquals(Object.keys(document).at(-1), "brief");
+    assertEquals(Object.keys(document).at(-2), "rtk");
+    assertEquals(Object.keys(document).at(-3), "codegraph");
 
     // Every field from SCHEMA_1_DOCUMENT retains its type
     for (const [field, type] of Object.entries(SCHEMA_1_DOCUMENT)) {

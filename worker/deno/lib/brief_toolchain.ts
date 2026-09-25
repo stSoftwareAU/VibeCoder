@@ -24,6 +24,7 @@
  */
 
 import type { Result } from "../types.ts";
+import type { BriefOutcome } from "./codebase_map_cache.ts";
 import {
   DEFAULT_SUBPROCESS_TIMEOUT_MS,
   runWithTimeout,
@@ -32,6 +33,13 @@ import {
 
 /** The brief executable, resolved on `PATH` — never through a shell. */
 export const BRIEF_BINARY = "brief";
+
+/**
+ * The brief release the container image pins (`container/tools.json`). It
+ * keys the codebase-map cache, so a new pin regenerates the map
+ * (Issue #2603); `brief_toolchain_test.ts` fails when the two drift.
+ */
+export const BRIEF_VERSION = "0.13.0";
 
 /** Maximum Cargo commands kept from one report. */
 export const MAX_BRIEF_COMMANDS = 20;
@@ -56,6 +64,44 @@ export type BriefRunResult =
 
 /** Runs brief against a repository checkout. Never throws. */
 export type BriefRunner = (repoDir: string) => Promise<BriefRunResult>;
+
+/**
+ * brief's part in one run, as the run-stats line and the post-run callback
+ * report it (Issue #2603). `enabled` is the host's `brief_toolchain` switch.
+ */
+export interface BriefRunReport {
+  enabled: boolean;
+  status: "ok" | "failed" | "off";
+  /** Seconds brief took; `0` on a cache hit. */
+  seconds?: number;
+  /** Present, `true`, when the map came from cache and brief was not spawned. */
+  cached?: boolean;
+  /** Why brief failed, or why a switched-on run did not use it. */
+  reason?: string;
+}
+
+/**
+ * Turn the codebase map's brief outcome into the run's report.
+ *
+ * With the switch off the report is always `{enabled:false,status:"off"}`,
+ * whatever the map said, so an off host reports nothing more.
+ */
+export function briefRunReport(
+  enabled: boolean,
+  outcome: BriefOutcome,
+): BriefRunReport {
+  if (!enabled) return { enabled: false, status: "off" };
+  switch (outcome.status) {
+    case "ok":
+      return outcome.cached
+        ? { enabled: true, status: "ok", seconds: 0, cached: true }
+        : { enabled: true, status: "ok", seconds: outcome.seconds };
+    case "failed":
+      return { enabled: true, status: "failed", reason: outcome.reason };
+    case "off":
+      return { enabled: true, status: "off", reason: outcome.reason };
+  }
+}
 
 /** The spawn seam — {@link runWithTimeout} in production, a stub in tests. */
 export type BriefSpawn = (

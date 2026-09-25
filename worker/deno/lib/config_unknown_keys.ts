@@ -197,6 +197,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // RTK output (Issue #2380, part of #2328)
   "rtk_output",
 
+  // brief toolchain (Issue #2603, part of #2581)
+  "brief_toolchain",
+
   // Verbosity settings (Issue #1330)
   "verbosity",
 

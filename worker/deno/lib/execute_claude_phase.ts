@@ -90,6 +90,13 @@ import {
 } from "./heartbeat.ts";
 import { getOrGenerateCodebaseMap } from "./codebase_map_cache.ts";
 import {
+  BRIEF_VERSION,
+  type BriefRunner,
+  type BriefRunReport,
+  briefRunReport,
+  createBriefRunner,
+} from "./brief_toolchain.ts";
+import {
   collectGraftContext,
   describeGraftContext,
   type GraftContextCollector,
@@ -226,6 +233,14 @@ export interface ExecuteClaudePhaseResult {
    * once the store was read again after the invocation.
    */
   rtkOutput?: RtkOutputResult;
+  /**
+   * What brief did for this run's codebase map (Issue #2603, part of #2581).
+   *
+   * Present whenever the map was generated — `{enabled:false,status:"off"}`
+   * on a host whose `brief_toolchain` switch is off — and absent when the
+   * run built no map.
+   */
+  brief?: BriefRunReport;
 }
 
 /** Options for the execute-claude phase. */
@@ -346,6 +361,13 @@ export interface ExecuteClaudePhaseOptions {
    * nothing, carries no `--settings` flag and sends the prompt it always sent.
    */
   rtkOutputEnabled?: boolean;
+  /**
+   * Whether the codebase map asks brief for a Rust repository's Cargo
+   * commands (Issue #2603, part of #2581, default: false). Threaded from
+   * `config.briefToolchain.enabled`. Off, brief is never spawned and the map
+   * is exactly the one rendered before the trial.
+   */
+  briefToolchainEnabled?: boolean;
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
   /** Warning threshold for the context budget (Issue #1327, default: 50). */
@@ -397,6 +419,12 @@ export interface ExecuteClaudePhaseDeps {
    * spawns `rtk`.
    */
   prepareRtkRun?: typeof prepareRtkRun;
+  /**
+   * The brief runner used when the host's switch is on (Issue #2603).
+   * Optional: production builds the real one; a test injects a scripted
+   * runner so no suite spawns `brief`.
+   */
+  briefRunner?: BriefRunner;
   /** Build the issue prompt with SHA-based cache integration (Issue #1273). */
   buildCachedIssuePrompt: (
     options: CachedIssuePromptOptions,
@@ -939,9 +967,10 @@ export async function runExecuteClaudePhase(
   const withCodegraph = carrier.codegraphContext
     ? { ...withGraft, codegraphContext: carrier.codegraphContext }
     : withGraft;
-  return carrier.rtkOutput
+  const withRtk = carrier.rtkOutput
     ? { ...withCodegraph, rtkOutput: carrier.rtkOutput }
     : withCodegraph;
+  return carrier.brief ? { ...withRtk, brief: carrier.brief } : withRtk;
 }
 
 /** Where the phase body leaves its CodeGraph and RTK outcomes (Issue #2159). */
@@ -949,6 +978,8 @@ interface CodegraphCarrier {
   codegraphContext?: CodegraphContextResult;
   /** This run's RTK outcome (Issue #2383) — same carrier, same reason. */
   rtkOutput?: RtkOutputResult;
+  /** What brief did for the codebase map (Issue #2603) — same reason. */
+  brief?: BriefRunReport;
 }
 
 /** Single-pass phase body — see {@link runExecuteClaudePhase}. */
@@ -995,6 +1026,7 @@ async function executeClaudePhaseBody(
     graftContextEnabled = false,
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     rtkOutputEnabled = OPERATIONAL_DEFAULTS.rtkOutput.enabled,
+    briefToolchainEnabled = OPERATIONAL_DEFAULTS.briefToolchain.enabled,
     sessionResumeState,
     contextBudgetWarningPercent =
       OPERATIONAL_DEFAULTS.contextBudgetWarningPercent,
@@ -1129,13 +1161,28 @@ async function executeClaudePhaseBody(
   // unmapped — degraded, never silently blank.
   let codebaseMap: string | undefined;
   if (includeCodebaseMap) {
+    // Issue #2603: brief runs only when the host switch is on; off, no
+    // runner is passed and the map, its cache key and the log are today's.
     const mapResult = await getOrGenerateCodebaseMap({
       repo,
       repoDir,
       cacheDir: codebaseMapCacheDir,
+      ...(briefToolchainEnabled
+        ? {
+          brief: {
+            runner: deps.briefRunner ?? createBriefRunner(),
+            version: BRIEF_VERSION,
+          },
+          warn: (message: string) => deps.log(`WARN: ${message}`),
+        }
+        : {}),
     });
     if (mapResult.ok) {
       codebaseMap = mapResult.value.content;
+      carrier.brief = briefRunReport(
+        briefToolchainEnabled,
+        mapResult.value.brief,
+      );
       deps.log(
         `Codebase map: ${codebaseMap.length} chars, tree=${
           mapResult.value.treeHash.slice(0, 12)

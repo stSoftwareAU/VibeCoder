@@ -62,6 +62,7 @@ import type { IssuePhaseRun } from "./fleet_telemetry.ts";
 import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import type { BriefRunReport } from "./brief_toolchain.ts";
 import { getRunId } from "./run_id.ts";
 
 /**
@@ -220,6 +221,46 @@ export function buildRtkStatsLine(rtk: RtkOutputResult): string {
   return rtk.status === "ok" && rtk.savedTokens !== undefined
     ? `${RTK_STATS_PREFIX} ok — ${formatCount(rtk.savedTokens)} tokens saved`
     : `${RTK_STATS_PREFIX} ${rtk.status}`;
+}
+
+/**
+ * The Brief line's fixed prefix (Issue #2603, part of #2581). A status line,
+ * never a cost line — like {@link RTK_STATS_PREFIX}, it sits outside
+ * {@link ESTIMATED_COST_PATTERN}, so brief's seconds never read as spend.
+ */
+export const BRIEF_STATS_PREFIX = "- **Brief:**";
+
+/**
+ * Render the Brief line for a run's stats comment (Issue #2603).
+ *
+ * `undefined` — no line — when the host switch is off, so an off host's
+ * comment is byte-identical to the one rendered before the trial. A failure
+ * reason is brief's own stderr, so it is rendered inside a code span with
+ * backticks and line breaks removed: nothing in it can mention, link or
+ * format.
+ *
+ * @param brief - What brief did for this run's codebase map
+ * @returns The markdown line, or `undefined` when the switch is off
+ */
+export function buildBriefStatsLine(
+  brief: BriefRunReport,
+): string | undefined {
+  if (!brief.enabled) return undefined;
+  if (brief.status === "ok") {
+    return brief.cached
+      ? `${BRIEF_STATS_PREFIX} ok (cached)`
+      : `${BRIEF_STATS_PREFIX} ok (${brief.seconds ?? 0}s)`;
+  }
+  if (brief.status === "failed") {
+    const reason = (brief.reason ?? "unknown").replace(/`/g, "'").replace(
+      /\s+/g,
+      " ",
+    ).trim();
+    return `${BRIEF_STATS_PREFIX} failed — \`${reason}\``;
+  }
+  return brief.reason
+    ? `${BRIEF_STATS_PREFIX} off — ${brief.reason}`
+    : `${BRIEF_STATS_PREFIX} off`;
 }
 
 /**
@@ -580,6 +621,8 @@ export function measureIssuePhaseRun(args: {
  * @param args.rtk - What this run's RTK preparation produced (Issue #2385);
  *   omitted renders exactly the comment this function rendered before the
  *   line existed
+ * @param args.brief - What brief did for this run's codebase map (Issue
+ *   #2603); omitted, or switched off, renders no line
  *
  * An implementation run also carries the split figures (Issue #2346): one
  * `split: on`/`split: off` line always, and the executor counts on a split run
@@ -598,6 +641,7 @@ export function buildIssueRunStatsComment(args: {
   codegraph?: CodegraphContextResult;
   qualityGate?: QualityGateAttemptOutcome;
   rtk?: RtkOutputResult;
+  brief?: BriefRunReport;
 }): string {
   const invocations = args.claudeResults.flatMap((result) =>
     buildPhaseInvocations(args.phase, result)
@@ -629,11 +673,14 @@ export function buildIssueRunStatsComment(args: {
   );
   const splitBlock = splitLines.map((line) => `\n${line}`).join("");
   const rtkLine = args.rtk ? `\n${buildRtkStatsLine(args.rtk)}` : "";
+  // Issue #2603: after RTK, and absent when the host switch is off.
+  const briefStats = args.brief ? buildBriefStatsLine(args.brief) : undefined;
+  const briefLine = briefStats ? `\n${briefStats}` : "";
   const body = `${marker}\n${section}${
     graftLine ? `\n${graftLine}` : ""
   }${codegraphLine}${
     qualityGateLine ? `\n${qualityGateLine}` : ""
-  }${splitBlock}${rtkLine}`;
+  }${splitBlock}${rtkLine}${briefLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
   );
@@ -775,6 +822,8 @@ export async function postIssueRunStatsComment(args: {
   qualityGate?: QualityGateAttemptOutcome;
   /** What this run's RTK preparation produced (Issue #2385). */
   rtk?: RtkOutputResult;
+  /** What brief did for this run's codebase map (Issue #2603). */
+  brief?: BriefRunReport;
   getIssueComments: (
     repo: string,
     issueNumber: number,
@@ -800,6 +849,7 @@ export async function postIssueRunStatsComment(args: {
   const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
   const qualityGate = args.qualityGate ? { qualityGate: args.qualityGate } : {};
   const rtk = args.rtk ? { rtk: args.rtk } : {};
+  const brief = args.brief ? { brief: args.brief } : {};
 
   // Built without the issue's comments first, purely to answer "is there
   // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
@@ -863,6 +913,7 @@ export async function postIssueRunStatsComment(args: {
         ...codegraph,
         ...qualityGate,
         ...rtk,
+        ...brief,
       }),
     );
     return { posted: true };
