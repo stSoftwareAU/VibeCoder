@@ -38,22 +38,19 @@ import {
   type HardenStep,
 } from "../lib/repo_settings_harden.ts";
 import { isValidRepoSlug, renderInertRepoSlug } from "../lib/repo_slug.ts";
+import type {
+  CodeownersSyncOptions,
+  CodeownersSyncResult,
+} from "./codeowners_sync.ts";
+
+export type { CodeownersSyncResult };
 
 type GhCommandFn = (args: string[]) => Promise<string>;
 
-/** What the CODEOWNERS writer did for one repository (#2627's contract). */
-export type CodeownersSyncResult =
-  | { status: "written"; path: string }
-  | { status: "skipped"; reason: string }
-  | { status: "error"; message: string };
-
 /** The CODEOWNERS writer (#2627's `syncCodeowners`). */
-export type SyncCodeownersFn = (opts: {
-  repo: string;
-  workDir: string;
-  owners: readonly string[];
-  findOnDefaultBranch(repo: string): Promise<CodeownersLocation>;
-}) => Promise<CodeownersSyncResult>;
+export type SyncCodeownersFn = (
+  opts: CodeownersSyncOptions,
+) => Promise<CodeownersSyncResult>;
 
 /** The audit-issue closer (#2629's `closeFixedRepoSettingsFindings`). */
 export type CloseFixedFindingsFn = (opts: {

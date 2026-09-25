@@ -100,7 +100,6 @@ import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
 import {
   type CloseFixedFindingsFn,
   runRepoSettingsHarden,
-  type SyncCodeownersFn,
 } from "./repo_settings_harden_sync.ts";
 import { explainRulesetFailure } from "../lib/ruleset_failure.ts";
 import {
@@ -110,7 +109,8 @@ import {
 } from "../lib/idle_task_backfill.ts";
 import { resolveSetupAgentProviderIds } from "./agent_providers.ts";
 import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
-import { loadExistingConfig } from "./config_setup.ts";
+import { loadExistingConfig, resolveCodeownersOwners } from "./config_setup.ts";
+import { syncCodeowners } from "./codeowners_sync.ts";
 import { runUpdateModeSetup } from "./update_mode_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { runGhOrThrow } from "../lib/gh_spawn.ts";
@@ -1396,9 +1396,7 @@ async function runBackfillIdleTaskLabels(configPath: string): Promise<boolean> {
   }
 }
 
-// Until #2627 and #2629 land these report plainly rather than guess.
-const syncCodeownersNotWired: SyncCodeownersFn = () =>
-  Promise.resolve({ status: "skipped", reason: "CODEOWNERS writer not wired" });
+// Until #2629 lands the closer closes nothing rather than guess.
 const closeFixedFindingsNotWired: CloseFixedFindingsFn = () =>
   Promise.resolve({ closed: [], warnings: [] });
 
@@ -1426,8 +1424,8 @@ async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
     return await runRepoSettingsHarden(config, {
       ghCommandFn: createSetupGhJson(ghConfigDir),
       workDir,
-      owners: [],
-      syncCodeowners: syncCodeownersNotWired,
+      owners: resolveCodeownersOwners(config, configPath),
+      syncCodeowners,
       closeFixedFindings: closeFixedFindingsNotWired,
       runLabel: `setup run ${new Date().toISOString()}`,
       log: printSuccess,
