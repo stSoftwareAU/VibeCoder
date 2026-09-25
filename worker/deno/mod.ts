@@ -42,6 +42,7 @@ import {
   createProviderOutageAlerter,
   installProviderOutageAlerter,
 } from "./lib/provider_outage_alert.ts";
+import { runGhCommand } from "./lib/github.ts";
 import {
   setPhaseEffortConfigOverrides,
   setPhaseModelConfigOverrides,
@@ -221,7 +222,6 @@ export {
 export { createLogger, type LoggerOptions } from "./lib/logger.ts";
 export { type CommandRegistry, createCommandRegistry } from "./lib/commands.ts";
 export { createGitHubClient } from "./lib/github.ts";
-import { runGhCommand } from "./lib/github.ts";
 export {
   buildQualityInstructions,
   buildReviewerFlags,

@@ -402,10 +402,19 @@ Deno.test("raiseMilestoneSyncPr - a stale-info rejection is refetched and retrie
     { code: 1, stderr: STALE_INFO },
     { code: 0, stderr: "" },
   ]);
+  const logs: string[] = [];
 
-  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    ...deps,
+    log: (m: string) => logs.push(m),
+  });
 
   assert(result.ok, result.ok ? "" : result.error.message);
+  // The report says a stale lease was refetched and retried, not silently.
+  assert(
+    logs.some((m) => m.includes("stale info") && m.includes("retried")),
+    logs.join("\n"),
+  );
   const verbs = git.map((args) => args[0]);
   // fetch, push (stale), refetch, push (accepted).
   assertEquals(verbs, ["fetch", "push", "fetch", "push"]);

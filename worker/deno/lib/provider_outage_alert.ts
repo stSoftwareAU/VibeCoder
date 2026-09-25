@@ -20,9 +20,11 @@ import {
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import { type AgentFailure, BALANCE_EXHAUSTED_RE } from "./agent_output.ts";
+import { GATE_WEDGE_DIAGNOSTIC_REPO } from "./milestone_gate_wedge.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Where the alert lives: the fleet's own repo, never a monitored one. */
-export const PROVIDER_OUTAGE_TARGET_REPO = "stSoftwareAU/VibeCoder";
+export const PROVIDER_OUTAGE_TARGET_REPO = GATE_WEDGE_DIAGNOSTIC_REPO;
 
 const MARKER_NAME = "vibe-provider-outage";
 const MARKER_RE =
@@ -37,21 +39,19 @@ type Log = (message: string) => void;
 /**
  * Whether a run's failure means the provider is refusing this account
  * outright: a refused credential, or a spent balance (402).
- *
- * SIMPLE-ON-PURPOSE: 429/5xx and a routine subscription window never alert,
- * since they clear on their own and are already parked by the usage-limit
- * path — upgrade when a sustained 429/5xx outage goes unnoticed for a day.
  */
 export function isProviderOutageAlertable(
   failure: AgentFailure | undefined,
 ): boolean {
+  // SIMPLE-ON-PURPOSE: 429/5xx and routine windows self-clear, so never alert — upgrade when a sustained 429/5xx outage goes unnoticed for a day
   if (!failure) return false;
   if (failure.category === "authentication") return true;
+  // The wording, not a parsed status: a stray "402" is not a spent balance.
   return failure.category === "quota-exhausted" &&
-    (failure.httpStatus === 402 || BALANCE_EXHAUSTED_RE.test(failure.message));
+    BALANCE_EXHAUSTED_RE.test(failure.message);
 }
 
-/** Render the alert body. The error is truncated and cannot leave its fence. */
+/** Render the alert body. The error is redacted, truncated and fenced. */
 export function formatProviderOutageBody(input: {
   provider: string;
   error: string;
@@ -60,9 +60,11 @@ export function formatProviderOutageBody(input: {
 }): string {
   const firstSeen = new Date(input.firstSeenMs).toISOString();
   const lastSeen = new Date(input.lastSeenMs).toISOString();
-  const clipped = input.error.length > MAX_ERROR_CHARS
-    ? `${input.error.slice(0, MAX_ERROR_CHARS)}…`
-    : input.error;
+  // The alert is a public issue body: redact before it leaves the process.
+  const redacted = redactSecrets(input.error);
+  const clipped = redacted.length > MAX_ERROR_CHARS
+    ? `${redacted.slice(0, MAX_ERROR_CHARS)}…`
+    : redacted;
   // Break every backtick run so the provider's text cannot close the fence.
   const safeError = clipped.replace(/`/g, "ˋ");
   return [

@@ -210,7 +210,7 @@ Deno.test("raiseProviderOutageAlert - another provider's alert is not reused", a
 Deno.test("raiseProviderOutageAlert - an unsafe provider id is refused", async () => {
   const gh = fakeGh();
   const decision = await raiseProviderOutageAlert({
-    provider: 'claude" --> <script>',
+    provider: 'claude" --> $(whoami)',
     error: BALANCE.message,
     nowMs: T0,
     ghFn: gh.ghFn,
@@ -230,6 +230,28 @@ Deno.test("formatProviderOutageBody - the error cannot break out of its fence", 
   });
   assertEquals(body.split("```").length, 3);
   assert(body.length < 3_000);
+});
+
+Deno.test("formatProviderOutageBody - a secret in the provider's error is redacted", () => {
+  const token = "ghp_" + "A".repeat(36);
+  const key = "sk-ant-api03-" + "x".repeat(40);
+  const body = formatProviderOutageBody({
+    provider: "claude",
+    error: `402 Insufficient Balance for ${key} (via ${token})`,
+    firstSeenMs: T0,
+    lastSeenMs: T0,
+  });
+  assert(!body.includes(token), body);
+  assert(!body.includes(key), body);
+  assert(body.includes("402 Insufficient Balance"));
+});
+
+Deno.test("isProviderOutageAlertable - a stray 402 in a routine window is not a spent balance", () => {
+  assert(
+    !isProviderOutageAlertable(
+      failure("quota-exhausted", "5-hour limit reached ∙ resets in 402s", 402),
+    ),
+  );
 });
 
 Deno.test("resolveProviderOutageAlert - closes the open alert with a recovery comment", async () => {

@@ -2140,6 +2140,18 @@
       "paths": [
         "worker/deno/lib/codeowners.ts"
       ]
+    },
+    {
+      "issue": 2613,
+      "chunk": "top-up-2613",
+      "title": "top-up: the provider-outage alert",
+      "ledger": "docs/audits/security-sweep-2613-provider-outage-alert.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: provider_outage_alert.ts (#2613)",
+      "status": "swept",
+      "sweptAt": "173497f5f8df511d64e55d8e5cef429c1524c5ff",
+      "paths": [
+        "worker/deno/lib/provider_outage_alert.ts"
+      ]
     }
   ],
   "roots": [

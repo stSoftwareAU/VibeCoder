@@ -926,7 +926,7 @@ What does and does not spend an attempt:
 
 **A provider outage is not a conflict** (Issue #2613). When the agent's provider
 refuses the request — a spent balance (HTTP 402), a refused credential
-(401/403), or a usage limit — the conflict was never judged, so the attempt is
+(401/403), a usage limit, or a 429/5xx that outlasted its retries — the conflict was never judged, so the attempt is
 concluded as disrupted and charged nothing. The milestone sync reports the
 branch `disrupted`: no `merge-fallback` issue is filed, no roll-back is
 attempted, gate repair stops, and the branch is left exactly as it was for a

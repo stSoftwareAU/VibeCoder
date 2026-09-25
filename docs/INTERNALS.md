@@ -4254,8 +4254,9 @@ paths.
   branch, and a push a `milestone/**` ruleset refuses lands through the sync PR
   of Issue #589 instead. That sync-branch push uses `--force-with-lease`. If it
   is rejected with `stale info` (another actor moved the branch), it is
-  refetched and retried once, and a second rejection is reported as a race
-  rather than as a repository rule refusing the roll-back (Issue #2613).
+  refetched and retried once. A retry that lands is logged as a stale-info
+  retry, and a second rejection is reported as a race rather than as a
+  repository rule refusing the roll-back (Issue #2613).
 - **Nothing half-done is published.** The pre-roll-back SHA is recorded first.
   A revert that conflicts, or a plan that runs out with the merge still
   conflicting, ends at `git reset --hard <pre-roll-back SHA>` with nothing
