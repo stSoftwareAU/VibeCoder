@@ -20,7 +20,7 @@ way to make `diffCoverage` green and a false record. The module is claimed by
 per map generation; `extractCargoCommands` and `sanitiseCargoCommands` reduce
 its JSON report to the Cargo commands the codebase map injects into the
 agent's prompt. Nothing calls it yet — the per-host switch lands in the next
-#2581 sub-issue.
+sub-issue of #2581.
 
 | Input | Source | Handling |
 | ----- | ------ | -------- |
