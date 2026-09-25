@@ -114,6 +114,7 @@ import { checkCiStatus, directMergePr } from "./direct_merge.ts";
 import { checkClaudeHealth, runClaudeWithRetry } from "./claude_runner.ts";
 import { prepareCodegraphContext } from "./codegraph_context.ts";
 import { prepareRtkRun, rtkProviderId } from "./rtk_output.ts";
+import { primeStreamCompaction } from "./stream_compaction.ts";
 import { buildClaudeModelArgs } from "./claude_executor.ts";
 import { isClaudeAuthError } from "./claude_auth.ts";
 import { activeAgentProvider } from "./agent_provider.ts";
@@ -332,6 +333,15 @@ export interface ClaudeDeps {
    * the id instead.
    */
   rtkProviderId: typeof rtkProviderId;
+  /**
+   * Compact a resumed stream's conversation before the run (Issue #2337).
+   *
+   * A seam (Issue #2642) because the production path spawns the real agent
+   * CLI for a `/compact` turn and walks its transcript tree. A mocked test
+   * that resumed a stream — any round after the first on a shared `workDir` —
+   * spawned `claude` for real and paid a second or more per round for it.
+   */
+  primeStreamCompaction: typeof primeStreamCompaction;
   runHealthCheck: typeof checkClaudeHealth;
   isClaudeAuthError: typeof isClaudeAuthError;
   buildClaudeModelArgs: typeof buildClaudeModelArgs;
@@ -644,6 +654,7 @@ export function createDefaultDeps(
       prepareCodegraphContext,
       prepareRtkRun,
       rtkProviderId,
+      primeStreamCompaction,
       runHealthCheck: checkClaudeHealth,
       // Provider-auth classification goes through the seam (Issue #4067),
       // so a different provider classifies its own auth failures.
@@ -1128,6 +1139,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     // above is forced off, so the id it names decides nothing in a test that
     // says nothing about RTK.
     rtkProviderId: mockFn<ClaudeDeps["rtkProviderId"]>(rtkProviderId),
+    // Nothing to compact by default (Issue #2642): the real one spawns the
+    // agent CLI, so a mocked test that resumed a stream ran `claude` for real.
+    primeStreamCompaction: mockFn<ClaudeDeps["primeStreamCompaction"]>(() =>
+      Promise.resolve(undefined)
+    ),
     runHealthCheck: mockFn<ClaudeDeps["runHealthCheck"]>(() =>
       Promise.resolve({ healthy: true, exitCode: 0, message: "OK" })
     ),
