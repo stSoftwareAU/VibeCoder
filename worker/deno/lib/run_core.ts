@@ -24,7 +24,10 @@ import {
   setConfiguredAgentProviderId,
   setRunProviderOverride,
 } from "./agent_provider.ts";
-import { anyPhaseRoutesToFableTier } from "./fable_routing.ts";
+import {
+  anyPhaseRoutesToFableTier,
+  type FableRoutingProvider,
+} from "./fable_routing.ts";
 import {
   classifyProviderBilling,
   type ProviderBillingEvidence,
@@ -557,6 +560,12 @@ export interface RunCoreDeps {
    * cache. Returns the verdict; never throws.
    */
   checkFableAvailability?: () => Promise<FableAvailability>;
+  /**
+   * Resolves the active provider for the Fable-probe routing check
+   * (Issue #2586). Defaults to `selectAgentProvider`; a test injects a
+   * throwing resolver to prove a resolution fault never aborts the cycle.
+   */
+  resolveFableRoutingProvider?: () => FableRoutingProvider;
 
   /**
    * Monitored repos the worker can no longer see (Issue #4038).
@@ -6119,7 +6128,9 @@ export async function runCoreLoop(
           if (probeFable) {
             let routesToFable = false;
             try {
-              routesToFable = anyPhaseRoutesToFableTier(selectAgentProvider());
+              routesToFable = anyPhaseRoutesToFableTier(
+                (deps.resolveFableRoutingProvider ?? selectAgentProvider)(),
+              );
             } catch (resolveErr) {
               deps.logError(
                 `Fable probe skipped: could not resolve the agent provider (continuing): ${
