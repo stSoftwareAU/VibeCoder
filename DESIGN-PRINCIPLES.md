@@ -753,7 +753,12 @@ values are guarded down to `0` by `getRepoNice()` in
   dropped from the ladder so the quota left goes to `top-priority` and
   `work-on` work. Tiers 1, 2 and 2b are never gated, a claimed run always
   finishes, and an unknown reading leaves every tier eligible: a failed probe
-  never refuses work. See the
+  never refuses work. On a host with a credential pool "will not last" is
+  judged across **every** Claude credential (Issue #2647): the pool's summed
+  burn rate is walked forward through the reset times, and the gate engages
+  only if capacity reaches zero before a reopening refills it — one nearly
+  spent token beside a fresh one, or one about to reopen, keeps the backlog
+  running. See the
   [issue-processing manual](docs/workflows/issue-processing.md#-weekly-claude-quota-pace-gate-tiers-3-and-4).
 - **New-work selection only.** The tiering gates the Priority 2 new-issue scan
   (`find_oldest_issue.ts`), the label scan (`find_issues_by_label.ts`), and the
