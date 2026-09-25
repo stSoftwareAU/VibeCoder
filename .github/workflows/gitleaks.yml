@@ -150,6 +150,15 @@ jobs:
         with:
           deno-version-file: .deno-version
 
+      # Issue #2619: warm the Deno module cache across runs, as the validate job does.
+      - name: Cache Deno modules
+        # actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+          # Exact key only, no restore-keys (Issue #4404, GHA-SUPPLY-010).
+
       - name: Install scanners
         env:
           GITLEAKS_VERSION: "8.30.1"
