@@ -48,6 +48,7 @@ import {
   type FindIssuesOptions,
   type FindIssuesResult,
   isRateLimitError,
+  seedIssueFetcherFromListing,
 } from "./issue_finder_common.ts";
 import { shuffleArray } from "./array_utils.ts";
 import { applyInFlightClaims, workStreamKey } from "./work_stream.ts";
@@ -231,7 +232,15 @@ export async function findOldestIssue(
 
   // Issue #1818: cache-backed, so idle re-scans do not re-view referenced
   // issues the iteration has already read.
-  const fetcher = createIssueFetcher(ghFn, cache);
+  // Issue #2662: and served from the listing first — a listed issue's body
+  // and open state are already in hand, and the dependencies the listing does
+  // not cover are read in one batched query per repository.
+  const fetcher = seedIssueFetcherFromListing(
+    createIssueFetcher(ghFn, cache),
+    (repo) => issuesByRepo.get(repo),
+    ghFn,
+    cache,
+  );
 
   // Issue #3100/#3138: feed the open-PR duplicate guard the union of every
   // fleet account's open PRs so another host's open PR for the same issue
@@ -333,6 +342,27 @@ export async function findOldestIssue(
         inFlightClaims,
         options.githubUser,
       );
+
+    // Issue #2662: every tier's label-event timelines in one batch per repo.
+    // Each collector used to batch only its own tier's issues, so a repo with
+    // work in four tiers paid four GraphQL calls a scan for what one query
+    // returns. The collectors' own `getBatchedGh` calls then find every
+    // number already in the iteration registry and make no call.
+    if (options.timelineBatchRegistry) {
+      const tierLabels = new Set([
+        ...(config.issueLabels ?? []),
+        config.workOnLabel,
+        config.lowPriorityLabel,
+        IDLE_TASK_LABEL,
+      ]);
+      await options.timelineBatchRegistry.getBatchedGh(
+        repo,
+        repoAllIssues
+          .filter((issue) => issue.labels.some((l) => tierLabels.has(l)))
+          .map((issue) => issue.number),
+        ghFn,
+      );
+    }
 
     const labelResult = await collectLabelCandidates(
       repo,

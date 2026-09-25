@@ -117,7 +117,7 @@ background service is offered, where files land — is covered in
    what the fields mean is the
    [Configuration Reference](CONFIGURATION.md#-update-mode)'s job.
 
-7. **Repository sync phases** — seven subcommands, each acting on the
+7. **Repository sync phases** — eight subcommands, each acting on the
    monitored GitHub repositories rather than the host, each idempotent, and
    each **non-fatal**:
 
@@ -135,13 +135,26 @@ background service is offered, where files land — is covered in
      trusted-author refresh lists collaborators, which needs push), filing an
      issue where it has not.
    - `branch-protection-sync` — applies the default-branch ruleset to every
-     monitored repository, then reports each repository's `milestone/**`
-     ruleset. On a terminal it offers to create a missing one, mirroring the
-     default-branch checks — but only when an answer could change something
-     (Issue #678). It stays quiet when a `milestone/**` ruleset already exists,
-     says so and asks nothing when there is no default-branch gate to mirror
-     (nothing could be created), and warns with the read error — never
-     "missing" — when the repository's rulesets cannot be read at all.
+     monitored repository, then **creates or aligns** each repository's
+     `milestone/**` ruleset to the GRQ-AutoTrader template, with no prompt on
+     any run (Issue #2623), and reports what is still wrong with it. The
+     template is named "Vibe Coder milestone branches" and carries exactly
+     `deletion`, `non_fast_forward` and `required_status_checks` — the checks
+     mirrored from the default branch, each keeping its `integration_id`, with
+     `strict_required_status_checks_policy: false` and
+     `do_not_enforce_on_create: true`; bypass actors are mirrored from the
+     default-branch ruleset. With no default-branch checks to mirror it
+     carries the first two rules only. A missing ruleset is created `active`.
+     A ruleset whose include is exactly `refs/heads/milestone/**` and which
+     differs in name, rules, checks, strict policy, create exemption or bypass
+     actors is rewritten to match — any other rule is removed, and a later
+     hand edit is reverted on the next run — but its enforcement is never
+     changed: a `disabled` or `evaluate` ruleset keeps it, with a warning. A
+     broader ruleset that merely also covers milestone branches is left
+     alone. Each write prints one success line, each failure one warning;
+     an already-aligned ruleset gets neither. The write runs as the operator,
+     re-reading the rulesets under that identity (Issue #595), and a read
+     that fails is a warning — never "missing" (Issue #678).
      Every ruleset failure is non-fatal and named: a **private repository on
      a free plan** cannot take a ruleset at all — GitHub answers HTTP 403,
      because rulesets there need GitHub Pro — and setup says exactly that,
@@ -167,6 +180,9 @@ background service is offered, where files land — is covered in
      block, retries the branch creation once, and when the write is refused
      (a ruleset write needs `admin`; an account holding only `write` gets a
      404) it hands the issue to a human with what it tried.
+   - `repo-settings-harden` — hardens every monitored repository's GitHub
+     settings on every run, writing **only what has drifted** (Issue #2628).
+     See [Repository settings hardening](#repository-settings-hardening).
    - `backfill-idle-task-labels` — adds the `idle-task` label to existing
      security-scan wrapper issues that lack it; already-labelled wrappers are
      not touched again.
@@ -225,7 +241,8 @@ flowchart TD
         BS --> GI["gitignore-sync"]
         GI --> VC["verify-monitored-collaborator"]
         VC --> BR["branch-protection-sync"]
-        BR --> BF["backfill-idle-task-labels"]
+        BR --> RH["repo-settings-harden"]
+        RH --> BF["backfill-idle-task-labels"]
     end
     BF --> H["8 · hooks (fatal on failure)"]
     H --> R["9 · work-directory clean-up<br/>(cache-only: removed · real data: reminder)"]
@@ -238,6 +255,53 @@ flowchart TD
     style SY fill:none,stroke:#e09f3e,stroke-dasharray:5 5
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+## Repository settings hardening
+
+`repo-settings-harden` runs straight after the ruleset sync, through the same
+admin `gh_config_dir` identity, and reads each repository's checkout from the
+same `WORK_DIR` (default `~/auto-issue-work`) as `gitignore-sync`. For each
+monitored repository, in order:
+
+1. **CODEOWNERS** — the default `.github/CODEOWNERS` writer runs against the
+   local checkout. The owners come from the `codeowners_owners` setup key.
+2. **Settings** — every setting below is read first and written only when it
+   differs, so a second run against a hardened repository makes no writes:
+   - the default workflow token is read-only, and Actions may not create or
+     approve pull requests;
+   - actions must be pinned to a full-length commit SHA;
+   - `allowed_actions` is `selected`, and every `owner/repo@*` the workflows
+     need, including the actions their composite actions call, is **added
+     to** the existing allow-list. Nothing on the list is removed;
+   - secret scanning and push protection are turned on for **public**
+     repositories only. A private repository needs the paid GitHub Secret
+     Protection add-on, so the step is skipped there and its line says so;
+   - code-owner review is required on the Vibe ruleset **only when a
+     CODEOWNERS file is already on the default branch**. A CODEOWNERS file
+     written in step 1 reaches the default branch with the next worker PR,
+     and the setup run after that turns the review on.
+3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
+   run fixed are commented on and closed.
+
+What it **never** changes: it never requires approving reviews (one required
+approval would stop the fleet's autonomous merges), never removes an entry
+from the action allow-list, never edits an existing CODEOWNERS file, and never
+buys or asks for GitHub Secret Protection.
+
+Each repository prints one line, followed by a totals line:
+
+```text
+owner/repo: 2 applied, 3 unchanged, 0 skipped, 0 failed; codeowners: skipped (present at .github/CODEOWNERS)
+Repo-settings hardening: 2 applied, 3 unchanged, 0 skipped, 0 failed across 1 repo(s); 0 repo(s) failed
+```
+
+A failed step is named on its repository's line with GitHub's message.
+Each repository runs on its own, so one repository's failure never stops the
+next. The step is non-fatal: setup prints a warning and carries on, the same
+as the other repository sync phases. The admin token in `gh_config_dir` needs
+repository-admin rights, the same assumption the ruleset sync makes.
+`setup.sh` and `setup.ps1` both call the same `repo-settings-harden`
+subcommand of the Deno setup CLI, so Windows and macOS behave the same.
 
 ## Update mode: dynamic or frozen
 
@@ -1567,6 +1631,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |
 | `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
+| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning on public repositories, and code-owner review once CODEOWNERS is on the default branch. Never requires approving reviews. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
 | `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
 | `hooks` | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only. | No. |

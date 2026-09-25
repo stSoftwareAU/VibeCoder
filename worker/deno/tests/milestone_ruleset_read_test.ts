@@ -1,6 +1,11 @@
 /**
- * Tests for the milestone-ruleset READ path and the create/skip decision
- * setup makes from it (Issue #678).
+ * Tests for the milestone-ruleset READ path and the create-or-align decision
+ * setup makes from it (Issues #678, #2623).
+ *
+ * Issue #2623 removed setup's `[y/N]` question: a missing ruleset is now
+ * created and a differing one aligned, on every run. The tests below that
+ * asserted the question (asked, not asked, answered yes) were rewritten to
+ * assert the write that replaced it.
  *
  * `setup.sh` kept re-asking "no ruleset covers `milestone/**` … create one?"
  * on repositories where a previous run had already answered yes. Two ways a
@@ -14,12 +19,14 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  applyMilestoneSyncOutcomes,
   checkMilestoneRuleset,
-  createMilestoneRuleset,
-  planMilestoneRuleset,
+  planMilestoneRulesetSync,
   readRulesetDetails,
   type RulesetDetail,
+  syncMilestoneRuleset,
 } from "../lib/milestone_ruleset_check.ts";
+import { isRequiredStatusChecksRule } from "../lib/repo_rulesets.ts";
 import {
   type MilestoneReportSeams,
   reportMilestoneRuleset,
@@ -240,44 +247,191 @@ Deno.test("checkMilestoneRuleset - reuses the rulesets the caller already read",
 });
 
 // ---------------------------------------------------------------------------
-// The decision: only ask a question an answer can change
+// The decision: create what is missing, align what differs (Issue #2623)
 // ---------------------------------------------------------------------------
 
-Deno.test("planMilestoneRuleset - a covered repository has nothing to ask about", () => {
+/** The template as setup writes it for {@link DEFAULT_BRANCH}. */
+const ALIGNED: RulesetDetail = {
+  id: 3,
+  name: "Vibe Coder milestone branches",
+  target: "branch",
+  enforcement: "active",
+  conditions: {
+    ref_name: { include: ["refs/heads/milestone/**"], exclude: [] },
+  },
+  rules: [
+    { type: "deletion" },
+    { type: "non_fast_forward" },
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: false,
+        do_not_enforce_on_create: true,
+        required_status_checks: [{ context: "semgrep" }],
+      },
+    },
+  ],
+  bypass_actors: [],
+};
+
+Deno.test("planMilestoneRulesetSync - a ruleset already on the template needs no write", () => {
+  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, ALIGNED], "main");
+  assertEquals(plan.writes, []);
+  assertEquals(plan.skipped, []);
+});
+
+Deno.test("planMilestoneRulesetSync - a missing ruleset is created, active, mirroring the checks", () => {
+  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH], "main");
+  assertEquals(plan.writes.length, 1);
+  const write = plan.writes[0]!;
+  assert(write.kind === "create");
+  assertEquals(write.body.enforcement, "active");
+  assertEquals(write.body.name, "Vibe Coder milestone branches");
+});
+
+Deno.test("planMilestoneRulesetSync - a repository with no rulesets at all still gets one", () => {
+  // Nothing to mirror: deletion and force-push protection only, no bypass.
+  const plan = planMilestoneRulesetSync([], "main");
+  const write = plan.writes[0];
+  assert(write?.kind === "create");
+  assertEquals(write.body.rules.map((r) => r.type), [
+    "deletion",
+    "non_fast_forward",
+  ]);
+  assertEquals(write.body.bypass_actors, undefined);
+});
+
+Deno.test("planMilestoneRulesetSync - a hand-made ruleset is aligned: renamed, strict off, extra rules dropped", () => {
+  // VibeCoder's own "Milestone" ruleset, plus a review requirement someone
+  // added later — the template has no `pull_request` rule, so it goes.
+  const handMade: RulesetDetail = {
+    ...MILESTONE,
+    name: "Milestone",
+    rules: [
+      ...MILESTONE.rules!,
+      {
+        type: "pull_request",
+        parameters: { required_approving_review_count: 1 },
+      },
+    ],
+  };
+  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, handMade], "main");
+  assertEquals(plan.writes.length, 1);
+  const write = plan.writes[0]!;
+  assert(write.kind === "align");
+  assertEquals(write.id, MILESTONE.id);
+  assertEquals(write.previousName, "Milestone");
+  assertEquals(write.body.name, "Vibe Coder milestone branches");
+  assertEquals(write.body.rules.map((r) => r.type), [
+    "deletion",
+    "non_fast_forward",
+    "required_status_checks",
+  ]);
+  const checks = write.body.rules.find(isRequiredStatusChecksRule);
+  assertEquals(checks?.parameters.strict_required_status_checks_policy, false);
+  assertEquals(checks?.parameters.do_not_enforce_on_create, true);
+  // Bypass actors mirror the default branch — sent even when empty, so the
+  // full-document PUT removes the stale role-3 bypass.
+  assertEquals(write.body.bypass_actors, []);
+});
+
+Deno.test("planMilestoneRulesetSync - an aligned ruleset mirrors the default branch's checks, not its own", () => {
+  // GRQ: its milestone ruleset required 2 checks while its default branch
+  // (an explicit `refs/heads/Develop` ruleset) requires more.
+  const develop: RulesetDetail = {
+    id: 10,
+    name: "Develop-2",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["refs/heads/Develop"] } },
+    rules: [{
+      type: "required_status_checks",
+      parameters: {
+        required_status_checks: [
+          { context: "gitleaks", integration_id: 15368 },
+          { context: "semgrep", integration_id: 15368 },
+          { context: "quality" },
+        ],
+      },
+    }],
+  };
+  const plan = planMilestoneRulesetSync([develop, MILESTONE], "Develop");
+  const write = plan.writes[0];
+  assert(write?.kind === "align");
   assertEquals(
-    planMilestoneRuleset([DEFAULT_BRANCH, MILESTONE]).kind,
-    "covered",
+    write.body.rules.find(isRequiredStatusChecksRule)?.parameters
+      .required_status_checks,
+    [
+      { context: "gitleaks", integration_id: 15368 },
+      { context: "semgrep", integration_id: 15368 },
+      { context: "quality" },
+    ],
   );
 });
 
-Deno.test("planMilestoneRuleset - a mirrorable default-branch gate makes the ruleset creatable", () => {
-  const plan = planMilestoneRuleset([DEFAULT_BRANCH]);
-  assert(plan.kind === "creatable");
-  assertEquals(plan.contexts, ["semgrep"]);
-  assertEquals(plan.mirror.name, "Vibe Coder default branch");
+Deno.test("planMilestoneRulesetSync - a later hand edit to a Vibe-named ruleset is reverted", () => {
+  const edited: RulesetDetail = {
+    ...ALIGNED,
+    rules: ALIGNED.rules!.map((rule) =>
+      rule.type === "required_status_checks"
+        ? {
+          ...rule,
+          parameters: {
+            ...rule.parameters,
+            strict_required_status_checks_policy: true,
+          },
+        }
+        : rule
+    ),
+  };
+  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, edited], "main");
+  assertEquals(plan.writes.map((w) => w.kind), ["align"]);
 });
 
-Deno.test("planMilestoneRuleset - nothing to mirror means the question can never be answered usefully", () => {
-  // The repositories that made this issue: their default branch takes direct
-  // pushes, so no ruleset requires checks, so answering yes creates nothing —
-  // and the question returned on every run (Issue #678).
-  const plan = planMilestoneRuleset([{
-    ...DEFAULT_BRANCH,
-    rules: [{ type: "deletion" }],
-  }]);
-  assert(plan.kind === "not-creatable");
-  assertStringIncludes(plan.reason, "no check set to mirror");
+Deno.test("planMilestoneRulesetSync - aligning never changes a human-chosen enforcement", () => {
+  for (const enforcement of ["disabled", "evaluate"]) {
+    const plan = planMilestoneRulesetSync(
+      [DEFAULT_BRANCH, { ...MILESTONE, enforcement }],
+      "main",
+    );
+    const write = plan.writes[0];
+    assert(write?.kind === "align", enforcement);
+    assertEquals(write.body.enforcement, enforcement);
+  }
+  // …and a disabled ruleset already on the template is left alone entirely.
+  const plan = planMilestoneRulesetSync(
+    [DEFAULT_BRANCH, { ...ALIGNED, enforcement: "disabled" }],
+    "main",
+  );
+  assertEquals(plan.writes, []);
 });
 
-Deno.test("planMilestoneRuleset - a repository with no rulesets at all cannot mirror one", () => {
-  const plan = planMilestoneRuleset([]);
-  assert(plan.kind === "not-creatable");
+Deno.test("planMilestoneRulesetSync - a broader ruleset covering milestone branches is left untouched", () => {
+  const broad: RulesetDetail = {
+    ...MILESTONE,
+    conditions: {
+      ref_name: {
+        include: ["refs/heads/milestone/**", "refs/heads/release/**"],
+      },
+    },
+  };
+  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, broad], "main");
+  assertEquals(plan.writes, [], "covered, and not setup's to align");
 });
 
-Deno.test("createMilestoneRuleset - an unreadable ruleset list fails loud instead of guessing", async () => {
+Deno.test("planMilestoneRulesetSync - an unrecognised enforcement is skipped with a reason, never guessed", () => {
+  const plan = planMilestoneRulesetSync(
+    [DEFAULT_BRANCH, { ...MILESTONE, enforcement: "paused" }],
+    "main",
+  );
+  assertEquals(plan.writes, []);
+  assertEquals(plan.skipped.length, 1);
+  assertStringIncludes(plan.skipped[0]!.reason, "paused");
+});
+
+Deno.test("syncMilestoneRuleset - an unreadable ruleset list fails loud instead of guessing", async () => {
   // Deciding "nothing covers milestone/**" from a read that failed could
   // create a second, conflicting ruleset.
-  const result = await createMilestoneRuleset(
+  const result = await syncMilestoneRuleset(
     "org/repo",
     () => Promise.reject(new Error("gh: Not Found (HTTP 404)")),
   );
@@ -285,44 +439,82 @@ Deno.test("createMilestoneRuleset - an unreadable ruleset list fails loud instea
   assertStringIncludes(result.error.message, "HTTP 404");
 });
 
-Deno.test("createMilestoneRuleset - writes nothing when the ruleset is already there", async () => {
-  const result = await createMilestoneRuleset(
+Deno.test("syncMilestoneRuleset - aligns with a PUT to the ruleset's own id", async () => {
+  const writes: Array<{ args: string[]; body: unknown }> = [];
+  const serve = ghServing([DEFAULT_BRANCH, MILESTONE]);
+  const result = await syncMilestoneRuleset(
     "org/repo",
-    ghServing([DEFAULT_BRANCH, MILESTONE]),
+    (args, stdin) => {
+      if (stdin !== undefined) {
+        writes.push({ args, body: JSON.parse(stdin) });
+        return Promise.resolve("");
+      }
+      return serve(args);
+    },
+    { defaultBranch: "main" },
   );
-  assert(result.ok && !result.created);
-  assertStringIncludes(result.reason, "already covered");
+  assert(result.ok);
+  assertEquals(result.outcomes.map((o) => o.kind), ["aligned"]);
+  assertEquals(writes.length, 1);
+  assertEquals(writes[0]!.args.slice(0, 4), [
+    "api",
+    "-X",
+    "PUT",
+    "repos/org/repo/rulesets/2",
+  ]);
+});
+
+Deno.test("syncMilestoneRuleset - rejects an invalid slug before reaching gh", async () => {
+  let called = false;
+  const result = await syncMilestoneRuleset("org/repo; rm -rf /", () => {
+    called = true;
+    return Promise.resolve("[]");
+  });
+  assert(!result.ok);
+  assert(!called);
+});
+
+Deno.test("applyMilestoneSyncOutcomes - reports the repository setup leaves behind", () => {
+  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, MILESTONE], "main");
+  const write = plan.writes[0];
+  assert(write?.kind === "align");
+  const after = applyMilestoneSyncOutcomes([DEFAULT_BRANCH, MILESTONE], [{
+    kind: "aligned",
+    ruleset: write.body.name,
+    previousName: write.previousName,
+    id: write.id,
+    body: write.body,
+  }]);
+  assertEquals(after.length, 2);
+  assertEquals(planMilestoneRulesetSync(after, "main").writes, []);
 });
 
 // ---------------------------------------------------------------------------
-// The wiring: what a setup RE-RUN actually asks and prints (Issue #678)
+// The wiring: what a setup run actually writes and prints (Issues #678, #2623)
 // ---------------------------------------------------------------------------
 
 /**
- * Records every question asked, line printed and identity used.
+ * Records every line printed, every write and the identity used.
  *
  * The `service-account` runner REFUSES to read rulesets: setup reads them once
  * and passes them down, so a second read under that identity is a defect. The
- * `operator` runner serves them, because the create deliberately re-reads
- * under the only identity holding `admin` (Issue #595).
+ * `operator` runner serves them, because the sync deliberately re-reads under
+ * the only identity holding `admin` (Issue #595).
  */
 function recordingSeams(options: {
-  answer?: boolean;
   rulesets?: RulesetDetail[];
-  onCreate?: (identity: SetupIdentity) => Promise<string>;
+  onWrite?: (identity: SetupIdentity) => Promise<string>;
 } = {}) {
-  const asked: string[] = [];
   const printed: Array<{ severity: ReportSeverity; message: string }> = [];
-  const identities: SetupIdentity[] = [];
+  const writes: Array<{ identity: SetupIdentity; body: unknown }> = [];
 
   const seams: MilestoneReportSeams = {
     ghFor: (identity) => (args: string[], stdin?: string) => {
-      identities.push(identity);
       const path = args[1] ?? "";
-      // The write: `gh api -X POST .../rulesets`.
       if (args.includes("-X") && stdin !== undefined) {
-        return options.onCreate
-          ? options.onCreate(identity)
+        writes.push({ identity, body: JSON.parse(stdin) });
+        return options.onWrite
+          ? options.onWrite(identity)
           : Promise.resolve("99");
       }
       if (args[0] === "pr") return Promise.resolve("[]");
@@ -334,89 +526,103 @@ function recordingSeams(options: {
       }
       return Promise.resolve("write");
     },
-    ask: (repo: string) => {
-      asked.push(repo);
-      return Promise.resolve(options.answer ?? false);
-    },
     print: (severity, message) => printed.push({ severity, message }),
   };
-  return { seams, asked, printed, identities };
+  return { seams, printed, writes };
 }
 
-Deno.test("reportMilestoneRuleset - a repo whose ruleset exists asks nothing and says nothing", async () => {
-  // THE regression: the run after the one that created the ruleset. The
-  // operator answered yes last time, the ruleset is there, and setup must have
-  // nothing to ask or report about it (Issue #678).
-  const { seams, asked, printed } = recordingSeams();
+Deno.test("reportMilestoneRuleset - a repo whose ruleset is on the template writes nothing and says nothing", async () => {
+  // The run after the one that created the ruleset: nothing to write, and no
+  // `success` line for a write that did not happen (Issues #678, #2623).
+  const current = [DEFAULT_BRANCH, ALIGNED];
+  const { seams, printed, writes } = recordingSeams({ rulesets: current });
 
   const errors = await reportMilestoneRuleset(
     { repo: "org/repo", branch: "main" },
     "VibeCoderST",
-    [DEFAULT_BRANCH, MILESTONE],
+    current,
     seams,
   );
 
   assertEquals(errors, 0);
-  assertEquals(asked, [], "a covered repository must never be asked again");
+  assertEquals(writes, [], "an aligned ruleset must not be written again");
   assertEquals(
-    printed.filter((p) => p.severity !== "info"),
+    printed.filter((p) => p.severity === "success"),
     [],
-    "a covered repository must print nothing for this item",
+    "no write, no success line",
   );
 });
 
-Deno.test("reportMilestoneRuleset - a missing ruleset that CAN be mirrored is offered", async () => {
-  const { seams, asked } = recordingSeams({ answer: false });
-
-  await reportMilestoneRuleset(
-    { repo: "org/repo", branch: "main" },
-    "VibeCoderST",
-    [DEFAULT_BRANCH],
-    seams,
-  );
-
-  assertEquals(
-    asked,
-    ["org/repo"],
-    "a creatable ruleset must still be offered",
-  );
-});
-
-Deno.test("reportMilestoneRuleset - answering yes creates under the OPERATOR identity", async () => {
+Deno.test("reportMilestoneRuleset - a missing ruleset is created without asking, under the OPERATOR identity", async () => {
   // The service-account config holds `write`; a ruleset write needs admin, and
-  // GitHub reports the shortfall as 404 (Issue #595). Replaces the former
-  // source-text assertion on this call site with one that runs the code.
-  let writeIdentity: SetupIdentity | undefined;
-  const { seams, printed } = recordingSeams({
-    answer: true,
+  // GitHub reports the shortfall as 404 (Issue #595).
+  const { seams, printed, writes } = recordingSeams({
     rulesets: [DEFAULT_BRANCH],
-    onCreate: (identity) => {
-      writeIdentity = identity;
-      return Promise.resolve("99");
-    },
   });
 
-  await reportMilestoneRuleset(
+  const errors = await reportMilestoneRuleset(
     { repo: "org/repo", branch: "main" },
     "VibeCoderST",
     [DEFAULT_BRANCH],
     seams,
   );
 
-  assertEquals(writeIdentity, "operator");
+  assertEquals(writes.map((w) => w.identity), ["operator"]);
+  const success = printed.filter((p) => p.severity === "success");
+  assertEquals(success.length, 1, "exactly one success line per write");
+  assertStringIncludes(success[0]!.message, "Vibe Coder milestone branches");
+  // The findings describe the repository as setup left it: covered.
   assert(
-    printed.some((p) =>
-      p.severity === "success" && p.message.includes("created the")
-    ),
-    "a successful creation must print the success line",
+    !printed.some((p) => p.message.includes("no ruleset covers")),
+    "a ruleset just created must not be reported missing",
   );
+  assertEquals(errors, 0);
+});
+
+Deno.test("reportMilestoneRuleset - an existing ruleset that differs is aligned with one success line", async () => {
+  const current = [DEFAULT_BRANCH, { ...MILESTONE, name: "Milestone" }];
+  const { seams, printed, writes } = recordingSeams({ rulesets: current });
+
+  await reportMilestoneRuleset(
+    { repo: "org/repo", branch: "main" },
+    "VibeCoderST",
+    current,
+    seams,
+  );
+
+  assertEquals(writes.map((w) => w.identity), ["operator"]);
+  const success = printed.filter((p) => p.severity === "success");
+  assertEquals(success.length, 1);
+  assertStringIncludes(success[0]!.message, "'Milestone'");
+  assertStringIncludes(success[0]!.message, "Vibe Coder milestone branches");
+});
+
+Deno.test("reportMilestoneRuleset - a disabled ruleset is aligned and warned about once", async () => {
+  const current = [DEFAULT_BRANCH, { ...MILESTONE, enforcement: "disabled" }];
+  const { seams, printed, writes } = recordingSeams({ rulesets: current });
+
+  await reportMilestoneRuleset(
+    { repo: "org/repo", branch: "main" },
+    "VibeCoderST",
+    current,
+    seams,
+  );
+
+  assertEquals(
+    (writes[0]!.body as { enforcement: string }).enforcement,
+    "disabled",
+  );
+  const enforcementLines = printed.filter((p) =>
+    p.severity === "warning" && p.message.includes("'disabled'")
+  );
+  assertEquals(enforcementLines.length, 1);
+  assertStringIncludes(enforcementLines[0]!.message, "Vibe Coder milestone");
 });
 
 Deno.test("reportMilestoneRuleset - a failed creation warns and is never a silent no-op", async () => {
   const { seams, printed } = recordingSeams({
-    answer: true,
     rulesets: [DEFAULT_BRANCH],
-    onCreate: () => Promise.reject(new Error("gh: Not Found (HTTP 404)")),
+    onWrite: () => Promise.reject(new Error("gh: Not Found (HTTP 404)")),
   });
 
   await reportMilestoneRuleset(
@@ -426,36 +632,71 @@ Deno.test("reportMilestoneRuleset - a failed creation warns and is never a silen
     seams,
   );
 
-  const warning = printed.find((p) => p.severity === "warning");
+  const warning = printed.find((p) =>
+    p.severity === "warning" && p.message.includes("could not create")
+  );
   assert(warning, "a failed creation must warn");
   assertStringIncludes(warning.message, "org/repo");
-  assertStringIncludes(warning.message, "could not create");
+  assertStringIncludes(warning.message, "ADMIN on org/repo");
+  // Still missing, so still reported as missing.
+  assert(printed.some((p) => p.message.includes("no ruleset covers")));
+  assert(!printed.some((p) => p.severity === "success"));
 });
 
-Deno.test("reportMilestoneRuleset - a repo with nothing to mirror asks nothing and warns once", async () => {
-  // The repositories in the issue's log whose default branch takes direct
-  // pushes: answering yes could create nothing, so the question is not asked —
-  // and the reason is folded into the standing warning rather than printed
-  // beside it, which read as two contradictory lines.
-  const { seams, asked, printed } = recordingSeams();
+Deno.test("reportMilestoneRuleset - an unreadable operator view warns and still reports", async () => {
+  const printed: Array<{ severity: ReportSeverity; message: string }> = [];
+  const seams: MilestoneReportSeams = {
+    ghFor: (identity) => (args: string[]) => {
+      if (identity === "operator") {
+        return Promise.reject(new Error("gh: Forbidden (HTTP 403)"));
+      }
+      if (args[0] === "pr") return Promise.resolve("[]");
+      return Promise.resolve("write");
+    },
+    print: (severity, message) => printed.push({ severity, message }),
+  };
 
   await reportMilestoneRuleset(
     { repo: "org/repo", branch: "main" },
     "VibeCoderST",
-    [{ ...DEFAULT_BRANCH, rules: [{ type: "deletion" }] }],
+    [DEFAULT_BRANCH],
     seams,
   );
 
-  assertEquals(asked, [], "an unanswerable question must not be asked");
-  const milestoneLines = printed.filter((p) =>
-    p.message.includes("`milestone/**`")
+  const warning = printed.find((p) =>
+    p.message.includes("could not create or align")
   );
+  assert(warning, "an unreadable state must warn, never pass in silence");
+  assertStringIncludes(warning.message, "HTTP 403");
+});
+
+Deno.test("reportMilestoneRuleset - a repo with no checks to mirror gets a check-less ruleset", async () => {
+  // GRQ-www: its default branch requires no status checks. Setup creates the
+  // deletion and force-push rules, and the standing `no-required-checks`
+  // warning stays accurate — auto-merge cannot be armed there until checks
+  // exist.
+  const checkless = { ...DEFAULT_BRANCH, rules: [{ type: "deletion" }] };
+  const { seams, printed, writes } = recordingSeams({ rulesets: [checkless] });
+
+  await reportMilestoneRuleset(
+    { repo: "org/repo", branch: "main" },
+    "VibeCoderST",
+    [checkless],
+    seams,
+  );
+
+  assertEquals(writes.length, 1);
   assertEquals(
-    milestoneLines.length,
-    1,
-    `expected one milestone line, got: ${
-      milestoneLines.map((l) => l.message).join(" || ")
-    }`,
+    (writes[0]!.body as { rules: { type: string }[] }).rules.map((r) => r.type),
+    ["deletion", "non_fast_forward"],
   );
-  assertStringIncludes(milestoneLines[0]!.message, "no check set to mirror");
+  const success = printed.find((p) => p.severity === "success");
+  assert(success);
+  assertStringIncludes(success.message, "no checks to mirror");
+  assert(
+    printed.some((p) =>
+      p.severity === "warning" && p.message.includes("requires no status")
+    ),
+    "the no-required-checks warning must still be printed",
+  );
 });

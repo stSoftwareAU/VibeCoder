@@ -18,6 +18,10 @@ import {
 } from "../lib/config_defaults.ts";
 import { REMOVED_CONFIG_KEYS } from "../lib/validation.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
+import {
+  codeownersOwnersErrors,
+  DEFAULT_CODEOWNERS_OWNERS,
+} from "./codeowners_sync.ts";
 import type { DuplicateRepoSlug } from "../lib/repo_slug.ts";
 import {
   assertValidRepoSlugs,
@@ -44,6 +48,11 @@ export interface SetupConfig {
    * the guard enforces from the first run instead of shipping inactive.
    */
   service_accounts?: string[];
+  /**
+   * Owners of the default `.github/CODEOWNERS` setup writes when a repo has
+   * none (Issue #2627). Default `["@nleck", "@Green-Beret"]`; never a bot.
+   */
+  codeowners_owners?: string[];
   // Issue #1834: `issue_labels` and `work_on_label` removed — top-priority,
   // work-on, and low-priority are hardwired discovery labels.
   failed_label?: string;
@@ -143,6 +152,7 @@ const EXPLICITLY_HANDLED_KEYS: ReadonlySet<string> = new Set([
   "repos",
   "authorized_commenters",
   "exclusion_team",
+  "codeowners_owners",
   "claude_model",
   "failed_label",
   "failed_once_label",
@@ -254,6 +264,15 @@ export function buildOverridesOnly(
 
   if (config.claude_model) {
     result.claude_model = config.claude_model;
+  }
+
+  // Issue #2627: only an owner list that differs from the default is stored,
+  // so a changed default reaches every host that never overrode it.
+  if (
+    config.codeowners_owners !== undefined &&
+    !sameOwners(config.codeowners_owners, DEFAULT_CODEOWNERS_OWNERS)
+  ) {
+    result.codeowners_owners = config.codeowners_owners;
   }
 
   // These fields have defaults — only include if different from default.
@@ -584,7 +603,47 @@ export async function loadExistingConfig(
     assertValidRepoSlugs(config.repos, configPath);
   }
 
+  // Issue #2627: a bot or malformed code owner is refused here, before setup
+  // writes a CODEOWNERS file from it.
+  if (config.codeowners_owners !== undefined) {
+    resolveCodeownersOwners(config, configPath);
+  }
+
   return config;
+}
+
+function sameOwners(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((owner, i) => owner === b[i]);
+}
+
+/**
+ * The owners for the default `.github/CODEOWNERS` (Issue #2627): the
+ * configured `codeowners_owners`, or `DEFAULT_CODEOWNERS_OWNERS` when the key
+ * is absent.
+ *
+ * @throws When the key is not a non-empty array of `@user` / `@org/team`
+ *   entries, or names a bot — the error names every offending entry.
+ */
+export function resolveCodeownersOwners(
+  config: SetupConfig,
+  source = ".config.json",
+): string[] {
+  const owners: unknown = config.codeowners_owners;
+  if (owners === undefined) return [...DEFAULT_CODEOWNERS_OWNERS];
+  if (!Array.isArray(owners)) {
+    throw new Error(
+      `Configuration error in ${source}: "codeowners_owners" must be an ` +
+        "array of @user or @org/team entries.",
+    );
+  }
+  const errors = codeownersOwnersErrors(owners);
+  if (errors.length > 0) {
+    throw new Error(
+      `Configuration error in ${source}: "codeowners_owners": ` +
+        errors.join("; "),
+    );
+  }
+  return [...owners] as string[];
 }
 
 /**

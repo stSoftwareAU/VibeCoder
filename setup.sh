@@ -1583,6 +1583,14 @@ main() {
     run_setup_cli branch-protection-sync \
         || print_warning "Ruleset sync had issues — see the per-repository lines above (non-fatal)"
 
+    # Harden every monitored repo's GitHub settings, writing only what drifted
+    # (Issue #2628 — part of #2611): read-only workflow token, SHA pinning, a
+    # selected-actions allow-list, secret scanning on public repos, and
+    # code-owner review once CODEOWNERS is on the default branch. Never
+    # required approving reviews. Setup-time only; non-fatal.
+    run_setup_cli repo-settings-harden \
+        || print_warning "Repo-settings hardening had issues — see the per-repository lines above (non-fatal)"
+
     # Back-fill `idle-task` label on existing `Run a security scan` wrappers
     # (Issue #2131). Idempotent — already-labelled wrappers emit
     # `already_labelled` events and are not re-touched.

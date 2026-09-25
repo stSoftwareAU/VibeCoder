@@ -18,9 +18,26 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-/** The `BP-REPO-*` finding-id marker every repo-settings finding body carries. */
+/**
+ * The `BP-REPO-*` finding-id marker every repo-settings finding body carries.
+ * The single definition: the admin-only hand-off below and setup's close-out
+ * of fixed findings (Issue #2629) both read it through
+ * {@link parseRepoSettingsFindingId}.
+ */
 const REPO_SETTINGS_FINDING_MARKER =
-  /<!--\s*finding-id:\s*BP-REPO-[A-Z0-9-]+\s*-->/i;
+  /<!--\s*finding-id:\s*(BP-REPO-[A-Z0-9-]+)\s*-->/i;
+
+/**
+ * The `BP-REPO-*` finding id an issue body's marker names (upper-cased, e.g.
+ * `BP-REPO-DEFAULT-TOKEN-WRITE`), or `null` when the body carries no such
+ * marker. Any other finding family — `BP-WORKER-*`, `BP-LINTER-*`, `SEC-*` —
+ * is `null`: only repo-settings findings are parsed here.
+ */
+export function parseRepoSettingsFindingId(issueBody: string): string | null {
+  if (!issueBody) return null;
+  const match = REPO_SETTINGS_FINDING_MARKER.exec(issueBody);
+  return match?.[1] ? match[1].toUpperCase() : null;
+}
 
 /**
  * The prose the scanner puts at the head of every suggested fix — a second,
@@ -35,6 +52,6 @@ const REPO_ADMIN_ACTION_PROSE = /the worker cannot change repository settings/i;
  */
 export function isAdminOnlyRepoSettingsIssue(issueBody: string): boolean {
   if (!issueBody) return false;
-  return REPO_SETTINGS_FINDING_MARKER.test(issueBody) ||
+  return parseRepoSettingsFindingId(issueBody) !== null ||
     REPO_ADMIN_ACTION_PROSE.test(issueBody);
 }

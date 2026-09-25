@@ -355,6 +355,8 @@ export async function collectIdleTaskCandidates(
           batchedGh,
           options.timelineCache,
           options.cache,
+          // Issue #2662: the listing already holds the labels.
+          issue.labels,
         );
         if (!hasIgnore) {
           diag?.logIssueSkipped(

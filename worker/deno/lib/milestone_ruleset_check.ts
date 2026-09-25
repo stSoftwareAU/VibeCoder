@@ -20,10 +20,12 @@
  *    breaks the sync that keeps it current (the Issue #4356 lesson, in a new
  *    place).
  *
- * This module **only reads and reports**. The worker does not write a
- * milestone ruleset: the operator owns it, and a configurator that guessed
- * here would be one misconfiguration away from freezing every milestone branch
- * in the fleet. Setup says what is wrong and what to change; a human decides.
+ * The worker itself never writes a milestone ruleset. Setup, running as the
+ * operator, creates a missing one and aligns an existing one to the
+ * GRQ-AutoTrader "milestone branches" template on every run, with no prompt
+ * (Issue #2623) — {@link syncMilestoneRuleset}. The template never guesses a
+ * check: it mirrors the default branch's, so a milestone PR is held to the
+ * same bar as the PR that eventually merges the collection.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -32,7 +34,10 @@ import {
   buildMilestoneRulesetBody,
   isValidRepoSlug,
   MILESTONE_REF_PATTERN,
+  type RequiredStatusCheckBody,
+  type RulesetBody,
   type RulesetBypassActorBody,
+  type RulesetEnforcement,
 } from "./repo_rulesets.ts";
 
 /** Ref patterns that count as covering the milestone branches. */
@@ -54,7 +59,11 @@ export interface RulesetRule {
   type?: string;
   parameters?: {
     required_approving_review_count?: number;
-    required_status_checks?: Array<{ context?: string }>;
+    required_status_checks?: Array<{
+      context?: string;
+      /** The app the check is pinned to, when it is pinned. */
+      integration_id?: number;
+    }>;
     strict_required_status_checks_policy?: boolean;
     /**
      * When true, the required checks gate merges but NOT branch creation.
@@ -103,7 +112,6 @@ export interface MilestoneRulesetFinding {
     | "ruleset-disabled"
     | "create-blocked"
     | "unreportable-checks"
-    | "non-strict-checks"
     | "no-automerge-gate"
     | "ruleset-read-failed"
     | "configured";
@@ -251,7 +259,8 @@ export function assessMilestoneRuleset(
         code: "ruleset-disabled",
         message:
           `ruleset '${name}' covers \`milestone/**\` but its enforcement is ` +
-          `'${ruleset.enforcement}', so it gates nothing.`,
+          `'${ruleset.enforcement}', so it gates nothing. Setup aligns its ` +
+          `rules but leaves the enforcement a human chose (Issue #2623).`,
       });
       continue;
     }
@@ -309,33 +318,6 @@ export function assessMilestoneRuleset(
             `starting work. Set \`do_not_enforce_on_create\` on that rule — do ` +
             `NOT remove the rule, which would leave the base unprotected and ` +
             `silently stop auto-merge being armed.`,
-        });
-      }
-
-      // Required checks WITHOUT the strict up-to-date policy let a stale
-      // child land. A child PR whose base is behind the default branch is
-      // armed anyway (Issue #2460), and the only thing that then holds the
-      // merge until the branch is level is
-      // `strict_required_status_checks_policy` — GitHub releases an armed PR
-      // the moment its required checks are green, however far behind the head
-      // is. Without it the arming is a side-pick onto a stale tip, and nothing
-      // ever forces the child current. The builder writes it
-      // (`buildMilestoneRulesetBody`); a hand-written or older ruleset may
-      // not, and GitHub reads the parameter's absence as false.
-      const strict =
-        checks.parameters?.strict_required_status_checks_policy === true;
-      if (!strict) {
-        findings.push({
-          severity: "error",
-          code: "non-strict-checks",
-          message:
-            `ruleset '${name}' requires status checks on \`milestone/**\` ` +
-            `but does not require the branch to be up to date. An armed ` +
-            `child PR whose base is behind the default branch merges on ` +
-            `green checks alone, landing work on a stale tip, and nothing ` +
-            `ever forces it current. Set ` +
-            `\`strict_required_status_checks_policy\` on that rule ` +
-            `(Issue #2461).`,
         });
       }
     }
@@ -689,155 +671,351 @@ export async function fetchMilestonePrCheckNames(
 }
 
 // ---------------------------------------------------------------------------
-// Creating the ruleset when it is missing (Issue #586)
+// Creating or aligning the ruleset (Issues #586, #2623)
 // ---------------------------------------------------------------------------
 
-/** Name of the milestone ruleset the worker creates when asked. */
+/** Name setup gives every `milestone/**` ruleset it creates or aligns. */
 export const MILESTONE_RULESET_NAME = "Vibe Coder milestone branches";
 
-/** Outcome of {@link createMilestoneRuleset}. */
-export type CreateMilestoneResult =
-  | { ok: true; created: true; contexts: string[] }
-  | { ok: true; created: false; reason: string }
-  | { ok: false; error: Error };
+/** Enforcement values GitHub accepts, so an aligned one is written back as is. */
+const ENFORCEMENTS: readonly RulesetEnforcement[] = [
+  "active",
+  "disabled",
+  "evaluate",
+];
 
-/** What creating the `milestone/**` ruleset would do, decided without writing. */
-export type MilestoneRulesetPlan =
-  /** A ruleset already covers `milestone/**` — there is nothing to create. */
-  | { kind: "covered" }
-  /** It can be created, mirroring `mirror`'s required contexts. */
-  | { kind: "creatable"; contexts: string[]; mirror: RulesetDetail }
-  /** It cannot be created, and `reason` says why an answer would not help. */
-  | { kind: "not-creatable"; reason: string };
+/** What every milestone ruleset should carry, mirrored from the default branch. */
+export interface MilestoneTemplateSource {
+  checks: RequiredStatusCheckBody[];
+  bypassActors: RulesetBypassActorBody[];
+}
 
-/**
- * Decide what a create would do, without writing anything (Issue #678).
- *
- * Setup asks the operator whether to create the ruleset, and a question whose
- * only possible outcome is a refusal must never be asked: on a repository
- * whose default branch takes direct pushes there is no gate to mirror, so
- * answering yes creates nothing and the same question returns on every run.
- * This is the predicate that stops that, and the one {@link
- * createMilestoneRuleset} writes from — one decision, one place.
- *
- * @param rulesets - Every ruleset on the repository, in detail shape.
- */
-export function planMilestoneRuleset(
-  rulesets: readonly RulesetDetail[],
-): MilestoneRulesetPlan {
-  if (rulesets.some(coversMilestoneBranches)) return { kind: "covered" };
+/** One write {@link planMilestoneRulesetSync} decided on. */
+export type MilestoneRulesetWrite =
+  | { kind: "create"; body: RulesetBody }
+  | { kind: "align"; id: number; previousName: string; body: RulesetBody };
 
-  // Mirror the default-branch gate rather than invent one.
-  const mirror = rulesets.find((r) =>
-    (r.conditions?.ref_name?.include ?? []).some((pattern) =>
-      pattern === "~DEFAULT_BRANCH" || pattern.startsWith("refs/heads/")
-    ) &&
-    (r.rules ?? []).some((rule) =>
-      rule.type === "required_status_checks" &&
-      (rule.parameters?.required_status_checks ?? []).length > 0
-    )
-  );
-  if (!mirror) {
-    return {
-      kind: "not-creatable",
-      reason:
-        "no existing ruleset requires status checks, so there is no check set " +
-        "to mirror — a guessed one would block every milestone PR on a " +
-        "context that never reports",
-    };
-  }
-
-  const contexts = (mirror.rules ?? [])
-    .filter((rule) => rule.type === "required_status_checks")
-    .flatMap((rule) => rule.parameters?.required_status_checks ?? [])
-    .map((check) => check.context)
-    .filter((context): context is string => typeof context === "string");
-
-  return { kind: "creatable", contexts, mirror };
+/** What setup should do to make `milestone/**` match the template. */
+export interface MilestoneRulesetSyncPlan {
+  writes: MilestoneRulesetWrite[];
+  /** Rulesets setup will not write, each with the reason. */
+  skipped: Array<{ ruleset: string; reason: string }>;
 }
 
 /**
- * Create the `milestone/**` ruleset, mirroring the repository's own
- * default-branch gate.
- *
- * The required contexts are taken from the default-branch ruleset that is
- * already in place, so both gates agree on what "green" means and a milestone
- * PR is held to the same bar as the PR that eventually merges the collection.
- * When no default-branch ruleset exists there is nothing to mirror and nothing
- * is written — a guessed check set would block every milestone PR on a context
- * that never reports.
- *
- * Setup runs with the operator's own credentials, which is why this can write
- * at all: the worker's service account has `write`, and creating a ruleset
- * needs `admin`.
+ * Whether this ruleset is the one setup owns: its include is exactly
+ * `refs/heads/milestone/**`. A broader ruleset that also covers milestone
+ * branches is left untouched (Issue #2623).
  */
-export async function createMilestoneRuleset(
+export function isExactMilestoneRuleset(ruleset: RulesetDetail): boolean {
+  const include = ruleset.conditions?.ref_name?.include ?? [];
+  return include.length === 1 && include[0] === MILESTONE_REF_PATTERN;
+}
+
+/** Whether a ruleset has at least one required status check. */
+function requiresChecks(ruleset: RulesetDetail): boolean {
+  return (ruleset.rules ?? []).some((rule) =>
+    rule.type === "required_status_checks" &&
+    (rule.parameters?.required_status_checks ?? []).length > 0
+  );
+}
+
+/** Bypass actors of `ruleset` in the shape a ruleset write accepts. */
+function mirroredBypassActors(
+  ruleset: RulesetDetail | undefined,
+): RulesetBypassActorBody[] {
+  return (ruleset?.bypass_actors ?? [])
+    .filter((actor): actor is Required<RulesetBypassActor> =>
+      actor.actor_type !== undefined && actor.actor_id !== undefined &&
+      actor.bypass_mode !== undefined
+    )
+    .filter((actor) =>
+      actor.actor_type === "RepositoryRole" || actor.actor_type === "Team" ||
+      actor.actor_type === "Integration" ||
+      actor.actor_type === "OrganizationAdmin"
+    )
+    .map((actor) => ({
+      actor_type: actor.actor_type as RulesetBypassActorBody["actor_type"],
+      actor_id: actor.actor_id,
+      bypass_mode: actor.bypass_mode as RulesetBypassActorBody["bypass_mode"],
+    }));
+}
+
+/**
+ * The checks and bypass actors to mirror onto `milestone/**`.
+ *
+ * Taken from the default-branch ruleset — the first one requiring checks, or
+ * failing that the first one at all, so a check-less default branch still
+ * lends its bypass actors. A milestone-only ruleset is never its own source.
+ * Each check keeps its `integration_id` when it has one.
+ *
+ * @param defaultBranch - The resolved default branch; without it any ruleset
+ *   on `~DEFAULT_BRANCH` or an explicit `refs/heads/` ref counts.
+ */
+export function milestoneTemplateSource(
+  rulesets: readonly RulesetDetail[],
+  defaultBranch?: string,
+): MilestoneTemplateSource {
+  const candidates = rulesets.filter((ruleset) =>
+    !targetsOnlyMilestoneBranches(ruleset) &&
+    (defaultBranch
+      ? coversDefaultBranch(ruleset, defaultBranch)
+      : (ruleset.conditions?.ref_name?.include ?? []).some((pattern) =>
+        pattern === "~DEFAULT_BRANCH" || pattern.startsWith("refs/heads/")
+      ))
+  );
+  const mirror = candidates.find(requiresChecks) ?? candidates[0];
+
+  const checks: RequiredStatusCheckBody[] = [];
+  const seen = new Set<string>();
+  for (const rule of mirror?.rules ?? []) {
+    if (rule.type !== "required_status_checks") continue;
+    for (const check of rule.parameters?.required_status_checks ?? []) {
+      if (typeof check.context !== "string" || check.context === "") continue;
+      const id = check.integration_id;
+      const key = `${check.context}\u0000${typeof id === "number" ? id : ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      checks.push(
+        typeof id === "number"
+          ? { context: check.context, integration_id: id }
+          : { context: check.context },
+      );
+    }
+  }
+  return { checks, bypassActors: mirroredBypassActors(mirror) };
+}
+
+/** The parts of a ruleset the template governs, in a comparable form. */
+function templateShape(ruleset: RulesetDetail | RulesetBody): string {
+  const rules = ((ruleset.rules ?? []) as RulesetRule[]).map((rule) => {
+    if (rule.type !== "required_status_checks") return { type: rule.type };
+    const parameters = rule.parameters ?? {};
+    return {
+      type: rule.type,
+      strict: parameters.strict_required_status_checks_policy === true,
+      exemptOnCreate: parameters.do_not_enforce_on_create === true,
+      checks: (parameters.required_status_checks ?? [])
+        .map((check) => `${check.context}@${check.integration_id ?? ""}`)
+        .sort(),
+    };
+  }).map((rule) => JSON.stringify(rule)).sort();
+  const bypass = ((ruleset.bypass_actors ?? []) as RulesetBypassActor[])
+    .map((actor) =>
+      `${actor.actor_type}:${actor.actor_id}:${actor.bypass_mode}`
+    )
+    .sort();
+  return JSON.stringify({ name: ruleset.name, rules, bypass });
+}
+
+/**
+ * Decide, without writing, what makes `milestone/**` match the template.
+ *
+ * - Nothing covers `milestone/**` → create one, `active`.
+ * - Each ruleset whose include is exactly `refs/heads/milestone/**` and whose
+ *   name, rules, checks, strict policy, create exemption or bypass actors
+ *   differ → align it. Rules the template lacks are dropped; enforcement is
+ *   never changed, and neither are the ref conditions' excludes.
+ * - A ruleset already matching the template gets no write.
+ */
+export function planMilestoneRulesetSync(
+  rulesets: readonly RulesetDetail[],
+  defaultBranch?: string,
+): MilestoneRulesetSyncPlan {
+  const { checks, bypassActors } = milestoneTemplateSource(
+    rulesets,
+    defaultBranch,
+  );
+  const plan: MilestoneRulesetSyncPlan = { writes: [], skipped: [] };
+
+  if (!rulesets.some(coversMilestoneBranches)) {
+    plan.writes.push({
+      kind: "create",
+      body: buildMilestoneRulesetBody(
+        MILESTONE_RULESET_NAME,
+        checks,
+        bypassActors,
+      ),
+    });
+    return plan;
+  }
+
+  for (const ruleset of rulesets.filter(isExactMilestoneRuleset)) {
+    const name = ruleset.name ?? `#${ruleset.id ?? "?"}`;
+    if (typeof ruleset.id !== "number") {
+      plan.skipped.push({ ruleset: name, reason: "it has no id to update" });
+      continue;
+    }
+    const enforcement = (ruleset.enforcement ?? "active") as RulesetEnforcement;
+    if (!ENFORCEMENTS.includes(enforcement)) {
+      plan.skipped.push({
+        ruleset: name,
+        reason: `its enforcement '${enforcement}' is not one setup recognises`,
+      });
+      continue;
+    }
+    const built = buildMilestoneRulesetBody(
+      MILESTONE_RULESET_NAME,
+      checks,
+      bypassActors,
+      enforcement,
+    );
+    // A full-document PUT: bypass actors are always sent, so a stale actor is
+    // removed rather than left behind by an omitted field.
+    const body: RulesetBody = {
+      ...built,
+      conditions: {
+        ref_name: {
+          include: [MILESTONE_REF_PATTERN],
+          exclude: [...(ruleset.conditions?.ref_name?.exclude ?? [])],
+        },
+      },
+      bypass_actors: bypassActors,
+    };
+    if (templateShape(ruleset) === templateShape(body)) continue;
+    plan.writes.push({
+      kind: "align",
+      id: ruleset.id,
+      previousName: name,
+      body,
+    });
+  }
+  return plan;
+}
+
+/** What happened to one planned write, or to a ruleset setup would not write. */
+export type MilestoneSyncOutcome =
+  | { kind: "created"; ruleset: string; id?: number; body: RulesetBody }
+  | {
+    kind: "aligned";
+    ruleset: string;
+    previousName: string;
+    id: number;
+    body: RulesetBody;
+  }
+  | {
+    kind: "failed";
+    action: "create" | "align";
+    ruleset: string;
+    error: Error;
+  }
+  | { kind: "skipped"; ruleset: string; reason: string };
+
+/** Outcome of {@link syncMilestoneRuleset}. */
+export type MilestoneSyncResult =
+  | { ok: true; outcomes: MilestoneSyncOutcome[] }
+  | { ok: false; error: Error };
+
+/**
+ * Create or align the `milestone/**` ruleset to the template (Issue #2623).
+ *
+ * No prompt, on any run. Each write is attempted on its own, so one refused
+ * write is reported as `failed` without stopping the rest. Setup calls this
+ * with the operator's credentials: a ruleset write needs `admin`, and only
+ * that identity can see the bypass actors a full-document PUT must carry
+ * (Issue #595) — so it re-reads the rulesets itself rather than trusting a
+ * service-account read.
+ *
+ * @param options.rulesets - Injected for tests; production reads them.
+ * @param options.defaultBranch - The branch whose checks are mirrored.
+ * @returns The outcomes, or the read error — an unreadable state is never
+ *   taken for "nothing covers `milestone/**`" (Issue #678).
+ */
+export async function syncMilestoneRuleset(
   repo: string,
   ghFn: GhJson,
-  options: {
-    /** Injected for tests; production reads the live rulesets. */
-    rulesets?: RulesetDetail[];
-    /** Bypass actors to carry over (defaults to the default branch's). */
-    bypassActors?: RulesetBypassActorBody[];
-  } = {},
-): Promise<CreateMilestoneResult> {
+  options: { rulesets?: RulesetDetail[]; defaultBranch?: string } = {},
+): Promise<MilestoneSyncResult> {
+  if (!isValidRepoSlug(repo)) {
+    return { ok: false, error: new Error(`Invalid repo slug: ${repo}`) };
+  }
   let rulesets = options.rulesets;
   if (!rulesets) {
-    // A read that failed must never be mistaken for "nothing covers
-    // `milestone/**`" — that would create a second, conflicting ruleset
-    // (Issue #678).
     const read = await readRulesetDetails(repo, ghFn);
     if (!read.ok) return { ok: false, error: read.error };
     rulesets = read.rulesets;
   }
 
-  const plan = planMilestoneRuleset(rulesets);
-  if (plan.kind === "covered") {
-    return { ok: true, created: false, reason: "already covered" };
+  const plan = planMilestoneRulesetSync(rulesets, options.defaultBranch);
+  const outcomes: MilestoneSyncOutcome[] = plan.skipped.map((skip) => ({
+    kind: "skipped",
+    ...skip,
+  }));
+  for (const write of plan.writes) {
+    const payload = JSON.stringify(write.body);
+    try {
+      if (write.kind === "create") {
+        const raw = await ghFn([
+          "api",
+          "-X",
+          "POST",
+          `repos/${repo}/rulesets`,
+          "--input",
+          "-",
+          "--jq",
+          ".id",
+        ], payload);
+        const id = Number(raw.trim());
+        outcomes.push({
+          kind: "created",
+          ruleset: write.body.name,
+          ...(Number.isInteger(id) && id > 0 ? { id } : {}),
+          body: write.body,
+        });
+      } else {
+        await ghFn([
+          "api",
+          "-X",
+          "PUT",
+          `repos/${repo}/rulesets/${write.id}`,
+          "--input",
+          "-",
+        ], payload);
+        outcomes.push({
+          kind: "aligned",
+          ruleset: write.body.name,
+          previousName: write.previousName,
+          id: write.id,
+          body: write.body,
+        });
+      }
+    } catch (error) {
+      outcomes.push({
+        kind: "failed",
+        action: write.kind,
+        ruleset: write.kind === "create" ? write.body.name : write.previousName,
+        error: explainRulesetWriteFailure(error, repo),
+      });
+    }
   }
-  if (plan.kind === "not-creatable") {
-    return { ok: true, created: false, reason: plan.reason };
+  return { ok: true, outcomes };
+}
+
+/**
+ * The rulesets as they stand after the successful writes, so what setup then
+ * reports describes the repository it left behind, not the one it found.
+ */
+export function applyMilestoneSyncOutcomes(
+  rulesets: readonly RulesetDetail[],
+  outcomes: readonly MilestoneSyncOutcome[],
+): RulesetDetail[] {
+  // A written body is the detail shape GitHub would now return, minus ids.
+  const asDetail = (body: RulesetBody, id?: number): RulesetDetail => ({
+    ...(body as unknown as RulesetDetail),
+    ...(id !== undefined ? { id } : {}),
+  });
+  const next = [...rulesets];
+  for (const outcome of outcomes) {
+    if (outcome.kind === "aligned") {
+      const index = next.findIndex((ruleset) => ruleset.id === outcome.id);
+      const detail = asDetail(outcome.body, outcome.id);
+      if (index === -1) next.push(detail);
+      else next[index] = detail;
+    } else if (outcome.kind === "created") {
+      next.push(asDetail(outcome.body, outcome.id));
+    }
   }
-  const { contexts, mirror: defaultBranchRuleset } = plan;
-
-  const bypassActors = options.bypassActors ??
-    (defaultBranchRuleset.bypass_actors ?? [])
-      .filter((actor): actor is Required<RulesetBypassActor> =>
-        actor.actor_type !== undefined && actor.actor_id !== undefined &&
-        actor.bypass_mode !== undefined
-      )
-      .filter((actor) =>
-        actor.actor_type === "RepositoryRole" || actor.actor_type === "Team" ||
-        actor.actor_type === "Integration" ||
-        actor.actor_type === "OrganizationAdmin"
-      )
-      .map((actor) => ({
-        actor_type: actor.actor_type as RulesetBypassActorBody["actor_type"],
-        actor_id: actor.actor_id,
-        bypass_mode: actor.bypass_mode as RulesetBypassActorBody["bypass_mode"],
-      }));
-
-  const body = buildMilestoneRulesetBody(
-    MILESTONE_RULESET_NAME,
-    contexts,
-    bypassActors,
-  );
-
-  try {
-    await ghFn([
-      "api",
-      "-X",
-      "POST",
-      `repos/${repo}/rulesets`,
-      "--input",
-      "-",
-      "--jq",
-      ".id",
-    ], JSON.stringify(body));
-    return { ok: true, created: true, contexts };
-  } catch (error) {
-    return { ok: false, error: explainRulesetWriteFailure(error, repo) };
-  }
+  return next;
 }
 
 /**

@@ -50,9 +50,10 @@ progress survives.
 
 - **Your context window is compacted automatically.** Do not stop a task early
   over token-budget concerns — the Token Economy rule above is about writing
-  less per step, never about finishing less of the task. Before the context
-  refreshes, save progress where it survives: commit the work in hand, or record
-  the current state in the issue or PR summary.
+  less per step, never about finishing less of the task. Save progress where it
+  survives: commit the work in hand, and keep a running `- [ ]` checklist of the
+  task's steps in the PR summary — tick each step as it lands, and re-read the
+  checklist first after a compaction.
 - **Investigate before you answer.** Never speculate about code you have not
   opened. Read the file, run the command, or check the API before asserting how
   something behaves. If you genuinely cannot verify a claim, say so rather than
