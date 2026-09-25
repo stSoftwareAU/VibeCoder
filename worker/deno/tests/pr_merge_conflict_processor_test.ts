@@ -1713,6 +1713,45 @@ Deno.test("processMergeConflict - a watchdog SIGTERM withdraws the attempt inste
   );
 });
 
+Deno.test("processMergeConflict - a provider outage withdraws the attempt instead of failing it (Issue #2613)", async () => {
+  // A 402 Insufficient Balance ended the agent before it looked at the
+  // conflict. That is the provider's failure, not the PR's: nothing is spent,
+  // no failure is posted, and the drain stops rather than burning the next PR.
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ unmergedAfterAgent: ["SECURITY.md"] }),
+    undefined,
+    {
+      claudeResult: {
+        exitCode: 2,
+        output: "API Error: 402 Insufficient Balance",
+        usageLimit: { waitSeconds: 60 },
+        agentFailure: {
+          category: "quota-exhausted",
+          message: "API Error: 402 Insufficient Balance",
+          evidence: "prose",
+          terminal: true,
+          httpStatus: 402,
+          errors: [],
+        },
+      },
+      postedCommentId: 9004,
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.runEnded, true);
+  assertEquals(result.value.escalated, false);
+  assertStringIncludes(result.value.summary, "provider");
+  assertEquals(captured.commentsDeleted, [9004]);
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+  assertEquals(captured.commitAndPushCalls, 0);
+});
+
 Deno.test("processMergeConflict - an agent that runs out its own timeout spends its attempt (Issue #2305)", async () => {
   // The other ending of an agent run: the agent's own 30-minute ceiling, not
   // the handler deadline. The rung was climbed and the conflict beat it, so

@@ -293,6 +293,7 @@ Deno.test("merge conflict agent - an exhausted provider balance is reported as a
         message: "API Error: 402 Insufficient Balance",
         evidence: "prose",
         terminal: true,
+        errors: [],
         httpStatus: 402,
       },
     }),
@@ -321,6 +322,7 @@ Deno.test("merge conflict agent - auth refusals and exhausted rate-limit retries
           message: `HTTP ${httpStatus}`,
           evidence: "structured",
           terminal: true,
+          errors: [],
           httpStatus,
         },
       }),
@@ -339,6 +341,7 @@ Deno.test("merge conflict agent - a task failure is still judged on the tree it 
         message: "the agent gave up",
         evidence: "process",
         terminal: false,
+        errors: [],
       },
     }),
   ));

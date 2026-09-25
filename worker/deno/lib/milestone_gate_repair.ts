@@ -424,6 +424,13 @@ export async function repairGatedResolution(
           `(Issue #1693)`,
       );
     }
+    if (outcome.value.providerUnavailable !== undefined) {
+      // Nor is a provider that refused the run — a 402, say (Issue #2613).
+      return stop(
+        `repair round ${round} was not run — the agent provider was ` +
+          `unavailable: ${outcome.value.providerUnavailable} (Issue #2613)`,
+      );
+    }
 
     const folded = await foldRepairIntoMerge(
       options,

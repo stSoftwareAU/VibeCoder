@@ -59,7 +59,10 @@ import {
   DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
   DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
 } from "./merge_conflict_drain.ts";
-import { AGENT_RUN_ENDED_BY_WORKER } from "./milestone_conflict_ladder.ts";
+import {
+  AGENT_PROVIDER_UNAVAILABLE,
+  AGENT_RUN_ENDED_BY_WORKER,
+} from "./milestone_conflict_ladder.ts";
 import { isRuleViolationPush } from "./milestone_sync_pr.ts";
 import {
   type MilestoneEscalationTarget,
@@ -694,6 +697,11 @@ export function failedConflictRung(
  *   ({@link AGENT_RUN_ENDED_BY_WORKER}). Nothing about the conflict was
  *   decided, so it concludes `disrupted` and the branch keeps its budget.
  *
+ * A provider that refused the run ({@link AGENT_PROVIDER_UNAVAILABLE} — a 402,
+ * an auth failure, an exhausted 429/5xx) is `disrupted` too: the conflict was
+ * never looked at, so no attempt is spent and no roll-back or merge-fallback
+ * follows (Issue #2613).
+ *
  * @param error - The failure the sync returned
  * @param agentAllowed - Whether this attempt was offered the agent rung
  */
@@ -713,6 +721,14 @@ export function judgeSyncFailure(
       return {
         outcome: "disrupted",
         reason: "the run was ended by the worker before the agent finished",
+        rung: "agent",
+      };
+    }
+    const refused = reasons.find((r) => r.includes(AGENT_PROVIDER_UNAVAILABLE));
+    if (refused !== undefined) {
+      return {
+        outcome: "disrupted",
+        reason: refused.replace(/^agent: /, ""),
         rung: "agent",
       };
     }

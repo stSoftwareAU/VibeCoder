@@ -199,6 +199,36 @@ Deno.test("repairGatedResolution - a run the worker ended is reported as ended, 
   }
 });
 
+Deno.test("repairGatedResolution - a provider outage is reported as the provider's, not as a verdict (Issue #2613)", async () => {
+  const fx = await repo();
+  try {
+    const outcome = await repairGatedResolution({
+      firstFailure: FAILURE,
+      gate: () => Promise.resolve(FAILURE),
+      agentFn: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            terminated: false,
+            providerUnavailable: "API Error: 402 Insufficient Balance",
+          },
+        }),
+      options: { cwd: fx.dir },
+      milestoneBranch: "milestone/1965",
+      defaultBranch: "main",
+      mergeSha: fx.mergeSha,
+      mergedCommitSubjects: [],
+    });
+
+    assertEquals(outcome.status, "failed");
+    const detail = outcome.status === "failed" ? outcome.detail : "";
+    assertStringIncludes(detail, "provider was unavailable");
+    assertStringIncludes(detail, "402 Insufficient Balance");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 Deno.test("repairGatedResolution - a repair that changed nothing does not spend the gate again (Issue #1965)", async () => {
   const fx = await repo();
   try {

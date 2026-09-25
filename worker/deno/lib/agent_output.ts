@@ -265,6 +265,35 @@ export function isTerminalFailureCategory(
   return TERMINAL_CATEGORIES.has(category);
 }
 
+/**
+ * Categories that mean the provider refused to serve at all — a spent
+ * balance (402), a rejected credential (401/403), or throttling and server
+ * errors that outlasted the retry budget. Nothing about the task is known.
+ */
+const PROVIDER_UNAVAILABLE_CATEGORIES: ReadonlySet<AgentFailureCategory> =
+  new Set([
+    "authentication",
+    "quota-exhausted",
+    "rate-limit",
+    "network",
+    "model-unavailable",
+  ]);
+
+/**
+ * Whether a failed run ended because the provider was unavailable, not
+ * because the task failed (Issue #2613). Callers must not charge such a run
+ * to a streak, a back-off or a conflict ladder attempt.
+ *
+ * @param failure - The run's normalised failure, when it had one.
+ * @returns True for a provider outage.
+ */
+export function isProviderUnavailableFailure(
+  failure: AgentFailure | undefined,
+): boolean {
+  return failure !== undefined &&
+    PROVIDER_UNAVAILABLE_CATEGORIES.has(failure.category);
+}
+
 /** Read a string field, or undefined when it is absent or another type. */
 export function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
