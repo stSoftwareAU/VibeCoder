@@ -97,6 +97,7 @@ const ADDITIVE_ENV = [
   "VIBECODER_MODE",
   "VIBECODER_TURNS",
   "VIBECODER_MODEL",
+  "VIBECODER_EFFORT",
 ] as const;
 
 /**
@@ -145,6 +146,7 @@ const FULL_CONTEXT: IssueRunCallbackContext = {
     estimatedCostUsd: 0.42,
     turns: 34,
     model: "claude-opus-4-6",
+    effort: "high",
   },
   outcome: { kind: "pr", prNumber: 267, phase: "completion" },
   graft: {
@@ -169,7 +171,12 @@ const FULL_CONTEXT: IssueRunCallbackContext = {
 /** The same run with every additive field of Issue #2100 unsupplied. */
 const WITHOUT_ADDITIVE: IssueRunCallbackContext = (() => {
   const { mode: _mode, graft: _graft, telemetry, ...rest } = FULL_CONTEXT;
-  const { turns: _turns, model: _model, ...leanTelemetry } = telemetry ?? {};
+  const {
+    turns: _turns,
+    model: _model,
+    effort: _effort,
+    ...leanTelemetry
+  } = telemetry ?? {};
   return { ...rest, telemetry: leanTelemetry };
 })();
 
@@ -291,6 +298,28 @@ Deno.test(
     for (const name of ADDITIVE_ENV) {
       assertEquals(env[name], undefined, `${name} exported without a value`);
     }
+  },
+);
+
+Deno.test(
+  "#2573 - telemetry.effort is emitted beside the model it was run with, and omitted when unset",
+  () => {
+    const document = buildCallbackContextDocument(FULL_CONTEXT, "always");
+    const telemetry = document.telemetry as Record<string, unknown>;
+    assertEquals(telemetry.effort, "high");
+    const env = buildCallbackEnv(
+      FULL_CONTEXT,
+      "always",
+      "/tmp/context.json",
+      () => undefined,
+    );
+    assertEquals(env.VIBECODER_EFFORT, "high");
+
+    const lean = buildCallbackContextDocument(WITHOUT_ADDITIVE, "always");
+    const leanTelemetry = lean.telemetry as Record<string, unknown>;
+    assert(!("effort" in leanTelemetry), "effort is emitted when none was run");
+    // An additive field, like #2100's: the version must not move for it.
+    assertEquals(CALLBACK_SCHEMA_VERSION, 2);
   },
 );
 
