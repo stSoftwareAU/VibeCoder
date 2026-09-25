@@ -1010,7 +1010,8 @@ interface GitHubMilestone {
  * @param repo - Repository in "owner/repo" format
  * @param ghCommandFn - Function to execute gh CLI commands
  * @param defaultBranchFn - Optional cached default-branch resolver
- * @returns Result with list of open milestones
+ * @returns Result with list of open milestones; `ok: false` when the
+ *   milestones call fails or returns a malformed response (Issue #2607)
  */
 export async function findActiveMilestoneBranches(
   repo: string,
@@ -1047,11 +1048,24 @@ export async function findActiveMilestoneBranches(
       const parsed = JSON.parse(output);
       const validated = validateGitHubMilestonesJson(parsed);
       if (!validated.ok) {
-        return { ok: true, value: [] }; // Malformed response — skip
+        // Issue #2607: a malformed response is a fault, not "no milestones".
+        const { field, message } = validated.error;
+        return {
+          ok: false,
+          error: new Error(
+            `Malformed milestones response for ${repo}: ${field}: ${message}`,
+          ),
+        };
       }
       milestones = validated.value;
-    } catch {
-      return { ok: true, value: [] }; // No milestones or API failure
+    } catch (err) {
+      // Issue #2607: an API or parse failure must surface — an empty list
+      // here would silently skip every milestone's sync for the cycle.
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        error: new Error(`Could not list milestones for ${repo}: ${message}`),
+      };
     }
 
     const activeMilestones: ActiveMilestone[] = [];

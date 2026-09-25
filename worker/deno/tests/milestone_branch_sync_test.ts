@@ -178,6 +178,85 @@ Deno.test("findActiveMilestoneBranches - handles API failure gracefully", async 
   assertEquals(result.ok, false);
 });
 
+// Issue #2607: the default branch resolves, so only the milestones call
+// fails — that failure must surface, not become an empty success.
+const mainBranch = () => Promise.resolve({ ok: true as const, value: "main" });
+
+Deno.test("findActiveMilestoneBranches - a failing milestones call is ok:false (Issue #2607)", async () => {
+  const ghFn = (_args: string[]): Promise<string> =>
+    Promise.reject(new Error("HTTP 502: Bad Gateway"));
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    mainBranch,
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      "Could not list milestones for owner/repo",
+    );
+    assertStringIncludes(result.error.message, "HTTP 502: Bad Gateway");
+  }
+});
+
+Deno.test("findActiveMilestoneBranches - unparseable milestones output is ok:false (Issue #2607)", async () => {
+  const ghFn = (_args: string[]): Promise<string> =>
+    Promise.resolve("<html>rate limited</html>");
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    mainBranch,
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      "Could not list milestones for owner/repo",
+    );
+  }
+});
+
+Deno.test("findActiveMilestoneBranches - a malformed milestones response is ok:false naming the field (Issue #2607)", async () => {
+  const ghFn = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([{ title: "M1" }]));
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    mainBranch,
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      "Malformed milestones response for owner/repo",
+    );
+    assertStringIncludes(result.error.message, "milestones[0].number");
+  }
+});
+
+Deno.test("findActiveMilestoneBranches - a non-array milestones response is ok:false (Issue #2607)", async () => {
+  const ghFn = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify({ message: "Not Found" }));
+
+  const result = await findActiveMilestoneBranches(
+    "owner/repo",
+    ghFn,
+    mainBranch,
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      "Malformed milestones response for owner/repo",
+    );
+    assertStringIncludes(result.error.message, "Expected array");
+  }
+});
+
 // ============================================================================
 // shouldSyncMilestone
 // ============================================================================
