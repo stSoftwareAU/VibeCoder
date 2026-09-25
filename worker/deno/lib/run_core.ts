@@ -539,6 +539,21 @@ export interface RunCoreDeps {
    */
   tryModelAdaptation?: () => Promise<{ adapted: boolean; detail?: string }>;
   /**
+   * Switch the run to a preferred-provider credential that still has budget
+   * on every window (Issue #2637).
+   *
+   * The owner's rule is to drain Claude completely before flipping to a
+   * fallback provider: one exhausted subscription rotates to the next one in
+   * the pool, and `agent_provider_fallback` is consulted only once every
+   * credential is spent on its five-hour window or its weekly limit. With
+   * `excludeHeld` the credential the run holds (the one just refused) is
+   * never chosen. Returns the label switched to, or null when none has
+   * budget. Absent → the health gate falls back as before.
+   */
+  selectPreferredCredential?: (
+    options: { excludeHeld: boolean },
+  ) => Promise<string | null>;
+  /**
    * How a candidate fallback provider is billed (Issue #1923).
    *
    * The health-gate fallback is a provider switch no human authorises at the
@@ -5178,6 +5193,22 @@ async function logCycleGhTelemetry(deps: RunCoreDeps): Promise<void> {
 }
 
 /**
+ * How often, while a fallback provider stands in, the health gate re-checks
+ * the preferred provider's credentials for budget (Issue #2637): the credential
+ * pool's own snapshot age, so a re-check costs at most one probe per token.
+ */
+const PREFERRED_PROVIDER_RECHECK_MS = 10 * 60_000;
+
+/** The active provider's id, or undefined when it cannot be resolved. */
+function activeProviderIdOrUndefined(): string | undefined {
+  try {
+    return selectAgentProvider().id;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Probe the configured fallback providers in order for a healthy one
  * (Issue #2055).
  *
@@ -5295,6 +5326,13 @@ export async function runCoreLoop(
   // Starts false so a run that never reaches a healthy iteration (e.g. Claude
   // 401 every cycle) does not report healthy at end of run.
   let lastHealthCheckPassed = false;
+  /**
+   * Issue #2637: the provider the health gate switched away from, while this
+   * run is on a fallback, and when its pool was last re-checked for a
+   * credential with budget again. Undefined while on the preferred provider.
+   */
+  let fallbackSwitchedFrom: string | undefined;
+  let preferredRecheckedAtMs = 0;
   /**
    * Set once this run stopped for quota exhaustion (Issue #342): the wait
    * would outlast the run-duration cap, so the run ends and the supervisor
@@ -5937,6 +5975,32 @@ export async function runCoreLoop(
           // Issue #2602: a failed check marks the worker unhealthy, so the
           // loop result carries `lastHealthCheckPassed: false` and the host
           // is never recorded as healthy for this run.
+          // (Issue #2637) While a fallback stands in for the preferred
+          // provider, re-check the preferred pool at most once per budget
+          // snapshot age: as soon as one of its credentials has budget
+          // again, the run returns to it rather than staying on the
+          // fallback until the next run.
+          if (
+            fallbackSwitchedFrom !== undefined &&
+            deps.selectPreferredCredential &&
+            deps.now() - preferredRecheckedAtMs >=
+              PREFERRED_PROVIDER_RECHECK_MS
+          ) {
+            preferredRecheckedAtMs = deps.now();
+            const label = await deps.selectPreferredCredential({
+              excludeHeld: false,
+            });
+            if (label !== null) {
+              deps.log(
+                `[provider-fallback] ${fallbackSwitchedFrom}/${label} has ` +
+                  `budget again — switching back from the fallback ` +
+                  `provider (Issue #2637)`,
+              );
+              setConfiguredAgentProviderId(fallbackSwitchedFrom);
+              setRunProviderOverride(undefined);
+              fallbackSwitchedFrom = undefined;
+            }
+          }
           const claudeHealth = await deps.checkClaudeHealth();
           if (!claudeHealth.ok || !claudeHealth.value.healthy) {
             lastHealthCheckPassed = false;
@@ -5962,6 +6026,26 @@ export async function runCoreLoop(
                 deps.log(
                   `[provider-adaptation] routing adapted for this run: ` +
                     `${adaptation.detail ?? "unavailable tier"} (Issue #2059)`,
+                );
+                continue;
+              }
+            }
+            // (Issue #2637) Drain the preferred provider before any fallback:
+            // an exhausted credential rotates to the next one in the pool
+            // that still has budget, and the configured alternatives are
+            // probed only once every credential is spent.
+            if (
+              exitCode === 3 && fallbackSwitchedFrom === undefined &&
+              deps.selectPreferredCredential
+            ) {
+              const label = await deps.selectPreferredCredential({
+                excludeHeld: true,
+              });
+              if (label !== null) {
+                deps.log(
+                  `[provider-fallback] the held credential is exhausted but ` +
+                    `${label} still has budget — rotating to it rather than ` +
+                    `switching provider (Issue #2637)`,
                 );
                 continue;
               }
@@ -6041,6 +6125,10 @@ export async function runCoreLoop(
                 `active provider for this run (billing=` +
                 `${billing.billingMode}, Issue #2055)`,
             );
+            // (Issue #2637) Remember what the fallback stands in for, so the
+            // gate above can switch back once its pool has budget again.
+            fallbackSwitchedFrom ??= activeProviderIdOrUndefined();
+            preferredRecheckedAtMs = deps.now();
             setConfiguredAgentProviderId(fallbackId);
             // (Issue #2062) The switch must survive the in-process config
             // reloads: the run override is a module record the resolver

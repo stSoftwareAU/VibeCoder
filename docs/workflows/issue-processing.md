@@ -180,6 +180,19 @@ Boundaries worth stating:
   gated, even if a stale `CLAUDE_CODE_OAUTH_TOKEN` is left in the shared
   environment, and a mid-run token switch discards the previous token's
   reading rather than judging the new subscription on it.
+- **The gate never moves work to another provider** (Issue #2637). An
+  engaged gate drops tiers 3 and 4 and switches nothing, even with an
+  `ordered` `agent_provider_fallback` configured: a projection is not
+  exhaustion, and Claude is drained completely before any fallback runs.
+  Issue #2470 briefly routed the paced backlog to the fallback by switching
+  the whole host's provider; on GRQ-23 that put `top-priority` and `work-on`
+  claims on DeepSeek with a third of the week still unspent, and DeepSeek
+  refused them for want of balance. The fallback now takes over only at the
+  health gate, once **every** Claude credential in the pool is exhausted on
+  its five-hour window or its weekly limit — see
+  [Which Claude token a run uses](../SETUP.md#which-claude-token-a-run-uses).
+  The claim scan, the idle census and the filer all read the gate's one
+  recorded verdict, so none of them can disagree about what is claimable.
 
 The verdict itself is the pure
 [`claudeWeekPaceVerdict`](../../worker/deno/lib/claude_week_pace.ts); the gate

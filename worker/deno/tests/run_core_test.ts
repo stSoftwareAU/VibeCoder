@@ -875,6 +875,165 @@ Deno.test("run_core - an auth failure never consults the fallback (Issue #2055)"
   );
 });
 
+// ---------------------------------------------------------------------------
+// Tests — drain every Claude credential before the fallback (Issue #2637)
+// ---------------------------------------------------------------------------
+
+Deno.test("run_core - one exhausted credential rotates to the next Claude credential, never to the fallback provider (Issue #2637)", async () => {
+  // An earlier test's switch must not leak into this one.
+  setRunProviderOverride(undefined);
+  // GRQ-23 holds three Claude subscriptions. provider is spent; provider-3
+  // still has budget, so the run must stay on Claude.
+  const probed: Array<string | undefined> = [];
+  const logs: string[] = [];
+  const asked: boolean[] = [];
+  let nowValue = 0;
+  let rotated = false;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      nowValue += 700 * 1000;
+      return Promise.resolve();
+    },
+    log: (msg: string) => {
+      logs.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      probed.push(typeof provider === "string" ? provider : provider?.id);
+      return Promise.resolve(
+        rotated
+          ? { ok: true, value: { healthy: true } }
+          : { ok: true, value: { healthy: false, exitCode: 3 } },
+      );
+    },
+    selectPreferredCredential: ({ excludeHeld }) => {
+      asked.push(excludeHeld);
+      rotated = true;
+      return Promise.resolve("provider-3");
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  try {
+    await runCoreLoop(config, deps);
+    assertEquals(asked[0], true, "the refused credential is excluded");
+    assertEquals(
+      probed.includes("deepseek"),
+      false,
+      "the fallback is not even probed while a Claude credential has budget",
+    );
+    assertEquals(runProviderOverrideId(), undefined);
+    assert(
+      logs.some((l) => l.includes("provider-3") && l.includes("#2637")),
+      `expected a rotation line, got: ${logs.join(" | ")}`,
+    );
+  } finally {
+    setRunProviderOverride(undefined);
+  }
+});
+
+Deno.test("run_core - every Claude credential exhausted: the fallback provider takes over (Issue #2637)", async () => {
+  // An earlier test's switch must not leak into this one.
+  setRunProviderOverride(undefined);
+  const probed: Array<string | undefined> = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      probed.push(typeof provider === "string" ? provider : provider?.id);
+      return Promise.resolve(
+        provider === undefined
+          ? { ok: true, value: { healthy: false, exitCode: 3 } }
+          : { ok: true, value: { healthy: true } },
+      );
+    },
+    // No credential in the pool has budget left.
+    selectPreferredCredential: () => Promise.resolve(null),
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  try {
+    await runCoreLoop(config, deps);
+    assert(probed.includes("deepseek"), "the fallback must be probed");
+    assertEquals(runProviderOverrideId(), "deepseek");
+  } finally {
+    setRunProviderOverride(undefined);
+  }
+});
+
+Deno.test("run_core - once a Claude credential's window resets the run switches back from the fallback (Issue #2637)", async () => {
+  // An earlier test's switch must not leak into this one.
+  setRunProviderOverride(undefined);
+  const logs: string[] = [];
+  const asked: boolean[] = [];
+  let nowValue = 0;
+  let windowReset = false;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      // Eleven minutes a cycle: past the ten-minute re-check interval.
+      nowValue += 660 * 1000;
+      return Promise.resolve();
+    },
+    log: (msg: string) => {
+      logs.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      // Claude is spent until the window resets; the fallback is healthy.
+      if (provider !== undefined) {
+        return Promise.resolve({ ok: true, value: { healthy: true } });
+      }
+      const onFallback = runProviderOverrideId() === "deepseek";
+      return Promise.resolve(
+        onFallback || windowReset
+          ? { ok: true, value: { healthy: true } }
+          : { ok: true, value: { healthy: false, exitCode: 3 } },
+      );
+    },
+    selectPreferredCredential: ({ excludeHeld }) => {
+      asked.push(excludeHeld);
+      if (excludeHeld) return Promise.resolve(null); // all three spent
+      windowReset = true; // the re-check finds provider reopened
+      return Promise.resolve("provider");
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  try {
+    await runCoreLoop(config, deps);
+    assert(asked.includes(false), "the loop must re-check the preferred pool");
+    assertEquals(
+      runProviderOverrideId(),
+      undefined,
+      "the fallback override is lifted once Claude has budget again",
+    );
+    assert(
+      logs.some((l) => l.includes("switching back") && l.includes("#2637")),
+      `expected a switch-back line, got: ${logs.join(" | ")}`,
+    );
+  } finally {
+    setRunProviderOverride(undefined);
+  }
+});
+
 Deno.test("run_core - an unavailable tier adapts in place and the cycle continues (Issue #2059)", async () => {
   const errors: string[] = [];
   const calls: string[] = [];

@@ -870,3 +870,113 @@ Deno.test("createClaudeCredentialPool - candidateCount reports the discovered su
   assertEquals(await pool.candidateCount(), 3);
   assertEquals(discoveries, 1, "discovered at most once");
 });
+
+// ---------------------------------------------------------------------------
+// selectAvailable — drain every Claude credential before any fallback
+// provider (Issue #2637)
+// ---------------------------------------------------------------------------
+
+/** A three-subscription pool, the GRQ-23 shape, with injected figures. */
+function threeTokenPool(byToken: Record<string, FakeBudget>, now = NOW) {
+  const probe = fetchWith(byToken);
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([
+        tokenFile("provider"),
+        tokenFile("provider-2"),
+        tokenFile("provider-3"),
+      ]),
+    fetchFn: probe.fn,
+    now: () => now,
+  });
+  return { pool, probe };
+}
+
+Deno.test("selectAvailable - two of three credentials exhausted: the third is chosen, so the run stays on Claude (Issue #2637)", async () => {
+  const { pool } = threeTokenPool({
+    "token-provider-3": healthy({ fiveHourRemaining: 0.1 }),
+  });
+  // One spent on its five-hour window, one on its weekly limit.
+  pool.recordExhaustion("provider", [
+    { window: "five_hour", resetAt: NOW + 2 * HOUR },
+  ]);
+  pool.recordExhaustion("provider-2", [
+    { window: "seven_day", resetAt: NOW + 60 * HOUR },
+  ]);
+
+  const chosen = await pool.selectAvailable({ exclude: "provider", now: NOW });
+
+  // provider-3 is below the five-hour *ranking* gate (10% left) but it is not
+  // exhausted — draining Claude means spending it before any fallback.
+  assertEquals(chosen?.label, "provider-3");
+});
+
+Deno.test("selectAvailable - all three credentials exhausted (five-hour or weekly): nothing is chosen, so the fallback may take over (Issue #2637)", async () => {
+  const { pool } = threeTokenPool({
+    "token-provider-3": healthy({ sevenDayRemaining: 0 }),
+  });
+  pool.recordExhaustion("provider", [
+    { window: "five_hour", resetAt: NOW + 2 * HOUR },
+  ]);
+  pool.recordExhaustion("provider-2", [
+    { window: "seven_day", resetAt: NOW + 60 * HOUR },
+  ]);
+
+  // provider-3 is probed: its weekly limit is gone even though its five-hour
+  // window is not, and either window at zero is exhaustion.
+  assertEquals(await pool.selectAvailable({ now: NOW }), null);
+});
+
+Deno.test("selectAvailable - a credential whose window has reset is available again, so the run returns to Claude (Issue #2637)", async () => {
+  const later = NOW + 6 * 60_000;
+  const { pool, probe } = threeTokenPool({}, later);
+  pool.recordExhaustion("provider", [
+    { window: "five_hour", resetAt: NOW + 5 * 60_000 },
+  ]);
+  pool.recordExhaustion("provider-2", [
+    { window: "seven_day", resetAt: NOW + 60 * HOUR },
+  ]);
+  pool.recordExhaustion("provider-3", [
+    { window: "seven_day", resetAt: NOW + 90 * HOUR },
+  ]);
+
+  assertEquals(
+    await pool.selectAvailable({ now: NOW }),
+    null,
+    "before the reset every credential is spent",
+  );
+  const chosen = await pool.selectAvailable({ now: later });
+  assertEquals(chosen?.label, "provider", "its five-hour window reopened");
+  assertEquals(probe.calls(), 0, "the recorded figures are still fresh");
+});
+
+Deno.test("selectAvailable - the excluded (held) credential and an unmeasurable one are never chosen (Issue #2637)", async () => {
+  // provider-2 answers 401: its budget is unknown, so it is not evidence of
+  // headroom, and switching to it could ping-pong with the held token.
+  const { pool } = threeTokenPool({
+    "token-provider": healthy(),
+    "token-provider-3": healthy({ sevenDayRemaining: 0 }),
+  });
+
+  assertEquals(
+    await pool.selectAvailable({ exclude: "provider", now: NOW }),
+    null,
+  );
+  assertEquals((await pool.selectAvailable({ now: NOW }))?.label, "provider");
+});
+
+Deno.test("selectAvailable - a single-subscription host is still measured (Issue #2637)", async () => {
+  const probe = fetchWith({ "token-provider": healthy() });
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () => Promise.resolve([tokenFile("provider")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+  });
+  assertEquals((await pool.selectAvailable({ now: NOW }))?.label, "provider");
+  assertEquals(
+    await pool.selectAvailable({ exclude: "provider", now: NOW }),
+    null,
+  );
+});

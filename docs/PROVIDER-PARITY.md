@@ -106,7 +106,9 @@ flowchart TD
     A -->|auto| Q["rank fixed-price subscriptions only"]
     Q -->|one eligible| R["switch provider"]
     Q -->|none eligible| W["wait — never metered"]
-    A -->|pinned| F{"agent_provider_fallback"}
+    A -->|pinned| P{"another Claude credential<br/>with budget? (#2637)"}
+    P -->|yes| T["rotate the run's token, stay on Claude"]
+    P -->|"no, every one exhausted"| F{"agent_provider_fallback"}
     F -->|empty, the default| K["skip cycle, stay pinned"]
     F -->|operator opted in| B["classify billing, log it loudly"]
     B --> R
@@ -143,7 +145,12 @@ unchanged.
 
 The older `agent_provider_fallback` path remains independently opt-in. It fires
 only on `subscription-exhausted`, `transient-rate-limit` or
-`model-unavailable`, and only when the alternative is already enabled. It is
+`model-unavailable`, and only when the alternative is already enabled. For a
+Claude preferred provider it fires only once **every** Claude credential in
+the pool is exhausted on its five-hour window or its weekly limit — one spent
+subscription rotates to the next — and the run switches back as soon as one
+has budget again (Issue #2637). The weekly pace projection never switches
+provider: it drops the backlog tiers only. It is
 not restricted to fixed-price subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Neither automatic mechanism is turned on for the

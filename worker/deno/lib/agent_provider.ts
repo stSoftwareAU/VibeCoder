@@ -58,7 +58,10 @@ import {
   isClaudeAuthError,
 } from "./claude_auth.ts";
 import type { AgentOutputAdapter } from "./agent_output.ts";
-import { CLAUDE_OUTPUT_ADAPTER } from "./claude_output_adapter.ts";
+import {
+  CLAUDE_OUTPUT_ADAPTER,
+  DEEPSEEK_OUTPUT_ADAPTER,
+} from "./claude_output_adapter.ts";
 import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
 import {
   buildSessionResumeArgs,
@@ -1059,10 +1062,11 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
   // The same CLI as Claude, so a bare `-p` reads the prompt from stdin
   // (Issue #4385).
   promptTransport: "stdin",
-  // The same CLI as Claude, so the same event decoder (Issue #1695),
-  // deferred for the same import cycle.
+  // The same CLI as Claude, so the same event decoder (Issue #1695), but
+  // refusals that name DeepSeek (Issue #2633); deferred for the same import
+  // cycle.
   get output(): AgentOutputAdapter {
-    return CLAUDE_OUTPUT_ADAPTER;
+    return DEEPSEEK_OUTPUT_ADAPTER;
   },
 
   // Every phase is pinned to a real DeepSeek model id: Claude's routing
