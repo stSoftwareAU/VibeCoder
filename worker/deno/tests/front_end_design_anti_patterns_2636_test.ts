@@ -1,26 +1,15 @@
 /**
- * Issue #2636: a visual/UX design anti-pattern list for front-end work.
- *
- * `design.md` covers code smells and `html.md` / `react.md` cover markup and
- * hook correctness, but no prompt named the visual mistakes a front-end
- * review should flag. The list lives in the `html` bucket: that bucket
- * already cites WCAG and the ARIA Authoring Practices, and a bucket is
- * inlined only into a best-practices scan of a repo with HTML, so the
- * always-loaded coding guidelines pay nothing for it.
- *
- * The tests read the guide through the same reader the scan uses and assert
- * structure — a short list whose every check links a canonical source — so
- * the wording may change freely.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Issue #2636: the front-end design anti-pattern list lives in the `html`
+ * bucket, so only best-practices scans of HTML repos pay for it. Tests assert
+ * structure (short, every check links its source), never wording.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   bucketGuidePath,
   readBucketGuide,
 } from "../lib/idle_task_templates/best_practices_template.ts";
-import { checkNumbersIn } from "../lib/bucket_check_numbering.ts";
+import { findCheckNumberingIssues } from "../lib/bucket_check_numbering.ts";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import { section, withoutSection } from "./support/markdown_docs.ts";
 
@@ -34,11 +23,21 @@ async function htmlGuide(): Promise<string> {
   return await readBucketGuide(bucketGuidePath("html"), PROMPTS_DIR);
 }
 
-/** The anti-pattern checks, one entry per numbered check. */
-async function antiPatternChecks(): Promise<string[]> {
-  return section(await htmlGuide(), HEADING)
+/** Numbered checks in `markdown`, one entry per check. */
+function checksIn(markdown: string): string[] {
+  return markdown
     .split(/\n(?=\d+\. \*\*)/)
     .filter((chunk) => /^\d+\. \*\*/.test(chunk));
+}
+
+/** Checks that do not link a canonical source. */
+function unlinked(checks: string[]): string[] {
+  return checks.filter((check) => !/<https:\/\/[^>\s]+>/.test(check));
+}
+
+/** The anti-pattern checks, one entry per numbered check. */
+async function antiPatternChecks(): Promise<string[]> {
+  return checksIn(section(await htmlGuide(), HEADING));
 }
 
 Deno.test("html bucket - carries a short design anti-pattern list", async () => {
@@ -51,24 +50,22 @@ Deno.test("html bucket - carries a short design anti-pattern list", async () => 
 });
 
 Deno.test("html bucket - every anti-pattern links a canonical source", async () => {
-  for (const check of await antiPatternChecks()) {
-    assert(
-      /<https:\/\/[^>\s]+>/.test(check),
-      `check must link its source rather than restate it: ${check}`,
-    );
-  }
+  assertEquals(unlinked(await antiPatternChecks()), []);
 });
 
-Deno.test("html bucket - anti-pattern checks continue the guide's numbering", async () => {
-  const guide = await htmlGuide();
-  const before = checkNumbersIn(withoutSection(guide, HEADING));
-  const within = checkNumbersIn(section(guide, HEADING));
-  assertEquals(within[0], before.length + 1);
+Deno.test("html bucket - negative control: a check without a link is caught", async () => {
+  const stripped = section(await htmlGuide(), HEADING)
+    .replace(/<https:\/\/[^>\s]+>/g, "");
+  assert(unlinked(checksIn(stripped)).length > 0);
 });
 
-Deno.test("html bucket - negative control: the list is gone without its section", async () => {
+Deno.test("html bucket - anti-pattern checks keep the guide's 1..N numbering", async () => {
+  assertEquals(findCheckNumberingIssues(await htmlGuide()), []);
+});
+
+Deno.test("html bucket - error path: a renamed section fails loudly", async () => {
   const rest = withoutSection(await htmlGuide(), HEADING);
-  assert(!rest.includes(HEADING));
+  assertThrows(() => section(rest, HEADING));
 });
 
 Deno.test("coding guidelines - the always-loaded prompt does not carry the list", async () => {
