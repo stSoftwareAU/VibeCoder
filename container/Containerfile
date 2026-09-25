@@ -192,6 +192,13 @@ COPY tools.json /tmp/toolchain-manifest.json
 # rtk joins it (Issue #2381, parent #2328): the CLI the worker's own RTK trial
 # drives, again not a monitored repository's gate. Its release tarball carries
 # a bare binary, installed straight to /usr/local/bin/rtk.
+#
+# brief joins them (Issue #2601, parent #2581): git-pkgs/brief, a single Go
+# binary the worker's own brief trial drives — used only when the host's brief
+# switch is on, and never a monitored repository's gate. Its release tarball
+# carries a bare binary, installed straight to /usr/local/bin/brief. Only the
+# binary ships: no enrich configuration and no remote scans, because the trial
+# uses the offline scan only.
 
 # No update nag and no telemetry round trip from an unattended container —
 # the same reasoning as SEMGREP_ENABLE_VERSION_CHECK below. Set before the
@@ -213,7 +220,7 @@ ENV RTK_TELEMETRY_DISABLED="1" \
 
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,brief
 
 # markdownlint-cli2 backs the check-markdownlint gate stage. The release
 # tarball is downloaded and checksum-verified first, then installed from that

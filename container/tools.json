@@ -336,6 +336,20 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "The RTK CLI trialled by the worker itself (Issue #2381, parent #2328). Like codegraph — and unlike every other entry here — this toolchain exists for the worker's own trial, not for a monitored repository's quality gate: nothing in the fleet's gates invokes it, so it is absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS; `repos` names this repository because parseContainerManifest rejects an empty list, not because a gate here needs the binary. Both digests are the v0.49.0 release's own checksums.txt entries for rtk-x86_64-unknown-linux-musl.tar.gz and rtk-aarch64-unknown-linux-gnu.tar.gz, copied rather than computed from a download; the stable release is pinned, never a daily pre-release, and never built with cargo install. Each tarball carries a bare rtk binary at its top level, so the fragment installs it straight to /usr/local/bin/rtk and aborts if that layout ever changes. `rtk --version` prints \"rtk <version>\", so the manifest needs no versionArgs and the start-up self-check probes it unchanged. The image also sets RTK_TELEMETRY_DISABLED and RTK_SUPPRESS_HOOK_WARNING: RTK does not honour DO_NOT_TRACK, so telemetry needs its own switch, which the binary honours. The second asks for RTK's daily missing-hook warning to stay off stderr — noise where the hook reaches the agent CLI through an explicit --settings path rather than the CLI's own user settings file — but v0.49.0 reads no such variable (the warning is throttled by a stamp file under RTK's data dir), so it is declared and inert until a release honours it."
+    },
+    {
+      "id": "brief",
+      "version": "0.13.0",
+      "fragment": "toolchains/brief.sh",
+      "commands": ["brief"],
+      "versionCommand": "brief",
+      "source": "https://github.com/git-pkgs/brief/releases",
+      "sha256": {
+        "amd64": "182af2944cf97e7d6d369d839d227d5332530aba940ae4b2ec4fd1fd7d1c5488",
+        "arm64": "41e89104e525faf12ec50bedb73ae4f51391847ad3729809ed95e52470f792f2"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "The git-pkgs/brief CLI (MIT, a single Go binary), a worker-trial tool for Issue #2581 (pinned by #2601), used only when the host's brief switch is on. Like codegraph and rtk it exists for the worker's own trial, not for a monitored repository's quality gate: nothing in the fleet's gates invokes it, so it is absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS; `repos` names this repository because parseContainerManifest rejects an empty list, not because a gate here needs the binary. Both digests are the v0.13.0 release's own checksums.txt entries for brief_0.13.0_linux_amd64.tar.gz and brief_0.13.0_linux_arm64.tar.gz, and match the downloaded assets. Each tarball carries a bare brief binary at its top level beside LICENSE and README.md, so the fragment installs it straight to /usr/local/bin/brief and aborts if that layout ever changes. `brief --version` prints \"brief <version>\", so the manifest needs no versionArgs and the start-up self-check probes it unchanged. Only the binary is installed: no enrich configuration and no remote scans, because the trial uses the offline scan only."
     }
   ],
   "tools": [
