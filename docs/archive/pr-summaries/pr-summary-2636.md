@@ -93,7 +93,7 @@ Findings from the standards reviewer:
   shape as `CHECK_HEADING` but returns each check's body, which
   `checkNumbersIn` does not. Exporting a splitter for one test is not worth
   the extra API.
-- Australian English, no hidden files, no secrets: clean.
+- Australian English and commit safety (hidden files, credentials) raised no findings.
 
 ## Test Plan
 
