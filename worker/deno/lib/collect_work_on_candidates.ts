@@ -470,7 +470,8 @@ export async function collectWorkOnCandidates(
     // from `blockedDetails` entirely.
     // Issue #1818: the listing already carries the body (`fetchAllIssues`
     // asks for it), so the scan-time check reads that instead of a live
-    // `gh issue view` per candidate per re-scan. The claimed issue is still
+    // `gh issue view` per candidate per re-scan — the gate itself takes it
+    // from the listed issue since Issue #2662. The claimed issue is still
     // re-verified live at pickup (#3647).
     const contentCheck = await verifyWorkOnContentIntegrityDetailed(
       repo,
@@ -480,10 +481,6 @@ export async function collectWorkOnCandidates(
       diag,
       options.contentApprovalDeps,
       options.timelineCache,
-      undefined,
-      typeof issue.body === "string"
-        ? { title: issue.title, body: issue.body }
-        : undefined,
     );
     if (contentCheck.verdict === "blocked") {
       // The gate has already logged its own skip line; record the reason.
@@ -578,6 +575,8 @@ export async function collectWorkOnCandidates(
           batchedGh,
           options.timelineCache,
           options.cache,
+          // Issue #2662: the listing already holds the labels.
+          issue.labels,
         );
         if (!hasIgnore) {
           noteBlocked(issue.number, milestoneTitle, "pr-blocked", {

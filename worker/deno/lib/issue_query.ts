@@ -2063,6 +2063,9 @@ export async function fetchIssueLabels(
  * @param ghCommandFn - Optional gh command function for testing
  * @param cache - Optional timeline cache for read-through label-author check
  * @param issueCache - Optional issue cache for read-through label fetch
+ * @param listedLabels - The labels the scan's listing already returned for
+ *   this issue (Issue #2662). When supplied, no `gh issue view --json labels`
+ *   is made; the label's author is still verified against the timeline.
  * @returns True if the label was added by an allowed author
  */
 export async function hasIgnoreOpenPRsLabel(
@@ -2073,8 +2076,9 @@ export async function hasIgnoreOpenPRsLabel(
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   cache?: TimelineCache,
   issueCache?: IssueCache,
+  listedLabels?: readonly string[],
 ): Promise<boolean> {
-  const labels = await fetchIssueLabels(
+  const labels = listedLabels ?? await fetchIssueLabels(
     repo,
     issueNumber,
     issueCache,

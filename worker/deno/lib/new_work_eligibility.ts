@@ -68,6 +68,7 @@ import {
   type FindIssuesOptions,
   isDependencyBlocked,
   memoiseIssueFetcher,
+  seedIssueFetcherFromListing,
 } from "./issue_finder_common.ts";
 import {
   resolveFleetAuthors,
@@ -171,7 +172,16 @@ export async function buildNewWorkGateContext(
     repoPRs,
     repoClosedPRs,
     repoAllIssues,
-    fetcher: memoiseIssueFetcher(createIssueFetcher(ghFn, options.cache)),
+    // Issue #2662: served from this repo's listing first, with uncovered
+    // dependency states batched, exactly as the claim scan does.
+    fetcher: memoiseIssueFetcher(
+      seedIssueFetcherFromListing(
+        createIssueFetcher(ghFn, options.cache),
+        (listed) => listed === repo ? repoAllIssues : undefined,
+        ghFn,
+        options.cache,
+      ),
+    ),
     openStateMap: buildOpenIssueStateMap(repoAllIssues),
     fleetWorkerLogins: resolveFleetAuthors(
       options.githubUser,
@@ -352,6 +362,8 @@ export async function filterNewWorkEligible(
           ctx.batchedGh,
           options.timelineCache,
           options.cache,
+          // Issue #2662: the listing already holds the labels.
+          issue.labels,
         );
         if (!hasIgnore) {
           note(issue, "pr-blocked", describeBlockingPr(blockingPR));

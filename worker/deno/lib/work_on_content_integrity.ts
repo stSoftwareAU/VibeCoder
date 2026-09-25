@@ -968,8 +968,21 @@ export async function verifyWorkOnContentIntegrityDetailed(
    */
   listedContent?: { title: string; body: string },
 ): Promise<WorkOnContentIntegrityOutcome> {
-  const fetched = listedContent
-    ? { ok: true as const, value: listedContent }
+  // Issue #2662: every collector's candidate comes from the same listing
+  // (`fetchAllIssues` asks for `body`), so the listed title and body are used
+  // whenever the caller did not pass them explicitly — the configured-label,
+  // low-priority and idle-task tiers re-ran `gh issue view --json title,body`
+  // per candidate per scan (46% of all GraphQL calls on GRQ-23 on
+  // 2026-09-25). The bytes hashed are the listing's `body` field, the same
+  // GraphQL field the view returned. Only a listing row without a body (an
+  // older cached payload) is still read live, and the claimed issue is
+  // re-verified against a live read at pickup (#3647).
+  const inHand = listedContent ??
+    (typeof issue.body === "string"
+      ? { title: issue.title, body: issue.body }
+      : undefined);
+  const fetched = inHand
+    ? { ok: true as const, value: inHand }
     : await fetchIssueTitleAndBody(repo, issue.number, ghFn);
   if (!fetched.ok) {
     // Issue #2534: a gh failure or malformed JSON for a single issue must not

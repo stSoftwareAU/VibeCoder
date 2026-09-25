@@ -36,6 +36,7 @@ import type {
 import type { FilterableIssue } from "./issue_filter.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { fetchOpenMilestoneClosedCounts } from "./issue_query.ts";
+import { withGraphQLSource } from "./gh_call_metrics.ts";
 import {
   ISSUE_BODY_CACHE_PREFIX,
   ISSUE_STATE_CACHE_PREFIX,
@@ -267,6 +268,202 @@ export function memoiseIssueFetcher(fetcher: IssueFetcher): IssueFetcher {
         bodyCache.set(k, p);
       }
       return p;
+    },
+  };
+}
+
+/** Most aliased `issueOrPullRequest` fields one batched query asks for. */
+export const ISSUE_STATE_BATCH_SIZE = 50;
+
+/** GitHub owner/name slug characters; anything else is refused. */
+const REPO_SLUG = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Read several issues' states in one aliased GraphQL query per
+ * {@link ISSUE_STATE_BATCH_SIZE} numbers (Issue #2662).
+ *
+ * `issueOrPullRequest` rather than `issue`, because a dependency reference can
+ * name a pull request (Issue #3218), whose `MERGED` state normalises to
+ * CLOSED exactly as the per-issue view's does. A number GitHub cannot resolve
+ * is simply absent from the result. Any failure — an invalid slug, a `gh`
+ * error, a GraphQL `errors` payload, malformed JSON — returns what was read
+ * so far, and the caller falls back to the per-issue read for the rest, so a
+ * failed batch changes the cost, never the verdict.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param numbers - Issue or pull request numbers to read
+ * @param ghCommandFn - The `gh` seam every call goes through
+ * @returns Each resolved number's state
+ */
+export async function fetchIssueStatesBatch(
+  repo: string,
+  numbers: readonly number[],
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<Map<number, IssueState>> {
+  const out = new Map<number, IssueState>();
+  const [owner, name, extra] = repo.split("/");
+  if (
+    !owner || !name || extra !== undefined || !REPO_SLUG.test(owner) ||
+    !REPO_SLUG.test(name)
+  ) {
+    return out;
+  }
+  const unique = [...new Set(numbers)].filter((n) =>
+    Number.isSafeInteger(n) && n > 0
+  );
+  const fields = "number state title milestone { title }";
+  for (let i = 0; i < unique.length; i += ISSUE_STATE_BATCH_SIZE) {
+    const slice = unique.slice(i, i + ISSUE_STATE_BATCH_SIZE);
+    const aliases = slice.map((n, j) =>
+      `i${j}: issueOrPullRequest(number: ${n}) { ` +
+      `... on Issue { ${fields} } ... on PullRequest { ${fields} } }`
+    ).join(" ");
+    const query =
+      `query { repository(owner: "${owner}", name: "${name}") { ${aliases} } }`;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await withGraphQLSource(
+          "issue-state-batch",
+          () => ghCommandFn(["api", "graphql", "-f", `query=${query}`]),
+        ),
+      );
+    } catch {
+      return out;
+    }
+    if (typeof parsed !== "object" || parsed === null) return out;
+    if ((parsed as { errors?: unknown }).errors !== undefined) return out;
+    const node = (parsed as {
+      data?: { repository?: Record<string, unknown> | null };
+    }).data?.repository;
+    if (!node) return out;
+    slice.forEach((n, j) => {
+      const item = node[`i${j}`] as
+        | {
+          number?: unknown;
+          state?: unknown;
+          title?: unknown;
+          milestone?: { title?: unknown } | null;
+        }
+        | null
+        | undefined;
+      if (!item || item.number !== n || typeof item.state !== "string") return;
+      const milestone = item.milestone?.title;
+      out.set(n, {
+        number: n,
+        state: normaliseIssueState(item.state),
+        title: typeof item.title === "string" ? item.title : "",
+        milestone: typeof milestone === "string" ? milestone : null,
+      });
+    });
+  }
+  return out;
+}
+
+/**
+ * Serve an {@link IssueFetcher} from the scan's own listing first (Issue
+ * #2662).
+ *
+ * The open-issue listing every collector ranks from (`fetchAllIssues`)
+ * already returned each open issue's title, body and milestone, so:
+ *
+ * - a listed issue's **body** is the listing's `body` field — the same
+ *   GraphQL field `gh issue view --json body` returned, so a dependency is
+ *   parsed from the same bytes;
+ * - a listed issue's **state** is OPEN, since the listing is open issues
+ *   only (the same fact {@link buildOpenIssueStateMap} already relies on);
+ * - a dependency the listing does not cover (a closed issue, a merged PR) is
+ *   read in **one** aliased GraphQL query per repository, together with every
+ *   other uncovered same-repository dependency the listing's bodies name, and
+ *   written to the iteration cache under the key the per-issue path uses.
+ *   Only numbers that query could not resolve fall through to the wrapped
+ *   fetcher's per-issue read.
+ *
+ * Sub-issues (a REST read) always go to the wrapped fetcher.
+ *
+ * @param fetcher - The per-issue fetcher to fall back to
+ * @param listingFor - The listing the scan holds for a repository, if any
+ * @param ghCommandFn - The `gh` seam for the batched query
+ * @param cache - Optional iteration cache the batch seeds
+ */
+export function seedIssueFetcherFromListing(
+  fetcher: IssueFetcher,
+  listingFor: (repo: string) => readonly FilterableIssue[] | undefined,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  cache?: IssueCache,
+): IssueFetcher {
+  const listed = (repo: string, issueNumber: number) =>
+    listingFor(repo)?.find((i) => i.number === issueNumber);
+  const sameRepo = (a: string, b: string) =>
+    a.trim().toLowerCase() === b.trim().toLowerCase();
+  const stateKey = (n: number) => `${ISSUE_STATE_CACHE_PREFIX}${n}`;
+  const batches = new Map<string, Promise<Map<number, IssueState>>>();
+
+  /** One batch per repository per fetcher lifetime, shared by every caller. */
+  const batchFor = (repo: string, requested: number) => {
+    const key = repo.trim().toLowerCase();
+    let batch = batches.get(key);
+    if (!batch) {
+      batch = (async () => {
+        const listing = listingFor(repo) ?? [];
+        const open = new Set(listing.map((i) => i.number));
+        const wanted = new Set<number>([requested]);
+        for (const issue of listing) {
+          const refs = extractDependencyReferencesDetailed(issue.body ?? "");
+          for (const ref of refs) {
+            if (ref.repo && !sameRepo(ref.repo, repo)) continue;
+            if (!open.has(ref.number)) wanted.add(ref.number);
+          }
+        }
+        const unread: number[] = [];
+        for (const n of wanted) {
+          const hit = cache
+            ? await cache.read<IssueState>(repo, stateKey(n))
+            : null;
+          if (hit === null) unread.push(n);
+        }
+        const states = await fetchIssueStatesBatch(repo, unread, ghCommandFn);
+        if (cache) {
+          for (const [n, state] of states) {
+            await cache.write(repo, stateKey(n), state);
+          }
+        }
+        return states;
+      })();
+      batches.set(key, batch);
+    }
+    return batch;
+  };
+
+  return {
+    async getIssueState(repo: string, issueNumber: number) {
+      const issue = listed(repo, issueNumber);
+      if (issue) {
+        return {
+          number: issueNumber,
+          state: "OPEN",
+          title: issue.title,
+          milestone: issue.milestone || null,
+        };
+      }
+      if (listingFor(repo) !== undefined) {
+        const cachedState = cache
+          ? await cache.read<IssueState>(repo, stateKey(issueNumber))
+          : null;
+        if (cachedState !== null) return cachedState;
+        const state = (await batchFor(repo, issueNumber)).get(issueNumber);
+        if (state) return state;
+      }
+      return fetcher.getIssueState(repo, issueNumber);
+    },
+    getSubIssues(repo: string, issueNumber: number) {
+      return fetcher.getSubIssues(repo, issueNumber);
+    },
+    getIssueBody(repo: string, issueNumber: number) {
+      const body = listed(repo, issueNumber)?.body;
+      return typeof body === "string"
+        ? Promise.resolve(body)
+        : fetcher.getIssueBody(repo, issueNumber);
     },
   };
 }
