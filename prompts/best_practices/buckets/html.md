@@ -55,3 +55,32 @@ templates (JSX/TSX components belong to the `react` bucket).
    default); bump to **`severity:medium`** when the link points to a
    user-controlled or otherwise external URL. Stable id: generic
    `BP-<12 hex>`.
+
+## Visual design anti-patterns
+
+What the page looks like and how it responds, not just its markup. These
+checks also read the stylesheets (`*.css`) the page loads. Each links the
+source that defines the bar — cite it, do not restate it.
+
+10. **Low text contrast.** Grey-on-grey body text, pale placeholder text
+    or text over a busy image that fails the WCAG contrast minimum —
+    <https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html>.
+11. **Colour as the only signal.** An error, status or link told apart by
+    colour alone, with no icon, text or underline to back it up —
+    <https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html>.
+12. **Focus ring removed.** `outline: none` (or `0`) on focusable elements
+    with no visible replacement, so a keyboard user cannot see where they
+    are — <https://www.w3.org/WAI/WCAG22/Understanding/focus-visible.html>.
+13. **Tiny or crowded tap targets.** Icon buttons and inline links too
+    small or too close together to hit reliably on touch —
+    <https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html>.
+14. **Zoom blocked or layout fixed-width.** A viewport `meta` with
+    `user-scalable=no` or `maximum-scale=1`, or a fixed-pixel layout that
+    scrolls sideways at narrow widths —
+    <https://www.w3.org/WAI/WCAG22/Understanding/reflow.html>.
+15. **Motion with no opt-out.** Auto-playing, parallax or large animated
+    transitions with no `prefers-reduced-motion` fallback —
+    <https://www.w3.org/WAI/WCAG22/Understanding/animation-from-interactions.html>.
+16. **Layout shift.** Images, embeds or late banners without reserved
+    space (no `width`/`height` or `aspect-ratio`), so content jumps under
+    the reader's cursor — <https://web.dev/articles/cls>.
