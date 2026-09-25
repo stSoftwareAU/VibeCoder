@@ -131,3 +131,48 @@ Deno.test("workflows - container images carry a tag beside the digest, artefacts
     );
   }
 });
+
+Deno.test("workflows - every setup-deno step is followed by the exact-key Deno module cache (Issue #2619)", async () => {
+  // SIMPLE-ON-PURPOSE: container-build.yml is outside #2619's audited job list — upgrade when an audit names it.
+  const exempt = new Set(["container-build.yml"]);
+  const key =
+    "key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}";
+  let guarded = 0;
+  for (const { name, text } of await workflowFiles()) {
+    if (exempt.has(name)) continue;
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      if (!/^\s*uses: denoland\/setup-deno@/.test(line)) return;
+      guarded++;
+      // The next step (`- name:` / `- uses:`) must be the cache step.
+      const next = lines.findIndex((l, j) => j > i && /^\s*- /.test(l));
+      assert(next > 0, `${name}:${i + 1} setup-deno is the last step`);
+      const step: string[] = [];
+      for (let j = next + 1; j < lines.length; j++) {
+        const l = lines[j] ?? "";
+        if (/^\s*- /.test(l) || /^\S/.test(l) || /^ {2}\S/.test(l)) break;
+        step.push(l.trim());
+      }
+      step.unshift((lines[next] ?? "").trim());
+      assert(
+        step.some((s) =>
+          /uses: actions\/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9$/
+            .test(s)
+        ),
+        `${name}:${
+          i + 1
+        } setup-deno not followed by the pinned actions/cache step`,
+      );
+      assert(
+        step.includes("path: ~/.cache/deno"),
+        `${name}:${i + 1} cache path`,
+      );
+      assert(step.includes(key), `${name}:${i + 1} cache key`);
+      assert(
+        !step.some((s) => s.startsWith("restore-keys:")),
+        `${name}:${i + 1} restore-keys`,
+      );
+    });
+  }
+  assert(guarded >= 11, `expected 11 setup-deno steps, saw ${guarded}`);
+});

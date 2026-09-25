@@ -46,6 +46,7 @@ import {
 } from "../issue_branch_resume.ts";
 import {
   anticipatedProviderId,
+  preferredStreamProviderId,
   primeStreamSession,
   resolveStreamRunKind,
 } from "../stream_session.ts";
@@ -686,9 +687,18 @@ export async function workOnIssueSetupBranch(
         : {}),
       logger,
     });
+    // Stored sessions with no recorded creator are presumed the preferred
+    // provider's (Issue #2638), so one filed under the fallback is skipped.
+    const preferredProviderId = preferredStreamProviderId({
+      ...(config.repoConfig?.[repo]
+        ? { repoConfig: config.repoConfig[repo] }
+        : {}),
+      logger,
+    });
     const adoption = await primeStreamSession({
       workDir: config.workDir,
       repo,
+      preferredProviderId,
       ...(ctx.milestoneTitle !== undefined
         ? { milestoneTitle: ctx.milestoneTitle }
         : {}),
@@ -714,6 +724,9 @@ export async function workOnIssueSetupBranch(
       state.autocompactTokens = await primeStreamCompaction({
         outcome: adoption.outcome,
         providerId,
+        ...(adoption.state.providerId !== undefined
+          ? { sessionProviderId: adoption.state.providerId }
+          : {}),
         sessionId: adoption.state.sessionId,
         cwd: repoPath,
         workDir: config.workDir,
