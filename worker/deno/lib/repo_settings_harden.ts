@@ -24,6 +24,9 @@
  *
  * Every step is planned from the CURRENT settings (nothing is written that
  * already holds), shown in dry-run, and applied only under `--apply`.
+ * `hardenRepo` runs the whole read-plan-apply pass for one repository and
+ * never throws; a read that fails with anything but a 404 is a `failed`
+ * result and plans nothing (Issue #2626).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -34,7 +37,11 @@ import { parse as parseYaml } from "@std/yaml/parse";
 // byte-for-byte, and two literals that must agree are a drift waiting to
 // happen. Re-exported because this module's name for it predates the move.
 export { MILESTONE_REF_PATTERN } from "./repo_rulesets.ts";
-import { MILESTONE_REF_PATTERN } from "./repo_rulesets.ts";
+import { isNotFoundError, MILESTONE_REF_PATTERN } from "./repo_rulesets.ts";
+import { VIBE_RULESET_NAME } from "./default_branch_ruleset.ts";
+import { getRepoDefaultBranch } from "./shell_helpers.ts";
+import { readWorkflowFiles } from "./workflow_scan_common.ts";
+import { extractUsesValue } from "./action_pin_scanner.ts";
 
 type GhCommandFn = (args: string[]) => Promise<string>;
 
@@ -597,7 +604,8 @@ export function planRepoSettingsHardening(
 /** Outcome of one step. */
 export interface HardenResult {
   step: HardenStep;
-  status: "planned" | "applied" | "failed";
+  /** `skipped`: deliberately not attempted; `detail` says why (Issue #2626). */
+  status: "planned" | "applied" | "failed" | "skipped";
   detail?: string;
 }
 
@@ -689,14 +697,16 @@ async function applyRulesetReviews(
       { id: number; name: string; enforcement: string }
     >;
     const branch = step.endpoint.replace(/^rulesets\//, "");
-    const target = rulesets.find((r) =>
-      r.name === branch && r.enforcement === "active"
-    );
+    // The fleet's own ruleset wins over a legacy one named after the branch
+    // (Issue #2626): it is the one `ensureDefaultBranchRuleset` maintains.
+    const active = (name: string) =>
+      rulesets.find((r) => r.name === name && r.enforcement === "active");
+    const target = active(VIBE_RULESET_NAME) ?? active(branch);
     if (!target) {
       return {
         step,
         status: "failed",
-        detail: `no active ruleset named ${branch}`,
+        detail: `no active ruleset named ${branch} or "${VIBE_RULESET_NAME}"`,
       };
     }
     const full = JSON.parse(
@@ -705,6 +715,13 @@ async function applyRulesetReviews(
       rules?: Array<{ type: string; parameters?: Record<string, unknown> }>;
     };
     const desired = JSON.parse(step.body ?? "{}") as Record<string, unknown>;
+    if (!(full.rules ?? []).some((r) => r.type === "pull_request")) {
+      return {
+        step,
+        status: "failed",
+        detail: `ruleset ${target.id} has no pull_request rule to update`,
+      };
+    }
     const rules = (full.rules ?? []).map((r) =>
       r.type === "pull_request"
         ? { ...r, parameters: { ...(r.parameters ?? {}), ...desired } }
@@ -724,4 +741,311 @@ async function applyRulesetReviews(
       detail: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/**
+ * Every repository `uses:` reference in the checkout's workflows, with its
+ * ref (`owner/repo@sha`), so composite manifests can be read at the pinned
+ * revision (Issue #4424). Local and docker steps are not repository actions.
+ */
+export async function collectUsesReferences(
+  workDir: string,
+): Promise<string[]> {
+  const files = await readWorkflowFiles(workDir);
+  const out = new Set<string>();
+  for (const file of files) {
+    for (const line of file.rawText.split("\n")) {
+      const value = extractUsesValue(line);
+      if (!value || value.startsWith(".") || value.startsWith("docker://")) {
+        continue;
+      }
+      const at = value.indexOf("@");
+      const path = at >= 0 ? value.slice(0, at) : value;
+      const [owner, repo] = path.split("/");
+      if (owner && repo) out.add(value);
+    }
+  }
+  return [...out].sort();
+}
+
+const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+type SurfaceRead<T> =
+  | { ok: true; value: T | undefined }
+  | { ok: false; detail: string };
+
+/**
+ * One settings read (Issue #2626): a 404 is an absent surface, any other
+ * error is a failure — never a silent `undefined` a plan could be built on.
+ */
+async function readSurface<T>(
+  gh: GhCommandFn,
+  endpoint: string,
+): Promise<SurfaceRead<T>> {
+  try {
+    return { ok: true, value: JSON.parse(await gh(["api", endpoint])) as T };
+  } catch (err) {
+    if (isNotFoundError(err)) return { ok: true, value: undefined };
+    return {
+      ok: false,
+      detail: `could not read ${endpoint}: ${errorMessage(err)}`,
+    };
+  }
+}
+
+/** A failed result standing in for a surface that could not be read. */
+function readFailure(
+  kind: HardenStep["kind"],
+  endpoint: string,
+  detail: string,
+): HardenResult {
+  return {
+    step: { kind, title: `Read ${endpoint}`, method: "PUT", endpoint },
+    status: "failed",
+    detail,
+  };
+}
+
+/** Options for {@link hardenRepo}. */
+export interface HardenRepoOptions {
+  apply: boolean;
+  ghCommandFn: GhCommandFn;
+  /** The repo's local checkout; its workflows feed the allow-list. */
+  workDir: string;
+  requireCodeOwnerReview?: boolean;
+  /** Fleet-stopping one-approval rule — off unless explicitly asked for. */
+  requireReviews?: boolean;
+  /** Operator-vouched `owner/repo` coordinates (`--allow-action`). */
+  extraCoordinates?: readonly string[];
+  /** Test seam: the default-branch disk cache (defaults to the worker's). */
+  defaultBranchCachePath?: string;
+}
+
+/** What {@link hardenRepo} found and did. */
+export interface HardenRepoOutcome {
+  results: HardenResult[];
+  /** {@link SECRET_PROTECTION_SKIP_NOTE} when that step was exempted. */
+  skipNote?: string;
+  /** The allow-list's action coordinates (empty without a checkout). */
+  coordinates: string[];
+  /** How many workflow `uses:` references fed the allow-list. */
+  referenceCount: number;
+  /** Actions whose manifest could not be read (allow-list may be short). */
+  unreadable: string[];
+}
+
+/**
+ * Snapshot, plan and (under `apply`) write one repository's settings
+ * hardening (Issue #2626). Never throws: every fault — an unknown default
+ * branch, an unreadable surface, a refused write — is a `failed` result, and
+ * nothing is planned from a surface that could not be read.
+ */
+export async function hardenRepo(
+  repo: string,
+  options: HardenRepoOptions,
+): Promise<HardenRepoOutcome> {
+  const outcome: HardenRepoOutcome = {
+    results: [],
+    coordinates: [],
+    referenceCount: 0,
+    unreadable: [],
+  };
+  try {
+    await hardenRepoInto(repo, options, outcome);
+  } catch (err) {
+    outcome.results.push(
+      readFailure("ruleset-reviews", `repos/${repo}`, errorMessage(err)),
+    );
+  }
+  return outcome;
+}
+
+async function hardenRepoInto(
+  repo: string,
+  options: HardenRepoOptions,
+  outcome: HardenRepoOutcome,
+): Promise<void> {
+  const gh = options.ghCommandFn;
+  const results = outcome.results;
+  if (!REPO_PATTERN.test(repo)) {
+    results.push(
+      readFailure("ruleset-reviews", `repos/${repo}`, "invalid repo name"),
+    );
+    return;
+  }
+  const defaultBranch = await getRepoDefaultBranch(
+    repo,
+    gh,
+    options.defaultBranchCachePath,
+  );
+  if (!defaultBranch.ok) {
+    results.push(
+      readFailure(
+        "ruleset-reviews",
+        `repos/${repo}`,
+        `default branch unknown: ${defaultBranch.error.message}`,
+      ),
+    );
+    return;
+  }
+  const branch = defaultBranch.value;
+
+  // Reads each surface; a failure is recorded and the surface left undefined.
+  const read = async <T>(
+    kind: HardenStep["kind"],
+    endpoint: string,
+  ): Promise<T | undefined> => {
+    const r = await readSurface<T>(gh, endpoint);
+    if (r.ok) return r.value;
+    results.push(readFailure(kind, endpoint, r.detail));
+    return undefined;
+  };
+
+  // One read of the repository serves both the security settings and the
+  // visibility that decides whether hardening them is free (Issue #2225).
+  const repoInfo = await read<{
+    security_and_analysis?: RepoSettingsSnapshot["security"];
+    visibility?: string;
+    private?: boolean;
+  }>("secret-scanning", `repos/${repo}`);
+  const snapshot: RepoSettingsSnapshot = {
+    workflow: await read(
+      "workflow-token",
+      `repos/${repo}/actions/permissions/workflow`,
+    ),
+    actions: await read(
+      "sha-pinning-required",
+      `repos/${repo}/actions/permissions`,
+    ),
+    security: repoInfo?.security_and_analysis,
+    visibility: repoInfo?.visibility,
+    private: repoInfo?.private,
+    rules: await read(
+      "ruleset-reviews",
+      `repos/${repo}/rules/branches/${encodeURIComponent(branch)}`,
+    ),
+  };
+  // The repo's branch rulesets, each expanded (Issue #3912 follow-up): the
+  // rulesets API takes a complete ruleset on write.
+  const rulesetList = await read<Array<{ id?: number; target?: string }>>(
+    "milestone-branch-create",
+    `repos/${repo}/rulesets`,
+  );
+  if (Array.isArray(rulesetList)) {
+    const expanded: RulesetSnapshot[] = [];
+    for (const entry of rulesetList) {
+      if (typeof entry.id !== "number") continue;
+      if (entry.target !== undefined && entry.target !== "branch") continue;
+      const full = await read<RulesetSnapshot>(
+        "milestone-branch-create",
+        `repos/${repo}/rulesets/${entry.id}`,
+      );
+      if (full) expanded.push(full);
+    }
+    if (expanded.length > 0) snapshot.rulesets = expanded;
+  }
+  if (snapshot.actions?.allowed_actions === "selected") {
+    snapshot.selectedActions = await read(
+      "actions-allow-list",
+      `repos/${repo}/actions/permissions/selected-actions`,
+    );
+  }
+
+  // Without a checkout the allow-list would be built from nothing, so the
+  // step is skipped and said so rather than writing an empty list.
+  const hasCheckout = await Deno.stat(`${options.workDir}/.git`).then(
+    () => true,
+    () => false,
+  );
+  if (hasCheckout) {
+    const references = await collectUsesReferences(options.workDir);
+    const transitive = await resolveTransitiveActionCoordinates(
+      references,
+      gh,
+    );
+    outcome.referenceCount = references.length;
+    outcome.unreadable = transitive.unreadable;
+    outcome.coordinates = [
+      ...new Set([
+        ...transitive.coordinates,
+        ...(options.extraCoordinates ?? []),
+      ]),
+    ].sort();
+  }
+  const plan = planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: buildAllowedActionPatterns(outcome.coordinates),
+    requireReviews: options.requireReviews === true,
+    requireCodeOwnerReview: options.requireCodeOwnerReview === true,
+    defaultBranch: branch,
+  });
+  const allowListStep = plan.find((s) => s.kind === "actions-allow-list");
+  const runnable = hasCheckout
+    ? plan
+    : plan.filter((s) => s.kind !== "actions-allow-list");
+  results.push(
+    ...await applyRepoSettingsPlan(repo, runnable, {
+      apply: options.apply,
+      ghCommandFn: gh,
+    }),
+  );
+  if (!hasCheckout) {
+    results.push({
+      step: allowListStep ?? {
+        kind: "actions-allow-list",
+        title: "Allow-list the actions the workflows use",
+        method: "PUT",
+        endpoint: "actions/permissions/selected-actions",
+      },
+      status: "skipped",
+      detail: "no local checkout",
+    });
+  }
+  // The exempted step is stated in the output, never silently absent.
+  if (isSecretScanningSkipped(snapshot)) {
+    outcome.skipNote = SECRET_PROTECTION_SKIP_NOTE;
+  }
+}
+
+/** Where a repo's CODEOWNERS file is, as read from its default branch. */
+export type CodeownersLocation =
+  | { state: "present"; path: string }
+  | { state: "absent" }
+  | { state: "error"; message: string };
+
+/** The locations GitHub reads CODEOWNERS from, in its precedence order. */
+const CODEOWNERS_PATHS = [
+  ".github/CODEOWNERS",
+  "CODEOWNERS",
+  "docs/CODEOWNERS",
+] as const;
+
+/**
+ * Find the CODEOWNERS file on the default branch (Issue #2626). Only a 404
+ * at every location is `absent`; any other error is `error`, so a flaky read
+ * is never mistaken for a missing file.
+ */
+export async function findCodeownersOnDefaultBranch(
+  repo: string,
+  ghCommandFn: GhCommandFn,
+): Promise<CodeownersLocation> {
+  if (!REPO_PATTERN.test(repo)) {
+    return { state: "error", message: `invalid repo name: ${repo}` };
+  }
+  for (const path of CODEOWNERS_PATHS) {
+    try {
+      await ghCommandFn(["api", `repos/${repo}/contents/${path}`]);
+      return { state: "present", path };
+    } catch (err) {
+      if (isNotFoundError(err)) continue;
+      return {
+        state: "error",
+        message: `could not read ${path}: ${errorMessage(err)}`,
+      };
+    }
+  }
+  return { state: "absent" };
 }

@@ -1192,9 +1192,25 @@ policy rather than a `BP-REPO-RULESET-NO-REVIEW` finding.
 `--require-reviews` additionally requires one approving review on every PR and
 code-owner review; it is opt-in only because it stops the fleet's autonomous
 auto-merge until a human approves each PR, and it wins when both flags are
-given. Needs an admin token —
+given. The review rule is written to the fleet's own `Vibe Coder default
+branch` ruleset when it exists, otherwise to an active ruleset named after the
+default branch; with neither, the step fails naming both (Issue #2626).
+Needs an admin token —
 an operator command, not a fleet task. Applied to VibeCoder on 2026-08-18
 (everything except the review rule).
+
+The command is a thin wrapper over `hardenRepo(repo, options)` in
+[`worker/deno/lib/repo_settings_harden.ts`](../worker/deno/lib/repo_settings_harden.ts),
+which a fleet-wide caller can reuse per repository (Issue #2626). It never
+throws: every fault is a `[failed]` line. A settings read that fails with
+anything but a 404 is reported as `[failed]` naming the endpoint, and nothing
+is planned from the missing value — an unreadable surface is never mistaken
+for an unhardened one. Without a local checkout (no `.git` in `--work-dir`)
+the allow-list step is reported as `[skipped] … — no local checkout` and no
+allow-list is written. The same module exports
+`findCodeownersOnDefaultBranch(repo, gh)`, which checks `.github/CODEOWNERS`,
+`CODEOWNERS` and `docs/CODEOWNERS` and answers `present` (with the path),
+`absent` (all three 404) or `error` (any other failure).
 
 ## 6-finding cap and priority order
 
