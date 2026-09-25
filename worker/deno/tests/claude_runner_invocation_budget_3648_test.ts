@@ -58,7 +58,7 @@ function buildRateLimitStubBody(exitCode: number): string {
     `  prev="$arg"`,
     `done`,
     // stream-json result line; the text matches detectRateLimit().
-    `printf '%s\\n' '{"type":"result","result":"Credit balance is too low - rate limit exceeded"}'`,
+    `printf '%s\\n' '{"type":"result","result":"API rate limit exceeded - too many requests"}'`,
     `exit ${exitCode}`,
   ].join("\n");
 }

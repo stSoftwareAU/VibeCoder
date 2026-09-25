@@ -99,10 +99,12 @@ Deno.test("isProviderOutageAlertable - a spent balance, a refused credential", (
 
 Deno.test("isProviderOutageAlertable - a routine window or a task failure is not an outage", () => {
   // A subscription window resets on its own; alerting on it would be noise.
-  assert(!isProviderOutageAlertable(
-    failure("quota-exhausted", "5-hour limit reached ∙ resets 3pm"),
-  ));
-  assert(!isProviderOutageAlertable(failure("unknown", "tests failed")));
+  assert(
+    !isProviderOutageAlertable(
+      failure("quota-exhausted", "5-hour limit reached ∙ resets 3pm"),
+    ),
+  );
+  assert(!isProviderOutageAlertable(failure("task-failure", "tests failed")));
   assert(!isProviderOutageAlertable(undefined));
 });
 
@@ -127,8 +129,17 @@ Deno.test("raiseProviderOutageAlert - files one alert naming provider, error and
 
 Deno.test("raiseProviderOutageAlert - a second failure updates the same alert in place", async () => {
   const gh = fakeGh();
-  const opts = { provider: "claude", ghFn: gh.ghFn, fleetAuthors: FLEET, log: quiet };
-  await raiseProviderOutageAlert({ ...opts, error: BALANCE.message, nowMs: T0 });
+  const opts = {
+    provider: "claude",
+    ghFn: gh.ghFn,
+    fleetAuthors: FLEET,
+    log: quiet,
+  };
+  await raiseProviderOutageAlert({
+    ...opts,
+    error: BALANCE.message,
+    nowMs: T0,
+  });
   const decision = await raiseProviderOutageAlert({
     ...opts,
     error: "API Error: 402 Payment Required",
@@ -223,13 +234,24 @@ Deno.test("formatProviderOutageBody - the error cannot break out of its fence", 
 
 Deno.test("resolveProviderOutageAlert - closes the open alert with a recovery comment", async () => {
   const gh = fakeGh();
-  const opts = { provider: "claude", ghFn: gh.ghFn, fleetAuthors: FLEET, log: quiet };
-  await raiseProviderOutageAlert({ ...opts, error: BALANCE.message, nowMs: T0 });
+  const opts = {
+    provider: "claude",
+    ghFn: gh.ghFn,
+    fleetAuthors: FLEET,
+    log: quiet,
+  };
+  await raiseProviderOutageAlert({
+    ...opts,
+    error: BALANCE.message,
+    nowMs: T0,
+  });
   const decision = await resolveProviderOutageAlert({ ...opts, nowMs: T1 });
   assertEquals(decision, { action: "closed", issues: [900] });
   assertEquals(gh.openAlerts().length, 0);
   const close = gh.calls.find((c) => c[1] === "close")!;
-  assert(close[close.indexOf("--comment") + 1]!.includes("2026-09-25T03:30:00.000Z"));
+  assert(
+    close[close.indexOf("--comment") + 1]!.includes("2026-09-25T03:30:00.000Z"),
+  );
 });
 
 Deno.test("resolveProviderOutageAlert - nothing open is a no-op", async () => {
@@ -297,7 +319,7 @@ Deno.test("createProviderOutageAlerter - a task failure neither raises nor close
   });
   await alerter.observe("claude", {
     succeeded: false,
-    failure: failure("unknown", "tests failed"),
+    failure: failure("task-failure", "tests failed"),
   });
   assertEquals(gh.calls.length, 0);
 });
@@ -305,7 +327,10 @@ Deno.test("createProviderOutageAlerter - a task failure neither raises nor close
 Deno.test("noteProviderRunOutcome - a no-op until an alerter is installed", async () => {
   const gh = fakeGh();
   installProviderOutageAlerter(undefined);
-  await noteProviderRunOutcome("claude", { succeeded: false, failure: BALANCE });
+  await noteProviderRunOutcome("claude", {
+    succeeded: false,
+    failure: BALANCE,
+  });
   assertEquals(gh.calls.length, 0);
   installProviderOutageAlerter(
     createProviderOutageAlerter({
@@ -316,7 +341,10 @@ Deno.test("noteProviderRunOutcome - a no-op until an alerter is installed", asyn
     }),
   );
   try {
-    await noteProviderRunOutcome("claude", { succeeded: false, failure: BALANCE });
+    await noteProviderRunOutcome("claude", {
+      succeeded: false,
+      failure: BALANCE,
+    });
     assertEquals(gh.openAlerts().length, 1);
   } finally {
     installProviderOutageAlerter(undefined);

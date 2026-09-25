@@ -39,6 +39,10 @@ import { type CommandRegistry, createCommandRegistry } from "./lib/commands.ts";
 import { buildDefaultWorkerConfig } from "./lib/config_defaults.ts";
 import { setSuppressionAuthorAllowlist } from "./lib/suppression_comments.ts";
 import {
+  createProviderOutageAlerter,
+  installProviderOutageAlerter,
+} from "./lib/provider_outage_alert.ts";
+import {
   setPhaseEffortConfigOverrides,
   setPhaseModelConfigOverrides,
 } from "./lib/claude_executor.ts";
@@ -217,6 +221,7 @@ export {
 export { createLogger, type LoggerOptions } from "./lib/logger.ts";
 export { type CommandRegistry, createCommandRegistry } from "./lib/commands.ts";
 export { createGitHubClient } from "./lib/github.ts";
+import { runGhCommand } from "./lib/github.ts";
 export {
   buildQualityInstructions,
   buildReviewerFlags,
@@ -535,6 +540,10 @@ export async function main(args: string[] = Deno.args): Promise<void> {
     // Wire the suppression author allowlist from the trusted-author list —
     // unconfigured, the suppression gate fails closed (Issue #3941).
     setSuppressionAuthorAllowlist(config.allowedAuthors ?? []);
+    // One pinned alert while the agent provider refuses requests (Issue #2613).
+    installProviderOutageAlerter(
+      createProviderOutageAlerter({ ghFn: runGhCommand }),
+    );
     // Only validate config for commands that need it
     const configOptionalCommands = [
       "version",
