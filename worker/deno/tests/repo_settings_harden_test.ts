@@ -754,9 +754,18 @@ function makeGh(routes: Record<string, unknown>) {
   return { gh, writes, reads };
 }
 
+// Every temp path the #2626 tests create, removed when the module unloads.
+const TEMP_PATHS: string[] = [];
+globalThis.addEventListener("unload", () => {
+  for (const path of TEMP_PATHS) {
+    Deno.removeSync(path, { recursive: true });
+  }
+});
+
 /** A temp directory; with `checkout`, a `.git` and one pinned workflow. */
 async function makeWorkDir(checkout: boolean): Promise<string> {
   const dir = await Deno.makeTempDir({ prefix: "vibe-harden-" });
+  TEMP_PATHS.push(dir);
   if (checkout) {
     await Deno.mkdir(`${dir}/.git`);
     await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
@@ -770,6 +779,7 @@ async function makeWorkDir(checkout: boolean): Promise<string> {
 
 // Keeps the default-branch lookup off the worker's real disk cache.
 const BRANCH_CACHE = await Deno.makeTempFile({ prefix: "vibe-harden-cache-" });
+TEMP_PATHS.push(BRANCH_CACHE);
 
 let repoCounter = 0;
 /** Unique per test: the default-branch lookup is memory-cached by repo. */
@@ -1128,4 +1138,55 @@ Deno.test("findCodeownersOnDefaultBranch - an invalid repo is an error without a
   const result = await findCodeownersOnDefaultBranch("not a repo", gh);
   assertEquals(result.state, "error");
   assertEquals(reads, []);
+});
+
+Deno.test("hardenRepo - an invalid repo is one failed result and no gh call (Issue #2626)", async () => {
+  const { gh, writes, reads } = makeGh({});
+  const report = await hardenRepo("bad repo;x", {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(report.results.map((r) => r.status), ["failed"]);
+  assertEquals(reads, []);
+  assertEquals(writes, []);
+});
+
+Deno.test("hardenRepo - a Vibe ruleset with no pull_request rule fails without a write (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  const noPullRequest = {
+    ...VIBE_RULESET,
+    rules: VIBE_RULESET.rules.filter((r) => r.type !== "pull_request"),
+  };
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [noPullRequest]));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+    requireCodeOwnerReview: true,
+  });
+  assertEquals(writes, []);
+  const reviews = report.results.find((r) => r.step.kind === "ruleset-reviews");
+  assertEquals(reviews?.status, "failed");
+  assert(reviews?.detail?.includes("no pull_request rule"), reviews?.detail);
+});
+
+Deno.test("hardenRepo - a checkout probe fault other than NotFound fails loud, never skips (Issue #2626)", async () => {
+  const repo = uniqueRepo();
+  // A file as the work dir: stat of `<file>/.git` is ENOTDIR, not NotFound.
+  const notADir = await Deno.makeTempFile({ prefix: "vibe-harden-file-" });
+  TEMP_PATHS.push(notADir);
+  const { gh, writes } = makeGh(hardenedRoutes(repo));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    workDir: notADir,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assert(report.results.length > 0);
+  assert(report.results.every((r) => r.status === "failed"));
+  assert(!report.results.some((r) => r.status === "skipped"));
 });

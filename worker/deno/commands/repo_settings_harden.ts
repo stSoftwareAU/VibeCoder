@@ -27,15 +27,13 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { runGhCommand } from "../lib/github.ts";
+import { isValidRepoSlug } from "../lib/repo_rulesets.ts";
 import {
   collectUsesReferences,
   hardenRepo,
   type HardenResult,
   isValidActionCoordinate,
 } from "../lib/repo_settings_harden.ts";
-
-// Moved into the lib with `hardenRepo` (Issue #2626); re-exported for callers.
-export { collectUsesReferences };
 
 /** What the command reports. */
 export interface RepoSettingsHardenReport {
@@ -95,7 +93,7 @@ export const repoSettingsHardenCommand: Command = {
     _config: WorkerConfig,
   ): Promise<CommandResult<RepoSettingsHardenReport>> {
     const repo = typeof args["repo"] === "string" ? args["repo"] : "";
-    if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+    if (!isValidRepoSlug(repo)) {
       return {
         success: false,
         message: "repo-settings-harden requires --repo owner/name",

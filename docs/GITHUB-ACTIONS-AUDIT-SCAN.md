@@ -1207,7 +1207,8 @@ anything but a 404 is reported as `[failed]` naming the endpoint, and nothing
 is planned from the missing value — an unreadable surface is never mistaken
 for an unhardened one. Without a local checkout (no `.git` in `--work-dir`)
 the allow-list step is reported as `[skipped] … — no local checkout` and no
-allow-list is written. The same module exports
+allow-list is written; a checkout that exists but cannot be probed or read is
+`[failed]`, never skipped. The same module exports
 `findCodeownersOnDefaultBranch(repo, gh)`, which checks `.github/CODEOWNERS`,
 `CODEOWNERS` and `docs/CODEOWNERS` and answers `present` (with the path),
 `absent` (all three 404) or `error` (any other failure).

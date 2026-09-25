@@ -37,7 +37,11 @@ import { parse as parseYaml } from "@std/yaml/parse";
 // byte-for-byte, and two literals that must agree are a drift waiting to
 // happen. Re-exported because this module's name for it predates the move.
 export { MILESTONE_REF_PATTERN } from "./repo_rulesets.ts";
-import { isNotFoundError, MILESTONE_REF_PATTERN } from "./repo_rulesets.ts";
+import {
+  isNotFoundError,
+  isValidRepoSlug,
+  MILESTONE_REF_PATTERN,
+} from "./repo_rulesets.ts";
 import { VIBE_RULESET_NAME } from "./default_branch_ruleset.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
@@ -768,8 +772,6 @@ export async function collectUsesReferences(
   return [...out].sort();
 }
 
-const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -871,7 +873,7 @@ async function hardenRepoInto(
 ): Promise<void> {
   const gh = options.ghCommandFn;
   const results = outcome.results;
-  if (!REPO_PATTERN.test(repo)) {
+  if (!isValidRepoSlug(repo)) {
     results.push(
       readFailure("ruleset-reviews", `repos/${repo}`, "invalid repo name"),
     );
@@ -959,10 +961,25 @@ async function hardenRepoInto(
   // step is skipped and said so rather than writing an empty list.
   const hasCheckout = await Deno.stat(`${options.workDir}/.git`).then(
     () => true,
-    () => false,
+    (err) => {
+      // Only a missing `.git` means "no checkout"; any other fault is loud.
+      if (err instanceof Deno.errors.NotFound) return false;
+      throw err;
+    },
   );
+  let allowListFault: string | undefined;
   if (hasCheckout) {
-    const references = await collectUsesReferences(options.workDir);
+    let references: string[];
+    try {
+      references = await collectUsesReferences(options.workDir);
+    } catch (err) {
+      // An unreadable workflow tree fails the allow-list alone — never an
+      // empty list written in its place.
+      allowListFault = `could not read the workflows in ${options.workDir}: ${
+        errorMessage(err)
+      }`;
+      references = [];
+    }
     const transitive = await resolveTransitiveActionCoordinates(
       references,
       gh,
@@ -983,7 +1000,7 @@ async function hardenRepoInto(
     defaultBranch: branch,
   });
   const allowListStep = plan.find((s) => s.kind === "actions-allow-list");
-  const runnable = hasCheckout
+  const runnable = hasCheckout && !allowListFault
     ? plan
     : plan.filter((s) => s.kind !== "actions-allow-list");
   results.push(
@@ -992,7 +1009,7 @@ async function hardenRepoInto(
       ghCommandFn: gh,
     }),
   );
-  if (!hasCheckout) {
+  if (!hasCheckout || allowListFault) {
     results.push({
       step: allowListStep ?? {
         kind: "actions-allow-list",
@@ -1000,8 +1017,8 @@ async function hardenRepoInto(
         method: "PUT",
         endpoint: "actions/permissions/selected-actions",
       },
-      status: "skipped",
-      detail: "no local checkout",
+      status: allowListFault ? "failed" : "skipped",
+      detail: allowListFault ?? "no local checkout",
     });
   }
   // The exempted step is stated in the output, never silently absent.
@@ -1032,7 +1049,7 @@ export async function findCodeownersOnDefaultBranch(
   repo: string,
   ghCommandFn: GhCommandFn,
 ): Promise<CodeownersLocation> {
-  if (!REPO_PATTERN.test(repo)) {
+  if (!isValidRepoSlug(repo)) {
     return { state: "error", message: `invalid repo name: ${repo}` };
   }
   for (const path of CODEOWNERS_PATHS) {
