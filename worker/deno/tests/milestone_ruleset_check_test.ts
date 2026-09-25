@@ -1,6 +1,6 @@
 /**
- * Tests for milestone_ruleset_check.ts — setup's read-only verification of
- * the `milestone/**` ruleset (Issue #586).
+ * Tests for milestone_ruleset_check.ts — setup's verification of the
+ * `milestone/**` ruleset (Issue #586), and its creation (Issue #2623).
  *
  * The configuration has to satisfy two things that pull against each other: a
  * milestone PR must be auto-mergeable (which needs the branch gated), and the
@@ -17,9 +17,9 @@ import {
   canArmAutoMerge,
   coversDefaultBranch,
   coversMilestoneBranches,
-  createMilestoneRuleset,
   type RulesetDetail,
   serviceAccountCanBypass,
+  syncMilestoneRuleset,
   unreportableChecks,
 } from "../lib/milestone_ruleset_check.ts";
 import { buildMilestoneRulesetBody } from "../lib/repo_rulesets.ts";
@@ -213,78 +213,145 @@ Deno.test("serviceAccountCanBypass - a pull_request-mode bypass does not cover a
 });
 
 // ---------------------------------------------------------------------------
-// Creating the ruleset when it is missing. Setup runs with the operator's own
-// credentials, so it can write what the service account cannot.
+// Creating the ruleset when it is missing (Issues #586, #2623). Setup runs
+// with the operator's own credentials, so it can write what the service
+// account cannot — and it no longer asks first.
 // ---------------------------------------------------------------------------
 
-Deno.test("createMilestoneRuleset - mirrors the default-branch check set", async () => {
+/** The GRQ-AutoTrader default branch: `gate`, pinned to its app. */
+const PINNED_DEFAULT = ruleset({
+  id: 1,
+  name: "Default",
+  conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
+  rules: [{
+    type: "required_status_checks",
+    parameters: {
+      required_status_checks: [
+        { context: "gate", integration_id: 15368 },
+        { context: "lint" },
+      ],
+    },
+  }],
+  bypass_actors: [
+    { actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always" },
+  ],
+});
+
+Deno.test("syncMilestoneRuleset - creates the template, mirroring the default-branch checks", async () => {
   const posted: { args: string[]; body?: string }[] = [];
-  const result = await createMilestoneRuleset(
+  const result = await syncMilestoneRuleset(
     "org/repo",
     (args, stdin) => {
       posted.push({ args, ...(stdin !== undefined ? { body: stdin } : {}) });
       return Promise.resolve("42");
     },
+    { rulesets: [PINNED_DEFAULT] },
+  );
+
+  assert(result.ok);
+  assertEquals(result.outcomes.map((o) => o.kind), ["created"]);
+  assertEquals(posted[0]!.args.slice(0, 4), [
+    "api",
+    "-X",
+    "POST",
+    "repos/org/repo/rulesets",
+  ]);
+  // Exactly the GRQ-AutoTrader template (id 22615560), `gate` pinned.
+  assertEquals(JSON.parse(posted[0]!.body!), {
+    name: "Vibe Coder milestone branches",
+    target: "branch",
+    enforcement: "active",
+    conditions: {
+      ref_name: { include: ["refs/heads/milestone/**"], exclude: [] },
+    },
+    rules: [
+      { type: "deletion" },
+      { type: "non_fast_forward" },
+      {
+        type: "required_status_checks",
+        parameters: {
+          strict_required_status_checks_policy: false,
+          do_not_enforce_on_create: true,
+          required_status_checks: [
+            { context: "gate", integration_id: 15368 },
+            { context: "lint" },
+          ],
+        },
+      },
+    ],
+    bypass_actors: [
+      { actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always" },
+    ],
+  });
+});
+
+Deno.test("syncMilestoneRuleset - writes nothing when a broader ruleset already covers milestone branches", async () => {
+  // Only a ruleset whose include is exactly `refs/heads/milestone/**` is
+  // setup's to align; `~ALL` covers the branches, so nothing is created
+  // either.
+  const result = await syncMilestoneRuleset(
+    "org/repo",
+    () => Promise.reject(new Error("must not call gh")),
+    {
+      rulesets: [
+        PINNED_DEFAULT,
+        ruleset({ id: 9, conditions: { ref_name: { include: ["~ALL"] } } }),
+      ],
+    },
+  );
+  assert(result.ok);
+  assertEquals(result.outcomes, []);
+});
+
+Deno.test("syncMilestoneRuleset - with no checks to mirror creates deletion and force-push rules only", async () => {
+  // GRQ-www: its default-branch ruleset requires no status checks. A guessed
+  // check would block every milestone PR, so none is written — but the
+  // branch is still protected, and the default branch's bypass carries over.
+  const bodies: Array<
+    { rules: { type: string }[]; bypass_actors?: unknown[] }
+  > = [];
+  const result = await syncMilestoneRuleset(
+    "org/repo",
+    (_args, stdin) => {
+      bodies.push(JSON.parse(stdin!));
+      return Promise.resolve("7");
+    },
     {
       rulesets: [ruleset({
         conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
-        rules: [{
-          type: "required_status_checks",
-          parameters: {
-            required_status_checks: [
-              { context: "semgrep" },
-              { context: "gitleaks" },
-            ],
-          },
-        }],
+        rules: [{ type: "deletion" }],
         bypass_actors: [
           { actor_type: "RepositoryRole", actor_id: 5, bypass_mode: "always" },
         ],
       })],
     },
   );
-
-  assert(result.ok && result.created);
-  assertEquals(result.contexts, ["semgrep", "gitleaks"]);
-
-  const body = JSON.parse(posted[0]!.body!);
-  assertEquals(body.conditions.ref_name.include, ["refs/heads/milestone/**"]);
-  // No `pull_request` rule: review belongs on the default branch, not in
-  // front of every child PR the fleet raises.
-  assertEquals(
-    (body.rules as { type: string }[]).some((r) => r.type === "pull_request"),
-    false,
-  );
-  // The default branch's bypass actors carry over, so whoever could push
-  // there can still push a milestone branch.
-  assertEquals(body.bypass_actors.length, 1);
+  assert(result.ok);
+  assertEquals(result.outcomes.map((o) => o.kind), ["created"]);
+  assertEquals(bodies.length, 1);
+  assertEquals(bodies[0]!.rules.map((r) => r.type), [
+    "deletion",
+    "non_fast_forward",
+  ]);
+  assertEquals(bodies[0]!.bypass_actors?.length, 1);
 });
 
-Deno.test("createMilestoneRuleset - does nothing when milestone branches are already covered", async () => {
-  const result = await createMilestoneRuleset(
+Deno.test("syncMilestoneRuleset - a 404 is explained as a permission problem (Issue #595)", async () => {
+  // GitHub answers a ruleset write from a non-admin with 404, not 403. Every
+  // repository in a fleet setup run failed with the bare "gh: Not Found
+  // (HTTP 404)", which named neither the cause nor the fix.
+  const result = await syncMilestoneRuleset(
     "org/repo",
-    () => Promise.reject(new Error("must not call gh")),
-    { rulesets: [ruleset()] },
+    () => Promise.reject(new Error("gh: Not Found (HTTP 404)")),
+    { rulesets: [PINNED_DEFAULT] },
   );
-  assert(result.ok && !result.created);
-  assertStringIncludes(result.reason, "already covered");
-});
 
-Deno.test("createMilestoneRuleset - refuses to guess a check set", async () => {
-  // Requiring a context nothing reports would block every milestone PR for
-  // ever, which is worse than the gap it would close.
-  const result = await createMilestoneRuleset(
-    "org/repo",
-    () => Promise.reject(new Error("must not call gh")),
-    {
-      rulesets: [ruleset({
-        conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
-        rules: [{ type: "deletion" }],
-      })],
-    },
-  );
-  assert(result.ok && !result.created);
-  assertStringIncludes(result.reason, "no check set to mirror");
+  assert(result.ok);
+  const failed = result.outcomes[0];
+  assert(failed?.kind === "failed", JSON.stringify(result.outcomes));
+  assertEquals(failed.action, "create");
+  assertStringIncludes(failed.error.message, "ADMIN on org/repo");
+  assertStringIncludes(failed.error.message, "'write', which is not enough");
 });
 
 // ---------------------------------------------------------------------------
@@ -352,29 +419,6 @@ Deno.test("assessMilestoneRuleset - checks that do report raise nothing", () => 
   assertEquals(findings.map((f) => f.code), ["configured"]);
 });
 
-Deno.test("createMilestoneRuleset - a 404 is explained as a permission problem (Issue #595)", async () => {
-  // GitHub answers a ruleset write from a non-admin with 404, not 403. Every
-  // repository in a fleet setup run failed with the bare "gh: Not Found
-  // (HTTP 404)", which named neither the cause nor the fix.
-  const result = await createMilestoneRuleset(
-    "org/repo",
-    () => Promise.reject(new Error("gh: Not Found (HTTP 404)")),
-    {
-      rulesets: [ruleset({
-        conditions: { ref_name: { include: ["~DEFAULT_BRANCH"] } },
-        rules: [{
-          type: "required_status_checks",
-          parameters: { required_status_checks: [{ context: "semgrep" }] },
-        }],
-      })],
-    },
-  );
-
-  assert(!result.ok);
-  assertStringIncludes(result.error.message, "ADMIN on org/repo");
-  assertStringIncludes(result.error.message, "'write', which is not enough");
-});
-
 // The Issue #595 property — the ruleset write runs as the OPERATOR, never as
 // the service account — was asserted here by reading `setup_cli.ts` as text
 // and grepping the call site for `createSetupGhJson()`. That test verified
@@ -385,7 +429,8 @@ Deno.test("createMilestoneRuleset - a 404 is explained as a permission problem (
 // It is replaced by a test that RUNS the code and asserts which identity the
 // write was issued under:
 //   tests/milestone_ruleset_read_test.ts
-//     :: reportMilestoneRuleset - answering yes creates under the OPERATOR identity
+//     :: reportMilestoneRuleset - a missing ruleset is created without asking,
+//        under the OPERATOR identity (Issue #2623 removed the question)
 // Coverage of the property is retained; only the source-text assertion is gone.
 
 // ---------------------------------------------------------------------------
@@ -543,13 +588,13 @@ Deno.test("assessMilestoneRuleset - a ruleset already exempt on create is not re
 });
 
 // ---------------------------------------------------------------------------
-// Required checks WITHOUT the strict up-to-date policy (Issue #2461). A child
-// PR whose base is behind the default branch is armed anyway (Issue #2460),
-// and the strict policy is the only thing that then holds the merge until the
-// branch is level.
+// The strict up-to-date policy is no longer a finding (Issue #2623). Issue
+// #2461 reported `false` as an error; the GRQ-AutoTrader template setup now
+// writes sets it `false`, so setup must not flag the ruleset it just wrote.
+// These two replace the #2461 tests that asserted the opposite.
 // ---------------------------------------------------------------------------
 
-Deno.test("assessMilestoneRuleset - required checks that do not require an up-to-date branch are an ERROR", () => {
+Deno.test("assessMilestoneRuleset - an explicit non-strict policy is not reported (Issue #2623)", () => {
   const findings = assessMilestoneRuleset(
     [ruleset({
       rules: [{
@@ -560,26 +605,16 @@ Deno.test("assessMilestoneRuleset - required checks that do not require an up-to
           strict_required_status_checks_policy: false,
         },
       }],
+      bypass_actors: [
+        { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
+      ],
     })],
     ACCOUNT,
   );
-  const stale = findings.find((f) => f.code === "non-strict-checks");
-  assert(
-    stale,
-    `expected non-strict-checks: ${JSON.stringify(codes(findings))}`,
-  );
-  assertEquals(stale.severity, "error");
-  // Names the parameter to set, and why it matters.
-  assertStringIncludes(
-    stale.message,
-    "strict_required_status_checks_policy",
-  );
-  assertStringIncludes(stale.message, "stale tip");
+  assertEquals(codes(findings), ["configured"]);
 });
 
-Deno.test("assessMilestoneRuleset - an absent strict policy is reported like an explicit false", () => {
-  // GitHub defaults the parameter to false, so absence is the same defect —
-  // and it is the shape every ruleset written before the builder set it has.
+Deno.test("assessMilestoneRuleset - an absent strict policy is not reported (Issue #2623)", () => {
   const findings = assessMilestoneRuleset(
     [ruleset({
       rules: [{
@@ -589,15 +624,13 @@ Deno.test("assessMilestoneRuleset - an absent strict policy is reported like an 
           do_not_enforce_on_create: true,
         },
       }],
+      bypass_actors: [
+        { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
+      ],
     })],
     ACCOUNT,
   );
-  const stale = findings.find((f) => f.code === "non-strict-checks");
-  assert(
-    stale,
-    `expected non-strict-checks: ${JSON.stringify(codes(findings))}`,
-  );
-  assertEquals(stale.severity, "error");
+  assertEquals(codes(findings), ["configured"]);
 });
 
 Deno.test("assessMilestoneRuleset - a strict ruleset raises no staleness finding and reports configured", () => {
@@ -631,14 +664,15 @@ Deno.test("assessMilestoneRuleset - no required checks means no staleness findin
     [ruleset({ rules: [{ type: "deletion" }] })],
     ACCOUNT,
   );
-  assertEquals(findings.filter((f) => f.code === "non-strict-checks"), []);
   assertEquals(codes(findings), ["no-required-checks"]);
 });
 
 Deno.test("assessMilestoneRuleset - the ruleset this repo writes passes with no errors", () => {
   // The builder and the checker must agree: a ruleset the fleet created for
   // itself must not be reported back as broken.
-  const body = buildMilestoneRulesetBody("milestone-branches", ["gate"], [
+  const body = buildMilestoneRulesetBody("milestone-branches", [{
+    context: "gate",
+  }], [
     { actor_type: "RepositoryRole", actor_id: 3, bypass_mode: "always" },
   ]);
   const findings = assessMilestoneRuleset(

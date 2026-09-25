@@ -63,11 +63,6 @@ import {
 } from "./scheduled_task.ts";
 import { setupPlaywrightMcp } from "./screenshot.ts";
 import {
-  type ConsentReader,
-  isAffirmative,
-  readConsentLine,
-} from "./consent_prompt.ts";
-import {
   addRepoToMonitoredList,
   listMonitoredRepos,
   removeRepoFromMonitoredList,
@@ -84,17 +79,21 @@ import {
   verifyMonitoredCollaborators,
 } from "./collaborator_precheck.ts";
 import {
+  applyMilestoneSyncOutcomes,
   assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
-  createMilestoneRuleset,
   type GhJson,
-  MILESTONE_RULESET_NAME,
-  planMilestoneRuleset,
+  type MilestoneSyncOutcome,
   readRulesetDetails,
   repairMilestoneRulesetCreateBlock,
   type RulesetDetail,
   rulesetReadFailedFinding,
+  syncMilestoneRuleset,
 } from "../lib/milestone_ruleset_check.ts";
+import {
+  isRequiredStatusChecksRule,
+  type RulesetBody,
+} from "../lib/repo_rulesets.ts";
 import { syncBranchProtectionForAllRepos } from "./branch_protection_sync.ts";
 import { explainRulesetFailure } from "../lib/ruleset_failure.ts";
 import {
@@ -148,50 +147,6 @@ function createSetupGhJson(ghConfigDir?: string) {
       ...(stdin === undefined ? {} : { stdin }),
       ...(dir ? { env: { GH_CONFIG_DIR: dir } } : {}),
     });
-}
-
-/** The terminal edges of {@link askCreateMilestoneRuleset}, injectable. */
-export interface ConsentPromptSeams {
-  /** Where the answer is read. Defaults to `Deno.stdin`. */
-  reader?: ConsentReader;
-  /** Whether a terminal is attached. Defaults to `Deno.stdin.isTerminal()`. */
-  isTerminal?: () => boolean;
-  /** Where the question is written. Defaults to `Deno.stdout`. */
-  write?: (chunk: Uint8Array) => Promise<number>;
-}
-
-/**
- * Ask whether to create the missing `milestone/**` ruleset (Issue #586).
- *
- * Setup asks its own questions — this is one of them. Without a terminal to
- * ask on there is no consent to infer, so the check warns and changes
- * nothing: a scripted run can never hang here, and never writes a ruleset
- * nobody agreed to.
- *
- * The answer is read one whole line at a time (Issue #1296). This question is
- * asked once per repository, so a fixed-size read left the tail of a long
- * answer in the buffer to approve the NEXT repository's ruleset — consent the
- * operator never gave to a question they never saw.
- */
-export async function askCreateMilestoneRuleset(
-  repo: string,
-  seams: ConsentPromptSeams = {},
-): Promise<boolean> {
-  const isTerminal = seams.isTerminal ?? (() => Deno.stdin.isTerminal());
-  if (!isTerminal()) return false;
-
-  const write = seams.write ??
-    ((chunk: Uint8Array) => Deno.stdout.write(chunk));
-  await write(
-    new TextEncoder().encode(
-      out.question(
-        `${repo}: no ruleset covers \`milestone/**\`, so GitHub cannot arm ` +
-          `auto-merge on a milestone PR.`,
-      ) + "\n" +
-        out.plain("Create one mirroring the default-branch checks? [y/N] "),
-    ),
-  );
-  return isAffirmative(await readConsentLine(seams.reader ?? Deno.stdin));
 }
 
 function printError(msg: string): void {
@@ -1051,8 +1006,6 @@ export type ReportSeverity = "info" | "success" | "warning" | "error";
 export interface MilestoneReportSeams {
   /** A `gh` runner for the given identity. */
   ghFor: (identity: SetupIdentity) => GhJson;
-  /** Ask the operator whether to create the missing ruleset. */
-  ask: (repo: string) => Promise<boolean>;
   /** Emit one line. */
   print: (severity: ReportSeverity, message: string) => void;
 }
@@ -1064,7 +1017,6 @@ function liveMilestoneSeams(ghConfigDir?: string): MilestoneReportSeams {
       identity === "operator"
         ? createSetupGhJson()
         : createSetupGhJson(ghConfigDir),
-    ask: askCreateMilestoneRuleset,
     print: (severity, message) => {
       if (severity === "error") printError(message);
       else if (severity === "warning") printWarning(message);
@@ -1074,24 +1026,71 @@ function liveMilestoneSeams(ghConfigDir?: string): MilestoneReportSeams {
   };
 }
 
+/** Print the one line each sync outcome earns (Issue #2623). */
+function printMilestoneSyncOutcome(
+  repo: string,
+  outcome: MilestoneSyncOutcome,
+  print: MilestoneReportSeams["print"],
+): void {
+  switch (outcome.kind) {
+    case "created":
+      print(
+        "success",
+        `${repo}: created the '${outcome.ruleset}' ruleset on ` +
+          `\`milestone/**\` ${describeTemplateChecks(outcome.body)}`,
+      );
+      return;
+    case "aligned":
+      print(
+        "success",
+        `${repo}: aligned ruleset '${outcome.previousName}' to the ` +
+          `'${outcome.ruleset}' template ` +
+          `${describeTemplateChecks(outcome.body)}`,
+      );
+      return;
+    case "failed":
+      print(
+        "warning",
+        `${repo}: could not ${outcome.action} the milestone ruleset ` +
+          `'${outcome.ruleset}': ${outcome.error.message}`,
+      );
+      return;
+    case "skipped":
+      print(
+        "warning",
+        `${repo}: left milestone ruleset '${outcome.ruleset}' as it is — ` +
+          `${outcome.reason}`,
+      );
+      return;
+  }
+}
+
+/** "requiring N check(s)", or why it requires none. */
+function describeTemplateChecks(body: RulesetBody): string {
+  const count = body.rules.find(isRequiredStatusChecksRule)?.parameters
+    .required_status_checks.length ?? 0;
+  return count > 0
+    ? `requiring ${count} check(s) mirrored from the default branch`
+    : `with deletion and force-push protection only — the default branch ` +
+      `requires no checks to mirror`;
+}
+
 /**
- * Report one repository's milestone-branch and auto-merge configuration, and
- * offer to create the `milestone/**` ruleset when — and only when — an answer
- * could change something (Issues #586, #553, #678).
+ * Report one repository's milestone-branch and auto-merge configuration,
+ * after creating or aligning its `milestone/**` ruleset to the template
+ * (Issues #586, #553, #678, #2623).
  *
- * The rulesets are read by the caller, once, and passed in, so the offer, the
- * milestone findings and the default-branch auto-merge check all assess the
- * same state and cannot disagree about what is on the repository.
- *
- * The one call that does NOT reuse them is the create: it re-reads under the
- * `operator` identity because that is the only one holding `admin`, and it
- * must decide what to write from what THAT identity can see (Issue #595). The
- * re-read is deliberate, not a missed optimisation.
+ * The create-or-align runs first, with no prompt, under the `operator`
+ * identity: it is the only one holding the `admin` a ruleset write needs, and
+ * it re-reads the rulesets so the write is decided from what THAT identity
+ * can see (Issue #595). The findings are then assessed against the caller's
+ * rulesets with the successful writes applied, so setup reports the
+ * repository it leaves behind rather than the one it found.
  *
  * @param result - The repo and its resolved default branch
  * @param login - The service account the worker runs as
  * @param rulesets - Every ruleset on the repository, already read
- * @param seams - The `gh`, prompt and print edges
+ * @param seams - The `gh` and print edges
  * @returns The number of `error`-severity findings printed
  */
 export async function reportMilestoneRuleset(
@@ -1101,11 +1100,31 @@ export async function reportMilestoneRuleset(
   seams: MilestoneReportSeams,
 ): Promise<number> {
   const { repo, branch } = result;
+
+  let current: readonly RulesetDetail[] = rulesets;
+  const sync = await syncMilestoneRuleset(
+    repo,
+    seams.ghFor("operator"),
+    branch ? { defaultBranch: branch } : {},
+  );
+  if (!sync.ok) {
+    seams.print(
+      "warning",
+      `${repo}: could not create or align the milestone ruleset: ` +
+        `${sync.error.message}`,
+    );
+  } else {
+    for (const outcome of sync.outcomes) {
+      printMilestoneSyncOutcome(repo, outcome, seams.print);
+    }
+    current = applyMilestoneSyncOutcomes(rulesets, sync.outcomes);
+  }
+
   const findings = await checkMilestoneRuleset(
     repo,
     login,
     seams.ghFor("service-account"),
-    { rulesets },
+    { rulesets: current },
   );
 
   // Issue #2067: a `milestone/**` ruleset that enforces its required checks
@@ -1116,11 +1135,13 @@ export async function reportMilestoneRuleset(
   // worker cannot clear it: a ruleset write needs `admin` and the service
   // account holds `write`. Setup, running as the operator, can — so it does,
   // rather than leaving a repository stranded behind a flag nobody flips.
+  // After the sync above this is reached only for a milestone-only ruleset
+  // the sync does not own, or one whose alignment failed.
   let repairedCreateBlock = false;
   if (findings.some((finding) => finding.code === "create-blocked")) {
     // Re-read under the operator identity for the Issue #595 reason the
-    // create path re-reads: only that identity holds `admin`, so what it can
-    // see is what the write must be decided from.
+    // sync re-reads: only that identity holds `admin`, so what it can see is
+    // what the write must be decided from.
     const repair = await repairMilestoneRulesetCreateBlock(
       repo,
       seams.ghFor("operator"),
@@ -1142,51 +1163,6 @@ export async function reportMilestoneRuleset(
     }
   }
 
-  // A question whose only possible outcome is a refusal must not be asked.
-  // With no default-branch gate to mirror there is nothing to create, so
-  // answering yes changed nothing and the same question came back on every
-  // run — setup says why instead (Issue #678).
-  const plan = planMilestoneRuleset(rulesets);
-  let suppressMissingWarning = false;
-
-  if (plan.kind === "not-creatable") {
-    // Said once, as a single line. The standing `no-milestone-ruleset` warning
-    // ends "add a ruleset with required status checks", which read as a
-    // contradiction next to "there are no checks to mirror" — so the reason is
-    // folded into that warning rather than printed beside it.
-    suppressMissingWarning = true;
-    seams.print(
-      "warning",
-      `${repo}: no ruleset covers \`milestone/**\`, so GitHub cannot arm ` +
-        `auto-merge on a milestone PR (Issue #586). Setup is not offering to ` +
-        `create one — ${plan.reason}. Require status checks on the default ` +
-        `branch first, then re-run setup to mirror them onto ` +
-        `\`milestone/**\`.`,
-    );
-  } else if (plan.kind === "creatable" && await seams.ask(repo)) {
-    const created = await createMilestoneRuleset(repo, seams.ghFor("operator"));
-    if (!created.ok) {
-      seams.print(
-        "warning",
-        `${repo}: could not create the milestone ruleset: ` +
-          `${created.error.message}`,
-      );
-    } else if (created.created) {
-      seams.print(
-        "success",
-        `${repo}: created the "${MILESTONE_RULESET_NAME}" ruleset ` +
-          `requiring ${created.contexts.length} check(s) on ` +
-          `\`milestone/**\` — milestone PRs are auto-mergeable`,
-      );
-      return 0;
-    } else {
-      seams.print(
-        "info",
-        `${repo}: milestone ruleset not created — ${created.reason}`,
-      );
-    }
-  }
-
   // Issue #553: the same question for the DEFAULT branch. Auto-merge being
   // "set at random" was deterministic all along — GitHub refuses to arm it on
   // a PR nothing blocks, so a branch requiring neither checks nor reviews can
@@ -1195,7 +1171,7 @@ export async function reportMilestoneRuleset(
   // nothing says so. A repo whose default branch could not be resolved is
   // already reported by the caller; there is nothing to assess against.
   const autoMergeFinding = branch
-    ? assessDefaultBranchAutoMerge(rulesets, branch)
+    ? assessDefaultBranchAutoMerge(current, branch)
     : null;
   if (autoMergeFinding) {
     seams.print("warning", `${repo}: ${autoMergeFinding.message}`);
@@ -1203,9 +1179,6 @@ export async function reportMilestoneRuleset(
 
   let errors = 0;
   for (const finding of findings) {
-    if (suppressMissingWarning && finding.code === "no-milestone-ruleset") {
-      continue;
-    }
     // Already fixed above — a repaired repository is a clean one, not one
     // reported as broken (Issue #2067).
     if (repairedCreateBlock && finding.code === "create-blocked") continue;
@@ -1291,11 +1264,11 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
           `${r.repo} (${r.visibility}, ${r.branch}): already covered by a ruleset (no change)`,
         );
       }
-      // Issue #586: milestone branches are the operator's to configure — the
-      // worker never writes their ruleset, because getting it wrong freezes
-      // every milestone branch in the fleet. Setup reads it and says what is
-      // wrong, so a misconfiguration is caught here rather than by a milestone
-      // sync failing on the hour.
+      // Issue #586: the worker never writes the milestone ruleset — setup,
+      // running as the operator, creates or aligns it to the template with no
+      // prompt (Issue #2623), then says what is still wrong, so a
+      // misconfiguration is caught here rather than by a milestone sync
+      // failing on the hour.
       const milestoneLogin = (config.service_accounts ?? [])[0];
       if (milestoneLogin) {
         // Read the rulesets ONCE, and treat a read that failed as a failure:

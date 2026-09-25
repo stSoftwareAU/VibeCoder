@@ -360,7 +360,9 @@ Deno.test("repo_rulesets - the milestone body exempts branch CREATION from its c
   // runs to satisfy. GRQ-FX-validation carried exactly that ruleset and every
   // run died in `setup` with "push declined due to repository rule
   // violations".
-  const body = buildMilestoneRulesetBody("Vibe milestones", ["quality"]);
+  const body = buildMilestoneRulesetBody("Vibe milestones", [
+    { context: "quality" },
+  ]);
 
   const checks = body.rules.find(isRequiredStatusChecksRule);
   assert(checks);
@@ -370,5 +372,40 @@ Deno.test("repo_rulesets - the milestone body exempts branch CREATION from its c
   assertEquals(checks.parameters.required_status_checks, [
     { context: "quality" },
   ]);
-  assertEquals(checks.parameters.strict_required_status_checks_policy, true);
+  // Issue #2623: the GRQ-AutoTrader template leaves strict off.
+  assertEquals(checks.parameters.strict_required_status_checks_policy, false);
+});
+
+Deno.test("repo_rulesets - the milestone body keeps each check's integration_id (Issue #2623)", () => {
+  const body = buildMilestoneRulesetBody("Vibe milestones", [
+    { context: "gate", integration_id: 15368 },
+    { context: "lint" },
+  ]);
+  const checks = body.rules.find(isRequiredStatusChecksRule);
+  assert(checks);
+  assertEquals(checks.parameters.required_status_checks, [
+    { context: "gate", integration_id: 15368 },
+    { context: "lint" },
+  ]);
+  assertEquals(body.enforcement, "active");
+});
+
+Deno.test("repo_rulesets - a milestone body with no checks carries only deletion and force-push rules (Issue #2623)", () => {
+  // A guessed check would block every milestone PR on a context that never
+  // reports, so an empty check set writes no status-check rule at all.
+  const body = buildMilestoneRulesetBody("Vibe milestones", []);
+  assertEquals(body.rules.map((rule) => rule.type), [
+    "deletion",
+    "non_fast_forward",
+  ]);
+});
+
+Deno.test("repo_rulesets - the milestone body keeps the enforcement it is given (Issue #2623)", () => {
+  const body = buildMilestoneRulesetBody(
+    "Vibe milestones",
+    [{ context: "gate" }],
+    [],
+    "disabled",
+  );
+  assertEquals(body.enforcement, "disabled");
 });

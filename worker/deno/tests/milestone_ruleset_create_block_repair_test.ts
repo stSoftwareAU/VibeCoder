@@ -275,6 +275,20 @@ Deno.test("repairMilestoneRulesetCreateBlock - an invalid repo slug is refused b
 // The setup wiring — the only identity that can do this write
 // ---------------------------------------------------------------------------
 
+/**
+ * {@link BLOCKED} on a single-segment `milestone/*` include. Since Issue #2623
+ * setup first aligns any ruleset whose include is exactly
+ * `refs/heads/milestone/**`, which also clears the create block; the repair
+ * below is what still reaches a milestone-only ruleset the sync does not own,
+ * so these wiring tests exercise it on one.
+ */
+const BLOCKED_UNOWNED: RulesetDetail = {
+  ...BLOCKED,
+  conditions: {
+    ref_name: { include: ["refs/heads/milestone/*"], exclude: [] },
+  },
+};
+
 /** Seams for `reportMilestoneRuleset` recording writes and their identity. */
 function reportSeams(details: RulesetDetail[]) {
   const writes: Array<{ identity: SetupIdentity; body: unknown }> = [];
@@ -297,7 +311,6 @@ function reportSeams(details: RulesetDetail[]) {
       }
       return Promise.resolve("write");
     },
-    ask: () => Promise.resolve(false),
     print: (severity, message) => printed.push({ severity, message }),
   };
   return { seams, writes, printed };
@@ -307,12 +320,12 @@ Deno.test("reportMilestoneRuleset - a create-blocking ruleset is repaired under 
   // The whole of Issue #2067 end to end: setup finds the ruleset that makes
   // every run on the repository die in `setup`, and clears it. A ruleset
   // write needs admin, which only the operator identity holds (Issue #595).
-  const { seams, writes, printed } = reportSeams([BLOCKED]);
+  const { seams, writes, printed } = reportSeams([BLOCKED_UNOWNED]);
 
   const errors = await reportMilestoneRuleset(
     { repo: "org/repo", branch: "Develop" },
     "VibeCoderST",
-    [BLOCKED],
+    [BLOCKED_UNOWNED],
     seams,
   );
 
@@ -336,12 +349,16 @@ Deno.test("reportMilestoneRuleset - a create-blocking ruleset is repaired under 
 });
 
 Deno.test("reportMilestoneRuleset - a healthy ruleset is never written to", async () => {
-  const { seams, writes, printed } = reportSeams([REPAIRED]);
+  const repairedUnowned = {
+    ...REPAIRED,
+    conditions: BLOCKED_UNOWNED.conditions,
+  };
+  const { seams, writes, printed } = reportSeams([repairedUnowned]);
 
   const errors = await reportMilestoneRuleset(
     { repo: "org/repo", branch: "Develop" },
     "VibeCoderST",
-    [REPAIRED],
+    [repairedUnowned],
     seams,
   );
 
@@ -353,7 +370,7 @@ Deno.test("reportMilestoneRuleset - a healthy ruleset is never written to", asyn
 Deno.test("reportMilestoneRuleset - a refused repair warns and still reports the fault", async () => {
   // Never fail silently: when the write is refused the repository is still
   // broken, so the error finding must survive to the operator.
-  const { printed } = reportSeams([BLOCKED]);
+  const { printed } = reportSeams([BLOCKED_UNOWNED]);
   const refusing: MilestoneReportSeams = {
     ghFor: (identity) => (args: string[], stdin?: string) => {
       if (stdin !== undefined) {
@@ -363,18 +380,17 @@ Deno.test("reportMilestoneRuleset - a refused repair warns and still reports the
       if ((args[1] ?? "").includes("/rulesets")) {
         return identity === "service-account"
           ? Promise.reject(new Error("must not re-read the rulesets"))
-          : ghRecording([BLOCKED]).gh(args);
+          : ghRecording([BLOCKED_UNOWNED]).gh(args);
       }
       return Promise.resolve("write");
     },
-    ask: () => Promise.resolve(false),
     print: (severity, message) => printed.push({ severity, message }),
   };
 
   const errors = await reportMilestoneRuleset(
     { repo: "org/repo", branch: "Develop" },
     "VibeCoderST",
-    [BLOCKED],
+    [BLOCKED_UNOWNED],
     refusing,
   );
 
