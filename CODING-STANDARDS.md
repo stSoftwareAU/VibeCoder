@@ -563,7 +563,7 @@ manual is [docs/BEST-PRACTICES-SCAN.md](docs/BEST-PRACTICES-SCAN.md).
 | [`typescript`](prompts/best_practices/buckets/typescript.md)                 | Type safety, `tsconfig` strictness, lint rules, module structure        |
 | [`java`](prompts/best_practices/buckets/java.md)                             | Effective Java items, style guide conformance, API design               |
 | [`react`](prompts/best_practices/buckets/react.md)                           | Hooks rules, rendering and state, component accessibility               |
-| [`html`](prompts/best_practices/buckets/html.md)                             | Living-standard markup, WCAG and ARIA accessibility                     |
+| [`html`](prompts/best_practices/buckets/html.md)                             | Living-standard markup, WCAG and ARIA accessibility, visual design anti-patterns |
 | [`terraform`](prompts/best_practices/buckets/terraform.md)                   | Module composition, state handling, provider/version pinning            |
 | [`aws-cloudformation`](prompts/best_practices/buckets/aws-cloudformation.md) | Well-Architected pillars, template structure, stack safety              |
 | [`general`](prompts/best_practices/buckets/general.md)                       | Repo-level hygiene only — never language-specific code quality          |

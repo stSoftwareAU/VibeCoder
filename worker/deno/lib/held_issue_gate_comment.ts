@@ -69,6 +69,11 @@ export const HELD_ISSUE_GATE_MARKER = "vibe-held-issue-gate";
 export type HeldIssueGate =
   /** A PR is already open on this stream; the issue is worked once it lands. */
   | { kind: "pr-open"; prNumber: number }
+  /**
+   * The fleet's open PRs on the default branch have reached the slot cap
+   * (Issue #2663): one fleet PR per slot, so no single PR is the blocker.
+   */
+  | { kind: "fleet-pr-cap"; open: number; cap: number }
   /** The dependency is closed, but its code rides a milestone branch. */
   | { kind: "milestone-wait"; dependency: ChainIssueRef; milestone: string }
   /** The dependency is still open, optionally with an unworkable chain root. */
@@ -131,6 +136,12 @@ function gateSentence(gate: HeldIssueGate): string {
     case "pr-open":
       return `PR #${gate.prNumber} is open on this stream; this issue is ` +
         `worked once it lands.`;
+    case "fleet-pr-cap": {
+      const prs = gate.open === 1 ? "fleet PR is" : "fleet PRs are";
+      return `${gate.open} ${prs} open on this repo's default branch ` +
+        `(cap ${gate.cap}) — one fleet PR per slot; this issue is worked ` +
+        `once one lands.`;
+    }
     case "milestone-wait": {
       const ref = renderRef(gate.dependency);
       const milestone = safeMilestone(gate.milestone);
@@ -167,6 +178,8 @@ function gateKey(gate: HeldIssueGate): string {
   switch (gate.kind) {
     case "pr-open":
       return `held-gate-pr-open-${gate.prNumber}`;
+    case "fleet-pr-cap":
+      return `held-gate-fleet-pr-cap-${gate.open}-of-${gate.cap}`;
     case "milestone-wait":
       return `held-gate-milestone-wait-${renderRef(gate.dependency)}-` +
         `${safeMilestone(gate.milestone)}`;
@@ -268,6 +281,7 @@ export async function upsertHeldIssueGateComment(opts: {
  * The gate a held issue's scan entry names, or `null` when the entry names none
  * the fleet reports (Issue #2535).
  *
+ * - `pr-blocked` at the default-branch slot cap (#2663) ⇒ `fleet-pr-cap`.
  * - `pr-blocked` with the PR recorded (#2534) ⇒ `pr-open`.
  * - `dependency-blocked` ⇒ the first recorded blocker: `milestone-wait` when it
  *   is the cross-milestone hold (#2173), otherwise `dependency`, carrying the
@@ -288,6 +302,13 @@ export function heldIssueGateFor(
   fleetWorkingChain: boolean,
 ): HeldIssueGate | null {
   if (held.reason === "pr-blocked") {
+    if (held.fleetPrCap !== undefined) {
+      return {
+        kind: "fleet-pr-cap",
+        open: held.fleetPrCap.open,
+        cap: held.fleetPrCap.cap,
+      };
+    }
     return held.blockingPr === undefined
       ? null
       : { kind: "pr-open", prNumber: held.blockingPr };

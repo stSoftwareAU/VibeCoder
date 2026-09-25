@@ -55,8 +55,10 @@ import { runGhCommand } from "./github.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import { filterAndSort, isMilestoneOccupied } from "./issue_filter.ts";
 import {
+  describeBlockingPr,
   getBlockingPRForIssue,
   isBlockedByRecentlyClosedPR,
+  resolveFleetPrSlots,
 } from "./issue_query.ts";
 import type { ClosedPR, OpenPR } from "./issue_query.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
@@ -407,13 +409,15 @@ export async function collectSelfDiagnosticCandidates(
         repoPRs,
         milestoneTitle,
         pushCapableAuthors,
+        resolveFleetPrSlots(config, repo),
+        issue.number,
       );
       if (blockingPR) {
         diag?.logIssueSkipped(
           repo,
           issue.number,
           "pr-blocked",
-          `PR #${blockingPR.number}`,
+          describeBlockingPr(blockingPR),
         );
         continue;
       }

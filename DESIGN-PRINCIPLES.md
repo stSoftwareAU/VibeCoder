@@ -419,9 +419,16 @@ parked the whole default-branch work stream for ~21 hours while unassigned
 ### One PR per work stream (serialised work)
 
 The worker serialises its work per work stream (each milestone is a work stream;
-non-milestone issues share the default branch work stream). It creates one PR at
-a time so each piece of work builds on the previous. This prevents merge hell
-from multiple independent PRs branching from the same root.
+non-milestone issues share the default branch work stream). A milestone stream
+runs one PR at a time so each piece of work builds on the previous, and the
+milestone's single consolidation PR is the human review gate. The default-branch
+stream is bounded by slots instead: the owner's rule (2026-09-26) is **one fleet
+PR per slot — multiple milestones mean multiple PRs** (Issue #2663). Every free
+slot can have its own default-branch PR in flight, up to `fleet_pr_slots`
+(default `8`; per repository in `repo_config`); only at that cap is a
+non-milestone issue held. Holding every non-milestone issue behind any single
+fleet PR serialised whole backlogs — GRQ-AutoTrader's 13 `work-on` issues waited
+three hours behind one PR.
 
 Human-assigned issues do **not** block any work stream — only a Vibe Coder's
 assignment counts as "occupied". The worker works weekends and holidays; it must
@@ -465,13 +472,17 @@ branch):**
    scan (`scanExcludedIssues`) until the sibling releases, so the refusal
    costs one skipped candidate rather than a re-scan loop.
 2. **PR blocking** (`getBlockingPRForIssue` in
-   `worker/deno/lib/issue_query.ts`): blocks if the **fleet** has an open PR
-   targeting the same branch (milestone branch or default branch). Only
-   push-capable fleet accounts count — a human's open PR never defers an issue.
+   `worker/deno/lib/issue_query.ts`): a milestone issue is held while a
+   **fleet** PR targets its milestone branch; a non-milestone issue is held only
+   while the fleet's open PRs on the default branch reach the `fleet_pr_slots`
+   cap. Only push-capable fleet accounts count — `github_user` plus
+   `fleet_pr_authors` ∪ `service_accounts` — and a human's open PR never defers
+   an issue.
 
 Both guards therefore resolve the same set from the same helper. Together they
-ensure at most one in-flight piece of worker work per work stream, while humans
-can assign issues freely without stalling the worker.
+bound the worker's in-flight work per work stream — one PR per milestone
+branch, one per slot on the default branch — while humans can assign issues
+freely without stalling the worker.
 
 ### One PR per issue across the fleet
 
@@ -575,8 +586,10 @@ The nudge-and-escalate path became unreachable and was retired with
 claims, pushes to, comments on, or merges someone else's PR uninvited is
 unchanged.
 
-The fleet's own open PRs keep the repo-wide one-at-a-time rule, so the worker
-never runs several of its own PRs into the same work stream (merge hell). Two
+The fleet's own open PRs keep their per-stream limit — one per milestone
+branch, and one per slot on the default branch (`fleet_pr_slots`,
+Issue #2663) — so the worker never runs more of its own PRs into a work stream
+than it has slots to carry. Two
 inputs stay on the blocking side as a fail-safe, because authorship could not be
 established: a PR whose author was never stamped (a pre- cache entry), and
 an unresolved/empty push-capable set.

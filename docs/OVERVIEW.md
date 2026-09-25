@@ -139,10 +139,11 @@ Details: [Issue processing](workflows/issue-processing.md),
 The Vibe Coder is designed to run in parallel with other developers and with
 other Vibe Coders. Coordination is through GitHub only:
 
-- **One PR per target branch** — In a repo, the worker does not start a second
-  issue for the same target (default or a milestone branch) while it already has
-  an open PR for that branch. So you get at most one open PR to default and one
-  per milestone branch.
+- **One PR per target branch, one per slot on default** — In a repo, the
+  worker does not start a second issue for a milestone branch while the fleet
+  already has an open PR for that branch. The default branch holds one fleet PR
+  per slot: a non-milestone issue waits only once the fleet's open PRs there
+  reach `fleet_pr_slots` (default `8`, Issue #2663). Human PRs never count.
 - **One issue per work stream** — A work stream is a merge target: the default
   branch, plus each open milestone. The worker enforces one in-flight issue per
   work stream, so a repository runs as many issues concurrently as it has

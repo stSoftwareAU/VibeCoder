@@ -107,3 +107,89 @@ batching and call metrics. `deno check`, `deno lint`, `deno fmt` and
 | 5 | No new-work scan below disk floor / failing health / no free slot | Missing (follow-up) | Out of scope for this PR |
 | 6 | Failed cross-repo PR prefetch reuses last good result | Missing (follow-up) | Out of scope for this PR |
 | 7 | No behaviour change in what gets claimed | **Met** | `… claims exactly what it claimed before`, checked on both old and new code. The existing claim-scan, idle-census and filer tests pass unchanged |
+
+## Part 2 — criterion 6 (prefetch under rate limits)
+
+Criterion 6 of the acceptance list (the brief's "criterion 5", the fifth
+proposed change): the cross-repo open-PR prefetch keeps serving when its
+search fails, instead of falling back to
+`gh pr list --repo --author --state open` for every repo and author. On
+GRQ-23 that listing shape alone was 3,281 calls on 2026-09-25.
+
+- **Last good result** (`fleet_pr_prefetch.ts`). Every successful search is
+  kept as the owner's last good result. A failed search inside
+  `PREFETCH_REUSE_WINDOW_SECONDS` (3,600 s, the primary GraphQL quota window)
+  fills the missing guard and maintenance entries from it. A live entry is
+  never overwritten. The invitation listing is not served from it, so it fails
+  closed. The window is longer than the 600 s listing cache on purpose: the
+  search only runs after that cache has expired.
+- **Rate limit: wait, don't fall back.** Rate-limited with nothing to reuse,
+  the owner is reported in `ownersRateLimited`. The production dep throws the
+  primary rate limit and `run_core` re-throws it into the existing pause
+  (Issue #1780). Any other failure with nothing to reuse still falls back per
+  repo, at most once per repo and author per 600 s cache window.
+- **Refreshed where it is read** (`run_core.ts`). The prefetch now also runs
+  before every issue scan and before the post-scan auto-merge pass. Inside the
+  TTL this is a marker read. After a run that outlived the cache it is one
+  search per owner. Concurrent slots share one pass.
+- **Post-scan pass** (`EnsureAutoMergeOptions.refreshRepos`). Only the repos
+  the cycle claimed from are listed live. Before, every repo was listed live
+  for every fleet author.
+- **`isDraft`**. The prefetched `prs_<login>` entry now carries it. The
+  auto-merge sweep reads it to skip drafts (Issue #1800), and without it a
+  draft served from the prefetch looked ready to arm.
+- **Closed-PR listing** (869 calls): no new cache added. It is already a
+  settled listing (Issue #2409), served for up to 3,600 s while every open PR
+  seen since caching is still open. It reads that open set from `prs_<login>`,
+  so a reused prefetch keeps it warm too.
+- **Not routed.** The all-authors listing (`prs_open_all`, the 541-call
+  `pr list --json --state=open` shape) is not routed through the prefetch. It
+  needs PRs by any author, including bots and people outside the fleet, while
+  the search covers only fleet and trusted logins. Widening the search would
+  change its 1,000-result truncation risk for every consumer.
+
+### Evidence
+
+`worker/deno/tests/fleet_pr_prefetch_budget_2662_test.ts` runs the real
+prefetch and the real consumers (`fetchOpenPRsForFleet`, `listOpenPrs`) over
+a 20-repo fixture. The duplicate guard covers 4 authors and maintenance covers
+2. Calls go through a counting `gh` stub, and the cache and prefetch share an
+injected clock (no sleeps). `pr list` calls per cycle:
+
+| Cycle | Before | After |
+| ----- | -----: | ----: |
+| Healthy search | 0 | 0 |
+| Search failed, last good 11–30 min old | 120 | 0 |
+| Search rate-limited, last good 11 min old | 120 | 0 |
+| Search rate-limited, no last good | 120 | 0 (cycle waits) |
+| Search failed, last good older than 1 h | 120 | 120, then 0 next cycle |
+| Post-scan auto-merge pass, 1 claimed repo | 40 | 2 |
+
+The "before" figure of 120 is the per-repo path the old code took on any
+failed search (20 repos × 6 author listings). The test measures it on the
+same fixture as its reference. Every path produces the same guard view, and
+the scan claims the same repo on each (`fleet/repo-03`). With `lib/` reverted
+to `main`, the new `run_core` and production-deps tests fail and the budget
+test cannot load: the reuse API, `refreshesRepoLive` and the clock seam are
+missing.
+
+Other tests added:
+
+- `run_core_fleet_prefetch_test.ts`: a re-scan after a run is preceded by a
+  prefetch, and a rate-limited prefetch pauses the cycle with no scan.
+- `run_core_post_scan_auto_merge_test.ts`: the post-scan pass names only the
+  claimed repo, after a prefetch.
+- `fleet_pr_prefetch_wiring_test.ts`: the production dep surfaces the rate
+  limit, reuses the last good result, and shares one search across concurrent
+  callers.
+
+Local targeted runs passed 446 and 352 tests (`--parallel --reporter=dot`,
+integration files excluded). These covered the prefetch, the claim scan
+(`find_oldest_issue*`, `claim_issue`), the idle census and filer, the
+`run_core*` suites, `issue_query*`, the auto-merge sweep and the #2662 scan
+budget test.
+
+| # | Criterion | Status | Evidence |
+| - | --------- | ------ | -------- |
+| 6 | Failed cross-repo PR prefetch reuses last good result | **Met** | `#2662 - a rate-limited search reuses the last good prefetch: zero per-repo listings` and the table above |
+| 7 | No behaviour change in what gets claimed | **Met** | Same claim on every path in the budget test; existing claim-scan, idle-census and filer tests unchanged and passing |

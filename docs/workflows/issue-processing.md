@@ -6,7 +6,7 @@ This page is part of the **user manual** for the Vibe Coder. It describes how is
 
 ## ⚡ TL;DR
 
-**Issue → branch → Claude → quality → PR (Pull Request).** The worker picks the next eligible issue from a four-tier priority order: **`top-priority`** → **`work-on`** → **`low-priority`** → **`idle-task`** (lowest tier). All four labels mean the same thing — _work on this issue_ — and differ only in priority; `idle-task` is simply last and is the only one the Vibe Coder may self-apply. Within the chosen tier the **globally oldest** by creation date wins. The legacy `help wanted` and `claude` discovery labels were retired in; only `idle-task` is self-appliable by the Vibe Coder. Repo scan order is **fair by default** — `shuffle_repos` (enabled by default) randomises the order in which repos are queried, but the final selection is always the globally oldest eligible issue across all repos ("fair scanning, then oldest first"). After filters and one-PR-per-target-branch it **claims** the issue (assign self, verify; tie-break if two workers claimed), sets up the repo and branch (default or milestone), optionally asks for clarification, runs Claude and `./quality.sh`, commits, pushes, and opens a PR with auto-merge. Fail once → retry; fail twice → label and skip until you remove it.
+**Issue → branch → Claude → quality → PR (Pull Request).** The worker picks the next eligible issue from a four-tier priority order: **`top-priority`** → **`work-on`** → **`low-priority`** → **`idle-task`** (lowest tier). All four labels mean the same thing — _work on this issue_ — and differ only in priority; `idle-task` is simply last and is the only one the Vibe Coder may self-apply. Within the chosen tier the **globally oldest** by creation date wins. The legacy `help wanted` and `claude` discovery labels were retired in; only `idle-task` is self-appliable by the Vibe Coder. Repo scan order is **fair by default** — `shuffle_repos` (enabled by default) randomises the order in which repos are queried, but the final selection is always the globally oldest eligible issue across all repos ("fair scanning, then oldest first"). After filters and the open-PR gate (one fleet PR per slot on the default branch, one per milestone branch) it **claims** the issue (assign self, verify; tie-break if two workers claimed), sets up the repo and branch (default or milestone), optionally asks for clarification, runs Claude and `./quality.sh`, commits, pushes, and opens a PR with auto-merge. Fail once → retry; fail twice → label and skip until you remove it.
 
 ```mermaid
 flowchart TD
@@ -103,7 +103,7 @@ Long-lived milestone branches drift from the default branch and then fail to mer
 - **Started:** the open milestone already has at least one closed child (`closed_issues > 0` on the cached milestone listing).
 - **Fleet-viable:** every remaining open non-tracking issue already passed the existing gates — it carries a work-tier label (or is a self-diagnostic) and is not blocked (`needs-human`, `failed`, `grill-me`, `planning`, `refine-issue`, unresolved dependency, open sub-issue, occupied stream, paced behind). If any leftover needs a human, the rule does not apply.
 - **Order inside the band:** fewest remaining viable issues first, then in-milestone `priority-high` / `priority-low`, then oldest. `nice` does not apply.
-- **What it must not override:** `top-priority` stays first. The one-PR-per-work-stream gate, dependency blocking, milestone-behind pacing, and the weekly quota pace gate for tiers 3 and 4 are unchanged — the band only re-orders candidates those gates have already admitted. A paced or blocked started milestone contributes nothing, so the fleet does not sit idle waiting for it.
+- **What it must not override:** `top-priority` stays first. The open-PR gate (one fleet PR per slot on the default branch, one per milestone branch), dependency blocking, milestone-behind pacing, and the weekly quota pace gate for tiers 3 and 4 are unchanged — the band only re-orders candidates those gates have already admitted. A paced or blocked started milestone contributes nothing, so the fleet does not sit idle waiting for it.
 - **Non-milestone `work-on`** still beats non-milestone `low-priority`. The promotion applies only to leftovers that close out a started milestone.
 
 The decision is logged once per selection (`close-out: has N viable issues left, selecting #X over tier-2 #Y`).
@@ -347,7 +347,12 @@ Within a label tier, the final cross-repo selection is **`nice`-aware**. Each re
 A `top-priority` issue is **not** automatically picked just because the label is present. Five filters are applied during candidate collection (in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts), [`collect_label_candidates.ts`](../../worker/deno/lib/collect_label_candidates.ts), [`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts), and [`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts)). Any one of them removes the candidate from its tier — the next-oldest issue in the same tier is then considered, and only if every tier 1 candidate is suppressed does the worker fall through to tier 2.
 
 1. **Milestone occupancy** — [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) skips an issue when a Vibe Coder — this host or a sibling in `fleet_pr_authors`/`service_accounts` — already has another issue assigned in the same `repo + milestone` work stream. Enforces "one issue per milestone per repo at a time". Human-assigned issues do not count: the match set is the fleet-identity set (`resolveFleetMaintenanceAuthorSet`), never the `allowed_authors` permission list. Since Issue #2532 the gate binds `low-priority` and `idle-task` only — a `top-priority` or `work-on` claim shares a busy stream in its own fresh conversation (Issue #2530), and only the single issue a sibling slot on this host already holds is refused, as `slot-in-flight`.
-2. **Open PR blocking** — [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) skips an issue when the **fleet** already has an open PR targeting the same branch (default branch for non-milestone issues, `milestone/<name>` for milestone issues). Enforces "one PR per work stream" so consecutive work serialises cleanly. Only push-capable fleet accounts (`github_user` + `fleet_pr_authors`) count: a human's open PR never blocks issue pickup — the developer manages their own PR.
+2. **Open PR blocking** — [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) applies the owner's rule: **one fleet PR per slot; multiple milestones mean multiple PRs** (Issue #2663).
+   - **Non-milestone issues** are held only while the fleet's open PRs on the repository's default branch number at least the slot cap, `fleet_pr_slots` (default `8`; per repository via `repo_config.<repo>.fleet_pr_slots` — see [Configuration](../CONFIGURATION.md)). Below the cap the issue is claimable, so every free slot can have its own PR in flight. PRs onto a `milestone/*` branch, and milestone-merge PRs, are on other streams and never count.
+   - **Milestone issues** are held while a fleet PR targets their own `milestone/<name>` branch — one PR per milestone stream, so several milestones run several PRs at once.
+   - Only fleet accounts count — `github_user` plus the union of `fleet_pr_authors` and `service_accounts`, which `loadConfig` folds together so a host naming a sibling under either key counts its PRs. A human's open PR never counts: the developer manages their own PR.
+   - The held issue's gate comment states the count against the cap — e.g. "6 fleet PRs are open on this repo's default branch (cap 6)" — rather than naming one PR as the blocker. The idle census, the idle-detect audit and the idle-task filer's own gate apply the same call with the same cap, so none can call work claimable that the scan holds (the #460 / #2563 invariant).
+   - Until Issue #2663 any single fleet PR held every non-milestone issue: one fleet PR at a time on the default branch, per repository, fleet-wide. On stSoftwareAU/GRQ-AutoTrader all 13 `work-on` issues waited three hours behind one PR.
 3. **Recently-closed PR cooldown** — [`fetchRecentlyClosedPRsByUser`](../../worker/deno/lib/issue_query.ts) plus [`isBlockedByRecentlyClosedPR`](../../worker/deno/lib/issue_query.ts) suppress candidates whose target branch was the subject of a worker-closed (un-merged) PR inside the cooldown window.: prevents the worker from immediately re-opening a PR that was just closed (e.g. a reviewer rejected the approach) before a human has had time to react.
 4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails open on API errors so a transient outage cannot stall the worker.
 5. **Content modified after approval** — [`verifyWorkOnContentIntegrity`](../../worker/deno/lib/work_on_content_integrity.ts), backed by [`content_approval_tracker.ts`](../../worker/deno/lib/content_approval_tracker.ts), compares a SHA-256 hash of the issue title + body against the snapshot captured when an allowed author added `work-on`: if the issue content has been edited by an untrusted author after approval, the candidate is suppressed and `needs-human` is added. The approval label itself is left in place (Issue #3964) — stripping it destroyed the record of who had approved what. TOCTOU protection, so a mutated issue body cannot ride a stale approval.
@@ -360,7 +365,7 @@ A `top-priority` issue is **not** automatically picked just because the label is
 
 ### PR-blocked configured-label suppresses `work-on` in the same repo + milestone
 
-Even when tier 1 yields no *selectable* candidate, [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not blindly fall through to tier 2. If a configured-label candidate was found but held by an open PR on its work stream, every `work-on` candidate in the same `repo + milestone` is dropped before the tier 2 pool is considered. The intent is to keep work serialised on the same work stream — the stream's branch already has a PR in flight, and the worker should wait rather than race ahead with a lower-priority issue on the same branch. Surviving `work-on` candidates from other repos / milestones remain eligible. If suppression empties tier 2 entirely, selection falls through to tier 3 (`low-priority`) under the same global gate.
+Even when tier 1 yields no *selectable* candidate, [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not blindly fall through to tier 2. If a configured-label candidate was found but held by the open-PR gate on its work stream, every `work-on` candidate in the same `repo + milestone` is dropped before the tier 2 pool is considered. The intent is to keep a full work stream from being over-filled — the stream is already at its PR limit (its slot cap on the default branch, or its one PR on a milestone branch), and the worker should wait rather than race ahead with a lower-priority issue on the same branch. Surviving `work-on` candidates from other repos / milestones remain eligible. If suppression empties tier 2 entirely, selection falls through to tier 3 (`low-priority`) under the same global gate.
 
 A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream — so the `work-on` issues beside it stay eligible: top priority starves nothing, and a tier that is truly blocked means working elsewhere. Until #2563 the dependency wait parked the stream whenever the repo had any open fleet PR, even a milestone rollup PR that blocks nothing in the stream. On stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed for hours with no skip reason recorded, while the idle-decision census rightly counted them as claimable and filed an idle-inversion issue.
 
@@ -458,8 +463,8 @@ enforces it, and the single recovery path.
 
 1. **Fleet-author union** — every guard resolves its fleet set through
    [`resolveFleetAuthors`](../../worker/deno/lib/fleet_authors.ts), which unions
-   the host's own login, `allowed_authors`, **and** `fleet_pr_authors`
-   (case-insensitively de-duplicated). A sibling listed in *only one* of those
+   the host's own login, `allowed_authors`, `fleet_pr_authors` **and**
+   `service_accounts` (case-insensitively de-duplicated). A sibling listed in *only one* of those
    keys is still covered — the structural blind spot behind the original
    incident.
 2. **Milestone occupancy** —
@@ -472,13 +477,17 @@ enforces it, and the single recovery path.
 3. **Discovery open-PR guard** — during candidate collection,
    [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) over
    [`fetchOpenPRsForFleet`](../../worker/deno/lib/issue_query.ts) skips an issue
-   when **any push-capable** fleet account has an open PR targeting the same
-   work stream. A human's PR is filtered out first.
+   when the push-capable fleet accounts' open PRs fill its work stream — one PR
+   on a milestone branch, or the `fleet_pr_slots` cap on the default branch
+   (Issue #2663). A human's PR is filtered out first. The duplicate itself is
+   stopped by the claim, the claim-time re-check and the merged-lock below:
+   the deterministic branch `issue-<n>-<slug>` means one issue has one PR.
 4. **Claim-time live re-check** — closes Mode A's residual window. After
    this host wins the atomic-claim comment race and **before any Claude/token
    work begins**, [`claimIssue`](../../worker/deno/lib/claim_issue.ts) performs a
-   live, **cache-bypassing** (`forceRefresh`) fleet open-PR re-check. If a fleet
-   PR already targets the work stream the claim is **aborted** — the claim
+   live, **cache-bypassing** (`forceRefresh`) fleet open-PR re-check with the
+   same gate and cap as discovery. If the fleet's PRs now fill the work stream
+   the claim is **aborted** — the claim
    comment is removed, the assignment released, and the caller receives
    `reason: "fleet_pr_exists"` — so no tokens are spent and no second PR is
    opened. Fails open (a transient API error never blocks a legitimate claim)
@@ -499,7 +508,7 @@ enforces it, and the single recovery path.
 
 ```mermaid
 flowchart TD
-    D["Discovery: candidate issue"] --> L2{"Fleet open PR on<br/>this work stream?<br/>(union)"}
+    D["Discovery: candidate issue"] --> L2{"Fleet PRs fill<br/>this work stream?<br/>(union, per-slot cap)"}
     L2 -- yes --> Skip["Skip — no duplicate"]
     L2 -- no --> L4{"Merged fleet PR<br/>for this issue?<br/>(permanent)"}
     L4 -- yes --> Skip
@@ -647,7 +656,7 @@ The worker enforces that **only one lower-tier issue per repo/milestone combinat
 - **Milestone issues** — Only one issue per milestone per repo at a time.
 - **Non-milestone issues** — Only one non-milestone issue per repo at a time.
 
-This is separate from the one-PR-per-target-branch rule (which prevents multiple open PRs). The milestone occupation check operates at the **issue assignment** level, while open-PR blocking operates at the **PR** level.
+This is separate from the open-PR gate (which caps the fleet's open PRs per target branch — one per slot on the default branch, one per milestone branch). The milestone occupation check operates at the **issue assignment** level, while open-PR blocking operates at the **PR** level.
 
 ### 🔓 Fail-open design
 

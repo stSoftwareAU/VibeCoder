@@ -15,9 +15,11 @@ import type { IssueFetcher } from "./issue_dependencies.ts";
 import { isRepoAllowed } from "./config_validator.ts";
 import { isMilestoneOccupied, isStreamSharingTier } from "./issue_filter.ts";
 import {
+  describeBlockingPr,
   fetchAllIssues,
   fetchOpenPRsForFleet,
   getBlockingPRForIssue,
+  resolveFleetPrSlots,
   wasLabelAddedByAllowedAuthor,
 } from "./issue_query.ts";
 import { checkRepoAvailability } from "./repo_availability.ts";
@@ -412,10 +414,15 @@ export async function diagnoseIssue(
         repoPRs,
         issue.milestone,
         pushCapableAuthors,
+        resolveFleetPrSlots(config, repo),
+        issueNumber,
       );
       if (blockingPR) {
         prBlocked = true;
-        blockingPRDetail = `PR #${blockingPR.number} ("${blockingPR.title}")`;
+        // Issue #2663: a default-branch slot hold is the count, not one PR.
+        blockingPRDetail = `${
+          describeBlockingPr(blockingPR)
+        } ("${blockingPR.title}")`;
       }
     }
     checks.push({

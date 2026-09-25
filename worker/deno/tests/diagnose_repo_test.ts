@@ -231,6 +231,8 @@ Deno.test("diagnoseRepoIssue - detects PR blocking for non-milestone issue", () 
     allIssues: [],
     labelConfig: defaultLabelConfig,
     workerUser: "worker-bot",
+    // Issue #2663: cap 1 — the one open fleet PR fills the default branch.
+    fleetPrSlots: 1,
   };
 
   const result = diagnoseRepoIssue(input);

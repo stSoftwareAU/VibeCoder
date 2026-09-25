@@ -124,6 +124,7 @@ import { IssueCache } from "../lib/issue_cache.ts";
 import {
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
+  resolveFleetPrSlots,
 } from "../lib/issue_query.ts";
 import { getRunId } from "../lib/run_id.ts";
 import { appendIdleTaskAttribution } from "../lib/idle_task_attribution.ts";
@@ -876,6 +877,8 @@ export const maybeFileIdleTaskCommand: Command = {
               idleGateCache,
               ghCommandFn,
             ),
+          // Issue #2663: the per-repo slot cap the claim scan applies.
+          fleetPrSlotsFor: (repo: string) => resolveFleetPrSlots(config, repo),
           mergedPRsFn: (repo: string) =>
             fetchRecentlyClosedPRsForFleet(
               repo,

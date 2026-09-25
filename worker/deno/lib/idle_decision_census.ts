@@ -593,6 +593,13 @@ export interface RepoCensusInput {
    * behaviour exactly as `openPRs` does.
    */
   openMilestones?: ReadonlySet<string>;
+  /**
+   * The repo's fleet PR cap on the default-branch stream (Issue #2663) —
+   * `resolveFleetPrSlots(config, repo)`, the value the scan passes to
+   * {@link getBlockingPRForIssue}. Omitted → `DEFAULT_FLEET_PR_SLOTS`, the
+   * scan's own default.
+   */
+  fleetPrSlots?: number;
 }
 
 /** Per-priority unblocked counts for a repo. */
@@ -791,18 +798,31 @@ function isUnblockedFor(issue: CensusIssue, label: string): boolean {
 }
 
 /**
- * True when an open PR blocks `issue` under the scan's milestone-aware
- * rule (Issue #3526) and the issue does not carry the bypass label.
+ * True when open fleet PRs block `issue` under the scan's gate
+ * (Issues #3526, #2663) and the issue does not carry the bypass label.
+ *
+ * The same call the scan makes, over the same inputs: the fleet set
+ * (`workerUser` ∪ `pushCapableAuthors`, so a human's PR never counts —
+ * Issue #4133) and the repo's slot cap. The census reads the repo's PRs
+ * through `fetchAllOpenPRs`, whose rows carry the listing author as
+ * `authorLogin`; `getBlockingPRForIssue` classifies on it when no fetch login
+ * was stamped, so the census and the scan cannot disagree about a PR's owner.
  */
-function isPrBlocked(issue: CensusIssue, openPRs: OpenPR[]): boolean {
+function isPrBlocked(
+  issue: CensusIssue,
+  openPRs: OpenPR[],
+  fleetAuthors: readonly string[],
+  fleetPrSlots: number | undefined,
+): boolean {
   if (openPRs.length === 0) return false;
   if (issue.labels.includes(IGNORE_OPEN_PRS_LABEL)) return false;
-  // Issue #4133: the census reads the repo's PRs through `fetchAllOpenPRs`,
-  // which carries no author, so no PR can be classified here — every open
-  // PR keeps counting as a blocker (the fail-safe empty-set behaviour of
-  // `getBlockingPRForIssue`). The census only counts; it never blocks a
-  // pickup, so the residual over-count is observability, not policy.
-  return getBlockingPRForIssue(openPRs, issue.milestone, []) !== null;
+  return getBlockingPRForIssue(
+    openPRs,
+    issue.milestone,
+    fleetAuthors,
+    fleetPrSlots,
+    issue.number,
+  ) !== null;
 }
 
 /**
@@ -1018,6 +1038,7 @@ function countUnblocked(
   weekPaceEngaged = false,
   deferredHolds: ReadonlySet<number> = new Set<number>(),
   openMilestones: ReadonlySet<string> = new Set<string>(),
+  fleetPrSlots?: number,
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
@@ -1093,7 +1114,16 @@ function countUnblocked(
       streamOccupied += 1;
       continue;
     }
-    if (isPrBlocked(issue, openPRs)) {
+    if (
+      isPrBlocked(
+        issue,
+        openPRs,
+        pushCapableAuthors.length > 0
+          ? [workerUser, ...pushCapableAuthors]
+          : [],
+        fleetPrSlots,
+      )
+    ) {
       prBlocked += 1;
       continue;
     }
@@ -1261,6 +1291,7 @@ export function buildIdleDecisionCensus(opts: {
       opts.weekPaceEngaged ?? false,
       input.deferredHolds ?? new Set<number>(),
       input.openMilestones ?? new Set<string>(),
+      input.fleetPrSlots,
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,

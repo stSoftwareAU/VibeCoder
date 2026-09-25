@@ -79,6 +79,8 @@ function classifyOckham() {
         headRefName: HEAD_REF,
         author: "stservice",
       }],
+      // Issue #2663: cap 1 — the window's one fleet PR fills the stream.
+      fleetPrSlots: 1,
     },
   );
 }

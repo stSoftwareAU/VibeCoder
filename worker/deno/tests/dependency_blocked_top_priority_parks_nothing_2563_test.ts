@@ -26,6 +26,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { findOldestIssue } from "../lib/find_oldest_issue.ts";
 import { buildIdleDecisionCensus } from "../lib/idle_decision_census.ts";
+import { resolveFleetPrSlots } from "../lib/issue_query.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { OpenPR } from "../lib/issue_query.ts";
@@ -47,6 +48,8 @@ function makeConfig(): WorkerConfig {
   const base = buildDefaultWorkerConfig();
   return {
     ...base,
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     // Issue #3874: the content-approval store resolves from workDir.
     workDir: Deno.makeTempDirSync({ prefix: "issue-2563-workdir-" }),
     repos: [REPO],
@@ -115,7 +118,8 @@ async function bothInstruments(
   issues: FixtureIssue[],
   openPRs: OpenPR[],
 ): Promise<{ scanClaimed: number | null; censusClaimable: number[] }> {
-  const result = await findOldestIssue(makeConfig(), {
+  const config = makeConfig();
+  const result = await findOldestIssue(config, {
     githubUser: WORKER,
     ghCommandFn: mockGh(issues, openPRs),
     cache: new IssueCache(
@@ -142,6 +146,8 @@ async function bothInstruments(
         body: i.body ?? "",
       })),
       openPRs,
+      // Issue #2663: the same per-repo slot cap the scan read from config.
+      fleetPrSlots: resolveFleetPrSlots(config, REPO),
     }],
   });
   return {

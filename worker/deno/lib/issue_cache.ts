@@ -92,6 +92,8 @@ export interface CacheStats {
 export class IssueCache {
   private readonly cacheDir: string;
   private readonly ttlSeconds: number;
+  /** Wall clock in epoch milliseconds; injectable so tests need no sleeps. */
+  private readonly nowMs: () => number;
   /** Memoised result of the one-off directory ownership check. */
   private privateDirCheck: Promise<boolean> | null = null;
   private stats: CacheStats;
@@ -103,10 +105,17 @@ export class IssueCache {
    *   per-account default under `TMPDIR`. Every directory — supplied or
    *   defaulted, temporary root or work volume — is ownership-checked.
    * @param ttlSeconds - Cache time-to-live in seconds (default: 600 = 10 minutes)
+   * @param nowMs - Clock in epoch milliseconds (default `Date.now`); tests
+   *   inject one to age entries without sleeping (Issue #2662).
    */
-  constructor(cacheDir?: string, ttlSeconds = 600) {
+  constructor(
+    cacheDir?: string,
+    ttlSeconds = 600,
+    nowMs: () => number = Date.now,
+  ) {
     this.cacheDir = cacheDir ?? defaultIssueCacheDir();
     this.ttlSeconds = ttlSeconds;
+    this.nowMs = nowMs;
     this.stats = { hits: 0, misses: 0, saved: 0 };
   }
 
@@ -149,7 +158,7 @@ export class IssueCache {
    * Check whether a cache entry is still valid (within TTL).
    */
   private isValid(entry: CacheEntry, ttlSeconds = this.ttlSeconds): boolean {
-    const now = Math.floor(Date.now() / 1000);
+    const now = Math.floor(this.nowMs() / 1000);
     return (now - entry.timestamp) < ttlSeconds;
   }
 
@@ -218,7 +227,7 @@ export class IssueCache {
 
     try {
       const entry: CacheEntry = {
-        timestamp: Math.floor(Date.now() / 1000),
+        timestamp: Math.floor(this.nowMs() / 1000),
         data: redactJsonStrings(data),
       };
 

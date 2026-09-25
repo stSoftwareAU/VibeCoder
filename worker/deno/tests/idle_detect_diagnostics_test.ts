@@ -788,7 +788,7 @@ const DEFAULT_BRANCH_PR: OpenPR = {
 Deno.test("classifyIssues - an issue blocked by an open PR in its stream is not claimable", () => {
   const verdicts = classifyIssues(
     [{ number: 1, labels: ["work-on"], assignees: [], milestone: "" }],
-    { workerUser: "vibe", openPRs: [DEFAULT_BRANCH_PR] },
+    { workerUser: "vibe", openPRs: [DEFAULT_BRANCH_PR], fleetPrSlots: 1 },
   );
 
   // Without the PR gate this issue passes every other check, which is
@@ -868,6 +868,8 @@ Deno.test("auditClaimableState - a PR-blocked backlog raises no mis_classificati
         { number: 2, labels: [{ name: "work-on" }], assignees: [] },
       ])),
     openPRsFn: () => Promise.resolve([DEFAULT_BRANCH_PR]),
+    // Issue #2663: cap 1 — one open fleet PR fills the default branch.
+    fleetPrSlotsFor: () => 1,
     log: (line) => logs.push(line),
     hostnameFn: () => "host",
     pidFn: () => 1,

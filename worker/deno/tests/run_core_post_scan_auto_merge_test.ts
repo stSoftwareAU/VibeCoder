@@ -16,6 +16,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
+  type EnsureAutoMergeOptions,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
@@ -136,9 +137,14 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
  */
 async function runOneCycle(
   options: { claimIssue: boolean },
-): Promise<{ events: string[]; refreshFlags: (boolean | undefined)[] }> {
+): Promise<{
+  events: string[];
+  refreshFlags: (boolean | undefined)[];
+  sweepOptions: (EnsureAutoMergeOptions | undefined)[];
+}> {
   const events: string[] = [];
   const refreshFlags: (boolean | undefined)[] = [];
+  const sweepOptions: (EnsureAutoMergeOptions | undefined)[] = [];
   let findCalls = 0;
   let cycleCount = 0;
   let nowValue = 0;
@@ -152,9 +158,14 @@ async function runOneCycle(
       if (cycleCount >= 1) nowValue += 4000 * 1000;
       return Promise.resolve();
     },
-    ensureAutoMerge: (opts?: { refreshOpenPrs?: boolean }) => {
+    prefetchFleetOpenPrs: () => {
+      events.push("prefetch");
+      return Promise.resolve();
+    },
+    ensureAutoMerge: (opts?: EnsureAutoMergeOptions) => {
       events.push("sweep");
       refreshFlags.push(opts?.refreshOpenPrs);
+      sweepOptions.push(opts);
       return Promise.resolve({ ok: true as const, value: undefined });
     },
     findNextIssue: () => {
@@ -183,7 +194,7 @@ async function runOneCycle(
   config.runDurationSeconds = 3600;
   await runCoreLoop(config, deps);
 
-  return { events, refreshFlags };
+  return { events, refreshFlags, sweepOptions };
 }
 
 Deno.test(
@@ -384,5 +395,24 @@ Deno.test(
       ),
       `expected the crash to be logged: ${errors.join(" | ")}`,
     );
+  },
+);
+
+Deno.test(
+  "run_core - the post-scan sweep lists live only the repos this cycle claimed from (Issue #2662)",
+  async () => {
+    const { events, sweepOptions } = await runOneCycle({ claimIssue: true });
+
+    const postScan = sweepOptions.find((opts) => opts?.refreshOpenPrs);
+    assert(postScan !== undefined, "expected a post-scan sweep");
+    // Every other repo's open PRs are what the prefetch holds; listing each
+    // live per fleet author cost `repos x authors` calls for no new answer.
+    assertEquals(postScan.refreshRepos, ["org/repo"]);
+
+    // And the prefetch is refreshed first, so the repos read from the cache
+    // are served by one search rather than a listing each.
+    const created = events.indexOf("pr-created");
+    const sweep = events.findIndex((e, i) => e === "sweep" && i > created);
+    assertEquals(events[sweep - 1], "prefetch", events.join(" → "));
   },
 );
