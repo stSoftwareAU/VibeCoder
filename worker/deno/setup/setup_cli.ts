@@ -145,6 +145,16 @@ function printWarning(msg: string): void {
  * published through none of the write-repo allowlist, `redactGhBodyArgs` or
  * the audit journal.
  */
+/**
+ * The `WORK_DIR` the repo-side setup steps read local clones from, defaulting
+ * to `$HOME/auto-issue-work` (Issue #134). One place, so every step agrees and
+ * the host work-dir guard counts a single construction (Issue #2628).
+ */
+function setupWorkDir(): string {
+  return Deno.env.get("WORK_DIR") ??
+    `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+}
+
 function createSetupGhJson(ghConfigDir?: string) {
   const dir = expandHome(ghConfigDir);
   return (args: string[], stdin?: string): Promise<string> =>
@@ -746,8 +756,7 @@ async function runWorkflowSync(configPath: string): Promise<boolean> {
     // Pass `workDir` so the auditor reads workflow files from the local
     // clone where one exists (Issue #1811). Falls back to `gh api` for
     // repos that have not been cloned yet.
-    const workDir = Deno.env.get("WORK_DIR") ??
-      `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+    const workDir = setupWorkDir();
     const results = await syncWorkflowsForAllRepos(repos, {
       ghConfigDir,
       workDir,
@@ -790,8 +799,7 @@ async function runBestPracticesSync(configPath: string): Promise<boolean> {
     const ghConfigDir = config.gh_config_dir
       ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
       : undefined;
-    const workDir = Deno.env.get("WORK_DIR") ??
-      `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+    const workDir = setupWorkDir();
 
     const results = await syncBestPracticesForAllRepos({
       repos,
@@ -912,8 +920,7 @@ async function runGitignoreSync(configPath: string): Promise<boolean> {
       return true;
     }
 
-    const workDir = Deno.env.get("WORK_DIR") ??
-      `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+    const workDir = setupWorkDir();
 
     const summary = await syncGitignoreForAllRepos(repos, workDir);
     for (const r of summary.results) {
@@ -1412,8 +1419,7 @@ async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
     const ghConfigDir = config.gh_config_dir
       ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
       : undefined;
-    const workDir = Deno.env.get("WORK_DIR") ??
-      `${Deno.env.get("HOME") ?? ""}/auto-issue-work`;
+    const workDir = setupWorkDir();
 
     return await runRepoSettingsHarden(config, {
       ghCommandFn: createSetupGhJson(ghConfigDir),

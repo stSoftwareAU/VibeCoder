@@ -93,6 +93,7 @@ Run from `worker/deno`:
   `requireReviews: true`, requiring code-owner review unless the lookup said
   `absent`, and returning `true` unconditionally made 7 tests fail.
 - `tests/setup_parity_test.ts` and `tests/setup_ps1_test.ts`: **43 passed**.
+- `tests/host_workdir_guard_test.ts`: passes. The four `WORK_DIR ?? $HOME/auto-issue-work` constructions in `setup_cli.ts` are now one `setupWorkDir()` helper, so the allowlist count drops from 3 to 1 instead of rising to 4.
 - After wiring the merged siblings, the new suite together with `setup_repo_settings_audit_close_test.ts`, `codeowners_sync_test.ts`, `lib_sweep_coverage_test.ts` and `setup_parity_test.ts`: **107 passed, 0 failed**.
 - `tests/lib_sweep_coverage_test.ts`: **31 passed**.
 - `tests/setup_cli_container_repair_test.ts` and
