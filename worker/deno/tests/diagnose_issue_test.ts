@@ -526,7 +526,9 @@ Deno.test("diagnose_issue - formatDiagnosticReport shows positive verdict when a
 // =============================================================================
 
 Deno.test("diagnose_issue - fails when blocked by open PR", async () => {
-  const config = makeConfig();
+  // One fleet PR per slot (Issue #2663): with a cap of one, a single open
+  // fleet PR on the default branch fills the stream.
+  const config = makeConfig({ fleetPrSlots: 1 });
   const issueView = makeIssueViewData();
   const mockGh = createMockGh({
     issueView,
@@ -574,13 +576,14 @@ Deno.test("diagnose_issue - a human-authored PR is not reported as blocking (Iss
 });
 
 Deno.test("diagnose_issue - a fleet-authored blocking PR is reported as blocking (Issue #4133)", async () => {
+  // The issue's own fleet PR holds it whatever the slot cap (Issue #2663).
   const config = makeConfig({ fleetPrAuthors: ["stsvcbot"] });
   const mockGh = createMockGh({
     issueView: makeIssueViewData(),
     prAuthor: "stsvcbot",
     prs: [{
       number: 100,
-      title: "Fix something",
+      title: "Fix something (#42)",
       baseRefName: "main",
       headRefName: "fix-branch",
     }],
@@ -594,6 +597,27 @@ Deno.test("diagnose_issue - a fleet-authored blocking PR is reported as blocking
   const check = findCheck(report.checks, "no-blocking-pr");
   assertEquals(check.passed, false);
   assert(check.detail.includes("#100"));
+});
+
+Deno.test("diagnose_issue - one unrelated fleet PR below the slot cap does not block (Issue #2663)", async () => {
+  const config = makeConfig({ fleetPrAuthors: ["stsvcbot"] });
+  const mockGh = createMockGh({
+    issueView: makeIssueViewData(),
+    prAuthor: "stsvcbot",
+    prs: [{
+      number: 100,
+      title: "Fix something else (#7)",
+      baseRefName: "main",
+      headRefName: "issue-7-fix",
+    }],
+  });
+
+  const report = await diagnoseIssue("owner/repo", 42, config, {
+    githubUser: "bot",
+    ghCommandFn: mockGh,
+  });
+
+  assertEquals(findCheck(report.checks, "no-blocking-pr").passed, true);
 });
 
 // =============================================================================

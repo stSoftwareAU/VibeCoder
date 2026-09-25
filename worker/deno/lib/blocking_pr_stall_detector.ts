@@ -917,6 +917,7 @@ async function mapBlockedWorkOnIssues(
       issue.milestone ?? "",
       pushCapableAuthors,
       fleetPrSlots,
+      issue.number,
     );
     if (!blocking) continue;
     const existing = blockedByPr.get(blocking.number);

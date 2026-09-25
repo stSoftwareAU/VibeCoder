@@ -375,6 +375,7 @@ export async function collectLabelCandidates(
           milestoneTitle,
           pushCapableAuthors,
           resolveFleetPrSlots(config, repo),
+          issue.number,
         );
         if (blockingPR) {
           const hasIgnore = await hasIgnoreOpenPRsLabel(

@@ -410,6 +410,7 @@ export async function collectSelfDiagnosticCandidates(
         milestoneTitle,
         pushCapableAuthors,
         resolveFleetPrSlots(config, repo),
+        issue.number,
       );
       if (blockingPR) {
         diag?.logIssueSkipped(

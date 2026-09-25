@@ -348,6 +348,7 @@ export async function collectIdleTaskCandidates(
         milestoneTitle,
         pushCapableAuthors,
         resolveFleetPrSlots(config, repo),
+        issue.number,
       );
       if (blockingPR) {
         const hasIgnore = await hasIgnoreOpenPRsLabel(

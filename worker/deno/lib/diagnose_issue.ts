@@ -415,6 +415,7 @@ export async function diagnoseIssue(
         issue.milestone,
         pushCapableAuthors,
         resolveFleetPrSlots(config, repo),
+        issueNumber,
       );
       if (blockingPR) {
         prBlocked = true;

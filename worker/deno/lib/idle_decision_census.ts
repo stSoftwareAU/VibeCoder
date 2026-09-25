@@ -821,6 +821,7 @@ function isPrBlocked(
     issue.milestone,
     fleetAuthors,
     fleetPrSlots,
+    issue.number,
   ) !== null;
 }
 

@@ -1100,6 +1100,7 @@ async function liveFleetPrRecheck(
       milestoneTitle ?? "",
       pushCapableAuthors ?? [],
       fleetPrSlots,
+      issueNumber,
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

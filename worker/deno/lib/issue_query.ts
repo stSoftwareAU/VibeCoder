@@ -9,7 +9,10 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { extractClosingIssueNumbers } from "./pr_body.ts";
+import {
+  extractClosingIssueNumbers,
+  extractIssueNumberFromPrTitle,
+} from "./pr_body.ts";
 import { runGhCommand } from "./github.ts";
 import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
@@ -1899,6 +1902,19 @@ function prAuthorForGate(pr: OpenPR): string | undefined {
   return typeof listed === "string" ? listed : undefined;
 }
 
+/**
+ * True when `pr` is the fleet's PR for issue `issueNumber`: its title ends in
+ * the worker's `(#N)` / `(Issue #N)` suffix, or its head branch is the
+ * worker's `issue-N` / `issue-N-…` branch (so `issue-17-…` is not issue 1's).
+ */
+function isPrForIssue(pr: OpenPR, issueNumber: number): boolean {
+  const fromTitle = extractIssueNumberFromPrTitle(pr.title ?? "");
+  if (fromTitle.ok && fromTitle.value === issueNumber) return true;
+  const head = pr.headRefName ?? "";
+  return head === `issue-${issueNumber}` ||
+    head.startsWith(`issue-${issueNumber}-`);
+}
+
 /** True when an open PR is on a repo's default-branch (non-milestone) stream. */
 function isDefaultStreamPr(pr: OpenPR): boolean {
   const base = pr.baseRefName ?? "";
@@ -1944,6 +1960,7 @@ export function getBlockingPRForIssue(
   milestoneTitle: string,
   pushCapableAuthors: readonly string[],
   fleetPrSlots: number = DEFAULT_FLEET_PR_SLOTS,
+  issueNumber?: number,
 ): BlockingPRInfo | null {
   if (prs.length === 0) return null;
 
@@ -1952,6 +1969,16 @@ export function getBlockingPRForIssue(
     (pr) => !isHumanAuthoredPr(prAuthorForGate(pr), pushCapableAuthors),
   );
   if (fleetPrs.length === 0) return null;
+
+  // An issue whose own fleet PR is open is never claimable again, on any
+  // stream and whatever the cap (Issue #2663). Before the per-slot cap, any
+  // open fleet PR held every non-milestone issue, which hid this; with the
+  // cap a lone PR holds nothing, and the issue it delivers was re-claimed
+  // while that PR waited for CI or review.
+  if (issueNumber !== undefined) {
+    const own = fleetPrs.find((pr) => isPrForIssue(pr, issueNumber));
+    if (own) return toBlockingPRInfo(own);
+  }
 
   if (milestoneTitle !== "") {
     // Milestone issue: only blocked by PRs targeting the same milestone branch
