@@ -38,7 +38,13 @@ for `number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body
     (`new_work_eligibility.ts`) both use it.
 - **`ignore-open-prs` check** (`hasIgnoreOpenPRsLabel`). All five callers pass
   the listed labels, so `issue view --json labels` is gone from the scan. Who
-  added the label is still verified against the timeline.
+  added the label is still verified against the timeline. The per-issue label
+  read was already cached for the iteration, so the label is about as fresh as
+  before: a newly added `ignore-open-prs` is seen when the listing next
+  refreshes, which takes at most 600 s. One fixture in
+  `find_issues_by_label_gating_test.ts` had a listing without the label that
+  its per-issue view reported. It now lists the label, as GitHub would, and its
+  assertion is unchanged.
 - **Timeline batches** (`find_oldest_issue.ts`). One label-event batch per
   repository covers every tier's issues. Before, each of the four collectors
   batched only its own tier. The collectors' `getBatchedGh` calls then find
