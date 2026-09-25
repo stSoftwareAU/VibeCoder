@@ -38,6 +38,7 @@
 
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import type { BriefRunReport } from "./brief_toolchain.ts";
 import type { FailureCategory } from "./failure_diagnosis.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import {
@@ -265,6 +266,12 @@ export interface IssueRunCallbackContext {
    */
   rtk?: RtkOutputResult;
   /**
+   * What brief did for this run's codebase map (Issue #2603, part of #2581).
+   * Absent only on a context a caller assembled without it; the document
+   * then reports {@link BRIEF_OFF}.
+   */
+  brief?: BriefRunReport;
+  /**
    * The release tag the running commit carries, when it carries one
    * (Issue #2444). Absent rather than guessed when the checkout is untagged.
    */
@@ -335,6 +342,28 @@ export function codegraphNotRun(switchedOn: boolean): CodegraphContextResult {
  */
 export function rtkNotRun(switchedOn: boolean): RtkOutputResult {
   return switchedOn ? { enabled: true, status: "off" } : RTK_OFF;
+}
+
+/**
+ * What a run that reported no brief outcome publishes (Issue #2603).
+ *
+ * Stated rather than omitted, like {@link RTK_OFF}: the brief trial compares
+ * runs with the Cargo commands against runs without them.
+ */
+export const BRIEF_OFF: BriefRunReport = Object.freeze({
+  enabled: false,
+  status: "off",
+});
+
+/**
+ * What a run that recorded no brief outcome publishes (Issue #2603): the
+ * host's real switch and `off`, read exactly as {@link rtkNotRun} reads RTK,
+ * so a switched-on host's early exit is never archived as a control run.
+ *
+ * @param switchedOn - Whether the host's `brief_toolchain.enabled` is on
+ */
+export function briefNotRun(switchedOn: boolean): BriefRunReport {
+  return switchedOn ? { enabled: true, status: "off" } : BRIEF_OFF;
 }
 
 /**
@@ -476,6 +505,8 @@ export interface TerminalIssueRun {
    * reported one.
    */
   rtk?: RtkOutputResult;
+  /** What brief did for this run's codebase map (Issue #2603), when reported. */
+  brief?: BriefRunReport;
 }
 
 /** What became of one hook invocation. */
@@ -545,8 +576,8 @@ function readEnvSafe(name: string): string | undefined {
  * is a truthful test of "this run had a session". The `codegraph` block
  * (Issue #2162) is the deliberate exception: it is present on every run,
  * because a trial figure the reader has to infer from an absent key is worse
- * than one stated as `off`. The `rtk` block (Issue #2386) is present on every
- * run for the same reason.
+ * than one stated as `off`. The `rtk` block (Issue #2386) and the `brief`
+ * block (Issue #2603) are present on every run for the same reason.
  */
 export function buildCallbackContextDocument(
   context: IssueRunCallbackContext,
@@ -599,6 +630,8 @@ export function buildCallbackContextDocument(
   // Emitted on every run (Issue #2386), and last, so every key a deployed
   // hook already reads stays exactly where it was.
   document.rtk = rtkBlock(context.rtk);
+  // Issue #2603: additive, on every run, after every existing key.
+  document.brief = briefBlock(context.brief);
   return document;
 }
 
@@ -646,6 +679,32 @@ function rtkBlock(rtk: RtkOutputResult = RTK_OFF): Record<string, unknown> {
     status: rtk.status,
   };
   if (rtk.savedTokens !== undefined) block.savedTokens = rtk.savedTokens;
+  return block;
+}
+
+/**
+ * The `brief` block for one run (Issue #2603): the switch and the status,
+ * `seconds` and `cached` when brief ran or was served from cache, and
+ * `reason` only on `failed`. A switched-on run that did not use brief is the
+ * bare `{enabled:true,status:"off"}`.
+ *
+ * @param brief - What brief did for the run's codebase map, when reported
+ * @returns The block, defaulting to {@link BRIEF_OFF}
+ */
+function briefBlock(
+  brief: BriefRunReport = BRIEF_OFF,
+): Record<string, unknown> {
+  const block: Record<string, unknown> = {
+    enabled: brief.enabled,
+    status: brief.status,
+  };
+  if (brief.status === "ok") {
+    if (brief.seconds !== undefined) block.seconds = brief.seconds;
+    if (brief.cached) block.cached = true;
+  }
+  if (brief.status === "failed" && brief.reason !== undefined) {
+    block.reason = brief.reason;
+  }
   return block;
 }
 
@@ -773,6 +832,12 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_RTK_ENABLED", String(rtk.enabled));
   put(env, "VIBECODER_RTK_STATUS", rtk.status);
   put(env, "VIBECODER_RTK_SAVED_TOKENS", rtk.savedTokens);
+  // Issue #2603: the brief switch on every run.
+  put(
+    env,
+    "VIBECODER_BRIEF_ENABLED",
+    String((context.brief ?? BRIEF_OFF).enabled),
+  );
   // Issue #2444: omitted rather than guessed when the build could not be read.
   put(env, "VIBECODER_WORKER_VERSION", context.workerVersion);
   put(env, "VIBECODER_WORKER_COMMIT", context.workerCommit);

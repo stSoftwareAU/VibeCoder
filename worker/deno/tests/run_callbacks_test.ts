@@ -11,6 +11,8 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  BRIEF_OFF,
+  briefNotRun,
   buildCallbackContextDocument,
   buildCallbackEnv,
   buildCycleCallbackDocument,
@@ -596,4 +598,72 @@ Deno.test("run_callbacks - a cycle env has no run-only scalars (Issue #1955)", (
   assert(!("VIBECODER_RESULT" in env));
   assert(!("VIBECODER_ISSUE_NUMBER" in env));
   assert(!("VIBECODER_EXIT_CODE" in env));
+});
+
+// --- The additive `brief` block (Issue #2603, part of #2581) ---------------
+
+Deno.test("run_callbacks - the brief block carries each outcome of the trial", () => {
+  const cases: Array<[IssueRunCallbackContext["brief"], unknown]> = [
+    [{ enabled: true, status: "ok", seconds: 2.5 }, {
+      enabled: true,
+      status: "ok",
+      seconds: 2.5,
+    }],
+    [{ enabled: true, status: "ok", seconds: 0, cached: true }, {
+      enabled: true,
+      status: "ok",
+      seconds: 0,
+      cached: true,
+    }],
+    [{ enabled: true, status: "failed", reason: "brief timed out" }, {
+      enabled: true,
+      status: "failed",
+      reason: "brief timed out",
+    }],
+    // Switched on, no Cargo.toml: the block is the bare switched-on off.
+    [{ enabled: true, status: "off", reason: "no Cargo.toml" }, {
+      enabled: true,
+      status: "off",
+    }],
+    [{ enabled: false, status: "off" }, { enabled: false, status: "off" }],
+  ];
+  for (const [brief, expected] of cases) {
+    const document = buildCallbackContextDocument(
+      context({ ...(brief ? { brief } : {}) }),
+      "always",
+    );
+    assertEquals(document.brief, expected);
+  }
+});
+
+Deno.test("run_callbacks - a run with no brief report is explicitly off, and last", () => {
+  const document = buildCallbackContextDocument(context(), "always");
+  assertEquals(document.brief, { enabled: false, status: "off" });
+  assertEquals(BRIEF_OFF, { enabled: false, status: "off" });
+  // Additive: appended after every key a deployed hook already reads.
+  const keys = Object.keys(document);
+  assertEquals(keys[keys.length - 1], "brief");
+  assertEquals(keys[keys.length - 2], "rtk");
+});
+
+Deno.test("run_callbacks - briefNotRun states the host's real switch", () => {
+  assertEquals(briefNotRun(true), { enabled: true, status: "off" });
+  assertEquals(briefNotRun(false), BRIEF_OFF);
+});
+
+Deno.test("run_callbacks - VIBECODER_BRIEF_ENABLED follows the switch", () => {
+  const on = buildCallbackEnv(
+    context({ brief: { enabled: true, status: "ok", seconds: 1 } }),
+    "always",
+    "/tmp/context.json",
+    () => undefined,
+  );
+  assertEquals(on.VIBECODER_BRIEF_ENABLED, "true");
+  const off = buildCallbackEnv(
+    context(),
+    "always",
+    "/tmp/context.json",
+    () => undefined,
+  );
+  assertEquals(off.VIBECODER_BRIEF_ENABLED, "false");
 });

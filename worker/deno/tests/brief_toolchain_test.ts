@@ -17,6 +17,8 @@ import {
   MAX_BRIEF_COMMAND_LENGTH,
   MAX_BRIEF_COMMANDS,
   sanitiseCargoCommands,
+  BRIEF_VERSION,
+  briefRunReport,
 } from "../lib/brief_toolchain.ts";
 import {
   DEFAULT_SUBPROCESS_TIMEOUT_MS,
@@ -314,4 +316,53 @@ Deno.test("extractCargoCommands - an empty report is ok with no commands", () =>
 Deno.test("extractCargoCommands - rejects output that is not a JSON object", () => {
   assertEquals(extractCargoCommands("brief dev — /repo").ok, false);
   assertEquals(extractCargoCommands('"cargo test"').ok, false);
+});
+
+// --- Issue #2603: the run report and the pinned version ---
+
+Deno.test("briefRunReport - switch off is always the bare off block", () => {
+  for (
+    const outcome of [
+      { status: "off", reason: "no runner" },
+      { status: "ok", seconds: 3 },
+      { status: "failed", reason: "x" },
+    ] as const
+  ) {
+    assertEquals(briefRunReport(false, outcome), {
+      enabled: false,
+      status: "off",
+    });
+  }
+});
+
+Deno.test("briefRunReport - switch on maps ok, cached, failed and off", () => {
+  assertEquals(briefRunReport(true, { status: "ok", seconds: 1.5 }), {
+    enabled: true,
+    status: "ok",
+    seconds: 1.5,
+  });
+  assertEquals(
+    briefRunReport(true, { status: "ok", seconds: 0, cached: true }),
+    { enabled: true, status: "ok", seconds: 0, cached: true },
+  );
+  assertEquals(briefRunReport(true, { status: "failed", reason: "boom" }), {
+    enabled: true,
+    status: "failed",
+    reason: "boom",
+  });
+  assertEquals(
+    briefRunReport(true, { status: "off", reason: "no Cargo.toml" }),
+    { enabled: true, status: "off", reason: "no Cargo.toml" },
+  );
+});
+
+Deno.test("BRIEF_VERSION - matches the brief pin in container/tools.json", async () => {
+  const manifest = JSON.parse(
+    await Deno.readTextFile(
+      new URL("../../../container/tools.json", import.meta.url),
+    ),
+  ) as { toolchains: { id: string; version: string }[] };
+  const pin = manifest.toolchains.find((t) => t.id === "brief");
+  assert(pin, "container/tools.json must pin brief");
+  assertEquals(BRIEF_VERSION, pin.version);
 });

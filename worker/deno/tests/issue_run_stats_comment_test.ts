@@ -7,6 +7,8 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  BRIEF_STATS_PREFIX,
+  buildBriefStatsLine,
   buildGraftStatsLine,
   buildIssueCostTotalLine,
   buildIssueRunStatsComment,
@@ -33,6 +35,7 @@ import {
 } from "../lib/codegraph_context.ts";
 import { GEMINI_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { RTK_OFF, type RtkOutputResult } from "../lib/rtk_output.ts";
+import type { BriefRunReport } from "../lib/brief_toolchain.ts";
 import { buildDegradationReport } from "../lib/planning_run_stats.ts";
 import { buildPhaseInvocations } from "../lib/phase_run_stats.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
@@ -1764,4 +1767,146 @@ Deno.test("measureIssuePhaseRun - only a gate that passed carries its attempt", 
       ?.gatePassedOnAttempt,
     undefined,
   );
+});
+
+// ============================================================================
+// Brief line (Issue #2603, part of #2581)
+// ============================================================================
+
+/** Every Brief line the comment carries. */
+function briefLinesOf(body: string): string[] {
+  return body.split("\n").filter((line) => line.startsWith(BRIEF_STATS_PREFIX));
+}
+
+/** A stats comment for a run whose codebase map reported `brief`. */
+function commentWithBrief(brief: BriefRunReport): string {
+  return buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-brief-run",
+    rtk: RTK_OFF,
+    brief,
+  });
+}
+
+Deno.test("brief line - the prefix is the fixed `- **Brief:**` bullet", () => {
+  assertEquals(BRIEF_STATS_PREFIX, "- **Brief:**");
+});
+
+Deno.test("brief line - ok reports the seconds brief took", () => {
+  const brief: BriefRunReport = { enabled: true, status: "ok", seconds: 1.25 };
+  assertEquals(buildBriefStatsLine(brief), "- **Brief:** ok (1.25s)");
+  assertEquals(briefLinesOf(commentWithBrief(brief)), [
+    "- **Brief:** ok (1.25s)",
+  ]);
+});
+
+Deno.test("brief line - a cache hit says cached, not a time", () => {
+  assertEquals(
+    buildBriefStatsLine({
+      enabled: true,
+      status: "ok",
+      seconds: 0,
+      cached: true,
+    }),
+    "- **Brief:** ok (cached)",
+  );
+});
+
+Deno.test("brief line - failed carries the reason", () => {
+  assertEquals(
+    buildBriefStatsLine({
+      enabled: true,
+      status: "failed",
+      reason: "brief exited with code 2: boom",
+    }),
+    "- **Brief:** failed — `brief exited with code 2: boom`",
+  );
+});
+
+Deno.test("brief line - a reason cannot break out of its code span", () => {
+  const line = buildBriefStatsLine({
+    enabled: true,
+    status: "failed",
+    reason: "bad `@someone` <b>x</b>\nnext",
+  });
+  assertEquals(line, "- **Brief:** failed — `bad '@someone' <b>x</b> next`");
+});
+
+Deno.test("brief line - switched on with no Cargo.toml says off and why", () => {
+  assertEquals(
+    buildBriefStatsLine({
+      enabled: true,
+      status: "off",
+      reason: "no Cargo.toml",
+    }),
+    "- **Brief:** off — no Cargo.toml",
+  );
+  assertEquals(
+    buildBriefStatsLine({ enabled: true, status: "off" }),
+    "- **Brief:** off",
+  );
+});
+
+Deno.test("brief line - no line at all when the switch is off", () => {
+  const brief: BriefRunReport = { enabled: false, status: "off" };
+  assertEquals(buildBriefStatsLine(brief), undefined);
+  const without = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-brief-run",
+    rtk: RTK_OFF,
+  });
+  // Byte-identical to today's comment.
+  assertEquals(commentWithBrief(brief), without);
+});
+
+Deno.test("brief line - sits after the RTK line and before the issue total", () => {
+  const prior = commentWithBrief({ enabled: true, status: "ok", seconds: 1 });
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-brief-run",
+    priorComments: [prior],
+    rtk: RTK_OFF,
+    brief: { enabled: true, status: "ok", seconds: 2 },
+  });
+  const lines = body.split("\n");
+  const rtkAt = lines.findIndex((l) => l.startsWith(RTK_STATS_PREFIX));
+  const briefAt = lines.findIndex((l) => l.startsWith(BRIEF_STATS_PREFIX));
+  const totalAt = lines.findIndex((l) => l.includes("**Issue total across"));
+  assertEquals(briefAt, rtkAt + 1);
+  assertEquals(totalAt, briefAt + 1);
+  // The seconds figure never reads as spend.
+  assertEquals(
+    tallyIssueCost([prior]),
+    tallyIssueCost([
+      buildIssueRunStatsComment({
+        phase: "issue",
+        claudeResults: [claudeResult(["claude-opus-4-8"])],
+        runId: "vibe-brief-run",
+        rtk: RTK_OFF,
+      }),
+    ]),
+  );
+});
+
+Deno.test("postIssueRunStatsComment - posts the Brief line", async () => {
+  const github = makeGitHubDouble();
+
+  await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 2603,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    getIssueComments: github.getIssueComments,
+    postComment: github.postComment,
+    logger: makeLogger(),
+    authorOptions: FLEET_OPTIONS,
+    brief: { enabled: true, status: "failed", reason: "brief timed out" },
+  });
+
+  assertEquals(briefLinesOf(github.posted[0] ?? ""), [
+    "- **Brief:** failed — `brief timed out`",
+  ]);
 });
