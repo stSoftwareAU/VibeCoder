@@ -12,41 +12,48 @@
  * so it survives a compaction and a container restart, and it needs no
  * cleanup step, no `.gitignore` entry and no Commit Safety allowlist change.
  * The rule rides the existing compaction bullet, so the always-loaded prompt
- * (#2574) gains no new bullet.
+ * (#2574) gains no new bullet — one bullet carries the rule.
+ *
+ * A documentation-drift test under CODING-STANDARDS.md: the rule is prose
+ * the worker cannot hold as a value, and it is read section-scoped.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
+import { flat, section, withoutSection } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+const HEADING = "Long-Horizon Runs";
+const COMPACTION = "**Your context window is compacted automatically.**";
+const MECHANISM = "running `- [ ]` checklist";
 
-/** The Long-Horizon Runs section of the resolved coding guidelines. */
-async function longHorizonSection(): Promise<string> {
+/** The resolved coding guidelines template. */
+async function guidelines(): Promise<string> {
   const loaded = await loadPrompt("coding_guidelines", PROMPTS_DIR);
   assert(loaded.ok, "coding_guidelines must resolve");
-  const text = loaded.value;
-  const start = text.indexOf("## Long-Horizon Runs");
-  assert(start >= 0, "expected a Long-Horizon Runs section");
-  const end = text.indexOf("\n## ", start + 1);
-  return end < 0 ? text.slice(start) : text.slice(start, end);
+  return loaded.value;
 }
 
-/** The top-level bullet that governs automatic compaction. */
+/** Top-level bullets of the Long-Horizon Runs section, single-spaced. */
+async function bullets(): Promise<string[]> {
+  return section(await guidelines(), HEADING).split("\n- ").map(flat);
+}
+
+/** The bullet that governs automatic compaction. */
 async function compactionBullet(): Promise<string> {
-  const section = await longHorizonSection();
-  const bullet = section.split("\n- ").find((b) =>
-    b.startsWith("**Your context window is compacted automatically.**")
-  );
+  const bullet = (await bullets()).find((b) => b.includes(COMPACTION));
   assert(bullet, "expected the compaction bullet");
-  return bullet.replace(/\s+/g, " ");
+  return bullet;
 }
 
 Deno.test("running checklist - names one mechanism: a checklist in the PR summary (Issue #2635)", async () => {
   const bullet = await compactionBullet();
-  assertStringIncludes(bullet, "running `- [ ]` checklist");
-  assertStringIncludes(bullet, "in the PR summary");
+  assertStringIncludes(
+    bullet,
+    `${MECHANISM} of the task's steps in the PR summary`,
+  );
 });
 
 Deno.test("running checklist - says when to update and when to re-read it (Issue #2635)", async () => {
@@ -58,16 +65,13 @@ Deno.test("running checklist - says when to update and when to re-read it (Issue
   );
 });
 
-Deno.test("running checklist - never asks for a scratch checklist file (Issue #2635)", async () => {
-  const section = (await longHorizonSection()).replace(/\s+/g, " ");
-  assert(
-    !/checklist file|\.\w*checklist/i.test(section),
-    "the checklist must live in the committed PR summary, not a scratch file",
-  );
+Deno.test("running checklist - one bullet carries the rule, not a new one (Issue #2635)", async () => {
+  const carriers = (await bullets()).filter((b) => b.includes("checklist"));
+  assertEquals(carriers.length, 1, "the checklist rule lives in one bullet");
+  assertStringIncludes(carriers[0] ?? "", COMPACTION);
 });
 
-Deno.test("running checklist - rides the existing bullet, adding none (Issue #2635)", async () => {
-  const section = await longHorizonSection();
-  const bullets = section.split("\n").filter((l) => l.startsWith("- "));
-  assertEquals(bullets.length, 4, "Long-Horizon Runs keeps its four bullets");
+Deno.test("running checklist - negative control: the rule lives only in Long-Horizon Runs (Issue #2635)", async () => {
+  const rest = flat(withoutSection(await guidelines(), HEADING));
+  assert(!rest.includes(MECHANISM), "the rule must not be restated elsewhere");
 });
