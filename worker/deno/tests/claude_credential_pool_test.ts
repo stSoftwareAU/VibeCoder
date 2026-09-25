@@ -980,3 +980,63 @@ Deno.test("selectAvailable - a single-subscription host is still measured (Issue
     null,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Every credential's reading, for the pool-wide weekly pace (Issue #2647)
+// ---------------------------------------------------------------------------
+
+Deno.test("readPoolBudgets - a single-token host reads nothing and makes no request (Issue #2647)", async () => {
+  const probe = fetchWith({ "token-provider": healthy() });
+  const lines: string[] = [];
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () => Promise.resolve([tokenFile("provider")]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+    log: (line) => lines.push(line),
+  });
+  assertEquals(await pool.readPoolBudgets(NOW), null);
+  assertEquals(probe.calls(), 0);
+  assertEquals(lines, []);
+});
+
+Deno.test("readPoolBudgets - every candidate's reading, recorded ones reused, stale ones probed once, nothing logged (Issue #2647)", async () => {
+  const lines: string[] = [];
+  const probe = fetchWith({
+    "token-provider": healthy(),
+    "token-provider-3": healthy({ sevenDayRemaining: 0.3 }),
+  });
+  const pool = createClaudeCredentialPool({
+    provider: CLAUDE,
+    discover: () =>
+      Promise.resolve([
+        tokenFile("provider"),
+        tokenFile("provider-2"),
+        tokenFile("provider-3"),
+      ]),
+    fetchFn: probe.fn,
+    now: () => NOW,
+    log: (line) => lines.push(line),
+  });
+  pool.recordExhaustion("provider-2", [
+    { window: "seven_day", resetAt: NOW + 60 * HOUR },
+  ]);
+  lines.length = 0;
+
+  const budgets = await pool.readPoolBudgets(NOW);
+  assert(budgets !== null);
+  assertEquals(budgets.map((b) => b.label), [
+    "provider",
+    "provider-2",
+    "provider-3",
+  ]);
+  assertEquals(probe.calls(), 2, "the recorded exhaustion costs no probe");
+  const second = budgets[1];
+  assert(second?.known === true);
+  assertEquals(second.remainingFraction, 0);
+
+  // A second read inside the snapshot age is free.
+  await pool.readPoolBudgets(NOW + 60_000);
+  assertEquals(probe.calls(), 2);
+  assertEquals(lines, [], "a reading is not a selection, so it logs nothing");
+});

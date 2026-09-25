@@ -33,9 +33,32 @@
  *   refuses work — it is recorded as a warning, never as a refusal.
  *
  * Only the seven-day window drives this gate; the five-hour window keeps its
- * existing role as the token-selection gate. The verdict is judged on the
- * token this run selected at start, so a host with a token pool re-judges at
- * the next worker start exactly as it does today.
+ * existing role as the token-selection gate.
+ *
+ * ## A pool is judged as a pool (Issue #2647)
+ *
+ * On a host with two or more Claude subscriptions the question is not
+ * whether the token this run holds lasts — one nearly spent token says
+ * nothing when another has plenty left or reopens in a few hours — but
+ * whether the **pool** lasts. {@link claudePoolWeekPaceVerdict} answers it,
+ * as purely as the single-token verdict:
+ *
+ * 1. **Burn rate** — the sum over credentials of `usedShare / elapsedHours`
+ *    of each one's own window: the rate the host has been drawing weekly
+ *    share, in windows per hour. A credential inside the grace, or whose
+ *    window has rolled over, has no trustworthy rate and is left out of it.
+ * 2. **Capacity walk** — start from the sum of every credential's remaining
+ *    share, and step through the reset times in order. Between resets the
+ *    capacity is drawn down at the burn rate, soonest-expiring credential
+ *    first; at each reset that credential's week reopens with a full window.
+ *    The walk ends at the latest reset in the pool (at most 168 hours out).
+ * 3. **Verdict** — engaged if capacity reaches zero before the next
+ *    reopening would refill it; off otherwise.
+ *
+ * A credential whose reading is unknown, or which reports no seven-day
+ * window, is left out of both the rate and the capacity (headroom has to be
+ * evidenced); a pool with no usable reading at all is unknown. A host with a
+ * single token is judged by {@link claudeWeekPaceVerdict} exactly as before.
  *
  * ## What it costs
  *
@@ -44,7 +67,9 @@
  * minutes the credential pool's snapshots use, so a busy cycle costs nothing.
  * A host with no Claude subscription token in its run environment (every
  * other vendor) makes **no** request and logs nothing: the gate is simply not
- * applicable there.
+ * applicable there. A pooled host reads the credential pool's own snapshots
+ * (`readPoolBudgets`), which follow the same ten-minute rule, so the pool
+ * verdict adds no request of its own beyond refreshing a stale snapshot.
  *
  * The token value is never an input to anything this module formats, so it
  * cannot reach a log line.
@@ -184,6 +209,235 @@ export function claudeWeekPaceVerdict(
     : { state: "off", reading: reading(projectedShare), reason: "on-pace" };
 }
 
+/** The pool-wide figures the verdict was computed from, and reports. */
+export interface ClaudePoolWeekPaceReading {
+  /** Credentials in the pool, usable reading or not. */
+  readonly total: number;
+  /** Credentials with a usable seven-day reading, counted in the capacity. */
+  readonly counted: number;
+  /** Credentials whose own window gave a trustworthy burn rate. */
+  readonly rated: number;
+  /** Sum of every counted credential's remaining share, in windows. */
+  readonly remainingShare: number;
+  /** Weekly share the pool is drawing, in windows per hour. */
+  readonly burnPerHour: number;
+  /**
+   * When capacity reaches zero before a reopening refills it, in epoch
+   * milliseconds; `null` when it never does inside the walk.
+   */
+  readonly runsOutAt: number | null;
+  /**
+   * The reopening judged against: the one capacity ran out before when
+   * engaged, otherwise the soonest one ahead; `null` when none lies ahead.
+   */
+  readonly nextReopenAt: number | null;
+}
+
+/** What the pool's weekly windows say about claiming backlog work. */
+export type ClaudePoolWeekPaceVerdict =
+  /** The pool will not last: tiers 3 and 4 are skipped. */
+  | { readonly state: "engaged"; readonly reading: ClaudePoolWeekPaceReading }
+  /** The pool lasts, or nothing gives a rate yet: every tier runs. */
+  | {
+    readonly state: "off";
+    readonly reading: ClaudePoolWeekPaceReading;
+    /**
+     * `within-grace` and `window-elapsed` mean no credential gave a rate to
+     * project with, for the same reasons the single-token verdict gives.
+     */
+    readonly reason: "within-grace" | "on-pace" | "window-elapsed" | "drain";
+  }
+  /** No credential reported a usable seven-day window: a warning. */
+  | { readonly state: "unknown"; readonly reason: string };
+
+/** One credential's place in the capacity walk. */
+interface PoolCredential {
+  /** Remaining share of its current window. */
+  remaining: number;
+  /** When that window reopens; `Infinity` when not inside the walk. */
+  resetAt: number;
+}
+
+/**
+ * The seven-day window of a known budget, when it is a usable reading.
+ *
+ * The five-hour window is deliberately never read: it is the token-selection
+ * gate's, and a five-hour exhaustion says nothing about the week.
+ */
+function usableSevenDay(
+  budget: ClaudeTokenBudget,
+): { remainingFraction: number; resetAt: number } | null {
+  if (!budget.known) return null;
+  const window = budget.windows.find((w) => w.window === "seven_day");
+  if (window === undefined) return null;
+  if (
+    !Number.isFinite(window.remainingFraction) ||
+    !Number.isFinite(window.resetAt)
+  ) {
+    return null;
+  }
+  return {
+    remainingFraction: Math.min(1, Math.max(0, window.remainingFraction)),
+    resetAt: window.resetAt,
+  };
+}
+
+/**
+ * Judge the weekly quota's pace across a whole credential pool (Issue #2647).
+ *
+ * "Won't make it" means the pool as a whole runs out before capacity reopens
+ * at the current burn rate — see the module comment for the model. One
+ * nearly spent credential beside a fresh one, or beside one about to reopen,
+ * leaves the gate off.
+ *
+ * A pool of exactly one budget takes its state from
+ * {@link claudeWeekPaceVerdict}, so a single-credential host behaves exactly
+ * as it always has; the pool figures are still reported.
+ *
+ * @param budgets - One probe outcome per pool credential.
+ * @param nowMs - Current time in epoch milliseconds (a parameter, never a
+ *   clock of this function's own).
+ * @param options - `drain` (Issue #2474): off while any reading is usable.
+ * @returns Whether the backlog tiers should be skipped, and the figures.
+ */
+export function claudePoolWeekPaceVerdict(
+  budgets: readonly ClaudeTokenBudget[],
+  nowMs: number,
+  options: { drain?: boolean } = {},
+): ClaudePoolWeekPaceVerdict {
+  const windowMs = SEVEN_DAY_WINDOW_HOURS * HOUR_MS;
+  const graceMs = CLAUDE_WEEK_PACE_GRACE_HOURS * HOUR_MS;
+  const credentials: PoolCredential[] = [];
+  let burnPerHour = 0;
+  let rated = 0;
+  let inGrace = 0;
+  const unusable: string[] = [];
+
+  for (const budget of budgets) {
+    const window = usableSevenDay(budget);
+    if (window === null) {
+      unusable.push(
+        budget.known
+          ? `${budget.label}: no seven-day window`
+          : `${budget.label}: ${budget.reason}`,
+      );
+      continue;
+    }
+    if (window.resetAt <= nowMs) {
+      // Rolled over since the reading: a fresh, full window with no rate.
+      credentials.push({ remaining: 1, resetAt: Number.POSITIVE_INFINITY });
+      continue;
+    }
+    const elapsedMs = windowMs - (window.resetAt - nowMs);
+    credentials.push({
+      remaining: window.remainingFraction,
+      resetAt: window.resetAt,
+    });
+    if (elapsedMs < graceMs) {
+      inGrace++;
+      continue;
+    }
+    burnPerHour += (1 - window.remainingFraction) / (elapsedMs / HOUR_MS);
+    rated++;
+  }
+
+  if (credentials.length === 0) {
+    return {
+      state: "unknown",
+      reason: `no credential in the pool reported a usable seven-day window ` +
+        `(${unusable.join("; ") || "empty pool"})`,
+    };
+  }
+
+  const walk = walkPoolCapacity(credentials, burnPerHour, nowMs);
+  const reading: ClaudePoolWeekPaceReading = {
+    total: budgets.length,
+    counted: credentials.length,
+    rated,
+    remainingShare: credentials.reduce((sum, c) => sum + c.remaining, 0),
+    burnPerHour,
+    runsOutAt: walk.runsOutAt,
+    nextReopenAt: walk.nextReopenAt,
+  };
+
+  const only = budgets.length === 1 ? budgets[0] : undefined;
+  if (only !== undefined) {
+    // One credential: the state is the single-token verdict's, unchanged.
+    const single = claudeWeekPaceVerdict(only, nowMs, options);
+    if (single.state === "unknown") return single;
+    return single.state === "engaged"
+      ? { state: "engaged", reading }
+      : { state: "off", reading, reason: single.reason };
+  }
+
+  if (options.drain === true) return { state: "off", reading, reason: "drain" };
+  if (rated === 0) {
+    return {
+      state: "off",
+      reading,
+      reason: inGrace > 0 ? "within-grace" : "window-elapsed",
+    };
+  }
+  return walk.runsOutAt === null
+    ? { state: "off", reading, reason: "on-pace" }
+    : { state: "engaged", reading };
+}
+
+/**
+ * Walk the pool's capacity forward through its reopenings.
+ *
+ * Between two reopenings the capacity is drawn down at the burn rate from the
+ * soonest-expiring credential first (share still on a window when it reopens
+ * is lost, so it is the share to spend first); at each reopening that
+ * credential's window refills to a full one. Capacity reaching zero at or
+ * before a reopening is "won't make it" — the single-token threshold, where a
+ * projection landing exactly on the reset engages.
+ *
+ * Pure; mutates only its own copy of the credentials.
+ */
+function walkPoolCapacity(
+  initial: readonly PoolCredential[],
+  burnPerHour: number,
+  nowMs: number,
+): { runsOutAt: number | null; nextReopenAt: number | null } {
+  const credentials = initial.map((c) => ({ ...c }));
+  const horizon = nowMs + SEVEN_DAY_WINDOW_HOURS * HOUR_MS;
+  const reopenings = [
+    ...new Set(
+      credentials.map((c) => c.resetAt).filter((at) =>
+        at > nowMs && at <= horizon
+      ),
+    ),
+  ].sort((a, b) => a - b);
+  const firstReopen = reopenings[0] ?? null;
+  const perMs = burnPerHour / HOUR_MS;
+  if (!(perMs > 0)) return { runsOutAt: null, nextReopenAt: firstReopen };
+
+  let at = nowMs;
+  for (const reopenAt of reopenings) {
+    const capacity = credentials.reduce((sum, c) => sum + c.remaining, 0);
+    let need = perMs * (reopenAt - at);
+    if (need >= capacity) {
+      return { runsOutAt: at + capacity / perMs, nextReopenAt: reopenAt };
+    }
+    credentials.sort((a, b) => a.resetAt - b.resetAt);
+    for (const credential of credentials) {
+      const draw = Math.min(credential.remaining, need);
+      credential.remaining -= draw;
+      need -= draw;
+    }
+    for (const credential of credentials) {
+      if (credential.resetAt === reopenAt) {
+        credential.remaining = 1;
+        // Its next reopening is a week on, beyond the walk.
+        credential.resetAt = Number.POSITIVE_INFINITY;
+      }
+    }
+    at = reopenAt;
+  }
+  return { runsOutAt: null, nextReopenAt: firstReopen };
+}
+
 /** Render a share as a percentage. */
 function formatShare(fraction: number): string {
   return `${(fraction * 100).toFixed(1)}%`;
@@ -240,6 +494,56 @@ export function formatWeekPaceLiftedLine(
 }
 
 /**
+ * The pool figures every pool pace line carries (Issue #2647): credentials
+ * counted, remaining capacity, burn rate per hour, and when capacity runs out
+ * against the next reopening. Labels and shares only — no token value is an
+ * input here, so none can reach the line.
+ */
+function describePoolReading(reading: ClaudePoolWeekPaceReading): string {
+  const runsOut = reading.runsOutAt === null
+    ? "never before a reopening"
+    : formatReset(reading.runsOutAt);
+  const reopen = reading.nextReopenAt === null
+    ? "none ahead"
+    : formatReset(reading.nextReopenAt);
+  return `pool counted=${reading.counted}/${reading.total} ` +
+    `rated=${reading.rated} ` +
+    `remaining=${formatShare(reading.remainingShare)} ` +
+    `burn=${(reading.burnPerHour * 100).toFixed(2)}%/h ` +
+    `runs-out=${runsOut} next-reopen=${reopen}`;
+}
+
+/**
+ * The line an engaged pool gate logs (Issue #2647). Pure.
+ *
+ * @param reading - The pool figures the verdict was computed from.
+ * @returns The INFO line to log.
+ */
+export function formatPoolWeekPaceEngagedLine(
+  reading: ClaudePoolWeekPaceReading,
+): string {
+  return `${CLAUDE_WEEK_PACE_LOG_PREFIX} engaged — ${
+    describePoolReading(reading)
+  }; the pool runs out before capacity reopens, so low-priority and ` +
+    `idle-task pickup is skipped and the remaining weekly quota goes to ` +
+    `top-priority and work-on issues (Issues #1885, #2647)`;
+}
+
+/**
+ * The line logged once when the pool gate lifts (Issue #2647). Pure.
+ *
+ * @param reading - The pool figures that lifted it.
+ * @returns The INFO line to log.
+ */
+export function formatPoolWeekPaceLiftedLine(
+  reading: ClaudePoolWeekPaceReading,
+): string {
+  return `${CLAUDE_WEEK_PACE_LOG_PREFIX} lifted — ${
+    describePoolReading(reading)
+  }; low-priority and idle-task pickup resumed`;
+}
+
+/**
  * The line an unknown reading logs, once per scan cycle.
  *
  * @param reason - Why the reading is unknown.
@@ -270,6 +574,15 @@ export interface ClaudeWeekPaceGateOptions {
   url?: string;
   /** Reading seam; defaults to one bounded probe of {@link token}. */
   readBudget?: () => Promise<ClaudeTokenBudget>;
+  /**
+   * Every credential's reading on a pooled host (Issue #2647) — production
+   * passes the credential pool's `readPoolBudgets`, which keeps its own
+   * ten-minute snapshots. `null`, or fewer than two readings, means a
+   * single-token host, judged on {@link token} exactly as before.
+   */
+  readPoolBudgets?: (
+    nowMs: number,
+  ) => Promise<readonly ClaudeTokenBudget[] | null>;
   /** Age past which the reading is re-probed. Defaults to the pool's ten minutes. */
   snapshotMaxAgeMs?: number;
   /** Current time source; defaults to the wall clock. */
@@ -362,6 +675,31 @@ export function createClaudeWeekPaceGate(
       // rather than unknown: no request, and no line.
       if (token === null || token.trim().length === 0) return setVerdict(false);
 
+      // Issue #2647: a pooled host is judged across every credential, not on
+      // the one token this run happens to hold.
+      const pool = await readPool(nowMs);
+      if (pool !== null && "failed" in pool) {
+        say(logWarn, formatWeekPaceUnknownLine(pool.failed));
+        return setVerdict(false);
+      }
+      if (pool !== null && pool.length >= 2) {
+        const verdict = claudePoolWeekPaceVerdict(pool, nowMs, {
+          drain: options.drain === true,
+        });
+        if (verdict.state === "unknown") {
+          say(logWarn, formatWeekPaceUnknownLine(verdict.reason));
+          return setVerdict(false);
+        }
+        if (verdict.state === "engaged") {
+          say(logInfo, formatPoolWeekPaceEngagedLine(verdict.reading));
+          return setVerdict(true);
+        }
+        if (wasEngaged) {
+          say(logInfo, formatPoolWeekPaceLiftedLine(verdict.reading));
+        }
+        return setVerdict(false);
+      }
+
       if (
         snapshot === null || snapshot.token !== token ||
         nowMs - snapshot.observedAtMs > maxAgeMs
@@ -405,6 +743,26 @@ export function createClaudeWeekPaceGate(
     if (line === lastLine) return;
     lastLine = line;
     sink(line);
+  }
+
+  /**
+   * Every pool credential's reading, null for a single-token host, or the
+   * reason the pool could not be read. Never throws: a pool that cannot be
+   * read is an unknown reading, never a hold.
+   */
+  async function readPool(
+    nowMs: number,
+  ): Promise<readonly ClaudeTokenBudget[] | null | { failed: string }> {
+    if (options.readPoolBudgets === undefined) return null;
+    try {
+      return await options.readPoolBudgets(nowMs);
+    } catch (error: unknown) {
+      return {
+        failed: `the credential pool could not be read (${
+          error instanceof Error ? error.name : "unknown error"
+        })`,
+      };
+    }
   }
 
   /** True when this run's coding agent is Claude. */
