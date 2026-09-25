@@ -24,7 +24,10 @@ import {
   setConfiguredAgentProviderId,
   setRunProviderOverride,
 } from "./agent_provider.ts";
-import { anyPhaseRoutesToFableTier } from "./fable_routing.ts";
+import {
+  anyPhaseRoutesToFableTier,
+  type FableRoutingProvider,
+} from "./fable_routing.ts";
 import {
   classifyProviderBilling,
   type ProviderBillingEvidence,
@@ -557,6 +560,12 @@ export interface RunCoreDeps {
    * cache. Returns the verdict; never throws.
    */
   checkFableAvailability?: () => Promise<FableAvailability>;
+  /**
+   * Resolves the active provider for the Fable-probe routing check
+   * (Issue #2586). Defaults to `selectAgentProvider`; a test injects a
+   * throwing resolver to prove a resolution fault never aborts the cycle.
+   */
+  resolveFableRoutingProvider?: () => FableRoutingProvider;
 
   /**
    * Monitored repos the worker can no longer see (Issue #4038).
@@ -6111,21 +6120,38 @@ export async function runCoreLoop(
           // provider: if no phase will ever route to Fable (including
           // operator-pinned phases), there is no point calling the probe. This
           // avoids unnecessary Fable calls on Codex and Gemini providers.
-          const activeProvider = selectAgentProvider();
-          if (
-            deps.checkFableAvailability &&
-            anyPhaseRoutesToFableTier(activeProvider)
-          ) {
+          //
+          // Issue #2586: resolve the provider only when the probe is wired,
+          // and a resolution fault skips the probe loudly — it must never
+          // abort the cycle, like the other best-effort per-cycle steps.
+          const probeFable = deps.checkFableAvailability;
+          if (probeFable) {
+            let routesToFable = false;
             try {
-              await deps.checkFableAvailability();
-            } catch (fableErr) {
+              routesToFable = anyPhaseRoutesToFableTier(
+                (deps.resolveFableRoutingProvider ?? selectAgentProvider)(),
+              );
+            } catch (resolveErr) {
               deps.logError(
-                `Fable availability probe failed (continuing): ${
-                  fableErr instanceof Error
-                    ? fableErr.message
-                    : String(fableErr)
+                `Fable probe skipped: could not resolve the agent provider (continuing): ${
+                  resolveErr instanceof Error
+                    ? resolveErr.message
+                    : String(resolveErr)
                 }`,
               );
+            }
+            if (routesToFable) {
+              try {
+                await probeFable();
+              } catch (fableErr) {
+                deps.logError(
+                  `Fable availability probe failed (continuing): ${
+                    fableErr instanceof Error
+                      ? fableErr.message
+                      : String(fableErr)
+                  }`,
+                );
+              }
             }
           }
 
