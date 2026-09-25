@@ -44,6 +44,7 @@ import {
   anticipatedProviderId,
   handOnStreamSession,
   type JoinedStream,
+  preferredStreamProviderId,
   primeStreamSession,
 } from "./stream_session.ts";
 import { primeStreamCompaction } from "./stream_compaction.ts";
@@ -1607,9 +1608,18 @@ async function _processPlanningWithHeartbeat(
         : {}),
       logger,
     });
+    // Stored sessions with no recorded creator are presumed the preferred
+    // provider's (Issue #2638), so one filed under the fallback is skipped.
+    const preferredProviderId = preferredStreamProviderId({
+      ...(config.repoConfig?.[repo]
+        ? { repoConfig: config.repoConfig[repo] }
+        : {}),
+      logger,
+    });
     const adoption = await primeStreamSession({
       workDir: config.workDir,
       repo,
+      preferredProviderId,
       ...(milestoneTitle !== undefined ? { milestoneTitle } : {}),
       providerId,
       runKind: "planning",
@@ -1623,6 +1633,9 @@ async function _processPlanningWithHeartbeat(
       const autocompactTokens = await primeStreamCompaction({
         outcome: adoption.outcome,
         providerId,
+        ...(adoption.state.providerId !== undefined
+          ? { sessionProviderId: adoption.state.providerId }
+          : {}),
         sessionId: adoption.state.sessionId,
         cwd: config.workDir,
         workDir: config.workDir,
@@ -1641,11 +1654,17 @@ async function _processPlanningWithHeartbeat(
    * turn can time out. A stream that is never written is a conversation lost,
    * so the write follows whichever turn actually ran last.
    */
-  const handOnStream = (state: SessionResumeState): Promise<void> =>
+  const handOnStream = (
+    state: SessionResumeState,
+    runProviderId: string | undefined,
+  ): Promise<void> =>
     handOnStreamSession({
       workDir: config.workDir,
       joined: streamSession,
       state,
+      // The provider that served the turn owns the slot (Issue #2638) — not
+      // the one anticipated before the spawn, which a fallback can overrule.
+      ...(runProviderId ? { runProviderId } : {}),
       logger,
       logFields: { repo, issueNumber },
     });
@@ -1742,7 +1761,7 @@ async function _processPlanningWithHeartbeat(
     }
     // The draft turn can publish sub-issues and return below, so the stream is
     // written here as well as after the publish turn (Issue #2333).
-    await handOnStream(sessionState);
+    await handOnStream(sessionState, draftResult.value.provider);
     recordInvocation(invocations, draftResult.value, codegraph, graft);
     if (draftResult.value.timedOut) {
       logger.warn(
@@ -1919,6 +1938,7 @@ async function _processPlanningWithHeartbeat(
         providerId: claudeResult.value.provider,
       })
       : publishSessionState,
+    claudeResult.value.provider,
   );
 
   const claudeOutput = claudeResult.value.output;
