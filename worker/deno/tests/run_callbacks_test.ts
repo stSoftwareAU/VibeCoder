@@ -680,6 +680,9 @@ for (const enabled of [false, true]) {
     fn: async () => {
       const config = buildDefaultWorkerConfig();
       config.briefToolchain = { enabled };
+      // The main-loop phase builds the map too (Issue #2621); switch it off so
+      // the run truly builds no map.
+      config.includeCodebaseMap = false;
       const result = await workOnIssue(
         {
           repo: "stSoftwareAU/VibeCoder",
