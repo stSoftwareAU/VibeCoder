@@ -237,7 +237,9 @@ Deno.test("#2444 - the addition never moves the schema version", () => {
   );
   assertEquals(document.schemaVersion, 2);
   // The blocks that landed before this one stay where a deployed hook reads
-  // them: `rtk` last, `codegraph` before it (Issues #2386, #2162).
-  assertEquals(Object.keys(document).at(-1), "rtk");
-  assertEquals(Object.keys(document).at(-2), "codegraph");
+  // them: `rtk` then `codegraph` before it (Issues #2386, #2162), with the
+  // `brief` block (Issue #2603) appended after them.
+  assertEquals(Object.keys(document).at(-1), "brief");
+  assertEquals(Object.keys(document).at(-2), "rtk");
+  assertEquals(Object.keys(document).at(-3), "codegraph");
 });

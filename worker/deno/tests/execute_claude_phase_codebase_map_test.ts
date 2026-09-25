@@ -15,6 +15,7 @@ import {
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
 import type { CachedIssuePromptOptions } from "../lib/prompt_builder_cache.ts";
+import type { BriefRunner, BriefRunResult } from "../lib/brief_toolchain.ts";
 
 function createMockDeps(
   captured: { options?: CachedIssuePromptOptions },
@@ -209,4 +210,147 @@ Deno.test("runExecuteClaudePhase - a map failure warns loudly and does not stop 
     await Deno.remove(workDir, { recursive: true });
     await Deno.remove(cacheDir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// brief toolchain switch (Issue #2603, part of #2581)
+// ---------------------------------------------------------------------------
+
+/** A scripted brief runner that counts its calls. */
+function scriptedBrief(
+  reply: BriefRunResult,
+): { runner: BriefRunner; calls: string[] } {
+  const calls: string[] = [];
+  return {
+    calls,
+    runner: (repoDir) => {
+      calls.push(repoDir);
+      return Promise.resolve(reply);
+    },
+  };
+}
+
+/** Run the phase once with `brief` injected, returning the map and result. */
+async function runWithBrief(
+  workDir: string,
+  cacheDir: string,
+  briefRunner: BriefRunner,
+  briefToolchainEnabled?: boolean,
+) {
+  const captured: { options?: CachedIssuePromptOptions } = {};
+  const logs: string[] = [];
+  const result = await runExecuteClaudePhase(
+    createTestOptions({
+      workDir,
+      codebaseMapCacheDir: cacheDir,
+      ...(briefToolchainEnabled === undefined ? {} : { briefToolchainEnabled }),
+    }),
+    { ...createMockDeps(captured, logs), briefRunner },
+  );
+  return { map: captured.options?.codebaseMap, result, logs };
+}
+
+const CARGO_OK: BriefRunResult = {
+  status: "ok",
+  commands: ["cargo build", "cargo test"],
+  seconds: 1.5,
+};
+
+Deno.test("runExecuteClaudePhase - brief switch off: brief never spawned and the map is today's", async () => {
+  await withWorkDir(async (workDir, cacheDir) => {
+    await Deno.writeTextFile(`${workDir}/repo/Cargo.toml`, "[package]\n");
+    const brief = scriptedBrief(CARGO_OK);
+    const off = await runWithBrief(workDir, cacheDir, brief.runner);
+    const explicit = await runWithBrief(
+      workDir,
+      `${cacheDir}/off`,
+      brief.runner,
+      false,
+    );
+
+    assertEquals(brief.calls, []);
+    assert(off.map, "the map must still be rendered");
+    assertEquals(off.map.includes("Cargo commands"), false);
+    assertEquals(explicit.map, off.map);
+    assertEquals(off.result.brief, { enabled: false, status: "off" });
+  });
+});
+
+Deno.test("runExecuteClaudePhase - brief switch on, Rust repo: the map carries the Cargo block", async () => {
+  await withWorkDir(async (workDir, cacheDir) => {
+    await Deno.writeTextFile(`${workDir}/repo/Cargo.toml`, "[package]\n");
+    const brief = scriptedBrief(CARGO_OK);
+    const run = await runWithBrief(workDir, cacheDir, brief.runner, true);
+
+    assertEquals(brief.calls, [`${workDir}/repo`]);
+    assert(run.map);
+    assertStringIncludes(run.map, "## Cargo commands (from brief)");
+    assertStringIncludes(run.map, "cargo test");
+    assertEquals(run.result.brief, {
+      enabled: true,
+      status: "ok",
+      seconds: 1.5,
+    });
+  });
+});
+
+Deno.test("runExecuteClaudePhase - brief switch on, brief fails: today's map, failed, run not failed", async () => {
+  await withWorkDir(async (workDir, cacheDir) => {
+    await Deno.writeTextFile(`${workDir}/repo/Cargo.toml`, "[package]\n");
+    const today = await runWithBrief(
+      workDir,
+      `${cacheDir}/today`,
+      scriptedBrief(CARGO_OK).runner,
+      false,
+    );
+    const brief = scriptedBrief({
+      status: "failed",
+      reason: "brief could not be spawned: not found",
+    });
+    const run = await runWithBrief(workDir, cacheDir, brief.runner, true);
+
+    assertEquals(run.map, today.map);
+    assertEquals(run.result.brief, {
+      enabled: true,
+      status: "failed",
+      reason: "brief could not be spawned: not found",
+    });
+    assert(run.result.action !== "failure", "brief must never fail the run");
+    assert(
+      run.logs.some((l) => l.startsWith("WARN: brief failed")),
+      `expected a loud warning, got: ${run.logs.join(" | ")}`,
+    );
+  });
+});
+
+Deno.test("runExecuteClaudePhase - brief switch on, no Cargo.toml: off, brief not spawned", async () => {
+  await withWorkDir(async (workDir, cacheDir) => {
+    const brief = scriptedBrief(CARGO_OK);
+    const run = await runWithBrief(workDir, cacheDir, brief.runner, true);
+
+    assertEquals(brief.calls, []);
+    assertEquals(run.result.brief, {
+      enabled: true,
+      status: "off",
+      reason: "no Cargo.toml",
+    });
+  });
+});
+
+Deno.test("runExecuteClaudePhase - brief switch on, cache hit: ok, cached, brief not spawned again", async () => {
+  await withWorkDir(async (workDir, cacheDir) => {
+    await Deno.writeTextFile(`${workDir}/repo/Cargo.toml`, "[package]\n");
+    const brief = scriptedBrief(CARGO_OK);
+    const first = await runWithBrief(workDir, cacheDir, brief.runner, true);
+    const second = await runWithBrief(workDir, cacheDir, brief.runner, true);
+
+    assertEquals(brief.calls.length, 1);
+    assertEquals(second.map, first.map);
+    assertEquals(second.result.brief, {
+      enabled: true,
+      status: "ok",
+      seconds: 0,
+      cached: true,
+    });
+  });
 });

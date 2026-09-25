@@ -531,3 +531,28 @@ Deno.test("completion - a run that never reached the RTK preparation mentions no
     `a run without the preparation must not mention it: ${stats.body}`,
   );
 });
+
+Deno.test("completion - reports the run's Brief status in the stats comment (Issue #2603)", async () => {
+  for (
+    const [brief, expected] of [
+      [{ enabled: true, status: "ok", seconds: 3 }, ["- **Brief:** ok (3s)"]],
+      [{ enabled: false, status: "off" }, []],
+    ] as const
+  ) {
+    const ctx = makeContext();
+    const state = makeState({
+      claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+      brief: { ...brief },
+    });
+    const comments: RecordedComment[] = [];
+
+    await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+    const stats = statsCommentOn(comments, ctx.issueNumber);
+    assert(stats, "expected a run-stats comment on the issue");
+    assertEquals(
+      stats.body.split("\n").filter((l) => l.startsWith("- **Brief:**")),
+      [...expected],
+    );
+  }
+});

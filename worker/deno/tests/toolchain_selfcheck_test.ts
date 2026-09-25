@@ -305,6 +305,10 @@ const REAL_IMAGE_OUTPUT: Record<
   // architecture the image builds for (Issue #2381): the toolchain is new and
   // the image above predates it, so there is no in-image capture to quote yet.
   rtk: { command: "rtk 0.49.0\n" },
+  // Captured by running the very tarball this manifest checksums, on the
+  // architecture the image builds for (Issue #2601): the toolchain is new and
+  // the image above predates it, so there is no in-image capture to quote yet.
+  brief: { command: "brief 0.13.0\n" },
 };
 
 Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {

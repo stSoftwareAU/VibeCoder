@@ -48,7 +48,7 @@ the largest download, so it sits last and a Rust bump rebuilds only itself.
 
 The fetch-verify-extract toolchains in that block are **fragments**
 (Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
-`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk`
+`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,brief`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
 blocks. `markdownlint-cli2` and `graft` sit between the two runs, unchanged —

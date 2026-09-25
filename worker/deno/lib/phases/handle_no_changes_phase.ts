@@ -255,6 +255,8 @@ export async function workOnIssueHandleNoChanges(
           : {}),
         // …and its RTK status, `off` included (Issue #2385).
         ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+        // …and brief's, when the run built a codebase map (Issue #2603).
+        ...(state.brief ? { brief: state.brief } : {}),
       });
       // Issue #2347: this is the second path that wraps up an `issue`-phase
       // run, so it records the same figures its comment renders. Leaving it

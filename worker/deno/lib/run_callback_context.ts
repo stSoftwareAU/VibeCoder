@@ -25,7 +25,7 @@ import type {
   TerminalScanCycle,
 } from "./run_callbacks.ts";
 import { callbackGraftFacts } from "./run_callbacks.ts";
-import { CODEGRAPH_OFF, RTK_OFF } from "./run_callbacks.ts";
+import { BRIEF_OFF, CODEGRAPH_OFF, RTK_OFF } from "./run_callbacks.ts";
 import { classifyRunFailure } from "./run_outcome_classifier.ts";
 import {
   agentTranscriptDir,
@@ -238,6 +238,8 @@ export function buildIssueRunCallbackContext(
     // Issue #2386: likewise stated on every run, `off` when the run reported
     // no RTK preparation.
     rtk: run.rtk ?? RTK_OFF,
+    // Issue #2603: and brief's, `off` when the run reported no outcome.
+    brief: run.brief ?? BRIEF_OFF,
   };
 }
 

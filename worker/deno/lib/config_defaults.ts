@@ -438,6 +438,11 @@ export const OPERATIONAL_DEFAULTS = {
    */
   rtkOutput: { enabled: true },
   /**
+   * The brief toolchain switch (Issue #2603, part of #2581). Off by default:
+   * on, a Rust repository's codebase map spawns brief, so a host opts in.
+   */
+  briefToolchain: { enabled: false },
+  /**
    * TTL in seconds for the issue-timeline cache used by label-author
    * checks (Issue #1673). Defaults to 5 minutes — shorter than the
    * 10-minute issues TTL because timelines mutate when labels are
@@ -1574,6 +1579,7 @@ export function buildDefaultWorkerConfig(
       enabled: OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     },
     rtkOutput: { enabled: OPERATIONAL_DEFAULTS.rtkOutput.enabled },
+    briefToolchain: { enabled: OPERATIONAL_DEFAULTS.briefToolchain.enabled },
     timelineCacheTtlSeconds: OPERATIONAL_DEFAULTS.timelineCacheTtlSeconds,
     enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
     verbosity: DEFAULT_VERBOSITY,
