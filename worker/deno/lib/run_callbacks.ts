@@ -99,6 +99,12 @@ export interface CallbackRunTelemetry {
    * served model of the invocation with the biggest token total.
    */
   model?: string;
+  /**
+   * The effort that same dominant invocation was started with (Issue #2573),
+   * so a per-phase effort pilot can separate its runs from the control's run
+   * by run. Absent when the invocation recorded none — never guessed.
+   */
+  effort?: string;
 }
 
 /**
@@ -727,6 +733,7 @@ export function buildCallbackEnv(
   put(env, "VIBECODER_ESTIMATED_COST_USD", context.telemetry?.estimatedCostUsd);
   put(env, "VIBECODER_TURNS", context.telemetry?.turns);
   put(env, "VIBECODER_MODEL", context.telemetry?.model);
+  put(env, "VIBECODER_EFFORT", context.telemetry?.effort);
   put(
     env,
     "VIBECODER_TELEMETRY_ABSENT_REASON",

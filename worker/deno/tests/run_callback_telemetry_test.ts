@@ -325,3 +325,65 @@ Deno.test("run_callback_telemetry - an equal-token tie is broken deterministical
     "claude-opus-4-6",
   );
 });
+
+// -- Effort attribution (Issue #2573) --
+//
+// The Opus 5.5 effort sweep compares pilot runs against control runs, and a
+// per-host counter cannot separate a run made before a pilot host's
+// `phase_effort_overrides` change from one made after it. The effort each run
+// was actually invoked at is therefore carried per run, on the same dominant
+// invocation `model` names — so the two can never describe different calls.
+
+Deno.test("run_callback_telemetry - the effort is the one the dominant invocation ran at", () => {
+  const small = usage(100, 10);
+  const large = usage(9000, 900);
+  const invocation = (effort: string, tokenUsage: typeof small) => ({
+    runStats: {
+      servedModels: ["claude-opus-5-5"],
+      requestedModel: "opus",
+      effort,
+      tokenUsage,
+    },
+  });
+  // Both directions: whichever invocation dominates names the effort, not
+  // whichever came first.
+  assertEquals(
+    summariseCallbackTelemetry([
+      invocation("high", small),
+      invocation("medium", large),
+    ])?.effort,
+    "medium",
+  );
+  assertEquals(
+    summariseCallbackTelemetry([
+      invocation("high", large),
+      invocation("medium", small),
+    ])?.effort,
+    "high",
+  );
+});
+
+Deno.test("run_callback_telemetry - no effort is reported when the dominant invocation recorded none", () => {
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-opus-5-5"],
+        requestedModel: "opus",
+        effort: "high",
+        tokenUsage: usage(10, 1),
+      },
+    },
+    {
+      runStats: {
+        servedModels: ["gemini-3-pro"],
+        requestedModel: "gemini-3-pro",
+        tokenUsage: usage(5000, 500),
+      },
+    },
+  ]);
+  assert(telemetry !== undefined);
+  assert(
+    !("effort" in telemetry),
+    "a borrowed effort would attribute the run to an arm it never ran in",
+  );
+});

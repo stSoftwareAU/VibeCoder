@@ -550,6 +550,14 @@ it should equal `issuePhaseRuns`, and on a control host it should be zero. Any
 other reading means a host is half-configured and its numbers belong to neither
 arm.
 
+An **effort** arm (the Opus 5.5 effort sweep, Issue #2573) has no per-host
+counter of its own. The per-host counters accumulate across the override
+change, so read them as the difference between two snapshots — one taken when
+the override lands, one at the end of the window. Each run's post-run callback
+carries `telemetry.effort`, the effort the run was actually started with
+([CALLBACKS.md](CALLBACKS.md)), so the archive separates pilot runs from control
+runs run by run and shows any run that did not use the arm's effort.
+
 **What no number measures.** Unit-test *quality* has no metric of its own here —
 none of the five distinguishes a meaningful regression test from one that
 asserts nothing. The control for it is the existing review path rather than a
