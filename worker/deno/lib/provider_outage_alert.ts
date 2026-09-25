@@ -1,8 +1,9 @@
 /**
  * Provider-outage alert (Issue #2613).
  *
- * When the agent provider refuses every request — a spent balance (HTTP 402)
- * or a refused credential — each task it touches fails the same way. Without
+ * When the agent provider refuses every request because it will not accept
+ * the credential, each task it touches fails the same way. (A spent balance
+ * was once alerted too; it no longer is — Issue #2633.) Without
  * one place that says so, the outage surfaces as dozens of misleading task
  * failures. This module keeps exactly **one** open issue per provider in the
  * VibeCoder repo while the outage lasts: filed on the first refusal, updated
@@ -19,7 +20,7 @@ import {
   type AlertDedupRow,
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
-import { type AgentFailure, BALANCE_EXHAUSTED_RE } from "./agent_output.ts";
+import type { AgentFailure } from "./agent_output.ts";
 import { GATE_WEDGE_DIAGNOSTIC_REPO } from "./milestone_gate_wedge.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
@@ -38,17 +39,20 @@ type Log = (message: string) => void;
 
 /**
  * Whether a run's failure means the provider is refusing this account
- * outright: a refused credential, or a spent balance (402).
+ * outright: a refused credential, the one refusal that never clears on its
+ * own.
+ *
+ * A spent balance (402) is **not** an outage (Issue #2633). Running out of
+ * quota, credit or balance is normal operation for this fleet (owner,
+ * 2026-09-25): the provider-outage state in `provider_auto_state.ts` already
+ * parks the run and retries it, and a filed issue for it was noise. That
+ * state, not this alert, is what does the parking.
  */
 export function isProviderOutageAlertable(
   failure: AgentFailure | undefined,
 ): boolean {
-  // SIMPLE-ON-PURPOSE: 429/5xx and routine windows self-clear, so never alert — upgrade when a sustained 429/5xx outage goes unnoticed for a day
-  if (!failure) return false;
-  if (failure.category === "authentication") return true;
-  // The wording, not a parsed status: a stray "402" is not a spent balance.
-  return failure.category === "quota-exhausted" &&
-    BALANCE_EXHAUSTED_RE.test(failure.message);
+  // SIMPLE-ON-PURPOSE: 429/5xx, routine windows and spent balances self-clear, so never alert — upgrade when a sustained 429/5xx outage goes unnoticed for a day
+  return failure?.category === "authentication";
 }
 
 /** Render the alert body. The error is redacted, truncated and fenced. */
@@ -85,9 +89,8 @@ export function formatProviderOutageBody(input: {
     "charged, no merge-fallback issue is filed and no milestone roll-back is " +
     "attempted. Work retries once the provider answers.",
     "",
-    "**What to do:** restore the account (top up the balance or fix the " +
-    "credential). This issue closes itself on the first request that " +
-    "succeeds.",
+    "**What to do:** fix the credential. This issue closes itself on the " +
+    "first request that succeeds.",
   ].join("\n");
 }
 
