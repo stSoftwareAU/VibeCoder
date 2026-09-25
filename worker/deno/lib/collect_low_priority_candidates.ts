@@ -22,10 +22,12 @@ import {
   isMilestoneOccupied,
 } from "./issue_filter.ts";
 import {
+  describeBlockingPr,
   fetchIssuesByLabel,
   getBlockingPRForIssue,
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
+  resolveFleetPrSlots,
   wasLabelAddedByAllowedAuthor,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
@@ -321,6 +323,8 @@ export async function collectLowPriorityCandidates(
         repoPRs,
         milestoneTitle,
         pushCapableAuthors,
+        resolveFleetPrSlots(config, repo),
+        issue.number,
       );
       if (blockingPR) {
         const hasIgnore = await hasIgnoreOpenPRsLabel(
@@ -339,7 +343,7 @@ export async function collectLowPriorityCandidates(
             repo,
             issue.number,
             "pr-blocked",
-            `PR #${blockingPR.number}`,
+            describeBlockingPr(blockingPR),
           );
           continue;
         }

@@ -261,6 +261,11 @@ function makeConfig(workDir: string): WorkerConfig {
     workOnLabel: "work-on",
     lowPriorityLabel: "low-priority",
     shuffleRepos: false,
+    // One fleet PR fills a repo's default-branch stream, so an open fleet PR
+    // defers that repo's issues, as the fixture above intends. This is the
+    // rule this test's baseline was measured under; #2663's per-slot cap
+    // (default 8) is exercised by its own tests (Issue #2663).
+    fleetPrSlots: 1,
   };
 }
 

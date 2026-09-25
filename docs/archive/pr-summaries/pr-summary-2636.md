@@ -57,21 +57,43 @@ Closes #2636
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — The chosen file carries the anti-pattern list, and the PR states why that file was chosen — evidence: `prompts/best_practices/buckets/html.md:59`, `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts::html bucket - carries a short design anti-pattern list`, `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts::html bucket - every anti-pattern links a canonical source`, rationale under "Why `html.md`" above and in `docs/REFERENCES.md:122` — reviewer: met
-- **met** — The list does not grow the always-loaded prompt unless the PR justifies the cost — evidence: `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts::coding guidelines - the always-loaded prompt does not carry the list` (`prompts/coding_guidelines/prompt.md` is not in the diff) — reviewer: met
-- **unrequested** — `docs/BEST-PRACTICES-SCAN.md:376` html row now names the stylesheets a page loads and web.dev CLS — reviewer: unrequested — reason: doc sync, because the new checks also read `*.css`; bucket selection still rests on HTML bytes
-- **unrequested** — `CODING-STANDARDS.md:566` html bucket row gains "visual design anti-patterns" — reviewer: unrequested — reason: doc sync so the bucket table matches the guide's new scope
-- **unrequested** — `docs/REFERENCES.md:122` covered count 11 → 13 of 15 — reviewer: unrequested — reason: the row had to change for #2636 anyway, and the count was stale after #2635
+- **The chosen file carries the anti-pattern list, and the PR states why
+  that file was chosen.** — reviewer: met.
+  - `html.md` checks 10–16 carry the list.
+  - The rationale is in this summary under "Why `html.md`", in the
+    `docs/REFERENCES.md` row, and in the test header.
+- **The list does not grow the always-loaded prompt unless the PR justifies
+  the cost.** — reviewer: met.
+  - `prompts/coding_guidelines/prompt.md` is untouched.
+  - The test "the always-loaded prompt does not carry the list" pins this
+    through `loadPrompt`.
+- **`docs/BEST-PRACTICES-SCAN.md` html row widened** — reviewer: unrequested.
+  - reason: This is a doc sync for the new stylesheet checks. The Targets
+    column names the files a scan reviews, not what selects the bucket
+    (selection stays on HTML bytes).
+- **`docs/REFERENCES.md` covered count 11 → 13** — reviewer: unrequested.
+  - reason: The count went stale after #2635, and the row was being edited
+    anyway.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — TDD rule 5 / documentation-drift tests: a whole-file `includes` is not section-scoped — evidence: `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts:71` — reason: stands; it pins the concrete promise for the heading as shipped, but would not catch the list moved in under a different heading. Tightening it is a code change, out of scope for this summary-only fix
-- **violation** — TDD rule 5 (no size assertions on prose), borderline — evidence: `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts:19` — reason: stands; the issue explicitly asks to "keep it short", and `MAX_CHECKS` is the executable form of that requirement
-- **violation** — DRY / single source of truth, minor — evidence: `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts:28` — reason: stands; `checksIn` repeats the `CHECK_HEADING` shape from `worker/deno/lib/bucket_check_numbering.ts:24` but returns each check's body, which that module does not expose; exporting a splitter for one test is not worth the extra API
-- **violation** — TDD rule 4 (exercise real code), minor — evidence: `worker/deno/tests/front_end_design_anti_patterns_2636_test.ts:66` — reason: stands; the renamed-section test exercises the shared `section` helper's error path rather than new content, and is harmless
-- **clean** — Australian English, placement (front-end rules in the `html` bucket, not `coding_guidelines`), 10–16 check numbering, link-don't-restate sources, docs sync, `deno fmt`/`deno lint`, Deno/TS test conventions, commit messages referencing #2636, and commit safety (no hidden or credential files)
+Findings from the standards reviewer:
+
+- Fixed:
+  - The circular negative control is replaced by a real one: removing the
+    links makes `unlinked()` report the checks.
+  - An error-path test is added: a renamed section throws.
+  - Numbering is now checked across the whole guide with the existing
+    `findCheckNumberingIssues`, not just the section's first number.
+  - The 16-line test header is cut to 4 lines.
+  - The `CODING-STANDARDS.md` bucket table row is updated.
+- Kept: the test's check-splitting regex. It splits on the same heading
+  shape as `CHECK_HEADING` but returns each check's body, which
+  `checkNumbersIn` does not. Exporting a splitter for one test is not worth
+  the extra API.
+- Australian English and commit safety (hidden files, credentials) raised no findings.
 
 ## Test Plan
 

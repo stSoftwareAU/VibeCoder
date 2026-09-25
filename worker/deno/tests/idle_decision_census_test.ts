@@ -62,6 +62,9 @@ function repoInput(
     skipReason: partial.skipReason,
     issues: partial.issues ?? [],
     openPRs: partial.openPRs,
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin;
+    // the per-slot cap itself is pinned in `fleet_pr_slots_test.ts`.
+    fleetPrSlots: partial.fleetPrSlots ?? 1,
     mergedPRs: partial.mergedPRs,
     runLocalHolds: partial.runLocalHolds,
     deferredHolds: partial.deferredHolds,

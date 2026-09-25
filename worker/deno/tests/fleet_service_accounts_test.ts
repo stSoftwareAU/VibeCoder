@@ -216,8 +216,12 @@ Deno.test(
       repos: ["owner/repo-a"],
       allowed_authors: ["alice"],
       service_accounts: [HOST, SIBLING],
+      // Issue #2663: one fleet PR fills the default branch, so the sibling's
+      // PR holds the issue — read through `loadConfig` like any operator key.
+      fleet_pr_slots: 1,
     }, async (configPath) => {
       const config = await loadConfig(configPath);
+      assertEquals(config.fleetPrSlots, 1);
       const result = await findOldestIssue({
         ...config,
         // Issue #1066: `allowed_authors` no longer reaches

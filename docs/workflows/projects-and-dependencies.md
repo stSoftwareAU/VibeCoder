@@ -45,12 +45,12 @@ flowchart TD
 A **milestone** on GitHub acts as a pseudo-project: a group of issues that belong together. The worker:
 
 - Creates one **milestone branch** per milestone (e.g. `milestone/oidc-auth`).
-- Allows **at most one open PR per target branch** in a repo. Target branches are: the **default branch** (for issues with no milestone) and **each milestone branch** (for issues in that milestone). So in one repo:
-  - Issues with **no milestone** → one PR targeting the default branch at a time.
+- Bounds the fleet's open PRs per target branch in a repo — **one fleet PR per slot; multiple milestones mean multiple PRs** (Issue #2663). Target branches are: the **default branch** (for issues with no milestone) and **each milestone branch** (for issues in that milestone). So in one repo:
+  - Issues with **no milestone** → up to `fleet_pr_slots` fleet PRs (default `8`) targeting the default branch at once, one per slot.
   - Issues in **milestone A** → one PR targeting `milestone/A` at a time.
   - Issues in **milestone B** → one PR targeting `milestone/B` at a time.
-- With no milestones, there is at most one PR (to default). With one milestone, there can be up to two PRs (one to default, one to the milestone branch). With more milestones, more concurrent PRs (one per milestone plus one to default).
-- **Enforced at issue selection:** The worker skips any issue whose target branch already has an open PR by the configured GitHub user. This filtering happens at **issue selection** time, not at PR creation. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#one-pr-per-target-branch-open-pr-blocking).
+- Human-authored PRs never count towards either limit.
+- **Enforced at issue selection:** The worker skips a milestone issue whose milestone branch already has an open fleet PR, and a non-milestone issue once the fleet's default-branch PRs reach the cap. This filtering happens at **issue selection** time, not at PR creation. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#one-pr-per-target-branch-open-pr-blocking).
 - **Implementation only:** This constraint applies only to implementation workflows. Planning, question, and refinement workflows are exempt — they never create branches or PRs. See [planning-and-questions.md](planning-and-questions.md#open-pr-blocking-does-not-apply-issue-500).
 
 When **all** issues in a milestone are completed (each milestone-issue PR has auto-merged into the milestone branch — no human review per issue, so the worker can safely run 24/7), the worker raises **one final PR** from the milestone branch to the default branch. **No code reaches the default branch without your review:** that final PR is your single gate. You approve it when ready — many issues completed, all quality gates already run. See [milestones.md](milestones.md).

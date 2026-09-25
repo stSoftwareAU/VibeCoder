@@ -25,6 +25,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
 import { getMachineId } from "../machine_id.ts";
+import { resolveFleetPrSlots } from "../issue_query.ts";
 import {
   initialiseMilestoneSession,
   restoreSession,
@@ -132,6 +133,8 @@ export async function workOnIssueSetupBranch(
     fleetAuthors,
     pushCapableAuthors,
     milestoneTitle,
+    // Issue #2663: the default-branch slot cap the discovery scan applied.
+    fleetPrSlots: resolveFleetPrSlots(config, repo),
     // Issue #2334: one run per milestone stream at a time, fleet-wide. This
     // phase is the standard pipeline's claim — the run that joins the
     // stream's conversation — so the lock applies here and nowhere else; the

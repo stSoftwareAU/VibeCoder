@@ -46,6 +46,8 @@ function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   const base = buildDefaultWorkerConfig();
   return {
     ...base,
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     repos: ["owner/repo"],
     // The configured-label tier is hardwired to [top-priority].
     issueLabels: ["top-priority"],

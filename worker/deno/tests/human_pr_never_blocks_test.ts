@@ -101,6 +101,8 @@ function isPrWrite(args: string[]): boolean {
 function makeConfig(): WorkerConfig {
   return {
     ...buildDefaultWorkerConfig(),
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     repos: ["owner/repo"],
     allowedAuthors: [HUMAN],
     fleetPrAuthors: [SIBLING],

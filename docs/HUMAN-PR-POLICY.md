@@ -58,9 +58,10 @@ through the wider fleet-owned set (`resolveFleetPrAuthorSet`), which meant one
 unrelated human PR parked every `work-on` issue in the repo. It no longer does:
 `getBlockingPRForIssue` only considers PRs authored by the **push-capable** set,
 so your PR is invisible to issue selection. You manage your PR; the worker gets
-on with the issues it was invited to. The one-open-PR-at-a-time rule still
-applies to the fleet's *own* PRs, so the worker never runs several of its own
-PRs into the same work stream.
+on with the issues it was invited to. The per-stream limit still
+applies to the fleet's *own* PRs — one per milestone branch, one per slot on the
+default branch (`fleet_pr_slots`, Issue #2663) — so the worker never runs more
+of its own PRs into a work stream than it has slots to carry.
 
 ```mermaid
 flowchart TD

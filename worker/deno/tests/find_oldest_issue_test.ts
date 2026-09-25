@@ -30,6 +30,8 @@ function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   const base = buildDefaultWorkerConfig();
   return {
     ...base,
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     // Issue #3874: the content-approval store must resolve from workDir, or
     // the integrity gate fails closed and blocks every candidate.
     workDir: Deno.makeTempDirSync({ prefix: "find-oldest-workdir-" }),

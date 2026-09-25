@@ -9,7 +9,10 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { extractClosingIssueNumbers } from "./pr_body.ts";
+import {
+  extractClosingIssueNumbers,
+  extractIssueNumberFromPrTitle,
+} from "./pr_body.ts";
 import { runGhCommand } from "./github.ts";
 import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
@@ -19,6 +22,7 @@ import { createMilestoneBranchName } from "./git_branch.ts";
 import { isHumanAuthoredPr } from "./fleet_authors.ts";
 export { createMilestoneBranchName };
 import { IssueCache } from "./issue_cache.ts";
+import type { WorkerConfig } from "../types.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 // Issue #4037: fold the per-tick issue-list fetch into the access store.
@@ -187,6 +191,14 @@ export interface BlockingPRInfo {
    * Empty when the fetch never stamped it (a pre-#4024 cache entry).
    */
   author: string;
+  /**
+   * Set only when a **non-milestone** issue is held because the fleet's open
+   * PRs on the repo's default-branch stream have reached the slot cap
+   * (Issue #2663). No single PR is "the" blocker then — the count is — so a
+   * reporter states `open` against `cap` rather than naming {@link number}.
+   * Absent for a milestone-branch hold, which is still one PR per milestone.
+   */
+  fleetPrCap?: { open: number; cap: number };
 }
 
 /**
@@ -1833,42 +1845,140 @@ export async function fetchMergedPRsAnyAuthor(
 }
 
 /**
- * Check if a specific issue is blocked by an open PR (milestone-aware).
+ * Default number of fleet PRs that may be open at once on a repository's
+ * default-branch (non-milestone) stream — `fleet_pr_slots` (Issue #2663).
  *
- * - Only **fleet-authored** PRs block. A human's open PR never defers an
+ * The owner's rule is one fleet PR per slot. No host's config carries the
+ * fleet's size (each host knows only its own `max_concurrent_issues`), so the
+ * default cannot be derived from config; it is fixed at 8 — the ceiling of
+ * `max_concurrent_issues` (1–8), so one host at its maximum never holds itself,
+ * and four hosts at the default two slots fill it exactly. Operators set the
+ * real figure with `fleet_pr_slots`, per repository with `repo_config`.
+ */
+export const DEFAULT_FLEET_PR_SLOTS = 8;
+
+/** A usable slot cap: a positive integer, or `fallback`. */
+function positiveSlotsOr(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    return fallback;
+  }
+  return value;
+}
+
+/**
+ * Resolve the fleet PR cap for a repository's default-branch stream
+ * (Issue #2663): `repo_config.<repo>.fleet_pr_slots` wins over the global
+ * `fleet_pr_slots`, which wins over {@link DEFAULT_FLEET_PR_SLOTS}. A value
+ * that is not a positive integer (config arrives untrusted) falls back a
+ * level rather than disabling the gate.
+ */
+export function resolveFleetPrSlots(
+  config: Partial<Pick<WorkerConfig, "fleetPrSlots" | "repoConfig">>,
+  repo: string,
+): number {
+  const globalValue = positiveSlotsOr(
+    config.fleetPrSlots,
+    DEFAULT_FLEET_PR_SLOTS,
+  );
+  return positiveSlotsOr(config.repoConfig?.[repo]?.fleetPrSlots, globalValue);
+}
+
+/**
+ * The login that authored an open PR, for the fleet classification.
+ *
+ * {@link OpenPR.author} is the fleet login the PR was fetched under
+ * (`fetchOpenPRsForFleet`). A row from the repo-wide listing
+ * (`fetchAllOpenPRs`, which the idle census and the claimable audit read)
+ * carries the listing's own author as `authorLogin` instead. Falling back to
+ * it lets those consumers classify exactly as the scan does (Issue #2663);
+ * with neither, the author is unknown and the PR stays fleet-owned (the
+ * fail-safe in {@link isHumanAuthoredPr}).
+ */
+function prAuthorForGate(pr: OpenPR): string | undefined {
+  if (typeof pr.author === "string" && pr.author.trim() !== "") {
+    return pr.author;
+  }
+  const listed = (pr as { authorLogin?: unknown }).authorLogin;
+  return typeof listed === "string" ? listed : undefined;
+}
+
+/**
+ * True when `pr` is the fleet's PR for issue `issueNumber`: its title ends in
+ * the worker's `(#N)` / `(Issue #N)` suffix, or its head branch is the
+ * worker's `issue-N` / `issue-N-…` branch (so `issue-17-…` is not issue 1's).
+ */
+function isPrForIssue(pr: OpenPR, issueNumber: number): boolean {
+  const fromTitle = extractIssueNumberFromPrTitle(pr.title ?? "");
+  if (fromTitle.ok && fromTitle.value === issueNumber) return true;
+  const head = pr.headRefName ?? "";
+  return head === `issue-${issueNumber}` ||
+    head.startsWith(`issue-${issueNumber}-`);
+}
+
+/** True when an open PR is on a repo's default-branch (non-milestone) stream. */
+function isDefaultStreamPr(pr: OpenPR): boolean {
+  const base = pr.baseRefName ?? "";
+  const head = pr.headRefName ?? "";
+  if (base.startsWith("milestone/")) return false;
+  if (head.startsWith("milestone/") || head.includes("merge-milestone")) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Check if a specific issue is blocked by open fleet PRs (milestone-aware).
+ *
+ * - Only **fleet-authored** PRs count. A human's open PR never defers an
  *   issue: the developer manages their own PR, and one unrelated human PR
  *   must not park a repo's whole `work-on` queue (Issue #4133).
- * - Milestone issues are only blocked by PRs targeting their milestone branch
- * - Non-milestone issues are only blocked by PRs targeting a non-milestone branch
- * - Milestone-merge PRs (merging milestone into default) are excluded
+ * - Milestone issues are blocked by a PR targeting their milestone branch —
+ *   one PR per milestone stream, so multiple milestones mean multiple PRs.
+ * - Non-milestone issues are blocked only while the fleet's open PRs on the
+ *   default-branch stream number at least `fleetPrSlots` — one fleet PR per
+ *   slot (Issue #2663). Milestone-branch and milestone-merge PRs are not on
+ *   that stream and never count.
  *
- * The fleet's own open PRs keep the repo-wide one-at-a-time rule, so the
- * worker never runs ahead of itself and creates merge hell.
- *
- * The returned info carries the PR's `author` (Issue #4078) so callers can
- * name the PR that deferred the issue.
+ * The returned info carries the PR's `author` (Issue #4078); a default-stream
+ * hold also carries `fleetPrCap`, the count against the cap, and names the
+ * first counted PR only so existing callers keep a PR to point at.
  *
  * @param prs - Array of open PRs
  * @param milestoneTitle - The issue's milestone title (empty if none)
  * @param pushCapableAuthors - The fleet's push-capable logins
- *   (`resolveFleetMaintenanceAuthorSet`: host login + `fleet_pr_authors`).
- *   PRs authored outside this set are ignored. Pass `[]` only where the
- *   set is genuinely unavailable — an empty set cannot classify anything,
- *   so every PR keeps blocking (fail-safe, see {@link isHumanAuthoredPr}).
+ *   (`resolveFleetMaintenanceAuthorSet`: host login + `fleet_pr_authors` ∪
+ *   `service_accounts`). PRs authored outside this set are ignored. Pass `[]`
+ *   only where the set is genuinely unavailable — an empty set cannot
+ *   classify anything, so every PR counts (fail-safe, see
+ *   {@link isHumanAuthoredPr}).
+ * @param fleetPrSlots - The default-branch cap ({@link resolveFleetPrSlots});
+ *   anything but a positive integer means {@link DEFAULT_FLEET_PR_SLOTS}.
  * @returns Blocking PR info, or null if not blocked
  */
 export function getBlockingPRForIssue(
   prs: OpenPR[],
   milestoneTitle: string,
   pushCapableAuthors: readonly string[],
+  fleetPrSlots: number = DEFAULT_FLEET_PR_SLOTS,
+  issueNumber?: number,
 ): BlockingPRInfo | null {
   if (prs.length === 0) return null;
 
   // Issue #4133: someone else's PR is not the worker's work stream.
   const fleetPrs = prs.filter(
-    (pr) => !isHumanAuthoredPr(pr.author, pushCapableAuthors),
+    (pr) => !isHumanAuthoredPr(prAuthorForGate(pr), pushCapableAuthors),
   );
   if (fleetPrs.length === 0) return null;
+
+  // An issue whose own fleet PR is open is never claimable again, on any
+  // stream and whatever the cap (Issue #2663). Before the per-slot cap, any
+  // open fleet PR held every non-milestone issue, which hid this; with the
+  // cap a lone PR holds nothing, and the issue it delivers was re-claimed
+  // while that PR waited for CI or review.
+  if (issueNumber !== undefined) {
+    const own = fleetPrs.find((pr) => isPrForIssue(pr, issueNumber));
+    if (own) return toBlockingPRInfo(own);
+  }
 
   if (milestoneTitle !== "") {
     // Milestone issue: only blocked by PRs targeting the same milestone branch
@@ -1877,27 +1987,35 @@ export function getBlockingPRForIssue(
     return blocking ? toBlockingPRInfo(blocking) : null;
   }
 
-  // Non-milestone issue: blocked by PRs NOT targeting milestone branches
-  // and NOT milestone-merge PRs
-  const blocking = fleetPrs.find((pr) => {
-    const base = pr.baseRefName ?? "";
-    const head = pr.headRefName ?? "";
-    if (base.startsWith("milestone/")) return false;
-    if (head.startsWith("milestone/") || head.includes("merge-milestone")) {
-      return false;
-    }
-    return true;
-  });
+  // Non-milestone issue: one fleet PR per slot on the default-branch stream.
+  const cap = positiveSlotsOr(fleetPrSlots, DEFAULT_FLEET_PR_SLOTS);
+  const onStream = fleetPrs.filter(isDefaultStreamPr);
+  if (onStream.length < cap) return null;
+  return {
+    ...toBlockingPRInfo(onStream[0]!),
+    fleetPrCap: { open: onStream.length, cap },
+  };
+}
 
-  return blocking ? toBlockingPRInfo(blocking) : null;
+/**
+ * One-line description of a hold for skip logs (Issue #2663): the PR, and
+ * for a default-branch slot hold the count against the cap as well — the
+ * count is the gate; the PR is kept so a log grep still finds it.
+ */
+export function describeBlockingPr(info: BlockingPRInfo): string {
+  if (!info.fleetPrCap) return `PR #${info.number}`;
+  const { open, cap } = info.fleetPrCap;
+  return `PR #${info.number} (${open} fleet PR${open === 1 ? "" : "s"} ` +
+    `open on the default branch, cap ${cap})`;
 }
 
 /** Project an open PR onto the blocking-guard result shape (Issue #4078). */
 function toBlockingPRInfo(pr: OpenPR): BlockingPRInfo {
+  const author = prAuthorForGate(pr);
   return {
     number: pr.number,
     title: pr.title,
-    author: typeof pr.author === "string" ? pr.author.trim() : "",
+    author: typeof author === "string" ? author.trim() : "",
   };
 }
 

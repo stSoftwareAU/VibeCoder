@@ -541,6 +541,16 @@ export interface WorkerConfig {
    */
   blockingPrStallThresholdSeconds?: number;
   /**
+   * How many fleet PRs may be open at once on a repository's default-branch
+   * (non-milestone) stream before a non-milestone issue is held (Issue #2663,
+   * `.config.json` `fleet_pr_slots`). The owner's rule is one fleet PR per
+   * slot; milestone branches are separate streams and are not counted here.
+   * Left undefined when unset so `resolveFleetPrSlots` applies
+   * `DEFAULT_FLEET_PR_SLOTS`. Per-repo override via
+   * `repoConfig[repo].fleetPrSlots`.
+   */
+  fleetPrSlots?: number;
+  /**
    * Whether the worker's quality gate compares post-Claude diffable
    * findings (mermaid, markdownlint, docs prompt-version) against the
    * baseline captured before Claude started, and treats the gate as
@@ -948,6 +958,12 @@ export interface RepoConfig {
    * global `blocking_pr_stall_threshold_seconds`.
    */
   blockingPrStallThresholdSeconds?: number;
+  /**
+   * Per-repo override of the fleet PR cap on the default-branch stream
+   * (Issue #2663). Non-positive or non-integer values fall back to the global
+   * `fleet_pr_slots`.
+   */
+  fleetPrSlots?: number;
   /** Per-repo verbosity level override (Issue #1330) */
   verbosity?: "minimal" | "concise" | "standard" | "verbose";
   /**
@@ -1443,6 +1459,8 @@ export interface ConfigFile {
   update_retry_max_attempts?: number;
   /** Stall threshold in seconds for PRs blocking `work-on` issues (Issue #4025) */
   blocking_pr_stall_threshold_seconds?: number;
+  /** Fleet PR cap on a repository's default-branch stream (Issue #2663) */
+  fleet_pr_slots?: number;
   /** Exponential backoff delays in seconds between software update retries (Issue #1496) */
   update_retry_backoff_seconds?: number[];
   /** Maximum auto-fix attempts per PR CI failure signature (Issue #3582) */

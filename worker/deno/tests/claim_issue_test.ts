@@ -2197,6 +2197,8 @@ Deno.test("claim issue - aborts when a sibling fleet PR appears in the discovery
     githubUser: "worker-bot",
     workerId: "worker-bot-123",
     fleetAuthors: ["worker-bot", "sibling-bot"],
+    // Issue #2663: cap 1 — the sibling's one PR fills the default branch.
+    fleetPrSlots: 1,
     sleepFn: noSleep,
     ghCommandFn,
   });

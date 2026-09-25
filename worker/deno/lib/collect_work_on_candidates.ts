@@ -33,10 +33,12 @@ import {
   isMilestoneTrackingIssue,
 } from "./issue_filter.ts";
 import {
+  describeBlockingPr,
   fetchIssuesByLabel,
   getBlockingPRForIssue,
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
+  resolveFleetPrSlots,
   wasLabelAddedByAllowedAuthor,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
@@ -400,6 +402,8 @@ export async function collectWorkOnCandidates(
       blockers?: DependencyBlocker[];
       /** Issue #2534: the open PR holding the issue. */
       blockingPr?: number;
+      /** Issue #2663: the default-branch slot cap that holds the issue. */
+      fleetPrCap?: { open: number; cap: number };
     },
   ): void => {
     // Each key is omitted, not set to `undefined`, when it does not apply.
@@ -412,6 +416,9 @@ export async function collectWorkOnCandidates(
       ...(gate?.blockingPr === undefined
         ? {}
         : { blockingPr: gate.blockingPr }),
+      ...(gate?.fleetPrCap === undefined
+        ? {}
+        : { fleetPrCap: gate.fleetPrCap }),
     });
     if (suppressesLowerTiers(reason)) suppressingCount++;
   };
@@ -552,10 +559,13 @@ export async function collectWorkOnCandidates(
     }
 
     if (repoPRs.length > 0) {
+      // Issue #2663: one fleet PR per slot on the default-branch stream.
       const blockingPR = getBlockingPRForIssue(
         repoPRs,
         milestoneTitle,
         pushCapableAuthors,
+        resolveFleetPrSlots(config, repo),
+        issue.number,
       );
       if (blockingPR) {
         const hasIgnore = await hasIgnoreOpenPRsLabel(
@@ -572,12 +582,15 @@ export async function collectWorkOnCandidates(
         if (!hasIgnore) {
           noteBlocked(issue.number, milestoneTitle, "pr-blocked", {
             blockingPr: blockingPR.number,
+            ...(blockingPR.fleetPrCap
+              ? { fleetPrCap: blockingPR.fleetPrCap }
+              : {}),
           });
           diag?.logIssueSkipped(
             repo,
             issue.number,
             "pr-blocked",
-            `PR #${blockingPR.number}`,
+            describeBlockingPr(blockingPR),
           );
           // Issue #4024: record the blocking PR so one structured line
           // per PR names every issue it deferred (emitted after the loop).
