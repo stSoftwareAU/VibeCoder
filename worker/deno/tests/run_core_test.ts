@@ -2664,3 +2664,80 @@ Deno.test("run_core - a genuine fault is still fatal, network patterns notwithst
   assertEquals(crashNotifications, 1);
   assertStringIncludes(result.exitReason, "Fatal");
 });
+
+// ---------------------------------------------------------------------------
+// Tests — Fable probe provider resolution (Issue #2586)
+// ---------------------------------------------------------------------------
+
+/** A provider resolver that throws, counting how often it is asked. */
+function unresolvableProvider() {
+  const calls = { count: 0 };
+  const resolve = (): never => {
+    calls.count++;
+    throw new Error('Unknown agent provider "no-such-provider-2586"');
+  };
+  return { calls, resolve };
+}
+
+/** Deps that end the loop after one cycle and record handler calls. */
+function oneCycleDeps(overrides: Partial<RunCoreDeps>) {
+  const handlerCalls: string[] = [];
+  let nowValue = 0;
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    findAndProcessPrFeedback: () => {
+      handlerCalls.push("pr-feedback");
+      return Promise.resolve({ ok: true, value: { processed: false } });
+    },
+    ...overrides,
+  });
+  return { deps, handlerCalls };
+}
+
+Deno.test("run_core - an unresolvable provider does not abort the cycle when the Fable probe is unwired (Issue #2586)", async () => {
+  const resolver = unresolvableProvider();
+  const { deps, handlerCalls } = oneCycleDeps({
+    resolveFableRoutingProvider: resolver.resolve,
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  const result = await runCoreLoop(config, deps);
+
+  assertEquals(result.fatalError, false);
+  assertEquals(resolver.calls.count, 0, "no probe wired, nothing to resolve");
+  assert(handlerCalls.includes("pr-feedback"), "the cycle's work must run");
+});
+
+Deno.test("run_core - an unresolvable provider skips the Fable probe loudly and the cycle continues (Issue #2586)", async () => {
+  const errors: string[] = [];
+  let probed = 0;
+  const { deps, handlerCalls } = oneCycleDeps({
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    resolveFableRoutingProvider: unresolvableProvider().resolve,
+    checkFableAvailability: () => {
+      probed++;
+      return Promise.resolve("available");
+    },
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+
+  const result = await runCoreLoop(config, deps);
+
+  assertEquals(result.fatalError, false);
+  assertEquals(probed, 0, "the probe is skipped when no provider resolves");
+  assert(
+    errors.some((e) =>
+      e.includes("Fable probe skipped") && e.includes("no-such-provider-2586")
+    ),
+    `the resolution fault must be logged, got: ${JSON.stringify(errors)}`,
+  );
+  assert(handlerCalls.includes("pr-feedback"), "the cycle's work must run");
+});
