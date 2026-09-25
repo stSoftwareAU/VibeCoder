@@ -186,6 +186,27 @@ export interface ClaudeCredentialPool {
   selectEligible(now?: number): Promise<ProviderTokenFile | null>;
 
   /**
+   * The best-ranked token that still has budget on **every** window, or null
+   * when every token is exhausted (Issue #2637).
+   *
+   * The question a fallback provider must be asked behind: the owner's rule
+   * is to drain Claude completely before flipping, so one spent subscription
+   * rotates to the next rather than to another vendor. Unlike
+   * {@link selectEligible} there is no five-hour *ranking* gate and no
+   * two-candidate minimum — a token with 5% of its window left is not
+   * exhausted — but a token whose budget could not be measured is not chosen
+   * either: headroom has to be evidenced, or a failed probe would ping-pong
+   * the run between two spent tokens.
+   *
+   * @param options.exclude - A label never to choose (the token just refused).
+   * @param options.now - Current time in epoch milliseconds.
+   * @returns The token to switch to, or null when none has budget left.
+   */
+  selectAvailable(
+    options?: { exclude?: string; now?: number },
+  ): Promise<ProviderTokenFile | null>;
+
+  /**
    * How many subscription tokens this host's pool holds, discovered at most
    * once and shared with every selection (Issue #2024).
    */
@@ -234,6 +255,27 @@ function exhaustedBudget(
     window: headline.window,
     windows: spent,
   };
+}
+
+/**
+ * Whether a measured budget still has headroom on every window it reports
+ * (Issue #2637).
+ *
+ * Exhausted means a window at zero whose reset is still ahead — the five-hour
+ * window and the weekly limit alike. A window whose reset has passed has
+ * reopened, whatever the snapshot last said. An unknown budget is not
+ * evidence of headroom.
+ */
+function hasBudgetLeft(budget: ClaudeTokenBudget, now: number): boolean {
+  if (!budget.known) return false;
+  const windows = budget.windows.length > 0 ? budget.windows : [{
+    window: budget.window,
+    remainingFraction: budget.remainingFraction,
+    resetAt: budget.resetAt,
+  }];
+  return windows.every((window) =>
+    window.remainingFraction > 0 || window.resetAt <= now
+  );
 }
 
 /**
@@ -315,6 +357,20 @@ export function createClaudeCredentialPool(
       // against?" — so a winner that fails it is no selection at all.
       if (winner === null || !winner.passesFiveHourGate) return null;
       return pool[winner.index] ?? null;
+    },
+
+    async selectAvailable(selection = {}) {
+      const now = selection.now ?? clock();
+      const exclude = selection.exclude?.trim();
+      const pool = (await candidates()).filter((token) =>
+        token.label !== exclude
+      );
+      if (pool.length === 0) return null;
+      const ranking = await rankPool(pool, now);
+      const winner = ranking.ranked.find((candidate) =>
+        hasBudgetLeft(candidate.budget, now)
+      );
+      return winner === undefined ? null : pool[winner.index] ?? null;
     },
 
     async candidateCount() {
