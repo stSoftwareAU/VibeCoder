@@ -18,13 +18,26 @@
  *
  * - `new` — the stream has no session for this provider; the run opens one and
  *   becomes the holder. The first issue of a stream, and a fallback provider's
- *   first issue on a stream the primary already runs.
+ *   first issue on a stream the primary already runs. Also when the slot holds
+ *   a session another provider created (Issue #2638, below).
  * - `resumed` — the stream's session id is replayed, so the run continues the
  *   conversation the previous issue left.
  * - `reset` — the record names a session this provider cannot resume. The dead
  *   entry is dropped, a fresh session opens in its place, and the reason is
  *   logged. A stream that cannot be resumed is a lost conversation, never a
  *   failed issue: resume is an optimisation, never control flow.
+ *
+ * ## A session belongs to the provider that created it (Issue #2638)
+ *
+ * A session's model ids, its thinking blocks and its size budget are its
+ * creator's, so no provider ever resumes another's. Each entry records the
+ * provider that created it; an entry that names another provider — or, written
+ * before the creator was recorded, is presumed to be the configured preferred
+ * provider's — is skipped (logged naming both providers and the session id)
+ * and this provider opens its own. The skipped entry is not deleted, so
+ * switching back to its creator resumes it again. GRQ-23 resumed a 1.2 MB
+ * Claude transcript on DeepSeek this way and every run died of
+ * "Prompt is too long".
  *
  * A milestone stream is only ever joined by the issues that carry that
  * milestone, so a freshly planned milestone starts at its first sub-issue with
@@ -37,6 +50,7 @@
 import {
   type AgentProviderSelection,
   DEFAULT_AGENT_PROVIDER_ID,
+  preferredAgentProviderId,
   repoPinnedAgentProvider,
   resolveAgentProviderId,
 } from "./agent_provider.ts";
@@ -150,6 +164,33 @@ export function anticipatedProviderId(options: {
   }
 }
 
+/**
+ * The provider a stream record with no recorded creator is presumed to belong
+ * to (Issue #2638): the repository's pin, else the configured preferred
+ * provider — never the pace fallback standing in for it.
+ *
+ * Degrades to the default, and says so, exactly like
+ * {@link anticipatedProviderId}: a wrong guess costs one resume.
+ */
+export function preferredStreamProviderId(options: {
+  repoConfig?: RepoConfig;
+  selection?: AgentProviderSelection;
+  logger?: StreamSessionLogger;
+} = {}): string {
+  try {
+    return repoPinnedAgentProvider(options.repoConfig) ??
+      preferredAgentProviderId(options.selection ?? {});
+  } catch (error) {
+    options.logger?.warn(
+      `Could not resolve the preferred agent provider — presuming ` +
+        `${DEFAULT_AGENT_PROVIDER_ID} created this stream's unlabelled ` +
+        `sessions (Issue #2638)`,
+      { error: error instanceof Error ? error.message : String(error) },
+    );
+    return DEFAULT_AGENT_PROVIDER_ID;
+  }
+}
+
 /** What joining a stream did to the run's session. */
 export type StreamSessionOutcome = "resumed" | "new" | "reset";
 
@@ -162,6 +203,12 @@ export interface StreamSessionAdoption {
   outcome: StreamSessionOutcome;
   /** Why the stream was reset. Present only when `outcome` is `reset`. */
   resetReason?: string;
+  /**
+   * The session this provider's slot held but another provider created
+   * (Issue #2638), skipped rather than resumed. Present only when `outcome`
+   * is `new`.
+   */
+  skipped?: { sessionId: string; createdBy: string };
 }
 
 /** Options shared by {@link adoptStreamSession} and {@link primeStreamSession}. */
@@ -174,6 +221,12 @@ export interface StreamSessionOptions {
   milestoneTitle?: string;
   /** Provider whose conversation is being joined. */
   providerId: string;
+  /**
+   * The configured preferred provider (Issue #2638), presumed to have created
+   * any stored session with no recorded creator. Omitted, it is resolved from
+   * configuration by {@link preferredStreamProviderId}.
+   */
+  preferredProviderId?: string;
   /** What kind of run this is — a non-joining kind touches no record. */
   runKind: StreamRunKind;
 }
@@ -193,7 +246,21 @@ export async function adoptStreamSession(
   if (!joinsStream(runKind)) return undefined;
 
   const stream = resolveStreamId(repo, milestoneTitle);
-  const lookup = await lookupStreamSession(workDir, stream, providerId);
+  const lookup = await lookupStreamSession(workDir, stream, providerId, {
+    legacyProviderId: options.preferredProviderId ??
+      preferredStreamProviderId(),
+  });
+
+  if (lookup.status === "foreign") {
+    // Another provider's conversation (Issue #2638): not ours to replay, and
+    // not ours to delete — its creator resumes it when it is back.
+    return {
+      stream,
+      state: createSessionResumeState(),
+      outcome: "new",
+      skipped: { sessionId: lookup.sessionId, createdBy: lookup.createdBy },
+    };
+  }
 
   if (lookup.status === "usable") {
     // phaseCount 1 is what makes `buildSessionResumeFlags` emit `--resume`:
@@ -278,6 +345,21 @@ export async function primeStreamSession(
     return undefined;
   }
   if (!adoption) return undefined;
+  if (adoption.skipped) {
+    logger.info(
+      `stream session ${adoption.skipped.sessionId} was created by ` +
+        `${adoption.skipped.createdBy} — not resuming it on ` +
+        `${rest.providerId}; starting a new ${rest.providerId} session ` +
+        `(Issue #2638)`,
+      {
+        repo: rest.repo,
+        stream: streamLabel(adoption.stream),
+        skippedSessionId: adoption.skipped.sessionId,
+        sessionProviderId: adoption.skipped.createdBy,
+        providerId: rest.providerId,
+      },
+    );
+  }
   if (adoption.outcome === "reset") {
     logger.warn(`stream session reset: ${adoption.resetReason}`, {
       repo: rest.repo,

@@ -75,7 +75,10 @@ export type StreamCompactionAction =
   | "compacted"
   /** Uncompacted — every phase run of this issue carries `--autocompact`. */
   | "autocompact"
-  /** A stream session opened this run: there is no conversation to compact. */
+  /**
+   * Nothing of this provider's to compact: the stream session opened this
+   * run, or another provider created it (Issue #2638).
+   */
   | "skipped"
   /** The provider exposes no compaction control to the worker. */
   | "unavailable";
@@ -126,8 +129,15 @@ export type CompactionRunner = (
 export interface StreamCompactionOptions {
   /** What joining the stream did — only a `resumed` session has a history. */
   outcome: StreamSessionOutcome;
-  /** The provider whose conversation this is. */
+  /** The provider this run is on — the one the print run would spawn. */
   providerId: string;
+  /**
+   * The provider that created {@link sessionId} (Issue #2638), when the
+   * session state records it. A session another provider created is never
+   * compacted: the print run would replay that provider's transcript on this
+   * one's endpoint.
+   */
+  sessionProviderId?: string;
   /** The stream session id the print run resumes. */
   sessionId: string;
   /**
@@ -267,6 +277,16 @@ export async function compactStreamSession(
       action: "skipped",
       message: "compaction skipped: new stream session",
       fields: { providerId, outcome },
+    };
+  }
+
+  const { sessionProviderId } = options;
+  if (sessionProviderId !== undefined && sessionProviderId !== providerId) {
+    return {
+      action: "skipped",
+      message: `compaction skipped: stream session ${sessionId} was created ` +
+        `by ${sessionProviderId}, not ${providerId} (Issue #2638)`,
+      fields: { providerId, sessionProviderId, outcome },
     };
   }
 
