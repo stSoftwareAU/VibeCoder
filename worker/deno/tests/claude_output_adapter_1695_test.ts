@@ -14,7 +14,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { CLAUDE_OUTPUT_ADAPTER } from "../lib/claude_output_adapter.ts";
+import {
+  CLAUDE_OUTPUT_ADAPTER,
+  DEEPSEEK_OUTPUT_ADAPTER,
+} from "../lib/claude_output_adapter.ts";
 import { extractStreamJsonText } from "../lib/claude_executor.ts";
 
 const FIXTURE_DIR = new URL("./fixtures/agent_output/", import.meta.url);
@@ -320,4 +323,67 @@ Deno.test("claude adapter - a 402 Insufficient Balance is an exhausted allowance
   assertEquals(failure?.httpStatus, 402);
   assertEquals(failure?.terminal, true);
   assertStringIncludes(failure?.message ?? "", "Insufficient Balance");
+});
+
+// ---------------------------------------------------------------------------
+// The refusal names its own provider, and a spent balance is not a window
+// (Issue #2633)
+// ---------------------------------------------------------------------------
+//
+// DeepSeek runs the Claude Code binary, so it shared this adapter verbatim and
+// its `402 Insufficient Balance` was published as "Claude's subscription
+// window is exhausted" — the wrong provider and the wrong condition. A spent
+// balance is a balance; a window is a window; each names its provider.
+
+function classifyWith(
+  adapter: typeof CLAUDE_OUTPUT_ADAPTER,
+  stderr: string,
+) {
+  const streams = { stdout: "", stderr, exitCode: 1 };
+  return adapter.classify(streams, adapter.decode(streams.stdout));
+}
+
+Deno.test("deepseek adapter - a 402 Insufficient Balance names DeepSeek and its balance (Issue #2633)", () => {
+  const failure = classifyWith(
+    DEEPSEEK_OUTPUT_ADAPTER,
+    "API Error: 402 Insufficient Balance (request_id: 5030f03a)",
+  );
+  assertEquals(failure?.category, "quota-exhausted");
+  assertEquals(failure?.httpStatus, 402);
+  assertStringIncludes(
+    failure?.message ?? "",
+    "DeepSeek's account balance is spent",
+  );
+  assert(!(failure?.message ?? "").includes("Claude"));
+  assert(!(failure?.message ?? "").includes("subscription window"));
+});
+
+Deno.test("claude adapter - a spent Anthropic credit balance is a balance, not a window (Issue #2633)", () => {
+  const failure = classifyWith(
+    CLAUDE_OUTPUT_ADAPTER,
+    "API Error: 402 Your credit balance is too low to access the Anthropic API.",
+  );
+  assertEquals(failure?.category, "quota-exhausted");
+  assertStringIncludes(
+    failure?.message ?? "",
+    "Claude's account balance is spent",
+  );
+});
+
+Deno.test("claude adapter - a spent usage window still reads as a window (Issue #2633)", () => {
+  const failure = classifyWith(CLAUDE_OUTPUT_ADAPTER, USAGE_LIMIT_ERR);
+  assertEquals(failure?.category, "quota-exhausted");
+  assertStringIncludes(
+    failure?.message ?? "",
+    "Claude's subscription window is exhausted",
+  );
+});
+
+Deno.test("deepseek adapter - every other refusal names DeepSeek too (Issue #2633)", () => {
+  const auth = classifyWith(
+    DEEPSEEK_OUTPUT_ADAPTER,
+    "API Error: 401 Invalid API key",
+  );
+  assertEquals(auth?.category, "authentication");
+  assertStringIncludes(auth?.message ?? "", "DeepSeek refused the credential");
 });
