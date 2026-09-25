@@ -33,6 +33,11 @@ export interface TelemetrySource {
   runStats?: {
     servedModels: string[];
     requestedModel: string;
+    /**
+     * Effort the invocation was started with, verbatim from the argv the
+     * runner built (Issue #2573). Absent when the provider takes none.
+     */
+    effort?: string;
     /** Turns the provider reported for this invocation, when it reported any. */
     numTurns?: number;
     tokenUsage?: {
@@ -58,7 +63,7 @@ export function summariseCallbackTelemetry(
   let cacheReadTokens = 0;
   let turns: number | undefined;
   /** The dominant invocation so far: most tokens wins, first-seen on a tie. */
-  let dominant: { model: string; tokens: number } | undefined;
+  let dominant: { model: string; effort?: string; tokens: number } | undefined;
 
   for (const invocation of invocations) {
     const stats = invocation.runStats;
@@ -88,7 +93,9 @@ export function summariseCallbackTelemetry(
       stats.tokenUsage.cacheCreationTokens +
       stats.tokenUsage.cacheReadTokens;
     if (dominant === undefined || tokens > dominant.tokens) {
-      dominant = { model, tokens };
+      // Issue #2573: the effort travels with the model, from the same
+      // invocation, so `model` and `effort` can never describe two calls.
+      dominant = { model, effort: stats.effort, tokens };
     }
   }
 
@@ -107,6 +114,7 @@ export function summariseCallbackTelemetry(
       : { estimatedCostUsd: estimate.totalCost }),
     ...(turns !== undefined ? { turns } : {}),
     ...(dominant ? { model: dominant.model } : {}),
+    ...(dominant?.effort ? { effort: dominant.effort } : {}),
   };
 }
 

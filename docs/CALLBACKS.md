@@ -428,7 +428,8 @@ invocation (mode `0600`) and removed after it exits:
     "cacheReadTokens": 20,
     "estimatedCostUsd": 0.42,
     "turns": 34,
-    "model": "claude-opus-4-6"
+    "model": "claude-opus-4-6",
+    "effort": "high"
   },
   "outcome": {
     "kind": "pr",
@@ -491,6 +492,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_ESTIMATED_COST_USD`           | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
 | `VIBECODER_TURNS`                        | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                    |
 | `VIBECODER_MODEL`                        | `telemetry.model`               | no             | Served model of the invocation with the biggest token total — the model most of the run went through                 |
+| `VIBECODER_EFFORT`                       | `telemetry.effort`              | no             | Effort that same dominant invocation was started with (`low`, `medium`, `high`, `xhigh`, `max`) — Issue #2573        |
 | `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
 | `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
 | `VIBECODER_OUTCOME_CATEGORY`             | `outcome.category`              | no             | `FailureCategory` when `kind` is `no_pr`, or when a `pr` run was failed by a later step (Issue #2044)                |
@@ -544,6 +546,14 @@ optional, and a hook written before they existed is unaffected:
   token total, falling back to that invocation's requested model when the API
   reported none. Tokens rather than estimated cost, so a model with no
   pricing row can still be named; it is present whenever `telemetry` is.
+
+`telemetry.effort` was **added** the same way (Issue #2573), for the per-phase
+effort sweep on Opus 5.5. It is the effort the invocation `telemetry.model`
+names was started with — the value the worker passed on the command line,
+after every `phase_effort_overrides` and environment override was applied — so
+a pilot host's runs from before and after its override change can be told
+apart run by run. It is omitted, never guessed, when that invocation recorded
+no effort (a provider that takes none).
 
 The `graft` block was **added** the same way (Issue #2104, part of #2060), and
 is the one optional-looking fact that is present on **every** run context:
