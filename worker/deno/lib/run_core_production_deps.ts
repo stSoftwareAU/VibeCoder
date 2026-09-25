@@ -966,7 +966,6 @@ export async function createProductionRunCoreDeps(
       policy: fastFailurePolicy,
       machineId,
       ghFn: runGhCommandRaw,
-      ...(config.repoConfig ? { repoConfigs: config.repoConfig } : {}),
       log: (message: string) => logger.info(message),
     });
     if (decision.action === "suppressed") {

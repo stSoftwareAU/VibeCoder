@@ -78,19 +78,14 @@ Deno.test("formatRepoFastFailureBody - an error line cannot forge a marker or cl
   }
 });
 
-Deno.test("resolveRepoFastFailureTarget - defaults to the worker repository", () => {
+// Issue #2592 replaced "defaults to the worker repository" and "repo_config
+// can file it in the affected repo": the diagnostic always lands in the
+// monitored repository, and `fast_failure_diagnostics_here` is gone.
+Deno.test("resolveRepoFastFailureTarget - is always the monitored repository (Issue #2592)", () => {
+  assertEquals(resolveRepoFastFailureTarget(REPO), REPO);
   assertEquals(
-    resolveRepoFastFailureTarget(REPO, undefined),
-    "stSoftwareAU/VibeCoder",
-  );
-});
-
-Deno.test("resolveRepoFastFailureTarget - repo_config can file it in the affected repo", () => {
-  assertEquals(
-    resolveRepoFastFailureTarget(REPO, {
-      [REPO]: { fastFailureDiagnosticsHere: true },
-    }),
-    REPO,
+    resolveRepoFastFailureTarget("acme/widgets"),
+    "acme/widgets",
   );
 });
 
@@ -112,14 +107,14 @@ Deno.test("fileRepoFastFailureIssue - files exactly one diagnostic when none exi
         return Promise.resolve("[]");
       }
       return Promise.resolve(
-        "https://github.com/stSoftwareAU/VibeCoder/issues/8123\n",
+        "https://github.com/stSoftwareAU/example/issues/8123\n",
       );
     },
   });
   assertEquals(decision, {
     action: "filed",
     issueNumber: 8123,
-    targetRepo: "stSoftwareAU/VibeCoder",
+    targetRepo: REPO,
   });
   assertEquals(calls.length, 2);
   assertEquals(calls[1]?.[1], "create");
@@ -148,7 +143,7 @@ Deno.test("fileRepoFastFailureIssue - an existing fleet-authored diagnostic is r
   assertEquals(decision, {
     action: "exists",
     issueNumber: 4242,
-    targetRepo: "stSoftwareAU/VibeCoder",
+    targetRepo: REPO,
   });
   assertEquals(calls.length, 1);
 });
@@ -171,7 +166,7 @@ Deno.test("fileRepoFastFailureIssue - a stranger's marker does not stand in for 
       }
       created = true;
       return Promise.resolve(
-        "https://github.com/stSoftwareAU/VibeCoder/issues/8124\n",
+        "https://github.com/stSoftwareAU/example/issues/8124\n",
       );
     },
   });
@@ -206,14 +201,15 @@ Deno.test("fileRepoFastFailureIssue - a gh failure is reported, never thrown at 
   assert(logs.some((line) => line.includes("suppressed:gh_failed")));
 });
 
-Deno.test("fileRepoFastFailureIssue - repo_config targets the affected repository", async () => {
+// Issue #2592 replaced "repo_config targets the affected repository": there
+// is no opt-in any more, so every gh call targets the monitored repository.
+Deno.test("fileRepoFastFailureIssue - searches and files in the monitored repository, never VibeCoder (Issue #2592)", async () => {
   const targets: string[] = [];
   const decision = await fileRepoFastFailureIssue({
     state: backedOffState(),
     policy: POLICY,
     machineId: "host-a",
     fleetAuthors: FLEET,
-    repoConfigs: { [REPO]: { fastFailureDiagnosticsHere: true } },
     recordFiling: () => Promise.resolve(true),
     ghFn: (args) => {
       targets.push(args[args.indexOf("--repo") + 1] ?? "");
@@ -227,4 +223,66 @@ Deno.test("fileRepoFastFailureIssue - repo_config targets the affected repositor
     targetRepo: REPO,
   });
   assertEquals(targets, [REPO, REPO]);
+});
+
+Deno.test("fileRepoFastFailureIssue - a refused label is retried once without --label (Issue #2592)", async () => {
+  const creates: string[][] = [];
+  const faults: string[] = [];
+  const decision = await fileRepoFastFailureIssue({
+    state: backedOffState(),
+    policy: POLICY,
+    machineId: "host-a",
+    fleetAuthors: FLEET,
+    recordFiling: () => Promise.resolve(true),
+    recordFault: (kind, detail) => {
+      faults.push(`${kind}: ${detail ?? ""}`);
+    },
+    ghFn: (args) => {
+      if (args[1] === "list") return Promise.resolve("[]");
+      creates.push(args);
+      if (args.includes("--label")) {
+        return Promise.reject(
+          new Error("could not add label: 'bug' not found"),
+        );
+      }
+      return Promise.resolve(`https://github.com/${REPO}/issues/77\n`);
+    },
+  });
+  assertEquals(decision, {
+    action: "filed",
+    issueNumber: 77,
+    targetRepo: REPO,
+  });
+  assertEquals(creates.length, 2);
+  assert(creates[0]!.includes("--label"));
+  assert(!creates[1]!.includes("--label"));
+  assertEquals(creates[1]![creates[1]!.indexOf("--repo") + 1], REPO);
+  assertEquals(faults, []);
+});
+
+Deno.test("fileRepoFastFailureIssue - both create attempts failing is suppressed, with no VibeCoder fallback (Issue #2592)", async () => {
+  const targets: string[] = [];
+  const faults: string[] = [];
+  const decision = await fileRepoFastFailureIssue({
+    state: backedOffState(),
+    policy: POLICY,
+    machineId: "host-a",
+    fleetAuthors: FLEET,
+    recordFiling: () => Promise.resolve(true),
+    recordFault: (kind, detail) => {
+      faults.push(`${kind}: ${detail ?? ""}`);
+    },
+    ghFn: (args) => {
+      targets.push(args[args.indexOf("--repo") + 1] ?? "");
+      if (args[1] === "list") return Promise.resolve("[]");
+      return Promise.reject(new Error("issues are disabled"));
+    },
+  });
+  assertEquals(decision, { action: "suppressed", reason: "gh_failed" });
+  // One search plus exactly two creates, all against the monitored repo.
+  assertEquals(targets, [REPO, REPO, REPO]);
+  assert(!targets.includes("stSoftwareAU/VibeCoder"));
+  assertEquals(faults.length, 1);
+  assertStringIncludes(faults[0]!, "catch_block_warning");
+  assertStringIncludes(faults[0]!, "issues are disabled");
 });
