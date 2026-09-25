@@ -924,6 +924,18 @@ What does and does not spend an attempt:
 | **Disrupted** — opened, never concluded       | No       | A restart, a swept heartbeat, or the worker killing the agent at the cycle deadline; the conflict was never judged (Issues #395, #1693). An agent that runs out **its own** timeout is judged and charged (Issue #2305) |
 | **Not-charged** — a conclusion the branch is not answerable for | No | A merge gate refused the push, or the pass stood down before touching the branch. Not charged is not *no consequence*: a resolution-gate refusal that repeats unchanged is counted separately as a wedge, which holds the milestone's issues back and files one worker diagnostic in VibeCoder (Issue #2388) |
 
+**A provider outage is not a conflict** (Issue #2613). When the agent's provider
+refuses the request — a spent balance (HTTP 402), a refused credential
+(401/403), a usage limit, or a 429/5xx that outlasted its retries — the conflict was never judged, so the attempt is
+concluded as disrupted and charged nothing. The milestone sync reports the
+branch `disrupted`: no `merge-fallback` issue is filed, no roll-back is
+attempted, gate repair stops, and the branch is left exactly as it was for a
+later cycle. A PR conflict run cut short the same way is not charged either. A
+spent balance is parked like a usage limit rather than walking the model ladder,
+so it adds nothing to a failure streak or a repo back-off. The worker keeps one
+self-closing alert issue per provider in VibeCoder — see
+[INTERNALS.md → the provider-outage alert](INTERNALS.md#-the-provider-outage-alert).
+
 A disrupted attempt is re-attempted rather than charged, and is bounded
 separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the
 disruption — not the conflict — is the problem, and a human is told so.

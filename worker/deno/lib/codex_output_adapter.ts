@@ -42,6 +42,7 @@ import {
   type AgentStructuredError,
   type AgentTerminalStatus,
   type AgentTextSource,
+  BALANCE_EXHAUSTED_RE,
   classifyProcessOutcome,
   detectQuotaScope,
   extractHttpStatus,
@@ -405,8 +406,11 @@ function classifyCodexFailure(
   }
 
   // An exhausted window: only when the refusal says the window is spent.
-  const quotaError = match(QUOTA_RE);
-  if (quotaError || QUOTA_RE.test(stderr)) {
+  // Issue #2613: a spent balance (HTTP 402) is the same account-wide refusal.
+  const quotaError = match(QUOTA_RE) ?? match(BALANCE_EXHAUSTED_RE);
+  if (
+    quotaError || QUOTA_RE.test(stderr) || BALANCE_EXHAUSTED_RE.test(stderr)
+  ) {
     return agentFailure({
       category: "quota-exhausted",
       message: say("Codex's subscription window is exhausted"),

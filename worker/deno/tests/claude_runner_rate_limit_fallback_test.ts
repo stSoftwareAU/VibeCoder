@@ -59,7 +59,10 @@ const MODEL_LOG = "models.log";
  * invocation (one per line), prints a stream-json result whose text matches
  * the rate-limit detector, and exits with `exitCode`.
  */
-function buildRateLimitStubBody(exitCode: number): string {
+function buildRateLimitStubBody(
+  exitCode: number,
+  resultText = "API rate limit exceeded - too many requests",
+): string {
   // Walk the args to find the value following `--model`. Append it to the
   // log — beside the stub, located from `$0` so no path is baked in — so the
   // test can assert the downgrade sequence across re-invocations.
@@ -73,7 +76,7 @@ function buildRateLimitStubBody(exitCode: number): string {
     `  prev="$arg"`,
     `done`,
     // stream-json result line; the text matches detectRateLimit().
-    `printf '%s\\n' '{"type":"result","result":"Credit balance is too low - rate limit exceeded"}'`,
+    `printf '%s\\n' '{"type":"result","result":"${resultText}"}'`,
     `exit ${exitCode}`,
   ].join("\n");
 }
@@ -86,9 +89,10 @@ function buildRateLimitStubBody(exitCode: number): string {
 function withRateLimitStub<T>(
   exitCode: number,
   fn: (stub: StubClaude) => Promise<T>,
+  resultText?: string,
 ): Promise<T> {
   return withAgentStub(
-    buildRateLimitStubBody(exitCode),
+    buildRateLimitStubBody(exitCode, resultText),
     (stub) => fn({ path: stub.path, modelLog: `${stub.dir}/${MODEL_LOG}` }),
     { prefix: "claude_rl_stub_" },
   );
@@ -150,6 +154,36 @@ Deno.test({
     // Tier-by-tier downgrade, no upgrade, no infinite loop: each tier is run
     // exactly once and the order is strictly cheaper each step.
     assertEquals(models, ["fable", "opus", "sonnet", "haiku"]);
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - a spent balance (402) does not walk the model ladder (Issue #2613)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const models = await withRateLimitStub(
+      1,
+      async (stub) => {
+        await runClaudeWithRetry(
+          {
+            clock: fakeClock(),
+            prompt: "test",
+            agentBinaryPath: stub.path,
+            model: "fable",
+            enableModelFallback: true,
+            timeoutSeconds: 30,
+            killAfterSeconds: 2,
+          },
+          FAST_RETRY,
+        );
+        return await readModelSequence(stub.modelLog);
+      },
+      "API Error: 402 Insufficient Balance",
+    );
+    // A cheaper tier bills the same empty account, so one run is all it gets.
+    assertEquals(models, ["fable"]);
   },
 });
 

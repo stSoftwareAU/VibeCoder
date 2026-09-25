@@ -803,6 +803,27 @@ radius of unexpected exits:
 
 Implemented in Deno TypeScript.
 
+### 🚨 The provider-outage alert
+
+When the agent provider refuses this account outright — a spent balance
+(HTTP 402, `BALANCE_EXHAUSTED_RE` in `agent_output.ts`) or a refused
+credential — every task fails the same way (Issue #2613).
+[provider_outage_alert.ts](../worker/deno/lib/provider_outage_alert.ts) keeps
+**one** open issue per provider in VibeCoder while that lasts. `claude_runner.ts`
+reports each run's outcome to the process-wide alerter installed in `mod.ts`.
+The first refusal files the alert, naming the provider, the error and the
+first-seen time. A later refusal edits it in place and keeps first-seen. The
+first run that succeeds closes it with a recovery comment. Dedup matches a
+`<!-- vibe-provider-outage provider="…" first-seen="…" -->` body marker that a
+fleet account authored, and a failed search files nothing. A 429/5xx or a
+routine subscription window never alerts, because those clear on their own
+and the usage-limit path already parks them.
+
+A spent balance is a **usage limit**, not a rate limit. It is parked and never
+walks the model ladder, and it charges no failure streak or repo back-off. A
+conflict run it cuts short is `disrupted`, not failed: see
+[MERGE.md → The merge-conflict attempt budget](MERGE.md#the-merge-conflict-attempt-budget).
+
 ### 🔄 Unified workflow handler (Deno TypeScript)
 
 The workflow handler provides consistent logging, failure tracking, and GitHub
@@ -4231,7 +4252,11 @@ paths.
   `Revert child PR #N "<title>" — milestone roll-back (Issue #1730)` so a later
   roll-back can see it. The push is an ordinary fast-forward of the milestone
   branch, and a push a `milestone/**` ruleset refuses lands through the sync PR
-  of Issue #589 instead.
+  of Issue #589 instead. That sync-branch push uses `--force-with-lease`. If it
+  is rejected with `stale info` (another actor moved the branch), it is
+  refetched and retried once. A retry that lands is logged as a stale-info
+  retry, and a second rejection is reported as a race rather than as a
+  repository rule refusing the roll-back (Issue #2613).
 - **Nothing half-done is published.** The pre-roll-back SHA is recorded first.
   A revert that conflicts, or a plan that runs out with the merge still
   conflicting, ends at `git reset --hard <pre-roll-back SHA>` with nothing

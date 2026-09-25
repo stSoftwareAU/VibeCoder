@@ -26,6 +26,7 @@ import { loadRepoContextContent } from "./repo_context_reader.ts";
 import { readPrResponseMessage } from "./pr_branch_preparation.ts";
 import type { ConflictIssueContext } from "./conflict_issue_context.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import { isProviderUnavailableFailure } from "./agent_output.ts";
 
 export type {
   MergeConflictRepairContext,
@@ -97,6 +98,13 @@ export interface MergeConflictAgentRequest {
 export interface MergeConflictAgentOutcome {
   /** The run was ended by the worker (SIGTERM, exit 143). */
   terminated: boolean;
+  /**
+   * Set when the provider refused to serve the run — a spent balance, a
+   * rejected credential or an outlasting 429/5xx (Issue #2613). Like
+   * `terminated`, the tree is no verdict on the conflict; carries the
+   * provider's error for the operator.
+   */
+  providerUnavailable?: string;
 }
 
 /**
@@ -190,6 +198,23 @@ export async function runMergeConflictAgent(
           ? `agent produced no output for ${claudeNoOutputTimeout}s`
           : `agent timed out after ${claudeTimeout}s`,
       ),
+    };
+  }
+
+  // Issue #2613: the provider refused the run, so the agent never touched
+  // the tree. Reported, never judged — no ladder attempt, no fallback.
+  const { exitCode, usageLimit, agentFailure } = claudeResult.value;
+  if (
+    exitCode !== 0 &&
+    (usageLimit !== undefined || isProviderUnavailableFailure(agentFailure))
+  ) {
+    return {
+      ok: true,
+      value: {
+        terminated: false,
+        providerUnavailable: agentFailure?.message ??
+          "the provider's usage limit refused the run",
+      },
     };
   }
 

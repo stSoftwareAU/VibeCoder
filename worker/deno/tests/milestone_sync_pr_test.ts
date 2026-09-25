@@ -17,6 +17,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   isRuleViolationPush,
+  isStaleInfoPush,
   raiseMilestoneSyncPr,
   SYNC_BRANCH_PREFIX,
   syncBranchFor,
@@ -349,4 +350,99 @@ Deno.test("raiseMilestoneSyncPr - a branch absent from the remote still pushes (
 
   assert(result.ok, JSON.stringify(result));
   assert(git.some((a) => a[0] === "push"));
+});
+
+const STALE_INFO =
+  " ! [rejected]        HEAD -> sync/milestone-523-idle-task-scans (stale info)\n" +
+  "error: failed to push some refs to 'https://github.com/org/repo'";
+
+/** A git fake whose pushes answer from `pushResults` in order (Issue #2613). */
+function stalePushDeps(pushResults: Array<{ code: number; stderr: string }>) {
+  const git: string[][] = [];
+  const queue = [...pushResults];
+  return {
+    git,
+    deps: {
+      git: (args: string[]) => {
+        git.push(args);
+        if (args[0] === "push") {
+          return Promise.resolve(queue.shift() ?? { code: 0, stderr: "" });
+        }
+        return Promise.resolve({ code: 0, stderr: "" });
+      },
+      gh: (args: string[]) => {
+        if (args[1] === "list") return Promise.resolve("[]");
+        if (args[1] === "create") {
+          return Promise.resolve("https://github.com/org/repo/pull/700\n");
+        }
+        return Promise.resolve("");
+      },
+    },
+  };
+}
+
+Deno.test("isStaleInfoPush - recognises a lease refused because another actor moved the branch (Issue #2613)", () => {
+  assertEquals(isStaleInfoPush(STALE_INFO), true);
+  assertEquals(isStaleInfoPush("! [rejected] x -> x (STALE INFO)"), true);
+  // A stale lease is a race, never a repository rule.
+  assertEquals(isRuleViolationPush(STALE_INFO), false);
+  for (
+    const other of [
+      "! [rejected] main -> main (non-fast-forward)",
+      "! [remote rejected] x (push declined due to repository rule violations)",
+      "",
+    ]
+  ) {
+    assertEquals(isStaleInfoPush(other), false, other);
+  }
+});
+
+Deno.test("raiseMilestoneSyncPr - a stale-info rejection is refetched and retried, then the PR is raised (Issue #2613)", async () => {
+  const { git, deps } = stalePushDeps([
+    { code: 1, stderr: STALE_INFO },
+    { code: 0, stderr: "" },
+  ]);
+  const logs: string[] = [];
+
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    ...deps,
+    log: (m: string) => logs.push(m),
+  });
+
+  assert(result.ok, result.ok ? "" : result.error.message);
+  // The report says a stale lease was refetched and retried, not silently.
+  assert(
+    logs.some((m) => m.includes("stale info") && m.includes("retried")),
+    logs.join("\n"),
+  );
+  const verbs = git.map((args) => args[0]);
+  // fetch, push (stale), refetch, push (accepted).
+  assertEquals(verbs, ["fetch", "push", "fetch", "push"]);
+  assertEquals(git[2], git[0], "the refetch refreshes the same lease baseline");
+});
+
+Deno.test("raiseMilestoneSyncPr - a second stale-info rejection says another actor moved the branch, not a repository rule (Issue #2613)", async () => {
+  const { git, deps } = stalePushDeps([
+    { code: 1, stderr: STALE_INFO },
+    { code: 1, stderr: STALE_INFO },
+  ]);
+
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(!result.ok);
+  assertEquals(git.filter((args) => args[0] === "push").length, 2);
+  assertStringIncludes(result.error.message, "stale info");
+  assertStringIncludes(result.error.message, "another actor updated");
+  assertStringIncludes(result.error.message, "refetched and retried");
+});
+
+Deno.test("raiseMilestoneSyncPr - any other push failure is not retried (Issue #2613)", async () => {
+  const { git, deps } = stalePushDeps([
+    { code: 1, stderr: "fatal: unable to access ... Could not resolve host" },
+  ]);
+
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(!result.ok);
+  assertEquals(git.filter((args) => args[0] === "push").length, 1);
 });

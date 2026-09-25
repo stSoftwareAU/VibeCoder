@@ -152,3 +152,26 @@ Deno.test("detectRunInterrupted - is tail-only (an early mention that recovered 
     "Applied the fix and committed.";
   assertEquals(detectRunInterrupted(output), false);
 });
+
+Deno.test("usage limit - an exhausted provider balance (HTTP 402) is a usage limit, not a task failure (Issue #2613)", () => {
+  for (
+    const message of [
+      "API Error: 402 Insufficient Balance",
+      'API Error: 402 {"error":{"message":"Insufficient Balance"}}',
+      "402 Payment Required",
+      "Your credit balance is too low to access the Anthropic API.",
+      "Error: insufficient credits on this account",
+    ]
+  ) {
+    assertEquals(detectUsageLimit(message), true, message);
+  }
+  // A token count or line number that happens to be 402 is not a refusal.
+  for (
+    const message of [
+      "Read 402 lines from lib/foo.ts",
+      "Updated the balance sheet report",
+    ]
+  ) {
+    assertEquals(detectUsageLimit(message), false, message);
+  }
+});

@@ -11,6 +11,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  AGENT_PROVIDER_UNAVAILABLE,
   climbConflictLadder,
   hasConflictMarkers,
   listUnmergedPaths,
@@ -443,6 +444,38 @@ Deno.test(
         outcome.escalations[0]!.reason,
         "ended by the worker",
       );
+    } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "climbConflictLadder - a provider outage is not a verdict on the conflict (Issue #2613)",
+  async () => {
+    const fx = await conflictedClone();
+    try {
+      const outcome = await climbConflictLadder({
+        escalations: undecided,
+        options: { cwd: fx.dir },
+        milestoneBranch: "milestone/1777",
+        defaultBranch: "main",
+        applyRulesFn: rulesDeferEverything,
+        agentFn: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              terminated: false,
+              providerUnavailable: "API Error: 402 Insufficient Balance",
+            },
+          }),
+      });
+
+      assertEquals(outcome.resolved, []);
+      const reason = outcome.escalations[0]!.reason;
+      assertStringIncludes(reason, AGENT_PROVIDER_UNAVAILABLE);
+      assertStringIncludes(reason, "402 Insufficient Balance");
+      assert(!reason.includes("unmerged"), reason);
     } finally {
       await fx.cleanup();
     }

@@ -27,6 +27,7 @@ import type { RunStats } from "./run_stats.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { ScheduledReleaseReason } from "./failure_diagnosis.ts";
 import type { AgentDecodedOutput, AgentFailure } from "./agent_output.ts";
+import { BALANCE_EXHAUSTED_RE } from "./agent_output.ts";
 
 /** Exit code returned when a process times out. */
 export const TIMEOUT_EXIT_CODE = 124;
@@ -462,6 +463,16 @@ const USAGE_LIMIT_RE =
   /(claude (ai )?usage limit reached|(you'?ve|you have) (hit|reached) your (usage |session )?limit|\b(5|five)[- ]hour (usage )?(limit|window)\b|\bweekly (usage )?limit\b|out of extra usage)/i;
 
 /**
+ * Issue #2613: a spent provider balance (HTTP 402) is the same shape of
+ * refusal — account-wide, not the task's fault, cured only by time or a
+ * top-up — so it takes the same terminal pause rather than the rate-limit
+ * ladder (whose `credit` match would otherwise retry it into the ground).
+ */
+function isUsageLimitText(text: string): boolean {
+  return USAGE_LIMIT_RE.test(text) || BALANCE_EXHAUSTED_RE.test(text);
+}
+
+/**
  * Check whether the tail of `output` reports a subscription usage limit.
  * Tail-only for the same reason as {@link detectRateLimit}: the agent may
  * *discuss* limits mid-transcript.
@@ -472,7 +483,7 @@ export function detectUsageLimit(
 ): boolean {
   if (!output.trim()) return false;
   const tail = output.split("\n").slice(-tailLines).join("\n");
-  return USAGE_LIMIT_RE.test(tail);
+  return isUsageLimitText(tail);
 }
 
 /**
