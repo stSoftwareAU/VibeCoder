@@ -6,7 +6,10 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { isAdminOnlyRepoSettingsIssue } from "../lib/admin_only_finding.ts";
+import {
+  isAdminOnlyRepoSettingsIssue,
+  parseRepoSettingsFindingId,
+} from "../lib/admin_only_finding.ts";
 
 Deno.test("isAdminOnlyRepoSettingsIssue - a BP-REPO finding-id marker matches", () => {
   for (
@@ -55,4 +58,59 @@ Deno.test("isAdminOnlyRepoSettingsIssue - matching is case-insensitive and white
     ),
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// parseRepoSettingsFindingId — the one source of truth for the marker, shared
+// with setup's audit-issue close-out (Issue #2629).
+// ---------------------------------------------------------------------------
+
+Deno.test("parseRepoSettingsFindingId - a valid marker yields its finding id", () => {
+  assertEquals(
+    parseRepoSettingsFindingId(
+      "<!-- finding-id: BP-REPO-DEFAULT-TOKEN-WRITE -->\n\n## Finding",
+    ),
+    "BP-REPO-DEFAULT-TOKEN-WRITE",
+  );
+});
+
+Deno.test("parseRepoSettingsFindingId - whitespace variants and case are normalised", () => {
+  for (
+    const body of [
+      "<!--finding-id:BP-REPO-SECRET-SCANNING-OFF-->",
+      "<!--   finding-id:   BP-REPO-SECRET-SCANNING-OFF   -->",
+      "<!--\tfinding-id:\tbp-repo-secret-scanning-off\n-->",
+      "intro text\n<!-- finding-id: BP-REPO-SECRET-SCANNING-OFF -->\nmore",
+    ]
+  ) {
+    assertEquals(
+      parseRepoSettingsFindingId(body),
+      "BP-REPO-SECRET-SCANNING-OFF",
+      body,
+    );
+  }
+});
+
+Deno.test("parseRepoSettingsFindingId - a non-BP-REPO id yields null", () => {
+  for (
+    const body of [
+      "<!-- finding-id: BP-WORKER-TOKEN-CAN-EDIT-RULESETS -->",
+      "<!-- finding-id: BP-LINTER-github-actions -->",
+      "<!-- finding-id: SEC-0123abcd -->",
+    ]
+  ) {
+    assertEquals(parseRepoSettingsFindingId(body), null, body);
+  }
+});
+
+Deno.test("parseRepoSettingsFindingId - a body with no marker yields null", () => {
+  for (
+    const body of [
+      "",
+      "Repository admin action — the worker cannot change repository settings.",
+      "finding-id: BP-REPO-DEFAULT-TOKEN-WRITE (not inside an HTML comment)",
+    ]
+  ) {
+    assertEquals(parseRepoSettingsFindingId(body), null, body);
+  }
 });
