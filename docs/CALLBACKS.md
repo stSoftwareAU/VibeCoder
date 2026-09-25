@@ -458,6 +458,11 @@ invocation (mode `0600`) and removed after it exits:
     "status": "ok",
     "savedTokens": 12840
   },
+  "brief": {
+    "enabled": true,
+    "status": "ok",
+    "seconds": 1.5
+  },
   "workerVersion": "1.4.2",
   "workerCommit": "0123456789abcdef0123456789abcdef01234567"
 }
@@ -515,6 +520,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_RTK_ENABLED`                  | `rtk.enabled`                   | yes            | Whether the host's RTK output switch was on for this run (`true` or `false`)                                         |
 | `VIBECODER_RTK_STATUS`                   | `rtk.status`                    | yes            | `ok`, `failed`, `unsupported` (this provider takes no hook) or `off` (switch off, or the run ended before RTK ran) |
 | `VIBECODER_RTK_SAVED_TOKENS`             | `rtk.savedTokens`               | no             | RTK's own indicative count of tokens its filtering saved during the run                                              |
+| `VIBECODER_BRIEF_ENABLED`                | `brief.enabled`                 | yes            | Whether the host's `brief_toolchain` switch was on for this run (`true` or `false`)                                  |
 | `VIBECODER_WORKER_VERSION`               | `workerVersion`                 | no             | Worker binary version that produced this run                                                                         |
 | `VIBECODER_WORKER_COMMIT`                | `workerCommit`                  | no             | Git commit SHA of the worker code that produced this run                                                              |
 
@@ -620,6 +626,19 @@ and never `0` standing in for "unknown" — unless RTK's gain store was read bot
 before and after the run; a measured `0` is published as `0`. Nothing else in
 the contract moved: `schemaVersion` stays at 2, and a hook that knows nothing
 about RTK ignores the block.
+
+`brief` is an **additive** block (Issue #2603, part of #2581) carried by every
+run document: what brief did for the run's codebase map. `enabled` is the
+host's `brief_toolchain` switch, stated truthfully the way the `rtk` block
+states RTK's (`briefNotRun`). `status` is `ok` — with `seconds`, and
+`"cached": true, "seconds": 0` when the map came from cache and brief was not
+spawned — `failed` with a one-line `reason` (brief was missing, exited non-zero,
+timed out or printed no report; the run still completed with the map it had
+before the trial, and is not marked failed), or `off`. A switched-on run that
+did not use brief — no root `Cargo.toml`, or it ended before the map was built —
+is the bare `{ "enabled": true, "status": "off" }`; a switched-off host is
+`{ "enabled": false, "status": "off" }`. Only `VIBECODER_BRIEF_ENABLED` is
+exported as a scalar. Nothing else moved: `schemaVersion` stays at 2.
 
 `workerVersion` and `workerCommit` are **additive** scalars (Issue #2444, part of
 \#2327) that identify the worker binary and its source that produced this run.
@@ -891,6 +910,7 @@ Two differences to plan for:
 | Context assembly and transcript     | `worker/deno/lib/run_callback_context.ts`      |
 | CodeGraph figures the block carries | `worker/deno/lib/codegraph_context.ts`         |
 | RTK outcome the block carries       | `worker/deno/lib/rtk_output.ts`                |
+| brief outcome the block carries     | `worker/deno/lib/brief_toolchain.ts`           |
 | Exactly-once guard                  | `worker/deno/lib/issue_callback_guard.ts`      |
 | Conformance fixture                 | `worker/deno/lib/callback_conformance.ts`      |
 | `callback-conformance` command      | `worker/deno/commands/callback_conformance.ts` |

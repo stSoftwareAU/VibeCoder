@@ -2253,7 +2253,7 @@ reads as "this is everything" when it is not. A generation fault logs
 `WARN: codebase map unavailable …` and the run continues unmapped rather than
 shipping a silently blank index.
 
-**Cargo commands from brief (#2581 trial, not yet switched on).** A caller of
+**Cargo commands from brief (#2581 trial, off by default).** A caller of
 `getOrGenerateCodebaseMap` may pass a brief runner and its version
 ([`brief_toolchain.ts`](../worker/deno/lib/brief_toolchain.ts)). For a
 repository with a root `Cargo.toml` the runner spawns `brief --json <repo>` —
@@ -2263,6 +2263,11 @@ fixed argv, no shell, offline scan only, bounded by `runWithTimeout` — and a
 200 characters each and 20 in all. The cache key then also carries brief's
 version; a failed brief run logs a warning, renders the map without the block
 and is not cached. With no runner the map and its tree-hash key are unchanged.
+The `execute-claude-phase` path passes the runner only while the host's
+`brief_toolchain.enabled` switch is on (Issue #2603; see
+[Configuration](CONFIGURATION.md)), keyed on the brief version the container
+pins, and reports the outcome as the run-stats `Brief:` line and the callback's
+`brief` block.
 
 Set `include_codebase_map` to `false` in `.config.json` to switch the injection
 off. Implementation:
