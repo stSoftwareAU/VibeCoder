@@ -55,6 +55,15 @@ export function isRuleViolationPush(stderr: string): boolean {
 }
 
 /**
+ * Whether a `--force-with-lease` push was refused as `stale info`: another
+ * actor updated the branch after this host fetched it. That is a race to
+ * refetch and retry, never a repository rule (Issue #2613).
+ */
+export function isStaleInfoPush(stderr: string): boolean {
+  return /\bstale info\b/i.test(stderr);
+}
+
+/**
  * The branch a sync PR is raised from, for a given milestone branch.
  *
  * Deterministic, so a second run finds the branch the first one pushed and
@@ -311,30 +320,48 @@ export async function raiseMilestoneSyncPr(
   // This does not weaken the lease. The baseline is taken from whatever the
   // remote holds at this moment; if another host moves the branch after that,
   // the push is still refused, which is the case the lease exists for.
-  await deps.git([
-    "fetch",
-    "origin",
-    `refs/heads/${branch}:refs/remotes/origin/${branch}`,
-  ]);
+  const fetchBaseline = () =>
+    deps.git([
+      "fetch",
+      "origin",
+      `refs/heads/${branch}:refs/remotes/origin/${branch}`,
+    ]);
+  const pushBranch = () =>
+    deps.git([
+      "push",
+      "--force-with-lease",
+      "origin",
+      `HEAD:refs/heads/${branch}`,
+    ]);
+  await fetchBaseline();
 
   // Force-with-lease: the sync branch is this function's alone, and a stale
   // one from an earlier cycle carries a merge that is no longer current.
   // `--force-with-lease` still refuses if somebody else moved it.
-  const push = await deps.git([
-    "push",
-    "--force-with-lease",
-    "origin",
-    `HEAD:refs/heads/${branch}`,
-  ]);
+  let push = await pushBranch();
+  // `stale info` means another actor moved the branch after the fetch above.
+  // Refetch the new baseline and retry once (Issue #2613).
+  let staleRetried = false;
+  if (
+    push.code !== 0 && isStaleInfoPush(`${push.stderr}\n${push.stdout ?? ""}`)
+  ) {
+    staleRetried = true;
+    await fetchBaseline();
+    push = await pushBranch();
+  }
   if (push.code !== 0) {
+    const detail = push.stderr.trim() || push.stdout?.trim() ||
+      `git exited ${push.code} and printed nothing`;
+    const stale = staleRetried &&
+      isStaleInfoPush(`${push.stderr}\n${push.stdout ?? ""}`);
     return {
       ok: false,
       error: new Error(
-        `Could not push the milestone sync branch '${branch}': ` +
-          `${
-            push.stderr.trim() || push.stdout?.trim() ||
-            `git exited ${push.code} and printed nothing`
-          }`,
+        stale
+          ? `Could not push the milestone sync branch '${branch}': the push ` +
+            `was rejected with stale info — another actor updated the branch ` +
+            `— and was still rejected after it was refetched and retried: ${detail}`
+          : `Could not push the milestone sync branch '${branch}': ${detail}`,
       ),
     };
   }

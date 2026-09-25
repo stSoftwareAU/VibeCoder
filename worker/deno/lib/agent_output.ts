@@ -287,6 +287,17 @@ export function readObject(
 }
 
 /**
+ * A provider refusing every request because the account's balance or credit
+ * is spent (Issue #2613): `API Error: 402 Insufficient Balance`, `402 Payment
+ * Required`, `credit balance is too low`. Like an exhausted subscription
+ * window it is account-wide — retrying or downgrading the model cannot help,
+ * and the task that happened to be running is not at fault. Shared so both
+ * adapters read it the same way.
+ */
+export const BALANCE_EXHAUSTED_RE =
+  /\binsufficient (?:balance|credits?|funds)\b|\bpayment required\b|\bcredit balance is too low\b|\bapi error:? 402\b/i;
+
+/**
  * HTTP statuses that mean the transport failed, not the credential, the model
  * or this account's allowance. Shared, so two adapters cannot disagree about
  * what an overloaded upstream is.
@@ -400,7 +411,8 @@ export function redactedEvidence(
 }
 
 /** HTTP statuses worth naming; anything else is not inferred from digits. */
-const HTTP_STATUS_RE = /\b(401|403|404|408|409|429|500|502|503|504|529)\b/;
+const HTTP_STATUS_RE =
+  /\b(401|402|403|404|408|409|429|500|502|503|504|529)\b/;
 
 /**
  * The HTTP status a message names, when it names one.

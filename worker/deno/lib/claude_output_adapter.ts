@@ -329,6 +329,8 @@ function classifyClaudeFailure(
       message: say("Claude's subscription window is exhausted"),
       evidence: "prose",
       quota: claudeQuota(surface, nowMs),
+      // Issue #2613: a spent balance names its 402 — keep it for the alert.
+      ...(httpStatus !== undefined ? { httpStatus } : {}),
       errors: decoded.errors,
     });
   }

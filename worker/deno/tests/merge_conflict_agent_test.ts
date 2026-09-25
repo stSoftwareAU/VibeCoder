@@ -282,6 +282,70 @@ Deno.test("merge conflict agent - a terminated run is reported, not judged", asy
   assertEquals(outcome.value.terminated, true);
 });
 
+Deno.test("merge conflict agent - an exhausted provider balance is reported as a provider outage, not judged (Issue #2613)", async () => {
+  const captured = makeCaptured();
+  const outcome = await runMergeConflictAgent(makeRequest(
+    makeRunner(captured, {
+      exitCode: 2,
+      usageLimit: { waitSeconds: 3600 },
+      agentFailure: {
+        category: "quota-exhausted",
+        message: "API Error: 402 Insufficient Balance",
+        evidence: "prose",
+        terminal: true,
+        httpStatus: 402,
+      },
+    }),
+  ));
+
+  assert(outcome.ok);
+  assertEquals(outcome.value.terminated, false);
+  assertStringIncludes(outcome.value.providerUnavailable ?? "", "402");
+});
+
+Deno.test("merge conflict agent - auth refusals and exhausted rate-limit retries are provider outages (Issue #2613)", async () => {
+  for (
+    const [category, httpStatus] of [
+      ["authentication", 401],
+      ["authentication", 403],
+      ["rate-limit", 429],
+      ["network", 503],
+      ["model-unavailable", 529],
+    ] as const
+  ) {
+    const outcome = await runMergeConflictAgent(makeRequest(
+      makeRunner(makeCaptured(), {
+        exitCode: 2,
+        agentFailure: {
+          category,
+          message: `HTTP ${httpStatus}`,
+          evidence: "structured",
+          terminal: true,
+          httpStatus,
+        },
+      }),
+    ));
+    assert(outcome.ok);
+    assert(outcome.value.providerUnavailable, `${category} ${httpStatus}`);
+  }
+});
+
+Deno.test("merge conflict agent - a task failure is still judged on the tree it left (Issue #2613)", async () => {
+  const outcome = await runMergeConflictAgent(makeRequest(
+    makeRunner(makeCaptured(), {
+      exitCode: 1,
+      agentFailure: {
+        category: "task-failure",
+        message: "the agent gave up",
+        evidence: "process",
+        terminal: false,
+      },
+    }),
+  ));
+  assert(outcome.ok);
+  assertEquals(outcome.value.providerUnavailable, undefined);
+});
+
 Deno.test("merge conflict agent - a hard timeout fails loudly", async () => {
   const captured = makeCaptured();
   const outcome = await runMergeConflictAgent(makeRequest(
