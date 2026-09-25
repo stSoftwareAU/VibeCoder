@@ -1706,6 +1706,11 @@ function Invoke-VibeSetupMain {
         Write-VibeWarning "Ruleset sync had issues (non-fatal)"
     }
 
+    # Harden every monitored repo's GitHub settings, drift only (Issue #2628).
+    if (-not (Invoke-VibeSetupCli -Arguments @("repo-settings-harden"))) {
+        Write-VibeWarning "Repo-settings hardening had issues - see the per-repository lines above (non-fatal)"
+    }
+
     # Back-fill `idle-task` label on existing security-scan wrappers (#2131).
     if (-not (Invoke-VibeSetupCli -Arguments @("backfill-idle-task-labels"))) {
         Write-VibeWarning "idle-task label back-fill had issues (non-fatal)"
