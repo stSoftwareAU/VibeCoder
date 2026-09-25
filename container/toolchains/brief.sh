@@ -91,8 +91,8 @@ fi
 install -m 0755 "${workdir}/brief" /usr/local/bin/brief
 
 # Prove the installed binary runs in this image and is the pinned release.
-# The version must appear as a whole token, as the start-up self-check
-# requires, so a pin that is only a substring of the reported version fails.
+# The version must appear as a whole space-separated token, so a pin that is
+# only a substring of the reported version fails.
 installed="$(brief --version < /dev/null)"
 if [[ " ${installed} " != *" ${version} "* ]]; then
     echo "[${TOOLCHAIN_ID}] Installed binary reports \"${installed}\", expected ${version}" >&2
