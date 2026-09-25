@@ -35,6 +35,7 @@ import {
   type AgentRunStreams,
   type AgentStructuredError,
   type AgentTextSource,
+  BALANCE_EXHAUSTED_RE,
   classifyProcessOutcome,
   detectQuotaScope,
   extractHttpStatus,
@@ -224,6 +225,7 @@ function claudeQuota(surface: string, nowMs: number): AgentQuota {
  * @returns The normalised failure, or undefined when the run did not fail.
  */
 function classifyClaudeFailure(
+  name: string,
   streams: AgentRunStreams,
   decoded: AgentDecodedOutput,
 ): AgentFailure | undefined {
@@ -271,7 +273,7 @@ function classifyClaudeFailure(
     if (/auth/i.test(code) || isClaudeAuthError(error.message)) {
       return agentFailure({
         category: "authentication",
-        message: say("Claude refused the credential"),
+        message: say(`${name} refused the credential`),
         evidence: "structured",
         ...(httpStatus !== undefined ? { httpStatus } : {}),
         errors: decoded.errors,
@@ -280,7 +282,7 @@ function classifyClaudeFailure(
     if (detectUsageLimit(error.message)) {
       return agentFailure({
         category: "quota-exhausted",
-        message: say("Claude's subscription window is exhausted"),
+        message: say(quotaHeadline(name, error.message)),
         evidence: "structured",
         quota: claudeQuota(error.message, nowMs),
         errors: decoded.errors,
@@ -306,7 +308,7 @@ function classifyClaudeFailure(
   ) {
     return agentFailure({
       category: "authentication",
-      message: say("Claude refused the credential"),
+      message: say(`${name} refused the credential`),
       evidence: "prose",
       ...(httpStatus !== undefined ? { httpStatus } : {}),
       errors: decoded.errors,
@@ -316,7 +318,7 @@ function classifyClaudeFailure(
   if (detectModelUnavailable(surface)) {
     return agentFailure({
       category: "model-unavailable",
-      message: say("Claude refused the requested model"),
+      message: say(`${name} refused the requested model`),
       evidence: "prose",
       ...(httpStatus !== undefined ? { httpStatus } : {}),
       errors: decoded.errors,
@@ -326,7 +328,7 @@ function classifyClaudeFailure(
   if (detectUsageLimit(surface)) {
     return agentFailure({
       category: "quota-exhausted",
-      message: say("Claude's subscription window is exhausted"),
+      message: say(quotaHeadline(name, surface)),
       evidence: "prose",
       quota: claudeQuota(surface, nowMs),
       // Issue #2613: a spent balance names its 402 — keep it for the alert.
@@ -356,7 +358,7 @@ function classifyClaudeFailure(
     const retryAfterSeconds = extractRetryAfterSeconds(surface);
     return agentFailure({
       category: "rate-limit",
-      message: say("Claude rate-limited this request"),
+      message: say(`${name} rate-limited this request`),
       evidence: "prose",
       ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
       ...(httpStatus !== undefined ? { httpStatus } : {}),
@@ -372,9 +374,41 @@ function classifyClaudeFailure(
   });
 }
 
-/** Claude Code's output adapter, named by the Claude and DeepSeek descriptors. */
-export const CLAUDE_OUTPUT_ADAPTER: AgentOutputAdapter = {
-  providerId: PROVIDER_ID,
-  decode: decodeClaudeOutput,
-  classify: classifyClaudeFailure,
-};
+/**
+ * The headline for a quota refusal: a spent balance is a balance, a spent
+ * window is a window (Issue #2633). DeepSeek's `402 Insufficient Balance` was
+ * published as "Claude's subscription window is exhausted" — the wrong
+ * provider and the wrong condition.
+ */
+function quotaHeadline(name: string, text: string): string {
+  return BALANCE_EXHAUSTED_RE.test(text)
+    ? `${name}'s account balance is spent`
+    : `${name}'s subscription window is exhausted`;
+}
+
+/**
+ * An output adapter for a provider that runs the Claude Code binary: the
+ * events are Claude Code's, the refusals name the provider (Issue #2633).
+ */
+function claudeCodeOutputAdapter(
+  providerId: string,
+  name: string,
+): AgentOutputAdapter {
+  return {
+    providerId,
+    decode: decodeClaudeOutput,
+    classify: (streams, decoded) =>
+      classifyClaudeFailure(name, streams, decoded),
+  };
+}
+
+/** Claude Code's output adapter for the Claude provider. */
+export const CLAUDE_OUTPUT_ADAPTER: AgentOutputAdapter =
+  claudeCodeOutputAdapter(PROVIDER_ID, "Claude");
+
+/**
+ * The same adapter for DeepSeek, which runs the Claude Code binary against
+ * DeepSeek's endpoint: identical events, refusals that name DeepSeek.
+ */
+export const DEEPSEEK_OUTPUT_ADAPTER: AgentOutputAdapter =
+  claudeCodeOutputAdapter("deepseek", "DeepSeek");

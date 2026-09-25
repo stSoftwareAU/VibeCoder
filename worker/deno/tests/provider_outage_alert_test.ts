@@ -34,9 +34,20 @@ function failure(
   };
 }
 
+/**
+ * The one refusal that still raises an alert: a credential the provider will
+ * not accept never clears on its own (Issue #2633).
+ */
+const REFUSED = failure(
+  "authentication",
+  "DeepSeek refused the credential: API Error: 401 Invalid API key",
+  401,
+);
+
+/** A spent balance: routine, parked and retried — never an alert (#2633). */
 const BALANCE = failure(
   "quota-exhausted",
-  "Claude's subscription window is exhausted: API Error: 402 Insufficient Balance",
+  "DeepSeek's account balance is spent: API Error: 402 Insufficient Balance",
   402,
 );
 
@@ -87,14 +98,31 @@ function fakeGh(
 
 const quiet = () => {};
 
-Deno.test("isProviderOutageAlertable - a spent balance, a refused credential", () => {
-  assert(isProviderOutageAlertable(BALANCE));
-  assert(isProviderOutageAlertable(
-    failure("quota-exhausted", "API Error: 402 Payment Required"),
-  ));
+Deno.test("isProviderOutageAlertable - a refused credential is an outage", () => {
+  assert(isProviderOutageAlertable(REFUSED));
   assert(isProviderOutageAlertable(
     failure("authentication", "Invalid API key", 401),
   ));
+});
+
+Deno.test("isProviderOutageAlertable - a spent balance is routine, not an outage (Issue #2633)", () => {
+  // Owner rule, 2026-09-25: running out of quota or balance is normal. The
+  // run is parked and retried by the provider-outage state; no issue is filed.
+  assert(!isProviderOutageAlertable(BALANCE));
+  assert(
+    !isProviderOutageAlertable(
+      failure("quota-exhausted", "API Error: 402 Payment Required"),
+    ),
+  );
+  assert(
+    !isProviderOutageAlertable(
+      failure(
+        "quota-exhausted",
+        "Claude's account balance is spent: Your credit balance is too low",
+        402,
+      ),
+    ),
+  );
 });
 
 Deno.test("isProviderOutageAlertable - a routine window or a task failure is not an outage", () => {
@@ -112,7 +140,7 @@ Deno.test("raiseProviderOutageAlert - files one alert naming provider, error and
   const gh = fakeGh();
   const decision = await raiseProviderOutageAlert({
     provider: "claude",
-    error: BALANCE.message,
+    error: REFUSED.message,
     nowMs: T0,
     ghFn: gh.ghFn,
     fleetAuthors: FLEET,
@@ -121,7 +149,7 @@ Deno.test("raiseProviderOutageAlert - files one alert naming provider, error and
   assertEquals(decision, { action: "filed", issue: 900 });
   const [alert] = gh.openAlerts();
   assert(alert!.body.includes("`claude`"));
-  assert(alert!.body.includes("402 Insufficient Balance"));
+  assert(alert!.body.includes("401 Invalid API key"));
   assert(alert!.body.includes("2026-09-25T01:00:00.000Z"));
   const create = gh.calls.find((c) => c[1] === "create")!;
   assertEquals(create[create.indexOf("--repo") + 1], "stSoftwareAU/VibeCoder");
@@ -137,7 +165,7 @@ Deno.test("raiseProviderOutageAlert - a second failure updates the same alert in
   };
   await raiseProviderOutageAlert({
     ...opts,
-    error: BALANCE.message,
+    error: REFUSED.message,
     nowMs: T0,
   });
   const decision = await raiseProviderOutageAlert({
@@ -158,7 +186,7 @@ Deno.test("raiseProviderOutageAlert - a failed search files nothing", async () =
   const gh = fakeGh([], { failList: true });
   const decision = await raiseProviderOutageAlert({
     provider: "claude",
-    error: BALANCE.message,
+    error: REFUSED.message,
     nowMs: T0,
     ghFn: gh.ghFn,
     fleetAuthors: FLEET,
@@ -178,7 +206,7 @@ Deno.test("raiseProviderOutageAlert - a marker a stranger wrote is not adopted",
   const gh = fakeGh([{ number: 5, body: forged, login: "mallory" }]);
   const decision = await raiseProviderOutageAlert({
     provider: "claude",
-    error: BALANCE.message,
+    error: REFUSED.message,
     nowMs: T1,
     ghFn: gh.ghFn,
     fleetAuthors: FLEET,
@@ -198,7 +226,7 @@ Deno.test("raiseProviderOutageAlert - another provider's alert is not reused", a
   const gh = fakeGh([{ number: 7, body: other, login: "vibe-bot" }]);
   const decision = await raiseProviderOutageAlert({
     provider: "claude",
-    error: BALANCE.message,
+    error: REFUSED.message,
     nowMs: T1,
     ghFn: gh.ghFn,
     fleetAuthors: FLEET,
@@ -211,7 +239,7 @@ Deno.test("raiseProviderOutageAlert - an unsafe provider id is refused", async (
   const gh = fakeGh();
   const decision = await raiseProviderOutageAlert({
     provider: 'claude" --> $(whoami)',
-    error: BALANCE.message,
+    error: REFUSED.message,
     nowMs: T0,
     ghFn: gh.ghFn,
     fleetAuthors: FLEET,
@@ -264,7 +292,7 @@ Deno.test("resolveProviderOutageAlert - closes the open alert with a recovery co
   };
   await raiseProviderOutageAlert({
     ...opts,
-    error: BALANCE.message,
+    error: REFUSED.message,
     nowMs: T0,
   });
   const decision = await resolveProviderOutageAlert({ ...opts, nowMs: T1 });
@@ -300,8 +328,8 @@ Deno.test("createProviderOutageAlerter - one alert across failures, closed on th
   });
   // Two concurrent failures must not race into two alerts.
   await Promise.all([
-    alerter.observe("claude", { succeeded: false, failure: BALANCE }),
-    alerter.observe("claude", { succeeded: false, failure: BALANCE }),
+    alerter.observe("claude", { succeeded: false, failure: REFUSED }),
+    alerter.observe("claude", { succeeded: false, failure: REFUSED }),
   ]);
   assertEquals(gh.openAlerts().length, 1);
   now = T1;
@@ -351,7 +379,7 @@ Deno.test("noteProviderRunOutcome - a no-op until an alerter is installed", asyn
   installProviderOutageAlerter(undefined);
   await noteProviderRunOutcome("claude", {
     succeeded: false,
-    failure: BALANCE,
+    failure: REFUSED,
   });
   assertEquals(gh.calls.length, 0);
   installProviderOutageAlerter(
@@ -365,7 +393,7 @@ Deno.test("noteProviderRunOutcome - a no-op until an alerter is installed", asyn
   try {
     await noteProviderRunOutcome("claude", {
       succeeded: false,
-      failure: BALANCE,
+      failure: REFUSED,
     });
     assertEquals(gh.openAlerts().length, 1);
   } finally {
