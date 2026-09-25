@@ -25,10 +25,12 @@ import {
   isIssueFleetAssigned,
 } from "./issue_filter.ts";
 import {
+  describeBlockingPr,
   fetchIssuesByLabel,
   getBlockingPRForIssue,
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
+  resolveFleetPrSlots,
   wasLabelAddedByAllowedAuthor,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
@@ -372,6 +374,7 @@ export async function collectLabelCandidates(
           repoPRs,
           milestoneTitle,
           pushCapableAuthors,
+          resolveFleetPrSlots(config, repo),
         );
         if (blockingPR) {
           const hasIgnore = await hasIgnoreOpenPRsLabel(
@@ -390,7 +393,7 @@ export async function collectLabelCandidates(
               repo,
               issue.number,
               "pr-blocked",
-              `PR #${blockingPR.number}`,
+              describeBlockingPr(blockingPR),
             );
             blocked.push({ repo, milestone: milestoneTitle });
             blockedDetails.push({
@@ -400,6 +403,10 @@ export async function collectLabelCandidates(
               reason: "pr-blocked",
               // Issue #2534: the concrete gate, so a comment can name it.
               blockingPr: blockingPR.number,
+              // Issue #2663: a default-branch slot hold names the count.
+              ...(blockingPR.fleetPrCap
+                ? { fleetPrCap: blockingPR.fleetPrCap }
+                : {}),
             });
             continue;
           }

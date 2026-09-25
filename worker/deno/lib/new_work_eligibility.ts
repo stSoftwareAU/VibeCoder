@@ -45,6 +45,7 @@ import {
 } from "./issue_filter.ts";
 import {
   type ClosedPR,
+  describeBlockingPr,
   fetchAllIssues,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
@@ -52,6 +53,7 @@ import {
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
   type OpenPR,
+  resolveFleetPrSlots,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
 import type {
@@ -339,6 +341,7 @@ export async function filterNewWorkEligible(
         ctx.repoPRs,
         milestoneTitle,
         ctx.pushCapableAuthors,
+        resolveFleetPrSlots(config, repo),
       );
       if (blockingPR) {
         const hasIgnore = await hasIgnoreOpenPRsLabel(
@@ -351,7 +354,7 @@ export async function filterNewWorkEligible(
           options.cache,
         );
         if (!hasIgnore) {
-          note(issue, "pr-blocked", `PR #${blockingPR.number}`);
+          note(issue, "pr-blocked", describeBlockingPr(blockingPR));
           continue;
         }
       }

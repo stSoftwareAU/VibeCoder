@@ -44,10 +44,12 @@ import {
   isMilestoneOccupied,
 } from "./issue_filter.ts";
 import {
+  describeBlockingPr,
   fetchIssuesByLabel,
   getBlockingPRForIssue,
   hasIgnoreOpenPRsLabel,
   isBlockedByRecentlyClosedPR,
+  resolveFleetPrSlots,
   wasLabelAddedByAllowedAuthor,
   wasLabelReappliedAfterClosedPR,
 } from "./issue_query.ts";
@@ -345,6 +347,7 @@ export async function collectIdleTaskCandidates(
         repoPRs,
         milestoneTitle,
         pushCapableAuthors,
+        resolveFleetPrSlots(config, repo),
       );
       if (blockingPR) {
         const hasIgnore = await hasIgnoreOpenPRsLabel(
@@ -361,7 +364,7 @@ export async function collectIdleTaskCandidates(
             repo,
             issue.number,
             "pr-blocked",
-            `PR #${blockingPR.number}`,
+            describeBlockingPr(blockingPR),
           );
           continue;
         }

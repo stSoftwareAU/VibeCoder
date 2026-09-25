@@ -40,6 +40,8 @@ function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   const base = buildDefaultWorkerConfig();
   return {
     ...base,
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     repos: ["owner/repo"],
     issueLabels: ["help-wanted"],
     allowedAuthors: ["alice"],

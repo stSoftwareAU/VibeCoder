@@ -54,6 +54,7 @@ import {
   fetchIssuesByLabel,
   fetchOpenPRsForFleet,
   getBlockingPRForIssue,
+  resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { MERGE_CONFLICT_LABEL } from "./pr_merge_conflict_scan.ts";
@@ -792,6 +793,12 @@ export interface FindBlockingPrObservationsOptions {
    * fail-safe: an unclassifiable PR still counts as a blocker.
    */
   pushCapableAuthors?: readonly string[];
+  /**
+   * The repo's fleet PR cap on the default-branch stream (Issue #2663) —
+   * one fleet PR per slot, so a `work-on` issue is held (and its PRs can
+   * stall it) only at the cap. Omitted → `DEFAULT_FLEET_PR_SLOTS`.
+   */
+  fleetPrSlotsFor?: (repo: string) => number;
   /** Configured `authorized_commenters` logins. */
   authorisedCommenters: readonly string[];
   /** Injected `gh` CLI runner. */
@@ -839,6 +846,7 @@ export async function findBlockingPrObservations(
         opts.pushCapableAuthors ?? [],
         ghCommandFn,
         opts.cache,
+        opts.fleetPrSlotsFor?.(repo),
       );
     } catch (err) {
       log?.(
@@ -882,6 +890,7 @@ async function mapBlockedWorkOnIssues(
   pushCapableAuthors: readonly string[],
   ghCommandFn: (args: string[]) => Promise<string>,
   cache?: IssueCache,
+  fleetPrSlots?: number,
 ): Promise<Map<number, number[]>> {
   const blockedByPr = new Map<number, number[]>();
 
@@ -907,6 +916,7 @@ async function mapBlockedWorkOnIssues(
       prs,
       issue.milestone ?? "",
       pushCapableAuthors,
+      fleetPrSlots,
     );
     if (!blocking) continue;
     const existing = blockedByPr.get(blocking.number);
@@ -1007,10 +1017,12 @@ async function observeBlockingPr(params: {
 export interface ScanBlockingPrStallsOptions
   extends FindBlockingPrObservationsOptions {
   /** Worker config used to resolve the per-repo threshold. */
-  config: Pick<
-    WorkerConfig,
-    "blockingPrStallThresholdSeconds" | "repoConfig"
-  >;
+  config:
+    & Pick<
+      WorkerConfig,
+      "blockingPrStallThresholdSeconds" | "repoConfig"
+    >
+    & Partial<Pick<WorkerConfig, "fleetPrSlots">>;
   /** Label name to apply — typically `config.needsHumanLabel`. */
   needsHumanLabel: string;
   /** GitHub login used in the comment footer. */
@@ -1042,7 +1054,11 @@ export async function scanBlockingPrStalls(
     nowSeconds = () => Math.floor(Date.now() / 1000),
   } = opts;
 
-  const observations = await findBlockingPrObservations(opts);
+  // Issue #2663: the same per-repo slot cap the claim scan applies.
+  const observations = await findBlockingPrObservations({
+    fleetPrSlotsFor: (repo) => resolveFleetPrSlots(config, repo),
+    ...opts,
+  });
   const now = nowSeconds();
   const stalls: BlockingPrStall[] = [];
 

@@ -35,6 +35,8 @@ function createTestCache(): IssueCache {
 function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   return {
     ...buildDefaultWorkerConfig(),
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     repos: [REPO],
     allowedAuthors: ["alice"],
     fleetPrAuthors: ["bot"],

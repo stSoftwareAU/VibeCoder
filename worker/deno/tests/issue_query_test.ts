@@ -222,7 +222,7 @@ const UNCLASSIFIABLE: readonly string[] = [];
 const FLEET = ["bot", "stsvcbot"];
 
 Deno.test("issue_query - getBlockingPRForIssue returns null for empty PRs", () => {
-  assertEquals(getBlockingPRForIssue([], "", UNCLASSIFIABLE), null);
+  assertEquals(getBlockingPRForIssue([], "", UNCLASSIFIABLE, 1), null);
   assertEquals(getBlockingPRForIssue([], "v1.0", UNCLASSIFIABLE), null);
 });
 
@@ -282,7 +282,7 @@ Deno.test("issue_query - getBlockingPRForIssue blocks non-milestone issue by non
   const prs = [
     { number: 1, title: "Fix", baseRefName: "main", headRefName: "fix-branch" },
   ];
-  const result = getBlockingPRForIssue(prs, "", UNCLASSIFIABLE);
+  const result = getBlockingPRForIssue(prs, "", UNCLASSIFIABLE, 1);
   assertEquals(result?.number, 1);
 });
 
@@ -295,7 +295,7 @@ Deno.test("issue_query - getBlockingPRForIssue excludes milestone-merge PRs for 
       headRefName: "milestone/v1-0",
     },
   ];
-  assertEquals(getBlockingPRForIssue(prs, "", UNCLASSIFIABLE), null);
+  assertEquals(getBlockingPRForIssue(prs, "", UNCLASSIFIABLE, 1), null);
 });
 
 Deno.test("issue_query - getBlockingPRForIssue excludes merge-milestone PRs for non-milestone issues", () => {
@@ -307,7 +307,7 @@ Deno.test("issue_query - getBlockingPRForIssue excludes merge-milestone PRs for 
       headRefName: "issue-42-merge-milestone-v1-to-main",
     },
   ];
-  assertEquals(getBlockingPRForIssue(prs, "", UNCLASSIFIABLE), null);
+  assertEquals(getBlockingPRForIssue(prs, "", UNCLASSIFIABLE, 1), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -330,26 +330,26 @@ Deno.test("issue_query - getBlockingPRForIssue ignores a human-authored PR (Issu
   // never push-capable. Their PR is theirs to manage, so it must not park
   // the repo's queue.
   assertEquals(
-    getBlockingPRForIssue([prBy(4036, "maintainer")], "", FLEET),
+    getBlockingPRForIssue([prBy(4036, "maintainer")], "", FLEET, 1),
     null,
   );
 });
 
 Deno.test("issue_query - getBlockingPRForIssue still blocks on a fleet PR (Issue #4133)", () => {
   assertEquals(
-    getBlockingPRForIssue([prBy(500, "stsvcbot")], "", FLEET)?.number,
+    getBlockingPRForIssue([prBy(500, "stsvcbot")], "", FLEET, 1)?.number,
     500,
   );
   // GitHub logins are case-insensitive.
   assertEquals(
-    getBlockingPRForIssue([prBy(501, "BOT")], "", FLEET)?.number,
+    getBlockingPRForIssue([prBy(501, "BOT")], "", FLEET, 1)?.number,
     501,
   );
 });
 
 Deno.test("issue_query - getBlockingPRForIssue skips past a human PR to a fleet PR (Issue #4133)", () => {
   const prs = [prBy(4036, "maintainer"), prBy(4037, "bot")];
-  assertEquals(getBlockingPRForIssue(prs, "", FLEET)?.number, 4037);
+  assertEquals(getBlockingPRForIssue(prs, "", FLEET, 1)?.number, 4037);
 });
 
 Deno.test("issue_query - getBlockingPRForIssue ignores a human PR on the milestone lane too (Issue #4133)", () => {
@@ -378,9 +378,10 @@ Deno.test("issue_query - getBlockingPRForIssue blocks on an unstamped author (Is
     baseRefName: "main",
     headRefName: "unstamped",
   };
-  assertEquals(getBlockingPRForIssue([unstamped], "", FLEET)?.number, 600);
+  assertEquals(getBlockingPRForIssue([unstamped], "", FLEET, 1)?.number, 600);
   assertEquals(
-    getBlockingPRForIssue([{ ...unstamped, author: "  " }], "", FLEET)?.number,
+    getBlockingPRForIssue([{ ...unstamped, author: "  " }], "", FLEET, 1)
+      ?.number,
     600,
   );
 });
@@ -388,7 +389,7 @@ Deno.test("issue_query - getBlockingPRForIssue blocks on an unstamped author (Is
 Deno.test("issue_query - getBlockingPRForIssue blocks when the fleet set is unresolved (Issue #4133)", () => {
   // An empty push-capable set classifies nothing — fail safe, not open.
   assertEquals(
-    getBlockingPRForIssue([prBy(700, "maintainer")], "", UNCLASSIFIABLE)
+    getBlockingPRForIssue([prBy(700, "maintainer")], "", UNCLASSIFIABLE, 1)
       ?.number,
     700,
   );

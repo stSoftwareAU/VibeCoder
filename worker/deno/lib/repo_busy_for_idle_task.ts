@@ -306,6 +306,13 @@ export interface AnyRepoHasUnblockedRealWorkOptions {
    */
   openPRsFn?: (repo: string) => Promise<readonly OpenPR[]>;
   /**
+   * Resolves a repo's fleet PR cap on the default-branch stream
+   * (Issue #2663, `resolveFleetPrSlots`), so this gate holds a non-milestone
+   * issue only at the cap the scan applies. Omitted →
+   * `DEFAULT_FLEET_PR_SLOTS`.
+   */
+  fleetPrSlotsFor?: (repo: string) => number;
+  /**
    * The fleet's recently closed/merged PRs for `repo` (Issue #1050). Only
    * `merged: true` entries count: those are the ones the scan refuses
    * *permanently* as `merged-pr-permanent` (Issue #3151). Best-effort, by
@@ -572,6 +579,7 @@ async function repoHasStartableWork(
   const startable = classifyIssues(issues, {
     ...baseOptions,
     openPRs,
+    fleetPrSlots: opts.fleetPrSlotsFor?.(repo),
     mergedPRs,
     runLocalHolds,
   }).filter((v) => v.claimable).length;

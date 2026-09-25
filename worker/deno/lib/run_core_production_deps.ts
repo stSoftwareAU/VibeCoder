@@ -114,6 +114,7 @@ import {
   fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
+  resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
@@ -4987,6 +4988,9 @@ export async function createProductionRunCoreDeps(
           // no PR blocking.
           openPRsFn: (repo: string) =>
             fetchAllOpenPRs(repo, issueCache, 50, auditGh),
+          // Issue #2663: the per-repo slot cap the scan applies, so the
+          // audit and the scan agree on a default-branch hold.
+          fleetPrSlotsFor: (repo: string) => resolveFleetPrSlots(config, repo),
           // GRQ#4419: an issue named by a merged fleet PR is refused
           // permanently by the scan, so counting it as claimable kept the
           // `mis_classification` ALERT firing against a scan that was right.
@@ -5165,6 +5169,9 @@ export async function createProductionRunCoreDeps(
                 body: i.body,
               })),
               openPRs,
+              // Issue #2663: the per-repo slot cap the scan applies, so the
+              // census counts the same default-branch hold (#460 / #2563).
+              fleetPrSlots: resolveFleetPrSlots(config, repo),
               mergedPRs,
               // Issue #655: the candidates `find_oldest_issue.ts` drops after
               // every collector has passed them — a persisted retry cooldown,

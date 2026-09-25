@@ -54,6 +54,8 @@ function createTestCache(): IssueCache {
 function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   return {
     ...buildDefaultWorkerConfig(),
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     // Issue #3874: the content-approval store must resolve from workDir, or
     // the integrity gate fails closed and blocks every candidate.
     workDir: Deno.makeTempDirSync({ prefix: "fleet-dup-workdir-" }),
@@ -371,6 +373,8 @@ Deno.test(
       githubUser: HOST,
       workerId: "worker-c1",
       fleetAuthors: [HOST, SIBLING_ALLOWED, SIBLING_FLEET_ONLY],
+      // Issue #2663: cap 1 — the third account's one PR fills the stream.
+      fleetPrSlots: 1,
       sleepFn: noSleep,
       ghCommandFn,
     });

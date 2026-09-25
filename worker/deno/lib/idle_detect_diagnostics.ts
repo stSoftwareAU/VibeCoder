@@ -328,12 +328,17 @@ function isPrBlocked(
   issue: { labels: string[]; milestone: string },
   openPRs: readonly OpenPR[],
   pushCapableAuthors: readonly string[],
+  fleetPrSlots: number | undefined,
 ): boolean {
   if (issue.labels.includes(IGNORE_OPEN_PRS_LABEL)) return false;
+  // Issue #2663: the same per-repo slot cap the scan applies to the
+  // default-branch stream; `fetchAllOpenPRs` rows carry `authorLogin`, which
+  // the gate classifies on, so a human's PR never counts here either.
   return getBlockingPRForIssue(
     [...openPRs],
     issue.milestone,
     pushCapableAuthors,
+    fleetPrSlots,
   ) !== null;
 }
 
@@ -435,6 +440,12 @@ export interface ClassifyOptions {
    * to catch.
    */
   openPRs?: readonly OpenPR[];
+  /**
+   * The repo's fleet PR cap on the default-branch stream (Issue #2663,
+   * `resolveFleetPrSlots`) — the value the scan passes to
+   * `getBlockingPRForIssue`. Omitted → `DEFAULT_FLEET_PR_SLOTS`.
+   */
+  fleetPrSlots?: number;
   /**
    * The repo's closed/merged fleet PRs, so the classifier can apply the
    * scan's permanent `merged-pr-permanent` gate (GRQ#4419). Only entries
@@ -717,7 +728,10 @@ export function classifyIssues(
     // Applied last, so an issue excluded for a more fundamental reason keeps
     // that reason: `pr_blocked` marks only issues that would otherwise be
     // claimable right now.
-    if (openPRs.length > 0 && isPrBlocked(issue, openPRs, pushCapableAuthors)) {
+    if (
+      openPRs.length > 0 &&
+      isPrBlocked(issue, openPRs, pushCapableAuthors, opts.fleetPrSlots)
+    ) {
       result.push({
         number: issue.number,
         claimable: false,
@@ -1000,6 +1014,12 @@ export interface AuditClaimableStateOptions {
    */
   openPRsFn?: (repo: string) => Promise<readonly OpenPR[]>;
   /**
+   * Resolves a repo's fleet PR cap on the default-branch stream
+   * (Issue #2663, `resolveFleetPrSlots`), so the audit applies the scan's
+   * per-slot rule. Omitted → `DEFAULT_FLEET_PR_SLOTS`.
+   */
+  fleetPrSlotsFor?: (repo: string) => number;
+  /**
    * Supplies a repo's closed/merged fleet PRs so the audit can exclude work
    * the Priority 2 scan refuses permanently as `merged-pr-permanent`
    * (GRQ#4419).
@@ -1217,6 +1237,7 @@ export async function auditClaimableState(
       workerUser: opts.workerUser,
       pushCapableAuthors: opts.pushCapableAuthors,
       openPRs,
+      fleetPrSlots: opts.fleetPrSlotsFor?.(repo),
       mergedPRs,
       runLocalHolds,
       repo,

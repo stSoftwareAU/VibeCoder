@@ -70,14 +70,14 @@ planning parent. See
 
 ## 🔀 One PR per target branch
 
-In a single repo, issues either target the **default branch** (no milestone) or a **milestone branch**. The worker creates **at most one open PR per target branch**:
+In a single repo, issues either target the **default branch** (no milestone) or a **milestone branch**. The owner's rule is **one fleet PR per slot; multiple milestones mean multiple PRs** (Issue #2663):
 
-- **No milestone** — At most one PR targeting the default branch (for issues with no milestone).
+- **No milestone** — Up to `fleet_pr_slots` fleet PRs (default `8`) targeting the default branch at once, one per slot. A non-milestone issue waits only once that cap is reached.
 - **Per milestone** — At most one PR targeting that milestone’s branch (for issues in that milestone).
 
-So: if there are issues with no milestone and issues in one milestone, there can be **up to 2 PRs** (one to default, one to the milestone branch). With more milestones, more concurrent PRs (one per milestone plus one to default). See [projects-and-dependencies.md](projects-and-dependencies.md) for the full model.
+So with several milestones there are several milestone PRs at once, beside the default-branch PRs. Human-authored PRs never count. See [projects-and-dependencies.md](projects-and-dependencies.md) for the full model.
 
-**Enforced at issue selection:** When selecting an issue for implementation, the worker skips any issue whose target branch already has an open PR by the configured GitHub user. This is enforced at **issue selection** time — the issue finder filters out blocked issues before one is chosen. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#one-pr-per-target-branch-open-pr-blocking).
+**Enforced at issue selection:** When selecting an issue for implementation, the worker skips a milestone issue whose milestone branch already has an open fleet PR, and a non-milestone issue once the fleet's open PRs on the default branch reach the cap. This is enforced at **issue selection** time — the issue finder filters out blocked issues before one is chosen. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#one-pr-per-target-branch-open-pr-blocking).
 
 **Implementation only:** This constraint applies only to **implementation** workflows (issues selected via `find_oldest_issue`). Planning, question, and refinement workflows are **exempt** — they never create branches or PRs, so open-PR blocking is irrelevant. See [planning-and-questions.md](planning-and-questions.md#open-pr-blocking-does-not-apply-issue-500).
 

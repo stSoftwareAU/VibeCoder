@@ -168,6 +168,13 @@ export interface BlockedCandidateInfo {
    * recorded", never as "no blocking PR".
    */
   blockingPr?: number;
+  /**
+   * Set on a `pr-blocked` skip of a non-milestone issue when the fleet's
+   * open PRs on the default-branch stream reached the slot cap
+   * (Issue #2663), so the gate comment states the count against the cap
+   * rather than naming one PR as the blocker. Absent otherwise.
+   */
+  fleetPrCap?: { open: number; cap: number };
 }
 
 /**
