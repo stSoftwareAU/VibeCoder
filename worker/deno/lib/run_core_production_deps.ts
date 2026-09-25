@@ -566,7 +566,9 @@ export interface ProductionDepsOptions {
 
   /**
    * The weekly-pace gate (Issue #1885). Production leaves it unset and gets
-   * one probing the held Claude token; a wiring test injects a verdict
+   * one judging the whole Claude credential pool on a pooled host (Issue
+   * #2647), or the held token on a single-token host; a wiring test injects a
+   * verdict
    * (Issue #2637) so it can prove an engaged guard switches no provider.
    */
   weekPaceGate?: ClaudeWeekPaceGate;
@@ -579,7 +581,11 @@ export interface ProductionDepsOptions {
    */
   claudeCredentialPool?: Pick<
     ClaudeCredentialPool,
-    "recordExhaustion" | "candidateCount" | "selectAvailable" | "applySelection"
+    | "recordExhaustion"
+    | "candidateCount"
+    | "selectAvailable"
+    | "applySelection"
+    | "readPoolBudgets"
   >;
 
   /**
@@ -736,16 +742,31 @@ export async function createProductionRunCoreDeps(
         ? ` alternatives=${providerFallback.alternatives.join(",")}`
         : ""),
   );
-  // --- Weekly Claude quota pace (Issue #1885) ---
+  // --- The Claude credential pool (Issues #2637, #2647) ---
+  // One pool per process, built lazily: a host whose run never asks never
+  // reads the credential directory or probes a token for it.
+  let claudePool = options.claudeCredentialPool;
+  function claudeCredentialPool(): NonNullable<typeof claudePool> {
+    claudePool ??= createClaudeCredentialPool({
+      log: (message) => logger.info(message),
+      provider: resolveAgentProvider(CLAUDE_PROVIDER_ID),
+      env,
+    });
+    return claudePool;
+  }
+  // --- Weekly Claude quota pace (Issues #1885, #2647) ---
   // One gate for the life of the process. The Priority 2 scan asks it once
   // per scan cycle; the reading behind it is re-probed only once it is older
   // than the credential pool's ten-minute snapshot age, and a host with no
-  // Claude subscription token makes no request at all.
+  // Claude subscription token makes no request at all. A pooled host is
+  // judged across every credential in the pool (Issue #2647); a single-token
+  // host on its one token, exactly as before.
   const weekPaceGate = options.weekPaceGate ?? createClaudeWeekPaceGate({
     // Declared here rather than read ambiently inside the gate (Issue #1177):
     // the one environment value it depends on is visible at the wiring site,
     // and a test factory's `options.env` reaches it like every other lookup.
     token: () => env("CLAUDE_CODE_OAUTH_TOKEN") ?? null,
+    readPoolBudgets: (nowMs) => claudeCredentialPool().readPoolBudgets(nowMs),
     logInfo: (message) => logger.info(message),
     logWarn: (message) => logger.warn(message),
     // Issue #2474: the operator's opt-in drain mode — the guard never
@@ -764,9 +785,7 @@ export async function createProductionRunCoreDeps(
   // fallback provider. The health gate asks this pool for another Claude
   // credential with budget before it probes `agent_provider_fallback`, and
   // while a fallback stands in it asks again so the run can switch back.
-  // Built lazily: a host that never exhausts a credential never reads the
-  // credential directory or probes a token for it.
-  let claudePool = options.claudeCredentialPool;
+  // The pool is shared with the weekly-pace gate above (Issue #2647).
   const setRunEnv = options.setEnv ??
     ((name: string, value: string) => Deno.env.set(name, value));
   async function selectPreferredClaudeCredential(
@@ -775,11 +794,7 @@ export async function createProductionRunCoreDeps(
     // The pool is Claude's; another preferred provider keeps the pre-#2637
     // behaviour (fall back once its one credential is exhausted).
     if (providerFallback.preferred !== CLAUDE_PROVIDER_ID) return null;
-    claudePool ??= createClaudeCredentialPool({
-      log: (message) => logger.info(message),
-      provider: resolveAgentProvider(CLAUDE_PROVIDER_ID),
-      env,
-    });
+    const claudePool = claudeCredentialPool();
     // The health check's usage signal names the credential that was just
     // refused; record it as spent before asking who has budget left.
     await primeClaudePoolFromUsageSignal(
