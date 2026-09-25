@@ -772,13 +772,13 @@ export function milestoneTemplateSource(
     if (rule.type !== "required_status_checks") continue;
     for (const check of rule.parameters?.required_status_checks ?? []) {
       if (typeof check.context !== "string" || check.context === "") continue;
-      const pinned = typeof check.integration_id === "number";
-      const key = `${check.context}\u0000${pinned ? check.integration_id : ""}`;
+      const id = check.integration_id;
+      const key = `${check.context}\u0000${typeof id === "number" ? id : ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
       checks.push(
-        pinned
-          ? { context: check.context, integration_id: check.integration_id! }
+        typeof id === "number"
+          ? { context: check.context, integration_id: id }
           : { context: check.context },
       );
     }

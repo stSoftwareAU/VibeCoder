@@ -590,7 +590,7 @@ Deno.test("assessMilestoneRuleset - a ruleset already exempt on create is not re
 // ---------------------------------------------------------------------------
 // The strict up-to-date policy is no longer a finding (Issue #2623). Issue
 // #2461 reported `false` as an error; the GRQ-AutoTrader template setup now
-// writes sets it `false`, so setup must not flag the ruleset it just wrote.
+// writes has it `false`, so setup must not flag the ruleset it just wrote.
 // These two replace the #2461 tests that asserted the opposite.
 // ---------------------------------------------------------------------------
 
