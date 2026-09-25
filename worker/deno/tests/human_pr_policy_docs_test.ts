@@ -218,9 +218,9 @@ Deno.test("human-PR policy - the real guard ignores a human PR and keeps fleet P
     headRefName: "feature",
     author: HUMAN,
   };
-  assertEquals(getBlockingPRForIssue([humanPr], "", pushCapable), null);
+  assertEquals(getBlockingPRForIssue([humanPr], "", pushCapable, 1), null);
   assertEquals(
-    getBlockingPRForIssue([{ ...humanPr, author: SIBLING }], "", pushCapable)
+    getBlockingPRForIssue([{ ...humanPr, author: SIBLING }], "", pushCapable, 1)
       ?.number,
     2312,
   );

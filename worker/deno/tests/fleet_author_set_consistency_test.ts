@@ -172,6 +172,8 @@ function createTestCache(): IssueCache {
 function makeConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   return {
     ...buildDefaultWorkerConfig(),
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     // The content-approval store must resolve from workDir, or the
     // integrity gate fails closed and blocks every candidate (#3874).
     workDir: Deno.makeTempDirSync({ prefix: "fleet-author-set-workdir-" }),

@@ -490,6 +490,8 @@ Deno.test("observation gathering maps blocked work-on issues onto the blocking P
   const gh = buildScanGh(fixture, [], []);
 
   const observations = await findBlockingPrObservations({
+    // Issue #2663: cap 1 — one fleet PR fills the default branch.
+    fleetPrSlotsFor: () => 1,
     repos: [REPO],
     workOnLabel: "work-on",
     fleetAuthors: ["vibe-coder"],
@@ -529,7 +531,7 @@ Deno.test("scan escalates a stalled blocking PR once and reports it", async () =
     fleetAuthors: ["vibe-coder"],
     authorisedCommenters: ["nigel"],
     ghCommandFn: gh,
-    config: { blockingPrStallThresholdSeconds: THRESHOLD },
+    config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
     needsHumanLabel: "needs-human",
     githubUser: "vibe-coder",
     ensureLabelExists: () =>
@@ -814,7 +816,7 @@ Deno.test("a PR that merges inside the threshold is never escalated", async () =
     fleetAuthors: ["VibeCoderST"],
     authorisedCommenters: ["nleck"],
     ghCommandFn: gh,
-    config: { blockingPrStallThresholdSeconds: THRESHOLD },
+    config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
     needsHumanLabel: "needs-human",
     logger,
     nowSeconds: () => NOW,
@@ -998,6 +1000,8 @@ Deno.test("observation gathering reads the PR's mergeability and labels", async 
   };
 
   const observations = await findBlockingPrObservations({
+    // Issue #2663: cap 1 — one fleet PR fills the default branch.
+    fleetPrSlotsFor: () => 1,
     repos: [REPO],
     workOnLabel: "work-on",
     fleetAuthors: ["vibe-coder"],
@@ -1122,7 +1126,7 @@ Deno.test("the scan withdraws the live escalation on a PR that entered the lane"
     fleetAuthors: ["vibe-coder"],
     authorisedCommenters: ["nigel"],
     ghCommandFn: buildScanGh(fixture, comments, writes),
-    config: { blockingPrStallThresholdSeconds: THRESHOLD },
+    config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
     needsHumanLabel: "needs-human",
     ensureLabelExists: () =>
       Promise.resolve({ ok: true as const, value: undefined }),

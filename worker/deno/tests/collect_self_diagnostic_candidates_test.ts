@@ -413,22 +413,35 @@ Deno.test("self-schedule - a needs-human diagnostic is not re-scheduled", async 
   assertEquals(result.candidates, []);
 });
 
-Deno.test("self-schedule - an open fleet PR defers the diagnostic", async () => {
+// Issue #2663: a self-scheduled diagnostic is tier-2b work on the same
+// default-branch stream as `work-on`, so it follows the same per-slot cap —
+// one fleet PR per slot — rather than deferring behind any single fleet PR.
+const OPEN_FLEET_PR = {
+  number: 7,
+  title: "fix: something",
+  baseRefName: "main",
+  headRefName: "issue-1",
+  author: WORKER_LOGIN,
+} as OpenPR;
+
+Deno.test("self-schedule - fleet PRs at the slot cap defer the diagnostic (Issue #2663)", async () => {
   const { result } = await collect({
     issues: [makeIssue()],
-    prs: [
-      {
-        number: 7,
-        title: "fix: something",
-        baseRefName: "main",
-        headRefName: "issue-1",
-        author: WORKER_LOGIN,
-      } as OpenPR,
-    ],
-    config: makeConfig({ fleetPrAuthors: [WORKER_LOGIN] }),
+    prs: [OPEN_FLEET_PR],
+    config: makeConfig({ fleetPrAuthors: [WORKER_LOGIN], fleetPrSlots: 1 }),
     deps: captureDeps([], []),
   });
   assertEquals(result.candidates, []);
+});
+
+Deno.test("self-schedule - fleet PRs below the slot cap do not defer the diagnostic (Issue #2663)", async () => {
+  const { result } = await collect({
+    issues: [makeIssue()],
+    prs: [OPEN_FLEET_PR],
+    config: makeConfig({ fleetPrAuthors: [WORKER_LOGIN], fleetPrSlots: 2 }),
+    deps: captureDeps([], []),
+  });
+  assertEquals(result.candidates.length, 1);
 });
 
 Deno.test("self-schedule - a merged PR blocks permanently and escalates to a human", async () => {

@@ -227,6 +227,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Stall threshold for PRs blocking work-on issues (Issue #4025)
   "blocking_pr_stall_threshold_seconds",
 
+  // Fleet PR cap on the default-branch stream — one fleet PR per slot (Issue #2663)
+  "fleet_pr_slots",
+
   // Idle-task template draw weights (Issue #2401)
   "idle_task_template_weights",
 

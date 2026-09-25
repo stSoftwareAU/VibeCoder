@@ -26,6 +26,7 @@ import {
   fetchAllIssues,
   fetchIssuesByLabel,
   fetchOpenPRsForFleet,
+  resolveFleetPrSlots,
 } from "../lib/issue_query.ts";
 import {
   resolveFleetAuthors,
@@ -245,6 +246,8 @@ export const diagnoseRepoCommand: Command = {
             githubUser,
             fleetPrAuthors: config.fleetPrAuthors ?? [],
           }),
+          // Issue #2663: the same default-branch slot cap the scan applies.
+          fleetPrSlots: resolveFleetPrSlots(config, repo),
           isInCooldown,
           unmetDependencies,
           openSubIssues,

@@ -328,6 +328,13 @@ interface CompositionOutcome {
  * Run one idle cycle of `runCoreLoop` with all three real suppressors wired
  * to `fleet`, and report what the composed stack decided.
  */
+/**
+ * Issue #2663: every gate gets the same one-slot cap, so the fixture's one
+ * open fleet PR fills the default branch in the audit, the census and the
+ * filer's gate alike — the agreement these tests pin.
+ */
+const ONE_SLOT = (_repo: string): number => 1;
+
 async function runComposedIdleCycle(
   fleet: Fleet,
 ): Promise<CompositionOutcome> {
@@ -365,6 +372,7 @@ async function runComposedIdleCycle(
         scanFoundClaimable,
         ghCommandFn: gh,
         openPRsFn,
+        fleetPrSlotsFor: ONE_SLOT,
         runLocalHoldFn,
         log: (line) => logs.push(line),
       });
@@ -385,6 +393,7 @@ async function runComposedIdleCycle(
           nice: 0,
           issues: censusIssues(fleet.issues.get(repo) ?? []),
           openPRs: [...(fleet.openPRs.get(repo) ?? [])],
+          fleetPrSlots: ONE_SLOT(repo),
           runLocalHolds: fleet.holds,
         })),
       });
@@ -402,6 +411,7 @@ async function runComposedIdleCycle(
         workerUser: WORKER_USER,
         pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
         openPRsFn,
+        fleetPrSlotsFor: ONE_SLOT,
         runLocalHoldFn,
         ghCommandFn: gh,
         logFn: (line) => logs.push(line),
@@ -545,6 +555,7 @@ Deno.test(
         workerUser: WORKER_USER,
         pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
         openPRsFn: (repo) => Promise.resolve(fleet.openPRs.get(repo) ?? []),
+        fleetPrSlotsFor: ONE_SLOT,
         runLocalHoldFn: (_repo, n) => fleet.holds.has(n),
         ghCommandFn: makeGh(fleet),
         logFn: () => {},
@@ -563,6 +574,7 @@ Deno.test(
         workerUser: WORKER_USER,
         pushCapableAuthors: PUSH_CAPABLE_AUTHORS,
         openPRsFn: (repo) => Promise.resolve(free.openPRs.get(repo) ?? []),
+        fleetPrSlotsFor: ONE_SLOT,
         runLocalHoldFn: (_repo, n) => free.holds.has(n),
         ghCommandFn: makeGh(free),
         logFn: () => {},

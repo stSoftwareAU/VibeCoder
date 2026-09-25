@@ -61,6 +61,8 @@ if (getTemplate(TEMPLATE_NAME) === undefined) registerTemplate(testTemplate);
 function config(names: { blocked: string; quiet: string }): WorkerConfig {
   return {
     ...buildDefaultWorkerConfig(),
+    // Issue #2663: cap 1 reproduces the one-fleet-PR stream these tests pin.
+    fleetPrSlots: 1,
     repos: [names.blocked, names.quiet],
     allowedAuthors: ["human-dev", WORKER_USER],
     fleetPrAuthors: [SIBLING],

@@ -234,6 +234,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   max_auto_fix_attempts: "maxAutoFixAttempts",
   // Per-repo blocking-PR stall threshold (Issue #4025).
   blocking_pr_stall_threshold_seconds: "blockingPrStallThresholdSeconds",
+  // Per-repo fleet PR cap on the default-branch stream (Issue #2663).
+  fleet_pr_slots: "fleetPrSlots",
 };
 
 /**
@@ -932,6 +934,10 @@ export async function loadConfig(
   const blockingPrStallThresholdSeconds =
     file.blocking_pr_stall_threshold_seconds;
 
+  // Fleet PR cap on the default-branch stream (Issue #2663). Left undefined
+  // when unset so `resolveFleetPrSlots` applies its documented default.
+  const fleetPrSlots = file.fleet_pr_slots;
+
   // Per-template weights for the idle-task draw (Issue #2401)
   const idleTaskTemplateWeights: Record<string, number> =
     file.idle_task_template_weights ?? {};
@@ -1151,6 +1157,7 @@ export async function loadConfig(
     infraRetryBackoffMs,
     maxAutoFixAttempts,
     blockingPrStallThresholdSeconds,
+    fleetPrSlots,
     idleTaskTemplateWeights,
     idleTaskCadence,
     softwareMinVersions,

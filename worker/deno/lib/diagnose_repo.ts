@@ -16,7 +16,7 @@ import {
   isStreamSharingTier,
 } from "./issue_filter.ts";
 import type { BlockingPRInfo, OpenPR } from "./issue_query.ts";
-import { getBlockingPRForIssue } from "./issue_query.ts";
+import { describeBlockingPr, getBlockingPRForIssue } from "./issue_query.ts";
 
 /**
  * Label configuration for blocking reason detection.
@@ -92,6 +92,11 @@ export interface RepoIssueDiagnosticInput {
    * PR still blocks, and leaves only this host's own assignments occupying.
    */
   pushCapableAuthors?: string[];
+  /**
+   * The repo's fleet PR cap on the default-branch stream (Issue #2663,
+   * `resolveFleetPrSlots`). Omitted → `DEFAULT_FLEET_PR_SLOTS`.
+   */
+  fleetPrSlots?: number;
   /** Whether the issue is currently in cooldown. */
   isInCooldown?: boolean;
   /** Unmet dependency description (if any). */
@@ -249,10 +254,12 @@ export function diagnoseRepoIssue(
     prs,
     issue.milestone,
     input.pushCapableAuthors ?? [],
+    input.fleetPrSlots,
   );
   if (blockingPR) {
+    // Issue #2663: a default-branch slot hold also states the count.
     reasons.push(
-      `Blocked by open PR #${blockingPR.number}: ${blockingPR.title}`,
+      `Blocked by open ${describeBlockingPr(blockingPR)}: ${blockingPR.title}`,
     );
     isBlocked = true;
   }

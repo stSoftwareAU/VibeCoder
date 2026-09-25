@@ -35,7 +35,11 @@ import {
   scanHeartbeatMarkers,
   seedMarkerState,
 } from "./heartbeat_storage.ts";
-import { fetchOpenPRsForFleet, getBlockingPRForIssue } from "./issue_query.ts";
+import {
+  describeBlockingPr,
+  fetchOpenPRsForFleet,
+  getBlockingPRForIssue,
+} from "./issue_query.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { postCooldownComment } from "./shared_cooldown.ts";
@@ -120,6 +124,13 @@ export interface ClaimOptions {
    * (`getBlockingPRForIssue`).
    */
   milestoneTitle?: string;
+  /**
+   * The repo's fleet PR cap on the default-branch stream (Issue #2663,
+   * `resolveFleetPrSlots`), so the live re-check holds a non-milestone claim
+   * only at the cap the discovery-time scan applied. Omitted →
+   * `DEFAULT_FLEET_PR_SLOTS`.
+   */
+  fleetPrSlots?: number;
   /**
    * Optional iteration-scoped cache. The live fleet-PR re-check always
    * force-refreshes it (bypassing any stale `prs_${user}` entry) and
@@ -1069,6 +1080,7 @@ async function liveFleetPrRecheck(
   milestoneTitle: string | undefined,
   cache: IssueCache | undefined,
   ghCommandFn: (args: string[]) => Promise<string>,
+  fleetPrSlots: number | undefined,
 ): Promise<BlockingPRInfo | null> {
   const authors = (fleetAuthors ?? []).filter(
     (a) => typeof a === "string" && a.trim().length > 0,
@@ -1087,6 +1099,8 @@ async function liveFleetPrRecheck(
       prs,
       milestoneTitle ?? "",
       pushCapableAuthors ?? [],
+      fleetPrSlots,
+      issueNumber,
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1108,6 +1122,7 @@ interface FinaliseWonClaimParams {
   fleetAuthors: string[] | undefined;
   pushCapableAuthors: string[] | undefined;
   milestoneTitle: string | undefined;
+  fleetPrSlots: number | undefined;
   cache: IssueCache | undefined;
   ghCommandFn: (args: string[]) => Promise<string>;
   allClaimComments: ClaimComment[];
@@ -1138,6 +1153,7 @@ async function finaliseWonClaim(
     fleetAuthors,
     pushCapableAuthors,
     milestoneTitle,
+    fleetPrSlots,
     cache,
     ghCommandFn,
     allClaimComments,
@@ -1154,6 +1170,7 @@ async function finaliseWonClaim(
     milestoneTitle,
     cache,
     ghCommandFn,
+    fleetPrSlots,
   );
   if (blockingPr) {
     incrementCounter("claimConflicts");
@@ -1189,8 +1206,9 @@ async function finaliseWonClaim(
         claimed: false,
         competingWorkerCount,
         reason: "fleet_pr_exists",
-        reasonDetail:
-          `open PR #${blockingPr.number} already targets this work stream`,
+        reasonDetail: blockingPr.fleetPrCap
+          ? `open ${describeBlockingPr(blockingPr)} — one fleet PR per slot`
+          : `open PR #${blockingPr.number} already targets this work stream`,
       },
     };
   }
@@ -1234,6 +1252,7 @@ export async function claimIssue(
     fleetAuthors,
     pushCapableAuthors,
     milestoneTitle,
+    fleetPrSlots,
     cache,
     wasClosedThisRun = defaultWasClosedThisRun,
     blockingLabels = [LABEL_DEFAULTS.needsHumanLabel],
@@ -1520,6 +1539,7 @@ export async function claimIssue(
       fleetAuthors,
       pushCapableAuthors,
       milestoneTitle,
+      fleetPrSlots,
       cache,
       ghCommandFn,
       allClaimComments,
