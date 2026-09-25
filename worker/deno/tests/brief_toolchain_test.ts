@@ -293,6 +293,18 @@ Deno.test("sanitiseCargoCommands - drops bidi and zero-width characters", () => 
   );
 });
 
+Deno.test("sanitiseCargoCommands - drops tag characters and soft hyphens", () => {
+  assertEquals(
+    sanitiseCargoCommands([
+      "cargo test\u{E0049}\u{E0067}",
+      "cargo test\u00ad",
+      "cargo test\u2028",
+      "cargo bench",
+    ]),
+    ["cargo bench"],
+  );
+});
+
 Deno.test("extractCargoCommands - an empty report is ok with no commands", () => {
   const result = extractCargoCommands("{}");
   assert(result.ok);

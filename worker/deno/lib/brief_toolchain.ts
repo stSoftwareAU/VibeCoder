@@ -42,10 +42,12 @@ export const MAX_BRIEF_COMMAND_LENGTH = 200;
 /** Maximum length of a failure reason, so a noisy stderr stays one short line. */
 const MAX_REASON_LENGTH = 200;
 
-/** Control, bidi and zero-width characters — never let through to the prompt. */
-const UNSAFE_CHARS =
-  // deno-lint-ignore no-control-regex -- control characters are exactly what it rejects.
-  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
+/**
+ * Control, format (bidi, zero-width, soft hyphen, tag characters), line/
+ * paragraph separator and private-use characters — never let through to the
+ * prompt.
+ */
+const UNSAFE_CHARS = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}]/u;
 
 /** The outcome of one brief run. */
 export type BriefRunResult =
