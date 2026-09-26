@@ -12,9 +12,8 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
-  NEAR_BUDGET_AT_BASELINE,
+  gitGuardShimOnPath,
   normaliseTestPath,
-  OVER_BUDGET_AT_BASELINE,
   parseJunitTestTimes,
   passesTimeBudget,
   readPassTimings,
@@ -25,6 +24,7 @@ import {
 } from "../lib/unit_test_time_budget.ts";
 import { IN_GATE_SCRIPT_SUITES } from "../lib/integration_test_manifest.ts";
 import { SUBPROCESS_TIMING_TEST_FILES } from "../lib/parallel_unsafe_test_manifest.ts";
+import { renderGitShimScript } from "../lib/git_guard_shim.ts";
 
 /** A JUnit report in the shape `deno test --junit-path` writes. */
 function junit(cases: { file: string; name: string; seconds: number }[]) {
@@ -103,15 +103,23 @@ Deno.test("time budget - integration suites and the keep-list never fail and get
   ]);
 });
 
-Deno.test("time budget - the baseline and subprocess-timing suites are on the keep-list", () => {
-  for (
-    const file of [
-      ...OVER_BUDGET_AT_BASELINE,
-      ...NEAR_BUDGET_AT_BASELINE,
-      ...SUBPROCESS_TIMING_TEST_FILES.keys(),
-    ]
-  ) {
+Deno.test("time budget - the subprocess-timing suites are on the keep-list", () => {
+  for (const file of SUBPROCESS_TIMING_TEST_FILES.keys()) {
     assert(SLOW_UNIT_TEST_KEEP_FILES.has(file), file);
+  }
+});
+
+Deno.test("time budget - every keep-list entry is a reasoned decision, not a baseline (Issue #2669)", () => {
+  // The #2642 baseline kept 38 files on one generic reason; #2669 burnt it
+  // down. Only an entry that says what its cost buys may remain.
+  const keptFiles = new Set([
+    ...IN_GATE_SCRIPT_SUITES.keys(),
+    ...SUBPROCESS_TIMING_TEST_FILES.keys(),
+  ]);
+  for (const [file, reason] of SLOW_UNIT_TEST_KEEP_FILES) {
+    assert(reason.trim().length > 0, `${file} is kept with no reason`);
+    assert(!/over or near the budget/.test(reason), `${file}: ${reason}`);
+    assert(keptFiles.has(file), `${file} is kept outside the two manifests`);
   }
 });
 
@@ -132,7 +140,69 @@ Deno.test("time budget - no timings, no findings", () => {
     exemptNotes: [],
     failedFiles: [],
     failures: [],
+    unenforced: [],
   });
+});
+
+Deno.test("time budget - under the git guard shim a slow file is reported, not failed (Issue #2669)", () => {
+  const report = unitTestTimeBudget([
+    { file: "tests/git_heavy_test.ts", name: "commits", ms: 1400 },
+    { file: "tests/git_heavy_test.ts", name: "pushes", ms: 1100 },
+  ], { ...NO_EXEMPTIONS, gitGuardShim: true });
+
+  assertEquals(report.failedFiles, []);
+  assertEquals(report.failures, []);
+  // Loud, not silent: each would-be failure is named, with why it is waived.
+  assertEquals(report.unenforced.length, 1);
+  assert(report.unenforced[0]!.startsWith("NOT ENFORCED: every test in tests/git_heavy_test.ts"));
+  assert(report.unenforced[0]!.includes("git guard shim"));
+  // The per-test WARNING lines still name every slow test.
+  assertEquals(report.warnings.length, 2);
+});
+
+Deno.test("time budget - without the git guard shim a slow file still fails (Issue #2669)", () => {
+  const report = unitTestTimeBudget([
+    { file: "tests/git_heavy_test.ts", name: "commits", ms: 1400 },
+  ], { ...NO_EXEMPTIONS, gitGuardShim: false });
+  assertEquals(report.failedFiles, ["tests/git_heavy_test.ts"]);
+  assertEquals(report.unenforced, []);
+});
+
+/** A temp `PATH` directory holding one file named `git`. */
+async function pathWithGit(body: string): Promise<string> {
+  const dir = await Deno.makeTempDir({ prefix: "issue2669-" });
+  await Deno.writeTextFile(`${dir}/git`, body, { mode: 0o755 });
+  return dir;
+}
+
+Deno.test("gitGuardShimOnPath - finds the real rendered shim first on PATH (Issue #2669)", async () => {
+  const shim = await pathWithGit(renderGitShimScript({
+    denoPath: "/usr/bin/deno",
+    guardModulePath: "/opt/guard/git_guard_cli.ts",
+    realGitPath: "/usr/bin/git",
+    verdictDir: "/tmp/verdict",
+    denoDir: "/tmp/deno-dir",
+  }));
+  const plain = await pathWithGit("#!/bin/sh\nexec /usr/bin/git \"$@\"\n");
+  try {
+    assert(await gitGuardShimOnPath(`${shim}:${plain}`));
+    // Only the git that would run counts: a shim behind another git is not.
+    assert(!await gitGuardShimOnPath(`${plain}:${shim}`));
+  } finally {
+    await Deno.remove(shim, { recursive: true });
+    await Deno.remove(plain, { recursive: true });
+  }
+});
+
+Deno.test("gitGuardShimOnPath - no PATH, an empty PATH or no git on it is no shim", async () => {
+  const empty = await Deno.makeTempDir({ prefix: "issue2669-" });
+  try {
+    assert(!await gitGuardShimOnPath(undefined));
+    assert(!await gitGuardShimOnPath(""));
+    assert(!await gitGuardShimOnPath(`::${empty}:/nonexistent/issue2669`));
+  } finally {
+    await Deno.remove(empty, { recursive: true });
+  }
 });
 
 Deno.test("parseJunitTestTimes - reads names, files and times, entities decoded", () => {
@@ -215,6 +285,19 @@ Deno.test("passesTimeBudget - holds every pass's report to one budget", async ()
   });
   assertEquals(report.failedFiles, ["tests/p_test.ts"]);
   assertEquals(report.warnings.length, 1);
+});
+
+Deno.test("passesTimeBudget - waives a slow file when the git guard shim is on PATH", async () => {
+  const report = await passesTimeBudget(["/p.xml"], {
+    ...NO_EXEMPTIONS,
+    gitGuardShim: true,
+    readText: () =>
+      Promise.resolve(
+        junit([{ file: "tests/p_test.ts", name: "p", seconds: 1.1 }]),
+      ),
+  });
+  assertEquals(report.failedFiles, []);
+  assertEquals(report.unenforced.length, 1);
 });
 
 Deno.test("normaliseTestPath - spells a path the way the manifests do", () => {

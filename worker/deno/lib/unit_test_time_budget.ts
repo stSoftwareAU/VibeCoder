@@ -15,12 +15,22 @@
  *   reason. One slow case in an otherwise fast file is a warning; a file that
  *   is slow throughout is a unit suite that is really something else.
  *
+ * Issue #2669: the agent's own run puts the git guard shim first on `PATH`,
+ * and every message-carrying `git` call a test makes then pays ~200 ms of
+ * Deno start-up for the guard. Measured on the 38 files once baselined, the
+ * same tests ran in 2 s without the shim and 39 s with it. There the failure
+ * is not enforced — each would-be failure is printed as a NOT ENFORCED line
+ * instead — because the time is the guard's, not the test's; CI and the
+ * worker's own gate run without the shim and enforce it.
+ *
  * ```mermaid
  * flowchart LR
  *   P[deno test pass] -->|--junit-path| X[JUnit XML]
  *   X --> T[per-test times]
  *   T -->|test over 1s| W[WARNING line]
- *   T -->|every test in the file over 1s, not exempt| F[gate FAILS]
+ *   T -->|every test in the file over 1s, not exempt| S{git guard shim on PATH?}
+ *   S -->|no| F[gate FAILS]
+ *   S -->|yes| N[NOT ENFORCED line]
  * ```
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
@@ -31,74 +41,10 @@ import {
   INTEGRATION_TEST_FILES,
 } from "./integration_test_manifest.ts";
 import { SUBPROCESS_TIMING_TEST_FILES } from "./parallel_unsafe_test_manifest.ts";
+import { GIT_GUARD_SHIM_MARKER } from "./git_guard_shim.ts";
 
 /** The per-test budget: a unit test over this is reported. */
 export const UNIT_TEST_BUDGET_MS = 1000;
-
-/**
- * The files already over the budget when it was introduced (Issue #2642).
- *
- * A ratchet, not an endorsement. The budget exists to catch a *new* slow
- * unit file at PR time; failing every run's gate on the files that were
- * already slow would teach everyone to ignore it. Measured on 2026-09-26
- * over the full parallel pass (24,219 tests, 1,652 files, 7 cores,
- * `DENO_JOBS` unset):
- *
- * - {@link OVER_BUDGET_AT_BASELINE} — every test over one second. Nearly
- *   all build real git repositories in a temp directory and drive `git`
- *   through them; the rest spawn `deno` or walk the whole tree.
- * - {@link NEAR_BUDGET_AT_BASELINE} — the fastest test between 0.4 s and
- *   one second, so parallel load alone could tip the file over and fail an
- *   unrelated change.
- *
- * Remove an entry when its file is made fast; never add one to let a new
- * slow file through — that is what {@link SLOW_UNIT_TEST_KEEP_FILES}'s
- * reasoned entries are for.
- */
-export const OVER_BUDGET_AT_BASELINE: readonly string[] = [
-  "tests/commit_and_push_pending_test.ts",
-  "tests/container_build_probe_paths_test.ts",
-  "tests/git_branch_sync_test.ts",
-  "tests/git_pull_checkout_error_test.ts",
-  "tests/git_pull_conflict_test.ts",
-  "tests/git_pull_lane_isolation_test.ts",
-  "tests/git_pull_remote_head_test.ts",
-  "tests/git_push_preflight_test.ts",
-  "tests/git_push_recovery_diagnostics_test.ts",
-  "tests/git_push_single_branch_clone_test.ts",
-  "tests/git_push_single_branch_test.ts",
-  "tests/git_unpushed_test.ts",
-  "tests/issue_worker_base_fetch_test.ts",
-  "tests/milestone_branch_selfheal_test.ts",
-  "tests/milestone_branch_worktree_block_test.ts",
-  "tests/milestone_conflict_ladder_test.ts",
-  "tests/milestone_gate_repair_test.ts",
-  "tests/milestone_presync_git_test.ts",
-  "tests/milestone_sync_agent_commit_test.ts",
-  "tests/milestone_sync_agent_judgement_test.ts",
-  "tests/milestone_sync_already_synced_test.ts",
-  "tests/milestone_sync_conflict_resolution_test.ts",
-  "tests/milestone_sync_dirty_clone_test.ts",
-  "tests/milestone_sync_gate_repair_test.ts",
-  "tests/milestone_sync_merge_gate_test.ts",
-  "tests/parallel_safety_cap_test.ts",
-  "tests/push_moved_head_test.ts",
-  "tests/quality_gate_bump_audit_history_test.ts",
-];
-
-/** See {@link OVER_BUDGET_AT_BASELINE}. */
-export const NEAR_BUDGET_AT_BASELINE: readonly string[] = [
-  "tests/agents_md_pointer_anchors_test.ts",
-  "tests/audit_journal_concurrency_test.ts",
-  "tests/claude_runner_oom_terminal_test.ts",
-  "tests/git_issue_branch_resume_test.ts",
-  "tests/git_ref_args_integration_test.ts",
-  "tests/git_repo_validation_test.ts",
-  "tests/hidden_files_safety_integration_test.ts",
-  "tests/host_workdir_guard_test.ts",
-  "tests/milestone_branch_ensure_test.ts",
-  "tests/quality_gate_docs_consistency_test.ts",
-];
 
 /**
  * Files kept in the unit gate although every test in them is slow, and why.
@@ -113,13 +59,6 @@ export const NEAR_BUDGET_AT_BASELINE: readonly string[] = [
 export const SLOW_UNIT_TEST_KEEP_FILES: ReadonlyMap<string, string> = new Map([
   ...IN_GATE_SCRIPT_SUITES,
   ...SUBPROCESS_TIMING_TEST_FILES,
-  ...[...OVER_BUDGET_AT_BASELINE, ...NEAR_BUDGET_AT_BASELINE].map((
-    file,
-  ): [string, string] => [
-    file,
-    "over or near the budget when it was introduced — see " +
-    "OVER_BUDGET_AT_BASELINE (Issue #2642)",
-  ]),
 ]);
 
 /** One test's measured time. */
@@ -197,6 +136,11 @@ export interface TimeBudgetOptions {
   /** Injected so a test can vary them. */
   integrationFiles?: readonly string[];
   keepFiles?: ReadonlyMap<string, string>;
+  /**
+   * The git guard shim is the `git` on `PATH` (Issue #2669): report a file
+   * that would fail as NOT ENFORCED instead — see {@link gitGuardShimOnPath}.
+   */
+  gitGuardShim?: boolean;
 }
 
 /** What the budget found over one or more passes. */
@@ -212,6 +156,11 @@ export interface TimeBudgetReport {
   failedFiles: string[];
   /** One line per failed file, saying what to do about it. */
   failures: string[];
+  /**
+   * One NOT ENFORCED line per file that would have failed, when the git guard
+   * shim is on `PATH` (Issue #2669).
+   */
+  unenforced: string[];
 }
 
 /** Hold a set of per-test times to the unit-test budget. */
@@ -248,21 +197,38 @@ export function unitTestTimeBudget(
   for (const t of timings) {
     byFile.set(t.file, [...(byFile.get(t.file) ?? []), t]);
   }
-  const failedFiles = [...byFile]
+  const slowFiles = [...byFile]
     .filter(([file, tests]) =>
       !exempt.has(file) && tests.every((t) => t.ms > budgetMs)
     )
     .map(([file]) => file)
     .sort();
-  const failures = failedFiles.map((file) => {
+  const everyTestOver = (file: string): string => {
     const tests = byFile.get(file)!;
     const total = tests.reduce((sum, t) => sum + t.ms, 0);
-    return `FAIL: every test in ${file} (${tests.length}, ${seconds(total)}) ` +
-      `is over the ${budget} unit-test budget — find what the mocks miss and ` +
-      `make it fast, or list the file in INTEGRATION_TEST_FILES or ` +
-      `SLOW_UNIT_TEST_KEEP_FILES with a reason (Issue #2642)`;
-  });
-  return { warnings, exemptNotes, failedFiles, failures };
+    return `every test in ${file} (${tests.length}, ${seconds(total)}) ` +
+      `is over the ${budget} unit-test budget`;
+  };
+  if (options.gitGuardShim) {
+    const unenforced = slowFiles.map((file) =>
+      `NOT ENFORCED: ${everyTestOver(file)} — the git guard shim is on PATH ` +
+      `and adds ~200 ms of Deno start-up to every message-carrying git ` +
+      `call; CI and the worker's own gate enforce this (Issue #2669)`
+    );
+    return { warnings, exemptNotes, failedFiles: [], failures: [], unenforced };
+  }
+  const failures = slowFiles.map((file) =>
+    `FAIL: ${everyTestOver(file)} — find what the mocks miss and ` +
+    `make it fast, or list the file in INTEGRATION_TEST_FILES or ` +
+    `SLOW_UNIT_TEST_KEEP_FILES with a reason (Issue #2642)`
+  );
+  return {
+    warnings,
+    exemptNotes,
+    failedFiles: slowFiles,
+    failures,
+    unenforced: [],
+  };
 }
 
 /**
@@ -300,4 +266,50 @@ export async function passesTimeBudget(
     timings.push(...await readPassTimings(path, options.readText));
   }
   return unitTestTimeBudget(timings, options);
+}
+
+/** Bytes read from a candidate `git` — the shim's header is in its first lines. */
+const SHIM_HEAD_BYTES = 512;
+
+/**
+ * The first bytes of the regular file at `path`, or `undefined` when there is
+ * no such file. Any other error — a permission fault, say — is thrown.
+ */
+export async function readFileHead(path: string): Promise<string | undefined> {
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(path, { read: true });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return undefined;
+    throw error;
+  }
+  try {
+    if (!(await file.stat()).isFile) return undefined;
+    const buffer = new Uint8Array(SHIM_HEAD_BYTES);
+    const read = await file.read(buffer);
+    return new TextDecoder().decode(buffer.subarray(0, read ?? 0));
+  } finally {
+    file.close();
+  }
+}
+
+/**
+ * Whether the `git` this process would run is the agent's git guard shim
+ * (Issue #2669).
+ *
+ * The first `git` on `pathVar` — pass `Deno.env.get("PATH")` — decides, as
+ * it does for the shell. Reading
+ * `PATH` only detects the shim; it never removes it — editing `PATH` to skip
+ * the guard is the bypass the shim's own documentation forbids.
+ */
+export async function gitGuardShimOnPath(
+  pathVar: string | undefined,
+  readHead: (path: string) => Promise<string | undefined> = readFileHead,
+): Promise<boolean> {
+  for (const dir of (pathVar ?? "").split(":")) {
+    if (dir === "") continue;
+    const head = await readHead(`${dir}/git`);
+    if (head !== undefined) return head.includes(GIT_GUARD_SHIM_MARKER);
+  }
+  return false;
 }
