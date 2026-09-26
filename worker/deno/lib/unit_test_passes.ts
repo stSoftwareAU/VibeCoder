@@ -58,6 +58,7 @@ import {
   parallelUnsafeIgnoreArg,
 } from "./parallel_unsafe_test_manifest.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
+import { normaliseTestPath } from "./unit_test_time_budget.ts";
 import {
   CONTAINER_IMAGE_STAMP_ENV,
   runningInContainerImage,
@@ -210,6 +211,11 @@ export interface UnitTestPass {
   args: readonly string[];
   /** The environment this pass runs with. */
   env: Record<string, string>;
+  /**
+   * Where the pass writes its JUnit report, for the time budget
+   * (Issue #2642). Absent when the caller asked for no report.
+   */
+  junitPath?: string;
 }
 
 /** Inputs for {@link unitTestPasses}. */
@@ -227,6 +233,21 @@ export interface UnitTestPassOptions {
   /** The manifests, injected so a test can vary them. */
   integrationFiles?: readonly string[];
   parallelUnsafeFiles?: readonly string[];
+  /**
+   * A directory for each pass's JUnit report (Issue #2642): the pass writes
+   * `<junitDir>/<label>.xml`, which the time budget reads back.
+   */
+  junitDir?: string;
+}
+
+/** The JUnit report path and flag for one pass, when a directory is given. */
+function junitFor(
+  junitDir: string | undefined,
+  label: string,
+): { flag: string[]; field: { junitPath?: string } } {
+  if (junitDir === undefined) return { flag: [], field: {} };
+  const junitPath = `${junitDir}/${label}.xml`;
+  return { flag: [`--junit-path=${junitPath}`], field: { junitPath } };
 }
 
 /**
@@ -245,6 +266,45 @@ export function serialPassFiles(
 }
 
 /**
+ * `test`, the caller's extra flags, and the flags every pass shares.
+ */
+function commonTestArgs(extraArgs: readonly string[]): string[] {
+  // The gate's own `deno check '**/*.ts'` stage type-checks the whole graph
+  // including tests/**, so `deno test` need not build a second full
+  // TypeScript program (Issue #4347). In parallel mode both used to start
+  // together and miss the shared cache — the memory spike quality.sh blames
+  // for the in-container SIGKILLs.
+  // Issue #2430: the gate's output is quoted back into prompts, and `pretty`
+  // spends ~23,000 lines saying that a test passed. `dot` is the quietest
+  // reporter `deno test` accepts that still prints a failure in full — name,
+  // assertion message, diff and stack trace. It follows the permission set so
+  // `extraArgs` keep the position `test:unit` expects.
+  return [
+    "test",
+    ...extraArgs,
+    "--no-check",
+    ...TEST_PERMISSION_FLAGS,
+    TEST_REPORTER_FLAG,
+  ];
+}
+
+/** The parallel pass's environment: the container bounds `DENO_JOBS`. */
+function parallelPassEnv(
+  options: UnitTestPassOptions,
+  env: Record<string, string>,
+): Record<string, string> {
+  const parallelEnv = { ...env };
+  // An operator's own DENO_JOBS wins; the bound is only a default.
+  if (
+    runningInContainerImage((name) => options.env[name]) &&
+    parallelEnv.DENO_JOBS === undefined
+  ) {
+    parallelEnv.DENO_JOBS = CONTAINER_DENO_JOBS;
+  }
+  return parallelEnv;
+}
+
+/**
  * The two passes the unit suite runs as, in order.
  *
  * Order matters: the fast pass runs first, so the common failure is reported
@@ -260,23 +320,7 @@ export function unitTestPasses(
   const serialFiles = serialPassFiles(parallelUnsafeFiles, integrationFiles);
   const env = testStageEnv(options.env);
 
-  // The gate's own `deno check '**/*.ts'` stage type-checks the whole graph
-  // including tests/**, so `deno test` need not build a second full
-  // TypeScript program (Issue #4347). In parallel mode both used to start
-  // together and miss the shared cache — the memory spike quality.sh blames
-  // for the in-container SIGKILLs.
-  // Issue #2430: the gate's output is quoted back into prompts, and `pretty`
-  // spends ~23,000 lines saying that a test passed. `dot` is the quietest
-  // reporter `deno test` accepts that still prints a failure in full — name,
-  // assertion message, diff and stack trace. It follows the permission set so
-  // `extraArgs` keep the position `test:unit` expects.
-  const common = [
-    "test",
-    ...extraArgs,
-    "--no-check",
-    ...TEST_PERMISSION_FLAGS,
-    TEST_REPORTER_FLAG,
-  ];
+  const common = commonTestArgs(extraArgs);
 
   // Issue #907: the suites that copy the repository's own `.sh`/`.ps1` into
   // a temp tree, stub a PATH and spawn them are integration tests. They cost
@@ -293,15 +337,10 @@ export function unitTestPasses(
     parallelUnsafeIgnoreArg(parallelUnsafeFiles),
   ].filter((part) => part.length > 0).join(",");
 
-  const parallelEnv = { ...env };
-  // An operator's own DENO_JOBS wins; the bound is only a default.
-  if (
-    runningInContainerImage((name) => options.env[name]) &&
-    parallelEnv.DENO_JOBS === undefined
-  ) {
-    parallelEnv.DENO_JOBS = CONTAINER_DENO_JOBS;
-  }
+  const parallelEnv = parallelPassEnv(options, env);
 
+  const parallelJunit = junitFor(options.junitDir, "parallel");
+  const serialJunit = junitFor(options.junitDir, "serial");
   return [
     {
       label: "parallel",
@@ -312,10 +351,12 @@ export function unitTestPasses(
       args: [
         options.denoCmd,
         ...common,
+        ...parallelJunit.flag,
         "--parallel",
         ...(parallelIgnore.length > 0 ? [`--ignore=${parallelIgnore}`] : []),
       ],
       env: parallelEnv,
+      ...parallelJunit.field,
     },
     {
       label: "serial",
@@ -325,14 +366,84 @@ export function unitTestPasses(
       args: [
         options.denoCmd,
         ...common,
+        ...serialJunit.flag,
         ...(integrationIgnore.length > 0
           ? [`--ignore=${integrationIgnore}`]
           : []),
         ...serialFiles,
       ],
       env,
+      ...serialJunit.field,
     },
   ];
+}
+
+/** What {@link targetedUnitTestPasses} runs, and what it left out. */
+export interface TargetedUnitTestPlan {
+  /** The passes to run — only those with at least one requested file. */
+  passes: readonly UnitTestPass[];
+  /** Requested files left out because they are integration suites (#907). */
+  skippedIntegration: readonly string[];
+}
+
+/**
+ * The unit passes over a hand-picked list of test files (Issue #2642).
+ *
+ * An agent that runs `deno test` over every file its grep matched also runs
+ * the integration suites the gate deliberately excludes — the launcher suites
+ * alone cost minutes. This intersects the list with the unit scope: an
+ * integration suite is left out and named, a parallel-unsafe file runs in the
+ * serial pass, and everything else runs under `--parallel`, exactly as the
+ * gate would run it.
+ */
+export function targetedUnitTestPasses(
+  options: UnitTestPassOptions,
+  files: readonly string[],
+): TargetedUnitTestPlan {
+  const integrationFiles = options.integrationFiles ?? INTEGRATION_TEST_FILES;
+  const integration = new Set(integrationFiles);
+  const serialSet = new Set(serialPassFiles(
+    options.parallelUnsafeFiles ?? PARALLEL_UNSAFE_TEST_FILES,
+    integrationFiles,
+  ));
+  const requested = [...new Set(files.map(normaliseTestPath))];
+  const skippedIntegration = requested.filter((f) => integration.has(f));
+  const unit = requested.filter((f) => !integration.has(f));
+  const serial = unit.filter((f) => serialSet.has(f));
+  const parallel = unit.filter((f) => !serialSet.has(f));
+
+  const common = commonTestArgs(options.extraArgs ?? []);
+  const env = testStageEnv(options.env);
+  const passes: UnitTestPass[] = [];
+  if (parallel.length > 0) {
+    const junit = junitFor(options.junitDir, "parallel");
+    passes.push({
+      label: "parallel",
+      description:
+        `${parallel.length} requested parallel-safe unit test file(s)`,
+      args: [
+        options.denoCmd,
+        ...common,
+        ...junit.flag,
+        "--parallel",
+        ...parallel,
+      ],
+      env: parallelPassEnv(options, env),
+      ...junit.field,
+    });
+  }
+  if (serial.length > 0) {
+    const junit = junitFor(options.junitDir, "serial");
+    passes.push({
+      label: "serial",
+      description:
+        `${serial.length} requested parallel-unsafe unit test file(s)`,
+      args: [options.denoCmd, ...common, ...junit.flag, ...serial],
+      env,
+      ...junit.field,
+    });
+  }
+  return { passes, skippedIntegration };
 }
 
 /** What one pass did. */

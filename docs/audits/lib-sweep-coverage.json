@@ -426,6 +426,7 @@
         "worker/deno/lib/stuck_issue_detector.ts",
         "worker/deno/lib/timeline_cache.ts",
         "worker/deno/lib/unit_test_passes.ts",
+        "worker/deno/lib/unit_test_time_budget.ts",
         "worker/deno/lib/workflow_scope.ts"
       ],
       "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
