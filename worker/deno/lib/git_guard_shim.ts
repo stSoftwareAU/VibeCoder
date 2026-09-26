@@ -70,6 +70,12 @@ import {
 import { posixSingleQuote as shellQuote } from "./shell_quote.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 
+/**
+ * The shim's own header words — how a process tells the shim is the `git` on
+ * its `PATH` (Issue #2669).
+ */
+export const GIT_GUARD_SHIM_MARKER = "Vibe Coder git guard shim";
+
 /** Absolute path of the guard entry point the `git` shim invokes. */
 export function defaultGitGuardModulePath(): string {
   // Issue #1444: resolved from the read-only checkout for the same reason as
@@ -107,7 +113,7 @@ export function renderGitShimScript(opts: {
   // `#!/bin/bash` rather than `/usr/bin/env bash`: a security wrapper must not
   // depend on the PATH of whoever invokes it.
   return `#!/bin/bash
-# Vibe Coder git guard shim (Issue #1284) — generated per run; do not edit.
+# ${GIT_GUARD_SHIM_MARKER} (Issue #1284) — generated per run; do not edit.
 # Redacts secrets from the message arguments of every git command the agent
 # runs, then delegates to the real binary. A pushed commit message is
 # permanent public history.
