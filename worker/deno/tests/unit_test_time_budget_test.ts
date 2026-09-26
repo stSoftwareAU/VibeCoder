@@ -12,6 +12,7 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  budgetProvedPass,
   gitGuardShimOnPath,
   normaliseTestPath,
   parseJunitTestTimes,
@@ -172,21 +173,42 @@ Deno.test("time budget - without the git guard shim a slow file still fails (Iss
   assertEquals(report.unenforced, []);
 });
 
+Deno.test("budgetProvedPass - only an enforced, clean budget lets a pass be cached (Issue #2669)", () => {
+  const slow = [{ file: "tests/git_heavy_test.ts", name: "a", ms: 1500 }];
+  const fast = [{ file: "tests/git_heavy_test.ts", name: "a", ms: 20 }];
+  const opts = { ...NO_EXEMPTIONS };
+  assert(budgetProvedPass(unitTestTimeBudget(fast, opts)));
+  assert(
+    budgetProvedPass(unitTestTimeBudget(fast, { ...opts, gitGuardShim: true })),
+  );
+  // Waived under the shim: green, but not proved, so not cached.
+  assert(
+    !budgetProvedPass(
+      unitTestTimeBudget(slow, { ...opts, gitGuardShim: true }),
+    ),
+  );
+  assert(!budgetProvedPass(unitTestTimeBudget(slow, opts)));
+});
+
 /** A temp `PATH` directory holding one file named `git`. */
-async function pathWithGit(body: string): Promise<string> {
+async function pathWithGit(body: string, mode = 0o755): Promise<string> {
   const dir = await Deno.makeTempDir({ prefix: "issue2669-" });
-  await Deno.writeTextFile(`${dir}/git`, body, { mode: 0o755 });
+  await Deno.writeTextFile(`${dir}/git`, body);
+  await Deno.chmod(`${dir}/git`, mode);
   return dir;
 }
 
+/** The rendered shim, as the worker writes it. */
+const SHIM_SCRIPT = renderGitShimScript({
+  denoPath: "/usr/bin/deno",
+  guardModulePath: "/opt/guard/git_guard_cli.ts",
+  realGitPath: "/usr/bin/git",
+  verdictDir: "/tmp/verdict",
+  denoDir: "/tmp/deno-dir",
+});
+
 Deno.test("gitGuardShimOnPath - finds the real rendered shim first on PATH (Issue #2669)", async () => {
-  const shim = await pathWithGit(renderGitShimScript({
-    denoPath: "/usr/bin/deno",
-    guardModulePath: "/opt/guard/git_guard_cli.ts",
-    realGitPath: "/usr/bin/git",
-    verdictDir: "/tmp/verdict",
-    denoDir: "/tmp/deno-dir",
-  }));
+  const shim = await pathWithGit(SHIM_SCRIPT);
   const plain = await pathWithGit('#!/bin/sh\nexec /usr/bin/git "$@"\n');
   try {
     assert(await gitGuardShimOnPath(`${shim}:${plain}`));
@@ -206,6 +228,41 @@ Deno.test("gitGuardShimOnPath - no PATH, an empty PATH or no git on it is no shi
     assert(!await gitGuardShimOnPath(`::${empty}:/nonexistent/issue2669`));
   } finally {
     await Deno.remove(empty, { recursive: true });
+  }
+});
+
+Deno.test("gitGuardShimOnPath - skips a git that the shell would not run", async () => {
+  // A non-executable file or a directory named git is not what the shell
+  // runs, so the executable shim behind it decides.
+  const inert = await pathWithGit(SHIM_SCRIPT, 0o644);
+  const dirGit = await Deno.makeTempDir({ prefix: "issue2669-" });
+  await Deno.mkdir(`${dirGit}/git`);
+  const shim = await pathWithGit(SHIM_SCRIPT);
+  const plain = await pathWithGit('#!/bin/sh\nexec /usr/bin/git "$@"\n');
+  try {
+    assert(!await gitGuardShimOnPath(`${inert}:${dirGit}:${plain}`));
+    assert(await gitGuardShimOnPath(`${inert}:${dirGit}:${shim}`));
+  } finally {
+    for (const dir of [inert, dirGit, shim, plain]) {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("gitGuardShimOnPath - an unreadable git throws rather than reading as no shim", async () => {
+  // Executable but not readable: the check cannot tell, so it fails loud.
+  const locked = await pathWithGit(SHIM_SCRIPT, 0o311);
+  try {
+    // Root reads anything, so there is nothing to prove there.
+    const readable = await Deno.readFile(`${locked}/git`).then(() => true)
+      .catch(() => false);
+    if (readable) return;
+    await assertRejects(
+      () => gitGuardShimOnPath(locked),
+      Deno.errors.PermissionDenied,
+    );
+  } finally {
+    await Deno.remove(locked, { recursive: true });
   }
 });
 

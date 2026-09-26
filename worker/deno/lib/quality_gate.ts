@@ -65,6 +65,7 @@ import {
   unitTestStageVerdict,
 } from "./unit_test_passes.ts";
 import {
+  budgetProvedPass,
   gitGuardShimOnPath,
   passesTimeBudget,
   type TimeBudgetReport,
@@ -1362,9 +1363,8 @@ async function runUnitTestPasses(
     };
   }
   if (verdict.status === "PASSED") {
-    // Issue #2669: a pass that waived the budget under the git guard shim is
-    // not cached, so a gate that enforces it re-runs rather than reusing it.
-    if (budget.unenforced.length === 0) {
+    // Issue #2669: a pass that waived the budget is not cached.
+    if (budgetProvedPass(budget)) {
       await recordPass(config.cacheDir, name, digest, isoNow());
     }
     return { name, status: "PASSED", output: `${body}\nDeno tests: PASSED` };

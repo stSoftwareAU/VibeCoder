@@ -42,6 +42,7 @@ import {
 } from "./integration_test_manifest.ts";
 import { SUBPROCESS_TIMING_TEST_FILES } from "./parallel_unsafe_test_manifest.ts";
 import { GIT_GUARD_SHIM_MARKER } from "./git_guard_shim.ts";
+import { resolveExecutable } from "./gh_guard_shim.ts";
 
 /** The per-test budget: a unit test over this is reported. */
 export const UNIT_TEST_BUDGET_MS = 1000;
@@ -232,6 +233,17 @@ export function unitTestTimeBudget(
 }
 
 /**
+ * Whether a green stage may be cached under this report (Issue #2669).
+ *
+ * A pass that waived the budget under the git guard shim has not proved the
+ * budget holds, so it is not cached: a gate that enforces the budget re-runs
+ * the tests rather than reusing that pass.
+ */
+export function budgetProvedPass(report: TimeBudgetReport): boolean {
+  return report.failures.length === 0 && report.unenforced.length === 0;
+}
+
+/**
  * The per-test times one green pass reported.
  *
  * Throws when the report is missing or unreadable: a pass that exited 0
@@ -268,48 +280,32 @@ export async function passesTimeBudget(
   return unitTestTimeBudget(timings, options);
 }
 
-/** Bytes read from a candidate `git` — the shim's header is in its first lines. */
+/** Bytes read from the resolved `git` — the shim's header is in its first lines. */
 const SHIM_HEAD_BYTES = 512;
-
-/**
- * The first bytes of the regular file at `path`, or `undefined` when there is
- * no such file. Any other error — a permission fault, say — is thrown.
- */
-export async function readFileHead(path: string): Promise<string | undefined> {
-  let file: Deno.FsFile;
-  try {
-    file = await Deno.open(path, { read: true });
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return undefined;
-    throw error;
-  }
-  try {
-    if (!(await file.stat()).isFile) return undefined;
-    const buffer = new Uint8Array(SHIM_HEAD_BYTES);
-    const read = await file.read(buffer);
-    return new TextDecoder().decode(buffer.subarray(0, read ?? 0));
-  } finally {
-    file.close();
-  }
-}
 
 /**
  * Whether the `git` this process would run is the agent's git guard shim
  * (Issue #2669).
  *
- * The first `git` on `pathVar` — pass `Deno.env.get("PATH")` — decides, as
- * it does for the shell. Reading
- * `PATH` only detects the shim; it never removes it — editing `PATH` to skip
- * the guard is the bypass the shim's own documentation forbids.
+ * The first executable `git` on `pathVar` — pass `Deno.env.get("PATH")` —
+ * decides, as it does for the shell, resolved by the guard's own
+ * {@link resolveExecutable}. This only detects the shim; it never removes it —
+ * editing `PATH` to skip the guard is the bypass the shim's own documentation
+ * forbids. A resolved `git` that cannot be read throws rather than reading as
+ * "no shim".
  */
 export async function gitGuardShimOnPath(
   pathVar: string | undefined,
-  readHead: (path: string) => Promise<string | undefined> = readFileHead,
 ): Promise<boolean> {
-  for (const dir of (pathVar ?? "").split(":")) {
-    if (dir === "") continue;
-    const head = await readHead(`${dir}/git`);
-    if (head !== undefined) return head.includes(GIT_GUARD_SHIM_MARKER);
+  const git = resolveExecutable("git", pathVar ?? "");
+  if (git === undefined) return false;
+  const file = await Deno.open(git, { read: true });
+  try {
+    const buffer = new Uint8Array(SHIM_HEAD_BYTES);
+    const read = await file.read(buffer);
+    return new TextDecoder().decode(buffer.subarray(0, read ?? 0))
+      .includes(GIT_GUARD_SHIM_MARKER);
+  } finally {
+    file.close();
   }
-  return false;
 }
