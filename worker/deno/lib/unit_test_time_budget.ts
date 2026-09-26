@@ -144,8 +144,10 @@ function decodeXml(text: string): string {
 
 /** One attribute's decoded value from a tag's attribute text. */
 function attribute(attrs: string, name: string): string | undefined {
-  const match = new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attrs);
-  return match ? decodeXml(match[1]!) : undefined;
+  for (const match of attrs.matchAll(/(?:^|\s)([\w:.-]+)="([^"]*)"/g)) {
+    if (match[1] === name) return decodeXml(match[2]!);
+  }
+  return undefined;
 }
 
 /** `./tests/foo_test.ts` → `tests/foo_test.ts`, the manifests' spelling. */
