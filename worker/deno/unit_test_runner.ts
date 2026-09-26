@@ -129,7 +129,13 @@ async function runPasses(
   }
 
   const budget = await passesTimeBudget(junitPaths);
-  for (const line of [...budget.warnings, ...budget.failures]) {
+  for (
+    const line of [
+      ...budget.exemptNotes,
+      ...budget.warnings,
+      ...budget.failures,
+    ]
+  ) {
     console.log(line);
   }
   return budget.failures.length > 0 ? 1 : 0;

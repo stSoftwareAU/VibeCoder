@@ -1321,6 +1321,7 @@ async function runUnitTestPasses(
   const verdict = unitTestStageVerdict(outcomes);
   let budget: TimeBudgetReport = {
     warnings: [],
+    exemptNotes: [],
     failedFiles: [],
     failures: [],
   };
@@ -1337,7 +1338,14 @@ async function runUnitTestPasses(
   const body = [
     ...transcript,
     ...summariseUnitTestPasses(outcomes),
-    ...budget.warnings,
+    // A green stage says one line about slow tests, not one per test
+    // (Issue #2430); `deno task test:unit` lists them.
+    ...(budget.warnings.length > 0
+      ? [
+        `${budget.warnings.length} unit test(s) over the one-second budget ` +
+        `(Issue #2642) — \`deno task test:unit\` lists them`,
+      ]
+      : []),
     ...budget.failures,
   ].join("\n");
 

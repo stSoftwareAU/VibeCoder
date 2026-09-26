@@ -470,7 +470,7 @@ Run only the test files relevant to your changes:
 - **Deno** — when `deno.json` has a `test:unit` task, run touched tests through
   it rather than a raw `deno test <files>`: it runs only the unit tests among
   the files you name and skips the integration suites the gate excludes, which
-  can cost minutes. In VibeCoder, from `worker/deno`:
+  can cost minutes. Run it from the directory holding that `deno.json`:
   ```bash
   deno task test:unit tests/foo_test.ts tests/bar_test.ts < /dev/null
   ```
