@@ -81,11 +81,56 @@ export const MILESTONE_TRACKING_MARKER =
  */
 const MILESTONE_TRACKING_TITLE_PATTERN = /^Merge milestone '.+' to .+$/;
 
+/** Name-only head of the marker; older bodies vary in the trailing prose. */
+const MILESTONE_TRACKING_MARKER_HEAD = "<!-- milestone-tracking-issue";
+
+/** Opening or closing line of a CommonMark fenced code block. */
+const CODE_FENCE_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+/** A line that opens with the marker; a tab or 4+ spaces is indented code. */
+const LIVE_MARKER_LINE_RE = new RegExp(
+  `^ {0,3}${MILESTONE_TRACKING_MARKER_HEAD}`,
+);
+
+/**
+ * Return true when `body` carries the tracker marker as a live HTML comment
+ * (Issue #2673): a line opening with it, indented at most three spaces,
+ * outside a fenced code block — the CommonMark HTML-block position the
+ * worker writes it in. A marker quoted in prose, inline code or a code block
+ * is a *mention*: Migration_v21#450 quoted it while asking for tracker
+ * cleanup, the scan dropped it as a tracker and the census, counting it
+ * claimable, filed a false idle-inversion alert every cycle.
+ */
+export function hasLiveMilestoneTrackingMarker(
+  body: string | null | undefined,
+): boolean {
+  if (!body?.includes(MILESTONE_TRACKING_MARKER_HEAD)) return false;
+  let fence: string | null = null;
+  for (const line of body.split("\n")) {
+    const fenceMatch = CODE_FENCE_RE.exec(line)?.[1];
+    if (fence !== null) {
+      // A fence closes only on the same character, at least as long.
+      if (
+        fenceMatch && fenceMatch[0] === fence[0] &&
+        fenceMatch.length >= fence.length
+      ) fence = null;
+      continue;
+    }
+    if (fenceMatch) {
+      fence = fenceMatch;
+      continue;
+    }
+    if (LIVE_MARKER_LINE_RE.test(line)) return true;
+  }
+  return false;
+}
+
 /**
  * Detect whether an issue is a milestone tracking issue.
  *
  * Uses two checks (defence in depth):
- * 1. Primary: body contains the HTML marker comment.
+ * 1. Primary: body carries the live HTML marker comment
+ *    ({@link hasLiveMilestoneTrackingMarker}; a quoted marker does not count).
  * 2. Fallback: title matches the tracking issue title pattern
  *    (for pre-existing issues without the marker).
  *
@@ -94,7 +139,7 @@ const MILESTONE_TRACKING_TITLE_PATTERN = /^Merge milestone '.+' to .+$/;
  */
 export function isMilestoneTrackingIssue(issue: FilterableIssue): boolean {
   // Primary check — body marker
-  if (issue.body?.includes("<!-- milestone-tracking-issue")) {
+  if (hasLiveMilestoneTrackingMarker(issue.body)) {
     return true;
   }
 
