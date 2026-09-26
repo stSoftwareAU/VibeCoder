@@ -51,7 +51,6 @@ import {
   primeStreamSession,
   resolveStreamRunKind,
 } from "../stream_session.ts";
-import { primeStreamCompaction } from "../stream_compaction.ts";
 import { isStreamSharingTier } from "../issue_filter.ts";
 import {
   claimRepoLevelRejectionReport,
@@ -724,7 +723,7 @@ export async function workOnIssueSetupBranch(
       // left alone it is the next issue that dies of a full context window.
       // Returns the `--autocompact` window when the compaction could not be
       // verified — the CLI's own lever, pulled as early as it goes.
-      state.autocompactTokens = await primeStreamCompaction({
+      state.autocompactTokens = await deps.claude.primeStreamCompaction({
         outcome: adoption.outcome,
         providerId,
         ...(adoption.state.providerId !== undefined
