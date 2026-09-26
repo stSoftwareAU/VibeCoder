@@ -138,35 +138,41 @@ Deno.test("parseJunitTestTimes - fails loud on a report that is not JUnit", () =
   );
 });
 
-Deno.test("parseJunitTestTimes - reads the report deno test really writes", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "issue2642-junit-" });
-  try {
-    await Deno.writeTextFile(
-      `${dir}/fast_test.ts`,
-      'Deno.test("a fast one", () => {});\n',
-    );
-    const out = await new Deno.Command(Deno.execPath(), {
-      args: [
-        "test",
-        "--no-check",
-        "--no-config",
-        "--reporter=dot",
-        `--junit-path=${dir}/report.xml`,
-        `${dir}/fast_test.ts`,
-      ],
-      cwd: dir,
-      stdout: "null",
-      stderr: "piped",
-    }).output();
-    assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+/**
+ * A report `deno test --junit-path` wrote (Deno 2.9), verbatim — kept as a
+ * fixture so the parser is held to the real shape without spawning `deno`.
+ */
+const REAL_DENO_REPORT = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="deno test" tests="2" failures="0" errors="0" time="0.021">
+    <testsuite name="./tests/stream_compaction_seam_2642_test.ts" tests="2" disabled="0" errors="0" failures="0">
+        <testcase name="#2642 - the setup phase compacts a resumed stream through deps.claude" classname="./tests/stream_compaction_seam_2642_test.ts" time="0.006" line="140" col="6">
+        </testcase>
+        <testcase name="#2642 - the mock deps&apos; compaction answers no window and runs nothing" classname="./tests/stream_compaction_seam_2642_test.ts" time="0.000" line="191" col="6">
+        </testcase>
+    </testsuite>
+</testsuites>
+`;
 
-    const timings = await readPassTimings(`${dir}/report.xml`);
-    assertEquals(timings.map((t) => t.name), ["a fast one"]);
-    assertEquals(timings[0]!.file, "fast_test.ts");
-    assertEquals(unitTestTimeBudget(timings, NO_EXEMPTIONS).warnings, []);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
+Deno.test("parseJunitTestTimes - reads the report deno test really writes", async () => {
+  const timings = await readPassTimings(
+    "report.xml",
+    () => Promise.resolve(REAL_DENO_REPORT),
+  );
+  assertEquals(timings, [
+    {
+      file: "tests/stream_compaction_seam_2642_test.ts",
+      name:
+        "#2642 - the setup phase compacts a resumed stream through deps.claude",
+      ms: 6,
+    },
+    {
+      file: "tests/stream_compaction_seam_2642_test.ts",
+      name:
+        "#2642 - the mock deps' compaction answers no window and runs nothing",
+      ms: 0,
+    },
+  ]);
+  assertEquals(unitTestTimeBudget(timings, NO_EXEMPTIONS).warnings, []);
 });
 
 Deno.test("readPassTimings - a missing report fails loud rather than reading as fast", async () => {

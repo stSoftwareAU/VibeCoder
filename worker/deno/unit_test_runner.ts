@@ -35,6 +35,9 @@ import {
 } from "./lib/unit_test_passes.ts";
 import { passesTimeBudget } from "./lib/unit_test_time_budget.ts";
 
+/** The runner's own flags; anything else starting with `-` is refused. */
+const KNOWN_FLAGS = ["--", "--integration", "--parallel-only", "--serial-only"];
+
 /** Run the passes, stopping at the first failure, then apply the budget. */
 async function main(): Promise<void> {
   // Issue #1280 (SEC-1217-12): every entry point patches its own console —
@@ -74,6 +77,15 @@ async function runPasses(
   // Positional arguments are test files (Issue #2642); `--` is what an
   // operator types to separate them from the task's own flags.
   const files = Deno.args.filter((arg) => !arg.startsWith("-"));
+  // Fail loud on anything else: `--filter foo` would otherwise read `foo` as
+  // a file and run a different suite from the one asked for.
+  const unknown = Deno.args.filter((arg) =>
+    arg.startsWith("-") && !KNOWN_FLAGS.includes(arg)
+  );
+  if (unknown.length > 0) {
+    console.error(`Unknown option(s): ${unknown.join(" ")}`);
+    return 2;
+  }
 
   let passes: readonly UnitTestPass[];
   if (integration) {
