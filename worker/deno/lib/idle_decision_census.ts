@@ -289,6 +289,8 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "label-author-not-allowed": "upstream",
     "untrusted-operational-label": "upstream",
     "non-wrapper-title": "upstream",
+    // Tracker detection needs a *live* marker (Issue #2673): a body that only
+    // quotes it is work, to the scan and the census alike.
     "filtered-out": "upstream",
     "needs-human": "upstream",
     // Modelled gates — the ones that have bitten.
