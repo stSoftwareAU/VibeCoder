@@ -286,9 +286,15 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   gate runs anyway (Issue #1598). Being run by the gate does not make a suite a
   unit test: the classifier decides what a file is, and the exception decides
   only where it runs.
-- **Fast** — it finishes within 10 seconds, and that is a **target, not a
-  kill**. Nothing times a unit test at run
-  time, so the rule is enforced by shape rather than by stopwatch: a wall-clock
+- **Fast** — it finishes in milliseconds, and within 10 seconds at worst, a
+  **target, not a kill**. The unit passes write a JUnit report and hold it to
+  a one-second budget (Issue #2642): every test over it is reported as a
+  `WARNING` line, and a file whose tests **all** exceed it fails the gate
+  unless it is an integration suite or on `SLOW_UNIT_TEST_KEEP_FILES` in
+  [`lib/unit_test_time_budget.ts`](worker/deno/lib/unit_test_time_budget.ts)
+  with a reason. A slow unit test is usually a real side effect the mocks
+  missed — #2642's planning suites were spawning `claude` for real. Beyond
+  that budget the rule is enforced by shape rather than by stopwatch: a wall-clock
   sleep, a retry loop against the real clock, a polling wait or a spawned
   script is a `test-audit` finding (check 13) whatever the test happens to cost
   on your machine — unless the file is **declared**, in the integration
@@ -305,6 +311,9 @@ A unit test is **behavioural**, **self-contained**, **fast** and
 Unit tests run in the gate's `deno tests` stage and under `deno task test:unit`,
 as two passes over disjoint halves of one scope: everything parallel-safe under
 `--parallel`, then the rest one at a time.
+`deno task test:unit tests/a_test.ts tests/b_test.ts` runs only the unit tests
+among the files named, split the same way, and says which integration suites it
+left out — use it for targeted runs instead of a raw `deno test <files>`.
 
 **A unit test that cannot run in parallel is still a unit test.** It is capped
 debt, not a reclassification. Exactly three reasons put a file in the serial
