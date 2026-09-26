@@ -33,11 +33,7 @@ import {
   type UnitTestPass,
   unitTestPasses,
 } from "./lib/unit_test_passes.ts";
-import {
-  readPassTimings,
-  type TestTiming,
-  unitTestTimeBudget,
-} from "./lib/unit_test_time_budget.ts";
+import { passesTimeBudget } from "./lib/unit_test_time_budget.ts";
 
 /** Run the passes, stopping at the first failure, then apply the budget. */
 async function main(): Promise<void> {
@@ -97,7 +93,7 @@ async function runPasses(
   }
   passes = passes.filter((pass) => only === null || pass.label === only);
 
-  const timings: TestTiming[] = [];
+  const junitPaths: string[] = [];
   for (const pass of passes) {
     console.log(`\n=== deno test: ${pass.label} pass — ${pass.description}`);
     const startedAt = Date.now();
@@ -117,10 +113,10 @@ async function runPasses(
     // Stop at the first failure: the remaining pass costs minutes and
     // cannot change the verdict.
     if (status.code !== 0) return status.code;
-    if (pass.junitPath) timings.push(...await readPassTimings(pass.junitPath));
+    if (pass.junitPath) junitPaths.push(pass.junitPath);
   }
 
-  const budget = unitTestTimeBudget(timings);
+  const budget = await passesTimeBudget(junitPaths);
   for (const line of [...budget.warnings, ...budget.failures]) {
     console.log(line);
   }

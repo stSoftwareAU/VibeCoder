@@ -64,6 +64,10 @@ import {
   unitTestPassTranscript,
   unitTestStageVerdict,
 } from "./unit_test_passes.ts";
+import {
+  passesTimeBudget,
+  type TimeBudgetReport,
+} from "./unit_test_time_budget.ts";
 
 /**
  * The environment the `deno test` stage runs with (Issue #891).
@@ -1263,7 +1267,30 @@ async function runDenoTests(
     };
   }
 
-  const passes = unitTestPasses({ denoCmd, env: Deno.env.toObject() });
+  // Issue #2642: each pass writes a JUnit report the time budget reads back.
+  const junitDir = await Deno.makeTempDir({ prefix: "vibe_gate_junit_" });
+  try {
+    return await runUnitTestPasses(config, denoCmd, name, digest, junitDir);
+  } finally {
+    await Deno.remove(junitDir, { recursive: true }).catch((error) =>
+      console.warn(`Could not remove ${junitDir}: ${error}`)
+    );
+  }
+}
+
+/** The two passes, their verdict and the time budget over them. */
+async function runUnitTestPasses(
+  config: QualityGateConfig,
+  denoCmd: string,
+  name: string,
+  digest: string | null,
+  junitDir: string,
+): Promise<CheckExecutionResult> {
+  const passes = unitTestPasses({
+    denoCmd,
+    env: Deno.env.toObject(),
+    junitDir,
+  });
   const outcomes: UnitTestPassOutcome[] = [];
   const transcript: string[] = [];
 
@@ -1292,8 +1319,36 @@ async function runDenoTests(
   }
 
   const verdict = unitTestStageVerdict(outcomes);
-  const body = [...transcript, ...summariseUnitTestPasses(outcomes)].join("\n");
+  let budget: TimeBudgetReport = {
+    warnings: [],
+    failedFiles: [],
+    failures: [],
+  };
+  if (verdict.status === "PASSED") {
+    try {
+      budget = await passesTimeBudget(
+        passes.flatMap((pass) => pass.junitPath ? [pass.junitPath] : []),
+      );
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      budget = { ...budget, failures: [`FAIL: time budget: ${reason}`] };
+    }
+  }
+  const body = [
+    ...transcript,
+    ...summariseUnitTestPasses(outcomes),
+    ...budget.warnings,
+    ...budget.failures,
+  ].join("\n");
 
+  if (verdict.status === "PASSED" && budget.failures.length > 0) {
+    await invalidate(config.cacheDir, name);
+    return {
+      name,
+      status: "FAILED",
+      output: `${body}\nDeno tests: FAILED (unit-test time budget)`,
+    };
+  }
   if (verdict.status === "PASSED") {
     await recordPass(config.cacheDir, name, digest, isoNow());
     return { name, status: "PASSED", output: `${body}\nDeno tests: PASSED` };

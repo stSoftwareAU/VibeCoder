@@ -192,3 +192,17 @@ export async function readPassTimings(
   }
   return parseJunitTestTimes(xml);
 }
+
+/** {@link unitTestTimeBudget} over the reports of the green passes given. */
+export async function passesTimeBudget(
+  junitPaths: readonly string[],
+  options: TimeBudgetOptions & {
+    readText?: (path: string) => Promise<string>;
+  } = {},
+): Promise<TimeBudgetReport> {
+  const timings: TestTiming[] = [];
+  for (const path of junitPaths) {
+    timings.push(...await readPassTimings(path, options.readText));
+  }
+  return unitTestTimeBudget(timings, options);
+}
