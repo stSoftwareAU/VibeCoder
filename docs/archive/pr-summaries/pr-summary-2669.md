@@ -40,23 +40,33 @@ flowchart LR
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — `OVER_BUDGET_AT_BASELINE` is empty; each file made fast or moved to `INTEGRATION_TEST_FILES` with a reason — evidence: the constant is deleted from `worker/deno/lib/unit_test_time_budget.ts`; all 38 files run in 2 s in total (slowest file 231 ms) where the budget is enforced — reviewer: partial — reason: no test file was edited or moved; the files are already under budget without the shim, which is where the budget is enforced, so none needed to change. The only over-budget time was the guard's, and it is now reported loudly as NOT ENFORCED rather than hidden.
-- **met** — `NEAR_BUDGET_AT_BASELINE` is empty — evidence: the constant is deleted from `worker/deno/lib/unit_test_time_budget.ts` — reviewer: met
-- **unrequested** — shim detection, the NOT ENFORCED waiver and not caching a waived pass (`gitGuardShimOnPath`, `budgetProvedPass`, `quality_gate.ts:1367`, `unit_test_runner.ts:137`) — evidence: `tests/unit_test_time_budget_test.ts` — reviewer: unrequested — reason: without them, removing the baselines would fail every agent run on time the guard spends, not the tests.
-- **unrequested** — `GIT_GUARD_SHIM_MARKER` in `lib/git_guard_shim.ts` and the `CODING-STANDARDS.md` paragraph — evidence: the diff — reviewer: unrequested — reason: detection needs one shared marker, and the documented budget rule changed.
+- **partial** — `OVER_BUDGET_AT_BASELINE` is empty; each file made fast or moved to `INTEGRATION_TEST_FILES` with a reason — evidence: `worker/deno/lib/unit_test_time_budget.ts` (constant deleted; `tests/unit_test_time_budget_test.ts:113` forbids a baseline-style keep entry) — reviewer: partial — reason: the list is empty, but no file was edited or moved. Without the shim, where the budget is enforced (CI, the worker gate), all 38 files already run in 2 s in total, so none needed changing. Under the shim, the time the guard spends is reported as `NOT ENFORCED:`, which is a different remedy from the two the issue offers.
+- **met** — `NEAR_BUDGET_AT_BASELINE` is empty — evidence: `worker/deno/lib/unit_test_time_budget.ts` (constant deleted; no references remain) — reviewer: met
+- **unrequested** — shim detection and the `NOT ENFORCED:` waiver (`gitGuardShimOnPath`, the `unenforced` report field, output from the gate and the runner) — reviewer: unrequested — reason: without it, removing the baselines would fail every agent run on time the guard spends, not the tests.
+- **unrequested** — a waived pass is never cached (`budgetProvedPass`, `worker/deno/lib/quality_gate.ts:1367`) — reviewer: unrequested — reason: a gate that enforces the budget must re-run the tests rather than reuse the waived pass.
+- **unrequested** — `GIT_GUARD_SHIM_MARKER` exported from `lib/git_guard_shim.ts` — reviewer: unrequested — reason: detection and rendering share one marker (DRY).
+- **unrequested** — `CODING-STANDARDS.md`, module doc comments, the new tests and this summary — reviewer: unrequested — reason: the documented budget rule changed, and the new code needs tests.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — `worker/deno/lib/unit_test_time_budget.ts:297` — DRY: the PATH lookup duplicated `resolveExecutable` and did not check the executable bit — fixed: it now reuses `resolveExecutable` from `lib/gh_guard_shim.ts`.
-- **violation** — `worker/deno/lib/unit_test_time_budget.ts:297` — test coverage: the file-read paths were untested — fixed: `tests/unit_test_time_budget_test.ts:234` covers a non-executable `git` and a directory named `git`; `:252` checks that an unreadable `git` throws.
-- **violation** — `worker/deno/lib/unit_test_time_budget.ts` — KISS: an unused `readHead` injection seam — fixed: removed.
-- **violation** — `worker/deno/lib/quality_gate.ts:1367` — TDD: no test covered the rule that a waived pass is not cached — fixed: the rule was extracted as `budgetProvedPass` (`lib/unit_test_time_budget.ts:242`) and is tested at `tests/unit_test_time_budget_test.ts:176`.
-- **violation** — the PR summary was missing — fixed: this file.
-- **clean** — Australian English; fails loud (the waiver prints a line per file, is never cached, and an unreadable `git` throws); tests call real code; docs updated; no new dependencies or secrets.
+- **violation** — Never Fail Silently: a skipped check must be enforced loudly — evidence: `worker/deno/tests/unit_test_time_budget_test.ts:262` — reason: fixed here. The unreadable-`git` test used to `return` early (a silent pass) when run as root. It is now `Deno.test({ ignore })`, so it is reported as ignored.
+- **violation** — TDD rule 3 / PR summary: tests added or modified must be documented — evidence: `docs/archive/pr-summaries/pr-summary-2669.md:59` — reason: fixed here. The Test Plan below now names each added and modified test.
+- **clean** — Australian English; DRY (shared marker, reuses `resolveExecutable`); no new dependencies; fails loud (an unreadable `git` throws, each waiver prints a line and is never cached); the lib takes `PATH` as an argument; tests call real code in temp dirs, with happy, error and edge cases; docs updated; no hidden files or secrets.
 
 ## Test Plan
+
+Tests added to `worker/deno/tests/unit_test_time_budget_test.ts` (all Issue #2669):
+
+- `every keep-list entry is a reasoned decision, not a baseline`
+- `under the git guard shim a slow file is reported, not failed`
+- `without the git guard shim a slow file still fails`
+- `budgetProvedPass - only an enforced, clean budget lets a pass be cached`
+- `gitGuardShimOnPath` — finds the real rendered shim; no PATH, an empty PATH, or no `git` on it; skips a non-executable `git` or a directory named `git`; an unreadable `git` throws (ignored where root can read it)
+- `passesTimeBudget - waives a slow file when the git guard shim is on PATH`
+
+Modified: `the baseline and subprocess-timing suites are on the keep-list` becomes `the subprocess-timing suites are on the keep-list`, because the baseline it also checked is deleted.
 
 - [x] `deno task test:unit tests/unit_test_time_budget_test.ts`: 22 passed
 - [x] `deno fmt`, `deno lint` and `deno check` on the touched files

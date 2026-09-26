@@ -249,21 +249,33 @@ Deno.test("gitGuardShimOnPath - skips a git that the shell would not run", async
   }
 });
 
-Deno.test("gitGuardShimOnPath - an unreadable git throws rather than reading as no shim", async () => {
-  // Executable but not readable: the check cannot tell, so it fails loud.
-  const locked = await pathWithGit(SHIM_SCRIPT, 0o311);
+/** Whether a mode-0311 file is still readable here (root reads anything). */
+async function unreadableFilesAreReadable(): Promise<boolean> {
+  const dir = await pathWithGit(SHIM_SCRIPT, 0o311);
   try {
-    // Root reads anything, so there is nothing to prove there.
-    const readable = await Deno.readFile(`${locked}/git`).then(() => true)
-      .catch(() => false);
-    if (readable) return;
-    await assertRejects(
-      () => gitGuardShimOnPath(locked),
-      Deno.errors.PermissionDenied,
-    );
+    return await Deno.readFile(`${dir}/git`).then(() => true, () => false);
   } finally {
-    await Deno.remove(locked, { recursive: true });
+    await Deno.remove(dir, { recursive: true });
   }
+}
+
+Deno.test({
+  name:
+    "gitGuardShimOnPath - an unreadable git throws rather than reading as no shim",
+  // Reported as ignored, not passed, where permissions cannot be denied.
+  ignore: await unreadableFilesAreReadable(),
+  fn: async () => {
+    // Executable but not readable: the check cannot tell, so it fails loud.
+    const locked = await pathWithGit(SHIM_SCRIPT, 0o311);
+    try {
+      await assertRejects(
+        () => gitGuardShimOnPath(locked),
+        Deno.errors.PermissionDenied,
+      );
+    } finally {
+      await Deno.remove(locked, { recursive: true });
+    }
+  },
 });
 
 Deno.test("parseJunitTestTimes - reads names, files and times, entities decoded", () => {
