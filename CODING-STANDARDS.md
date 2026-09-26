@@ -292,8 +292,10 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   `WARNING` line, and a file whose tests **all** exceed it fails the gate
   unless it is an integration suite or on `SLOW_UNIT_TEST_KEEP_FILES` in
   [`lib/unit_test_time_budget.ts`](worker/deno/lib/unit_test_time_budget.ts)
-  with a reason (the files already slow when the budget landed are listed
-  there as a baseline to burn down, not to add to). A slow unit test is
+  with a reason. Under the agent's own git guard shim, which adds ~200 ms to
+  every message-carrying `git` call, that failure is printed as
+  `NOT ENFORCED` rather than failing the gate; CI and the worker's gate
+  enforce it (Issue #2669). A slow unit test is
   usually a real side effect the mocks missed — #2642's planning suites were
   spawning `claude` for real. Beyond
   that budget the rule is enforced by shape rather than by stopwatch: a wall-clock

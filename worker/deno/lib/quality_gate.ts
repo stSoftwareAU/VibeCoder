@@ -65,6 +65,7 @@ import {
   unitTestStageVerdict,
 } from "./unit_test_passes.ts";
 import {
+  gitGuardShimOnPath,
   passesTimeBudget,
   type TimeBudgetReport,
 } from "./unit_test_time_budget.ts";
@@ -1324,11 +1325,13 @@ async function runUnitTestPasses(
     exemptNotes: [],
     failedFiles: [],
     failures: [],
+    unenforced: [],
   };
   if (verdict.status === "PASSED") {
     try {
       budget = await passesTimeBudget(
         passes.flatMap((pass) => pass.junitPath ? [pass.junitPath] : []),
+        { gitGuardShim: await gitGuardShimOnPath(Deno.env.get("PATH")) },
       );
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -1346,6 +1349,7 @@ async function runUnitTestPasses(
         `(Issue #2642) — \`deno task test:unit\` lists them`,
       ]
       : []),
+    ...budget.unenforced,
     ...budget.failures,
   ].join("\n");
 
@@ -1358,7 +1362,11 @@ async function runUnitTestPasses(
     };
   }
   if (verdict.status === "PASSED") {
-    await recordPass(config.cacheDir, name, digest, isoNow());
+    // Issue #2669: a pass that waived the budget under the git guard shim is
+    // not cached, so a gate that enforces it re-runs rather than reusing it.
+    if (budget.unenforced.length === 0) {
+      await recordPass(config.cacheDir, name, digest, isoNow());
+    }
     return { name, status: "PASSED", output: `${body}\nDeno tests: PASSED` };
   }
   await invalidate(config.cacheDir, name);

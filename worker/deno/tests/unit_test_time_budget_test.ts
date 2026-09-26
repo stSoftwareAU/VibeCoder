@@ -154,7 +154,11 @@ Deno.test("time budget - under the git guard shim a slow file is reported, not f
   assertEquals(report.failures, []);
   // Loud, not silent: each would-be failure is named, with why it is waived.
   assertEquals(report.unenforced.length, 1);
-  assert(report.unenforced[0]!.startsWith("NOT ENFORCED: every test in tests/git_heavy_test.ts"));
+  assert(
+    report.unenforced[0]!.startsWith(
+      "NOT ENFORCED: every test in tests/git_heavy_test.ts",
+    ),
+  );
   assert(report.unenforced[0]!.includes("git guard shim"));
   // The per-test WARNING lines still name every slow test.
   assertEquals(report.warnings.length, 2);
@@ -183,7 +187,7 @@ Deno.test("gitGuardShimOnPath - finds the real rendered shim first on PATH (Issu
     verdictDir: "/tmp/verdict",
     denoDir: "/tmp/deno-dir",
   }));
-  const plain = await pathWithGit("#!/bin/sh\nexec /usr/bin/git \"$@\"\n");
+  const plain = await pathWithGit('#!/bin/sh\nexec /usr/bin/git "$@"\n');
   try {
     assert(await gitGuardShimOnPath(`${shim}:${plain}`));
     // Only the git that would run counts: a shim behind another git is not.

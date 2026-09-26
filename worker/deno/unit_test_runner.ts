@@ -21,6 +21,8 @@
  * Every unit pass is held to the time budget (Issue #2642): a test over one
  * second is reported as a WARNING, and a file whose tests are all over it
  * fails the run unless it is exempt — see `lib/unit_test_time_budget.ts`.
+ * Under the agent's git guard shim that failure is reported as NOT ENFORCED
+ * instead (Issue #2669): the shim's per-call cost is not the test's.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -33,7 +35,10 @@ import {
   type UnitTestPass,
   unitTestPasses,
 } from "./lib/unit_test_passes.ts";
-import { passesTimeBudget } from "./lib/unit_test_time_budget.ts";
+import {
+  gitGuardShimOnPath,
+  passesTimeBudget,
+} from "./lib/unit_test_time_budget.ts";
 
 /** The runner's own flags; anything else starting with `-` is refused. */
 const KNOWN_FLAGS = ["--", "--integration", "--parallel-only", "--serial-only"];
@@ -128,11 +133,14 @@ async function runPasses(
     if (pass.junitPath) junitPaths.push(pass.junitPath);
   }
 
-  const budget = await passesTimeBudget(junitPaths);
+  const budget = await passesTimeBudget(junitPaths, {
+    gitGuardShim: await gitGuardShimOnPath(Deno.env.get("PATH")),
+  });
   for (
     const line of [
       ...budget.exemptNotes,
       ...budget.warnings,
+      ...budget.unenforced,
       ...budget.failures,
     ]
   ) {
