@@ -598,3 +598,76 @@ Deno.test("isStreamSharingTier - honours operator-configured tier labels", () =>
     false,
   );
 });
+
+// =============================================================================
+// Quoted marker is prose, not a tracker (Issue #2673)
+// =============================================================================
+
+/** Body of Migration_v21#450: a cleanup issue that *mentions* the marker. */
+const QUOTED_MARKER_BODY = [
+  "## Summary",
+  "",
+  "All listed issues are auto-generated tracking duplicates: they share an " +
+  `identical body and carry the \`${MILESTONE_TRACKING_MARKER}\` marker.`,
+].join("\n");
+
+Deno.test("issue_filter - isMilestoneTrackingIssue ignores a marker quoted in inline code (Issue #2673)", () => {
+  const issue = makeIssue({
+    title: "Cleanup: close duplicates",
+    body: QUOTED_MARKER_BODY,
+  });
+  assertEquals(isMilestoneTrackingIssue(issue), false);
+});
+
+Deno.test("issue_filter - isMilestoneTrackingIssue ignores a marker mentioned mid-sentence (Issue #2673)", () => {
+  const issue = makeIssue({
+    body: "Skip unless the body contains <!-- milestone-tracking-issue here.",
+  });
+  assertEquals(isMilestoneTrackingIssue(issue), false);
+});
+
+Deno.test("issue_filter - isMilestoneTrackingIssue ignores a marker inside a fenced code block (Issue #2673)", () => {
+  for (const fence of ["```", "~~~~"]) {
+    const issue = makeIssue({
+      body:
+        `Example tracker body:\n${fence}md\n${MILESTONE_TRACKING_MARKER}\n${fence}\nDone.`,
+    });
+    assertEquals(isMilestoneTrackingIssue(issue), false, fence);
+  }
+});
+
+Deno.test("issue_filter - isMilestoneTrackingIssue ignores a marker in an indented code block (Issue #2673)", () => {
+  for (const indent of ["    ", "\t"]) {
+    const issue = makeIssue({
+      body: `Example:\n\n${indent}${MILESTONE_TRACKING_MARKER}\n`,
+    });
+    assertEquals(
+      isMilestoneTrackingIssue(issue),
+      false,
+      JSON.stringify(indent),
+    );
+  }
+});
+
+Deno.test("issue_filter - isMilestoneTrackingIssue still detects a marker line below other text (Issue #2673)", () => {
+  const issue = makeIssue({
+    body:
+      `Note added by a human.\n\n   ${MILESTONE_TRACKING_MARKER}\r\n## Milestone completion`,
+  });
+  assertEquals(isMilestoneTrackingIssue(issue), true);
+});
+
+Deno.test("issue_filter - isMilestoneTrackingIssue detects a marker after a closed fence (Issue #2673)", () => {
+  const issue = makeIssue({
+    body: "```\ncode\n```\n<!-- milestone-tracking-issue -->",
+  });
+  assertEquals(isMilestoneTrackingIssue(issue), true);
+});
+
+Deno.test("issue_filter - filterAndSort keeps work whose body quotes the marker (Issue #2673)", () => {
+  const issues = [makeIssue({ number: 450, body: QUOTED_MARKER_BODY })];
+  assertEquals(
+    filterAndSort(issues, defaultFilterLabels).map((i) => i.number),
+    [450],
+  );
+});

@@ -32,6 +32,11 @@ import {
   type RepoCensusInput,
 } from "../lib/idle_decision_census.ts";
 import { SKIP_REASONS } from "../lib/issue_finder_logger.ts";
+import {
+  type FilterableIssue,
+  filterAndSort,
+  MILESTONE_TRACKING_MARKER,
+} from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 
 function issue(
@@ -1900,4 +1905,42 @@ Deno.test("census - work-on issues in the occupied blank stream count under thei
   assertEquals(entry.unblocked.workOn, 1);
   assertEquals(entry.streamOccupied, 0);
   assert(entry.inversionSignal);
+});
+
+Deno.test("census - an issue quoting the tracker marker is claimable to census and scan alike (Issue #2673)", () => {
+  // Migration_v21#450: a cleanup issue whose prose quotes the marker. The
+  // census counted it claimable while the scan dropped it as a tracker.
+  const body = "They carry the `" + MILESTONE_TRACKING_MARKER + "` marker.";
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [{ ...issue(450, ["top-priority"]), body }],
+      }),
+    ],
+  });
+  assertEquals(census.perRepo[0]!.claimableIssues, [450]);
+
+  const scanned: FilterableIssue = {
+    number: 450,
+    title: "Cleanup: close Milestone 4 duplicate tracking issues",
+    url: "",
+    author: "nleck",
+    assignees: [],
+    labels: ["top-priority"],
+    createdAt: "2026-09-01T00:00:00Z",
+    milestone: "",
+    body,
+  };
+  const kept = filterAndSort([scanned], {
+    failedLabel: "failed",
+    needsRevisionLabel: "needs-revision",
+    refineIssueLabel: "refine-issue",
+    planningLabel: "planning",
+    questionLabel: "question",
+    needsHumanLabel: "needs-human",
+  });
+  assertEquals(kept.map((i) => i.number), [450]);
 });
