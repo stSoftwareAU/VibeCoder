@@ -12,7 +12,9 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  NEAR_BUDGET_AT_BASELINE,
   normaliseTestPath,
+  OVER_BUDGET_AT_BASELINE,
   parseJunitTestTimes,
   passesTimeBudget,
   readPassTimings,
@@ -22,6 +24,7 @@ import {
   unitTestTimeBudget,
 } from "../lib/unit_test_time_budget.ts";
 import { IN_GATE_SCRIPT_SUITES } from "../lib/integration_test_manifest.ts";
+import { SUBPROCESS_TIMING_TEST_FILES } from "../lib/parallel_unsafe_test_manifest.ts";
 
 /** A JUnit report in the shape `deno test --junit-path` writes. */
 function junit(cases: { file: string; name: string; seconds: number }[]) {
@@ -81,10 +84,11 @@ Deno.test("time budget - a file whose every test is slow fails, slowest warnings
   assertEquals(report.warnings.length, 2);
 });
 
-Deno.test("time budget - integration suites and the keep-list warn but never fail", () => {
+Deno.test("time budget - integration suites and the keep-list never fail and get one note, not a WARNING each", () => {
   const timings: TestTiming[] = [
     { file: "tests/integration_test.ts", name: "spawns", ms: 9000 },
     { file: "tests/kept_test.ts", name: "watchdog", ms: 6000 },
+    { file: "tests/kept_test.ts", name: "reaps", ms: 5000 },
   ];
   const report = unitTestTimeBudget(timings, {
     integrationFiles: ["tests/integration_test.ts"],
@@ -92,7 +96,23 @@ Deno.test("time budget - integration suites and the keep-list warn but never fai
   });
 
   assertEquals(report.failedFiles, []);
-  assertEquals(report.warnings.length, 2);
+  assertEquals(report.warnings, []);
+  assertEquals(report.exemptNotes, [
+    "slow by decision: tests/integration_test.ts — 1 test(s) over 1.00s",
+    "slow by decision: tests/kept_test.ts — 2 test(s) over 1.00s",
+  ]);
+});
+
+Deno.test("time budget - the baseline and subprocess-timing suites are on the keep-list", () => {
+  for (
+    const file of [
+      ...OVER_BUDGET_AT_BASELINE,
+      ...NEAR_BUDGET_AT_BASELINE,
+      ...SUBPROCESS_TIMING_TEST_FILES.keys(),
+    ]
+  ) {
+    assert(SLOW_UNIT_TEST_KEEP_FILES.has(file), file);
+  }
 });
 
 Deno.test("time budget - the run.ps1 launcher suite is on the default keep-list", () => {
@@ -109,6 +129,7 @@ Deno.test("time budget - the run.ps1 launcher suite is on the default keep-list"
 Deno.test("time budget - no timings, no findings", () => {
   assertEquals(unitTestTimeBudget([]), {
     warnings: [],
+    exemptNotes: [],
     failedFiles: [],
     failures: [],
   });
