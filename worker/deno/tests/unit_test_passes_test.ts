@@ -31,6 +31,7 @@ import {
   integrationTestPass,
   serialPassFiles,
   summariseUnitTestPasses,
+  targetedUnitTestPasses,
   type UnitTestPass,
   unitTestPasses,
   type UnitTestPassOutcome,
@@ -560,4 +561,82 @@ Deno.test("unit passes - a real container marker still bounds DENO_JOBS (Issue #
 Deno.test("unit passes - CONTAINER_MARKER_VAR is the canonical stamp name (Issue #1493)", () => {
   // Aliased rather than re-spelled, so the two cannot drift apart.
   assertEquals(CONTAINER_MARKER_VAR, CONTAINER_IMAGE_STAMP_ENV);
+});
+
+Deno.test("unit passes - a JUnit directory gives each pass its own report (Issue #2642)", () => {
+  const built = unitTestPasses({
+    denoCmd: "/usr/bin/deno",
+    env: HOST_ENV,
+    junitDir: "/tmp/junit",
+  });
+  assertEquals(built.map((p) => p.junitPath), [
+    "/tmp/junit/parallel.xml",
+    "/tmp/junit/serial.xml",
+  ]);
+  for (const pass of built) {
+    assert(pass.args.includes(`--junit-path=${pass.junitPath}`), pass.label);
+  }
+  // Without one, no pass writes a report.
+  for (const pass of passes()) {
+    assertEquals(pass.junitPath, undefined);
+    assertEquals(pass.args.some((a) => a.startsWith("--junit-path")), false);
+  }
+});
+
+Deno.test("targeted passes - only the unit tests among the files run, split as the gate splits them (Issue #2642)", () => {
+  const plan = targetedUnitTestPasses({
+    denoCmd: "/usr/bin/deno",
+    env: HOST_ENV,
+    integrationFiles: ["tests/launcher_test.ts", "tests/both_test.ts"],
+    parallelUnsafeFiles: ["tests/env_test.ts", "tests/both_test.ts"],
+    junitDir: "/tmp/junit",
+  }, [
+    "./tests/fast_test.ts",
+    "worker/deno/tests/launcher_test.ts",
+    "tests/env_test.ts",
+    "tests/both_test.ts",
+    "tests/fast_test.ts",
+  ]);
+
+  assertEquals(plan.skippedIntegration, [
+    "tests/launcher_test.ts",
+    "tests/both_test.ts",
+  ]);
+  assertEquals(plan.passes.map((p) => p.label), ["parallel", "serial"]);
+  const [parallel, serial] = plan.passes;
+  assert(parallel!.args.includes("--parallel"));
+  assertEquals(parallel!.args.slice(-1), ["tests/fast_test.ts"]);
+  assertEquals(serial!.args.includes("--parallel"), false);
+  assertEquals(serial!.args.slice(-1), ["tests/env_test.ts"]);
+  assertEquals(serial!.junitPath, "/tmp/junit/serial.xml");
+});
+
+Deno.test("targeted passes - a list of integration suites alone runs nothing (Issue #2642)", () => {
+  const plan = targetedUnitTestPasses({
+    denoCmd: "/usr/bin/deno",
+    env: HOST_ENV,
+    integrationFiles: ["tests/launcher_test.ts"],
+    parallelUnsafeFiles: [],
+  }, ["tests/launcher_test.ts"]);
+  assertEquals(plan.passes, []);
+  assertEquals(plan.skippedIntegration, ["tests/launcher_test.ts"]);
+  assertEquals(
+    targetedUnitTestPasses({ denoCmd: "deno", env: HOST_ENV }, []).passes,
+    [],
+  );
+});
+
+Deno.test("targeted passes - the real manifests keep the launcher suites out (Issue #2642)", () => {
+  const plan = targetedUnitTestPasses({ denoCmd: "deno", env: HOST_ENV }, [
+    "tests/run_sh_launcher_test.ts",
+    "tests/setup_ps1_test.ts",
+    "tests/unit_test_passes_test.ts",
+  ]);
+  assertEquals(plan.skippedIntegration, [
+    "tests/run_sh_launcher_test.ts",
+    "tests/setup_ps1_test.ts",
+  ]);
+  assertEquals(plan.passes.flatMap((p) => p.args.slice(-1)), [
+    "tests/unit_test_passes_test.ts",
+  ]);
 });

@@ -47,7 +47,6 @@ import {
   preferredStreamProviderId,
   primeStreamSession,
 } from "./stream_session.ts";
-import { primeStreamCompaction } from "./stream_compaction.ts";
 import {
   buildBoundaryIntegrityInstruction,
   createPromptDelimiters,
@@ -1630,7 +1629,7 @@ async function _processPlanningWithHeartbeat(
       streamSession = { stream: adoption.stream, providerId };
       // Compact the conversation this planning stream has been having before
       // the first turn starts (Issue #2337).
-      const autocompactTokens = await primeStreamCompaction({
+      const autocompactTokens = await deps.claude.primeStreamCompaction({
         outcome: adoption.outcome,
         providerId,
         ...(adoption.state.providerId !== undefined
