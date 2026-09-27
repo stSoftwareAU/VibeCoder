@@ -44,7 +44,18 @@ Optional argument: `owner/name` to review one repo only.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
-7. **Review each head commit once.** A new push gets a fresh review. When
+7. **A pre-existing problem the PR did not cause gets its own issue.** If
+   a dark-theme PR passes by a cross-site scripting bug that was already on
+   the default branch, it would be unfair to hold the PR up over it, but
+   now that it has been found it must not be forgotten: Fable reports it
+   separately, and it is filed as a new issue in the PR's repo (linked from
+   the review) without affecting the outcome. **If the PR caused the
+   problem, it is never an unrelated issue:** had the dark-theme change
+   itself introduced the cross-site scripting bug, it is a blocking finding
+   and this PR must fix it. Only a problem that is already present on the
+   base branch, unchanged by the PR, is filed separately; when in doubt, it
+   is a finding.
+8. **Review each head commit once.** A new push gets a fresh review. When
    the fleet pushes a fix to a PR that was sent back, the re-review checks
    the earlier findings were fixed, and approves once they are.
 
@@ -145,16 +156,35 @@ single message so they run in parallel, each with `model: "fable"` and
 > 7. For Dependabot: check the changelog or release notes for breaking changes
 >    that affect how this repo uses the dependency, and that a major bump is
 >    reflected in the code where needed.
+> 8. If, while reading, you notice an important **pre-existing** problem
+>    the PR did not cause and is not meant to fix (a bug, a security gap,
+>    data loss, a broken workflow in code it passes by), report it under
+>    `unrelatedIssues`, not as a finding: it is filed as a separate issue
+>    and does not block this PR. First confirm it is pre-existing: the same
+>    problem must be present on the base branch
+>    (`gh api repos/{repo}/contents/<path>?ref={baseRef}`) and not
+>    introduced, widened or newly exposed by this PR's changes. Anything
+>    this PR causes, even in a file it only touches in passing, is a
+>    blocking **finding** this PR must fix; when in doubt, it is a
+>    finding. Only real, verified problems with a file
+>    and line, at most 3; not style, polish or wishes. Skip any that
+>    `gh issue list -R {repo} --search "<words> in:title"` shows is already
+>    open. Write each as a standalone issue: a title that names the defect,
+>    and a body saying what is wrong, the failure scenario and a suggested
+>    fix. Describe a security gap by class and location only (for example
+>    "the query is written into the page unescaped"), never with a working
+>    exploit or payload: some repos are public.
 >
 > Only report **blocking** findings: things that are wrong, unsafe or
 > untested. Style preferences and optional polish are not blocking. A
 > meaningful test change the issue requires is not a finding; report it under
 > `testChanges`. Do
 > not guess: every finding needs a file and line from the diff and a concrete
-> failure scenario.
+> failure scenario. A problem the PR introduces, widens or newly exposes is
+> always a finding, never an unrelated issue.
 >
 > Reply with only this JSON:
-> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}]}`
+> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
 
 If an agent fails or returns something that isn't this JSON, post nothing for
 that PR; the next gate run reports it again.
@@ -177,19 +207,22 @@ The script does the rest, so do not post anything yourself:
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
   worker ignores; otherwise **approve**.
-- It writes and posts the review body, appends the result to
-  `~/.review-fleet-prs/log.jsonl`, refreshes
+- It files each of Fable's `unrelatedIssues` in the PR's repo, linking an
+  open issue with the same title instead of filing it twice. A failure to
+  file one never stops the review.
+- It writes and posts the review body (listing any issues filed), appends
+  the result to `~/.review-fleet-prs/log.jsonl`, refreshes
   `~/.review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
-It prints `{ posted, outcome?, reason? }`. Exit code 2 means Fable's reply
-was malformed: nothing was posted, and the PR comes back on the next gate
-pass.
+It prints `{ posted, outcome?, filedIssues?, reason? }`. Exit code 2 means
+Fable's reply was malformed: nothing was posted, and the PR comes back on the
+next gate pass.
 
 ### 3. Report
 
 One short line per round: approved, sent back, and held for the owner, each
-with PR links. Then go back to the loop.
+with PR links, plus any issues filed. Then go back to the loop.
 
 When the round held a PR for the owner or sent one back to the fleet, also
 send one PushNotification (status `proactive`) naming those PRs and why,

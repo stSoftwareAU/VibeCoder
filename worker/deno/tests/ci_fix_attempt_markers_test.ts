@@ -24,9 +24,11 @@ import {
   findDeferral,
   findHumanGate,
   findNoChangeComment,
+  isHumanGateParkedAt,
   parseCiFixAttemptMarkers,
   parseCiFixDeferralMarkers,
   parseCiHumanGateMarkers,
+  restampHumanGateMarker,
 } from "../lib/ci_fix_attempt_markers.ts";
 
 const SIGNATURE = "0123456789abcdef";
@@ -679,4 +681,44 @@ Deno.test("ci_fix_attempt_markers - an unresolved fleet collects no human gate",
 
   assertEquals(collected.fleetResolved, false);
   assertEquals(collected.humanGates.size, 0);
+});
+
+Deno.test("ci_fix_attempt_markers - a gate marker round-trips its head; a bad head is refused and skipped (PR #2762)", () => {
+  const head = "e".repeat(40);
+  const marker = buildCiHumanGateMarker({ checkName: "build", head });
+  assertEquals(parseCiHumanGateMarkers(marker), [{ checkName: "build", head }]);
+  assertThrows(() => buildCiHumanGateMarker({ checkName: "build", head: "x" }));
+  assertEquals(
+    parseCiHumanGateMarkers(
+      `<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="build" head="nope" -->`,
+    ),
+    [],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - isHumanGateParkedAt holds only for the marker's head (PR #2762)", () => {
+  const head = "e".repeat(40);
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({ body: buildCiHumanGateMarker({ checkName: "build", head }) }),
+      comment({ id: 2, body: buildCiHumanGateMarker({ checkName: "legacy" }) }),
+    ],
+    ["stservice"],
+  );
+  assert(isHumanGateParkedAt(collected, "build", head));
+  assertEquals(isHumanGateParkedAt(collected, "build", "f".repeat(40)), false);
+  assertEquals(isHumanGateParkedAt(collected, "build", undefined), false);
+  assertEquals(isHumanGateParkedAt(collected, "legacy", head), false);
+  assertEquals(isHumanGateParkedAt(collected, "other", head), false);
+});
+
+Deno.test("ci_fix_attempt_markers - restampHumanGateMarker replaces only the marker", () => {
+  const before = `Prose stays.\n\n${
+    buildCiHumanGateMarker({ checkName: "build" })
+  }`;
+  const next = buildCiHumanGateMarker({
+    checkName: "build",
+    head: "e".repeat(40),
+  });
+  assertEquals(restampHumanGateMarker(before, next), `Prose stays.\n\n${next}`);
 });

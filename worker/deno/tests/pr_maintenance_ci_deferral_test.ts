@@ -20,10 +20,12 @@ import {
 } from "../lib/pr_maintenance.ts";
 import {
   buildCiFixDeferralMarker,
+  buildCiHumanGateMarker,
   CI_FIX_DEFERRAL_MARKER_NAME,
 } from "../lib/ci_fix_attempt_markers.ts";
 import {
   findOpenDeferrals,
+  findParkedChecks,
   parseBlockerRef,
 } from "../lib/ci_fix_pr_markers.ts";
 import type { Logger } from "../types.ts";
@@ -35,18 +37,23 @@ import type { Logger } from "../types.ts";
 /** A logger that records what the scan reported. */
 interface RecordingLogger extends Logger {
   errors: string[];
+  warnings: string[];
   skips: string[];
 }
 
 function makeRecordingLogger(): RecordingLogger {
   const noop = () => {};
   const errors: string[] = [];
+  const warnings: string[] = [];
   const skips: string[] = [];
   return {
     errors,
+    warnings,
     skips,
     info: noop,
-    warn: noop,
+    warn: (message: string) => {
+      warnings.push(message);
+    },
     error: (message: string) => {
       errors.push(message);
     },
@@ -63,6 +70,10 @@ function makeRecordingLogger(): RecordingLogger {
 
 const FLEET_LOGIN = "testbot";
 const SIGNATURE = "a1b2c3d4e5f6";
+/** The stub PR's current head. */
+const HEAD = "c".repeat(40);
+/** An earlier head of the same PR. */
+const OLD_HEAD = "d".repeat(40);
 
 /** One REST comment row, as `repos/…/issues/…/comments` returns it. */
 function commentRow(
@@ -94,6 +105,24 @@ function deferralComment(
   );
 }
 
+/**
+ * A human-gate announcement for `checkName` (Issue #2727), confirmed on
+ * `head` — the PR's current head unless stated (PR #2762).
+ */
+function humanGateComment(
+  id: number,
+  author: string,
+  checkName: string,
+  head: string | null = HEAD,
+): Record<string, unknown> {
+  return commentRow(
+    id,
+    author,
+    `${checkName} needs a human to approve it.\n\n` +
+      buildCiHumanGateMarker({ checkName, head: head ?? undefined }),
+  );
+}
+
 interface StubOptions {
   /** Failed check runs on the single PR's head. */
   checks: Array<{ id: number; name: string }>;
@@ -120,7 +149,12 @@ function makeGh(
     calls.push(key);
     if (key.includes("pr list")) {
       return Promise.resolve(JSON.stringify([
-        { number: 7, headRefName: "issue-1-fix", baseRefName: "main" },
+        {
+          number: 7,
+          headRefName: "issue-1-fix",
+          headRefOid: HEAD,
+          baseRefName: "main",
+        },
       ]));
     }
     if (key.includes("check-runs") && !key.includes("annotations")) {
@@ -324,6 +358,135 @@ Deno.test("findFailedCiChecks - a PR with no failing checks reads no comments (I
 });
 
 // ---------------------------------------------------------------------------
+// findFailedCiChecks — human-gate checks (Issue #2744)
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - a check the fleet parked as a human gate is not returned; a sibling failure on the same PR is (Issue #2744)", async () => {
+  const logger = makeRecordingLogger();
+  const result = await scan({
+    checks: TWO_CHECKS,
+    comments: [humanGateComment(10, FLEET_LOGIN, "Project Validation")],
+  }, logger);
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "lint");
+  assertEquals(logger.skips.length, 1);
+  assertStringIncludes(logger.skips[0] ?? "", "ci-human-gate");
+  assertStringIncludes(logger.skips[0] ?? "", "Project Validation");
+  assertEquals(logger.errors, []);
+});
+
+Deno.test("findFailedCiChecks - a gate marker from an earlier head does not park a later failure of the same check (PR #2762)", async () => {
+  // Head A parked the gate; it cleared; head B fails the same job for an
+  // ordinary reason. The scanner must hand it to the processor to re-read.
+  const logger = makeRecordingLogger();
+  const result = await scan({
+    checks: [{ id: 1, name: "Project Validation" }],
+    comments: [
+      humanGateComment(10, FLEET_LOGIN, "Project Validation", OLD_HEAD),
+    ],
+  }, logger);
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "Project Validation");
+  assertEquals(logger.skips, []);
+});
+
+Deno.test("findFailedCiChecks - a pre-#2762 gate marker with no head parks nothing (PR #2762)", async () => {
+  const logger = makeRecordingLogger();
+  const result = await scan({
+    checks: [{ id: 1, name: "Project Validation" }],
+    comments: [
+      humanGateComment(10, FLEET_LOGIN, "Project Validation", null),
+    ],
+  }, logger);
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "Project Validation");
+  assertEquals(logger.skips, []);
+});
+
+Deno.test("findFailedCiChecks - a human-gate marker authored outside the fleet does not park the check (Issue #2744)", async () => {
+  const logger = makeRecordingLogger();
+  const result = await scan({
+    checks: TWO_CHECKS,
+    comments: [humanGateComment(10, "randomuser", "Project Validation")],
+  }, logger);
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "Project Validation");
+  assertEquals(logger.skips, []);
+});
+
+Deno.test("findFailedCiChecks - a parked human-gate check raises no max-retries warning (Issue #2744)", async () => {
+  const logger = makeRecordingLogger();
+  // maxRetries 0 puts every check over the cap, so any check that reaches
+  // the retry test warns.
+  const result = await scan(
+    {
+      checks: [{ id: 1, name: "Project Validation" }],
+      comments: [humanGateComment(10, FLEET_LOGIN, "Project Validation")],
+    },
+    logger,
+    [],
+    { maxRetries: 0 },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, null);
+  assertEquals(
+    logger.warnings.filter((w) => w.includes("exceeded max retries")),
+    [],
+  );
+  assertEquals(logger.skips.length, 1);
+  assertStringIncludes(logger.skips[0] ?? "", "ci-human-gate");
+});
+
+Deno.test("findFailedCiChecks - an unreadable comment thread leaves a gate check scanned and is logged (Issue #2744)", async () => {
+  const logger = makeRecordingLogger();
+  const result = await scan({
+    checks: [{ id: 1, name: "Project Validation" }],
+    comments: "error",
+  }, logger);
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "Project Validation");
+  assertEquals(logger.skips, []);
+  assertEquals(logger.errors.length, 1);
+  assertStringIncludes(logger.errors[0] ?? "", "human gate");
+  assertStringIncludes(logger.errors[0] ?? "", "Issue #2744");
+});
+
+Deno.test("findFailedCiChecks - a deferral and a human gate on one PR share a single comment read (Issue #2744)", async () => {
+  const logger = makeRecordingLogger();
+  const calls: Calls = [];
+  const result = await scan(
+    {
+      checks: [
+        { id: 1, name: "Project Validation" },
+        { id: 2, name: "Deploy approval" },
+        { id: 3, name: "lint" },
+      ],
+      comments: [
+        deferralComment(10, FLEET_LOGIN, "Project Validation", "org/repo#149"),
+        humanGateComment(11, FLEET_LOGIN, "Deploy approval"),
+      ],
+      blockers: { "org/repo#149": "OPEN" },
+    },
+    logger,
+    calls,
+  );
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "lint");
+  assertEquals(
+    calls.filter((call) => call.includes("/issues/7/comments")).length,
+    1,
+  );
+  assertEquals(logger.skips.length, 2);
+});
+
+// ---------------------------------------------------------------------------
 // findOpenDeferrals / parseBlockerRef
 // ---------------------------------------------------------------------------
 
@@ -399,6 +562,47 @@ Deno.test("findOpenDeferrals - a comment without a marker is not a deferral (Iss
   });
 
   assertEquals(open, []);
+});
+
+Deno.test("findParkedChecks - returns the fleet human gates alongside the deferrals, without reading a blocker (Issue #2744)", async () => {
+  const logger = makeRecordingLogger();
+  const calls: Calls = [];
+  const gh = makeGh({
+    checks: [],
+    comments: [
+      humanGateComment(10, FLEET_LOGIN, "Deploy approval"),
+      humanGateComment(11, "randomuser", "lint"),
+    ],
+  }, calls);
+
+  const parked = await findParkedChecks({
+    repo: "org/repo",
+    prNumber: 7,
+    ghCommandFn: gh,
+    fleetLogins: [FLEET_LOGIN],
+    logger,
+  });
+
+  assertEquals(parked.deferrals, []);
+  assertEquals([...parked.markers.humanGates.keys()], ["Deploy approval"]);
+  assertEquals(calls.filter((call) => call.startsWith("issue view ")), []);
+});
+
+Deno.test("findParkedChecks - an unreadable thread returns empty markers and logs the error (Issue #2744)", async () => {
+  const logger = makeRecordingLogger();
+  const gh = makeGh({ checks: [], comments: "error" }, []);
+
+  const parked = await findParkedChecks({
+    repo: "org/repo",
+    prNumber: 7,
+    ghCommandFn: gh,
+    fleetLogins: [FLEET_LOGIN],
+    logger,
+  });
+
+  assertEquals(parked.deferrals, []);
+  assertEquals(parked.markers.humanGates.size, 0);
+  assertEquals(logger.errors.length, 1);
 });
 
 Deno.test("parseBlockerRef - splits owner/repo#N and refuses anything else (Issue #1881)", () => {
