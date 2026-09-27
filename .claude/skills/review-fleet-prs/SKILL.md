@@ -201,15 +201,17 @@ deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME po
 
 The script does the rest, so do not post anything yourself:
 
-- It re-checks the head commit and posts nothing if it moved or the PR
+- It files each of Fable's `unrelatedIssues` first: they are already on
+  the base branch, so they are filed even if the PR has since moved or
+  merged.
+- It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
 - It decides the outcome: Fable findings mean **request changes** (the
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
   worker ignores; otherwise **approve**.
-- It files each of Fable's `unrelatedIssues` in the PR's repo, linking an
-  open issue with the same title instead of filing it twice. A failure to
-  file one never stops the review.
+- It links an open issue with the same title instead of filing an
+  unrelated issue twice. A failure to file one never stops the review.
 - It writes and posts the review body (listing any issues filed), appends
   the result to `~/.review-fleet-prs/log.jsonl`, refreshes
   `~/.review-fleet-prs/summary.md`, and raises a desktop notification when a
