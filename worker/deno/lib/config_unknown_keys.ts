@@ -50,6 +50,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "update_mode",
   "pinned_ref",
   "pinned_tool_versions",
+  // Copilot code review on/off/leave, applied by setup (Issue #2701).
+  "copilot_code_review",
   "agent_provider_mode",
   "agent_provider",
   "agent_providers",

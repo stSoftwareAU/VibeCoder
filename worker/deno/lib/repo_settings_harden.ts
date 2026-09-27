@@ -33,6 +33,13 @@
  *  - each fleet account (`fleetAccounts`) at write, never admin or
  *    maintain (Issue #2690); an organisation owner is left to the caller to
  *    report, since no repository setting can lower it.
+ *  - Copilot code review as the host's `copilot_code_review` says (Issue
+ *    #2701) — it is billed per review, so it is the operator's call:
+ *    `off` removes the `copilot_code_review` rule from every repository
+ *    ruleset (deleting a ruleset it leaves empty; an organisation ruleset is
+ *    reported, never written), `on` makes sure one applies to the default
+ *    branch (creating {@link COPILOT_RULESET_NAME} when none does), and
+ *    `leave` — the default — plans nothing.
  *
  * Every step is planned from the CURRENT settings (nothing is written that
  * already holds), shown in dry-run, and applied only under `--apply`.
@@ -61,6 +68,7 @@ import {
 } from "./branch_push_policy.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { extractUsesValue } from "./action_pin_scanner.ts";
+import type { CopilotCodeReviewMode } from "../types.ts";
 
 type GhCommandFn = (args: string[]) => Promise<string>;
 
@@ -164,10 +172,11 @@ export interface HardenStep {
     | "default-branch-squash-only"
     | "merge-commit-allowed"
     | "fleet-account-write"
-    | "milestone-branch-create";
+    | "milestone-branch-create"
+    | "copilot-code-review";
   /** What the step closes. */
   title: string;
-  method: "PUT" | "PATCH" | "POST";
+  method: "PUT" | "PATCH" | "POST" | "DELETE";
   /** `repos/{repo}/…` — the repo is filled in at apply time. */
   endpoint: string;
   body?: string;
@@ -210,6 +219,11 @@ export interface PlanOptions {
    * admin the rest of the run needs, so it is reported instead.
    */
   setupLogin?: string;
+  /**
+   * The host's `copilot_code_review` (Issue #2701). Absent is `leave`:
+   * nothing about Copilot code review is planned.
+   */
+  copilotCodeReview?: CopilotCodeReviewMode;
 }
 
 const GITHUB_OWNED = new Set(["actions", "github"]);
@@ -463,10 +477,15 @@ export function isSecretScanningSkipped(
 
 /** Plan the writes that close each open setting; empty when hardened. */
 export function planRepoSettingsHardening(
-  snapshot: RepoSettingsSnapshot,
+  current: RepoSettingsSnapshot,
   options: PlanOptions,
 ): HardenStep[] {
-  const steps: HardenStep[] = [];
+  // Copilot code review is planned first, and every later step plans from
+  // the rulesets as they will be once it has run (Issue #2701): a step that
+  // echoes a whole ruleset must not put back the rule this one removes.
+  const copilot = planCopilotCodeReview(current, options.copilotCodeReview);
+  const snapshot = copilot.snapshot;
+  const steps: HardenStep[] = [...copilot.steps];
   const w = snapshot.workflow;
   if (
     w &&
@@ -972,6 +991,158 @@ function planMergeCommitAllowed(
   return squash ? { ...step, dependsOn: [squash.kind] } : step;
 }
 
+/** The rule type GitHub gives Copilot code review in a ruleset. */
+const COPILOT_RULE_TYPE = "copilot_code_review";
+
+/**
+ * The ruleset `on` creates when no Copilot review rule applies to the
+ * default branch (Issue #2701). Its own ruleset, apart from
+ * {@link VIBE_RULESET_NAME}, so turning the review off again deletes it
+ * whole and leaves the default-branch ruleset untouched.
+ */
+export const COPILOT_RULESET_NAME = "Vibe Coder Copilot review";
+
+/**
+ * The rule `on` writes (Issue #2701): one review when a pull request is
+ * opened, none per push and none on drafts — each review is billed.
+ */
+const COPILOT_RULE: RulesetRule = {
+  type: COPILOT_RULE_TYPE,
+  parameters: { review_on_push: false, review_draft_pull_requests: false },
+};
+
+const COPILOT_BILLING_WARNING =
+  "Every automatic Copilot review is billed to the PR author's Copilot plan, or to the organisation — never free, even on a public repository (Issue #2701).";
+
+/** Whether setup may edit `ruleset`: only a repository ruleset. */
+function isRepositoryRuleset(ruleset: RulesetSnapshot): boolean {
+  return ruleset.source_type === undefined ||
+    ruleset.source_type === "Repository";
+}
+
+/** `'name'`, or the id when the ruleset has no name. */
+function rulesetLabel(ruleset: RulesetSnapshot): string {
+  return `'${ruleset.name ?? ruleset.id}'`;
+}
+
+/**
+ * Plan Copilot code review as the host asked (Issue #2701), returning the
+ * steps and the snapshot as it will read once they have run. Nothing is
+ * planned from a surface that could not be read.
+ */
+function planCopilotCodeReview(
+  snapshot: RepoSettingsSnapshot,
+  mode: CopilotCodeReviewMode | undefined,
+): { snapshot: RepoSettingsSnapshot; steps: HardenStep[] } {
+  if (mode === "off") return planCopilotOff(snapshot);
+  if (mode === "on") return { snapshot, steps: planCopilotOn(snapshot) };
+  return { snapshot, steps: [] };
+}
+
+/**
+ * `off`: take the Copilot rule out of every repository ruleset that carries
+ * it, deleting a ruleset left with no rules. An organisation ruleset cannot
+ * be edited from the repository, so it is reported for the owner.
+ */
+function planCopilotOff(
+  snapshot: RepoSettingsSnapshot,
+): { snapshot: RepoSettingsSnapshot; steps: HardenStep[] } {
+  if (!snapshot.rulesets) return { snapshot, steps: [] };
+  const steps: HardenStep[] = [];
+  const after: RulesetSnapshot[] = [];
+  for (const ruleset of snapshot.rulesets) {
+    const rules = ruleset.rules ?? [];
+    if (!rules.some((rule) => rule.type === COPILOT_RULE_TYPE)) {
+      after.push(ruleset);
+      continue;
+    }
+    const label = rulesetLabel(ruleset);
+    if (!isRepositoryRuleset(ruleset)) {
+      after.push(ruleset);
+      steps.push({
+        kind: "copilot-code-review",
+        title: `Remove Copilot code review from ruleset ${label}`,
+        method: "PUT",
+        endpoint: `rulesets/${ruleset.id}`,
+        held: {
+          status: "skipped",
+          detail: `Copilot code review comes from organisation ruleset ` +
+            `${label}, which a repository cannot edit — turn it off in the ` +
+            `organisation's rulesets`,
+        },
+      });
+      continue;
+    }
+    const remaining = rules.filter((rule) => rule.type !== COPILOT_RULE_TYPE);
+    if (remaining.length === 0) {
+      // Deleted, so no later step can pick it as a target.
+      steps.push({
+        kind: "copilot-code-review",
+        title: `Turn off Copilot code review: delete ruleset ${label}, ` +
+          `which held nothing else`,
+        method: "DELETE",
+        endpoint: `rulesets/${ruleset.id}`,
+      });
+      continue;
+    }
+    after.push({ ...ruleset, rules: remaining });
+    steps.push({
+      kind: "copilot-code-review",
+      title: `Turn off Copilot code review: remove its rule from ruleset ` +
+        label,
+      method: "PUT",
+      endpoint: `rulesets/${ruleset.id}`,
+      body: rulesetPutBody(ruleset, remaining),
+    });
+  }
+  return { snapshot: { ...snapshot, rulesets: after }, steps };
+}
+
+/**
+ * `on`: make sure a Copilot review rule applies to the default branch. The
+ * branch's effective rules decide — whatever ruleset, repository or
+ * organisation, carries it. With none, {@link COPILOT_RULESET_NAME} is
+ * created, or re-enabled when it exists but no longer applies.
+ */
+function planCopilotOn(snapshot: RepoSettingsSnapshot): HardenStep[] {
+  const { rules, rulesets } = snapshot;
+  if (!rules || !rulesets) return [];
+  if (rules.some((rule) => rule.type === COPILOT_RULE_TYPE)) return [];
+  const ours = rulesets.find((r) =>
+    isRepositoryRuleset(r) && r.name === COPILOT_RULESET_NAME
+  );
+  if (ours) {
+    return [{
+      kind: "copilot-code-review",
+      title: `Turn on Copilot code review on the default branch (ruleset ` +
+        `${rulesetLabel(ours)}: enforce it with the review rule)`,
+      method: "PUT",
+      endpoint: `rulesets/${ours.id}`,
+      body: rulesetPutBody({ ...ours, enforcement: "active" }, [
+        ...(ours.rules ?? []).filter((r) => r.type !== COPILOT_RULE_TYPE),
+        COPILOT_RULE,
+      ]),
+      warning: COPILOT_BILLING_WARNING,
+    }];
+  }
+  return [{
+    kind: "copilot-code-review",
+    title: `Turn on Copilot code review on the default branch (create ` +
+      `ruleset '${COPILOT_RULESET_NAME}')`,
+    method: "POST",
+    endpoint: "rulesets",
+    body: JSON.stringify({
+      name: COPILOT_RULESET_NAME,
+      target: "branch",
+      enforcement: "active",
+      // GitHub's alias keeps the rule on the default branch if it is renamed.
+      conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+      rules: [COPILOT_RULE],
+    }),
+    warning: COPILOT_BILLING_WARNING,
+  }];
+}
+
 /** A GitHub login: letters, digits and hyphens, at most 39. */
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 
@@ -1416,6 +1587,8 @@ export interface HardenRepoOptions {
   orgOwners?: readonly string[];
   /** The login setup runs as, never lowered mid-run. */
   setupLogin?: string;
+  /** The host's `copilot_code_review` (Issue #2701); absent is `leave`. */
+  copilotCodeReview?: CopilotCodeReviewMode;
 }
 
 /** What {@link hardenRepo} found and did. */
@@ -1623,6 +1796,9 @@ async function hardenRepoInto(
     defaultBranch: branch,
     ...(options.orgOwners ? { orgOwners: options.orgOwners } : {}),
     ...(options.setupLogin ? { setupLogin: options.setupLogin } : {}),
+    ...(options.copilotCodeReview
+      ? { copilotCodeReview: options.copilotCodeReview }
+      : {}),
   });
   const allowListStep = plan.find((s) => s.kind === "actions-allow-list");
   const runnable = allowListFault

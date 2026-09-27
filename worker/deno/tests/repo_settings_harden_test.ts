@@ -15,6 +15,7 @@ import {
   allowListCovers,
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
+  COPILOT_RULESET_NAME,
   findCodeownersOnDefaultBranch,
   hardenRepo,
   isSecretScanningSkipped,
@@ -1825,4 +1826,264 @@ Deno.test("buildMilestoneRulesetBody - a milestone ruleset carries no rule that 
   const types = body.rules.map((r) => r.type);
   assert(!types.includes("pull_request"), types.join(","));
   assert(!types.includes("required_linear_history"), types.join(","));
+});
+
+// ---------------------------------------------------------------------------
+// Copilot code review on / off / leave (Issue #2701)
+// ---------------------------------------------------------------------------
+
+const COPILOT_RULE = {
+  type: "copilot_code_review",
+  parameters: { review_on_push: true, review_draft_pull_requests: false },
+};
+
+/** The hand-made ruleset four monitored repos carried: Copilot alone. */
+const COPILOT_ONLY_RULESET = {
+  id: 21,
+  name: "Copilot review for default branch",
+  target: "branch",
+  enforcement: "active",
+  source_type: "Repository",
+  conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+  bypass_actors: [],
+  rules: [COPILOT_RULE],
+};
+
+/** A ruleset carrying the Copilot rule beside rules that must survive. */
+const MIXED_RULESET = {
+  ...VIBE_RULESET,
+  id: 22,
+  source_type: "Repository",
+  bypass_actors: [],
+  rules: [...VIBE_RULESET.rules, COPILOT_RULE],
+};
+
+/** A snapshot where nothing but the Copilot choice is in play. */
+function copilotSnapshot(
+  rulesets: Array<Record<string, unknown>>,
+): RepoSettingsSnapshot {
+  return {
+    rules: [
+      {
+        type: "pull_request",
+        ruleset_id: 7,
+        parameters: { required_approving_review_count: 1 },
+      },
+      ...rulesets.filter((r) => r["enforcement"] === "active").flatMap((r) =>
+        (r["rules"] as Array<{ type: string }>)
+          .filter((rule) => rule.type === "copilot_code_review")
+          .map((rule) => ({ ...rule, ruleset_id: r["id"] as number }))
+      ),
+    ],
+    rulesets: rulesets as unknown as RepoSettingsSnapshot["rulesets"],
+  };
+}
+
+function copilotSteps(
+  snapshot: RepoSettingsSnapshot,
+  mode: "on" | "off" | "leave" | undefined,
+) {
+  return planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: [],
+    defaultBranch: "main",
+    ...(mode ? { copilotCodeReview: mode } : {}),
+  }).filter((s) => s.kind === "copilot-code-review");
+}
+
+Deno.test("planRepoSettingsHardening - copilot off: a ruleset left with no rules is deleted (Issue #2701)", () => {
+  const steps = copilotSteps(copilotSnapshot([COPILOT_ONLY_RULESET]), "off");
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "DELETE");
+  assertEquals(steps[0]?.endpoint, "rulesets/21");
+  assertEquals(steps[0]?.body, undefined);
+  assert(steps[0]?.title.includes("Copilot review for default branch"));
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: a ruleset with other rules is PUT without the Copilot rule, echoing the rest (Issue #2701)", () => {
+  const steps = copilotSteps(copilotSnapshot([MIXED_RULESET]), "off");
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "PUT");
+  assertEquals(steps[0]?.endpoint, "rulesets/22");
+  const body = JSON.parse(steps[0]?.body ?? "{}");
+  assertEquals(body.rules, VIBE_RULESET.rules);
+  assertEquals(body.name, VIBE_RULESET.name);
+  assertEquals(body.conditions, VIBE_RULESET.conditions);
+  assertEquals(body.enforcement, "active");
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: already off plans no write (Issue #2701)", () => {
+  assertEquals(
+    copilotSteps(
+      copilotSnapshot([{ ...VIBE_RULESET, source_type: "Repository" }]),
+      "off",
+    ),
+    [],
+  );
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: an organisation ruleset is reported, never written (Issue #2701)", () => {
+  const steps = copilotSteps(
+    copilotSnapshot([{
+      ...COPILOT_ONLY_RULESET,
+      source_type: "Organization",
+    }]),
+    "off",
+  );
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.held?.status, "skipped");
+  assert(steps[0]?.held?.detail.includes("organisation"));
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: another step writing the same ruleset never puts the Copilot rule back (Issue #2701)", () => {
+  // A milestone ruleset enforced on create is written by its own step; that
+  // write must echo the ruleset WITHOUT the Copilot rule.
+  const base = milestoneRuleset(false);
+  const milestone = {
+    ...base,
+    source_type: "Repository",
+    enforcement: "active",
+    rules: [...(base.rules ?? []), COPILOT_RULE],
+  };
+  const plan = planRepoSettingsHardening(
+    copilotSnapshot([milestone as unknown as Record<string, unknown>]),
+    { thirdPartyPatterns: [], defaultBranch: "main", copilotCodeReview: "off" },
+  );
+  const milestoneStep = plan.find((s) => s.kind === "milestone-branch-create");
+  assert(milestoneStep, "the milestone step is still planned");
+  const rules = JSON.parse(milestoneStep.body ?? "{}").rules as Array<
+    { type: string }
+  >;
+  assert(!rules.some((r) => r.type === "copilot_code_review"));
+  assert(plan.some((s) => s.kind === "copilot-code-review"));
+});
+
+Deno.test("planRepoSettingsHardening - copilot on with no rule: a dedicated ruleset is created on the default branch (Issue #2701)", () => {
+  const steps = copilotSteps(
+    copilotSnapshot([{ ...VIBE_RULESET, source_type: "Repository" }]),
+    "on",
+  );
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "POST");
+  assertEquals(steps[0]?.endpoint, "rulesets");
+  assertEquals(JSON.parse(steps[0]?.body ?? "{}"), {
+    name: COPILOT_RULESET_NAME,
+    target: "branch",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+    rules: [{
+      type: "copilot_code_review",
+      parameters: { review_on_push: false, review_draft_pull_requests: false },
+    }],
+  });
+});
+
+Deno.test("planRepoSettingsHardening - copilot on: a rule already on the default branch plans no write (Issue #2701)", () => {
+  assertEquals(
+    copilotSteps(copilotSnapshot([COPILOT_ONLY_RULESET]), "on"),
+    [],
+  );
+});
+
+Deno.test("planRepoSettingsHardening - copilot on: our own ruleset left disabled is re-enabled, not duplicated (Issue #2701)", () => {
+  const ours = {
+    ...COPILOT_ONLY_RULESET,
+    id: 30,
+    name: COPILOT_RULESET_NAME,
+    enforcement: "disabled",
+  };
+  const steps = copilotSteps(copilotSnapshot([ours]), "on");
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "PUT");
+  assertEquals(steps[0]?.endpoint, "rulesets/30");
+  const body = JSON.parse(steps[0]?.body ?? "{}");
+  assertEquals(body.enforcement, "active");
+  assertEquals(
+    body.rules.filter((r: { type: string }) => r.type === "copilot_code_review")
+      .length,
+    1,
+  );
+});
+
+Deno.test("planRepoSettingsHardening - copilot leave, or no setting at all, plans nothing whatever the rulesets say (Issue #2701)", () => {
+  for (const mode of ["leave", undefined] as const) {
+    assertEquals(
+      copilotSteps(copilotSnapshot([COPILOT_ONLY_RULESET]), mode),
+      [],
+    );
+    assertEquals(copilotSteps(copilotSnapshot([]), mode), []);
+  }
+});
+
+Deno.test("planRepoSettingsHardening - copilot off or on plans nothing when the rulesets could not be read (Issue #2701)", () => {
+  for (const mode of ["on", "off"] as const) {
+    assertEquals(copilotSteps({}, mode), []);
+  }
+});
+
+/** Routes for a hardened repo whose rulesets are exactly `rulesets`. */
+function copilotRoutes(
+  repo: string,
+  rulesets: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/rules/branches/main`] = copilotSnapshot(rulesets).rules;
+  routes[`repos/${repo}/rulesets`] = rulesets.map((r) => ({
+    id: r["id"],
+    name: r["name"],
+    target: r["target"],
+    enforcement: r["enforcement"],
+    source_type: r["source_type"],
+  }));
+  for (const r of rulesets) routes[`repos/${repo}/rulesets/${r["id"]}`] = r;
+  return routes;
+}
+
+Deno.test("hardenRepo - copilot off deletes the Copilot-only ruleset and rewrites the mixed one, each once (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(
+    copilotRoutes(repo, [COPILOT_ONLY_RULESET, MIXED_RULESET]),
+  );
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+    copilotCodeReview: "off",
+  });
+  assertEquals(
+    writes.map((w) => `${w.method} ${w.endpoint}`),
+    [
+      `DELETE repos/${repo}/rulesets/21`,
+      `PUT repos/${repo}/rulesets/22`,
+    ],
+  );
+  assertEquals(writes[0]?.body, undefined);
+  assertEquals(
+    (writes[1]?.body as { rules: unknown }).rules,
+    VIBE_RULESET.rules,
+  );
+  assertEquals(report.results.map((r) => r.status), ["applied", "applied"]);
+});
+
+Deno.test("hardenRepo - copilot leave reads exactly what no setting reads and writes nothing (Issue #2701)", async () => {
+  const unset = uniqueRepo();
+  const absent = makeGh(copilotRoutes(unset, [COPILOT_ONLY_RULESET]));
+  await hardenRepo(unset, {
+    apply: true,
+    ghCommandFn: absent.gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  const left = uniqueRepo();
+  const leave = makeGh(copilotRoutes(left, [COPILOT_ONLY_RULESET]));
+  const report = await hardenRepo(left, {
+    apply: true,
+    ghCommandFn: leave.gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+    copilotCodeReview: "leave",
+  });
+  assertEquals(leave.writes, []);
+  assertEquals(report.results, []);
+  assertEquals(
+    leave.reads.map((r) => r.replace(left, "REPO")),
+    absent.reads.map((r) => r.replace(unset, "REPO")),
+  );
 });

@@ -117,6 +117,19 @@ background service is offered, where files land — is covered in
    what the fields mean is the
    [Configuration Reference](CONFIGURATION.md#-update-mode)'s job.
 
+   Straight after it, on both `setup.sh` and `setup.ps1`, `setup
+   copilot-review-mode` (Issue #2701) asks one question:
+   `Copilot code review (on/off/leave)`. Copilot code review is **billed per
+   review, never free — even on a public repository**: GitHub charges each
+   automatic review to the pull request author's Copilot plan, or to the
+   organisation. `on` has `repo-settings-harden` request a review on every PR
+   into the default branch, `off` removes the review rule from every
+   repository ruleset, and `leave` changes nothing. The default is this
+   host's current answer, `leave` on a fresh host, so Enter never changes
+   anything. The answer is recorded as `copilot_code_review` in
+   `.config.json`; without a terminal nothing is asked and nothing is
+   written. A failure is a warning, never fatal.
+
 7. **Repository sync phases** — eight subcommands, each acting on the
    monitored GitHub repositories rather than the host, each idempotent, and
    each **non-fatal**:
@@ -264,7 +277,8 @@ flowchart TD
     IC --> IP["4 · interactive configuration prompts<br/>(terminal only)"]
     IP --> W["5 · config write<br/>env first, answers merged over"]
     W --> UM["6 · update mode<br/>dynamic or frozen + pins (terminal only)"]
-    UM --> L["label-sync"]
+    UM --> CR["6 · Copilot code review<br/>on / off / leave (terminal only)"]
+    CR --> L["label-sync"]
     subgraph SY["7 · repository sync — warn and continue, never fatal"]
         L --> WS["workflow-sync"]
         WS --> BS["best-practices-sync"]
@@ -372,14 +386,28 @@ For each monitored repository, in order:
      setting to change (Organisation → People → the account → Change role →
      Member) and never changes organisation membership itself. An account
      below write is left to the collaborator precheck, which prints the
-     commands that grant it.
+     commands that grant it;
+   - **Copilot code review** follows the host's `copilot_code_review`
+     (Issue #2701), because each automatic review is billed to the PR
+     author's Copilot plan or the organisation. `off` removes the
+     `copilot_code_review` rule from every repository ruleset that carries
+     it — a ruleset left with no rules is deleted, one with other rules is
+     rewritten with those rules intact — and an **organisation** ruleset
+     carrying it is reported as skipped, since a repository cannot edit it.
+     `on` makes sure a Copilot review rule applies to the default branch
+     (`review_on_push: false`, `review_draft_pull_requests: false`),
+     creating a `Vibe Coder Copilot review` ruleset on `~DEFAULT_BRANCH` when
+     none does. `leave` — the default, and what an absent key means — reads
+     and writes nothing for it. Each change is named on the repository's
+     line.
 3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
    run fixed are commented on and closed.
 
 What it **never** changes: it never lowers an approval count, never adds a
 `pull_request` rule to a direct-push default branch or a milestone branch,
 never removes an entry from the action allow-list, never edits an existing
-CODEOWNERS file, and never buys or asks for GitHub Secret Protection.
+CODEOWNERS file, never buys or asks for GitHub Secret Protection, and never
+touches Copilot code review unless `copilot_code_review` says `on` or `off`.
 
 Each repository prints one line, followed by a totals line:
 
@@ -1734,7 +1762,8 @@ re-run converges on the same state rather than piling up duplicates.
 | `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |
 | `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
-| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), and code-owner review once CODEOWNERS is on the default branch. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
+| `copilot-review-mode` | Host-only. Asks whether `repo-settings-harden` turns Copilot code review on, off, or leaves it, stating that each review is billed, and records the answer as `copilot_code_review` in `.config.json`. Never prompts or writes without a terminal. | Yes — an unanswered host is `leave`, which changes nothing. |
+| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), code-owner review once CODEOWNERS is on the default branch, and Copilot code review on or off as `copilot_code_review` says. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
 | `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
 | `hooks` | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only. | No. |
