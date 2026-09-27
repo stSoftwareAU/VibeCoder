@@ -87,14 +87,18 @@ import {
 import {
   buildCiFixAttemptMarker,
   buildCiFixDeferralMarker,
+  buildCiHumanGateMarker,
   type CiFixAttemptOutcome,
   type CiFixAttemptRecord,
   countAttempts,
   findDeferral,
+  findHumanGate,
   findNoChangeComment,
   type FleetCiFixMarkers,
 } from "./ci_fix_attempt_markers.ts";
 import { isCheckRedOnBranch } from "./ci_base_branch_check.ts";
+import { buildHumanGateComment } from "./ci_human_gate_comment.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import {
   type BlockedDependency,
   detectBlockedOutcome,
@@ -1241,6 +1245,32 @@ async function _processCiWithHeartbeat(
         summary:
           `PR #${prNumber} (${checkName}) — the CI-fix attempt markers could ` +
           `not be read; stood down rather than spending an uncounted attempt`,
+      },
+    };
+  }
+
+  // Issue #2727: a check that declared a human step is parked with one
+  // comment — no attempt, no agent, no `needs-human` — before the cap reads
+  // the tally, so a gate can never exhaust it.
+  if (failureClassification.category === "human-gate") {
+    const gate = await _parkHumanGate({
+      repo,
+      prNumber,
+      checkName,
+      safeCheckName,
+      humanStep: failureClassification.humanStep,
+      markerState,
+      deps,
+      logger,
+    });
+    return {
+      ok: true,
+      value: {
+        processed: gate.processed,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary: `PR #${prNumber} (${checkName}) — ${gate.summary}`,
       },
     };
   }
@@ -2710,6 +2740,115 @@ async function replyToComment(
     // the outcome is returned rather than swallowed.
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Human gate (Issue #2727)
+// ---------------------------------------------------------------------------
+
+/** Inputs for {@link _parkHumanGate}. */
+interface HumanGateOptions {
+  repo: string;
+  prNumber: number;
+  /** Raw check name — the marker builder sanitises it itself. */
+  checkName: string;
+  /** Inert check name for the comment prose (Issue #2260). */
+  safeCheckName: string;
+  /** The step the classifier extracted, already neutralised and bounded. */
+  humanStep: string | undefined;
+  /** The pull request's markers, read successfully by the caller. */
+  markerState: PrCiFixMarkerState;
+  deps: WorkerDeps;
+  logger: Logger;
+}
+
+/**
+ * Park a human-gate check: post its one comment, or nothing when the fleet
+ * already has.
+ *
+ * `processed` is true only when the gate is positively recorded on the pull
+ * request — a marker already there, or the comment just posted. Every other
+ * outcome is logged as an error and returns `processed: false`, so the next
+ * scan retries rather than recording a silent success.
+ */
+async function _parkHumanGate(
+  options: HumanGateOptions,
+): Promise<{ processed: boolean; summary: string }> {
+  const { repo, prNumber, checkName, markerState, logger } = options;
+
+  if (findHumanGate(markerState.markers, checkName) !== undefined) {
+    logger.info(
+      "CI check is a human gate the fleet has already announced — posting " +
+        "nothing (Issue #2727)",
+      { repo, prNumber, checkName },
+    );
+    return { processed: true, summary: "human gate already announced" };
+  }
+
+  if (!markerState.markers.fleetResolved) {
+    // Without attribution no gate marker can be read back, so posting would
+    // repeat the comment on every pass. The readPrCiFixMarkers error already
+    // names the configuration that restores it.
+    logger.error(
+      "Human-gate check not announced: the fleet login set is empty, so the " +
+        "one-comment rule cannot be held (Issue #2727)",
+      { repo, prNumber, checkName },
+    );
+    return {
+      processed: false,
+      summary: "human gate not announced — fleet identity unresolved",
+    };
+  }
+
+  let marker: string;
+  try {
+    marker = buildCiHumanGateMarker({ checkName });
+  } catch (error: unknown) {
+    logger.error(
+      "Could not build the human-gate marker, so the gate comment was not " +
+        "posted (Issue #2727)",
+      {
+        repo,
+        prNumber,
+        checkName,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return {
+      processed: false,
+      summary: "human gate not announced — marker could not be built",
+    };
+  }
+
+  const body = buildHumanGateComment({
+    safeCheckName: options.safeCheckName,
+    // The classifier always sets a non-empty step for this category.
+    humanStep: options.humanStep ?? "(the check named no step)",
+    marker,
+  });
+  // A new outbound sink redacts its own text (SECURITY.md).
+  if (
+    !await replyToComment(repo, prNumber, redactSecrets(body), options.deps)
+  ) {
+    // The comment IS the record: without it the next pass must try again.
+    logger.error(
+      "The human-gate comment could not be posted, so the gate was not " +
+        "recorded — reporting the run as unprocessed so the next scan " +
+        "retries (Issue #2727)",
+      { repo, prNumber, checkName },
+    );
+    return {
+      processed: false,
+      summary: "human-gate comment could not be posted; nothing was recorded",
+    };
+  }
+
+  logger.info("Human-gate check announced once (Issue #2727)", {
+    repo,
+    prNumber,
+    checkName,
+  });
+  return { processed: true, summary: "human gate announced" };
 }
 
 // ---------------------------------------------------------------------------

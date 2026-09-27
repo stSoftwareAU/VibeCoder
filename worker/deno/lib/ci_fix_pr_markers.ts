@@ -149,6 +149,7 @@ function emptyMarkers(): FleetCiFixMarkers {
   return {
     attempts: new Map(),
     deferrals: new Map(),
+    humanGates: new Map(),
     fleetResolved: false,
     ignoredOutsideFleet: 0,
   };
