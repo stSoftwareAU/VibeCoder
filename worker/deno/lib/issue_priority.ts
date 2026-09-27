@@ -626,11 +626,10 @@ export function selectHighestPriority(
   // Issue #2164: a repo with a *suppressing* open work-on issue must not
   // contribute low-priority or idle-task candidates. A repo with an open
   // low-priority issue not waiting on a human (Issue #2751) must not
-  // contribute idle-task candidates. The
-  // label `low-priority` means "backlog work — picked up only when no
-  // other eligible work exists"; a repo with a PR-blocked or assigned
-  // work-on issue still has "other work" pending and should wait rather
-  // than pick backlog.
+  // contribute idle-task candidates. The label `low-priority` means
+  // "backlog work — picked up only when no other eligible work exists";
+  // a repo with a PR-blocked or assigned work-on issue still has "other
+  // work" pending and should wait rather than pick backlog.
   //
   // Issue #2610: `reposWithOpenWorkOn` deliberately *excludes* repos
   // whose only open work-on issues are purely dependency-blocked. Such a
