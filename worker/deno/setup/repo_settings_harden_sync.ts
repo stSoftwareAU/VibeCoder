@@ -9,6 +9,10 @@
  *  - `allowed_actions: selected`, with every transitive `owner/repo@*` the
  *    workflows need unioned onto the existing list;
  *  - secret scanning and push protection on public repositories only;
+ *  - CodeQL default setup, `default` query suite, on public repositories
+ *    only (Issue #2704): written only when `not-configured`, never on a
+ *    private repository (paid Code Security — not even read there), and
+ *    never over a repository's own CodeQL workflow, which is reported;
  *  - one approving review on the default branch (Issue #2680), so fleet PRs
  *    wait for `/review-fleet-prs` or the owner instead of auto-merging
  *    unreviewed. A branch that takes direct pushes gets no pull_request rule
@@ -141,6 +145,7 @@ const CHECKED_KINDS: readonly HardenStep["kind"][] = [
   "sha-pinning-required",
   "actions-allow-list",
   "secret-scanning",
+  "codeql-default-setup",
   "default-branch-approval",
   "ruleset-reviews",
 ];
@@ -214,6 +219,9 @@ function tallyOutcome(
     if (kind === "secret-scanning" && outcome.skipNote) {
       tally.skipped++;
       tally.skips.push(outcome.skipNote);
+    } else if (kind === "codeql-default-setup" && outcome.codeqlSkipNote) {
+      tally.skipped++;
+      tally.skips.push(outcome.codeqlSkipNote);
     } else if (kind === "ruleset-reviews" && location.state !== "present") {
       tally.skipped++;
       tally.skips.push(codeOwnerSkipReason(location));

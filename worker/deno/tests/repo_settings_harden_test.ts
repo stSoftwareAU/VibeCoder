@@ -15,6 +15,7 @@ import {
   allowListCovers,
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
+  CODE_SECURITY_SKIP_NOTE,
   COPILOT_RULESET_NAME,
   findCodeownersOnDefaultBranch,
   hardenRepo,
@@ -784,6 +785,10 @@ function hardenedRoutes(repo: string): Record<string, unknown> {
       },
     }],
     [`repos/${repo}/rulesets`]: [],
+    [`repos/${repo}/code-scanning/default-setup`]: {
+      state: "configured",
+      query_suite: "default",
+    },
   };
 }
 
@@ -2085,5 +2090,269 @@ Deno.test("hardenRepo - copilot leave reads exactly what no setting reads and wr
   assertEquals(
     leave.reads.map((r) => r.replace(left, "REPO")),
     absent.reads.map((r) => r.replace(unset, "REPO")),
+  );
+});
+
+// =============================================================================
+// Issue #2704 — CodeQL default setup kept on for public repositories only
+// =============================================================================
+
+const CODEQL_BODY = { state: "configured", query_suite: "default" };
+
+function codeqlPlan(snapshot: RepoSettingsSnapshot) {
+  return planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: [],
+    defaultBranch: "main",
+  }).filter((s) => s.kind === "codeql-default-setup");
+}
+
+Deno.test("planRepoSettingsHardening - a public repo with CodeQL not configured plans the default suite (Issue #2704)", () => {
+  const plan = codeqlPlan({
+    visibility: "public",
+    codeScanning: { state: "not-configured" },
+    codeqlWorkflows: [],
+  });
+  assertEquals(plan.length, 1);
+  assertEquals(plan[0]?.method, "PATCH");
+  assertEquals(plan[0]?.endpoint, "code-scanning/default-setup");
+  assertEquals(JSON.parse(plan[0]?.body ?? "{}"), CODEQL_BODY);
+  assertEquals(plan[0]?.held, undefined);
+});
+
+Deno.test("planRepoSettingsHardening - CodeQL already configured plans nothing, whatever the suite (Issue #2704)", () => {
+  for (const query_suite of ["default", "extended"]) {
+    assertEquals(
+      codeqlPlan({
+        visibility: "public",
+        codeScanning: { state: "configured", query_suite },
+        codeqlWorkflows: [],
+      }),
+      [],
+    );
+  }
+});
+
+Deno.test("planRepoSettingsHardening - a repo running its own CodeQL workflow is held and named, never written (Issue #2704)", () => {
+  const plan = codeqlPlan({
+    visibility: "public",
+    codeScanning: { state: "not-configured" },
+    codeqlWorkflows: [".github/workflows/codeql.yml"],
+  });
+  assertEquals(plan.length, 1);
+  assertEquals(plan[0]?.held?.status, "skipped");
+  assert(
+    plan[0]?.held?.detail.includes(".github/workflows/codeql.yml"),
+    plan[0]?.held?.detail,
+  );
+  assert(plan[0]?.held?.detail.includes("advanced setup"));
+});
+
+Deno.test("planRepoSettingsHardening - unread workflows hold CodeQL: advanced setup cannot be ruled out (Issue #2704)", () => {
+  const plan = codeqlPlan({
+    visibility: "public",
+    codeScanning: { state: "not-configured" },
+  });
+  assertEquals(plan.map((s) => s.held?.status), ["skipped"]);
+});
+
+Deno.test("hardenRepo - a public repo with CodeQL not configured gets one PATCH with the default suite (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, [{
+    method: "PATCH",
+    endpoint: `repos/${repo}/code-scanning/default-setup`,
+    body: CODEQL_BODY,
+  }]);
+  assertEquals(
+    report.results.map((r) => `${r.step.kind} ${r.status}`),
+    ["codeql-default-setup applied"],
+  );
+});
+
+Deno.test("hardenRepo - CodeQL already configured on the extended suite is left as it is (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "configured",
+    query_suite: "extended",
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(report.results, []);
+});
+
+Deno.test("hardenRepo - a private repo makes no code-scanning call and says why (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}`] = {
+    visibility: "private",
+    private: true,
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  };
+  const { gh, writes, reads } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(reads.filter((r) => r.includes("code-scanning")), []);
+  assertEquals(report.results, []);
+  assertEquals(report.codeqlSkipNote, CODE_SECURITY_SKIP_NOTE);
+});
+
+for (
+  const [label, files] of [
+    ["a codeql workflow file", {
+      ".github/workflows/codeql-analysis.yml": "jobs: {}\n",
+    }],
+    ["a workflow calling codeql-action/init", {
+      ".github/workflows/security.yml": "jobs:\n  a:\n    steps:\n" +
+        "      - uses: github/codeql-action/init@" + "2".repeat(40) + "\n",
+    }],
+  ] as const
+) {
+  Deno.test(`hardenRepo - advanced setup (${label}) is reported and not written (Issue #2704)`, async () => {
+    const repo = uniqueRepo();
+    const routes = hardenedRoutes(repo);
+    routes[`repos/${repo}/code-scanning/default-setup`] = {
+      state: "not-configured",
+    };
+    const [path, body] = Object.entries(files)[0]!;
+    const name = path.split("/").pop()!;
+    routes[`repos/${repo}/contents/.github/workflows?ref=main`] = [
+      { name, path, type: "file" },
+    ];
+    routes[`repos/${repo}/contents/${path}?ref=main`] = body;
+    const { gh, writes } = makeGh(routes);
+    const report = await hardenRepo(repo, {
+      apply: true,
+      ghCommandFn: gh,
+      defaultBranchCachePath: BRANCH_CACHE,
+    });
+    assertEquals(writes, []);
+    const codeql = report.results.filter((r) =>
+      r.step.kind === "codeql-default-setup"
+    );
+    assertEquals(codeql.map((r) => r.status), ["skipped"]);
+    assert(codeql[0]?.detail?.includes(path), codeql[0]?.detail);
+  });
+}
+
+for (
+  const [label, error] of [
+    ["403", new Error("HTTP 403: Resource not accessible by integration")],
+    ["404", NOT_FOUND()],
+  ] as const
+) {
+  Deno.test(`hardenRepo - a ${label} on the CodeQL read is reported as skipped, and the other steps still run (Issue #2704)`, async () => {
+    const repo = uniqueRepo();
+    const routes = hardenedRoutes(repo);
+    routes[`repos/${repo}/code-scanning/default-setup`] = error;
+    routes[`repos/${repo}/actions/permissions/workflow`] = {
+      default_workflow_permissions: "write",
+      can_approve_pull_request_reviews: false,
+    };
+    const { gh, writes } = makeGh(routes);
+    const report = await hardenRepo(repo, {
+      apply: true,
+      ghCommandFn: gh,
+      defaultBranchCachePath: BRANCH_CACHE,
+    });
+    assertEquals(
+      writes.map((w) => w.endpoint),
+      [`repos/${repo}/actions/permissions/workflow`],
+    );
+    const codeql = report.results.filter((r) =>
+      r.step.kind === "codeql-default-setup"
+    );
+    assertEquals(codeql.map((r) => r.status), ["skipped"]);
+    assert(
+      codeql[0]?.detail?.includes("code-scanning/default-setup"),
+      codeql[0]?.detail,
+    );
+  });
+}
+
+Deno.test("hardenRepo - a PATCH refused because advanced setup is on is skipped, not failed (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  const { gh: inner } = makeGh(routes);
+  const gh = (args: string[]) =>
+    args.includes("--method")
+      ? Promise.reject(
+        new Error(
+          "HTTP 409: Code scanning default setup cannot be enabled " +
+            "because CodeQL advanced setup is configured",
+        ),
+      )
+      : inner(args);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(report.results.map((r) => r.status), ["skipped"]);
+  assert(report.results[0]?.detail?.includes("advanced setup"));
+});
+
+Deno.test("hardenRepo - any other refused CodeQL PATCH is a failed result, never a throw (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  const { gh: inner } = makeGh(routes);
+  const gh = (args: string[]) =>
+    args.includes("--method")
+      ? Promise.reject(new Error("HTTP 403: Resource not accessible"))
+      : inner(args);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(report.results.map((r) => r.status), ["failed"]);
+  assert(report.results[0]?.detail?.includes("HTTP 403"));
+});
+
+Deno.test("hardenRepo - an unreadable workflow tree holds CodeQL rather than risk overriding advanced setup (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  routes[`repos/${repo}/contents/.github/workflows?ref=main`] = SERVER_ERROR();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(
+    report.results.filter((r) => r.step.kind === "codeql-default-setup")
+      .map((r) => r.status),
+    ["skipped"],
   );
 });
