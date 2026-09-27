@@ -1,11 +1,21 @@
-// Deterministic pre-review gate for /review-fleet-prs.
+// Deterministic pre-review gate for /review-fleet-prs (Issue #2675).
 //
-// Lists open PRs by Dependabot and the fleet accounts across the repos in the
-// VibeCoder .config.json, and classifies each one. Only PRs classified
-// "ready" are worth a model review; the gate never posts anything itself.
+// Finds the open PRs by Dependabot and the fleet accounts in the repos of the
+// VibeCoder .config.json that are ready for a model review: CI green, no
+// conflict, not a draft, and not yet reviewed at their head commit. It never
+// posts anything itself.
 //
-// Usage: deno run --allow-run=gh --allow-read gate.ts [--config=<path>] [--repo=<owner/name>]
-// Output: JSON on stdout, { reviewer, candidates: [...] }.
+// One GraphQL search (about 2 points a page) covers every repo, so polling
+// every few minutes stays cheap. With --watch=<seconds> the gate keeps polling
+// until something is ready and only then exits, so an idle night costs no
+// model tokens at all.
+//
+// Usage: deno run --allow-run=gh --allow-read gate.ts
+//          [--config=<path>] [--repo=<owner/name>] [--watch=<seconds>]
+//          [--sleep-first]
+// --sleep-first waits one interval before the first poll, so a PR whose
+// review just failed is retried after the interval instead of at once.
+// Output: one line of JSON, { ready: [...], skipped: { <reason>: count } }.
 
 // The skill lives at <checkout>/.claude/skills/review-fleet-prs/, next to the
 // checkout's own .config.json.
@@ -14,64 +24,68 @@ const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
 // Every review body the skill posts ends with this marker, so a comment-only
 // "held for the owner" review still counts as this commit's review.
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
+
 const DEPENDABOT_LOGINS = new Set([
   "app/dependabot",
   "dependabot[bot]",
   "dependabot",
 ]);
 
-type State =
-  | "ready" // CI green, not yet reviewed at this head: run the model review
-  | "missing-tests" // CI green but a fleet PR adds code without a test: request changes
-  | "waiting-ci" // checks still running: come back later
-  | "ci-failed" // a check failed: the fleet fixes it; no review
-  | "conflicting" // merge conflict: the fleet resolves it; no review
-  | "draft"
-  | "already-reviewed"; // this reviewer already reviewed this exact head commit
+// A watch that cannot reach GitHub for this many polls in a row exits, so the
+// session hears about it instead of polling silently for ever.
+const MAX_CONSECUTIVE_FAILURES = 12;
 
-interface Candidate {
+type Skip =
+  | "waiting-ci" // checks still running (or none reported yet)
+  | "ci-failed" // the fleet fixes it; no review
+  | "conflicting" // the fleet resolves it; no review
+  | "draft"
+  | "already-reviewed"; // reviewed at this exact head commit
+
+export interface ReadyPr {
   repo: string;
   number: number;
   title: string;
-  url: string;
   author: string;
   kind: "dependabot" | "fleet";
   headSha: string;
   baseRef: string;
-  state: State;
-  reasons: string[];
-  // Existing test files this PR touches; the model review judges whether the
-  // edits are meaningful. A removed test file always is.
+  // Existing test files this PR removes or edits; the model review judges
+  // whether the edits are meaningful. A removed test file always is.
   testChanges: { removed: string[]; edited: string[] };
-  files: {
-    path: string;
-    status: string;
-    additions: number;
-    deletions: number;
-  }[];
+  // Set when a fleet PR changes code but adds no test; the model review
+  // decides whether a test was appropriate.
+  noTestAdded: boolean;
 }
 
-function arg(name: string): string | undefined {
-  const hit = Deno.args.find((a) => a.startsWith(`--${name}=`));
-  return hit?.slice(name.length + 3);
+export interface Review {
+  author: { login: string } | null;
+  state: string;
+  body: string;
+  commit: { oid: string } | null;
 }
 
-async function gh(args: string[]): Promise<string> {
-  const out = await new Deno.Command("gh", {
-    args,
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  if (!out.success) {
-    throw new Error(
-      `gh ${args.join(" ")}: ${new TextDecoder().decode(out.stderr).trim()}`,
-    );
-  }
-  return new TextDecoder().decode(out.stdout);
+export interface SearchPr {
+  number: number;
+  title: string;
+  isDraft: boolean;
+  mergeable: string;
+  headRefOid: string;
+  baseRefName: string;
+  repository: { nameWithOwner: string };
+  author: { login: string } | null;
+  commits: {
+    nodes: { commit: { statusCheckRollup: { state: string } | null } }[];
+  };
+  reviews: { nodes: Review[] };
 }
 
-async function ghJson<T>(args: string[]): Promise<T> {
-  return JSON.parse(await gh(args)) as T;
+interface PrFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  previous_filename?: string;
 }
 
 // Test files across the fleet's languages: Deno/TS, JS, Python, Go, Rust
@@ -94,16 +108,10 @@ export function isTestPath(path: string): boolean {
   return TEST_PATH_PATTERNS.some((re) => re.test(path));
 }
 
-interface PrFile {
-  filename: string;
-  status: string;
-  additions: number;
-  deletions: number;
-  previous_filename?: string;
-}
-
-export function existingTestChanges(files: PrFile[]): Candidate["testChanges"] {
-  const changes: Candidate["testChanges"] = { removed: [], edited: [] };
+export function existingTestChanges(
+  files: PrFile[],
+): ReadyPr["testChanges"] {
+  const changes: ReadyPr["testChanges"] = { removed: [], edited: [] };
   for (const f of files) {
     const before = f.previous_filename ?? f.filename;
     if (f.status === "added" || !isTestPath(before)) continue;
@@ -116,11 +124,8 @@ export function existingTestChanges(files: PrFile[]): Candidate["testChanges"] {
 }
 
 // Dependabot bumps change manifests and lockfiles, not functionality.
-export function missingTests(
-  files: PrFile[],
-  kind: Candidate["kind"],
-): string[] {
-  if (kind === "dependabot") return [];
+export function noTestAdded(files: PrFile[], kind: ReadyPr["kind"]): boolean {
+  if (kind === "dependabot") return false;
   const codeChanged = files.some((f) =>
     f.status !== "removed" && f.additions > 0 &&
     CODE_EXTENSIONS.test(f.filename) && !isTestPath(f.filename)
@@ -128,45 +133,7 @@ export function missingTests(
   const testsAdded = files.some((f) =>
     isTestPath(f.filename) && f.status !== "removed" && f.additions > 0
   );
-  return codeChanged && !testsAdded
-    ? ["code changed but no test was added or extended"]
-    : [];
-}
-
-interface Check {
-  __typename: string;
-  status?: string;
-  conclusion?: string;
-  state?: string;
-  name?: string;
-  context?: string;
-}
-
-export function ciState(
-  checks: Check[],
-): { state: "green" | "pending" | "failed"; failing: string[] } {
-  if (checks.length === 0) return { state: "pending", failing: [] };
-  const failing: string[] = [];
-  let pending = false;
-  for (const c of checks) {
-    const name = c.name ?? c.context ?? "?";
-    if (c.__typename === "StatusContext") {
-      if (c.state === "PENDING" || c.state === "EXPECTED") pending = true;
-      else if (c.state !== "SUCCESS") failing.push(name);
-    } else if (c.status !== "COMPLETED") pending = true;
-    else if (!["SUCCESS", "SKIPPED", "NEUTRAL"].includes(c.conclusion ?? "")) {
-      failing.push(name);
-    }
-  }
-  if (failing.length > 0) return { state: "failed", failing };
-  return { state: pending ? "pending" : "green", failing };
-}
-
-interface Review {
-  user: { login: string };
-  commit_id: string;
-  state: string;
-  body: string;
+  return codeChanged && !testsAdded;
 }
 
 // An approval or change request always counts; a comment-only review counts
@@ -177,22 +144,128 @@ export function reviewedAtHead(
   headSha: string,
 ): boolean {
   return reviews.some((r) =>
-    r.user.login === reviewer && r.commit_id === headSha &&
+    r.author?.login === reviewer && r.commit?.oid === headSha &&
     (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" ||
       (r.state === "COMMENTED" && (r.body ?? "").includes(REVIEW_MARKER)))
   );
 }
 
-interface ListedPr {
-  number: number;
-  title: string;
-  url: string;
-  isDraft: boolean;
-  mergeable: string;
-  headRefOid: string;
-  baseRefName: string;
-  author: { login: string };
-  statusCheckRollup: Check[];
+// Sorts one searched PR: null when it is ready for review, else why not.
+// GitHub's rollup already treats skipped and neutral checks as passing.
+export function skipReason(pr: SearchPr, reviewer: string): Skip | null {
+  if (pr.isDraft) return "draft";
+  if (pr.mergeable === "CONFLICTING") return "conflicting";
+  const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state;
+  if (rollup === "FAILURE" || rollup === "ERROR") return "ci-failed";
+  if (rollup !== "SUCCESS") return "waiting-ci";
+  if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
+    return "already-reviewed";
+  }
+  return null;
+}
+
+export function authorKind(
+  login: string,
+  fleet: ReadonlySet<string>,
+): ReadyPr["kind"] | null {
+  if (DEPENDABOT_LOGINS.has(login)) return "dependabot";
+  return fleet.has(login) ? "fleet" : null;
+}
+
+function arg(name: string): string | undefined {
+  const hit = Deno.args.find((a) => a.startsWith(`--${name}=`));
+  return hit?.slice(name.length + 3);
+}
+
+async function gh(args: string[]): Promise<string> {
+  const out = await new Deno.Command("gh", {
+    args,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!out.success) {
+    const err = new TextDecoder().decode(out.stderr).trim();
+    throw new Error(`gh ${args[0]} ${args[1] ?? ""}: ${err}`);
+  }
+  return new TextDecoder().decode(out.stdout);
+}
+
+const SEARCH_QUERY = `
+query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest {
+      number title isDraft mergeable headRefOid baseRefName
+      repository { nameWithOwner }
+      author { login }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      reviews(last: 20) { nodes { author { login } state body commit { oid } } }
+    } }
+  }
+}`;
+
+async function searchOpenPrs(
+  owners: string[],
+  logins: string[],
+): Promise<SearchPr[]> {
+  const q = [
+    "is:pr is:open archived:false",
+    ...owners.map((o) => `user:${o}`),
+    ...logins.map((l) => `author:${l}`),
+  ].join(" ");
+  const prs: SearchPr[] = [];
+  let after: string | null = null;
+  do {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `query=${SEARCH_QUERY}`,
+      "-F",
+      `q=${q}`,
+    ];
+    if (after) args.push("-F", `after=${after}`);
+    const page = JSON.parse(await gh(args)).data.search;
+    prs.push(...page.nodes.filter((n: SearchPr) => n.number !== undefined));
+    after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (after);
+  return prs;
+}
+
+async function pass(
+  repos: ReadonlySet<string>,
+  fleet: ReadonlySet<string>,
+  reviewer: string,
+) {
+  const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
+  const logins = ["app/dependabot", ...fleet];
+  const ready: ReadyPr[] = [];
+  const skipped: Record<string, number> = {};
+  for (const pr of await searchOpenPrs(owners, logins)) {
+    const repo = pr.repository.nameWithOwner;
+    const kind = authorKind(pr.author?.login ?? "", fleet);
+    if (!repos.has(repo) || !kind) continue;
+    const skip = skipReason(pr, reviewer);
+    if (skip) {
+      skipped[skip] = (skipped[skip] ?? 0) + 1;
+      continue;
+    }
+    const files: PrFile[] = JSON.parse(
+      await gh(["api", `repos/${repo}/pulls/${pr.number}/files`, "--paginate"]),
+    );
+    ready.push({
+      repo,
+      number: pr.number,
+      title: pr.title,
+      author: pr.author!.login,
+      kind,
+      headSha: pr.headRefOid,
+      baseRef: pr.baseRefName,
+      testChanges: existingTestChanges(files),
+      noTestAdded: noTestAdded(files, kind),
+    });
+  }
+  return { ready, skipped };
 }
 
 async function main() {
@@ -203,100 +276,31 @@ async function main() {
     ...(config.fleet_pr_authors ?? []),
     ...(config.service_accounts ?? []),
   ]);
-  const repos: string[] = arg("repo") ? [arg("repo")!] : config.repos ?? [];
+  const repos = new Set<string>(arg("repo") ? [arg("repo")!] : config.repos);
   const reviewer = (await gh(["api", "user", "--jq", ".login"])).trim();
-  const candidates: Candidate[] = [];
+  const watchSeconds = Number(arg("watch") ?? 0);
 
-  for (const repo of repos) {
-    let prs: ListedPr[];
+  const sleep = () => new Promise((r) => setTimeout(r, watchSeconds * 1000));
+  if (watchSeconds > 0 && Deno.args.includes("--sleep-first")) await sleep();
+
+  let failures = 0;
+  while (true) {
     try {
-      prs = await ghJson<ListedPr[]>([
-        "pr",
-        "list",
-        "-R",
-        repo,
-        "--state",
-        "open",
-        "-L",
-        "100",
-        "--json",
-        "number,title,url,isDraft,mergeable,headRefOid,baseRefName,author,statusCheckRollup",
-      ]);
+      const result = await pass(repos, fleet, reviewer);
+      failures = 0;
+      if (result.ready.length > 0 || watchSeconds <= 0) {
+        console.log(JSON.stringify(result));
+        return;
+      }
     } catch (e) {
-      console.error(`skipping ${repo}: ${(e as Error).message}`);
-      continue;
-    }
-    for (const pr of prs) {
-      const login = pr.author.login;
-      const kind = DEPENDABOT_LOGINS.has(login)
-        ? "dependabot"
-        : fleet.has(login)
-        ? "fleet"
-        : null;
-      if (!kind) continue;
-      const c: Candidate = {
-        repo,
-        number: pr.number,
-        title: pr.title,
-        url: pr.url,
-        author: login,
-        kind,
-        headSha: pr.headRefOid,
-        baseRef: pr.baseRefName,
-        state: "ready",
-        reasons: [],
-        testChanges: { removed: [], edited: [] },
-        files: [],
-      };
-      candidates.push(c);
-      if (pr.isDraft) {
-        c.state = "draft";
-        continue;
-      }
-      if (pr.mergeable === "CONFLICTING") {
-        c.state = "conflicting";
-        continue;
-      }
-      const ci = ciState(pr.statusCheckRollup ?? []);
-      if (ci.state === "failed") {
-        c.state = "ci-failed";
-        c.reasons = ci.failing;
-        continue;
-      }
-      if (ci.state === "pending") {
-        c.state = "waiting-ci";
-        continue;
-      }
-
-      const reviews = await ghJson<Review[]>([
-        "api",
-        `repos/${repo}/pulls/${pr.number}/reviews`,
-        "--paginate",
-      ]);
-      if (reviewedAtHead(reviews, reviewer, pr.headRefOid)) {
-        c.state = "already-reviewed";
-        continue;
-      }
-      const files = await ghJson<PrFile[]>([
-        "api",
-        `repos/${repo}/pulls/${pr.number}/files`,
-        "--paginate",
-      ]);
-      c.files = files.map((f) => ({
-        path: f.filename,
-        status: f.status,
-        additions: f.additions,
-        deletions: f.deletions,
-      }));
-      c.testChanges = existingTestChanges(files);
-      const problems = missingTests(files, kind);
-      if (problems.length > 0) {
-        c.state = "missing-tests";
-        c.reasons = problems;
+      failures++;
+      console.error((e as Error).message);
+      if (watchSeconds <= 0 || failures >= MAX_CONSECUTIVE_FAILURES) {
+        Deno.exit(1);
       }
     }
+    await sleep();
   }
-  console.log(JSON.stringify({ reviewer, candidates }, null, 2));
 }
 
 if (import.meta.main) await main();

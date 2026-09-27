@@ -5,12 +5,14 @@
  */
 import { assertEquals } from "@std/assert";
 import {
-  ciState,
+  authorKind,
   existingTestChanges,
   isTestPath,
-  missingTests,
+  noTestAdded,
   REVIEW_MARKER,
   reviewedAtHead,
+  type SearchPr,
+  skipReason,
 } from "../../../.claude/skills/review-fleet-prs/gate.ts";
 
 const file = (
@@ -66,49 +68,71 @@ Deno.test("existingTestChanges: removed and edited existing tests are listed, ne
   });
 });
 
-Deno.test("missingTests: fleet code without a test is flagged; with a test, or from Dependabot, it is not", () => {
+Deno.test("noTestAdded: fleet code without a test is flagged; with a test, docs-only, or from Dependabot, it is not", () => {
   const code = file("lib/foo.ts", "modified", 10, 2);
-  assertEquals(missingTests([code], "fleet").length, 1);
+  assertEquals(noTestAdded([code], "fleet"), true);
   assertEquals(
-    missingTests([code, file("tests/foo_test.ts", "modified", 8, 0)], "fleet"),
-    [],
+    noTestAdded([code, file("tests/foo_test.ts", "modified", 8, 0)], "fleet"),
+    false,
   );
-  assertEquals(missingTests([code], "dependabot"), []);
+  assertEquals(noTestAdded([code], "dependabot"), false);
   assertEquals(
-    missingTests([file("docs/x.md", "modified", 10, 2)], "fleet"),
-    [],
+    noTestAdded([file("docs/x.md", "modified", 10, 2)], "fleet"),
+    false,
   );
 });
 
-Deno.test("ciState: green only when every check has passed or been skipped", () => {
-  const run = (status: string, conclusion: string | undefined) => ({
-    __typename: "CheckRun",
-    name: "c",
-    status,
-    conclusion,
-  });
-  assertEquals(ciState([]).state, "pending");
+Deno.test("authorKind: Dependabot and the fleet accounts only", () => {
+  const fleet = new Set(["stservice", "VibeCoderST"]);
+  assertEquals(authorKind("app/dependabot", fleet), "dependabot");
+  assertEquals(authorKind("VibeCoderST", fleet), "fleet");
+  assertEquals(authorKind("nleck", fleet), null);
+});
+
+const searchPr = (
+  overrides: Partial<SearchPr> = {},
+  rollup: string | null = "SUCCESS",
+): SearchPr => ({
+  number: 1,
+  title: "t",
+  isDraft: false,
+  mergeable: "MERGEABLE",
+  headRefOid: "head",
+  baseRefName: "main",
+  repository: { nameWithOwner: "o/r" },
+  author: { login: "stservice" },
+  commits: {
+    nodes: [{
+      commit: { statusCheckRollup: rollup === null ? null : { state: rollup } },
+    }],
+  },
+  reviews: { nodes: [] },
+  ...overrides,
+});
+
+Deno.test("skipReason: only a green, mergeable, unreviewed, non-draft PR is ready", () => {
+  assertEquals(skipReason(searchPr(), "nleck"), null);
+  assertEquals(skipReason(searchPr({}, "PENDING"), "nleck"), "waiting-ci");
+  assertEquals(skipReason(searchPr({}, null), "nleck"), "waiting-ci");
+  assertEquals(skipReason(searchPr({}, "FAILURE"), "nleck"), "ci-failed");
+  assertEquals(skipReason(searchPr({}, "ERROR"), "nleck"), "ci-failed");
+  assertEquals(skipReason(searchPr({ isDraft: true }), "nleck"), "draft");
   assertEquals(
-    ciState([run("COMPLETED", "SUCCESS"), run("COMPLETED", "SKIPPED")]).state,
-    "green",
+    skipReason(searchPr({ mergeable: "CONFLICTING" }), "nleck"),
+    "conflicting",
   );
+  assertEquals(skipReason(searchPr({ mergeable: "UNKNOWN" }), "nleck"), null);
+  const approved = {
+    nodes: [{
+      author: { login: "nleck" },
+      state: "APPROVED",
+      body: "",
+      commit: { oid: "head" },
+    }],
+  };
   assertEquals(
-    ciState([run("COMPLETED", "SUCCESS"), run("IN_PROGRESS", undefined)]).state,
-    "pending",
-  );
-  assertEquals(
-    ciState([run("IN_PROGRESS", undefined), run("COMPLETED", "FAILURE")]).state,
-    "failed",
-  );
-  assertEquals(
-    ciState([{ __typename: "StatusContext", context: "s", state: "PENDING" }])
-      .state,
-    "pending",
-  );
-  assertEquals(
-    ciState([{ __typename: "StatusContext", context: "s", state: "ERROR" }])
-      .state,
-    "failed",
+    skipReason(searchPr({ reviews: approved }), "nleck"),
+    "already-reviewed",
   );
 });
 
@@ -119,8 +143,8 @@ Deno.test("reviewedAtHead: approvals, change requests and the skill's own commen
     body = "",
     login = "nleck",
   ) => ({
-    user: { login },
-    commit_id,
+    author: { login },
+    commit: { oid: commit_id },
     state,
     body,
   });
