@@ -425,6 +425,7 @@
         "worker/deno/lib/shell_helpers.ts",
         "worker/deno/lib/stuck_issue_detector.ts",
         "worker/deno/lib/timeline_cache.ts",
+        "worker/deno/lib/token_scope_fleet_bound.ts",
         "worker/deno/lib/unit_test_passes.ts",
         "worker/deno/lib/unit_test_time_budget.ts",
         "worker/deno/lib/workflow_scope.ts"
@@ -526,6 +527,7 @@
         "worker/deno/lib/conflict_intent_audit.ts",
         "worker/deno/lib/conflict_intent_context.ts",
         "worker/deno/lib/conflict_marker_trust.ts",
+        "worker/deno/lib/conflict_needs_human_gate.ts",
         "worker/deno/lib/conflict_queue_order.ts",
         "worker/deno/lib/console_redaction.ts",
         "worker/deno/lib/console_redaction_entrypoint_check.ts",
@@ -2180,6 +2182,19 @@
       ]
     },
     {
+      "issue": 2688,
+      "chunk": "top-up-2688",
+      "title": "top-up: worker work-on → planning hand-off",
+      "ledger": "docs/audits/security-sweep-2688-planning-handoff.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: planning_handoff.ts, planning_handoff_trust.ts (#2688)",
+      "status": "swept",
+      "sweptAt": "cce5d6b2965f43fc25979050737b8894d8e44726",
+      "paths": [
+        "worker/deno/lib/planning_handoff.ts",
+        "worker/deno/lib/planning_handoff_trust.ts"
+      ]
+    },
+    {
       "issue": 2701,
       "chunk": "top-up-2701",
       "title": "top-up: the Copilot code review setup question",
@@ -2201,6 +2216,18 @@
       "sweptAt": "d7418ce59f0ab608691cfe6b130a105706e8beff",
       "paths": [
         "worker/deno/lib/prompt_too_long.ts"
+      ]
+    },
+    {
+      "issue": 2727,
+      "chunk": "top-up-2727",
+      "title": "top-up: the human-gate CI comment",
+      "ledger": "docs/audits/security-sweep-2727-ci-human-gate-comment.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: ci_human_gate_comment.ts (#2727)",
+      "status": "swept",
+      "sweptAt": "bf65c46fb12191e3f67a3571766cec5221b0970e",
+      "paths": [
+        "worker/deno/lib/ci_human_gate_comment.ts"
       ]
     }
   ],

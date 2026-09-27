@@ -152,9 +152,10 @@ written. This section adds only what is specific to issue #{{ISSUE_NUMBER}}:
 ## Escape Hatch
 
 For this issue, "genuinely out of scope" means its scope expanded after
-refinement, it bundles several independent changes, or it hinges on a product
-decision only a human can make. Size alone is not scope. When the escape hatch
-does apply:
+refinement or it hinges on a product decision only a human can make. Size alone
+is not scope. An issue that bundles several independent changes is not an
+escape-hatch case — hand it to planning (below). When the escape hatch does
+apply:
 
 - Run the dedup search against `{{REPO}}`, or against the dependency's repo when
   the root cause lives there.
@@ -169,6 +170,26 @@ does apply:
 - Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
   as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
   and hands it to a human.
+
+### Too large for one PR → emit the planning marker, and the worker plans it
+
+When the issue genuinely needs **several independent PRs** — separate
+subsystems, repos or deliverables that each land and test on their own — do not
+escalate it to a human and do not apply `planning` yourself. Make no code
+change, and end your final message with this marker on its own line:
+
+```text
+<!-- vibe-needs-planning reason="<why it splits — the independent pieces you found>" -->
+```
+
+The worker applies `planning` through its audited hand-off, posts your reason
+on the issue, and the planning run breaks it into sub-issues. `reason` is
+required; a marker without one, or a second request after an earlier hand-off,
+goes to a human instead. The marker applies to `work-on` issues only: on any
+other pickup label, or when the issue body carried an image from an untrusted
+author, the worker hands the issue to a human rather than to planning. Sheer
+volume in one coherent change is not a reason:
+a large PR that lands as one unit is still one PR.
 
 ### Worked Examples
 

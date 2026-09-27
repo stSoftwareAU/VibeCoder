@@ -15,6 +15,7 @@ import type { Result } from "../types.ts";
 import { reportStateLoadFailure } from "./state_load_failure.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { withStateLock } from "./state_mutex.ts";
+import type { WorkflowScopeState } from "./workflow_scope.ts";
 
 /** Configuration for cooldown state. */
 export interface CooldownConfig {
@@ -93,10 +94,52 @@ export function escalatingCooldownSeconds(consecutiveFailures: number): number {
   return ESCALATING_COOLDOWN_LADDER_SECONDS[index]!;
 }
 
+/**
+ * A host's own record that pushing an issue was refused for want of the
+ * `workflow` scope (Issue #2689).
+ *
+ * `token-scope` is transient, so the refused issue gets only the flat 600 s
+ * cooldown — and nothing in GRQ#4939's title or body named a workflow, so the
+ * claim scan's cheap read could not skip it. The same host re-claimed it
+ * every ten minutes and repeated a seven-minute agent run. This entry is that
+ * host's memory: the claim scan skips the issue while it stands.
+ *
+ * It lives in the cooldown state file in the install's work directory — the
+ * same directory as `.machine-id` — so it survives the hourly relaunch that
+ * an in-process set would not. It carries the install uuid rather than the
+ * container hostname, which changes on every launch, and the scope verdict
+ * the refusal happened under: granting the scope changes the verdict, and
+ * the entry stops applying at once rather than at the end of its retention.
+ */
+export interface WorkflowScopeRefusal {
+  /** Repository identifier (e.g., "stSoftwareAU/GRQ"). */
+  repo: string;
+  /** Issue number. */
+  issueNumber: number;
+  /** The install uuid from `${workDir}/.machine-id`. */
+  installUuid: string;
+  /** This host's workflow-scope verdict when the push was refused. */
+  verdict: WorkflowScopeState;
+  /** Unix timestamp when the refusal was recorded. */
+  timestamp: number;
+}
+
+/** What identifies a refusal, and the host asking about it. */
+export type WorkflowScopeRefusalKey = Omit<WorkflowScopeRefusal, "timestamp">;
+
+/**
+ * How long a refusal is remembered (Issue #2689). Long, because the verdict
+ * check already lifts it the moment the scope is granted; bounded, so the
+ * state file does not grow for ever with issues long since closed.
+ */
+export const WORKFLOW_SCOPE_REFUSAL_RETENTION_SECONDS = 30 * 24 * 60 * 60;
+
 /** Persisted cooldown state (JSON). */
 export interface CooldownState {
   /** Active cooldown entries. */
   entries: CooldownEntry[];
+  /** This install's workflow-scope refusals (Issue #2689). */
+  workflowScopeRefusals?: WorkflowScopeRefusal[];
 }
 
 /** Default cooldown configuration values. */
@@ -194,6 +237,18 @@ export async function loadState(
           : issueRetryCooldown;
         return (now - entry.timestamp) < retention;
       });
+    if (parsed.workflowScopeRefusals !== undefined) {
+      parsed.workflowScopeRefusals = Array.isArray(parsed.workflowScopeRefusals)
+        ? parsed.workflowScopeRefusals.filter((r) =>
+          typeof r?.repo === "string" &&
+          typeof r.issueNumber === "number" &&
+          typeof r.installUuid === "string" &&
+          typeof r.verdict === "string" &&
+          typeof r.timestamp === "number" &&
+          (now - r.timestamp) < WORKFLOW_SCOPE_REFUSAL_RETENTION_SECONDS
+        )
+        : [];
+    }
 
     return parsed;
   } catch (err) {
@@ -302,6 +357,44 @@ export async function isIssueInCooldown(
     )
     : config.issueRetryCooldown;
   return (now - latest.timestamp) < duration;
+}
+
+/**
+ * Remember that this install was refused an issue's push for want of the
+ * `workflow` scope (Issue #2689). One entry per issue and install: a repeat
+ * refreshes it.
+ */
+export async function recordWorkflowScopeRefusal(
+  config: CooldownConfig,
+  refusal: WorkflowScopeRefusalKey,
+): Promise<Result<CooldownState>> {
+  return await withStateLock(`cooldown:${config.workDir}`, async () => {
+    const state = await loadState(config.workDir, config.issueRetryCooldown);
+    state.workflowScopeRefusals = [
+      ...(state.workflowScopeRefusals ?? []).filter((r) =>
+        !(r.repo === refusal.repo && r.issueNumber === refusal.issueNumber &&
+          r.installUuid === refusal.installUuid)
+      ),
+      { ...refusal, timestamp: nowSeconds() },
+    ];
+    const writeResult = await persistState(config.workDir, state);
+    if (!writeResult.ok) return writeResult as Result<CooldownState>;
+    return { ok: true, value: state };
+  });
+}
+
+/**
+ * Whether this install was refused the issue under the verdict it still has
+ * (Issue #2689) — the claim scan's per-host skip.
+ */
+export function isWorkflowScopeRefused(
+  state: CooldownState,
+  host: WorkflowScopeRefusalKey,
+): boolean {
+  return (state.workflowScopeRefusals ?? []).some((r) =>
+    r.repo === host.repo && r.issueNumber === host.issueNumber &&
+    r.installUuid === host.installUuid && r.verdict === host.verdict
+  );
 }
 
 /**

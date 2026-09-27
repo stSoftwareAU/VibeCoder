@@ -4463,7 +4463,9 @@ sequence in the worker log.
 as `infrastructure` by `ci_failure_classifier.ts` (ETIMEDOUT, ENOTFOUND,
 5xx, runner lost connection, …) says nothing about the worker's ability to
 fix the code, so charging it against the human-escalation budget would
-escalate perfectly healthy repos. Every other category
+escalate perfectly healthy repos. Nor does a `human-gate` failure — a check
+whose log or annotation carries a `vibe-human-gate: <step>` line, declaring
+that a human action clears it (Issue #2726). Every other category
 (`code-fix-required`, `history-rewrite-required`, `timing`, `unknown`)
 consumes an attempt.
 

@@ -108,6 +108,10 @@ export function buildCiNoChangesResponse(
   const name = neutraliseAgentMarkers(checkName).text;
 
   switch (category) {
+    // Issue #2726: this path classifies the AGENT's output, not the check's,
+    // so a gate line here did not come from the check and must not let the
+    // agent dodge escalation — it gets the code-fix-required response.
+    case "human-gate":
     case "code-fix-required": {
       // Issue #2211: route the escalation through the shared helper, so
       // `body` is no longer posted directly. `reason` and `nextStep` are
@@ -118,7 +122,7 @@ export function buildCiNoChangesResponse(
         `I reviewed the CI check failure (**${name}**) but could not produce a code fix. ` +
         `The classifier indicates this requires a code change.${trailer}`;
       return {
-        category,
+        category: "code-fix-required",
         addNeedsHuman: true,
         reason,
         nextStep: PR_ESCALATION_NEXT_STEP,

@@ -133,7 +133,14 @@ flowchart TD
 - **Scope:** open PRs in the push-capable maintenance set (the fleet's own
   logins, plus a human PR whose author explicitly invited the worker) reported
   by GitHub as `mergeable == CONFLICTING`.
-- **Not in scope:** PRs already carrying `needs-human` (a human owns those). A
+- **Not in scope:** PRs already carrying `needs-human` (a human owns those) —
+  with one exception (Issue #2728): when the label came from a **CI-fix
+  escalation**, the conflict is still resolved. The scan reads the PR thread
+  first and lets the PR through only when a fleet-authored comment carries a
+  `vibe-ci-fix-attempt` marker **and** no comment carries the conflict lane's
+  own `needs-human-escalation: merge-conflict-…` marker. A marker from any
+  other login counts for nothing, and the budget, disruption bound, park and
+  abandon apply unchanged. `needs-human` stays on the PR for the red check. A
   conflict whose two sides genuinely contradict each other **is** in scope — the
   agent judges it and names the call (Issue #2306); only a resolution the
   mechanical guards refuse leaves the merge ladder for abandon-and-restart, and
@@ -831,8 +838,10 @@ The three candidates considered, and why each is ruled out:
    1.61 led the lane at 00:08:36 and started within the same second.
 
 **The lesson for the next quiet queue: read the live `mergeable` state, not the
-label.** A PR keeps `merge-conflict` after its conflict clears, so a labelled PR
-with no attempt marker is the *expected* shape once the base moves on — check
+label.** A PR kept `merge-conflict` after its conflict cleared, so a labelled PR
+with no attempt marker was the *expected* shape once the base moved on — the
+scan now clears it (Issue #2728, see below), but a label can still lag by one
+pass. Check
 whether the pass ran, then whether GitHub still calls the PR `CONFLICTING`,
 before assuming a stall.
 
@@ -843,6 +852,15 @@ including PRs the worker will not touch this pass. Filter on that label to see
 the whole stuck set at a glance. The branch updater's "needs a real merge"
 warning now fires **once per PR per process** rather than on every ~2.5-minute
 pass, because the label is the queue.
+
+**A stale label is cleared** (Issue #2728). When the scan sees a PR GitHub
+reports as `MERGEABLE` that still carries `merge-conflict` — resolved by a human,
+another host, or the base moving — it removes the label. Only a definite
+`MERGEABLE` clears it: `UNKNOWN` is GitHub still computing and may yet come back
+`CONFLICTING`, so the label stays. The labels ride the listing the scan already
+makes (a per-PR read only when a listing lacks them), and no DELETE is sent
+unless the label is present. A failed DELETE is a WARN line, not a scan error:
+the pass moves on to the next PR and the next pass retries.
 
 The label is no longer the *only* signal, though. It says a PR is stuck; two
 other instruments say whether anything is happening about it, and both exist
@@ -928,11 +946,11 @@ each carries the operands that make the decision checkable afterwards:
 | Reason | Operands | Meaning |
 | --- | --- | --- |
 | `attempted` | — | Selected for a resolution this pass. |
-| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry. Also emitted at the claim point, when the live `gh pr view --json state,mergeable` re-read says `MERGEABLE` because another host or a human resolved the conflict since the listing (Issue #2307). |
+| `not-conflicting` | `mergeableState` | GitHub no longer calls the PR `CONFLICTING` — a stale label, not a queue entry; on `MERGEABLE` the label is removed (Issue #2728). Also emitted at the claim point, when the live `gh pr view --json state,mergeable` re-read says `MERGEABLE` because another host or a human resolved the conflict since the listing (Issue #2307). |
 | `out-of-scope-author` | `author` | Outside the push-capable maintenance set. |
 | `already-handled` | — | Taken or deferred earlier in this same cycle's drain. |
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. `mergeable-state` also covers the claim-point re-read answering a `mergeable` nobody can act on — GitHub still recomputing the merge — which skips the cycle rather than guessing (Issue #2307). |
-| `needs-human` | `label` | A human already owns the conflict. |
+| `needs-human` | `label` | A human already owns the conflict. Not emitted for a `needs-human` that came only from a CI-fix escalation — that PR is resolved (Issue #2728). |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
 | `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` label and no comment asking anybody for anything. |

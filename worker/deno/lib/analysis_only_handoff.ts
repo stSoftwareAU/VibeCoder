@@ -139,9 +139,10 @@ export function buildAnalysisOnlyNextStep(): string {
     "Decide the next phase for this analysis-only issue — add `planning` to " +
     "break it into actionable sub-issues, or re-scope it into a concrete " +
     "code change and re-apply `work-on` — then remove `needs-human`. " +
-    "(The worker cannot self-apply `planning`/`work-on`; the security layer " +
-    "strips workflow labels added by the worker, which is why the hand-off " +
-    "stops at `needs-human`.)"
+    "(The worker applies `planning` itself only when a run asks for it with " +
+    "the `vibe-needs-planning` marker, and only once per issue (Issue " +
+    "#2688); otherwise the security layer strips workflow labels the worker " +
+    "adds, which is why this hand-off stops at `needs-human`.)"
   );
 }
 
