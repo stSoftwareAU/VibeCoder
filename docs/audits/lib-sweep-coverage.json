@@ -6,7 +6,7 @@
       "issue": 1214,
       "chunk": "12a",
       "title": "subprocess and argv construction",
-      "ledger": "docs/audits/security-sweep-2182-lib-delta-12a-12c.md",
+      "ledger": "docs/audits/security-sweep-2755-lib-delta-12a-12c.md",
       "definition": "grep -rl \"Deno.Command\" lib/ --include='*.ts' | grep -v '_test\\.ts$'",
       "status": "swept",
       "paths": [
@@ -60,13 +60,13 @@
         "worker/deno/lib/workflow_auditor.ts",
         "worker/deno/lib/write_repo_allowlist.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "e1fd6e86083b4ac434a74f7c3e5364ba6717ad1e"
     },
     {
       "issue": 1215,
       "chunk": "12b",
       "title": "filesystem, path and temp-file handling",
-      "ledger": "docs/audits/security-sweep-2182-lib-delta-12a-12c.md",
+      "ledger": "docs/audits/security-sweep-2755-lib-delta-12a-12c.md",
       "definition": "grep -rl \"Deno.writeTextFile|Deno.writeFile|Deno.remove|Deno.mkdir|Deno.makeTempDir|Deno.symlink|Deno.open\" lib/ minus 12a",
       "status": "swept",
       "paths": [
@@ -155,13 +155,13 @@
         "worker/deno/lib/work_volume_tiers.ts",
         "worker/deno/lib/worker_log_cleanup.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "e1fd6e86083b4ac434a74f7c3e5364ba6717ad1e"
     },
     {
       "issue": 1216,
       "chunk": "12c",
       "title": "untrusted GitHub-data ingestion",
-      "ledger": "docs/audits/security-sweep-2182-lib-delta-12a-12c.md",
+      "ledger": "docs/audits/security-sweep-2755-lib-delta-12a-12c.md",
       "definition": "grep -rl \"gh_spawn|runGhOrThrow|spawnGh|JSON.parse\" lib/ minus 12a and 12b",
       "status": "swept",
       "paths": [
@@ -369,7 +369,7 @@
         "worker/deno/lib/worker_token_privilege_scanner.ts",
         "worker/deno/lib/workflow_annotation_fetcher.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "e1fd6e86083b4ac434a74f7c3e5364ba6717ad1e"
     },
     {
       "issue": 1217,
