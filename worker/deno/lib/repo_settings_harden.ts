@@ -686,6 +686,11 @@ export function planRepoSettingsHardening(
       body: JSON.stringify({ require_code_owner_review: true }),
       warning:
         "PRs that touch a path named in .github/CODEOWNERS (workflows, actions, scripts) now wait for an owner's approval; every other PR — including the fleet's — merges as before (Issue #4397).",
+      // With no pull_request rule yet, the approval step above adds one only
+      // where the push policy allows it; a direct-push branch gets none, so
+      // this step is held for the same reason rather than failing for want
+      // of the rule.
+      ...(pr ? {} : { held: holdForPushPolicy(snapshot.pushPolicy) }),
     });
   }
   // A milestone ruleset that enforces its status checks on branch CREATION
