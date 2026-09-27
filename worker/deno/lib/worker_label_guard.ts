@@ -52,6 +52,7 @@ import type { AuditMutation } from "./audit_entry.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import { isAuditJournalEnabled } from "./audit_hook.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { PLANNING_HANDOFF_LABEL } from "./planning_handoff_trust.ts";
 
 /**
  * Literal label names the worker may apply to an existing issue.
@@ -372,7 +373,7 @@ export function assertWorkerCanHandOffToPlanning(
 ): Result<void> {
   const log = context.logFn ?? ((line: string) => console.warn(line));
   const caller = context.caller ?? "unknown";
-  if (label.toLowerCase() !== "planning") {
+  if (label.toLowerCase() !== PLANNING_HANDOFF_LABEL) {
     log(
       `[SECURITY] [WORKER_LABEL_REFUSED] label=${label} caller=${caller} ` +
         `reason=not_the_planning_handoff_label`,

@@ -11,6 +11,7 @@ import {
   detectPlanningHandoff,
   handOffToPlanning,
   hasPriorPlanningHandoff,
+  MAX_PLANNING_REASON_LENGTH,
   PLANNING_HANDOFF_REQUEST_MARKER_NAME,
 } from "../lib/planning_handoff.ts";
 import type { ReleaseClaimOutcomeOptions } from "../lib/claim_release.ts";
@@ -19,14 +20,19 @@ import type { GitHubClient, Logger } from "../types.ts";
 const REPO = "stSoftwareAU/Example";
 const ISSUE = 2688;
 
-function silentLogger(warnings: string[] = []): Logger {
+function silentLogger(
+  warnings: string[] = [],
+  errors: string[] = [],
+): Logger {
   return {
     debug: () => {},
     info: () => {},
     warn: (msg: string) => {
       warnings.push(msg);
     },
-    error: () => {},
+    error: (msg: string) => {
+      errors.push(msg);
+    },
   } as unknown as Logger;
 }
 
@@ -42,7 +48,11 @@ function makeCalls(): Calls {
   return { addLabel: [], postComment: [], ensured: [], released: 0 };
 }
 
-function makeClient(calls: Calls, failAddLabel = false): GitHubClient {
+function makeClient(
+  calls: Calls,
+  failAddLabel = false,
+  failComment = false,
+): GitHubClient {
   return {
     addLabel: (_r: string, _i: number, label: string) => {
       if (failAddLabel) return Promise.reject(new Error("403 forbidden"));
@@ -50,6 +60,7 @@ function makeClient(calls: Calls, failAddLabel = false): GitHubClient {
       return Promise.resolve();
     },
     postComment: (_r: string, _i: number, body: string) => {
+      if (failComment) return Promise.reject(new Error("502 bad gateway"));
       calls.postComment.push(body);
       return Promise.resolve(undefined);
     },
@@ -124,7 +135,7 @@ Deno.test("detectPlanningHandoff - an overlong reason is truncated", () => {
     `<!-- vibe-needs-planning reason="${long}" -->`,
   );
   assert(result !== undefined);
-  assert(result.reason.length <= 500);
+  assertEquals(result.reason.length, MAX_PLANNING_REASON_LENGTH);
 });
 
 Deno.test("detectPlanningHandoff - a similarly named marker does not match", () => {
@@ -241,4 +252,53 @@ Deno.test("handOffToPlanning - a failed label add reports not applied", async ()
   assertEquals(calls.postComment, []);
   assertEquals(calls.released, 0);
   assert(warnings.some((w) => w.includes("planning")));
+});
+
+Deno.test("handOffToPlanning - a failed label ensure reports not applied", async () => {
+  const calls = makeCalls();
+  const warnings: string[] = [];
+  const result = await handOffToPlanning({
+    ghClient: makeClient(calls),
+    repo: REPO,
+    issueNumber: ISSUE,
+    githubUser: "testbot",
+    reason: "r",
+    outputSnippet: "",
+    logger: silentLogger(warnings),
+    deps: {
+      ...deps(calls),
+      ensureLabelExists: () =>
+        Promise.resolve({ ok: false as const, error: new Error("no perms") }),
+    },
+  });
+
+  assertEquals(result.applied, false);
+  assertEquals(calls.addLabel, []);
+  assertEquals(calls.released, 0);
+  assert(warnings.some((w) => w.includes("no perms")), warnings.join("\n"));
+});
+
+Deno.test("handOffToPlanning - a failed comment is logged as an error, the hand-off stands", async () => {
+  const calls = makeCalls();
+  const errors: string[] = [];
+  const result = await handOffToPlanning({
+    ghClient: makeClient(calls, false, true),
+    repo: REPO,
+    issueNumber: ISSUE,
+    githubUser: "testbot",
+    reason: "r",
+    outputSnippet: "",
+    logger: silentLogger([], errors),
+    deps: deps(calls),
+  });
+
+  // The label is already on, so the claim is still released.
+  assertEquals(result.applied, true);
+  assertEquals(calls.addLabel, ["planning"]);
+  assertEquals(calls.released, 1);
+  // Loud: the missing loop-guard marker is named at error level.
+  assert(
+    errors.some((e) => e.includes(buildPlanningHandoffMarker())),
+    errors.join("\n"),
+  );
 });

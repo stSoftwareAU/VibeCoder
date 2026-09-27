@@ -179,7 +179,8 @@ export async function handOffToPlanning(
     return { applied: false };
   }
 
-  // The label is on; a failed comment loses only the explanation.
+  // The label is on, so the hand-off stands; but a missing comment also
+  // drops the loop-guard marker, so fail loud rather than warn.
   try {
     await ghClient.postComment(
       repo,
@@ -190,10 +191,11 @@ export async function handOffToPlanning(
       ),
     );
   } catch (error) {
-    logger.warn(
-      `Failed to post planning hand-off comment on ${target}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+    logger.error(
+      `Planning hand-off comment NOT posted on ${target} — the ` +
+        `${buildPlanningHandoffMarker()} loop-guard marker is missing: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
     );
   }
 
