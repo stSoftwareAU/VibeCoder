@@ -11,21 +11,31 @@
  *    auto-merge is refused and the fleet falls back to polling the checks
  *    itself (`direct_merge.ts`, Issue #926). One landing mechanism enforced by
  *    GitHub beats two enforced by us.
- * 2. **The worker must still be able to push the branch directly.**
- *    `syncMilestoneBranchWithDefault` merges the default branch into each
- *    milestone branch and pushes the result. A `pull_request` rule blocks that
- *    push outright, and a `required_status_checks` rule blocks it too — the
- *    merge commit has no checks yet, because checks run *after* a push. Unless
- *    the service account is a bypass actor, protecting the branch silently
- *    breaks the sync that keeps it current (the Issue #4356 lesson, in a new
- *    place).
+ * 2. **The branch sync must still land.** `syncMilestoneBranchWithDefault`
+ *    merges the default branch into each milestone branch and pushes the
+ *    result. A `required_status_checks` rule refuses that push from an
+ *    account that cannot bypass it — the merge commit has no checks yet,
+ *    because checks run *after* a push. The service account is deliberately
+ *    not a bypass actor (an admin may bypass, the fleet may not), so a refused
+ *    push raises or updates a sync PR instead (`git_pull.ts`,
+ *    `milestone_sync_pr.ts`, Issue #589), which the same gate makes
+ *    auto-mergeable.
  *
  * The worker itself never writes a milestone ruleset. Setup, running as the
  * operator, creates a missing one and aligns an existing one to the
  * GRQ-AutoTrader "milestone branches" template on every run, with no prompt
  * (Issue #2623) — {@link syncMilestoneRuleset}. The template never guesses a
  * check: it mirrors the default branch's, so a milestone PR is held to the
- * same bar as the PR that eventually merges the collection.
+ * same bar as the PR that eventually merges the collection — **less any check
+ * no merged milestone PR reports** (Issue #2684). A check whose workflow runs
+ * only for PRs into the default branch can never report on a milestone PR,
+ * and requiring it held every milestone PR BLOCKED for ever.
+ *
+ * The owner's spec for `milestone/**` (Issue #2684): required status checks
+ * must pass, `strict_required_status_checks_policy` is **false** (the branch
+ * need not be up to date), and there is **no** `pull_request` rule, so no
+ * approval is required. {@link buildMilestoneRulesetBody} is the only body
+ * the aligner writes, and it cannot express either.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -322,32 +332,24 @@ export function assessMilestoneRuleset(
       }
     }
 
-    // The one that breaks the fleet rather than merely limiting it.
+    // A gate the service account cannot bypass is the intended policy, and
+    // the branch sync lands through a sync PR there (Issue #589), so it earns
+    // no finding. A bypass this check cannot resolve might exempt the
+    // service account, which the policy forbids — that is worth saying.
     const blocksPush = pullRequest !== undefined ||
       (checks !== undefined && contexts.length > 0);
     if (blocksPush) {
       const bypass = serviceAccountCanBypass(ruleset, account);
-      if (!bypass.bypasses) {
+      if (!bypass.bypasses && bypass.unproven) {
         findings.push({
-          // Not an error against the ruleset: refusing the service account is
-          // the intended policy (an admin may bypass, the fleet may not). It
-          // is a warning about the worker, which still pushes directly.
           severity: "warning",
           code: "direct-push-blocked",
-          message: bypass.unproven
-            ? `ruleset '${name}' gates \`milestone/**\` and carries a bypass ` +
-              `this check cannot resolve (a User, Team, Integration or ` +
-              `OrganizationAdmin actor). If it exempts '${account.login}', ` +
-              `the service account can push past the gate — which the ` +
-              `operator's policy forbids: an admin may bypass, the fleet may ` +
-              `not (Issue #586).`
-            : `ruleset '${name}' gates \`milestone/**\` and ` +
-              `'${account.login}' (permission ` +
-              `'${account.permission ?? "unknown"}') correctly cannot bypass ` +
-              `it. The milestone branch sync still pushes directly, so that ` +
-              `push is REJECTED and milestone branches drift behind the ` +
-              `default line. The RULESET is right; the sync must raise a pull ` +
-              `request instead of pushing (Issue #589).`,
+          message: `ruleset '${name}' gates \`milestone/**\` and carries a ` +
+            `bypass this check cannot resolve (a User, Team, Integration or ` +
+            `OrganizationAdmin actor). If it exempts '${account.login}', the ` +
+            `service account can push past the gate — which the operator's ` +
+            `policy forbids: an admin may bypass, the fleet may not ` +
+            `(Issue #586).`,
         });
       }
     }
@@ -366,9 +368,11 @@ export function assessMilestoneRuleset(
           `ruleset '${name}' requires ${missing.length} check(s) that no ` +
           `milestone PR reports: ${missing.join(", ")}. Those PRs will read ` +
           `MERGEABLE and BLOCKED for ever, with no failing check to point ` +
-          `at. Usually a workflow filtering its PR base with ` +
-          '`branches: ["*"]`, which matches one path segment and so never ' +
-          'matches `milestone/...` — `["**"]` does (Issue #586).',
+          `at. Usually a workflow whose \`pull_request\` trigger filters on ` +
+          `the default branch, or on \`branches: ["*"]\`, which matches one ` +
+          'path segment and so never matches `milestone/...` — `["**"]` ' +
+          `does (Issue #586). Setup drops such checks from its own ` +
+          `'${MILESTONE_RULESET_NAME}' ruleset (Issue #2684).`,
       });
     }
 
@@ -391,9 +395,10 @@ export function assessMilestoneRuleset(
       severity: "info",
       code: "configured",
       message:
-        "`milestone/**` is covered by a ruleset with required status checks " +
-        "and the service account can still push it directly — milestone PRs " +
-        "are auto-mergeable and the branch sync keeps working.",
+        "`milestone/**` is covered by a ruleset with required status checks, " +
+        "so milestone PRs are auto-mergeable; the branch sync pushes " +
+        "directly where the service account may and raises a sync PR where " +
+        "it may not (Issue #589).",
     }];
   }
 
@@ -603,7 +608,11 @@ export async function checkMilestoneRuleset(
   repo: string,
   login: string,
   ghFn: GhJson,
-  options: { rulesets?: readonly RulesetDetail[] } = {},
+  options: {
+    rulesets?: readonly RulesetDetail[];
+    /** A sample the caller already took, so the check and the sync agree. */
+    reportedChecks?: readonly string[];
+  } = {},
 ): Promise<MilestoneRulesetFinding[]> {
   const [read, permission, reportedChecks] = await Promise.all([
     options.rulesets
@@ -613,7 +622,9 @@ export async function checkMilestoneRuleset(
       })
       : readRulesetDetails(repo, ghFn),
     fetchServiceAccountPermission(repo, login, ghFn),
-    fetchMilestonePrCheckNames(repo, ghFn),
+    options.reportedChecks
+      ? Promise.resolve([...options.reportedChecks])
+      : fetchMilestonePrCheckNames(repo, ghFn),
   ]);
   if (!read.ok) return [rulesetReadFailedFinding(read.error)];
   return assessMilestoneRuleset(read.rulesets, {
@@ -622,52 +633,67 @@ export async function checkMilestoneRuleset(
   }, reportedChecks);
 }
 
+/** How many merged milestone PRs {@link fetchMilestonePrCheckNames} unions. */
+const MILESTONE_PR_SAMPLE = 5;
+
 /**
- * Check names seen on the most recent PR into a milestone branch.
+ * Check names reported by recent MERGED PRs into a milestone branch.
  *
- * The sample is what makes {@link unreportableChecks} answerable: a required
- * context is only provably unreportable against a PR that actually ran. Open
- * PRs first, then merged ones, because a merged PR's checks are the strongest
- * evidence of what the base really runs.
+ * The sample is what makes {@link unreportableChecks} answerable and what the
+ * aligner intersects the default branch's checks with (Issue #2684). Only
+ * merged PRs count:
  *
- * @returns The check names, or an empty list when no milestone PR could be
- *   sampled — in which case nothing is claimed.
+ * - An open PR may still be running. GRQ-AutoTrader's open milestone PR had
+ *   not reached its final `gate` job when it was sampled, so setup claimed
+ *   `gate` never reports — on a repository where every merged milestone PR
+ *   reports it.
+ * - Anyone who can open a PR chooses which workflows it runs. A merged PR
+ *   went through the gate, so no outsider can shrink the sample and have the
+ *   aligner drop a check.
+ *
+ * The names of the last few are unioned, so one PR whose path filters
+ * skipped a workflow does not drop that check either.
+ *
+ * @returns The check names, or an empty list when no merged milestone PR
+ *   could be sampled — in which case nothing is claimed.
  */
 export async function fetchMilestonePrCheckNames(
   repo: string,
   ghFn: GhJson,
 ): Promise<string[]> {
-  for (const state of ["open", "merged"]) {
-    try {
-      const raw = await ghFn([
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        state,
-        "--search",
-        "base:milestone",
-        "--limit",
-        "1",
-        "--json",
-        "statusCheckRollup",
-      ]);
-      const parsed = raw ? JSON.parse(raw) : [];
-      if (!Array.isArray(parsed) || parsed.length === 0) continue;
-      const rollup = parsed[0]?.statusCheckRollup;
-      if (!Array.isArray(rollup) || rollup.length === 0) continue;
-      const names = rollup
-        .map((check: { name?: string; context?: string }) =>
-          check.name ?? check.context
-        )
-        .filter((name: unknown): name is string => typeof name === "string");
-      if (names.length > 0) return names;
-    } catch {
-      // A listing that cannot be read proves nothing; try the next state.
+  try {
+    const raw = await ghFn([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "merged",
+      "--search",
+      "base:milestone",
+      "--limit",
+      String(MILESTONE_PR_SAMPLE),
+      "--json",
+      "statusCheckRollup",
+    ]);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    const names = new Set<string>();
+    for (const pr of parsed) {
+      const rollup = pr?.statusCheckRollup;
+      if (!Array.isArray(rollup)) continue;
+      for (
+        const check of rollup as Array<{ name?: string; context?: string }>
+      ) {
+        const name = check.name ?? check.context;
+        if (typeof name === "string" && name.length > 0) names.add(name);
+      }
     }
+    return [...names];
+  } catch {
+    // A listing that cannot be read proves nothing.
+    return [];
   }
-  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +726,15 @@ export interface MilestoneRulesetSyncPlan {
   writes: MilestoneRulesetWrite[];
   /** Rulesets setup will not write, each with the reason. */
   skipped: Array<{ ruleset: string; reason: string }>;
+  /** Every context the default branch requires, in its order. */
+  mirrored: string[];
+  /**
+   * Default-branch contexts left off `milestone/**` because no merged
+   * milestone PR reports them (Issue #2684). Empty when nothing was sampled.
+   */
+  dropped: string[];
+  /** Whether any merged milestone PR's checks could be sampled. */
+  sampled: boolean;
 }
 
 /**
@@ -808,6 +843,18 @@ function templateShape(ruleset: RulesetDetail | RulesetBody): string {
   return JSON.stringify({ name: ruleset.name, rules, bypass });
 }
 
+/** The contexts a ruleset currently requires. */
+function currentContexts(ruleset: RulesetDetail): Set<string> {
+  const contexts = new Set<string>();
+  for (const rule of ruleset.rules ?? []) {
+    if (rule.type !== "required_status_checks") continue;
+    for (const check of rule.parameters?.required_status_checks ?? []) {
+      if (typeof check.context === "string") contexts.add(check.context);
+    }
+  }
+  return contexts;
+}
+
 /**
  * Decide, without writing, what makes `milestone/**` match the template.
  *
@@ -817,23 +864,47 @@ function templateShape(ruleset: RulesetDetail | RulesetBody): string {
  *   differ → align it. Rules the template lacks are dropped; enforcement is
  *   never changed, and neither are the ref conditions' excludes.
  * - A ruleset already matching the template gets no write.
+ *
+ * The checks are the default branch's, intersected with the names merged
+ * milestone PRs report (Issue #2684) — the default-branch ruleset's own rule
+ * (`default_branch_ruleset.ts`): a required check nothing reports holds every
+ * PR BLOCKED for ever. With no sample there is no evidence either way, so a
+ * new ruleset requires nothing and an existing one keeps what it has: never
+ * adding an unproven check, and never stripping a gate an armed PR is
+ * waiting on.
+ *
+ * @param reportedChecks - Names from {@link fetchMilestonePrCheckNames};
+ *   empty when nothing could be sampled.
  */
 export function planMilestoneRulesetSync(
   rulesets: readonly RulesetDetail[],
-  defaultBranch?: string,
+  defaultBranch: string | undefined,
+  reportedChecks: readonly string[],
 ): MilestoneRulesetSyncPlan {
   const { checks, bypassActors } = milestoneTemplateSource(
     rulesets,
     defaultBranch,
   );
-  const plan: MilestoneRulesetSyncPlan = { writes: [], skipped: [] };
+  const sampled = reportedChecks.length > 0;
+  const reported = new Set(reportedChecks);
+  const mirrored = [...new Set(checks.map((check) => check.context))];
+  const plan: MilestoneRulesetSyncPlan = {
+    writes: [],
+    skipped: [],
+    mirrored,
+    dropped: sampled ? mirrored.filter((c) => !reported.has(c)) : [],
+    sampled,
+  };
+  /** The template's checks this evidence shows a milestone PR reports. */
+  const evidenced = (evidence: ReadonlySet<string>) =>
+    checks.filter((check) => evidence.has(check.context));
 
   if (!rulesets.some(coversMilestoneBranches)) {
     plan.writes.push({
       kind: "create",
       body: buildMilestoneRulesetBody(
         MILESTONE_RULESET_NAME,
-        checks,
+        evidenced(reported),
         bypassActors,
       ),
     });
@@ -856,7 +927,7 @@ export function planMilestoneRulesetSync(
     }
     const built = buildMilestoneRulesetBody(
       MILESTONE_RULESET_NAME,
-      checks,
+      evidenced(sampled ? reported : currentContexts(ruleset)),
       bypassActors,
       enforcement,
     );
@@ -903,7 +974,13 @@ export type MilestoneSyncOutcome =
 
 /** Outcome of {@link syncMilestoneRuleset}. */
 export type MilestoneSyncResult =
-  | { ok: true; outcomes: MilestoneSyncOutcome[] }
+  | (
+    & { ok: true; outcomes: MilestoneSyncOutcome[] }
+    & Pick<
+      MilestoneRulesetSyncPlan,
+      "mirrored" | "dropped" | "sampled"
+    >
+  )
   | { ok: false; error: Error };
 
 /**
@@ -918,13 +995,19 @@ export type MilestoneSyncResult =
  *
  * @param options.rulesets - Injected for tests; production reads them.
  * @param options.defaultBranch - The branch whose checks are mirrored.
+ * @param options.reportedChecks - A milestone-PR sample the caller already
+ *   took; sampled here with {@link fetchMilestonePrCheckNames} when absent.
  * @returns The outcomes, or the read error — an unreadable state is never
  *   taken for "nothing covers `milestone/**`" (Issue #678).
  */
 export async function syncMilestoneRuleset(
   repo: string,
   ghFn: GhJson,
-  options: { rulesets?: RulesetDetail[]; defaultBranch?: string } = {},
+  options: {
+    rulesets?: RulesetDetail[];
+    defaultBranch?: string;
+    reportedChecks?: readonly string[];
+  } = {},
 ): Promise<MilestoneSyncResult> {
   if (!isValidRepoSlug(repo)) {
     return { ok: false, error: new Error(`Invalid repo slug: ${repo}`) };
@@ -936,7 +1019,13 @@ export async function syncMilestoneRuleset(
     rulesets = read.rulesets;
   }
 
-  const plan = planMilestoneRulesetSync(rulesets, options.defaultBranch);
+  const reportedChecks = options.reportedChecks ??
+    await fetchMilestonePrCheckNames(repo, ghFn);
+  const plan = planMilestoneRulesetSync(
+    rulesets,
+    options.defaultBranch,
+    reportedChecks,
+  );
   const outcomes: MilestoneSyncOutcome[] = plan.skipped.map((skip) => ({
     kind: "skipped",
     ...skip,
@@ -988,7 +1077,13 @@ export async function syncMilestoneRuleset(
       });
     }
   }
-  return { ok: true, outcomes };
+  return {
+    ok: true,
+    outcomes,
+    mirrored: plan.mirrored,
+    dropped: plan.dropped,
+    sampled: plan.sampled,
+  };
 }
 
 /**
