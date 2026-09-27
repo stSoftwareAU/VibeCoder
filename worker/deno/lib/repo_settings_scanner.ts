@@ -260,11 +260,10 @@ export async function scanRepoSettings(
       ? pr.required_approving_review_count as number
       : 0;
     const codeowners = pr?.require_code_owner_review === true;
-    // Code-owner review is a human gate on the paths that matter (workflows,
-    // actions, scripts — Issue #4397); with it enforced, a zero approval
-    // count on the rest is the operator's chosen policy for an autonomous
-    // fleet, not a missing review.
-    if (!pr || (approvals < 1 && !codeowners)) {
+    // Every default branch needs one approval (Issue #2680) — code-owner
+    // review alone gates only the owned paths, so it no longer excuses a
+    // zero count. Setup's `repo-settings-harden` closes this finding.
+    if (approvals < 1) {
       add({
         findingId: "BP-REPO-RULESET-NO-REVIEW",
         severity: "high",

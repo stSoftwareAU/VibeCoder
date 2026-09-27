@@ -17,10 +17,14 @@
  *    repositories only: a private or internal repo needs the paid GitHub
  *    Secret Protection add-on, so the step is not planned there and the
  *    skip is printed rather than a write attempted and refused (Issue #2225)
- *  - the default branch's review requirement (GHA-PERM-004) — **opt-in
- *    only** (`requireReviews`): with one required approval and code-owner
- *    review, the fleet's autonomous merges stop until a human approves,
- *    which is a policy change the operator makes knowingly, not a default.
+ *  - one approving review on the default branch (GHA-PERM-004, Issue #2680)
+ *    — by default: fleet PRs wait for `/review-fleet-prs` or the owner to
+ *    approve instead of auto-merging unreviewed. A pull_request rule below
+ *    one is raised in the ruleset that carries it; with none, one is added to
+ *    the worker's own {@link VIBE_RULESET_NAME} ruleset (created if absent),
+ *    but never on a branch that takes direct pushes, where a pull_request
+ *    rule would refuse every push — that is reported for the owner instead.
+ *  - code-owner review (`requireCodeOwnerReview`) — opt-in, separately.
  *
  * Every step is planned from the CURRENT settings (nothing is written that
  * already holds), shown in dry-run, and applied only under `--apply`.
@@ -43,6 +47,10 @@ import {
   MILESTONE_REF_PATTERN,
 } from "./repo_rulesets.ts";
 import { VIBE_RULESET_NAME } from "./default_branch_ruleset.ts";
+import {
+  assessBranchPushPolicy,
+  type BranchPushPolicy,
+} from "./branch_push_policy.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import { extractUsesValue } from "./action_pin_scanner.ts";
@@ -83,7 +91,13 @@ export interface RepoSettingsSnapshot {
   visibility?: string;
   /** The boolean `private` flag, used when `visibility` is absent. */
   private?: boolean;
-  rules?: Array<{ type?: string; parameters?: Record<string, unknown> }>;
+  /** The default branch's effective rules (`rules/branches/{branch}`). */
+  rules?: Array<{
+    type?: string;
+    parameters?: Record<string, unknown>;
+    /** The ruleset the rule comes from (Issue #2680). */
+    ruleset_id?: number;
+  }>;
   /**
    * The repo's branch rulesets, each already expanded to its full object
    * (Issue #3912 follow-up). The full object is needed because the rulesets
@@ -91,6 +105,11 @@ export interface RepoSettingsSnapshot {
    * everything it did not touch.
    */
   rulesets?: RulesetSnapshot[];
+  /**
+   * How the default branch is fed (Issue #2680). Read only when the branch
+   * has no pull_request rule, since only then would one be added.
+   */
+  pushPolicy?: BranchPushPolicy;
 }
 
 /** One branch ruleset, as the rulesets API returns it. */
@@ -99,6 +118,8 @@ export interface RulesetSnapshot {
   name?: string;
   target?: string;
   enforcement?: string;
+  /** `Repository` or `Organization`; only a repository ruleset is edited. */
+  source_type?: string;
   // deno-lint-ignore no-explicit-any
   conditions?: any;
   // deno-lint-ignore no-explicit-any
@@ -114,10 +135,11 @@ export interface HardenStep {
     | "actions-allow-list"
     | "secret-scanning"
     | "ruleset-reviews"
+    | "default-branch-approval"
     | "milestone-branch-create";
   /** What the step closes. */
   title: string;
-  method: "PUT" | "PATCH";
+  method: "PUT" | "PATCH" | "POST";
   /** `repos/{repo}/…` — the repo is filled in at apply time. */
   endpoint: string;
   body?: string;
@@ -125,19 +147,22 @@ export interface HardenStep {
   warning?: string;
   /** A write that must precede `body` for it to take effect. */
   preWrite?: { method: "PUT" | "PATCH"; endpoint: string; body: string };
+  /**
+   * Set when the plan decided NOT to write (Issue #2680): the step is
+   * reported with this status and detail, dry run or not, and nothing is
+   * sent.
+   */
+  held?: { status: "skipped" | "failed"; detail: string };
 }
 
 /** Options for {@link planRepoSettingsHardening}. */
 export interface PlanOptions {
   /** `<owner>/<repo>@*` patterns for the third-party actions in use. */
   thirdPartyPatterns: readonly string[];
-  /** Also plan the default branch's review requirement (fleet-stopping). */
-  requireReviews: boolean;
   /**
-   * Plan code-owner review only (Issue #4397): PRs that touch a path named
-   * in `.github/CODEOWNERS` (workflows, actions, scripts) need an owner's
-   * approval; every other PR keeps merging as before. `requireReviews`
-   * takes precedence when both are set.
+   * Plan code-owner review (Issue #4397): PRs that touch a path named in
+   * `.github/CODEOWNERS` (workflows, actions, scripts) need an owner's
+   * approval. Independent of the one-approval rule (Issue #2680).
    */
   requireCodeOwnerReview?: boolean;
   defaultBranch: string;
@@ -508,10 +533,14 @@ export function planRepoSettingsHardening(
       });
     }
   }
+  // The approval step comes first: when it adds the pull_request rule, the
+  // code-owner step below re-reads the live ruleset and finds it there.
+  const approval = planDefaultBranchApproval(snapshot, options.defaultBranch);
+  if (approval) steps.push(approval);
   const pr = snapshot.rules?.find((r) => r.type === "pull_request")
     ?.parameters;
   if (
-    !options.requireReviews && options.requireCodeOwnerReview &&
+    options.requireCodeOwnerReview &&
     snapshot.rules && (!pr || pr.require_code_owner_review !== true)
   ) {
     steps.push({
@@ -524,26 +553,6 @@ export function planRepoSettingsHardening(
       warning:
         "PRs that touch a path named in .github/CODEOWNERS (workflows, actions, scripts) now wait for an owner's approval; every other PR — including the fleet's — merges as before (Issue #4397).",
     });
-  }
-  if (options.requireReviews && snapshot.rules) {
-    const approvals = typeof pr?.required_approving_review_count === "number"
-      ? pr.required_approving_review_count as number
-      : 0;
-    if (!pr || approvals < 1 || pr.require_code_owner_review !== true) {
-      steps.push({
-        kind: "ruleset-reviews",
-        title:
-          `Require one approving review and code-owner review on ${options.defaultBranch}`,
-        method: "PUT",
-        endpoint: `rulesets/${options.defaultBranch}`,
-        body: JSON.stringify({
-          require_code_owner_review: true,
-          required_approving_review_count: 1,
-        }),
-        warning:
-          "Stops the fleet's autonomous auto-merge on the default branch until a human approves each PR — apply knowingly.",
-      });
-    }
   }
   // A milestone ruleset that enforces its status checks on branch CREATION
   // makes the fleet's milestone branches impossible to open (Issue #3912).
@@ -581,13 +590,9 @@ export function planRepoSettingsHardening(
         `(required checks still gate the merge)`,
       method: "PUT",
       endpoint: `rulesets/${ruleset.id}`,
-      body: JSON.stringify({
-        name: ruleset.name,
-        target: ruleset.target ?? "branch",
-        enforcement: ruleset.enforcement ?? "active",
-        bypass_actors: ruleset.bypass_actors ?? [],
-        conditions: ruleset.conditions,
-        rules: (ruleset.rules ?? []).map((rule) =>
+      body: rulesetPutBody(
+        ruleset,
+        (ruleset.rules ?? []).map((rule) =>
           rule.type === "required_status_checks"
             ? {
               ...rule,
@@ -598,11 +603,180 @@ export function planRepoSettingsHardening(
             }
             : rule
         ),
-      }),
+      ),
     });
   }
 
   return steps;
+}
+
+type RulesetRule = NonNullable<RulesetSnapshot["rules"]>[number];
+
+/**
+ * The full-document PUT body for `ruleset` with `rules` in place of its
+ * own: the rulesets API replaces the whole ruleset, so everything the change
+ * does not touch — name, conditions, enforcement, bypass actors — is echoed.
+ */
+function rulesetPutBody(
+  ruleset: RulesetSnapshot,
+  rules: readonly RulesetRule[],
+): string {
+  return JSON.stringify({
+    name: ruleset.name,
+    target: ruleset.target ?? "branch",
+    enforcement: ruleset.enforcement ?? "active",
+    bypass_actors: ruleset.bypass_actors ?? [],
+    conditions: ruleset.conditions,
+    rules,
+  });
+}
+
+/**
+ * The pull_request rule the approval step adds (Issue #2680): one approval
+ * and nothing else. Code-owner review is its own opt-in step; the other
+ * flags are GitHub's required fields, set to their permissive values.
+ */
+const APPROVAL_PULL_REQUEST_RULE: RulesetRule = {
+  type: "pull_request",
+  parameters: {
+    required_approving_review_count: 1,
+    dismiss_stale_reviews_on_push: false,
+    require_code_owner_review: false,
+    require_last_push_approval: false,
+    required_review_thread_resolution: false,
+  },
+};
+
+function approvalCount(parameters: Record<string, unknown> | undefined) {
+  const n = parameters?.required_approving_review_count;
+  return typeof n === "number" ? n : 0;
+}
+
+/**
+ * Why a pull_request rule may not be added, or `undefined` on a PR-only
+ * branch (Issue #2680). A direct-push or opted-out branch is a skip for the
+ * owner to decide; an unread or unreadable policy is a failure.
+ */
+function holdForPushPolicy(
+  policy: BranchPushPolicy | undefined,
+): HardenStep["held"] {
+  if (policy?.kind === "pr-only") return undefined;
+  if (!policy || policy.kind === "unknown") {
+    return {
+      status: "failed",
+      detail: `push policy unknown (${
+        policy?.detail ?? "not read"
+      }) — no pull_request rule added on uncertainty`,
+    };
+  }
+  return {
+    status: "skipped",
+    detail: `direct-push branch (${policy.detail}) — a pull_request rule ` +
+      "would refuse every direct push; the owner decides",
+  };
+}
+
+const APPROVAL_WARNING =
+  "Every PR into the default branch — the fleet's included — now waits for an approving review (/review-fleet-prs or the owner) before it merges (Issue #2680).";
+
+/**
+ * Plan one required approving review on the default branch (Issue #2680).
+ *
+ * Nothing is planned when the branch already needs an approval (the
+ * strictest pull_request rule decides, as GitHub does) or when the rules or
+ * rulesets could not be read. Otherwise, in order of preference:
+ *
+ *  1. **Raise** a pull_request rule below one in the repository ruleset that
+ *     carries it (the worker's own first), echoing everything else.
+ *  2. **Add** a pull_request rule to the worker's own ruleset (raising the
+ *     one it has instead, so a rule is never duplicated).
+ *  3. **Create** the worker's own ruleset holding just that rule. It shares
+ *     {@link VIBE_RULESET_NAME} with the default-branch ruleset sync, which
+ *     carries a rule it does not model through its updates and never
+ *     creates a second ruleset of that name — so the two never fight.
+ *
+ * Adding a pull_request rule where there was none refuses every direct push,
+ * so 2 and 3 are held unless {@link RepoSettingsSnapshot.pushPolicy} says
+ * the branch is PR-only: a direct-push or opted-out branch is a reported
+ * skip, and an unreadable policy a failure — never a lock on uncertainty.
+ * A human ruleset without a pull_request rule is never given one.
+ */
+export function planDefaultBranchApproval(
+  snapshot: RepoSettingsSnapshot,
+  defaultBranch: string,
+): HardenStep | undefined {
+  const { rules, rulesets } = snapshot;
+  if (!rules || !rulesets) return undefined;
+  const pullRequests = rules.filter((r) => r.type === "pull_request");
+  if (pullRequests.some((r) => approvalCount(r.parameters) >= 1)) {
+    return undefined;
+  }
+  const editable = rulesets.filter((r) =>
+    (r.source_type === undefined || r.source_type === "Repository") &&
+    (r.target === undefined || r.target === "branch")
+  );
+  const ours = editable.find((r) => r.name === VIBE_RULESET_NAME);
+  const carrying = new Set(pullRequests.map((r) => r.ruleset_id));
+  const carrier = [ours, ...editable].find((r) =>
+    r !== undefined && carrying.has(r.id) &&
+    (r.rules ?? []).some((rule) => rule.type === "pull_request")
+  );
+  const title = `Require one approving review on ${defaultBranch}`;
+
+  // A pull_request rule already refuses direct pushes, so raising its count
+  // changes nothing about how the branch is fed. Adding the first one does,
+  // so only then does the push policy decide.
+  const held = carrier || pullRequests.length > 0
+    ? undefined
+    : holdForPushPolicy(snapshot.pushPolicy);
+  const common = {
+    kind: "default-branch-approval" as const,
+    warning: APPROVAL_WARNING,
+    ...(held ? { held } : {}),
+  };
+  const target = carrier ?? ours;
+  if (target) {
+    const rules = target.rules ?? [];
+    const raise = rules.some((rule) => rule.type === "pull_request");
+    return {
+      ...common,
+      title: `${title} (ruleset '${target.name ?? target.id}': ${
+        raise ? "raise its pull_request rule to one" : "add a pull_request rule"
+      })`,
+      method: "PUT",
+      endpoint: `rulesets/${target.id}`,
+      body: rulesetPutBody(
+        target,
+        raise
+          ? rules.map((rule) =>
+            rule.type === "pull_request"
+              ? {
+                ...rule,
+                parameters: {
+                  ...(rule.parameters ?? {}),
+                  required_approving_review_count: 1,
+                },
+              }
+              : rule
+          )
+          : [...rules, APPROVAL_PULL_REQUEST_RULE],
+      ),
+    };
+  }
+  return {
+    ...common,
+    title: `${title} (create ruleset '${VIBE_RULESET_NAME}')`,
+    method: "POST",
+    endpoint: "rulesets",
+    body: JSON.stringify({
+      name: VIBE_RULESET_NAME,
+      target: "branch",
+      enforcement: "active",
+      // GitHub's alias keeps the rule on the default branch if it is renamed.
+      conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+      rules: [APPROVAL_PULL_REQUEST_RULE],
+    }),
+  };
 }
 
 /** Outcome of one step. */
@@ -627,6 +801,10 @@ export async function applyRepoSettingsPlan(
 ): Promise<HardenResult[]> {
   const out: HardenResult[] = [];
   for (const step of plan) {
+    if (step.held) {
+      out.push({ step, status: step.held.status, detail: step.held.detail });
+      continue;
+    }
     if (!options.apply) {
       out.push({ step, status: "planned" });
       continue;
@@ -669,7 +847,7 @@ export async function applyRepoSettingsPlan(
  */
 async function ghWrite(
   gh: GhCommandFn,
-  method: "PUT" | "PATCH",
+  method: HardenStep["method"],
   endpoint: string,
   body: string | undefined,
 ): Promise<void> {
@@ -819,8 +997,6 @@ export interface HardenRepoOptions {
   /** The repo's local checkout; its workflows feed the allow-list. */
   workDir: string;
   requireCodeOwnerReview?: boolean;
-  /** Fleet-stopping one-approval rule — off unless explicitly asked for. */
-  requireReviews?: boolean;
   /** Operator-vouched `owner/repo` coordinates (`--allow-action`). */
   extraCoordinates?: readonly string[];
   /** Test seam: the default-branch disk cache (defaults to the worker's). */
@@ -948,7 +1124,17 @@ async function hardenRepoInto(
       );
       if (full) expanded.push(full);
     }
-    if (expanded.length > 0) snapshot.rulesets = expanded;
+    // Set even when empty: "no rulesets" is what lets the approval step
+    // create one (Issue #2680), and is different from "could not read".
+    snapshot.rulesets = expanded;
+  }
+  // Only a branch with no pull_request rule would gain one, so only then is
+  // its push history read (Issue #2680).
+  if (
+    snapshot.rules && snapshot.rulesets &&
+    !snapshot.rules.some((r) => r.type === "pull_request")
+  ) {
+    snapshot.pushPolicy = await assessBranchPushPolicy(repo, branch, gh);
   }
   if (snapshot.actions?.allowed_actions === "selected") {
     snapshot.selectedActions = await read(
@@ -995,7 +1181,6 @@ async function hardenRepoInto(
   }
   const plan = planRepoSettingsHardening(snapshot, {
     thirdPartyPatterns: buildAllowedActionPatterns(outcome.coordinates),
-    requireReviews: options.requireReviews === true,
     requireCodeOwnerReview: options.requireCodeOwnerReview === true,
     defaultBranch: branch,
   });

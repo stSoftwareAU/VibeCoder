@@ -5,19 +5,18 @@
  *   mod.ts repo-settings-harden --repo owner/name            # dry run: show the plan
  *   mod.ts repo-settings-harden --repo owner/name --apply    # write the safe subset
  *   mod.ts repo-settings-harden --repo owner/name --apply --require-code-owner-review
- *   mod.ts repo-settings-harden --repo owner/name --apply --require-reviews
  *
- * The safe subset: read-only default token, no approve-PRs, SHA-pin
- * enforcement, an allow-list of the actions the workflows use, and — on a
- * public repository only — secret scanning + push protection; a private or
- * internal repository needs the paid GitHub Secret Protection add-on, so
- * that step is skipped and the skip printed (Issue #2225).
+ * The default plan: read-only default token, no approve-PRs, SHA-pin
+ * enforcement, an allow-list of the actions the workflows use, one approving
+ * review on the default branch (Issue #2680 — skipped and reported on a
+ * branch that takes direct pushes), and — on a public repository only —
+ * secret scanning + push protection; a private or internal repository needs
+ * the paid GitHub Secret Protection add-on, so that step is skipped and the
+ * skip printed (Issue #2225).
  * `--require-code-owner-review` (Issue #4397) makes PRs that touch a path in
- * `.github/CODEOWNERS` — the workflows, actions and scripts — wait for an
- * owner's approval while every other PR merges as before; the approval count
- * is left alone. `--require-reviews` additionally requires one approving
- * review on every PR — it stops the fleet's autonomous merges, so it is
- * never part of the default plan and wins over the owner-only flag.
+ * `.github/CODEOWNERS` — the workflows, actions and scripts — also wait for
+ * an owner's approval. `--require-reviews` is its retired spelling: it used
+ * to add the one-approval rule too, which is now always planned.
  *
  * Needs an admin token; the worker's own token cannot write settings, so
  * this is an operator command, not a fleet task.
@@ -87,7 +86,7 @@ export function parseAllowActionArg(value: unknown): string[] {
 export const repoSettingsHardenCommand: Command = {
   name: "repo-settings-harden",
   description:
-    "Plan (default) or apply (--apply) the repository-settings hardening the Actions audit reports: read-only token, no approve-PRs, SHA-pin enforcement, action allow-list, secret scanning; --require-code-owner-review makes owned paths (workflows) wait for an owner's approval without touching other PRs; --require-reviews opts into the fleet-stopping one-approval rule; the allow-list follows composite actions' own uses: and --allow-action adds more (Issues #4397 #4398 #4401 #4424)",
+    "Plan (default) or apply (--apply) the repository-settings hardening the Actions audit reports: read-only token, no approve-PRs, SHA-pin enforcement, action allow-list, secret scanning, one approving review on the default branch (never on a direct-push branch); --require-code-owner-review (or its retired spelling --require-reviews) makes owned paths (workflows) also wait for an owner's approval; the allow-list follows composite actions' own uses: and --allow-action adds more (Issues #4397 #4398 #4401 #4424 #2680)",
   async execute(
     args: Record<string, unknown>,
     _config: WorkerConfig,
@@ -100,8 +99,10 @@ export const repoSettingsHardenCommand: Command = {
       };
     }
     const apply = args["apply"] === true;
-    const requireReviews = args["require-reviews"] === true;
-    const requireCodeOwnerReview = args["require-code-owner-review"] === true;
+    // `--require-reviews` meant "one approval plus code-owner review"; the
+    // approval is now always planned (Issue #2680), leaving code-owner review.
+    const requireCodeOwnerReview = args["require-code-owner-review"] === true ||
+      args["require-reviews"] === true;
     const workDir = typeof args["work-dir"] === "string"
       ? args["work-dir"]
       : Deno.cwd();
@@ -118,7 +119,6 @@ export const repoSettingsHardenCommand: Command = {
       apply,
       ghCommandFn: runGhCommand,
       workDir,
-      requireReviews,
       requireCodeOwnerReview,
       extraCoordinates,
     });
