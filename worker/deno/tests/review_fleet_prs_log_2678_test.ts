@@ -46,6 +46,10 @@ Deno.test("decideOutcome: findings send it back, meaningful or removed tests hol
     decideOutcome(review({ testChanges: "meaningful" }), []),
     "held",
   );
+  assertEquals(
+    decideOutcome(review({ testChanges: "tightened" }), []),
+    "approved",
+  );
   assertEquals(decideOutcome(review(), ["tests/x_test.ts"]), "held");
   assertEquals(
     decideOutcome(

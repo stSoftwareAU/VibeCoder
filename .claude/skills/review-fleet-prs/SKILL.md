@@ -34,7 +34,9 @@ Optional argument: `owner/name` to review one repo only.
 4. **Meaningful changes to existing tests are the owner's call.** The PR is
    held for the owner with a comment-only review; it is neither approved nor
    sent back. A removed test file is always meaningful. Trivial edits
-   (formatting, renames, imports, added cases, fixture paths) are not.
+   (formatting, renames, imports, added cases, fixture paths) are not, and
+   neither are edits that only **tighten** a test (it now asserts more or
+   allows less, as the issue asks): those are approved.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
@@ -100,7 +102,12 @@ single message so they run in parallel, each with `model: "fable"` and
 >    **meaningful** if it removes a test case, weakens or deletes an
 >    assertion, changes an expected value or expected behaviour, or skips or
 >    loosens a test. It is **trivial** if it only reformats, renames,
->    updates imports or fixture paths, or adds cases or assertions.
+>    updates imports or fixture paths, or adds cases or assertions. It is
+>    **tightened** if an expected value or behaviour changes only to make
+>    the test stricter, as the issue asks: it now asserts more, allows less
+>    (e.g. no longer tolerates a permission or a call it used to allow), or
+>    pins a stricter count, and nothing it used to check is dropped. A change
+>    that tightens one thing and loosens another is **meaningful**.
 > 6. {previousFindings, if not empty: "An earlier review of this PR asked
 >    for these fixes: {previousFindings}. Check each one is fixed; one that
 >    is not is still a finding."}
@@ -115,7 +122,7 @@ single message so they run in parallel, each with `model: "fable"` and
 > failure scenario.
 >
 > Reply with only this JSON:
-> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}]}`
+> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}]}`
 
 If an agent fails or returns something that isn't this JSON, post nothing for
 that PR; the next gate run reports it again.
