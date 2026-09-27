@@ -1930,9 +1930,12 @@ the fleet means "already processed" (Issue #1249, finding 5). A count alone
 would let any account, with no repository permission, retire a comment from the
 scan for good. PR reviews use dismissal instead of reactions.
 
-**Staleness check** — review commit IDs are compared against the PR's current
-HEAD SHA. If the review was left on an older commit, it is skipped (the worker
-has already pushed new commits since the review).
+**Latest review wins** — a review's commit is **not** compared with the PR
+head: a branch update, rebase or merge-from-base moves the head without
+addressing anything (Issue #2697). Each reviewer's latest review decides, so a
+`CHANGES_REQUESTED` review stays outstanding until it is dismissed or the same
+reviewer submits a newer one; see
+[pr_review_outstanding.ts](../worker/deno/lib/pr_review_outstanding.ts).
 
 **Superseded by a fleet push** — a trusted comment is also deferred when the PR
 head was pushed by a **fleet login** _after_ the comment was written and within
