@@ -484,14 +484,23 @@ export async function claimPrComment(
 
   // Step 3: Immediately add eyes reaction to reduce the race window.
   // This prevents other workers from rediscovering the comment via
-  // find_pr_comments_to_fix() while we verify our claim.
-  await markCommentProcessed(
+  // find_pr_comments_to_fix() while we verify our claim. For a `pr_review`
+  // this is the dismissal — the only thing that retires a claimed change
+  // request now a moved head no longer does (Issue #2697), so a failure is
+  // logged rather than dropped.
+  const marked = await markCommentProcessed(
     repo,
     commentType,
     commentId,
     prNumber,
     ghCommandFn,
   );
+  if (!marked.ok) {
+    log(
+      `${where} could not mark feedback comment ${commentId} processed, so ` +
+        `the scan may rediscover it — ${marked.error.message}`,
+    );
+  }
 
   // Step 4: Brief pause for GitHub's eventual consistency to settle
   await sleepFn(3000);

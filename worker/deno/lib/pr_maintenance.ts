@@ -54,6 +54,12 @@ export {
   FLEET_PUSH_COOL_OFF_MS,
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
+import {
+  parsePrReviewPages,
+  PR_REVIEWS_JQ,
+  type PrReview,
+  selectOutstandingReviews,
+} from "./pr_review_outstanding.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
@@ -133,14 +139,6 @@ export interface CommentEntry {
   eyes?: number;
   /** ISO 8601 creation time — used for fleet-push supersession (Issue #211). */
   created_at?: string;
-}
-
-/** Review entry from the GitHub API. */
-export interface ReviewEntry {
-  login: string;
-  id: number;
-  body: string;
-  commit_id: string;
 }
 
 /** Check run entry from the GitHub API. */
@@ -639,30 +637,54 @@ export async function fetchCommentThumbsUpReactors(
   }
 }
 
+/** Say at INFO why a CHANGES_REQUESTED review is not actioned (Issue #2697). */
+function logReviewSkip(
+  logger: Logger,
+  repo: string,
+  prNumber: number,
+  reviewId: number,
+  reason: string,
+): void {
+  logger.info(
+    `Skipping CHANGES_REQUESTED review ${reviewId} on ${repo}#${prNumber} — ${reason}`,
+  );
+}
+
 /**
- * Fetch PR reviews with CHANGES_REQUESTED state.
+ * Fetch every submitted review on a PR, whatever its state (Issue #2697).
+ *
+ * All states are read so a reviewer's later review can supersede an earlier
+ * change request; every page is read so a long-lived PR's newest reviews are
+ * not cut off. An unreadable list is warned about loudly and treated as
+ * "nothing to action" for this scan only.
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - PR number
  * @param ghCommandFn - Function to run gh commands
- * @returns Array of review entries
+ * @param logger - Where a failed read is reported
+ * @returns Every review, in GitHub's list order
  */
 async function fetchPrReviews(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<ReviewEntry[]> {
+  logger: Logger,
+): Promise<PrReview[]> {
   try {
     const output = await ghCommandFn([
       "api",
-      `repos/${repo}/pulls/${prNumber}/reviews`,
+      "--paginate",
+      `repos/${repo}/pulls/${prNumber}/reviews?per_page=100`,
       "--jq",
-      '[.[] | select(.state == "CHANGES_REQUESTED" and .body != "") | {login: .user.login, id: .id, body: .body, commit_id: .commit_id}]',
+      PR_REVIEWS_JQ,
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as ReviewEntry[];
-  } catch {
+    return parsePrReviewPages(output);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      `Could not read reviews on ${repo}#${prNumber} — skipping its ` +
+        `CHANGES_REQUESTED reviews this scan: ${message}`,
+    );
     return [];
   }
 }
@@ -897,11 +919,29 @@ export async function findPrCommentsToFix(
         }
       }
 
-      // Check PR reviews (CHANGES_REQUESTED)
-      const reviews = await fetchPrReviews(repo, prNumber, ghCommandFn);
-      for (const review of reviews) {
-        if (!review.body) continue;
-        if (review.login === githubUser) continue;
+      // Check PR reviews (CHANGES_REQUESTED). A reviewer's latest review
+      // decides; a moved head does not retire it (Issue #2697).
+      const reviews = await fetchPrReviews(
+        repo,
+        prNumber,
+        ghCommandFn,
+        logger,
+      );
+      const { outstanding, skipped } = selectOutstandingReviews(reviews);
+      for (const { review, reason } of skipped) {
+        logReviewSkip(logger, repo, prNumber, review.id, reason);
+      }
+      for (const review of outstanding) {
+        if (review.login === githubUser) {
+          logReviewSkip(
+            logger,
+            repo,
+            prNumber,
+            review.id,
+            "the host's own review",
+          );
+          continue;
+        }
 
         // Issue #185 (SEC-8f21c4a0e7b3): a CHANGES_REQUESTED body goes
         // straight into the feedback prompt, so it must pass the same
@@ -921,13 +961,14 @@ export async function findPrCommentsToFix(
           continue;
         }
 
-        // Skip if commits pushed since review
-        if (headRefOid && review.commit_id !== headRefOid) {
-          logger.debug("Skipping stale CHANGES_REQUESTED review", {
-            reviewId: review.id,
-            commitId: review.commit_id,
-            headSha: headRefOid,
-          });
+        if (!review.body.trim()) {
+          logReviewSkip(
+            logger,
+            repo,
+            prNumber,
+            review.id,
+            "it has no body to act on",
+          );
           continue;
         }
 
