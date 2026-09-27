@@ -972,8 +972,13 @@ function planMergeCommitAllowed(
   return squash ? { ...step, dependsOn: [squash.kind] } : step;
 }
 
-/** A GitHub login: letters, digits and single hyphens, at most 39. */
+/** A GitHub login: letters, digits and hyphens, at most 39. */
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+
+/** Whether `login` is safe to put in an API path (Issue #2690). */
+export function isGitHubLogin(login: string): boolean {
+  return GITHUB_LOGIN.test(login);
+}
 
 /** Roles above write, which a fleet account must not hold (Issue #2690). */
 const ABOVE_WRITE = new Set(["admin", "maintain"]);
