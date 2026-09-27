@@ -145,6 +145,33 @@ background service is offered, where files land — is covered in
      `do_not_enforce_on_create: true`; bypass actors are mirrored from the
      default-branch ruleset. With no default-branch checks to mirror it
      carries the first two rules only. A missing ruleset is created `active`.
+
+     **The owner's spec** (Issue #2684). `milestone/**`: required status
+     checks must pass, the branch need **not** be up to date
+     (`strict_required_status_checks_policy: false`), and there is **no**
+     `pull_request` rule, so no approval is required. The default branch: at
+     least one approving review, required status checks, and
+     `strict_required_status_checks_policy: true`. The milestone template
+     cannot express a strict policy or a `pull_request` rule, and aligning
+     removes either from a ruleset setup owns.
+
+     **Only checks a milestone PR reports are mirrored** (Issue #2684). The
+     default branch's checks are intersected with the check names reported by
+     the last few *merged* PRs into a milestone branch — the same rule the
+     default-branch ruleset follows. A check whose workflow runs only for PRs
+     into the default branch (a `pull_request.branches: [Develop]` filter, a
+     version bump, CodeQL's default-branch analysis) never reports on a
+     milestone PR, and requiring it held every milestone PR BLOCKED for ever.
+     The checks left off are named on the repository's line. Open PRs are not
+     sampled: one still running has not reported its last jobs, and anyone
+     who can open a PR chooses which workflows it runs. With no merged
+     milestone PR to sample, a new ruleset requires no checks and an existing
+     one keeps the ones it has — setup never adds an unproven check, and never
+     strips a gate an armed PR is waiting on. When the default branch requires
+     checks but **none** of them reports on a milestone PR (TagsTS), requiring
+     nothing would let milestone PRs merge on no CI at all, so setup requires
+     instead the checks **every** sampled merged milestone PR reported, and
+     names both lists on the repository's line.
      A ruleset whose include is exactly `refs/heads/milestone/**` and which
      differs in name, rules, checks, strict policy, create exemption or bypass
      actors is rewritten to match — any other rule is removed, and a later
@@ -152,7 +179,10 @@ background service is offered, where files land — is covered in
      changed: a `disabled` or `evaluate` ruleset keeps it, with a warning. A
      broader ruleset that merely also covers milestone branches is left
      alone. Each write prints one success line, each failure one warning;
-     an already-aligned ruleset gets neither. The write runs as the operator,
+     an already-aligned ruleset gets neither. A service account that cannot
+     bypass the ruleset is the intended policy and earns no warning: its
+     refused sync push raises or updates a sync PR instead (Issue #589). The
+     write runs as the operator,
      re-reading the rulesets under that identity (Issue #595), and a read
      that fails is a warning — never "missing" (Issue #678).
      Every ruleset failure is non-fatal and named: a **private repository on

@@ -76,15 +76,23 @@ import { syncBestPracticesForAllRepos } from "./best_practices_sync.ts";
 import { relabelBestPracticesForAllRepos } from "./best_practices_relabel.ts";
 import { syncGitignoreForAllRepos } from "./gitignore_sync.ts";
 import {
+  COLLABORATOR_PRECHECK_REPO,
   statusExplanation,
   verifyMonitoredCollaborators,
 } from "./collaborator_precheck.ts";
 import {
+  createWriteRepoAllowlistContext,
+  seedWriteRepoAllowlist,
+  withWriteRepoAllowlistContext,
+} from "../lib/write_repo_allowlist.ts";
+import {
   applyMilestoneSyncOutcomes,
   assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
+  fetchMilestonePrCheckSample,
   type GhJson,
   type MilestoneSyncOutcome,
+  type MilestoneSyncResult,
   readRulesetDetails,
   repairMilestoneRulesetCreateBlock,
   type RulesetDetail,
@@ -1037,10 +1045,17 @@ function liveMilestoneSeams(ghConfigDir?: string): MilestoneReportSeams {
   };
 }
 
+/** What a sync learned about the checks, for the lines it prints. */
+type MilestoneCheckEvidence = Pick<
+  MilestoneSyncResult & { ok: true },
+  "mirrored" | "dropped" | "sampled" | "substituted"
+>;
+
 /** Print the one line each sync outcome earns (Issue #2623). */
 function printMilestoneSyncOutcome(
   repo: string,
   outcome: MilestoneSyncOutcome,
+  evidence: MilestoneCheckEvidence,
   print: MilestoneReportSeams["print"],
 ): void {
   switch (outcome.kind) {
@@ -1048,7 +1063,7 @@ function printMilestoneSyncOutcome(
       print(
         "success",
         `${repo}: created the '${outcome.ruleset}' ruleset on ` +
-          `\`milestone/**\` ${describeTemplateChecks(outcome.body)}`,
+          `\`milestone/**\` ${describeTemplateChecks(outcome.body, evidence)}`,
       );
       return;
     case "aligned":
@@ -1056,7 +1071,7 @@ function printMilestoneSyncOutcome(
         "success",
         `${repo}: aligned ruleset '${outcome.previousName}' to the ` +
           `'${outcome.ruleset}' template ` +
-          `${describeTemplateChecks(outcome.body)}`,
+          `${describeTemplateChecks(outcome.body, evidence)}`,
       );
       return;
     case "failed":
@@ -1076,14 +1091,42 @@ function printMilestoneSyncOutcome(
   }
 }
 
-/** "requiring N check(s)", or why it requires none. */
-function describeTemplateChecks(body: RulesetBody): string {
+/** The clause naming the default-branch checks `milestone/**` leaves off. */
+function droppedChecksClause(dropped: readonly string[]): string {
+  return `not requiring ${dropped.join(", ")} — no merged milestone PR ` +
+    `reports them, so requiring them would hold every milestone PR BLOCKED ` +
+    `(Issue #2684)`;
+}
+
+/** "requiring N check(s)", what was left off, or why it requires none. */
+function describeTemplateChecks(
+  body: RulesetBody,
+  evidence: MilestoneCheckEvidence,
+): string {
   const count = body.rules.find(isRequiredStatusChecksRule)?.parameters
     .required_status_checks.length ?? 0;
-  return count > 0
-    ? `requiring ${count} check(s) mirrored from the default branch`
-    : `with deletion and force-push protection only — the default branch ` +
-      `requires no checks to mirror`;
+  const dropped = evidence.dropped.length > 0
+    ? `; ${droppedChecksClause(evidence.dropped)}`
+    : "";
+  if (count > 0 && evidence.substituted.length > 0) {
+    return `requiring ${count} check(s) every merged milestone PR reports ` +
+      `(${evidence.substituted.join(", ")}) in place of the default ` +
+      `branch's, none of which a milestone PR runs${dropped}`;
+  }
+  if (count > 0) {
+    return `requiring ${count} check(s) mirrored from the default branch` +
+      dropped;
+  }
+  if (evidence.mirrored.length === 0) {
+    return `with deletion and force-push protection only — the default ` +
+      `branch requires no checks to mirror`;
+  }
+  if (!evidence.sampled) {
+    return `with deletion and force-push protection only — no merged ` +
+      `milestone PR has reported checks yet, so none of the default ` +
+      `branch's are required until one has (a later setup run adds them)`;
+  }
+  return `with deletion and force-push protection only${dropped}`;
 }
 
 /**
@@ -1112,11 +1155,19 @@ export async function reportMilestoneRuleset(
 ): Promise<number> {
   const { repo, branch } = result;
 
+  // One sample of what merged milestone PRs report, shared by the sync and
+  // the check, so the ruleset setup writes and the findings it prints are
+  // judged against the same evidence (Issue #2684).
+  const sample = await fetchMilestonePrCheckSample(
+    repo,
+    seams.ghFor("service-account"),
+  );
+
   let current: readonly RulesetDetail[] = rulesets;
   const sync = await syncMilestoneRuleset(
     repo,
     seams.ghFor("operator"),
-    branch ? { defaultBranch: branch } : {},
+    { ...(branch ? { defaultBranch: branch } : {}), sample },
   );
   if (!sync.ok) {
     seams.print(
@@ -1125,8 +1176,18 @@ export async function reportMilestoneRuleset(
         `${sync.error.message}`,
     );
   } else {
+    let named = false;
     for (const outcome of sync.outcomes) {
-      printMilestoneSyncOutcome(repo, outcome, seams.print);
+      printMilestoneSyncOutcome(repo, outcome, sync, seams.print);
+      named ||= outcome.kind === "created" || outcome.kind === "aligned";
+    }
+    // No write this run, but the checks left off are still worth one line:
+    // they are why `milestone/**` requires less than the default branch.
+    if (!named && sync.dropped.length > 0) {
+      seams.print(
+        "info",
+        `${repo}: \`milestone/**\` is ${droppedChecksClause(sync.dropped)}`,
+      );
     }
     current = applyMilestoneSyncOutcomes(rulesets, sync.outcomes);
   }
@@ -1135,7 +1196,7 @@ export async function reportMilestoneRuleset(
     repo,
     login,
     seams.ghFor("service-account"),
-    { rulesets: current },
+    { rulesets: current, reportedChecks: sample.union },
   );
 
   // Issue #2067: a `milestone/**` ruleset that enforces its required checks
@@ -1318,10 +1379,8 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
     );
     if (milestoneRulesetErrors > 0) {
       printWarning(
-        `${milestoneRulesetErrors} repo(s) gate \`milestone/**\` against the ` +
-          `service account, which is the intended policy — but the milestone ` +
-          `branch sync still pushes directly, so it fails there until the ` +
-          `sync raises a pull request instead (Issue #589).`,
+        `${milestoneRulesetErrors} error(s) in the \`milestone/**\` ` +
+          `configuration above — each names what to change.`,
       );
     }
     // Per-repo failures are non-fatal but signalled so setup.sh prints its
@@ -1456,6 +1515,71 @@ export const RUN_ALL_REPO_STEPS: ReadonlyArray<{
   { name: "backfill-idle-task-labels", run: runBackfillIdleTaskLabels },
 ];
 
+/**
+ * The subcommands that write to the monitored repos, and so run inside
+ * {@link withSetupWriteScope} (Issue #2684). `setup.sh` and `setup.ps1` run
+ * each repo-side step as its own subcommand, so the scope is applied at
+ * dispatch rather than inside `runAll` alone.
+ */
+export const SETUP_WRITE_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  ...RUN_ALL_REPO_STEPS.map((step) => step.name),
+  "label-colour-reconcile",
+  "best-practices-relabel",
+]);
+
+/**
+ * Run `fn` with the write-repo allowlist seeded from the configured repos
+ * (Issue #2684).
+ *
+ * Setup is its own process, and nothing in it seeded the allowlist, so every
+ * write it made logged `[SECURITY] [WRITE_REPO_UNSEEDED]` (Issue #1425).
+ * Setup writes to the monitored repos by design, and to VibeCoder for its
+ * collaborator-precheck issue, so those are what it may write to; anything
+ * else is refused at the `spawnGh` chokepoint.
+ *
+ * The seed lives in a fresh context, so the process default — and the
+ * fail-open accounting every other caller relies on — is untouched. With no
+ * configured repos (or a config that cannot be read, which the step itself
+ * reports) there is nothing to seed and `fn` runs as before.
+ */
+export async function withSetupWriteScope<T>(
+  configPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let repos: string[] = [];
+  try {
+    repos = (await loadExistingConfig(configPath)).repos ?? [];
+  } catch {
+    // The step loads the same file and reports why it could not.
+  }
+  if (repos.length === 0) return await fn();
+  return await withWriteRepoAllowlistContext(
+    createWriteRepoAllowlistContext(),
+    () => {
+      seedWriteRepoAllowlist(COLLABORATOR_PRECHECK_REPO, ...repos);
+      return fn();
+    },
+  );
+}
+
+/**
+ * Run the repo-side steps in order, each inside {@link withSetupWriteScope}.
+ *
+ * Scoped per step because a step reads the config afresh, and `runAll` writes
+ * the config before the first of them.
+ */
+export async function runRepoSteps(
+  configPath: string,
+  steps: ReadonlyArray<{
+    name: string;
+    run(configPath: string): Promise<boolean>;
+  }> = RUN_ALL_REPO_STEPS,
+): Promise<void> {
+  for (const step of steps) {
+    await withSetupWriteScope(configPath, () => step.run(configPath));
+  }
+}
+
 async function runAll(
   scriptDir: string,
   configPath: string,
@@ -1468,8 +1592,9 @@ async function runAll(
   // 2. Config
   await runConfig(configPath);
 
-  // 3–7. Repository sync phases, each non-fatal, in RUN_ALL_REPO_STEPS order.
-  for (const step of RUN_ALL_REPO_STEPS) await step.run(configPath);
+  // 3–7. Repository sync phases, each non-fatal, in RUN_ALL_REPO_STEPS order,
+  // each with setup's writes scoped to the configured repos (Issue #2684).
+  await runRepoSteps(configPath);
 
   // 8. Hooks
   await runHooks(scriptDir);
@@ -1695,83 +1820,93 @@ if (import.meta.main) {
     Deno.exit(1);
   }
 
-  switch (subcommand) {
-    case "prerequisites":
-      ok = await runPrerequisites(scriptDir, configPath, autoInstall);
-      break;
-    case "config":
-      ok = await runConfig(configPath);
-      break;
-    case "agent-providers":
-      ok = await runAgentProviders(configPath);
-      break;
-    case "launchagent":
-      ok = status
-        ? await runLaunchAgentStatus()
-        : uninstall
-        ? await runLaunchAgentRemoval()
-        : await runLaunchAgentSetup(scriptDir);
-      break;
-    case "scheduled-task":
-      ok = status
-        ? await runScheduledTaskStatus()
-        : uninstall
-        ? await runScheduledTaskRemoval()
-        : await runScheduledTaskSetup(scriptDir, powershell);
-      break;
-    case "screenshot":
-      ok = await runScreenshotSetup(scriptDir);
-      break;
-    case "label-sync":
-      ok = await runLabelSync(configPath, dryRun);
-      break;
-    case "label-colour-reconcile":
-      ok = await runLabelColourReconcile(configPath, dryRun);
-      break;
-    case "workflow-sync":
-      ok = await runWorkflowSync(configPath);
-      break;
-    case "best-practices-sync":
-      ok = await runBestPracticesSync(configPath);
-      break;
-    case "best-practices-relabel":
-      ok = await runBestPracticesRelabel(configPath, dryRun);
-      break;
-    case "gitignore-sync":
-      ok = await runGitignoreSync(configPath);
-      break;
-    case "verify-monitored-collaborator":
-      ok = await runVerifyCollaborator(configPath);
-      break;
-    case "branch-protection-sync":
-      ok = await runBranchProtectionSync(configPath);
-      break;
-    case "repo-settings-harden":
-      ok = await runRepoSettingsHardenStep(configPath, dryRun);
-      break;
-    case "backfill-idle-task-labels":
-      ok = await runBackfillIdleTaskLabels(configPath);
-      break;
-    case "repos":
-      ok = await runRepos(configPath, addRepo, removeRepo);
-      break;
-    case "update-mode":
-      ok = await runUpdateMode(scriptDir, configPath);
-      break;
-    case "hooks":
-      ok = await runHooks(scriptDir);
-      break;
-    case "all":
-      ok = await runAll(scriptDir, configPath, autoInstall);
-      break;
-    case "--help":
-    case "-h":
-      usage();
-      break;
-    default:
-      printError(`Unknown subcommand: ${subcommand}`);
-      usage();
-      ok = false;
+  const dispatch = async (): Promise<void> => {
+    switch (subcommand) {
+      case "prerequisites":
+        ok = await runPrerequisites(scriptDir, configPath, autoInstall);
+        break;
+      case "config":
+        ok = await runConfig(configPath);
+        break;
+      case "agent-providers":
+        ok = await runAgentProviders(configPath);
+        break;
+      case "launchagent":
+        ok = status
+          ? await runLaunchAgentStatus()
+          : uninstall
+          ? await runLaunchAgentRemoval()
+          : await runLaunchAgentSetup(scriptDir);
+        break;
+      case "scheduled-task":
+        ok = status
+          ? await runScheduledTaskStatus()
+          : uninstall
+          ? await runScheduledTaskRemoval()
+          : await runScheduledTaskSetup(scriptDir, powershell);
+        break;
+      case "screenshot":
+        ok = await runScreenshotSetup(scriptDir);
+        break;
+      case "label-sync":
+        ok = await runLabelSync(configPath, dryRun);
+        break;
+      case "label-colour-reconcile":
+        ok = await runLabelColourReconcile(configPath, dryRun);
+        break;
+      case "workflow-sync":
+        ok = await runWorkflowSync(configPath);
+        break;
+      case "best-practices-sync":
+        ok = await runBestPracticesSync(configPath);
+        break;
+      case "best-practices-relabel":
+        ok = await runBestPracticesRelabel(configPath, dryRun);
+        break;
+      case "gitignore-sync":
+        ok = await runGitignoreSync(configPath);
+        break;
+      case "verify-monitored-collaborator":
+        ok = await runVerifyCollaborator(configPath);
+        break;
+      case "branch-protection-sync":
+        ok = await runBranchProtectionSync(configPath);
+        break;
+      case "repo-settings-harden":
+        ok = await runRepoSettingsHardenStep(configPath, dryRun);
+        break;
+      case "backfill-idle-task-labels":
+        ok = await runBackfillIdleTaskLabels(configPath);
+        break;
+      case "repos":
+        ok = await runRepos(configPath, addRepo, removeRepo);
+        break;
+      case "update-mode":
+        ok = await runUpdateMode(scriptDir, configPath);
+        break;
+      case "hooks":
+        ok = await runHooks(scriptDir);
+        break;
+      case "all":
+        ok = await runAll(scriptDir, configPath, autoInstall);
+        break;
+      case "--help":
+      case "-h":
+        usage();
+        break;
+      default:
+        printError(`Unknown subcommand: ${subcommand}`);
+        usage();
+        ok = false;
+    }
+  };
+
+  // Issue #2684: a subcommand that writes to the monitored repos does so with
+  // the write-repo allowlist seeded from them.
+  if (SETUP_WRITE_SUBCOMMANDS.has(subcommand)) {
+    await withSetupWriteScope(configPath, dispatch);
+  } else {
+    await dispatch();
   }
 
   if (!ok) Deno.exit(1);
