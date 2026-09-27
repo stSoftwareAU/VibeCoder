@@ -2203,6 +2203,18 @@
       "paths": [
         "worker/deno/setup/repo_settings_harden_sync.ts"
       ]
+    },
+    {
+      "issue": 2701,
+      "chunk": "top-up-2701",
+      "title": "top-up: the Copilot code review setup question",
+      "ledger": "docs/audits/security-sweep-2701-copilot-review-setup.md",
+      "definition": "modules added to worker/deno/setup/ after 12a-12af recorded their coverage: copilot_review_setup.ts (#2701)",
+      "status": "swept",
+      "sweptAt": "d7418ce59f0ab608691cfe6b130a105706e8beff",
+      "paths": [
+        "worker/deno/setup/copilot_review_setup.ts"
+      ]
     }
   ],
   "roots": [

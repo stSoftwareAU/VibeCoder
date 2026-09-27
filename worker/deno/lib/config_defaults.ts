@@ -11,7 +11,11 @@
  *   compile time and call sites no longer need `as WorkerConfig` rescue casts.
  */
 
-import type { UpdateMode, WorkerConfig } from "../types.ts";
+import type {
+  CopilotCodeReviewMode,
+  UpdateMode,
+  WorkerConfig,
+} from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
@@ -673,6 +677,23 @@ export const DEFAULT_UPDATE_MODE: UpdateMode = "dynamic";
  * the meaning of a missing key.
  */
 export const SETUP_DEFAULT_UPDATE_MODE: UpdateMode = "frozen";
+
+/**
+ * Every `copilot_code_review` value a host may set (Issue #2701), named here
+ * so the validator and the setup conversation list the same three.
+ */
+export const COPILOT_CODE_REVIEW_MODES: readonly CopilotCodeReviewMode[] = [
+  "on",
+  "off",
+  "leave",
+];
+
+/**
+ * What an absent `copilot_code_review` means (Issue #2701): read and write
+ * nothing, so a host that never answered the question changes nothing, and
+ * setup offers it as the answer on a fresh host.
+ */
+export const DEFAULT_COPILOT_CODE_REVIEW: CopilotCodeReviewMode = "leave";
 
 /**
  * Tools whose exact version a frozen host pins (Issue #622, part of #583).

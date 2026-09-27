@@ -36,6 +36,8 @@ export type { LauncherDialect };
 export const SHARED_SETUP_SUBCOMMANDS: readonly string[] = [
   "prerequisites",
   "config",
+  // Asked before the hardening that applies it (Issue #2701).
+  "copilot-review-mode",
   "token-scope-preflight",
   "label-sync",
   "workflow-sync",
@@ -115,8 +117,10 @@ const SUBCOMMAND_INVOCATION: Record<LauncherDialect, RegExp> = {
   // `Invoke-VibeSetupCli -Arguments @("label-sync")`
   // `Capture` included: a query form still names the subcommand the script
   // depends on, and `agent-providers` is only ever read that way (Issue #745).
+  // `Passthrough` too: an interactive step runs that way so its question
+  // reaches the console (Issue #2701).
   powershell:
-    /Invoke-VibeSetupCli(?:OrExit|Capture)?\s+-Arguments\s+@\(\s*["']([a-z][a-z-]*)["']/g,
+    /Invoke-VibeSetupCli(?:OrExit|Capture|Passthrough)?\s+-Arguments\s+@\(\s*["']([a-z][a-z-]*)["']/g,
 };
 
 /** What one setup script's source says it does. */

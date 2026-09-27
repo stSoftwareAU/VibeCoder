@@ -278,6 +278,10 @@ function makeFakeGitHub(
       const ruleset = state.rulesets.find((r) =>
         endpoint === `${base}/rulesets/${r["id"]}`
       );
+      if (ruleset && method === "DELETE") {
+        state.rulesets = state.rulesets.filter((r) => r !== ruleset);
+        return;
+      }
       if (ruleset) {
         Object.assign(ruleset, body);
         return;
@@ -1116,4 +1120,111 @@ Deno.test("runRepoSettingsHarden - a dry run plans the merge-commit, squash-only
   ) {
     assertStringIncludes(line, kind);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Copilot code review on / off / leave (Issue #2701)
+// ---------------------------------------------------------------------------
+
+/** The hand-made ruleset four monitored repos carried: Copilot alone. */
+function copilotOnlyRuleset(): Record<string, unknown> {
+  return {
+    id: 40,
+    name: "Copilot review for default branch",
+    target: "branch",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+    rules: [{
+      type: "copilot_code_review",
+      parameters: { review_on_push: true, review_draft_pull_requests: false },
+    }],
+  };
+}
+
+/** Every Copilot rule anywhere in the repo's rulesets. */
+function copilotRules(state: FakeRepo): unknown[] {
+  return state.rulesets.flatMap((r) =>
+    (r["rules"] as Array<{ type: string }>).filter((rule) =>
+      rule.type === "copilot_code_review"
+    )
+  );
+}
+
+Deno.test("runRepoSettingsHarden - copilot off deletes the Copilot-only ruleset, names it on the repo line, and converges (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const state = {
+    [repo]: driftedRepo({
+      rulesets: [...driftedRepo().rulesets, copilotOnlyRuleset()],
+    }),
+  };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+  const first = harness(gh, workDir);
+
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "off" },
+    first.deps,
+  );
+
+  assert(
+    writes.some((w) =>
+      w.method === "DELETE" && w.endpoint === `repos/${repo}/rulesets/40`
+    ),
+  );
+  assertEquals(copilotRules(state[repo]!), []);
+  assertEquals(state[repo]!.rulesets.length, 1, "the Vibe ruleset stays");
+  assertStringIncludes(
+    first.lines.join("\n"),
+    "Turn off Copilot code review: delete ruleset " +
+      "'Copilot review for default branch'",
+  );
+
+  writes.length = 0;
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "off" },
+    harness(gh, workDir).deps,
+  );
+  assertEquals(writes, [], "already off: no write");
+});
+
+Deno.test("runRepoSettingsHarden - copilot on creates the dedicated ruleset once (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: driftedRepo() };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "on" },
+    harness(gh, workDir).deps,
+  );
+  assertEquals(copilotRules(state[repo]!), [{
+    type: "copilot_code_review",
+    parameters: { review_on_push: false, review_draft_pull_requests: false },
+  }]);
+
+  writes.length = 0;
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "on" },
+    harness(gh, workDir).deps,
+  );
+  assertEquals(writes, [], "already on: no write");
+});
+
+Deno.test("runRepoSettingsHarden - copilot leave leaves a Copilot ruleset exactly as it is (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const state = {
+    [repo]: driftedRepo({
+      rulesets: [...driftedRepo().rulesets, copilotOnlyRuleset()],
+    }),
+  };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "leave" },
+    harness(gh, workDir).deps,
+  );
+
+  assertEquals(copilotRules(state[repo]!).length, 1);
+  assert(!writes.some((w) => w.endpoint === `repos/${repo}/rulesets/40`));
 });

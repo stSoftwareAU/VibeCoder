@@ -23,7 +23,12 @@
  *    never admin or maintain (Issue #2690). An organisation owner is admin
  *    everywhere whatever its repository role, so it is reported ONCE per
  *    organisation with the setting to change; setup never changes
- *    organisation membership.
+ *    organisation membership;
+ *  - Copilot code review as `copilot_code_review` says (Issue #2701): `off`
+ *    removes the rule from every repository ruleset, deleting a ruleset it
+ *    leaves empty; `on` makes sure the default branch carries it; `leave`
+ *    (the default) reads and writes nothing. Each change is named on the
+ *    repository's line, since each review is billed.
  *
  * Per repository, in order: the CODEOWNERS writer (#2627), `hardenRepo` with
  * `apply: true` (#2626), then the closer that retires fleet-filed `BP-REPO-*`
@@ -59,6 +64,7 @@ import {
   isGitHubLogin,
 } from "../lib/repo_settings_harden.ts";
 import { isValidRepoSlug, renderInertRepoSlug } from "../lib/repo_slug.ts";
+import type { CopilotCodeReviewMode } from "../types.ts";
 import type {
   CodeownersSyncOptions,
   CodeownersSyncResult,
@@ -90,6 +96,11 @@ export interface RepoSettingsHardenConfig {
   service_accounts?: string[];
   /** Fleet PR authors; with `service_accounts`, held at write (#2690). */
   fleet_pr_authors?: string[];
+  /**
+   * On, off or leave Copilot code review (Issue #2701), already validated by
+   * the caller. Absent is `leave`.
+   */
+  copilot_code_review?: CopilotCodeReviewMode;
 }
 
 /** Everything the step touches, injectable. */
@@ -144,6 +155,8 @@ interface RepoTally {
   failed: number;
   skips: string[];
   failures: string[];
+  /** Copilot code review changes written, by title (Issue #2701). */
+  copilot: string[];
 }
 
 function emptyTally(): RepoTally {
@@ -156,6 +169,7 @@ function emptyTally(): RepoTally {
     failed: 0,
     skips: [],
     failures: [],
+    copilot: [],
   };
 }
 
@@ -177,8 +191,13 @@ function tallyOutcome(
 ): RepoTally {
   const tally = emptyTally();
   const count = (r: HardenResult) => {
-    if (r.status === "applied") tally.applied++;
-    else if (r.status === "planned") {
+    if (r.status === "applied") {
+      tally.applied++;
+      // Each Copilot change moves a bill, so it is named (Issue #2701).
+      if (r.step.kind === "copilot-code-review") {
+        tally.copilot.push(r.step.title);
+      }
+    } else if (r.status === "planned") {
       tally.planned++;
       tally.plans.push(r.step.kind);
     } else if (r.status === "failed") {
@@ -234,6 +253,7 @@ function formatLine(
   if (tally.plans.length > 0) {
     parts.push(`would apply: ${tally.plans.join(", ")}`);
   }
+  if (tally.copilot.length > 0) parts.push(tally.copilot.join(", "));
   if (tally.failures.length > 0) {
     parts.push(`failed: ${tally.failures.join(", ")}`);
   }
@@ -412,6 +432,9 @@ export async function runRepoSettingsHarden(
         fleetAccounts,
         orgOwners: await ownersOf(repo.split("/")[0] ?? ""),
         ...(login === UNKNOWN_LOGIN ? {} : { setupLogin: login }),
+        ...(config.copilot_code_review
+          ? { copilotCodeReview: config.copilot_code_review }
+          : {}),
         ...(deps.defaultBranchCachePath
           ? { defaultBranchCachePath: deps.defaultBranchCachePath }
           : {}),

@@ -28,6 +28,7 @@
  *   repo-settings-harden  Harden every monitored repo's GitHub settings (drift only)
  *   repos              List monitored repositories; --add / --remove one (Issue #672)
  *   update-mode        Ask for the update mode, pinned ref and tool versions (Issue #626)
+ *   copilot-review-mode  Ask whether Copilot code review is on, off or left as is (Issue #2701)
  *   hooks              Install pre-commit hook and git exclude patterns
  *   all                Run full setup (default)
  *
@@ -49,6 +50,7 @@ import {
 } from "./container_runtime_install.ts";
 import {
   installPreCommitHook,
+  readCopilotCodeReviewSetting,
   removePrePushHook,
   runConfigSetup,
   updateGitInfoExclude,
@@ -118,6 +120,7 @@ import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { loadExistingConfig, resolveCodeownersOwners } from "./config_setup.ts";
 import { syncCodeowners } from "./codeowners_sync.ts";
 import { runUpdateModeSetup } from "./update_mode_setup.ts";
+import { runCopilotReviewSetup } from "./copilot_review_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { runGhOrThrow } from "../lib/gh_spawn.ts";
 import { expandHome, runSetupCommand } from "./setup_command_runner.ts";
@@ -409,6 +412,27 @@ async function runConfig(configPath: string): Promise<boolean> {
     printWarning(warning);
   }
   return result.ok;
+}
+
+/**
+ * `copilot-review-mode`: ask whether `repo-settings-harden` turns Copilot
+ * code review on, off, or leaves it, and record the answer in `.config.json`
+ * (Issue #2701). `setup.sh` and `setup.ps1` run it before the hardening step
+ * that applies it.
+ */
+async function runCopilotReviewMode(configPath: string): Promise<boolean> {
+  const result = await runCopilotReviewSetup({ configPath });
+  if (!result.ok) {
+    printError(result.error.message);
+    return false;
+  }
+  const { mode, changed, prompted } = result.value;
+  if (!prompted) {
+    printInfo(`Copilot code review left at ${mode} (no terminal to ask at).`);
+  } else if (changed) {
+    printSuccess(`Recorded copilot_code_review: ${mode} in ${configPath}.`);
+  }
+  return true;
 }
 
 /**
@@ -1556,8 +1580,18 @@ async function runRepoSettingsHardenStep(
       return true;
     }
     const workDir = setupWorkDir();
+    // Fail loud on a value that is not on/off/leave (Issue #2701): read as
+    // `leave`, a typo would keep billing a host that asked for `off`.
+    const copilot = await readCopilotCodeReviewSetting(configPath);
+    if (!copilot.ok) {
+      printWarning(`Repo-settings hardening skipped: ${copilot.error.message}`);
+      return false;
+    }
 
-    return await runRepoSettingsHarden(config, {
+    return await runRepoSettingsHarden({
+      ...config,
+      copilot_code_review: copilot.value,
+    }, {
       // No `gh_config_dir`: the operator's own login (Issue #2685).
       ghCommandFn: createSetupGhJson(),
       dryRun,
@@ -1847,6 +1881,8 @@ Subcommands:
   repos           List monitored repositories (--add owner/repo, --remove owner/repo)
   update-mode     Ask for the update mode (dynamic/frozen) and, when frozen,
                   the pinned ref and the exact Claude CLI / gh / Deno versions
+  copilot-review-mode  Ask whether repo-settings-harden turns Copilot code
+                  review on, off, or leaves it (billed per review — Issue #2701)
   hooks           Install pre-commit hook and git exclude patterns
   scheduled-task  Register the Windows Task Scheduler entry (--status / --uninstall to query or remove it)
   all             Run full setup (default)
@@ -1985,6 +2021,9 @@ if (import.meta.main) {
         break;
       case "update-mode":
         ok = await runUpdateMode(scriptDir, configPath);
+        break;
+      case "copilot-review-mode":
+        ok = await runCopilotReviewMode(configPath);
         break;
       case "hooks":
         ok = await runHooks(scriptDir);
