@@ -3,7 +3,8 @@
 // Input: a JSON file { pr: <one "ready" entry from gate.ts>, review: <the
 // Fable reply, as text or an object> }. The script decides the outcome,
 // re-checks the head commit, posts the review, appends it to the review log,
-// refreshes the summary, and raises a desktop notification when a PR is
+// refreshes the summary, files an issue for each problem Fable noticed outside
+// the PR's scope (skipping one an open issue already covers), and raises a desktop notification when a PR is
 // sent back or held for the owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
@@ -14,11 +15,15 @@
 
 import {
   decideOutcome,
+  type FableReview,
+  type FiledIssue,
   LOG_FILE,
   type LogRecord,
   parseFableReview,
   reviewBody,
+  sameIssueTitle,
   stateDir,
+  unrelatedIssueBody,
   writeSummary,
 } from "./review_log.ts";
 
@@ -62,6 +67,59 @@ async function notify(title: string, message: string) {
   ]).catch(() => {});
 }
 
+// Best effort: a failure to file one issue never stops the review being
+// posted. An issue already open under the same title is linked, not refiled.
+async function fileUnrelatedIssues(
+  pr: Input["pr"],
+  review: FableReview,
+): Promise<FiledIssue[]> {
+  const filed: FiledIssue[] = [];
+  for (const issue of review.unrelatedIssues) {
+    try {
+      const open: FiledIssue[] = JSON.parse(
+        await run("gh", [
+          "issue",
+          "list",
+          "-R",
+          pr.repo,
+          "--state",
+          "open",
+          "--search",
+          `${issue.title} in:title`,
+          "--json",
+          "number,url,title",
+        ]),
+      );
+      const existing = open.find((o) => sameIssueTitle(o.title, issue.title));
+      if (existing) {
+        filed.push(existing);
+        continue;
+      }
+      const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
+      await Deno.writeTextFile(bodyFile, unrelatedIssueBody(issue, pr));
+      const url = await run("gh", [
+        "issue",
+        "create",
+        "-R",
+        pr.repo,
+        "--title",
+        issue.title,
+        "--body-file",
+        bodyFile,
+      ]);
+      await Deno.remove(bodyFile).catch(() => {});
+      filed.push({
+        number: Number(url.split("/").pop()),
+        url,
+        title: issue.title,
+      });
+    } catch (e) {
+      console.error(`could not file "${issue.title}": ${(e as Error).message}`);
+    }
+  }
+  return filed;
+}
+
 async function main() {
   const inputPath = Deno.args.find((a) => a.startsWith("--input="))?.slice(8);
   if (!inputPath) throw new Error("--input=<file> is required");
@@ -98,8 +156,12 @@ async function main() {
 
   const removed = pr.testChanges.removed;
   const outcome = decideOutcome(review, removed);
+  const filedIssues = await fileUnrelatedIssues(pr, review);
   const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
-  await Deno.writeTextFile(bodyFile, reviewBody(outcome, review, removed));
+  await Deno.writeTextFile(
+    bodyFile,
+    reviewBody(outcome, review, removed, filedIssues),
+  );
   const flag = outcome === "approved"
     ? "--approve"
     : outcome === "held"
@@ -129,6 +191,7 @@ async function main() {
     findings: review.findings,
     testChangeNotes: review.testChangeNotes,
     removedTests: removed,
+    filedIssues,
   };
   const dir = stateDir();
   await Deno.mkdir(dir, { recursive: true });
@@ -152,7 +215,13 @@ async function main() {
       `${pr.repo}#${pr.number} changes existing tests`,
     );
   }
-  console.log(JSON.stringify({ posted: true, outcome }));
+  console.log(
+    JSON.stringify({
+      posted: true,
+      outcome,
+      filedIssues: filedIssues.map((i) => i.url),
+    }),
+  );
 }
 
 if (import.meta.main) await main();
