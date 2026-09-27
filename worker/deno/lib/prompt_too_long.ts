@@ -17,6 +17,9 @@ import { PROMPT_TOO_LONG_MARKER } from "./failure_diagnosis.ts";
 import {
   deleteResumeState,
   deleteStreamSession,
+  lookupStreamSession,
+  resumeStatePath,
+  streamSessionPath,
 } from "./resume_state_store.ts";
 import {
   createSessionResumeState,
@@ -101,14 +104,17 @@ export async function discardResumedSession(input: {
   /** Why the session is discarded, for the log line. */
   reason: string;
 }): Promise<SessionResumeState> {
+  const providerId = input.providerId ?? input.streamSession?.providerId;
   if (input.streamSession) {
     await deleteStreamSession(
       input.workDir,
       input.streamSession.stream,
-      input.providerId ?? input.streamSession.providerId,
+      providerId,
     );
   }
   await deleteResumeState(input.workDir, input.repo, input.issueNumber);
+  // The delete helpers never throw, so confirm the removal before claiming it.
+  await assertSessionDiscarded(input, providerId);
   const fresh = createSessionResumeState();
   input.logger.warn(
     `Discarded resumed session ${input.sessionId} (${input.reason}); ` +
@@ -122,4 +128,45 @@ export async function discardResumedSession(input: {
     },
   );
   return fresh;
+}
+
+/** Throws when the discarded session could still be resumed by a later run. */
+async function assertSessionDiscarded(
+  input: {
+    workDir: string;
+    repo: string;
+    issueNumber: number;
+    sessionId: string;
+    streamSession?: JoinedStream;
+  },
+  providerId: string | undefined,
+): Promise<void> {
+  const leftovers: string[] = [];
+  const pointer = resumeStatePath(input.workDir, input.repo, input.issueNumber);
+  if (await pathExists(pointer)) leftovers.push(pointer);
+  if (input.streamSession && providerId !== undefined) {
+    const { stream } = input.streamSession;
+    const slot = await lookupStreamSession(input.workDir, stream, providerId);
+    if (slot.status !== "none") {
+      leftovers.push(
+        `${providerId} slot in ${streamSessionPath(input.workDir, stream)}`,
+      );
+    }
+  }
+  if (leftovers.length > 0) {
+    throw new Error(
+      `Could not discard session ${input.sessionId}: ${leftovers.join(", ")} ` +
+        "still present",
+    );
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return false;
+    throw err;
+  }
 }

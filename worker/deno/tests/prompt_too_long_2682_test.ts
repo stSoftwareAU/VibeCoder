@@ -7,6 +7,7 @@ import {
   assert,
   assertEquals,
   assertNotEquals,
+  assertRejects,
   assertStringIncludes,
 } from "@std/assert";
 import {
@@ -25,6 +26,7 @@ import {
 import {
   loadResumeState,
   loadStreamSession,
+  resumeStatePath,
   saveResumeState,
   saveStreamSession,
 } from "../lib/resume_state_store.ts";
@@ -203,6 +205,37 @@ Deno.test("#2682 discardResumedSession - no stream joined and nothing persisted 
     assertEquals(fresh.phaseCount, 0);
     assertEquals(logger.warns.length, 1);
   });
+});
+
+Deno.test("#2682 discardResumedSession - a pointer that cannot be removed fails loud, no discard line", async () => {
+  await withWorkDir(async (workDir) => {
+    // A non-empty directory at the pointer path defeats the idempotent delete.
+    const pointer = resumeStatePath(workDir, REPO, ISSUE);
+    await Deno.mkdir(`${pointer}/stuck`, { recursive: true });
+    const logger = recordingLogger();
+
+    const err = await assertRejects(() =>
+      discardResumedSession({
+        workDir,
+        repo: REPO,
+        issueNumber: ISSUE,
+        sessionId: "oversized",
+        logger,
+        reason: "Prompt is too long",
+      })
+    );
+    assertStringIncludes(String(err), "Could not discard session oversized");
+    assertEquals(logger.warns.length, 0);
+  });
+});
+
+Deno.test("#2682 isPromptTooLongOutput - accepts output exactly at the limit", () => {
+  const atLimit = "Prompt is too long".padEnd(
+    PROMPT_TOO_LONG_MAX_OUTPUT_CHARS,
+    ".",
+  );
+  assertEquals(atLimit.length, PROMPT_TOO_LONG_MAX_OUTPUT_CHARS);
+  assert(isPromptTooLongOutput(atLimit));
 });
 
 // ---------------------------------------------------------------------------
