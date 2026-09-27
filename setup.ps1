@@ -1708,8 +1708,11 @@ function Invoke-VibeSetupMain {
 
     # Harden every monitored repo's GitHub settings, drift only (Issue #2628),
     # including one approving review on the default branch (Issue #2680).
+    # The writes need repository admin, so it runs as your own gh login, not
+    # the fleet account in gh_config_dir, and says "needs an admin login" once
+    # without it (Issue #2685).
     if (-not (Invoke-VibeSetupCli -Arguments @("repo-settings-harden"))) {
-        Write-VibeWarning "Repo-settings hardening had issues - see the per-repository lines above (non-fatal)"
+        Write-VibeWarning "Repo-settings hardening had issues - see the per-repository lines above; it needs your own gh login to be a repository admin (non-fatal)"
     }
 
     # Back-fill `idle-task` label on existing security-scan wrappers (#2131).

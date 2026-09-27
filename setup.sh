@@ -1588,9 +1588,12 @@ main() {
     # selected-actions allow-list, secret scanning on public repos, one
     # approving review on the default branch (Issue #2680 — a direct-push
     # branch is skipped and reported), and code-owner review once CODEOWNERS
-    # is on the default branch. Setup-time only; non-fatal.
+    # is on the default branch. Setup-time only; non-fatal. The writes need
+    # repository admin, so it runs as your own gh login, not the fleet account
+    # in gh_config_dir, and says "needs an admin login" once without it
+    # (Issue #2685).
     run_setup_cli repo-settings-harden \
-        || print_warning "Repo-settings hardening had issues — see the per-repository lines above (non-fatal)"
+        || print_warning "Repo-settings hardening had issues — see the per-repository lines above; it needs your own gh login to be a repository admin (non-fatal)"
 
     # Back-fill `idle-task` label on existing `Run a security scan` wrappers
     # (Issue #2131). Idempotent — already-labelled wrappers emit

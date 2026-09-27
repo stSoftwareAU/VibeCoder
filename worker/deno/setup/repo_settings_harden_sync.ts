@@ -23,6 +23,17 @@
  * try/catch, so one failure never stops the others; the step returns `false`
  * when any repository failed and never throws.
  *
+ * IDENTITY (Issue #2685): every write here needs repository admin, so the
+ * step runs as the operator's own `gh` login — never the fleet account in
+ * `gh_config_dir`, which holds `write` by design and got a 403 or 404 on
+ * every repository. The first line names the login. Admin is checked once
+ * per repository (`repos/{repo}` `.permissions.admin`) before anything else;
+ * a repository without it is left alone, and one line says the run "needs an
+ * admin login" rather than a raw 403 or 404 per setting.
+ *
+ * DRY RUN (Issue #2685): `dryRun` plans every repository and writes nothing —
+ * no settings, no CODEOWNERS file, no audit-issue comment or close.
+ *
  * RATE-LIMIT BUDGET: setup-time only, like `branch_protection_sync.ts` —
  * never wire this into the per-iteration loop.
  *
@@ -72,9 +83,14 @@ export interface RepoSettingsHardenConfig {
 
 /** Everything the step touches, injectable. */
 export interface RepoSettingsHardenDeps {
-  /** The admin `gh` seam (`gh_config_dir`), as the ruleset sync uses. */
+  /**
+   * The operator's own `gh` login (Issue #2685) — the identity that holds
+   * admin. Never the fleet's `gh_config_dir`, which holds `write`.
+   */
   ghCommandFn: GhCommandFn;
-  /** `WORK_DIR`: each repo's checkout is `<workDir>/<repo name>`. */
+  /** Plan and report only; nothing is written anywhere (Issue #2685). */
+  dryRun?: boolean;
+  /** `WORK_DIR`: the CODEOWNERS writer's checkout is `<workDir>/<name>`. */
   workDir: string;
   /** CODEOWNERS owners handed to the writer. */
   owners: readonly string[];
@@ -109,6 +125,9 @@ const CHECKED_KINDS: readonly HardenStep["kind"][] = [
 
 interface RepoTally {
   applied: number;
+  /** Steps a dry run would have written (Issue #2685). */
+  planned: number;
+  plans: string[];
   unchanged: number;
   skipped: number;
   failed: number;
@@ -119,6 +138,8 @@ interface RepoTally {
 function emptyTally(): RepoTally {
   return {
     applied: 0,
+    planned: 0,
+    plans: [],
     unchanged: 0,
     skipped: 0,
     failed: 0,
@@ -146,7 +167,10 @@ function tallyOutcome(
   const tally = emptyTally();
   const count = (r: HardenResult) => {
     if (r.status === "applied") tally.applied++;
-    else if (r.status === "failed") {
+    else if (r.status === "planned") {
+      tally.planned++;
+      tally.plans.push(r.step.kind);
+    } else if (r.status === "failed") {
       tally.failed++;
       tally.failures.push(`${r.step.kind} (${r.detail ?? "failed"})`);
     } else if (r.status === "skipped") {
@@ -181,15 +205,24 @@ function describeCodeowners(result: CodeownersSyncResult): string {
   }
 }
 
+/** "N applied", or in a dry run "N planned" (Issue #2685). */
+function written(tally: RepoTally, dryRun: boolean): string {
+  return dryRun ? `${tally.planned} planned` : `${tally.applied} applied`;
+}
+
 function formatLine(
   repo: string,
   tally: RepoTally,
   codeowners: CodeownersSyncResult | undefined,
+  dryRun: boolean,
 ): string {
   const parts = [
-    `${repo}: ${tally.applied} applied, ${tally.unchanged} unchanged, ` +
+    `${repo}: ${written(tally, dryRun)}, ${tally.unchanged} unchanged, ` +
     `${tally.skipped} skipped, ${tally.failed} failed`,
   ];
+  if (tally.plans.length > 0) {
+    parts.push(`would apply: ${tally.plans.join(", ")}`);
+  }
   if (tally.failures.length > 0) {
     parts.push(`failed: ${tally.failures.join(", ")}`);
   }
@@ -198,19 +231,51 @@ function formatLine(
   return parts.join("; ");
 }
 
+/** The login `gh` is running as, for the identity line (Issue #2685). */
+async function readLogin(gh: GhCommandFn): Promise<string> {
+  try {
+    const user = JSON.parse(await gh(["api", "user"])) as { login?: unknown };
+    return typeof user.login === "string" ? user.login : "an unknown login";
+  } catch {
+    return "an unknown login";
+  }
+}
+
+/**
+ * Whether the `gh` identity holds admin on `repo` (Issue #2685): the
+ * `.permissions.admin` flag GitHub returns for the caller. Every write this
+ * step makes needs it, so it is asked once, up front.
+ */
+async function holdsAdmin(repo: string, gh: GhCommandFn): Promise<boolean> {
+  const info = JSON.parse(await gh(["api", `repos/${repo}`])) as {
+    permissions?: { admin?: unknown };
+  };
+  return info.permissions?.admin === true;
+}
+
 /**
  * Harden every monitored repository's settings (Issue #2628). Returns `false`
- * when any repository failed — setup reports that like any other non-fatal
- * step — and never throws.
+ * when any repository failed or lacked admin — setup reports that like any
+ * other non-fatal step — and never throws.
  */
 export async function runRepoSettingsHarden(
   config: RepoSettingsHardenConfig,
   deps: RepoSettingsHardenDeps,
 ): Promise<boolean> {
   const repos = config.repos ?? [];
+  if (repos.length === 0) return true;
   const harden = deps.hardenRepo ?? hardenRepo;
+  const dryRun = deps.dryRun === true;
   const totals = emptyTally();
   let failedRepos = 0;
+  const needsAdmin: string[] = [];
+
+  const login = await readLogin(deps.ghCommandFn);
+  deps.log(
+    `Repo-settings hardening runs as ${login}, your own gh login — not the ` +
+      `fleet account in gh_config_dir, which holds write only` +
+      (dryRun ? " (dry run: nothing is written)" : ""),
+  );
 
   for (const repo of repos) {
     let tally = emptyTally();
@@ -222,6 +287,11 @@ export async function runRepoSettingsHarden(
           "invalid owner/repo slug — refusing to derive a path from it",
         );
       }
+      if (!await holdsAdmin(repo, deps.ghCommandFn)) {
+        // Reported once, below, for every such repository.
+        needsAdmin.push(renderInertRepoSlug(repo));
+        continue;
+      }
       // One default-branch lookup per repo, shared by the writer and the
       // code-owner decision: they must agree on what they saw.
       let lookup: Promise<CodeownersLocation> | undefined;
@@ -230,22 +300,24 @@ export async function runRepoSettingsHarden(
           ? (lookup ??= findCodeownersOnDefaultBranch(slug, deps.ghCommandFn))
           : findCodeownersOnDefaultBranch(slug, deps.ghCommandFn);
 
+      // The writer writes a file, so a dry run does not call it.
       try {
-        codeowners = await deps.syncCodeowners({
-          repo,
-          workDir: deps.workDir,
-          owners: deps.owners,
-          findOnDefaultBranch,
-        });
+        codeowners = dryRun
+          ? { status: "skipped", reason: "dry run" }
+          : await deps.syncCodeowners({
+            repo,
+            workDir: deps.workDir,
+            owners: deps.owners,
+            findOnDefaultBranch,
+          });
       } catch (err) {
         codeowners = { status: "error", message: errorMessage(err) };
       }
       const location = await findOnDefaultBranch(repo);
 
       const outcome = await harden(repo, {
-        apply: true,
+        apply: !dryRun,
         ghCommandFn: deps.ghCommandFn,
-        workDir: `${deps.workDir}/${repo.split("/")[1]}`,
         requireCodeOwnerReview: location.state === "present",
         ...(deps.defaultBranchCachePath
           ? { defaultBranchCachePath: deps.defaultBranchCachePath }
@@ -253,7 +325,8 @@ export async function runRepoSettingsHarden(
       });
       tally = tallyOutcome(outcome, location);
 
-      await closeFindings(repo, outcome, config, deps);
+      // The closer comments on and closes issues: never in a dry run.
+      if (!dryRun) await closeFindings(repo, outcome, config, deps);
     } catch (err) {
       tally.failed++;
       tally.failures.push(`harden (${errorMessage(err)})`);
@@ -262,7 +335,12 @@ export async function runRepoSettingsHarden(
       tally.failed++;
     }
 
-    const line = formatLine(renderInertRepoSlug(repo), tally, codeowners);
+    const line = formatLine(
+      renderInertRepoSlug(repo),
+      tally,
+      codeowners,
+      dryRun,
+    );
     if (tally.failed > 0) {
       failedRepos++;
       deps.warn(line);
@@ -270,19 +348,27 @@ export async function runRepoSettingsHarden(
       deps.log(line);
     }
     totals.applied += tally.applied;
+    totals.planned += tally.planned;
     totals.unchanged += tally.unchanged;
     totals.skipped += tally.skipped;
     totals.failed += tally.failed;
   }
 
-  if (repos.length > 0) {
-    deps.log(
-      `Repo-settings hardening: ${totals.applied} applied, ` +
-        `${totals.unchanged} unchanged, ${totals.skipped} skipped, ` +
-        `${totals.failed} failed across ${repos.length} repo(s); ` +
-        `${failedRepos} repo(s) failed`,
+  if (needsAdmin.length > 0) {
+    failedRepos += needsAdmin.length;
+    deps.warn(
+      `Repo-settings hardening needs an admin login: ${login} is not an ` +
+        `admin on ${needsAdmin.length} repo(s) (${needsAdmin.join(", ")}), ` +
+        `so they were left alone. Run setup logged in to gh as a repository ` +
+        `admin (gh auth login).`,
     );
   }
+  deps.log(
+    `Repo-settings hardening: ${written(totals, dryRun)}, ` +
+      `${totals.unchanged} unchanged, ${totals.skipped} skipped, ` +
+      `${totals.failed} failed across ${repos.length} repo(s); ` +
+      `${failedRepos} repo(s) failed`,
+  );
   return failedRepos === 0;
 }
 
