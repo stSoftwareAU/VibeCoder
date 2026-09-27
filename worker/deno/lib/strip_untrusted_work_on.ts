@@ -103,6 +103,19 @@ export async function stripUntrustedWorkOnLabel(opts: {
   const logger = opts.logger ?? defaultLogger;
   const fleetWorkerLogins = opts.fleetWorkerLogins ?? [];
 
+  // Issue #2734: an empty trusted set is a misconfiguration, not evidence. A
+  // host whose monitored repositories share no writer folds to nothing, and
+  // stripping on that would unschedule every human `work-on` in the fleet.
+  if (allowedAuthors.length === 0) {
+    logger.warn(
+      "stripUntrustedWorkOnLabel: the trusted-author set is empty, so no " +
+        "adder can be confirmed untrusted — leaving the label in place " +
+        "(Issue #2734)",
+      { repo, issueNumber },
+    );
+    return false;
+  }
+
   // Determine the most-recent adder. Fail closed: if we cannot positively
   // identify who added the label, do nothing — a transient timeline-read
   // failure must never cause a genuine `work-on` to be stripped.

@@ -96,6 +96,33 @@ Deno.test("stripUntrustedWorkOnLabel - untrusted adder: strips label and posts e
   assertStringIncludes(calls.comments[0]!, buildUntrustedWorkOnMarker(3489));
 });
 
+Deno.test("stripUntrustedWorkOnLabel - empty trusted set: fails closed, never strips (Issue #2734)", async () => {
+  // Observed 2026-09-27: a host monitoring two organisations with disjoint
+  // writers folded its trusted set to nothing, and every human `work-on`
+  // across the fleet was stripped as "untrusted". An empty set confirms
+  // nothing about the adder; it is a misconfiguration, never evidence.
+  const { ghFn, calls } = fakeGh({ timeline: timelineJson("nleck") });
+  const warnings: string[] = [];
+  const logger = { ...silentLogger(), warn: (m: string) => warnings.push(m) };
+
+  const stripped = await stripUntrustedWorkOnLabel({
+    repo: "org/repo",
+    issueNumber: 1507,
+    workOnLabel: "work-on",
+    allowedAuthors: [],
+    ghFn,
+    logger,
+  });
+
+  assertEquals(stripped, false);
+  assertEquals(calls.removed, []);
+  assertEquals(calls.comments, []);
+  assert(
+    warnings.some((w) => w.includes("empty")),
+    `expected a WARNING naming the empty trusted set, got ${warnings}`,
+  );
+});
+
 Deno.test("stripUntrustedWorkOnLabel - trusted adder: does nothing (never strips a genuine label)", async () => {
   const { ghFn, calls } = fakeGh({ timeline: timelineJson("trusted-human") });
 
