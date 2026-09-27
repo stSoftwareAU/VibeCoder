@@ -11,6 +11,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assertWorkerCanApplyLabel,
+  assertWorkerCanHandOffToPlanning,
   isWorkerAppliableLabel,
   journalLabelRefusal,
   WORKER_APPLIABLE_CONTENT_LABELS,
@@ -18,6 +19,7 @@ import {
   WORKER_APPLIABLE_LABEL_PREFIXES,
   WORKER_FORBIDDEN_LABEL_LITERALS,
   WORKER_LABEL_REFUSAL_AUDIT_VERB,
+  WORKER_PLANNING_HANDOFF_AUDIT_VERB,
 } from "../lib/worker_label_guard.ts";
 import type { AuditMutation } from "../lib/audit_entry.ts";
 
@@ -267,4 +269,66 @@ Deno.test("worker_label_guard - the default sink is inert while the journal is o
     () => undefined,
   );
   assertEquals(result.ok, true);
+});
+
+// =============================================================================
+// Issue #2688: the audited planning hand-off is the one reserved-label path
+// =============================================================================
+
+Deno.test("worker_label_guard - planning hand-off is allowed and audited (Issue #2688)", async () => {
+  const lines: string[] = [];
+  const recorded: AuditMutation[] = [];
+  const result = assertWorkerCanHandOffToPlanning("planning", {
+    caller: "test",
+    target: "owner/repo#2688",
+    logFn: (line) => lines.push(line),
+    record: (mutation) => {
+      recorded.push(mutation);
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+  });
+  await Promise.resolve();
+  assertEquals(result.ok, true);
+  assertEquals(lines.length, 1);
+  assertStringIncludes(lines[0] ?? "", "[SECURITY] [WORKER_PLANNING_HANDOFF]");
+  assertStringIncludes(lines[0] ?? "", "owner/repo#2688");
+  assertEquals(recorded.length, 1);
+  assertEquals(recorded[0]?.verb, WORKER_PLANNING_HANDOFF_AUDIT_VERB);
+  assertEquals(recorded[0]?.outcome, "success");
+});
+
+Deno.test("worker_label_guard - planning hand-off matches case-insensitively (Issue #2688)", () => {
+  const result = assertWorkerCanHandOffToPlanning("Planning", {
+    logFn: () => {},
+    record: () => Promise.resolve({ ok: true, value: undefined }),
+  });
+  assertEquals(result.ok, true);
+});
+
+Deno.test("worker_label_guard - hand-off guard refuses every other reserved label (Issue #2688)", async () => {
+  for (const label of WORKER_FORBIDDEN_LABEL_LITERALS) {
+    if (label === "planning") continue;
+    const lines: string[] = [];
+    const recorded: AuditMutation[] = [];
+    const result = assertWorkerCanHandOffToPlanning(label, {
+      logFn: (line) => lines.push(line),
+      record: (mutation) => {
+        recorded.push(mutation);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    });
+    await Promise.resolve();
+    assertEquals(result.ok, false, label);
+    assertStringIncludes(lines[0] ?? "", "[SECURITY] [WORKER_LABEL_REFUSED]");
+    assertEquals(recorded[0]?.verb, WORKER_LABEL_REFUSAL_AUDIT_VERB);
+  }
+});
+
+Deno.test("worker_label_guard - the general guard still refuses planning (Issue #2688)", () => {
+  assertEquals(isWorkerAppliableLabel("planning"), false);
+  const result = assertWorkerCanApplyLabel("planning", {
+    logFn: () => {},
+    record: () => Promise.resolve({ ok: true, value: undefined }),
+  });
+  assertEquals(result.ok, false);
 });

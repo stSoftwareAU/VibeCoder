@@ -35,6 +35,11 @@ import {
 } from "../blocked_outcome.ts";
 import { deferBlockedIssue, hasPriorDeferral } from "../blocked_deferral.ts";
 import {
+  detectPlanningHandoff,
+  handOffToPlanning,
+  hasPriorPlanningHandoff,
+} from "../planning_handoff.ts";
+import {
   detectAlreadyResolved,
   formatAlreadyResolvedEvidence,
 } from "../already_resolved_outcome.ts";
@@ -205,6 +210,44 @@ export async function workOnIssueHandleNoChanges(
       expectedSkip: true,
       outcome: result.outcome,
     };
+  }
+
+  // Issue #2688 — a run that judged the issue too large for one PR asks for
+  // decomposition. The worker applies `planning` itself (audited, and trusted
+  // only while the human `work-on` add anchors it). A repeat request, or a
+  // hand-off that fails, falls through to the human hand-off below.
+  const planningRequest = blocked ? undefined : detectPlanningHandoff(
+    claudeOutput,
+  );
+  if (planningRequest && hasPriorPlanningHandoff(ctx.issueComments)) {
+    logger.warn(
+      "Planning requested again after an earlier hand-off — handing off to " +
+        "a human instead",
+      { repo, issueNumber },
+    );
+  } else if (planningRequest) {
+    const handoff = await handOffToPlanning({
+      ghClient: deps.github.createClient(logger),
+      repo,
+      issueNumber,
+      githubUser,
+      reason: planningRequest.reason,
+      outputSnippet: publishableSnippet(claudeOutput),
+      logger,
+      deps: { ensureLabelExists: deps.github.ensureLabelExists },
+    });
+    if (handoff.applied) {
+      logger.info("Too large for one PR — handed off to planning", {
+        repo,
+        issueNumber,
+      });
+      return {
+        status: "early_exit",
+        reason: "handed off to planning",
+        expectedSkip: true,
+        outcome: handoff.outcome,
+      };
+    }
   }
 
   // Check whether the run verified the issue was already resolved (Issue #519,
