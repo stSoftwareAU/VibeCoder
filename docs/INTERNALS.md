@@ -1937,6 +1937,21 @@ addressing anything (Issue #2697). Each reviewer's latest review decides, so a
 reviewer submits a newer one; see
 [pr_review_outstanding.ts](../worker/deno/lib/pr_review_outstanding.ts).
 
+**Staleness check** (Issue #2702) — a `CHANGES_REQUESTED` review is skipped
+only when a **fleet fix commit** landed after its `submitted_at`: a commit
+authored or committed by a fleet login that is neither a merge (the base branch
+merged in by update-branch) nor a bot's commit (`github-actions[bot]` formatting
+or version bumps). The head merely moving is not enough — on GRQ#5032 a base
+merge and a version bump moved the head after the owner's review, and the old
+`commit_id !== head` rule hid a review nobody had answered. A review on the
+current head costs no extra call; otherwise the PR's commits are read once
+(`pulls/{pr}/commits`, 100 a page), and an unreadable history keeps the review
+actionable. The skip is logged at info. The rule is the one fleet-push
+supersession uses (`isFleetAnswerAfter` in
+[pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts)),
+without the cool-off window; a handled review is dismissed, which is what stops
+it being processed twice.
+
 **Superseded by a fleet push** — a trusted comment is also deferred when the PR
 head was pushed by a **fleet login** _after_ the comment was written and within
 the cool-off window (`FLEET_PUSH_COOL_OFF_MS`, 15 minutes; see
