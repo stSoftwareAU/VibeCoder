@@ -44,22 +44,19 @@ function makeCapturingLogger(): Captured {
 function makeGh(
   headRefName: string,
   reviews: unknown[] | string,
+  seen: string[] = [],
 ): (args: string[]) => Promise<string> {
   return (args: string[]): Promise<string> => {
     const key = args.join(" ");
+    seen.push(key);
     if (key.includes("pr list")) {
       return Promise.resolve(JSON.stringify([
         { number: 42, headRefName, headRefOid: "shaB" },
       ]));
     }
     if (key.includes("pulls/42/reviews")) {
-      if (typeof reviews === "string") return Promise.resolve(reviews);
-      // `--paginate` prints one array per page; page one is full of noise, so
-      // the review under test is only reachable by reading every page.
-      const pageOne = JSON.stringify([{ ...NOISE, id: 1 }]);
-      const rest = `${JSON.stringify(reviews)}\n`;
       return Promise.resolve(
-        args.includes("--paginate") ? `${pageOne}\n${rest}` : `${pageOne}\n`,
+        typeof reviews === "string" ? reviews : `${JSON.stringify(reviews)}\n`,
       );
     }
     return Promise.resolve("[]");
@@ -80,16 +77,6 @@ function options(
   };
 }
 
-/** Another reviewer's approval — never outstanding, never supersedes. */
-const NOISE = {
-  login: "bystander",
-  id: 1,
-  body: "LGTM",
-  state: "APPROVED",
-  submitted_at: "2026-08-01T00:00:00Z",
-  commit_id: "shaA",
-};
-
 const CHANGES_REQUESTED = {
   login: "maintainer",
   id: 700,
@@ -101,16 +88,19 @@ const CHANGES_REQUESTED = {
 
 Deno.test("findPrCommentsToFix - a review on an issue branch survives a head move (Issue #2697)", async () => {
   const { logger } = makeCapturingLogger();
+  const seen: string[] = [];
   const result = await findPrCommentsToFix(
-    options(makeGh("issue-42-fix", [CHANGES_REQUESTED]), logger),
+    options(makeGh("issue-42-fix", [CHANGES_REQUESTED], seen), logger),
   );
 
   assertEquals(result.ok, true);
   if (!result.ok || !result.value) throw new Error("expected the review");
   assertEquals(result.value.commentType, "pr_review");
   assertEquals(result.value.commentId, "700");
-  // The review sits on page two, so this also proves every page is read.
   assertEquals(result.value.prNumber, 42);
+  // Every page is read, not just the first 30 reviews.
+  const reviewCall = seen.find((k) => k.includes("pulls/42/reviews"));
+  assertEquals(reviewCall?.includes("--paginate"), true);
 });
 
 Deno.test("findPrCommentsToFix - a review on a milestone branch survives a merge-from-base (Issue #2697)", async () => {

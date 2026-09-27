@@ -44,8 +44,11 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import {
+  type CommitProvenance,
+  fetchPrCommitProvenance,
   fetchPrHeadCommit,
   type HeadCommitInfo,
+  isReviewSupersededByFleetFix,
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
 // Re-exported so callers and tests can reason about the scan's supersession
@@ -920,7 +923,26 @@ export async function findPrCommentsToFix(
       }
 
       // Check PR reviews (CHANGES_REQUESTED). A reviewer's latest review
-      // decides; a moved head does not retire it (Issue #2697).
+      // decides; a moved head does not retire it (Issue #2697). The PR's
+      // commit history is read at most once, and only for a review that is
+      // not on the head.
+      let prCommits: CommitProvenance[] | null | undefined;
+      const reviewSupersededByFleetFix = async (
+        reviewSubmittedAt: string | null | undefined,
+      ): Promise<boolean> => {
+        if (prCommits === undefined) {
+          prCommits = await fetchPrCommitProvenance(
+            repo,
+            prNumber,
+            ghCommandFn,
+          );
+        }
+        return isReviewSupersededByFleetFix({
+          reviewSubmittedAt,
+          commits: prCommits,
+          fleetAuthors: scanAuthors,
+        });
+      };
       const reviews = await fetchPrReviews(
         repo,
         prNumber,
@@ -968,6 +990,29 @@ export async function findPrCommentsToFix(
             prNumber,
             review.id,
             "it has no body to act on",
+          );
+          continue;
+        }
+
+        // Issue #2702: the head moving is not the review being answered. A
+        // base merge and a bot's version bump moved GRQ#5032's head after the
+        // owner's review, and a `commit_id !== head` rule hid it for good.
+        // Only a fleet fix commit after the review supersedes it. A review on
+        // the current head cannot have been answered, so it costs no read.
+        if (
+          headRefOid && review.commit_id !== headRefOid &&
+          await reviewSupersededByFleetFix(review.submitted_at)
+        ) {
+          logger.info(
+            "Skipping CHANGES_REQUESTED review superseded by a fleet fix commit",
+            {
+              repo,
+              prNumber,
+              reviewId: review.id,
+              commitId: review.commit_id,
+              submittedAt: review.submitted_at,
+              headSha: headRefOid,
+            },
           );
           continue;
         }
