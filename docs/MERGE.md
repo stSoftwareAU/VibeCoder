@@ -703,6 +703,13 @@ This is enforced at the single git-push choke-point by
   commit's two parents. Each exemption is logged at INFO. Agent-added or
   agent-edited hidden or secret files are still refused, and an unreadable
   parent exempts nothing.
+- **Nor is a hidden file the default branch already publishes** (Issue #2774).
+  Outside a merge too, a staged path is exempt when its blob and mode are
+  identical to that path on the default branch's tip, read from the local
+  `origin/<default>` ref that `origin/HEAD` names, never fetched. Each
+  exemption is logged at INFO naming the ref. An added, edited or deleted
+  hidden or secret file is still refused, and an unresolvable `origin/HEAD`
+  exempts nothing.
 
 Existing maintenance that touches files (bump-deps, gitignore/gitattributes
 sync) **stages locally and rides the next feature-branch PR** — it never pushes

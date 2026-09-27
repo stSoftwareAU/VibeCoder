@@ -581,3 +581,178 @@ Deno.test("assertSafeToCommit - an unreadable MERGE_HEAD fails closed (Issue #27
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// --- hidden files already published on the default branch (Issue #2774) --
+
+const PUBLISHED = ".claude/skills/s/SKILL.md";
+
+/**
+ * A clone whose `origin/main` (the default, recorded as `origin/HEAD`) tracks
+ * {@link PUBLISHED}, with `old` — a branch that predates it — checked out and
+ * a byte-for-byte copy of it left untracked in the working tree, plus some
+ * real work. `git add -A` then stages the copy as new: the shape of #2755's
+ * WIP commit.
+ */
+async function makePublishedRepo(prefix: string): Promise<{
+  root: string;
+  dir: string;
+}> {
+  const root = await Deno.makeTempDir({ prefix });
+  const upstream = `${root}/upstream`;
+  await Deno.mkdir(upstream);
+  await mustGit(["init", "-q", "-b", "main"], upstream);
+  await mustGit(["config", "user.email", "test@example.com"], upstream);
+  await mustGit(["config", "user.name", "test"], upstream);
+  await mustGit(["config", "commit.gpgsign", "false"], upstream);
+  await stageFile(upstream, "README.md", "# project\n");
+  await mustGit(["commit", "-q", "-m", "base"], upstream);
+  await mustGit(["branch", "old"], upstream);
+  await stageFile(upstream, PUBLISHED, "# skill\n");
+  await mustGit(["commit", "-q", "-m", "main publishes a skill"], upstream);
+
+  const dir = `${root}/clone`;
+  await mustGit(["clone", "-q", upstream, dir], root);
+  await mustGit(["config", "user.email", "test@example.com"], dir);
+  await mustGit(["config", "user.name", "test"], dir);
+  await mustGit(["config", "commit.gpgsign", "false"], dir);
+  await mustGit(["checkout", "-q", "-b", "old", "origin/old"], dir);
+  await Deno.mkdir(`${dir}/.claude/skills/s`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/${PUBLISHED}`, "# skill\n");
+  await Deno.mkdir(`${dir}/src`);
+  await Deno.writeTextFile(`${dir}/src/work.ts`, "export const w = 1;\n");
+  return { root, dir };
+}
+
+Deno.test("assertSafeToCommit - a WIP commit staging a hidden file identical to origin/<default> commits (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_ok_");
+  try {
+    await mustGit(["add", "-A"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    await mustGit(["commit", "-q", "-m", "wip"], dir);
+    const tracked = await mustGit(["ls-files"], dir);
+    assert(tracked.includes(PUBLISHED));
+    assert(tracked.includes("src/work.ts"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - a hidden or secret file not on the default branch is refused (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_new_");
+  try {
+    await Deno.writeTextFile(`${dir}/.env`, "SECRET=1\n");
+    await Deno.writeTextFile(`${dir}/.claude/secret`, "token\n");
+    await mustGit(["add", "-A"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "files the default branch does not publish are refused");
+    if (!result.ok) {
+      const msg = result.error.message;
+      assert(msg.includes(".env"), `expected .env in error, got: ${msg}`);
+      assert(
+        msg.includes(".claude/secret"),
+        `expected .claude/secret in error, got: ${msg}`,
+      );
+      assert(
+        !msg.includes(PUBLISHED),
+        `the published copy is exempt and must not be listed: ${msg}`,
+      );
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - an edited copy of a file on the default branch is refused (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_edit_");
+  try {
+    await Deno.writeTextFile(`${dir}/${PUBLISHED}`, "# skill\nleaked=1\n");
+    await mustGit(["add", "-A"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "an edited copy discloses the edit and is refused");
+    if (!result.ok) {
+      assert(result.error.message.includes(PUBLISHED));
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - a copy whose mode differs from the default branch is refused (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_mode_");
+  try {
+    await mustGit(["add", "-A"], dir);
+    await mustGit(["update-index", "--chmod=+x", PUBLISHED], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "a mode change is a modification and must be refused");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - an unset origin/HEAD fails closed (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_unset_");
+  try {
+    await mustGit(["remote", "set-head", "origin", "-d"], dir);
+    await mustGit(["add", "-A"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "no exemption when origin/HEAD cannot be resolved");
+    if (!result.ok) {
+      assert(result.error.message.includes(PUBLISHED));
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - an origin/HEAD naming a missing ref fails closed (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_gone_");
+  try {
+    await mustGit(
+      ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone"],
+      dir,
+    );
+    await mustGit(["add", "-A"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "no exemption when origin/<default> cannot be read");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - an origin/HEAD pointing outside origin's refs vouches for nothing (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_local_");
+  try {
+    // A local branch holding the same blob is not what origin publishes.
+    await mustGit(["branch", "lookalike", "origin/main"], dir);
+    await mustGit(
+      ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/lookalike"],
+      dir,
+    );
+    await mustGit(["add", "-A"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "only a ref under refs/remotes/origin/ vouches");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - never fetches to resolve the default branch (Issue #2774)", async () => {
+  const { root, dir } = await makePublishedRepo("pre_commit_published_fetch_");
+  try {
+    // An unreachable origin: any fetch or `set-head --auto` would fail, and
+    // the stale local ref is still read as-is.
+    await mustGit(["remote", "set-url", "origin", `${root}/missing`], dir);
+    await mustGit(["add", "-A"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

@@ -21,6 +21,7 @@ import type { Result } from "../types.ts";
 import { defaultLogger } from "./logger.ts";
 import { isAllowedSessionPath } from "./session_file_policy.ts";
 import { resolveAgentStateDir } from "./agent_state_dir.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** Maximum total size in bytes for a single repo's session store (50 MB). */
 const DEFAULT_MAX_SESSION_SIZE_BYTES = 50 * 1024 * 1024;
@@ -91,7 +92,9 @@ export function getWorkStreamSessionPath(
  * Restore a repo's Claude session from the per-repo store.
  *
  * Copies stored session files into `${repoPath}/.claude`.
- * If no stored session exists, ensures `.claude/` is absent (clean start).
+ * If no stored session exists, ensures `.claude/` is absent (clean start),
+ * apart from any files the checked-out commit tracks there, which are put
+ * back exactly as `HEAD` holds them (Issue #2774).
  *
  * When milestoneId is provided, restores the milestone-specific session.
  * When not provided, restores the default branch session.
@@ -106,6 +109,66 @@ export function getWorkStreamSessionPath(
  * @returns Result indicating success or failure
  */
 export async function restoreSession(
+  repoPath: string,
+  workDir: string,
+  repo: string,
+  milestoneId?: number,
+): Promise<Result<void>> {
+  const restored = await replaceSessionDir(
+    repoPath,
+    workDir,
+    repo,
+    milestoneId,
+  );
+  const tracked = await restoreTrackedClaudePaths(repoPath);
+  return restored.ok ? tracked : restored;
+}
+
+/**
+ * Put back what the checked-out commit tracks under `.claude/` (Issue #2774).
+ *
+ * {@link restoreSession} erases `.claude/` wholesale, so nothing a previous
+ * run wrote there reaches this one — but a repository may track files there
+ * too (this one tracks `.claude/skills/` since #2676). Erased and never put
+ * back, they read as deleted: `git add -A` staged the deletions, the
+ * pre-commit safety gate refused them, and a run's WIP was lost. Each is
+ * restored from `HEAD`, so a previous run's edit to one does not survive
+ * either. Outside a git checkout, or when `HEAD` tracks nothing under
+ * `.claude/`, there is nothing to restore.
+ */
+async function restoreTrackedClaudePaths(
+  repoPath: string,
+): Promise<Result<void>> {
+  const listed = await runGitCommand(
+    ["ls-tree", "-r", "--name-only", "HEAD", "--", ".claude"],
+    { cwd: repoPath },
+  );
+  if (!listed.ok || listed.value.code !== 0) {
+    return { ok: true, value: undefined };
+  }
+  if (listed.value.stdout.trim() === "") return { ok: true, value: undefined };
+
+  const checkout = await runGitCommand(
+    ["checkout", "HEAD", "--", ".claude"],
+    { cwd: repoPath },
+  );
+  if (checkout.ok && checkout.value.code === 0) {
+    return { ok: true, value: undefined };
+  }
+  const detail = checkout.ok
+    ? checkout.value.stderr.trim() || `exit ${checkout.value.code}`
+    : checkout.error.message;
+  return {
+    ok: false,
+    error: new Error(
+      `Failed to restore the tracked .claude/ files in ${repoPath} ` +
+        `(Issue #2774): ${detail}`,
+    ),
+  };
+}
+
+/** Erase `.claude/` and copy the work stream's stored session into it. */
+async function replaceSessionDir(
   repoPath: string,
   workDir: string,
   repo: string,
