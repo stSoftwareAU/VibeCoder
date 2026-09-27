@@ -16,8 +16,14 @@
  *        outcome="pushed" -->
  *   <!-- vibe-ci-fix-deferred signature="…" check="…"
  *        depends-on="owner/repo#149" -->
+ *   <!-- vibe-ci-human-gate check="…" -->
  *
- * Both use the canonical `vibe-` grammar — a bare prefix and `key="value"`
+ * The human-gate marker (Issue #2727) records that the fleet has already told
+ * the pull request a check waits on a human step. It is keyed by **check
+ * name** alone — not by failure signature or head — so a new push or a
+ * changed log never produces a second gate comment.
+ *
+ * All three use the canonical `vibe-` grammar — a bare prefix and `key="value"`
  * attributes, no colon payload — so neither needs an `ACCEPTED_DEVIATIONS`
  * entry in `tests/marker_grammar_test.ts`. That scanner reads marker
  * *literals* out of `lib/`, and these markers are assembled from a name
@@ -56,6 +62,9 @@ export const CI_FIX_ATTEMPT_MARKER_NAME = "vibe-ci-fix-attempt";
 
 /** Marker recording that a failure was deferred to a blocking issue. */
 export const CI_FIX_DEFERRAL_MARKER_NAME = "vibe-ci-fix-deferred";
+
+/** Marker recording that a human-gate check was announced (Issue #2727). */
+export const CI_HUMAN_GATE_MARKER_NAME = "vibe-ci-human-gate";
 
 /** Longest check name a marker carries; a longer one is truncated. */
 const MAX_CHECK_NAME_LENGTH = 120;
@@ -102,6 +111,12 @@ export interface CiFixDeferralMarker {
   dependsOn: string;
 }
 
+/** One recorded human-gate announcement (Issue #2727). */
+export interface CiHumanGateMarker {
+  /** Name of the gate check, as {@link sanitiseCheckName} renders it. */
+  checkName: string;
+}
+
 /**
  * A pull-request comment as `GitHubClient.getIssueComments` returns it.
  *
@@ -142,12 +157,20 @@ export type CiFixAttemptRecord = CiFixAttemptMarker & CiFixMarkerContext;
 /** A deferral marker with the comment it was read from. */
 export type CiFixDeferralRecord = CiFixDeferralMarker & CiFixMarkerContext;
 
+/** A human-gate marker with the comment it was read from. */
+export type CiHumanGateRecord = CiHumanGateMarker & CiFixMarkerContext;
+
 /** Every fleet-authored CI-fix marker on a pull request, by signature. */
 export interface FleetCiFixMarkers {
   /** Attempt records, keyed by failure signature, in comment order. */
   attempts: Map<string, CiFixAttemptRecord[]>;
   /** Deferral records, keyed by failure signature, in comment order. */
   deferrals: Map<string, CiFixDeferralRecord[]>;
+  /**
+   * Human-gate records, keyed by sanitised check name, in comment order
+   * (Issue #2727).
+   */
+  humanGates: Map<string, CiHumanGateRecord[]>;
   /**
    * False when the fleet login set was empty, so nothing could be attributed.
    *
@@ -191,6 +214,12 @@ const ATTEMPT_MARKER_RE = new RegExp(
 /** The deferral marker, on the same terms. */
 const DEFERRAL_MARKER_RE = new RegExp(
   `<!--\\s*${CI_FIX_DEFERRAL_MARKER_NAME}(?=\\s)([^]*?)-->`,
+  "g",
+);
+
+/** The human-gate marker, on the same terms. */
+const HUMAN_GATE_MARKER_RE = new RegExp(
+  `<!--\\s*${CI_HUMAN_GATE_MARKER_NAME}(?=\\s)([^]*?)-->`,
   "g",
 );
 
@@ -324,6 +353,20 @@ export function buildCiFixDeferralMarker(marker: CiFixDeferralMarker): string {
 }
 
 /**
+ * Build the marker recording that a human-gate check was announced
+ * (Issue #2727).
+ *
+ * @param marker - The gate check to record.
+ * @returns The marker, as a single-line HTML comment.
+ * @throws When the check name sanitises to nothing.
+ */
+export function buildCiHumanGateMarker(marker: CiHumanGateMarker): string {
+  const check = sanitiseCheckName(marker.checkName);
+  requireField(check.length > 0, "check", marker.checkName);
+  return `<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="${check}" -->`;
+}
+
+/**
  * Read every well-formed attempt marker out of a comment body.
  *
  * A marker missing an attribute, or carrying one that fails validation, is
@@ -386,6 +429,24 @@ export function parseCiFixDeferralMarkers(body: string): CiFixDeferralMarker[] {
 }
 
 /**
+ * Read every well-formed human-gate marker out of a comment body.
+ *
+ * @param body - The comment body.
+ * @returns One record per valid marker, in the order they appear.
+ */
+export function parseCiHumanGateMarkers(body: string): CiHumanGateMarker[] {
+  const markers: CiHumanGateMarker[] = [];
+  for (const match of body.matchAll(HUMAN_GATE_MARKER_RE)) {
+    const checkName = sanitiseCheckName(
+      attribute(match[1] ?? "", "check") ?? "",
+    );
+    if (checkName.length === 0) continue;
+    markers.push({ checkName });
+  }
+  return markers;
+}
+
+/**
  * The comment's first line that is neither empty nor part of a marker.
  *
  * The CI-fix comment leads with the agent's own diagnosis and carries its
@@ -416,10 +477,11 @@ function append<T>(target: Map<string, T[]>, key: string, value: T): void {
   else existing.push(value);
 }
 
-/** True when a body carries marker text of either family, valid or not. */
+/** True when a body carries marker text of any family, valid or not. */
 function mentionsCiFixMarker(body: string): boolean {
   return body.includes(CI_FIX_ATTEMPT_MARKER_NAME) ||
-    body.includes(CI_FIX_DEFERRAL_MARKER_NAME);
+    body.includes(CI_FIX_DEFERRAL_MARKER_NAME) ||
+    body.includes(CI_HUMAN_GATE_MARKER_NAME);
 }
 
 /**
@@ -440,7 +502,8 @@ function mentionsCiFixMarker(body: string): boolean {
  * @param log - Sink for the unresolved-fleet and discard warnings. Defaults
  *   to `console.warn`, which every entry point has already patched through
  *   `installConsoleRedaction`; tests inject a recorder.
- * @returns Attempt and deferral records grouped by failure signature.
+ * @returns Attempt and deferral records grouped by failure signature, and
+ *   human-gate records grouped by check name.
  */
 export function collectFleetCiFixMarkers(
   comments: readonly CiFixMarkerComment[],
@@ -449,6 +512,7 @@ export function collectFleetCiFixMarkers(
 ): FleetCiFixMarkers {
   const attempts = new Map<string, CiFixAttemptRecord[]>();
   const deferrals = new Map<string, CiFixDeferralRecord[]>();
+  const humanGates = new Map<string, CiHumanGateRecord[]>();
   const fleet = [...fleetLogins];
 
   if (fleet.length === 0) {
@@ -464,6 +528,7 @@ export function collectFleetCiFixMarkers(
     return {
       attempts,
       deferrals,
+      humanGates,
       fleetResolved: false,
       ignoredOutsideFleet: 0,
     };
@@ -490,6 +555,9 @@ export function collectFleetCiFixMarkers(
     for (const marker of parseCiFixDeferralMarkers(body)) {
       append(deferrals, marker.signature, { ...marker, ...context });
     }
+    for (const marker of parseCiHumanGateMarkers(body)) {
+      append(humanGates, marker.checkName, { ...marker, ...context });
+    }
   }
 
   if (ignoredOutsideFleet > 0) {
@@ -500,7 +568,13 @@ export function collectFleetCiFixMarkers(
     );
   }
 
-  return { attempts, deferrals, fleetResolved: true, ignoredOutsideFleet };
+  return {
+    attempts,
+    deferrals,
+    humanGates,
+    fleetResolved: true,
+    ignoredOutsideFleet,
+  };
 }
 
 /**
@@ -552,4 +626,21 @@ export function findDeferral(
   signature: string,
 ): CiFixDeferralRecord | undefined {
   return markers.deferrals.get(signature)?.[0];
+}
+
+/**
+ * The first human-gate announcement recorded for one check (Issue #2727).
+ *
+ * Keyed by check name, never signature or head, so the gate comment posts
+ * once per pull request per gate check however often the log or head moves.
+ *
+ * @param markers - Collected markers.
+ * @param checkName - The raw check name; sanitised the way the marker was.
+ * @returns The earliest gate record, or `undefined`.
+ */
+export function findHumanGate(
+  markers: FleetCiFixMarkers,
+  checkName: string,
+): CiHumanGateRecord | undefined {
+  return markers.humanGates.get(sanitiseCheckName(checkName))?.[0];
 }
