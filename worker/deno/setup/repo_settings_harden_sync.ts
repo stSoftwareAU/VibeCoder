@@ -56,6 +56,7 @@ import {
   type HardenRepoOutcome,
   type HardenResult,
   type HardenStep,
+  isGitHubLogin,
 } from "../lib/repo_settings_harden.ts";
 import { isValidRepoSlug, renderInertRepoSlug } from "../lib/repo_slug.ts";
 import type {
@@ -284,7 +285,8 @@ function orgOwnerLookup(
   const cache = new Map<string, Promise<string[]>>();
   const read = async (org: string): Promise<string[]> => {
     const owners: string[] = [];
-    for (const login of fleetAccounts) {
+    // A login that is not a GitHub login never reaches an API path.
+    for (const login of fleetAccounts.filter(isGitHubLogin)) {
       try {
         const membership = JSON.parse(
           await deps.ghCommandFn([
@@ -309,8 +311,10 @@ function orgOwnerLookup(
           `every repository there and no repository setting can lower that. ` +
           `Change it at https://github.com/orgs/${org}/people: find ${login}, ` +
           `choose Change role, then Member. Setup never changes organisation ` +
-          `membership; once ${login} is a Member, the next setup run sets it ` +
-          `to write on each monitored repository.`,
+          `membership. As a Member it has the organisation's base ` +
+          `permission, so grant it write on each monitored repository ` +
+          `afterwards — the collaborator precheck ` +
+          `(verify-monitored-collaborator) prints the commands.`,
       );
     }
     return owners;

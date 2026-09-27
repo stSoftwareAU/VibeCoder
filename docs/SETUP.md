@@ -370,7 +370,9 @@ For each monitored repository, in order:
      an **owner of the organisation** is admin on every repository and no
      repository setting can lower that, so setup reports it once with the
      setting to change (Organisation → People → the account → Change role →
-     Member) and never changes organisation membership itself.
+     Member) and never changes organisation membership itself. An account
+     below write is left to the collaborator precheck, which prints the
+     commands that grant it.
 3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
    run fixed are commented on and closed.
 
