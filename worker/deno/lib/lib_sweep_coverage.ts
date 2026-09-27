@@ -453,7 +453,7 @@ export async function verifySweptAtsOnDefaultBranch(
     throw new SweepLedgerError(
       `${LIB_SWEEP_LEDGER_PATH}: ${failures.length} slice(s) record a ` +
         `sweptAt that is not on ${defaultRef}. A top-up records ` +
-        `\`git merge-base origin/main HEAD\`, never a branch commit — ` +
+        `\`git merge-base ${defaultRef} HEAD\`, never a branch commit — ` +
         `squash-merge deletes it:\n${failures.join("\n")}`,
     );
   }
