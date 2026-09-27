@@ -693,7 +693,7 @@ before the pre-commit gate** (Issue #1661), with a warning naming each path, so
 they never reach the gate and never widen its allowlist.
 
 The worker's own staged-path gate (`assertSafeToCommit()`, Issue #1758)
-exempts exactly one other case: **a path a merge in progress brings in
+exempts two other cases. The first is **a path a merge in progress brings in
 unchanged** (Issue #2737). During a merge the index holds every path the
 merged-in branch changed, so a hidden file that branch already tracks (for
 example `.claude/skills/…/SKILL.md`) used to refuse the whole
@@ -703,8 +703,19 @@ entry on `MERGE_HEAD`. It is already in the repository's history, so
 committing it discloses nothing new, and each exemption is logged at INFO
 naming the path and the `MERGE_HEAD` commit. Anything the agent added or
 edited during the merge, including an edit to a merged-in hidden file, is
-still refused. Outside a merge nothing is exempt, and a `MERGE_HEAD` that
-cannot be read exempts nothing (fail closed).
+still refused. Outside a merge nothing is exempt on `MERGE_HEAD`'s account,
+and a `MERGE_HEAD` that cannot be read exempts nothing (fail closed).
+
+It also exempts **a path the default branch already publishes unchanged**
+(Issue #2774). A refused path is exempt only when its staged mode and blob
+are identical to that path on the default branch's tip, read from the local
+remote-tracking ref that `refs/remotes/origin/HEAD` names. The gate never
+fetches. The path is already public, so committing it discloses nothing, and
+each exemption is logged at INFO naming the path and the ref. A hidden or
+secret file the default branch does not track, an edited copy, a mode change
+and a deletion are all still refused. If `origin/HEAD` is unset, names a ref
+outside `refs/remotes/origin/`, or names a ref that cannot be read, nothing is
+exempt on its account (fail closed).
 
 The same rule covers a milestone merge commit the worker adopts rather than
 writes (`assertAdoptedMergeIsSafe()`, Issues #1964 and #2739). Each refused

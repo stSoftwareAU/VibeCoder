@@ -453,3 +453,127 @@ Deno.test("session_manager - old-style migration drops settings.json", async () 
     await removeTestDir(testDir);
   }
 });
+
+// --- tracked .claude/ content survives a restore (Issue #2774) ---
+
+/** Run git in a fixture and fail the test loudly on a non-zero exit. */
+async function mustGit(args: string[], cwd: string): Promise<string> {
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const stderr = new TextDecoder().decode(out.stderr);
+  if (out.code !== 0) throw new Error(`git ${args.join(" ")}: ${stderr}`);
+  return new TextDecoder().decode(out.stdout);
+}
+
+const SKILL = ".claude/skills/s/SKILL.md";
+
+/**
+ * A git repository that tracks {@link SKILL} under `.claude/` — as this
+ * repository has since #2676 — ignoring the rest of `.claude/` as its root
+ * `.gitignore` does.
+ */
+async function makeTrackedClaudeRepo(testDir: string): Promise<string> {
+  const repoPath = `${testDir}/repo`;
+  await Deno.mkdir(`${repoPath}/.claude/skills/s`, { recursive: true });
+  await mustGit(["init", "-q", "-b", "main"], repoPath);
+  await mustGit(["config", "user.email", "test@example.com"], repoPath);
+  await mustGit(["config", "user.name", "test"], repoPath);
+  await mustGit(["config", "commit.gpgsign", "false"], repoPath);
+  await Deno.writeTextFile(
+    `${repoPath}/.gitignore`,
+    ".*\n!.gitignore\n!.claude\n.claude/*\n!.claude/skills\n",
+  );
+  await Deno.writeTextFile(`${repoPath}/${SKILL}`, "# skill\n");
+  await mustGit(["add", "-A"], repoPath);
+  await mustGit(["commit", "-q", "-m", "track a skill"], repoPath);
+  return repoPath;
+}
+
+Deno.test("session_manager - restoreSession keeps tracked .claude/ files, so git add -A stages nothing (Issue #2774)", async () => {
+  const testDir = await createTestDir();
+  try {
+    const repoPath = await makeTrackedClaudeRepo(testDir);
+
+    const result = await restoreSession(repoPath, testDir, "owner/repo");
+    assertEquals(result.ok, true);
+
+    assertEquals(
+      await Deno.readTextFile(`${repoPath}/${SKILL}`),
+      "# skill\n",
+    );
+    await mustGit(["add", "-A"], repoPath);
+    assertEquals(
+      await mustGit(["diff", "--cached", "--name-only"], repoPath),
+      "",
+    );
+  } finally {
+    await removeTestDir(testDir);
+  }
+});
+
+Deno.test("session_manager - restoreSession keeps tracked .claude/ files beside a restored milestone session (Issue #2774)", async () => {
+  const testDir = await createTestDir();
+  try {
+    const repoPath = await makeTrackedClaudeRepo(testDir);
+    const storePath = getWorkStreamSessionPath(testDir, "owner/repo", 81);
+    await Deno.mkdir(storePath, { recursive: true });
+    await Deno.writeTextFile(`${storePath}/session.json`, "milestone data");
+
+    const result = await restoreSession(repoPath, testDir, "owner/repo", 81);
+    assertEquals(result.ok, true);
+
+    assertEquals(
+      await Deno.readTextFile(`${repoPath}/.claude/session.json`),
+      "milestone data",
+    );
+    assertEquals(
+      await Deno.readTextFile(`${repoPath}/${SKILL}`),
+      "# skill\n",
+    );
+    await mustGit(["add", "-A"], repoPath);
+    assertEquals(
+      await mustGit(["diff", "--cached", "--name-only"], repoPath),
+      "",
+    );
+  } finally {
+    await removeTestDir(testDir);
+  }
+});
+
+Deno.test("session_manager - restoreSession still erases what a previous run left in .claude/ (Issue #2774)", async () => {
+  const testDir = await createTestDir();
+  try {
+    const repoPath = await makeTrackedClaudeRepo(testDir);
+    // A previous run edited the tracked skill and planted an untracked
+    // settings file and a skill of its own.
+    await Deno.writeTextFile(`${repoPath}/${SKILL}`, "# skill\nplanted\n");
+    await Deno.writeTextFile(
+      `${repoPath}/.claude/settings.local.json`,
+      '{"hooks": {}}',
+    );
+    await Deno.mkdir(`${repoPath}/.claude/skills/planted`);
+    await Deno.writeTextFile(
+      `${repoPath}/.claude/skills/planted/SKILL.md`,
+      "# planted\n",
+    );
+
+    const result = await restoreSession(repoPath, testDir, "owner/repo");
+    assertEquals(result.ok, true);
+
+    assertEquals(
+      await Deno.readTextFile(`${repoPath}/${SKILL}`),
+      "# skill\n",
+    );
+    assertEquals(
+      await pathExists(`${repoPath}/.claude/settings.local.json`),
+      false,
+    );
+    assertEquals(await pathExists(`${repoPath}/.claude/skills/planted`), false);
+  } finally {
+    await removeTestDir(testDir);
+  }
+});

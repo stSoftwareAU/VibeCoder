@@ -18,6 +18,7 @@ import type {
 } from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
+import { DEFAULT_CALL_STORM_NOVEL_SHARE } from "./call_storm.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { DEFAULT_CADENCE_POLICY } from "./idle_task_cadence.ts";
 import { DEFAULT_RUN_MODE } from "./run_mode.ts";
@@ -279,6 +280,14 @@ export const OPERATIONAL_DEFAULTS = {
    * the guard is evaluated at: the window judged is the window observed.
    */
   callStormWindowSeconds: 300,
+  /**
+   * Novel share below which a busy window is a storm (#2773).
+   *
+   * A security sweep reads a new module on nearly every call and a poll loop
+   * repeats three or four commands, so under a quarter distinct is the loop.
+   * Lower it if an investigation that revisits files is being stopped.
+   */
+  callStormNovelShare: DEFAULT_CALL_STORM_NOVEL_SHARE,
   /**
    * Self-scheduling for auto-filed worker diagnostics (Issue #505).
    *
@@ -1523,6 +1532,7 @@ export function buildDefaultWorkerConfig(
     callStormEnabled: OPERATIONAL_DEFAULTS.callStormEnabled,
     callStormCalls: OPERATIONAL_DEFAULTS.callStormCalls,
     callStormWindowSeconds: OPERATIONAL_DEFAULTS.callStormWindowSeconds,
+    callStormNovelShare: OPERATIONAL_DEFAULTS.callStormNovelShare,
     // Issue #505: self-scheduling for auto-filed worker diagnostics.
     selfScheduleDiagnosticsEnabled:
       OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsEnabled,
