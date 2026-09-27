@@ -156,7 +156,12 @@ Deno.test("unrelatedIssueBody names the location and the PR it was found in", ()
     url: "https://github.com/o/r/pull/7",
   });
   assert(body.includes("`web/search.ts:12`"));
-  assert(body.includes("https://github.com/o/r/pull/7"));
+  assert(
+    body.split("\n").some((l) =>
+      l ===
+        "Found while reviewing https://github.com/o/r/pull/7, but outside that PR's scope."
+    ),
+  );
   assert(body.includes(unrelated.body));
   assert(body.includes(REVIEW_MARKER));
 });
