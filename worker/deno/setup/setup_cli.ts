@@ -89,7 +89,7 @@ import {
   applyMilestoneSyncOutcomes,
   assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
-  fetchMilestonePrCheckNames,
+  fetchMilestonePrCheckSample,
   type GhJson,
   type MilestoneSyncOutcome,
   type MilestoneSyncResult,
@@ -1048,7 +1048,7 @@ function liveMilestoneSeams(ghConfigDir?: string): MilestoneReportSeams {
 /** What a sync learned about the checks, for the lines it prints. */
 type MilestoneCheckEvidence = Pick<
   MilestoneSyncResult & { ok: true },
-  "mirrored" | "dropped" | "sampled"
+  "mirrored" | "dropped" | "sampled" | "substituted"
 >;
 
 /** Print the one line each sync outcome earns (Issue #2623). */
@@ -1108,6 +1108,11 @@ function describeTemplateChecks(
   const dropped = evidence.dropped.length > 0
     ? `; ${droppedChecksClause(evidence.dropped)}`
     : "";
+  if (count > 0 && evidence.substituted.length > 0) {
+    return `requiring ${count} check(s) every merged milestone PR reports ` +
+      `(${evidence.substituted.join(", ")}) in place of the default ` +
+      `branch's, none of which a milestone PR runs${dropped}`;
+  }
   if (count > 0) {
     return `requiring ${count} check(s) mirrored from the default branch` +
       dropped;
@@ -1153,7 +1158,7 @@ export async function reportMilestoneRuleset(
   // One sample of what merged milestone PRs report, shared by the sync and
   // the check, so the ruleset setup writes and the findings it prints are
   // judged against the same evidence (Issue #2684).
-  const reportedChecks = await fetchMilestonePrCheckNames(
+  const sample = await fetchMilestonePrCheckSample(
     repo,
     seams.ghFor("service-account"),
   );
@@ -1162,7 +1167,7 @@ export async function reportMilestoneRuleset(
   const sync = await syncMilestoneRuleset(
     repo,
     seams.ghFor("operator"),
-    { ...(branch ? { defaultBranch: branch } : {}), reportedChecks },
+    { ...(branch ? { defaultBranch: branch } : {}), sample },
   );
   if (!sync.ok) {
     seams.print(
@@ -1191,7 +1196,7 @@ export async function reportMilestoneRuleset(
     repo,
     login,
     seams.ghFor("service-account"),
-    { rulesets: current, reportedChecks },
+    { rulesets: current, reportedChecks: sample.union },
   );
 
   // Issue #2067: a `milestone/**` ruleset that enforces its required checks
