@@ -64,7 +64,16 @@ flowchart TD
 
 ## Reproduction
 
-- **Status:** verified
+- **symptom** — the merge-conflict scan skipped a conflicting fleet PR as
+  `needs-human` even when that label came only from the fleet's own CI-fix
+  escalation, and it never cleared a stale `merge-conflict` label from a PR
+  GitHub reported as `MERGEABLE` (seen on GRQ-AutoTrader#1492).
+- **status** — `verified` — the regression tests were observed failing
+  against the unfixed code and passing after the fix (details below).
+- **regression test** —
+  `tests/pr_merge_conflict_scan_test.ts::findConflictingPr - resolves a needs-human PR the CI-fix lane escalated (Issue #2728)`
+  and
+  `tests/pr_merge_conflict_scan_test.ts::findConflictingPr - clears a stale merge-conflict label from a mergeable PR (Issue #2728)`
 - **Before (red):** `lib/pr_merge_conflict_scan.ts` and `lib/pr_maintenance.ts`
   were restored to `origin/main`. Then
   `deno task test:unit tests/pr_merge_conflict_scan_test.ts` ran:
