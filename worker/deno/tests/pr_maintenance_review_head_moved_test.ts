@@ -138,7 +138,7 @@ Deno.test("findPrCommentsToFix - a dismissed review is not returned (Issue #2697
   if (result.ok) assertEquals(result.value, null);
 });
 
-for (const later of ["APPROVED", "COMMENTED"]) {
+for (const later of ["APPROVED"]) {
   Deno.test(`findPrCommentsToFix - a later ${later} review supersedes and the skip is logged at INFO (Issue #2697)`, async () => {
     const { logger, infos } = makeCapturingLogger();
     const result = await findPrCommentsToFix(options(
@@ -166,6 +166,29 @@ for (const later of ["APPROVED", "COMMENTED"]) {
     );
   });
 }
+
+Deno.test("findPrCommentsToFix - a later COMMENTED review leaves the request actionable (Issue #2697)", async () => {
+  const { logger } = makeCapturingLogger();
+  const result = await findPrCommentsToFix(options(
+    makeGh("issue-42-fix", [
+      CHANGES_REQUESTED,
+      {
+        ...CHANGES_REQUESTED,
+        id: 701,
+        body: "One more thought.",
+        state: "COMMENTED",
+        submitted_at: "2026-09-02T00:00:00Z",
+        commit_id: "shaB",
+      },
+    ]),
+    logger,
+  ));
+
+  assertEquals(result.ok, true);
+  if (!result.ok || !result.value) throw new Error("expected the review");
+  assertEquals(result.value.commentType, "pr_review");
+  assertEquals(result.value.commentId, "700");
+});
 
 Deno.test("findPrCommentsToFix - skipping the host's own review is logged at INFO (Issue #2697)", async () => {
   const { logger, infos } = makeCapturingLogger();

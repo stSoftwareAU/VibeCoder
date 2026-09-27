@@ -1933,9 +1933,9 @@ scan for good. PR reviews use dismissal instead of reactions.
 **Latest review wins** (Issue #2697) — the scan reads every page of reviews
 (`gh api --paginate`) and keeps each reviewer's latest submitted review, so a
 `CHANGES_REQUESTED` review is retired by its dismissal or by the same
-reviewer's later `APPROVED` or non-empty `COMMENTED` review, never by the head
-moving. `PENDING` drafts and the empty `COMMENTED` containers an inline reply
-creates do not count. Each change request it skips is logged at info with the
+reviewer's later `APPROVED` or `CHANGES_REQUESTED` review, never by the head
+moving. `PENDING` drafts and every `COMMENTED` review do not count — GitHub
+keeps `reviewDecision` at `CHANGES_REQUESTED` after a Comment review. Each change request it skips is logged at info with the
 reason; see `selectOutstandingReviews` in
 [pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts).
 

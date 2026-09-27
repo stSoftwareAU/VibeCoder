@@ -144,20 +144,21 @@ match wins and the loop restarts.
    (Issue #2697): Priorities 1.6 and 1.65 update the branch *before* PR
    feedback runs, and a rebase or merge-from-base does not address anything.
    The scan reads every page of reviews, takes each reviewer's **latest**
-   submitted review (drafts and empty inline-reply containers do not count),
+   submitted review (drafts and `COMMENTED` reviews do not count — GitHub
+   never lets a Comment review clear a change request),
    and acts only where that latest review still requests changes — one entry
    per reviewer. A request is retired by its dismissal (the processed marker)
-   or by the same reviewer's later review; every change request it skips is
-   logged at INFO with the reason.
+   or by the same reviewer's later `APPROVED` or `CHANGES_REQUESTED` review;
+   every change request it skips is logged at INFO with the reason.
    Of those still outstanding, a review is skipped only when a **fleet fix
    commit** landed after it — never because a base merge or a bot's formatting or
    version bump moved the head (Issue #2702). That skip is logged at info.
 
    ```mermaid
    flowchart TD
-       R["Read every page of reviews<br/>(gh api --paginate)"] --> L["Latest submitted review<br/>per reviewer"]
+       R["Read every page of reviews<br/>(gh api --paginate)"] --> L["Latest submitted review<br/>per reviewer (COMMENTED ignored)"]
        L --> Q{"Latest is<br/>CHANGES_REQUESTED?"}
-       Q -- "no: DISMISSED, APPROVED,<br/>later COMMENTED" --> S["Skip — INFO log<br/>with the reason"]
+       Q -- "no: DISMISSED,<br/>later APPROVED" --> S["Skip — INFO log<br/>with the reason"]
        Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Fleet fix commit after it?"}
        O -- yes --> S
        O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>then dismiss the review"]

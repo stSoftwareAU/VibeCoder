@@ -254,15 +254,13 @@ export function parsePrReviewPages(payload: string): PrReview[] {
 /**
  * Does this review change what its reviewer is asking for?
  *
- * A `PENDING` review is an unsubmitted draft. An empty-bodied `COMMENTED`
- * review is the container GitHub creates for an inline reply — the reply is
- * scanned as a review comment in its own right, and it does not withdraw the
- * change request.
+ * A `PENDING` review is an unsubmitted draft. A `COMMENTED` review never
+ * clears a verdict — GitHub keeps `reviewDecision` at `CHANGES_REQUESTED`
+ * after a Comment review, matching `hasNonFleetApproval` — so only
+ * `APPROVED`, `DISMISSED` or a newer `CHANGES_REQUESTED` replaces a request.
  */
 function countsAsReview(review: PrReview): boolean {
-  if (review.state === "PENDING") return false;
-  if (review.state === "COMMENTED" && review.body.trim() === "") return false;
-  return true;
+  return review.state !== "PENDING" && review.state !== "COMMENTED";
 }
 
 /**

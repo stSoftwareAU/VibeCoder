@@ -62,12 +62,12 @@ Deno.test("selectOutstandingReviews - a later APPROVED review supersedes the req
   );
 });
 
-Deno.test("selectOutstandingReviews - a later non-empty COMMENTED review supersedes", () => {
+Deno.test("selectOutstandingReviews - a later non-empty COMMENTED review leaves the request outstanding", () => {
   const cr = review(1, "CHANGES_REQUESTED", "2026-09-01T00:00:00Z");
   const note = review(2, "COMMENTED", "2026-09-02T00:00:00Z");
   const { outstanding, skipped } = selectOutstandingReviews([cr, note]);
-  assertEquals(outstanding, []);
-  assertEquals(skipped[0]?.reason.includes("COMMENTED review 2"), true);
+  assertEquals(outstanding, [cr]);
+  assertEquals(skipped, []);
 });
 
 Deno.test("selectOutstandingReviews - an empty COMMENTED reply container does not supersede", () => {
