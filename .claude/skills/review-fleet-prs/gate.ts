@@ -18,7 +18,10 @@
 //          [--sleep-first]
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
-// Output: one line of JSON, { ready: [...], skipped: { <reason>: count } }.
+// Output: one line of JSON, { ready: [...], skipped: { <reason>: count },
+// upkeep: [...] }. Unlike the review itself, each pass also does the
+// Dependabot upkeep in dependabot.ts (rebase requests, arming auto-merge);
+// --dry-run reports that upkeep without doing it.
 
 // The skill lives at <checkout>/.claude/skills/review-fleet-prs/, next to the
 // checkout's own .config.json.
@@ -33,6 +36,7 @@ import {
   stateDir,
   writeSummary,
 } from "./review_log.ts";
+import { dependabotAction } from "./dependabot.ts";
 
 // Every review body the skill posts ends with this marker, so a comment-only
 // "held for the owner" review still counts as this commit's review.
@@ -89,11 +93,17 @@ export interface SearchPr {
   url: string;
   isDraft: boolean;
   mergeable: string;
+  // BEHIND, BLOCKED, CLEAN, DIRTY, ... (GitHub's merge state).
+  mergeStateStatus?: string;
+  autoMergeRequest?: { enabledAt: string } | null;
   headRefOid: string;
   baseRefName: string;
   repository: {
     nameWithOwner: string;
     defaultBranchRef: { name: string } | null;
+    autoMergeAllowed?: boolean;
+    squashMergeAllowed?: boolean;
+    mergeCommitAllowed?: boolean;
   };
   author: { login: string } | null;
   commits: {
@@ -226,14 +236,65 @@ query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      number title url isDraft mergeable headRefOid baseRefName
-      repository { nameWithOwner defaultBranchRef { name } }
+      number title url isDraft mergeable mergeStateStatus headRefOid baseRefName
+      autoMergeRequest { enabledAt }
+      repository {
+        nameWithOwner defaultBranchRef { name }
+        autoMergeAllowed squashMergeAllowed mergeCommitAllowed
+      }
       author { login }
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
     } }
   }
 }`;
+
+const ACTIVE_REPOS_QUERY = `
+query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest { repository { nameWithOwner } } }
+  }
+}`;
+
+// Repos where a fleet account has had a PR in the last `days` days. Each
+// fleet host monitors its own repos and this host cannot read the others'
+// configs, but every monitored repo carries fleet PRs, so this recovers the
+// fleet-wide set without leaving out a repo another host looks after.
+async function fleetActiveRepos(
+  owners: string[],
+  fleet: readonly string[],
+  days = 30,
+): Promise<Set<string>> {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(
+    0,
+    10,
+  );
+  const q = [
+    `is:pr updated:>=${since}`,
+    ...owners.map((o) => `user:${o}`),
+    ...fleet.map((l) => `author:${l}`),
+  ].join(" ");
+  const repos = new Set<string>();
+  let after: string | null = null;
+  do {
+    const args = [
+      "api",
+      "graphql",
+      "-f",
+      `query=${ACTIVE_REPOS_QUERY}`,
+      "-F",
+      `q=${q}`,
+    ];
+    if (after) args.push("-F", `after=${after}`);
+    const page = JSON.parse(await gh(args)).data.search;
+    for (const n of page.nodes) {
+      if (n.repository) repos.add(n.repository.nameWithOwner);
+    }
+    after = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+  } while (after);
+  return repos;
+}
 
 async function searchOpenPrs(
   owners: string[],
@@ -263,6 +324,29 @@ async function searchOpenPrs(
   return prs;
 }
 
+// Head commit a Dependabot rebase was last requested for, per PR, so the
+// request is not repeated while Dependabot works on it.
+const REBASE_FILE = "dependabot-rebase.json";
+
+// --dry-run reports the Dependabot upkeep it would do without doing it.
+const DRY_RUN = Deno.args.includes("--dry-run");
+
+async function readRebaseAsked(): Promise<Record<string, string>> {
+  try {
+    return JSON.parse(await Deno.readTextFile(`${stateDir()}/${REBASE_FILE}`));
+  } catch {
+    return {};
+  }
+}
+
+async function writeRebaseAsked(asked: Record<string, string>) {
+  await Deno.mkdir(stateDir(), { recursive: true });
+  await Deno.writeTextFile(
+    `${stateDir()}/${REBASE_FILE}`,
+    JSON.stringify(asked),
+  );
+}
+
 async function pass(
   repos: ReadonlySet<string>,
   fleet: ReadonlySet<string>,
@@ -273,12 +357,66 @@ async function pass(
   const ready: ReadyPr[] = [];
   const skipped: Record<string, number> = {};
   const open = new Set<string>();
+  const upkeep: string[] = [];
   const log = await readLog(stateDir());
+  const rebaseAsked = await readRebaseAsked();
+  const single = repos.size === 1;
+  const active = single
+    ? new Set<string>()
+    : await fleetActiveRepos(owners, [...fleet]);
   for (const pr of await searchOpenPrs(owners, logins)) {
     const repo = pr.repository.nameWithOwner;
     const kind = authorKind(pr.author?.login ?? "", fleet);
-    if (!repos.has(repo) || !kind) continue;
+    // Fleet PRs only exist in repos some host monitors; Dependabot PRs are
+    // taken from this host's repos plus any repo the fleet is active in.
+    if (!kind) continue;
+    if (kind === "dependabot" && !repos.has(repo) && !active.has(repo)) {
+      continue;
+    }
+    if (single && !repos.has(repo)) continue;
     open.add(prKey(repo, pr.number));
+    if (
+      kind === "dependabot" &&
+      pr.baseRefName === pr.repository.defaultBranchRef?.name
+    ) {
+      const key = prKey(repo, pr.number);
+      const action = dependabotAction(pr, reviewer, rebaseAsked[key]);
+      if (action.kind === "rebase") {
+        if (!DRY_RUN) {
+          await gh([
+            "pr",
+            "comment",
+            String(pr.number),
+            "-R",
+            repo,
+            "--body",
+            "@dependabot rebase",
+          ]);
+          rebaseAsked[key] = pr.headRefOid;
+        }
+        upkeep.push(`${key} rebase requested${DRY_RUN ? " (dry run)" : ""}`);
+        skipped["rebasing"] = (skipped["rebasing"] ?? 0) + 1;
+        continue;
+      }
+      if (action.kind === "auto-merge") {
+        if (!DRY_RUN) {
+          await gh([
+            "pr",
+            "merge",
+            String(pr.number),
+            "-R",
+            repo,
+            "--auto",
+            `--${action.method}`,
+          ]);
+        }
+        upkeep.push(
+          `${key} auto-merge armed (${action.method})${
+            DRY_RUN ? " (dry run)" : ""
+          }`,
+        );
+      }
+    }
     const skip = skipReason(pr, reviewer);
     if (skip) {
       skipped[skip] = (skipped[skip] ?? 0) + 1;
@@ -304,7 +442,8 @@ async function pass(
   // A single --repo run sees only part of the fleet, so it leaves the
   // summary's open set alone.
   if (repos.size > 1) await writeSummary(stateDir(), open);
-  return { ready, skipped };
+  await writeRebaseAsked(rebaseAsked);
+  return { ready, skipped, upkeep };
 }
 
 async function main() {
