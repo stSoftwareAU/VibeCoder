@@ -7,7 +7,9 @@
  *   - idempotent -> already-open wrappers are skipped;
  *   - per-repo error isolation -> a failing repo never aborts the sweep;
  *   - partial progress (Issue #3862) -> a partly-failed repo still reports the
- *     wrappers it filed, and an off-allowlist repo aborts before any gh call.
+ *     wrappers it filed, and an off-allowlist repo aborts before any gh call;
+ *   - any-open gate (Issue #2753) -> an open idle task blocks the repo unless
+ *     `force`, which logs action=forced.
  *
  * All dependencies are injected so the tests never touch the network. The real
  * template body builders read `prompts/<scan>/prompt.md`, so the seeding
@@ -213,5 +215,34 @@ Deno.test("raiseAllIdleTasks - an off-allowlist repo aborts in preflight without
     );
   } finally {
     resetWriteRepoAllowlist();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Any-open gate and --force (Issue #2753)
+// ---------------------------------------------------------------------------
+
+Deno.test("raiseAllIdleTasks - an open idle task blocks the repo unless forced", async () => {
+  for (const force of [false, true]) {
+    const { fn, created } = makeMockGh();
+    const logs: string[] = [];
+    const result = await raiseAllIdleTasks({
+      repos: ["org/alpha"],
+      ghCommandFn: fn,
+      ensureLabelFn: labelOk,
+      findOpenIdleTaskIssuesFn: () =>
+        Promise.resolve(openIdleTaskIssues(["Some other open idle task"])),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      force,
+      log: (line) => logs.push(line),
+    });
+
+    assert(result.ok);
+    assertEquals(created.length, force ? ALL_TITLES.length : 0);
+    assertEquals(
+      logs.includes("[idle-task] repo=org/alpha issue=1 action=forced"),
+      force,
+    );
   }
 });

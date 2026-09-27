@@ -14,10 +14,17 @@
  * wrapper whose canonical title is already open is skipped, so re-running never
  * produces duplicates. A per-repo failure is recorded and the sweep continues.
  *
+ * A repo that already holds any open `idle-task` issue is skipped whole
+ * (Issue #2752). `--force` files past that gate, logging the bypassed issue
+ * as `action=forced`; exact-title dedup still applies (Issue #2753):
+ *
+ *   deno run ... raise-all-idle-tasks --monitored-repos org/a,org/b --force
+ *
  * Structured progress lines (parseable by operator log scrapers) are emitted
  * by the helpers via the injected `log` sink:
  *
  *   [create-all-idle-task] repo=<r> template=<t> action=filed label=idle-task
+ *   [idle-task] repo=<r> issue=<n> action=forced
  *   [all-idle-tasks] repo=<r> action=done created=N skipped=N
  *   [all-idle-tasks] repo=<r> action=error reason=<msg>
  *
@@ -25,7 +32,11 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
-import { coerceStringListFlag } from "../lib/command_args.ts";
+import {
+  coerceBooleanFlag,
+  coerceStringListFlag,
+  findUnknownOptions,
+} from "../lib/command_args.ts";
 import {
   raiseAllIdleTasks,
   type RaiseAllIdleTasksOptions,
@@ -47,12 +58,20 @@ interface TestDeps {
   rootDir?: RaiseAllIdleTasksOptions["rootDir"];
 }
 
+/** Options this command accepts; `__testDeps` is the injected test seam. */
+const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
+  "monitored-repos",
+  "force",
+  "__testDeps",
+]);
+
 export const raiseAllIdleTasksCommand: Command = {
   name: "raise-all-idle-tasks",
   description:
     "Seed all ten idle-task wrappers in every named repo (--monitored-repos " +
     "CSV, else config repos), skipping any whose canonical title is already " +
-    "open (Issue #3196).",
+    "open (Issue #3196). A repo with any open idle-task issue is skipped " +
+    "unless --force is passed (Issue #2753).",
 
   async execute(
     args: Record<string, unknown>,
@@ -71,6 +90,22 @@ export const raiseAllIdleTasksCommand: Command = {
     );
     if (!reposResult.ok) {
       return { success: false, message: reposResult.error.message };
+    }
+    // A bare `--force` bypasses the any-open idle-task gate (Issue #2753);
+    // an unreadable value is refused rather than read as "not forced".
+    const forceResult = coerceBooleanFlag(args["force"], "force", false);
+    if (!forceResult.ok) {
+      return { success: false, message: forceResult.error.message };
+    }
+    // A misspelt flag (e.g. `--forse`) is refused, not silently dropped.
+    const unknown = findUnknownOptions(args, KNOWN_OPTIONS);
+    if (unknown.length > 0) {
+      return {
+        success: false,
+        message: `raise-all-idle-tasks: unknown option(s) ` +
+          `${unknown.map((k) => `--${k}`).join(", ")} — accepts only ` +
+          `--monitored-repos, --force`,
+      };
     }
     let repos = reposResult.value;
     if (repos.length === 0 && Array.isArray(config?.repos)) {
@@ -92,6 +127,7 @@ export const raiseAllIdleTasksCommand: Command = {
       findOpenIdleTaskIssuesFn: deps.findOpenIdleTaskIssuesFn,
       nowFn: deps.nowFn,
       rootDir: deps.rootDir,
+      force: forceResult.value,
       log,
     });
 
