@@ -121,9 +121,8 @@ Deno.test("#2682 execute - refusal on a resumed session retries once on a fresh 
   const lines = discardLines(captured);
   assertEquals(lines.length, 1);
   assert(lines[0]?.msg.includes("oversized-session"));
-  // Whatever the phase decides next, it is not a prompt-too-long failure.
-  const reason = result.status === "failure" ? result.reason : "";
-  assertNotEquals(detectFailureCategory(reason), "prompt_too_long");
+  // Labels are only applied to a failure result, so the retry adds none.
+  assertNotEquals(result.status, "failure");
 });
 
 Deno.test("#2682 execute - a second refusal on the fresh session fails as prompt-too-long", async () => {
