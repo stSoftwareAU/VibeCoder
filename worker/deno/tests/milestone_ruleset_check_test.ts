@@ -93,20 +93,22 @@ Deno.test("assessMilestoneRuleset - no covering ruleset means auto-merge cannot 
   assertStringIncludes(findings[0]!.message, "auto-merge");
 });
 
-Deno.test("assessMilestoneRuleset - a gated branch the service account cannot push is reported against the WORKER", () => {
-  // The operator's live configuration: `main` extended to cover
-  // `milestone/**`, with a RepositoryRole(admin) bypass — and a service
-  // account holding only `write`. The milestone sync's direct push dies.
+Deno.test("assessMilestoneRuleset - a gated branch the service account cannot bypass is the intended policy, not a finding", () => {
+  // The operator's live configuration: `milestone/**` gated, with a
+  // RepositoryRole(admin) bypass, and a service account holding only
+  // `write`. Its direct sync push is refused and the sync raises a sync PR
+  // instead (Issue #589), so there is nothing to warn about. The warning this
+  // replaced said the sync "still pushes directly" and was REJECTED, after
+  // #589 had closed (Issue #2684).
   const findings = assessMilestoneRuleset(
     [ruleset({
       rules: [
         {
-          type: "pull_request",
-          parameters: { required_approving_review_count: 0 },
-        },
-        {
           type: "required_status_checks",
-          parameters: { required_status_checks: [{ context: "semgrep" }] },
+          parameters: {
+            required_status_checks: [{ context: "semgrep" }],
+            do_not_enforce_on_create: true,
+          },
         },
       ],
       bypass_actors: [
@@ -116,13 +118,11 @@ Deno.test("assessMilestoneRuleset - a gated branch the service account cannot pu
     ACCOUNT,
   );
 
-  const blocked = findings.find((f) => f.code === "direct-push-blocked");
-  assert(blocked, "the blocked push must be reported");
-  // Refusing the service account is the intended policy — an admin may
-  // bypass, the fleet may not — so this is not an error against the ruleset.
-  assertEquals(blocked.severity, "warning");
-  assertStringIncludes(blocked.message, "REJECTED");
-  assertStringIncludes(blocked.message, "RULESET is right");
+  assertEquals(codes(findings), ["configured"]);
+  for (const finding of findings) {
+    assert(!finding.message.includes("REJECTED"), finding.message);
+    assert(!finding.message.includes("still pushes directly"), finding.message);
+  }
 });
 
 Deno.test("assessMilestoneRuleset - a RepositoryRole bypass the account satisfies is clean", () => {
@@ -245,7 +245,8 @@ Deno.test("syncMilestoneRuleset - creates the template, mirroring the default-br
       posted.push({ args, ...(stdin !== undefined ? { body: stdin } : {}) });
       return Promise.resolve("42");
     },
-    { rulesets: [PINNED_DEFAULT] },
+    // Merged milestone PRs report both, so both are mirrored (Issue #2684).
+    { rulesets: [PINNED_DEFAULT], reportedChecks: ["gate", "lint"] },
   );
 
   assert(result.ok);

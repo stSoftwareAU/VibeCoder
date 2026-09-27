@@ -41,8 +41,10 @@
  * is inert until a run seeds it with {@link seedWriteRepoAllowlist}, so the
  * main loop's legitimate cross-repo maintenance and unrelated flows are
  * unaffected until a run opts in. The production seed points are
- * `issue_worker.ts` (the claimed issue's own repo) and
- * `idle_task_claim_handler.ts` (the scanned repo). The gap that rule leaves
+ * `issue_worker.ts` (the claimed issue's own repo),
+ * `idle_task_claim_handler.ts` (the scanned repo), and setup's repo-side
+ * steps (`setup/setup_cli.ts`, every configured repo — Issue #2684), each in
+ * a context of its own. The gap that rule leaves
  * is that a code path which *forgot* to seed — a new command, a
  * mis-ordered initialisation, a promise settling outside the seeded
  * `AsyncLocalStorage` scope — used to be indistinguishable from a protected
@@ -343,18 +345,26 @@ export function noteAgentAllowlistSnapshot(): void {
  * Seed the allowlist for a new run and activate enforcement.
  *
  * Clears the previous run's seeded/registered repos, then adds
- * `targetRepo`. Pins ({@link pinWriteRepo}) survive the clear — they are
- * owned by long-lived writers, not by any single run. From this point every
- * off-allowlist GitHub write is refused until {@link resetWriteRepoAllowlist}.
+ * `targetRepo` and any `moreRepos`. Pins ({@link pinWriteRepo}) survive the
+ * clear — they are owned by long-lived writers, not by any single run. From
+ * this point every off-allowlist GitHub write is refused until
+ * {@link resetWriteRepoAllowlist}.
+ *
+ * A worker run seeds its one target repo. Setup seeds every configured repo
+ * (Issue #2684): it writes to each of them by design, and only to them.
  *
  * @param targetRepo - The run's own target repo, `owner/repo`.
+ * @param moreRepos - Further repos the same run writes to by design.
  */
-export function seedWriteRepoAllowlist(targetRepo: string): void {
+export function seedWriteRepoAllowlist(
+  targetRepo: string,
+  ...moreRepos: string[]
+): void {
   const c = ctx();
   c.allowed.clear();
   c.active = true;
   c.agentSnapshotTaken = false;
-  registerWriteRepo(targetRepo);
+  for (const repo of [targetRepo, ...moreRepos]) registerWriteRepo(repo);
 }
 
 /**
