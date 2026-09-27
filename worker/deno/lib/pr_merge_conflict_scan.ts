@@ -41,6 +41,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
+import { isCiFixEscalationOnly } from "./conflict_needs_human_gate.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
@@ -150,9 +151,11 @@ const NEEDS_HUMAN_LABEL = "needs-human";
  * no extra call, and it is what lets a PR outside the maintenance set be
  * recorded as `out-of-scope-author` rather than assumed away. `baseRefOid`
  * rides it for the same reason (Issue #2312): it is what tells a parked PR
- * apart from one whose base has moved since it was parked.
+ * apart from one whose base has moved since it was parked. `labels` rides it
+ * so a mergeable PR's stale `merge-conflict` label is cleared without a read
+ * per PR (Issue #2728).
  */
-const PR_FIELDS = "number,headRefName,baseRefName,baseRefOid,author";
+const PR_FIELDS = "number,headRefName,baseRefName,baseRefOid,author,labels";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -863,6 +866,37 @@ export async function ensureMergeConflictLabel(
   return true;
 }
 
+/**
+ * Clear a stale {@link MERGE_CONFLICT_LABEL} from a PR that merges cleanly
+ * again (Issue #2728). Labels come from the listing when it carried them, else
+ * one read. A failure is logged and left for the next pass — the PR is not
+ * conflicting, so it is not a scan error.
+ */
+async function clearStaleConflictLabel(
+  repo: string,
+  pr: PrEntry,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  logger: Logger,
+): Promise<void> {
+  const context = { repo, prNumber: pr.number };
+  try {
+    const labels = pr.labels !== undefined
+      ? pr.labels.map((l) => l.name)
+      : await fetchPrLabels(repo, pr.number, ghCommandFn);
+    if (!labels.includes(MERGE_CONFLICT_LABEL)) return;
+    await clearMergeConflictLabel(repo, pr.number, ghCommandFn);
+    logger.info(
+      `PR #${pr.number} merges cleanly — removed stale '${MERGE_CONFLICT_LABEL}' label`,
+      context,
+    );
+  } catch (err) {
+    logger.warn(
+      `Merge-conflict scan: failed to clear stale '${MERGE_CONFLICT_LABEL}' label — retrying next pass`,
+      { ...context, error: err instanceof Error ? err.message : String(err) },
+    );
+  }
+}
+
 /** Remove {@link MERGE_CONFLICT_LABEL} once the PR merges cleanly again. */
 export async function clearMergeConflictLabel(
   repo: string,
@@ -1486,6 +1520,11 @@ export async function findConflictingPr(
     }
 
     if (mergeableState !== "CONFLICTING") {
+      // Only a definite MERGEABLE clears the label — UNKNOWN is GitHub still
+      // computing, and may yet come back CONFLICTING (Issue #2728).
+      if (mergeableState === "MERGEABLE") {
+        await clearStaleConflictLabel(repo, pr, ghCommandFn, logger);
+      }
       return {
         outcome: "skipped",
         reason: { kind: "not-conflicting", mergeableState },
@@ -1551,13 +1590,6 @@ export async function findConflictingPr(
       });
     }
 
-    if (labels.includes(needsHumanLabel)) {
-      return {
-        outcome: "skipped",
-        reason: { kind: "needs-human", label: needsHumanLabel },
-      };
-    }
-
     let history: ConflictAttemptHistory;
     // Kept, not just counted: an abandon quotes what each failed attempt
     // recorded, and this thread is the only place that survives the run
@@ -1599,6 +1631,25 @@ export async function findConflictingPr(
         outcome: "skipped",
         reason: { kind: "scan-error", stage: "attempt-history", message },
       };
+    }
+
+    // Issue #2728: a CI-fix escalation's `needs-human` does not stop the
+    // conflict being resolved — that is mechanical work this lane owns. The
+    // thread is read first so a trusted CI-fix marker can be seen; the lane's
+    // own escalation still stops it, and the budget, disruption bound, park
+    // and abandon below apply unchanged.
+    if (labels.includes(needsHumanLabel)) {
+      if (!isCiFixEscalationOnly(prComments)) {
+        return {
+          outcome: "skipped",
+          reason: { kind: "needs-human", label: needsHumanLabel },
+        };
+      }
+      logger.info(
+        `PR #${pr.number} carries '${needsHumanLabel}' from a CI-fix ` +
+          "escalation — resolving its merge conflict anyway",
+        { repo, prNumber: pr.number },
+      );
     }
 
     // Issue #2312: a PR parked after its issue spent its restarts waits for
