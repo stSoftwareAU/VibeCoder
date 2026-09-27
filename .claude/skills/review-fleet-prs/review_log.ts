@@ -22,6 +22,26 @@ export interface TestChangeNote {
   change: string;
 }
 
+// A pre-existing problem Fable noticed that the PR did not cause (already on
+// the base branch, unchanged by the PR): unfair to ask this PR to fix it, too
+// important to forget, so post.ts files it as a new issue in the PR's repo
+// instead of letting it block or hold the PR. A problem the PR causes is a
+// finding, never one of these.
+export interface UnrelatedIssue {
+  title: string;
+  body: string;
+  file?: string;
+  line?: number;
+}
+
+export interface FiledIssue {
+  number: number;
+  url: string;
+  title: string;
+}
+
+export const MAX_UNRELATED_ISSUES = 3;
+
 export interface FableReview {
   summary: string;
   findings: Finding[];
@@ -29,6 +49,7 @@ export interface FableReview {
   // stricter; approved like "trivial".
   testChanges: "none" | "trivial" | "tightened" | "meaningful";
   testChangeNotes: TestChangeNote[];
+  unrelatedIssues: UnrelatedIssue[];
 }
 
 export interface LogRecord {
@@ -43,6 +64,7 @@ export interface LogRecord {
   findings: Finding[];
   testChangeNotes: TestChangeNote[];
   removedTests: string[];
+  filedIssues?: FiledIssue[];
 }
 
 export const LOG_FILE = "log.jsonl";
@@ -68,7 +90,45 @@ export function parseFableReview(text: string): FableReview {
   if (!["none", "trivial", "tightened", "meaningful"].includes(r.testChanges)) {
     throw new Error(`review JSON has testChanges=${r.testChanges}`);
   }
-  return { ...r, testChangeNotes: r.testChangeNotes ?? [] };
+  return {
+    ...r,
+    testChangeNotes: r.testChangeNotes ?? [],
+    unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
+  };
+}
+
+// A malformed unrelated issue is dropped, never a reason to reject the review.
+function parseUnrelatedIssues(raw: unknown): UnrelatedIssue[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((i): i is UnrelatedIssue =>
+    typeof i === "object" && i !== null &&
+    typeof i.title === "string" && i.title.trim() !== "" &&
+    typeof i.body === "string" && i.body.trim() !== ""
+  ).slice(0, MAX_UNRELATED_ISSUES);
+}
+
+const normTitle = (t: string) =>
+  t.toLowerCase().replace(/\s+/g, " ").trim().replace(/[.!?:;]+$/, "");
+
+// Whether an open issue already covers an unrelated issue, so a re-review of
+// the same PR does not file it twice.
+export const sameIssueTitle = (a: string, b: string) =>
+  normTitle(a) === normTitle(b);
+
+export function unrelatedIssueBody(
+  issue: UnrelatedIssue,
+  pr: { repo: string; number: number; url: string },
+): string {
+  const where = issue.file
+    ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`: `
+    : "";
+  return [
+    `${where}${issue.body}`,
+    "",
+    `Found while reviewing ${pr.url}, but outside that PR's scope.`,
+    "",
+    `_${REVIEW_MARKER} (Fable)._`,
+  ].join("\n");
 }
 
 export function decideOutcome(
@@ -95,6 +155,7 @@ export function reviewBody(
   outcome: Outcome,
   review: FableReview,
   removedTests: readonly string[],
+  filed: readonly FiledIssue[] = [],
 ): string {
   const lines: string[] = [];
   if (outcome === "changes_requested") {
@@ -118,6 +179,13 @@ export function reviewBody(
     );
   } else {
     lines.push(review.summary);
+  }
+  if (filed.length > 0) {
+    lines.push(
+      "",
+      "Filed separately, as they are outside this PR's scope:",
+      ...filed.map((i) => `- #${i.number} ${i.title}`),
+    );
   }
   lines.push("", `_${REVIEW_MARKER} (Fable)._`);
   return lines.join("\n");
