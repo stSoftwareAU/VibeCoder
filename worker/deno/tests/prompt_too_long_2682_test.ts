@@ -182,9 +182,10 @@ Deno.test("#2682 discardResumedSession - drops the stream slot and resume pointe
     );
     assertEquals(await loadResumeState(workDir, REPO, ISSUE), null);
     assertEquals(logger.warns.length, 1);
-    assertStringIncludes(logger.warns[0].message, "oversized");
-    assertStringIncludes(logger.warns[0].message, fresh.sessionId);
-    assertStringIncludes(logger.warns[0].message, "retrying once");
+    const line = logger.warns[0]?.message ?? "";
+    assertStringIncludes(line, "oversized");
+    assertStringIncludes(line, fresh.sessionId);
+    assertStringIncludes(line, "retrying once");
   });
 });
 
