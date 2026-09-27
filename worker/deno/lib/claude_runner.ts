@@ -107,6 +107,7 @@ import {
   summariseIssueExecutorSplitRun,
 } from "./issue_executor_enforcement.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
+import { currentAgentRunOwner } from "./handler_watchdog.ts";
 import {
   type AgentActivitySnapshot,
   AgentProgressTracker,
@@ -903,6 +904,15 @@ interface ActiveAgentRun {
   logger?: Logger;
   /** Spawn-time fingerprint (Issue #501); `null` when it could not be taken. */
   identity: ProcessIdentity | null;
+  /**
+   * The handler dispatch that started this run (Issue #2720), from
+   * `handler_watchdog.ts`; undefined for an issue slot's run.
+   */
+  owner?: string;
+  /** Set when an owner-scoped termination signalled this run (Issue #2720). */
+  terminationRequested?: boolean;
+  /** The run's live activity, once its progress tracker exists. */
+  activity?: () => AgentActivitySnapshot;
 }
 
 const activeAgentRuns = new Map<number, ActiveAgentRun>();
@@ -919,7 +929,7 @@ let agentRunsTerminating = false;
  * `[watchdog] … abandoning handler` line. Registering the ladder's own
  * `AbortController` closes that gap.
  */
-const activeRetryLadders = new Set<AbortController>();
+const activeRetryLadders = new Map<AbortController, string | undefined>();
 
 /** Live agent subprocesses, for status and tests. */
 export function listActiveAgentRuns(): { pid: number; label: string }[] {
@@ -927,6 +937,33 @@ export function listActiveAgentRuns(): { pid: number; label: string }[] {
     pid,
     label,
   }));
+}
+
+/**
+ * The freshest activity across the live agent runs `owner` started, or
+ * undefined when it has none (Issue #2720). The maintenance-handler watchdog
+ * reads it to tell a handler whose agent is still working from one that has
+ * stalled.
+ */
+export function agentRunActivity(
+  owner: string,
+): { lastToolCallAtMs?: number; lastChunkAtMs: number } | undefined {
+  let freshest:
+    | { lastToolCallAtMs?: number; lastChunkAtMs: number }
+    | undefined;
+  for (const run of activeAgentRuns.values()) {
+    if (run.owner !== owner || !run.activity) continue;
+    const { lastToolCallAtMs, lastChunkAtMs } = run.activity();
+    const tool = Math.max(
+      lastToolCallAtMs ?? -Infinity,
+      freshest?.lastToolCallAtMs ?? -Infinity,
+    );
+    freshest = {
+      ...(Number.isFinite(tool) ? { lastToolCallAtMs: tool } : {}),
+      lastChunkAtMs: Math.max(lastChunkAtMs, freshest?.lastChunkAtMs ?? 0),
+    };
+  }
+  return freshest;
 }
 
 /**
@@ -963,22 +1000,35 @@ export function resetAgentRunsTerminating(): void {
  * is cleared once the abandoned agents are confirmed dead (their runners
  * already returned on the SIGTERM, so they cannot relaunch), so a single
  * abandonment no longer silently refuses every agent for the rest of the run.
+ *
+ * Issue #2720: `owner` scopes the termination to the runs and retry ladders
+ * one handler dispatch started (`handler_watchdog.ts`). Abandoning PR Feedback
+ * used to kill every live agent, issue-slot runs included. A scoped call never
+ * touches the process-global flag — the slots beside it keep launching — and
+ * marks each run it signals instead, so that run's runner still reads the
+ * SIGTERM as ours rather than as an external kill.
  */
 export async function terminateActiveAgentRuns(
   reason: string,
   logger?: Logger,
-  options: { keepTerminating?: boolean } = {},
+  options: { keepTerminating?: boolean; owner?: string } = {},
 ): Promise<number[]> {
   const keepTerminating = options.keepTerminating ?? true;
-  agentRunsTerminating = true;
+  const owner = options.owner;
+  const owned = (runOwner: string | undefined) =>
+    owner === undefined || runOwner === owner;
+  if (owner === undefined) agentRunsTerminating = true;
   try {
     // Cancel every sleeping backoff ladder BEFORE anything can clear the flag
     // (Issue #1667). The kill loop below only reaches runs that own a pid, and
     // a ladder waiting between attempts has none; a ladder consults its own
     // signal ahead of the process-global flag, so the `keepTerminating: false`
     // clear in the `finally` cannot race it awake.
-    for (const ladder of activeRetryLadders) ladder.abort();
-    const runs = [...activeAgentRuns.values()];
+    for (const [ladder, ladderOwner] of activeRetryLadders) {
+      if (owned(ladderOwner)) ladder.abort();
+    }
+    const runs = [...activeAgentRuns.values()].filter((r) => owned(r.owner));
+    for (const run of runs) run.terminationRequested = true;
     if (runs.length === 0) return [];
     (logger ?? runs[0]?.logger)?.warn(
       `Terminating ${runs.length} active agent run(s) — ${reason}: ${
@@ -1003,7 +1053,7 @@ export async function terminateActiveAgentRuns(
     }));
     return runs.map((r) => r.pid);
   } finally {
-    if (!keepTerminating) agentRunsTerminating = false;
+    if (owner === undefined && !keepTerminating) agentRunsTerminating = false;
   }
 }
 
@@ -1366,13 +1416,16 @@ export async function runClaudeWithTimeout(
       );
     }
 
-    activeAgentRuns.set(childPid, {
+    const activeRun: ActiveAgentRun = {
       pid: childPid,
       label: `${phase ?? "agent"}${repo ? ` ${repo}` : ""}`,
       killAfterSeconds,
       logger,
       identity: childIdentity,
-    });
+      // Issue #2720: a handler abandonment terminates only its own runs.
+      owner: currentAgentRunOwner()?.id,
+    };
+    activeAgentRuns.set(childPid, activeRun);
 
     // Remember the child's descendants while it lives (Issue #4382). After
     // an external SIGKILL the kernel has re-parented them, so they can only
@@ -1534,6 +1587,8 @@ export async function runClaudeWithTimeout(
         ? { intervalMs: options.progressIntervalMs }
         : {}),
     });
+    // Issue #2720: the handler watchdog reads this to see the agent working.
+    activeRun.activity = () => progress.snapshot();
     const progressDecoder = new TextDecoder();
 
     // The hard deadline, epoch-ms (Issue #4296). Without the opt-in it is
@@ -2384,7 +2439,10 @@ export async function runClaudeWithTimeout(
     // — a tool the agent ran, the CLI, the container, a stray signal — and
     // must be surfaced and retried like the SIGKILL path, not accepted as a
     // silent run-end that lets the phase continue over a half-done tree.
-    const ourShutdown = isAgentRunsTerminating();
+    // Issue #2720: an owner-scoped termination marks the run it signals and
+    // leaves the process-global flag alone.
+    const ourShutdown = isAgentRunsTerminating() ||
+      activeRun.terminationRequested === true;
     const terminated = gotSigterm && ourShutdown;
 
     // Classify the run into the shared failure contract (Issue #1695), now
@@ -2666,7 +2724,7 @@ export async function runClaudeWithRetry(
   retryOptions: RetryOptions = {},
 ): Promise<Result<ClaudeRunResult>> {
   const ladder = new AbortController();
-  activeRetryLadders.add(ladder);
+  activeRetryLadders.set(ladder, currentAgentRunOwner()?.id);
   try {
     return await runRetryLadder(options, retryOptions, ladder.signal);
   } finally {

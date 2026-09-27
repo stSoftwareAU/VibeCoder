@@ -340,21 +340,30 @@ Deno.test({
         } satisfies Logger;
 
         // The handler the watchdog will abandon: it never resolves on its own
-        // because the ladder is asleep on a clock nobody advances.
-        const ladder = runClaudeWithRetry(
-          {
-            clock,
-            logger,
-            prompt: "test",
-            agentBinaryPath: stub.path,
-            model: "haiku",
-            enableModelFallback: false,
-            timeoutSeconds: 30,
-            killAfterSeconds: 2,
-          },
-          { maxRetries: 5, maxWaitSeconds: 100_000, initialWaitInterval: 300 },
-        );
-        await within(sleeping.promise, "the ladder's first backoff");
+        // because the ladder is asleep on a clock nobody advances. Started
+        // inside the handler, so the handler owns it (Issue #2720): the
+        // abandonment is scoped to the handler's own ladders and runs.
+        let ladder:
+          | ReturnType<typeof runClaudeWithRetry>
+          | undefined;
+        const startLadder = () =>
+          runClaudeWithRetry(
+            {
+              clock,
+              logger,
+              prompt: "test",
+              agentBinaryPath: stub.path,
+              model: "haiku",
+              enableModelFallback: false,
+              timeoutSeconds: 30,
+              killAfterSeconds: 2,
+            },
+            {
+              maxRetries: 5,
+              maxWaitSeconds: 100_000,
+              initialWaitInterval: 300,
+            },
+          );
 
         // Drive the real dispatch loop, wired to the real
         // `terminateActiveAgentRuns` — so the test proves run_core's own
@@ -365,28 +374,38 @@ Deno.test({
         // Issue #55 is about what the NEXT priority sees, so sample the flag
         // there. The loop's own run-end cleanup sets it again afterwards.
         let terminatingAtNextPriority: boolean | undefined;
+        // Whether the abandonment itself — not the run-end cleanup — ended
+        // the ladder, sampled before the next priority returns.
+        let ladderEndedByAbandonment = false;
         const deps = createMockDeps({
           logError: (m) => errors.push(m),
           addSignalListener: (signal, handler) => {
             if (signal === "SIGTERM") shutdownHandler = handler;
           },
           now: () => now,
-          watchdogDelay: (ms) => {
+          // The watchdog fires once the ladder is asleep in its backoff.
+          watchdogDelay: async (ms) => {
+            await within(sleeping.promise, "the ladder's first backoff");
             now += ms;
-            return Promise.resolve();
           },
           terminateActiveAgentRuns: async (reason, options) => {
             await terminateActiveAgentRuns(reason, undefined, options);
           },
           // Priority 1 is the abandoned handler: its ladder is asleep.
-          findAndProcessPrFeedback: () =>
-            ladder.then(() => ({
+          findAndProcessPrFeedback: () => {
+            ladder = startLadder();
+            return ladder.then(() => ({
               ok: true as const,
               value: { processed: false },
-            })),
-          findAndProcessRefinement: () => {
+            }));
+          },
+          findAndProcessRefinement: async () => {
             terminatingAtNextPriority = isAgentRunsTerminating();
-            return Promise.resolve({ ok: true, value: { processed: false } });
+            ladderEndedByAbandonment = await within(
+              ladder!.then(() => true),
+              "the abandoned ladder to end",
+            ).catch(() => false);
+            return { ok: true, value: { processed: false } };
           },
           findNextIssue: () => {
             if (shutdownHandler) shutdownHandler();
@@ -413,8 +432,10 @@ Deno.test({
         );
 
         // Issue #1667: the abandoned ladder has actually exited — no advance
-        // of the clock, no further spawn, the run-end result shape.
-        const result = await within(ladder, "the abandoned ladder to end");
+        // of the clock, no further spawn, the run-end result shape — and it
+        // was the abandonment that ended it, before the next priority ran on.
+        assert(ladderEndedByAbandonment, "the abandonment ended the ladder");
+        const result = await within(ladder!, "the abandoned ladder to end");
         assert(result.ok);
         if (!result.ok) return;
         assertEquals(
