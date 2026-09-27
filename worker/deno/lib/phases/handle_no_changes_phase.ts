@@ -4,7 +4,8 @@
  * Invoked when Claude produced no code changes. Closes the issue when the run
  * verified it was already resolved and cited the evidence (Issue #241), posts
  * a partial answer if useful text was produced (question disguised as issue),
- * or reports a detailed failure otherwise. Single responsibility: classify the
+ * or reports a detailed failure otherwise. Output that names files to change is
+ * a failed implementation, not analysis, so it is retried (Issue #2687). Single responsibility: classify the
  * "no changes" outcome and communicate it back to GitHub.
  *
  * Extracted from worker/deno/lib/issue_worker.ts (Issue #1527).
@@ -19,10 +20,15 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
-import { formatDetailedFailureMessage } from "../failure_message.ts";
+import {
+  type FailureDiagnosticContext,
+  formatDetailedFailureMessage,
+} from "../failure_message.ts";
 import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
 import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
+import { hasAnalysisOnlyMarker } from "../analysis_only.ts";
+import { detectDescribedCodeChange } from "../described_code_change.ts";
 import {
   detectBlockedOutcome,
   formatDependencyRef,
@@ -87,6 +93,48 @@ function matchesStructuredOutputTemplate(ctx: IssueContext): boolean {
     if (tpl.matchesIdleTaskBody?.(ctx.issueBody) === true) return true;
   }
   return false;
+}
+
+/**
+ * Retry a run that described a code change but made none (Issue #2687).
+ *
+ * Posts a nudge the retry prompt carries, then returns a `failure` whose
+ * wording `detectFailureCategory` reads as `no_changes`, so the issue walks the
+ * normal failed-once → failed ladder. The nudge is best-effort: a GitHub error
+ * is logged, never allowed to turn the retry into a hand-off.
+ */
+async function retryDescribedCodeChange(
+  deps: WorkerDeps,
+  ctx: IssueContext,
+  files: string[],
+  diagnostics: FailureDiagnosticContext,
+): Promise<PhaseResult> {
+  const logger = deps.logger;
+  logger.warn(
+    "Run described a code change but made none — retrying, not analysis-only",
+    { files },
+  );
+  const fileList = files.map((f) => `\`${f}\``).join(", ");
+  try {
+    await deps.github.createClient(logger).postComment(
+      ctx.repo,
+      ctx.issueNumber,
+      `## Retry: make the code change\n\nThe last run described a change to ${fileList} but committed nothing, so this is a failed implementation, not an analysis-only answer. The next attempt must edit and commit the files rather than describe the change.`,
+    );
+  } catch (err) {
+    logger.warn("Failed to post the retry nudge", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return {
+    status: "failure",
+    reason: formatDetailedFailureMessage(
+      `Described a code change (${
+        files.join(", ")
+      }) but finished without making any changes — retrying so the next run makes the edit`,
+      diagnostics,
+    ),
+  };
 }
 
 /**
@@ -354,6 +402,28 @@ export async function workOnIssueHandleNoChanges(
       };
     }
 
+    // Issue #2687: output that names files to change is a failed
+    // implementation, not analysis (GRQ#4871). Retry it through the normal
+    // failed-once → failed ladder with a nudge the next run's prompt carries,
+    // instead of escalating it as analysis-only. An explicit analysis-only
+    // marker in the body still wins.
+    if (!hasAnalysisOnlyMarker(ctx.issueBody)) {
+      const described = detectDescribedCodeChange(redactSecrets(claudeOutput));
+      if (described.described) {
+        return await retryDescribedCodeChange(
+          deps,
+          ctx,
+          described.files,
+          {
+            elapsedSeconds: truncationElapsed,
+            clarityStatus: state.clarityStatus,
+            outputSize: claudeOutput.length,
+            lastOutputSnippet: redactedTail(claudeOutput, 500) || undefined,
+          },
+        );
+      }
+    }
+
     logger.info(
       "Claude produced text output but no code changes, posting partial answer",
     );
@@ -366,7 +436,8 @@ export async function workOnIssueHandleNoChanges(
     // analysis-only issue) AND hand the issue off to `needs-human` so it
     // stops looping. The hand-off applies `needs-human` + a paired
     // explanation comment (Issue #1471) and releases the worker's claim;
-    // it is NOT a `failed` outcome — the task did its job. The existing
+    // it is NOT a `failed` outcome — the task did its job. Output that
+    // describes a code change never reaches here (Issue #2687, above). The existing
     // `failed-once` → `failed` ladder remains the fallback loop guard for
     // the no-useful-output path below.
     const ghClient = deps.github.createClient(logger);
