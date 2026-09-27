@@ -635,3 +635,140 @@ Deno.test(
     assertEquals(skip!.includes("PR #103"), true);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Idle-task suppression flag (Issue #2751)
+// ---------------------------------------------------------------------------
+
+/** One low-priority issue #70 with the given extra labels and assignees. */
+function suppressionFixture(
+  extraLabels: string[],
+  assignees: string[],
+): Record<string, unknown> {
+  return {
+    number: 70,
+    title: "Tidy logs",
+    url: "https://github.com/owner/repo/issues/70",
+    assignees: assignees.map((login) => ({ login })),
+    labels: ["low-priority", ...extraLabels].map((name) => ({ name })),
+    createdAt: "2026-08-01T00:00:00Z",
+    author: { login: "alice" },
+    milestone: null,
+  };
+}
+
+async function collectSuppression(
+  issues: Record<string, unknown>[],
+  repoPRs: OpenPR[] = [],
+) {
+  const config = makeConfig({ fleetPrAuthors: ["stsvcbot"] });
+  const mockGh = createMockGh({
+    issues,
+    timeline: [{
+      event: "labeled",
+      label: { name: "low-priority" },
+      actor: { login: "alice" },
+      created_at: "2026-08-01T00:00:00Z",
+    }],
+    issueView: { title: "Tidy logs", body: "Reduce verbose logs" },
+  });
+  return await collectLowPriorityCandidates(
+    "owner/repo",
+    config,
+    buildOptions(mockGh, createTestCache()),
+    repoPRs,
+    [],
+    createIssueFetcher(mockGh),
+    [],
+  );
+}
+
+const WAITING_ON_HUMAN_CASES: Array<
+  { name: string; labels: string[]; assignees: string[] }
+> = [
+  { name: "failed label", labels: ["failed"], assignees: [] },
+  { name: "refine-issue label", labels: ["refine-issue"], assignees: [] },
+  { name: "planning label", labels: ["planning"], assignees: [] },
+  { name: "question label", labels: ["question"], assignees: [] },
+  { name: "needs-revision label", labels: ["needs-revision"], assignees: [] },
+  { name: "needs-human label", labels: ["needs-human"], assignees: [] },
+  { name: "human assignee", labels: [], assignees: ["carol"] },
+  {
+    name: "human beside a fleet assignee",
+    labels: [],
+    assignees: ["bot", "carol"],
+  },
+];
+
+for (const c of WAITING_ON_HUMAN_CASES) {
+  Deno.test(
+    `collect_low_priority_candidates - ${c.name} waits on a human and does not suppress idle tasks (Issue #2751)`,
+    async () => {
+      const result = await collectSuppression([
+        suppressionFixture(c.labels, c.assignees),
+      ]);
+
+      assertEquals(result.hasSuppressingLowPriority, false);
+      // The raw snapshot is unchanged: the issue is still open.
+      assertEquals(result.hasOpenIssues, true);
+    },
+  );
+}
+
+const STILL_SUPPRESSING_CASES: Array<{ name: string; assignees: string[] }> = [
+  { name: "unassigned eligible issue", assignees: [] },
+  { name: "issue assigned to this host", assignees: ["bot"] },
+  { name: "issue assigned to a sibling fleet login", assignees: ["stsvcbot"] },
+  { name: "fleet assignee in different casing", assignees: ["StSvcBot"] },
+];
+
+for (const c of STILL_SUPPRESSING_CASES) {
+  Deno.test(
+    `collect_low_priority_candidates - ${c.name} still suppresses idle tasks (Issue #2751)`,
+    async () => {
+      const result = await collectSuppression([
+        suppressionFixture([], c.assignees),
+      ]);
+
+      assertEquals(result.hasSuppressingLowPriority, true);
+    },
+  );
+}
+
+Deno.test(
+  "collect_low_priority_candidates - a PR-blocked issue is not a candidate but still suppresses idle tasks (Issue #2751)",
+  async () => {
+    const result = await collectSuppression([suppressionFixture([], [])], [{
+      number: 103,
+      title: "Tidy the config loader",
+      baseRefName: "main",
+      headRefName: "tidy-config",
+      author: "stsvcbot",
+    }]);
+
+    assertEquals(result.candidates, []);
+    assertEquals(result.hasSuppressingLowPriority, true);
+  },
+);
+
+Deno.test(
+  "collect_low_priority_candidates - one waiting issue beside one workable issue still suppresses (Issue #2751)",
+  async () => {
+    const waiting = suppressionFixture(["needs-human"], []);
+    const workable = { ...suppressionFixture([], []), number: 71 };
+
+    const result = await collectSuppression([waiting, workable]);
+
+    assertEquals(result.hasSuppressingLowPriority, true);
+  },
+);
+
+Deno.test(
+  "collect_low_priority_candidates - no open low-priority issue does not suppress (Issue #2751)",
+  async () => {
+    const result = await collectSuppression([]);
+
+    assertEquals(result.hasSuppressingLowPriority, false);
+    assertEquals(result.hasOpenIssues, false);
+  },
+);
