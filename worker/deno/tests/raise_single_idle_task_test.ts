@@ -36,6 +36,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import type { Result } from "../types.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
+import { openIdleTaskIssues } from "./support/open_idle_task_issues.ts";
 
 const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
@@ -80,7 +81,7 @@ Deno.test("raiseSingleIdleTask - unknown template name fails loud", async () => 
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -97,7 +98,7 @@ Deno.test("raiseSingleIdleTask - seeds exactly the one named wrapper per repo", 
     repos,
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -123,7 +124,7 @@ Deno.test("raiseSingleIdleTask - honours a different template name", async () =>
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -141,8 +142,8 @@ Deno.test("raiseSingleIdleTask - skips a wrapper already open", async () => {
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () =>
-      Promise.resolve(new Set<string>([DOCUMENTATION_AUDIT_ISSUE_TITLE])),
+    findOpenIdleTaskIssuesFn: () =>
+      Promise.resolve(openIdleTaskIssues([DOCUMENTATION_AUDIT_ISSUE_TITLE])),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -161,7 +162,7 @@ Deno.test("raiseSingleIdleTask - a failing repo never aborts the sweep", async (
     repos: ["org/alpha", "org/beta"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -190,7 +191,7 @@ Deno.test("raiseSingleIdleTask - an off-allowlist repo aborts in preflight witho
       repos: ["org/alpha", "org/beta"],
       ghCommandFn: fn,
       ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
     });
@@ -217,7 +218,7 @@ Deno.test("raiseSingleIdleTask - a failed repo reports the failure per template"
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });

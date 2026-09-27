@@ -187,6 +187,8 @@ export const processSeedIdleTasksCommand: Command = {
         createAllIdleTaskWrappers(r, {
           ghCommandFn: runGhCommand,
           nowFn: now,
+          // Surfaces the any-open gate's skip lines (Issue #2752).
+          log: (line: string) => logger.info(line),
         }));
 
     if (repo.length === 0) {

@@ -46,6 +46,8 @@ export interface FindExistingIdleTaskOptions {
 export interface ExistingIdleTaskIssue {
   number: number;
   url: string;
+  /** Present when the lookup asked for `title` and gh returned a string. */
+  title?: string;
 }
 
 /**
@@ -93,13 +95,14 @@ export const IDLE_TASK_LABEL = "idle-task";
 
 /**
  * Parses the JSON printed by
- * `gh issue list --label idle-task --state open --json number,url` into the
+ * `gh issue list --label idle-task --state open --json number[,title],url` into the
  * well-formed entries it holds (Issue #2750). Shared so every open-idle-task
  * gate reads that payload the same way.
  *
  * Fails closed: output that is not JSON, or JSON that is not an array, throws
  * with `repo` in the message rather than reading as "no open issue". Entries
- * lacking a numeric `number` or string `url` are skipped.
+ * lacking a numeric `number` or string `url` are skipped. A string `title` is
+ * kept when the query asked for it (Issue #2752).
  */
 export function parseOpenIdleTaskIssues(
   raw: string,
@@ -125,7 +128,11 @@ export function parseOpenIdleTaskIssues(
     if (entry === null || typeof entry !== "object") continue;
     const r = entry as Record<string, unknown>;
     if (typeof r.number !== "number" || typeof r.url !== "string") continue;
-    issues.push({ number: r.number, url: r.url });
+    issues.push(
+      typeof r.title === "string"
+        ? { number: r.number, url: r.url, title: r.title }
+        : { number: r.number, url: r.url },
+    );
   }
   return issues;
 }

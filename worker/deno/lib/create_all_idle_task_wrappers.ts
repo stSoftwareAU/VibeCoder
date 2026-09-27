@@ -11,13 +11,17 @@
  * practice: it can take many idle cycles before all seventeen templates have run at
  * least once.
  *
- * {@link createAllIdleTaskWrappers} deliberately bypasses both the random
- * single-pick and the cross-repo gate so a single call seeds every registered
- * idle-task wrapper at once. It stays idempotent by reusing the canonical
- * wrapper-title allowlist (`IDLE_TASK_WRAPPER_TITLES`) and a per-repo dedup
- * lookup: before filing each template it skips any wrapper whose canonical
- * title is already open in the repo. Re-running therefore never produces
- * duplicates — already-open wrappers are reported in `skipped`.
+ * {@link createAllIdleTaskWrappers} deliberately bypasses the random
+ * single-pick so a single call seeds every registered idle-task wrapper at
+ * once — but only into a repo holding **no** open `idle-task` issue
+ * (Issue #2752). One fail-closed lookup runs before the template loop: any
+ * open `idle-task` issue, whatever its title or other labels (a
+ * `Finish #N:` follow-up, a `needs-human` or `failed` wrapper), blocks the
+ * whole sweep and is reported in `blockedBy`; a lookup that fails or prints
+ * malformed output files nothing and returns an {@link IdleTaskSweepError}.
+ * `force: true` bypasses the any-open gate for an operator who asks for it,
+ * and the exact canonical-title dedup still skips wrappers already open, so
+ * re-running never produces duplicates.
  *
  * Which of the seventeen actually *fire* on a given (e.g. private) repo is governed
  * at runtime elsewhere (Issue #2571); this helper only seeds the wrappers.
@@ -44,7 +48,11 @@
 import type { Result } from "../types.ts";
 import { runGhCommand as defaultGhCommand } from "./github.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
-import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+import {
+  type ExistingIdleTaskIssue,
+  IDLE_TASK_LABEL,
+  parseOpenIdleTaskIssues,
+} from "./idle_task_issue.ts";
 import { listTemplates } from "./idle_task_template.ts";
 import { ensureIdleTaskLabel as defaultEnsureIdleTaskLabel } from "./label_operations.ts";
 import { appendIdleTaskAttribution } from "./idle_task_attribution.ts";
@@ -101,11 +109,17 @@ export interface CreateAllIdleTaskWrappersDeps {
   /** Ensure-label helper for the `idle-task` label. */
   ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /**
-   * Per-repo dedup lookup — returns the set of canonical wrapper titles
-   * already open in `repo`. Defaults to a gh `issue list --label idle-task`
-   * query filtered to {@link IDLE_TASK_WRAPPER_TITLES}.
+   * Open `idle-task` issue lookup (Issue #2752) — returns every open
+   * `idle-task`-labelled issue in `repo`. Defaults to a fail-closed gh
+   * `issue list --label idle-task --state open --json number,title,url` query;
+   * a throw is read as "state unknown" and the sweep files nothing.
    */
-  findExistingWrapperTitlesFn?: (repo: string) => Promise<Set<string>>;
+  findOpenIdleTaskIssuesFn?: (repo: string) => Promise<ExistingIdleTaskIssue[]>;
+  /**
+   * Bypass the any-open gate (Issue #2752). The exact canonical-title dedup
+   * still applies, so a forced sweep never duplicates an open wrapper.
+   */
+  force?: boolean;
   /**
    * Per-template milestone helper. Only consulted for templates that do NOT
    * set `skipMilestone: true`. All seventeen production templates set it, so this
@@ -168,6 +182,11 @@ export interface CreateAllIdleTaskWrappersResult {
   failed?: IdleTaskWrapperFailure[];
   /** Set when a terminal failure stopped the sweep before the last template. */
   aborted?: boolean;
+  /**
+   * The open `idle-task` issue that blocked the whole sweep (Issue #2752).
+   * When set, nothing was filed and every template is in `skipped`.
+   */
+  blockedBy?: ExistingIdleTaskIssue;
 }
 
 /**
@@ -241,6 +260,9 @@ export function formatIdleTaskOutcomeTable(
   outcome: CreateAllIdleTaskWrappersResult,
 ): string[] {
   const failed = outcome.failed ?? [];
+  const skipReason = outcome.blockedBy === undefined
+    ? "already_open"
+    : `existing_wrapper_open #${outcome.blockedBy.number}`;
   const rows = [
     ...outcome.created.map((t) => ({
       template: t,
@@ -250,7 +272,7 @@ export function formatIdleTaskOutcomeTable(
     ...outcome.skipped.map((t) => ({
       template: t,
       status: "skipped",
-      reason: "already_open",
+      reason: skipReason,
     })),
     ...failed.map((f) => ({
       template: f.template,
@@ -280,15 +302,14 @@ export function formatIdleTaskOutcomeTable(
 }
 
 /**
- * Default per-repo dedup lookup. Lists the repo's open `idle-task`-labelled
- * issues and returns the subset of titles that match the canonical wrapper
- * allowlist. A malformed gh response degrades to "nothing open" so a transient
- * hiccup never blocks seeding.
+ * Default open `idle-task` issue lookup (Issue #2752). Fails closed: a gh
+ * error, non-JSON or non-array output throws rather than reading as "nothing
+ * open", so an unknown repo is never seeded.
  */
-async function defaultFindExistingWrapperTitles(
+async function defaultFindOpenIdleTaskIssues(
   repo: string,
   gh: (args: string[]) => Promise<string>,
-): Promise<Set<string>> {
+): Promise<ExistingIdleTaskIssue[]> {
   const raw = await gh([
     "issue",
     "list",
@@ -299,32 +320,16 @@ async function defaultFindExistingWrapperTitles(
     "--state",
     "open",
     "--json",
-    "title",
+    "number,title,url",
     "--limit",
     "200",
   ]);
-
-  const found = new Set<string>();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return found;
-  }
-  if (!Array.isArray(parsed)) return found;
-  for (const item of parsed) {
-    if (item === null || typeof item !== "object") continue;
-    const title = (item as { title?: unknown }).title;
-    if (typeof title !== "string") continue;
-    const trimmed = title.trim();
-    if (WRAPPER_TITLE_SET.has(trimmed)) found.add(trimmed);
-  }
-  return found;
+  return parseOpenIdleTaskIssues(raw, repo);
 }
 
 /**
- * File all seventeen standard idle-task wrappers in `repo`, skipping any whose
- * canonical title is already open.
+ * File all seventeen standard idle-task wrappers in `repo` when it holds no
+ * open `idle-task` issue (Issue #2752).
  *
  * Iterates the template registry via {@link listTemplates} and acts only on
  * templates whose `buildIssueTitle(repo)` matches the canonical wrapper
@@ -332,9 +337,10 @@ async function defaultFindExistingWrapperTitles(
  * the shared registry and guarantees a clean repo gets exactly the seventeen
  * production wrappers.
  *
- * Bypasses the random single-pick and the cross-repo `findAnyOpenIdleTaskWrapper`
- * gate so one call seeds every wrapper; per-template title dedup still prevents
- * duplicates.
+ * Bypasses the random single-pick so one call seeds every wrapper. Any open
+ * `idle-task` issue blocks the whole sweep (reported in `blockedBy`) unless
+ * `deps.force` is set; a failed lookup files nothing. Per-template title dedup
+ * still prevents duplicates on a forced sweep.
  */
 export async function createAllIdleTaskWrappers(
   repo: string,
@@ -370,8 +376,8 @@ export async function createAllIdleTaskWrappers(
   const gh = deps.ghCommandFn ?? defaultGhCommand;
   const ensureLabelFn = deps.ensureLabelFn ??
     ((r: string) => defaultEnsureIdleTaskLabel(r));
-  const findExistingWrapperTitlesFn = deps.findExistingWrapperTitlesFn ??
-    ((r: string) => defaultFindExistingWrapperTitles(r, gh));
+  const findOpenIdleTaskIssuesFn = deps.findOpenIdleTaskIssuesFn ??
+    ((r: string) => defaultFindOpenIdleTaskIssues(r, gh));
   const ensureMilestoneFn = deps.ensureMilestoneFn ??
     ((opts: { repo: string; template: string }) =>
       defaultEnsureIdleTaskMilestone(opts));
@@ -391,6 +397,46 @@ export async function createAllIdleTaskWrappers(
     (nameFilter === undefined || nameFilter.has(t.name))
   );
 
+  // Any-open gate (Issue #2752), checked once per sweep and before any write.
+  // Only a well-formed empty list means "clean": a failed lookup files nothing.
+  let openIssues: ExistingIdleTaskIssue[];
+  try {
+    openIssues = await findOpenIdleTaskIssuesFn(repo);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(`[idle-task] repo=${repo} action=skipped reason=lookup_failed`);
+    return {
+      ok: false,
+      error: new IdleTaskSweepError(
+        `[create-all-idle-task] open idle-task lookup failed in ${repo}: ` +
+          `${message} — nothing filed`,
+        emptyOutcome(),
+        isWriteRefusal(err),
+      ),
+    };
+  }
+  const blocker = openIssues[0];
+  if (deps.force !== true && blocker !== undefined) {
+    log(
+      `[idle-task] repo=${repo} issue=${blocker.number} action=skipped reason=existing_wrapper_open`,
+    );
+    return {
+      ok: true,
+      value: {
+        created: [],
+        skipped: templates.map((t) => t.name),
+        failed: [],
+        blockedBy: blocker,
+      },
+    };
+  }
+  // Exact canonical-title dedup — only reachable past the gate on `force`.
+  const openTitles = new Set(
+    openIssues.map((i) => (i.title ?? "").trim()).filter((t) =>
+      WRAPPER_TITLE_SET.has(t)
+    ),
+  );
+
   // Ensure the `idle-task` pickup label exists once before filing.
   const labelResult = await ensureLabelFn(repo);
   if (!labelResult.ok) {
@@ -400,22 +446,6 @@ export async function createAllIdleTaskWrappers(
         `[create-all-idle-task] failed to ensure idle-task label in ${repo}: ${labelResult.error.message}`,
         emptyOutcome(),
         isWriteRefusal(labelResult.error),
-      ),
-    };
-  }
-
-  // Snapshot the open canonical wrappers once for per-template dedup.
-  let openTitles: Set<string>;
-  try {
-    openTitles = await findExistingWrapperTitlesFn(repo);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      error: new IdleTaskSweepError(
-        `[create-all-idle-task] dedup lookup failed in ${repo}: ${message}`,
-        emptyOutcome(),
-        isWriteRefusal(err),
       ),
     };
   }

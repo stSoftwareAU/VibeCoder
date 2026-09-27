@@ -55,7 +55,7 @@ function makeMockGh() {
 const testDeps = (fn: (args: string[]) => Promise<string>) => ({
   ghCommandFn: fn,
   ensureLabelFn: labelOk,
-  findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+  findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
   nowFn: stableNow,
   rootDir: REPO_ROOT,
   log: () => {},

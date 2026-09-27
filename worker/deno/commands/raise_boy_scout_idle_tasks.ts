@@ -35,8 +35,8 @@ interface TestDeps {
   log?: (line: string) => void;
   ghCommandFn?: RaiseBoyScoutIdleTasksOptions["ghCommandFn"];
   ensureLabelFn?: RaiseBoyScoutIdleTasksOptions["ensureLabelFn"];
-  findExistingWrapperTitlesFn?:
-    RaiseBoyScoutIdleTasksOptions["findExistingWrapperTitlesFn"];
+  findOpenIdleTaskIssuesFn?:
+    RaiseBoyScoutIdleTasksOptions["findOpenIdleTaskIssuesFn"];
   nowFn?: RaiseBoyScoutIdleTasksOptions["nowFn"];
   /**
    * Checkout root the wrapper bodies' prompt files are read from
@@ -88,7 +88,7 @@ export const raiseBoyScoutIdleTasksCommand: Command = {
       repos,
       ghCommandFn: deps.ghCommandFn,
       ensureLabelFn: deps.ensureLabelFn,
-      findExistingWrapperTitlesFn: deps.findExistingWrapperTitlesFn,
+      findOpenIdleTaskIssuesFn: deps.findOpenIdleTaskIssuesFn,
       nowFn: deps.nowFn,
       rootDir: deps.rootDir,
       log,

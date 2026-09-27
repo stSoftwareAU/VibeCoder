@@ -11,6 +11,9 @@
  *   - not_found / no_access (remediation comment + escalateToHuman applies
  *     needs-human; repo not added; no wrappers filed).
  *
+ * Also covers the any-open idle-task gate (Issue #2752): a target already
+ * holding an open `idle-task` issue gets no wrappers.
+ *
  * Also covers the canonical label sync (Issue #2599): labels are synced
  * before wrapper seeding, and a sync failure is reported in the summary but
  * is non-fatal so onboarding still completes. The remaining setup syncs
@@ -740,4 +743,64 @@ Deno.test("buildEscalationText embeds the push grant command (Issue #1455)", () 
 
   const na = buildEscalationText("no_access", TARGET, "vibe-bot");
   assertEquals(na.reason.includes("push"), true);
+});
+
+// ---------------------------------------------------------------------------
+// Any-open idle-task gate (Issue #2752)
+// ---------------------------------------------------------------------------
+
+Deno.test("blocked repo - an open idle-task issue stops wrapper seeding (Issue #2752)", async () => {
+  const calls: string[][] = [];
+  const logged: string[] = [];
+  const capture = (m: string) => logged.push(m);
+  const ignore = () => {};
+  const { success } = await run(baseDeps({
+    // The default createWrappersFn is left wired so the real gate runs.
+    runGhCommand: (args: string[]) => {
+      calls.push(args);
+      const isIdleList = args[0] === "issue" && args[1] === "list" &&
+        args.includes("idle-task");
+      return Promise.resolve(
+        isIdleList
+          ? JSON.stringify([{
+            number: 638,
+            title: "Finish #638: tidy docs",
+            url: `https://github.com/${TARGET}/issues/638`,
+            labels: [{ name: "idle-task" }, { name: "needs-human" }],
+          }])
+          : "",
+      );
+    },
+    validateFn: () =>
+      Promise.resolve({
+        ok: true,
+        value: { kind: "ok", visibility: "public" } as AddRepoTargetStatus,
+      }),
+    addRepoFn: () => Promise.resolve({ ok: true, value: { added: true } }),
+    logger: {
+      info: capture,
+      warn: capture,
+      error: capture,
+      debug: ignore,
+      security: ignore,
+      skipReason: ignore,
+      timing: ignore,
+      scanSummary: ignore,
+      workerSummary: ignore,
+    },
+  }));
+
+  assertEquals(success, true);
+  assertEquals(
+    calls.filter((c) => c[0] === "issue" && c[1] === "create").length,
+    0,
+  );
+  assertEquals(
+    logged.some((l) =>
+      l.includes(
+        `[idle-task] repo=${TARGET} issue=638 action=skipped reason=existing_wrapper_open`,
+      )
+    ),
+    true,
+  );
 });
