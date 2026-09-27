@@ -696,6 +696,13 @@ This is enforced at the single git-push choke-point by
   logs each exemption at INFO. A hidden or secret file the agent adds or edits
   during the merge is still refused; with no readable `MERGE_HEAD` nothing is
   exempt. See [SECURITY.md](../SECURITY.md) for the full rule.
+- **The same holds for a merge commit a rung wrote itself** (Issue #2739).
+  When the sync adopts a milestone merge commit it did not write, a flagged
+  path is exempt only when its blob and mode are identical on the default
+  branch's tip, and only when that tip and the pre-merge commit are the
+  commit's two parents. Each exemption is logged at INFO. Agent-added or
+  agent-edited hidden or secret files are still refused, and an unreadable
+  parent exempts nothing.
 
 Existing maintenance that touches files (bump-deps, gitignore/gitattributes
 sync) **stages locally and rides the next feature-branch PR** — it never pushes
