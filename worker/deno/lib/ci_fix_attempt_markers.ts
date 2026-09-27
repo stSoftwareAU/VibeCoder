@@ -24,7 +24,7 @@
  * changed log never produces a second gate comment.
  *
  * All three use the canonical `vibe-` grammar — a bare prefix and `key="value"`
- * attributes, no colon payload — so neither needs an `ACCEPTED_DEVIATIONS`
+ * attributes, no colon payload — so none needs an `ACCEPTED_DEVIATIONS`
  * entry in `tests/marker_grammar_test.ts`. That scanner reads marker
  * *literals* out of `lib/`, and these markers are assembled from a name
  * constant, so the guard that holds the shape is this module's own test: it

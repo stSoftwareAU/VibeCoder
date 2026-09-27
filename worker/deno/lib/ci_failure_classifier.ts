@@ -91,6 +91,7 @@ import {
   truncateWholeCharacters,
 } from "./ci_fix_attempt_markers.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Upper bound, in UTF-16 code units, on a declared human step. */
 export const HUMAN_STEP_MAX_LENGTH = 300;
@@ -423,8 +424,10 @@ function buildHaystack(
 
 /**
  * The step on the first `vibe-human-gate:` line, made safe for any consumer:
- * control characters flattened, HTML-comment markers neutralised, and the
- * result bounded on whole characters. A line whose step is empty is no gate.
+ * control characters flattened, HTML-comment markers neutralised, secrets
+ * redacted **before** the bound (Issue #2727 — a token cut at the bound would
+ * leave a fragment no signature rule matches), and the result bounded on
+ * whole characters. A line whose step is empty is no gate.
  *
  * Prefixes are peeled procedurally rather than by one regex so that runs of
  * whitespace cannot make the match backtrack.
@@ -444,7 +447,7 @@ function findHumanStep(texts: ReadonlyArray<string>): string | undefined {
       ).trim();
       if (step.length === 0) continue;
       return truncateWholeCharacters(
-        neutraliseAgentMarkers(step).text,
+        redactSecrets(neutraliseAgentMarkers(step).text),
         HUMAN_STEP_MAX_LENGTH,
       );
     }

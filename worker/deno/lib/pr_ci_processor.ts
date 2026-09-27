@@ -98,6 +98,7 @@ import {
 } from "./ci_fix_attempt_markers.ts";
 import { isCheckRedOnBranch } from "./ci_base_branch_check.ts";
 import { buildHumanGateComment } from "./ci_human_gate_comment.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import {
   type BlockedDependency,
   detectBlockedOutcome,
@@ -2825,7 +2826,10 @@ async function _parkHumanGate(
     humanStep: options.humanStep ?? "(the check named no step)",
     marker,
   });
-  if (!await replyToComment(repo, prNumber, body, options.deps)) {
+  // A new outbound sink redacts its own text (SECURITY.md).
+  if (
+    !await replyToComment(repo, prNumber, redactSecrets(body), options.deps)
+  ) {
     // The comment IS the record: without it the next pass must try again.
     logger.error(
       "The human-gate comment could not be posted, so the gate was not " +

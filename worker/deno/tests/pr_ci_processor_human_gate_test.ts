@@ -159,6 +159,7 @@ async function runPass(
   state: PrState,
   input: CiFixInput,
   head = "a".repeat(40),
+  fleetLogins: string[] = [FLEET_LOGIN],
 ): Promise<CiFixResult> {
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -221,7 +222,7 @@ async function runPass(
       workDir: tmpDir,
       workRoot: tmpDir,
       ghCommandFn: runGh,
-      fleetLogins: [FLEET_LOGIN],
+      fleetLogins,
     };
     const result = await processCiFailure(input, processorDeps);
     assert(result.ok, "processCiFailure returned an error");
@@ -319,6 +320,22 @@ Deno.test("human gate - a marker-read failure stands down without posting", asyn
   assertEquals(state.posted, []);
   assertEquals(state.agentRuns, 0);
   assertEquals(state.labelCalls, []);
+});
+
+Deno.test("human gate - an unresolved fleet identity posts nothing and fails loud", async () => {
+  const state = newPrState();
+  const result = await runPass(state, gateInput(), "a".repeat(40), []);
+
+  assertEquals(result.processed, false);
+  assertEquals(state.posted, []);
+  assertEquals(state.agentRuns, 0);
+  assertEquals(state.labelCalls, []);
+  assert(
+    state.errors.some((line) =>
+      line.includes("Human-gate check not announced")
+    ),
+    `expected a loud error; got: ${state.errors.join(" | ")}`,
+  );
 });
 
 Deno.test("human gate - a comment that cannot be posted is unprocessed and records nothing", async () => {
