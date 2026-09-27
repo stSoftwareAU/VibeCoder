@@ -147,7 +147,9 @@ import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   assessDegradedDelivery,
+  buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
+  degradedNeedsFollowUp,
   fileDegradedFollowUp,
 } from "../degraded_delivery.ts";
 import { IDLE_TASK_LABEL } from "../idle_task_issue.ts";
@@ -2005,13 +2007,18 @@ async function completionBody(
   // but every accepted scope item not shown `met` is filed as an `idle-task`
   // follow-up the fleet picks up, and the PR body names the gap. A healthy
   // run, or a degraded one that met everything, is untouched.
+  //
+  // Issue #2695: only a `partial` or `missing` shortfall files that follow-up.
+  // When every shortfall is `unassessed` (no stated criteria, or none the
+  // summary assessed), the PR still opens with a degraded note naming the
+  // model and reason, but no `Finish #N` issue is filed or reused.
   // ---------------------------------------------------------------------
   const degradedDelivery = assessDegradedDelivery({
     claudeResults: state.claudeRunStats ?? [],
     issueBody: ctx.issueBody,
     prBody,
   });
-  if (degradedDelivery.shortfalls.length > 0) {
+  if (degradedNeedsFollowUp(degradedDelivery)) {
     const labelled = await deps.github.ensureLabelExists(
       repo,
       IDLE_TASK_LABEL,
@@ -2057,6 +2064,15 @@ async function completionBody(
     );
     prBody = buildDegradedPrSection(degradedDelivery, followUp.value.number) +
       prBody;
+  } else if (degradedDelivery.shortfalls.length > 0) {
+    logger.warn(
+      "Degraded run: no shortfall partial or missing — no follow-up filed",
+      {
+        reason: degradedDelivery.reason,
+        unassessed: degradedDelivery.shortfalls.length,
+      },
+    );
+    prBody = buildDegradedNoFollowUpSection(degradedDelivery) + prBody;
   }
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),

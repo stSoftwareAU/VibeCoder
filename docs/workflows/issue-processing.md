@@ -1132,9 +1132,11 @@ flowchart TD
     D -- no --> P["PR as today"]
     D -- yes --> S{"Every accepted scope<br/>item shown met?"}
     S -- yes --> P
-    S -- no --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
+    S -- no --> G{"Any shortfall<br/>partial or missing?"}
+    G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
     F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
     F -- "gh failed" --> X["Run fails, no PR —<br/>nothing closes the issue"]
+    G -- "no — all unassessed" --> N["No follow-up; PR body opens with a<br/>'Degraded run — no follow-up filed'<br/>section saying why"]
 ```
 
 - **The scope** is the issue's `## Acceptance Criteria`, or — for an issue
@@ -1143,6 +1145,16 @@ flowchart TD
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
   is a shortfall.
+- **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).
+  An `unassessed` item carries no evidence of a gap, and a follow-up built only
+  from those restated whole issues as `Finish #N` tickets no later run could act
+  on. When every shortfall is `unassessed`, no follow-up is filed or reused; the
+  PR still opens with a `Degraded run — no follow-up filed` section naming the
+  served model and reason and saying why — "the issue states no acceptance
+  criteria", or "no acceptance criterion was assessed `partial` or `missing`"
+  (with the unassessed items listed). It references no follow-up, and the PR
+  closes the issue as a healthy PR would. Where a `partial` or `missing` item
+  exists, unassessed items are still listed in the follow-up alongside it.
 - **The follow-up** carries the `idle-task` label — the one work-trigger label
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run

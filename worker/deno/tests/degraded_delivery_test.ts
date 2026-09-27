@@ -19,8 +19,10 @@ import { emptyEnv } from "./support/env_lookup.ts";
 import {
   assessDegradedDelivery,
   buildDegradedFollowUpIssue,
+  buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
   degradedFollowUpFindingId,
+  degradedNeedsFollowUp,
   fileDegradedFollowUp,
 } from "../lib/degraded_delivery.ts";
 
@@ -348,4 +350,123 @@ Deno.test("assessDegradedDelivery - a run served a lower tier than expected is s
   });
   assertEquals(verdict.degraded, true);
   assertEquals(verdict.shortfalls.length, 3);
+});
+
+// ---------------------------------------------------------------------------
+// Follow-up gating (Issue #2695)
+// ---------------------------------------------------------------------------
+
+/** One criterion assessed `partial`; the other two left unassessed. */
+const SUMMARY_ONE_PARTIAL = `## Summary
+
+Did a little.
+
+## Acceptance Criteria
+
+- **partial** — the router — evidence: \`lib/config_defaults.ts\` — reviewer: partial — reason: execution only
+`;
+
+Deno.test("degradedNeedsFollowUp - (a) no stated criteria files no follow-up", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITHOUT_SCOPE,
+    prBody: MINIMAL_BODY,
+  });
+  assertEquals(verdict.degraded, true);
+  assertEquals(degradedNeedsFollowUp(verdict), false);
+});
+
+Deno.test("degradedNeedsFollowUp - (b) stated criteria all unassessed files no follow-up", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: GRILL_ME_ISSUE,
+    prBody: MINIMAL_BODY,
+  });
+  assertEquals(verdict.shortfalls.length, 3);
+  assertEquals(degradedNeedsFollowUp(verdict), false);
+});
+
+Deno.test("degradedNeedsFollowUp - (c) one partial criterion files a follow-up", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: SUMMARY_ONE_PARTIAL,
+  });
+  assertEquals(degradedNeedsFollowUp(verdict), true);
+});
+
+Deno.test("degradedNeedsFollowUp - a missing criterion files a follow-up", () => {
+  assertEquals(
+    degradedNeedsFollowUp({
+      degraded: true,
+      delivered: [],
+      shortfalls: [{ criterion: "x", status: "missing" }],
+    }),
+    true,
+  );
+});
+
+Deno.test("degradedNeedsFollowUp - a healthy or fully met run files no follow-up", () => {
+  assertEquals(
+    degradedNeedsFollowUp({ degraded: false, delivered: [], shortfalls: [] }),
+    false,
+  );
+  assertEquals(
+    degradedNeedsFollowUp({ degraded: true, delivered: ["x"], shortfalls: [] }),
+    false,
+  );
+});
+
+Deno.test("buildDegradedNoFollowUpSection - (a) names the reason and says the issue states no criteria", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITHOUT_SCOPE,
+    prBody: MINIMAL_BODY,
+  });
+  const section = buildDegradedNoFollowUpSection(verdict);
+  assert(section.startsWith("## ⚠️ Degraded run"));
+  assertStringIncludes(section, "`haiku`");
+  assertStringIncludes(section, verdict.reason!);
+  assertStringIncludes(section, "the issue states no acceptance criteria");
+  assert(!/#\d/.test(section), "no follow-up number is referenced");
+});
+
+Deno.test("buildDegradedNoFollowUpSection - (b) says no criterion was assessed partial or missing and lists them", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: GRILL_ME_ISSUE,
+    prBody: MINIMAL_BODY,
+  });
+  const section = buildDegradedNoFollowUpSection(verdict);
+  assertStringIncludes(section, "`haiku`");
+  assertStringIncludes(
+    section,
+    "no acceptance criterion was assessed `partial` or `missing`",
+  );
+  assertStringIncludes(section, "Raise the Claude Code pin.");
+  assertStringIncludes(section, "unassessed");
+  assert(!section.includes("states no acceptance criteria"));
+  assert(!/#\d/.test(section), "no follow-up number is referenced");
+});
+
+Deno.test("buildDegradedNoFollowUpSection - a verdict with no reason still names the fallback", () => {
+  const section = buildDegradedNoFollowUpSection({
+    degraded: true,
+    delivered: [],
+    shortfalls: [{ criterion: "Do the thing.", status: "unassessed" }],
+  });
+  assertStringIncludes(section, "served by a fallback model");
+});
+
+Deno.test("buildDegradedPrSection - (c) lists unassessed items alongside the partial one", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: SUMMARY_ONE_PARTIAL,
+  });
+  const section = buildDegradedPrSection(verdict, 77);
+  assertStringIncludes(section, "Degraded run — partial delivery");
+  assertStringIncludes(section, "#77");
+  assertStringIncludes(section, "**partial** — The router sends planning");
+  assertStringIncludes(section, "**unassessed** — The release floor is 1.9.0.");
 });

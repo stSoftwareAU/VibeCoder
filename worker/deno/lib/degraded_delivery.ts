@@ -20,9 +20,12 @@
  *     D -- no --> P["PR as today"]
  *     D -- yes --> S{"Every accepted scope<br/>item shown met?"}
  *     S -- yes --> P
- *     S -- no --> F["File (or reuse) one follow-up<br/>naming each shortfall"]
+ *     S -- no --> G{"Any shortfall<br/>partial or missing?"}
+ *     G -- yes --> F["File (or reuse) one follow-up<br/>naming each shortfall"]
  *     F --> B["PR body gains a<br/>'Degraded run' section<br/>pointing at the follow-up"]
  *     B --> P2["PR raised; the residue<br/>survives the merge"]
+ *     G -- "no — all unassessed" --> N["PR body gains a<br/>'Degraded run' section<br/>saying why no follow-up"]
+ *     N --> P3["PR raised; closes the<br/>issue as a healthy PR would"]
  * ```
  *
  * The degraded verdict is the one {@link buildDegradationReport} gives the
@@ -33,6 +36,13 @@
  * `partial` or `missing` entry, or no entry at all, is a shortfall. A degraded
  * run on an issue that states no scope names the issue itself as unverified,
  * since there is nothing narrower to name.
+ *
+ * Only a `partial` or `missing` shortfall files a follow-up (Issue #2695). An
+ * `unassessed` item carries no evidence of a gap — the run said nothing about
+ * it — and a follow-up built only from those restated whole issues as
+ * `Finish #N` tickets that later runs could not act on. When every shortfall
+ * is `unassessed`, the PR still opens with a degraded section naming the
+ * served model and reason and saying why nothing was filed.
  *
  * The follow-up carries the `idle-task` label — the one work-trigger label the
  * worker may apply itself — so a later run picks the residue up without a
@@ -218,6 +228,51 @@ export function buildDegradedFollowUpIssue(args: {
     title: `Finish #${parentNumber}: ${args.parentTitle}`.slice(0, 250),
     body,
   };
+}
+
+/**
+ * Whether a degraded verdict warrants a follow-up: at least one shortfall the
+ * PR summary itself marked `partial` or `missing` (Issue #2695). `unassessed`
+ * items alone never do.
+ */
+export function degradedNeedsFollowUp(
+  verdict: DegradedDeliveryVerdict,
+): boolean {
+  return verdict.shortfalls.some((s) =>
+    s.status === "partial" || s.status === "missing"
+  );
+}
+
+/**
+ * Build the PR-body section for a degraded run whose shortfalls are all
+ * `unassessed`, so no follow-up is filed (Issue #2695). It names the served
+ * model and reason, says why nothing was filed, and references no follow-up.
+ */
+export function buildDegradedNoFollowUpSection(
+  verdict: DegradedDeliveryVerdict,
+): string {
+  const unstated = verdict.shortfalls.length === 1 &&
+    verdict.shortfalls[0]?.criterion === UNSTATED_SCOPE_ITEM;
+  const why = unstated
+    ? "the issue states no acceptance criteria"
+    : "no acceptance criterion was assessed `partial` or `missing`";
+  const lines = [
+    "## ⚠️ Degraded run — no follow-up filed",
+    "",
+    `This run was degraded (${
+      verdict.reason ?? "served by a fallback model"
+    }). No follow-up was filed because ${why}.`,
+  ];
+  if (!unstated) {
+    lines.push(
+      "",
+      "Unassessed by this run's PR summary — check them against the diff " +
+        "before merging:",
+      "",
+      ...shortfallLines(verdict.shortfalls),
+    );
+  }
+  return [...lines, "", ""].join("\n");
 }
 
 /**
