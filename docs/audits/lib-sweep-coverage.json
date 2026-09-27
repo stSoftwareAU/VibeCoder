@@ -2180,6 +2180,19 @@
       ]
     },
     {
+      "issue": 2688,
+      "chunk": "top-up-2688",
+      "title": "top-up: worker work-on → planning hand-off",
+      "ledger": "docs/audits/security-sweep-2688-planning-handoff.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: planning_handoff.ts, planning_handoff_trust.ts (#2688)",
+      "status": "swept",
+      "sweptAt": "cce5d6b2965f43fc25979050737b8894d8e44726",
+      "paths": [
+        "worker/deno/lib/planning_handoff.ts",
+        "worker/deno/lib/planning_handoff_trust.ts"
+      ]
+    },
+    {
       "issue": 2701,
       "chunk": "top-up-2701",
       "title": "top-up: the Copilot code review setup question",

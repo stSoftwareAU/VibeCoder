@@ -1504,7 +1504,9 @@ repos via the idle-task framework:
 label **only**. The worker is not authorised to apply any workflow label
 (`planning`, `work-on`, `top-priority`, etc.) — `label_security.ts` strips any
 such label added by the worker on the next scan, so the developer toggles the
-next-phase label manually after triage. See
+next-phase label manually after triage. The one exception is the audited
+`work-on` → `planning` hand-off of an oversized issue, which does not apply to
+filed findings ([SECURITY.md §5g](SECURITY.md), Issue #2688). See
 [Supported Labels in README.md](README.md#-supported-labels) for the full
 list.
 

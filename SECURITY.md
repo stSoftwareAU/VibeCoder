@@ -1614,6 +1614,64 @@ pinned by `worker/deno/tests/conflict_marker_trust_test.ts` and the
 outsider-authored cases in `conflict_abandon_restart_test.ts` and
 `pr_merge_conflict_scan_test.ts`.
 
+#### 5g. Worker `work-on` → `planning` hand-off — one audited exception (Issue #2688)
+
+An implementation run that finds its `work-on` issue too large for one PR emits
+`<!-- vibe-needs-planning reason="…" -->`. The worker then adds `planning`
+itself rather than stopping at `needs-human`. This is the **only** workflow
+label the worker may apply, and it is narrowed five ways:
+
+- **In-process guard.** `assertWorkerCanHandOffToPlanning`
+  (`worker_label_guard.ts`) allows `planning` alone. Every allowed call logs
+  `[SECURITY] [WORKER_PLANNING_HANDOFF]` and journals a
+  `worker-planning-handoff` audit entry. Any other label is refused with
+  `[WORKER_LABEL_REFUSED]`.
+- **Trust anchored on a human.** `isWorkerPlanningHandoff`
+  (`planning_handoff_trust.ts`) honours a worker-added `planning` in
+  `label_security.ts` and `issue_query.ts` only when the latest `work-on` add
+  came **before** it, was made by a trusted, **non-worker** author, and has not
+  been removed since. `work-on` stays on the issue as that anchor. An outsider
+  who adds `planning`, or who re-adds `work-on`, gets no trust from the
+  exception, so they still cannot trigger planning.
+- **Once per issue.** The hand-off comment carries `<!-- vibe-planning-handoff -->`.
+  If that marker is already present, a second request falls back to
+  `needs-human`. A forged marker can only make that fallback fire, which is
+  the safe direction. Untrusted issue text reaches the prompt through
+  `issue_content_trust_filter.ts` (delimiter sanitising and nonce-boundary
+  wrapping). Even if an injection did make the run emit
+  `vibe-needs-planning`, the result is only planning an issue that a trusted
+  human already scheduled with `work-on`. The posted hand-off comment passes
+  the run's reason and output through `neutraliseAgentMarkers`, so agent text
+  cannot forge a fleet marker in a worker-authored comment.
+- **`work-on` issues only.** `handle_no_changes_phase.ts` attempts the
+  hand-off only when the issue carries `work-on` (`PLANNING_HANDOFF_ANCHOR`).
+  On any other pickup tier the label would never be trusted, so the run goes
+  to `needs-human` instead of leaving an untrusted `planning` label behind.
+- **Untrusted-image gate.** The hand-off retires the issue into sub-issues with
+  no human step, so, like the already-resolved close, it is withheld when an
+  untrusted author's body carried an image. `gatePlanningHandoff`
+  (`image_conclusion_gate.ts`) logs a `[SECURITY]` audit line with the image
+  count, and the run falls through to the analysis-only hand-off.
+
+```mermaid
+flowchart TD
+    R["Run emits vibe-needs-planning"] --> P{"vibe-planning-handoff<br/>already on the issue?"}
+    P -->|yes| H["needs-human"]
+    P -->|no| W{"work-on on the issue<br/>and no untrusted image?"}
+    W -->|no| H
+    W -->|yes| G{"Guard: label is planning?"}
+    G -->|no| H
+    G -->|yes| A["Audit line + journal,<br/>add planning"]
+    A --> S{"Label security scan:<br/>trusted non-worker work-on<br/>before it, still present?"}
+    S -->|yes| PL["planning honoured"]
+    S -->|no| X["planning stripped / ignored"]
+```
+
+The directions are pinned by `worker/deno/tests/planning_handoff_trust_test.ts`,
+the Issue #2688 cases in the `label_security`, `issue_query` and
+`image_conclusion_gate` tests, `worker/deno/tests/planning_handoff_test.ts`,
+and `worker/deno/tests/handle_no_changes_planning_handoff_test.ts`.
+
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 
 The mitigations above narrow what untrusted content can *say* to the worker; egress containment narrows what a successful injection can *do*. Without it, an injection that reads a private repo can post the contents as a public comment in a different repo (four of the monitored repos are public, so the exfiltration sink is real).

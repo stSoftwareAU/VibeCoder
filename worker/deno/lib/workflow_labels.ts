@@ -73,6 +73,10 @@ export function isWorkflowLabel(name: string): boolean {
  *     wrapper issue. Strict lowest-priority placement in
  *     `issue_priority.ts` guarantees these issues never starve real
  *     work. Issue #2077 retired the `idle-task-pending` approval gate.
+ *
+ * `planning` is deliberately absent. Handing an oversized `work-on` issue
+ * to planning (Issue #2688) goes through the separate, audited
+ * `assertWorkerCanHandOffToPlanning` check instead.
  */
 export const WORKER_SELF_APPLIABLE_LABELS: ReadonlySet<string> = new Set([
   "idle-task",

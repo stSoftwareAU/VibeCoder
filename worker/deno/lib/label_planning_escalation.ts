@@ -7,8 +7,10 @@
  *   - `checkAndHealPlanningEscalation` — fetch comments and detect
  *   - `escalateToPlanning` — post the escalation comment and unassign
  *
- * The worker never adds the operational `planning` label itself — a trusted
- * human must add it to confirm escalation (Issue #1476).
+ * This module never adds the operational `planning` label — a trusted human
+ * must add it to confirm escalation (Issue #1476). The one exception is the
+ * audited `work-on` → `planning` hand-off in `planning_handoff.ts`
+ * (Issue #2688).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

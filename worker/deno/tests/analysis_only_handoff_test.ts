@@ -102,6 +102,8 @@ Deno.test("buildAnalysisOnlyNextStep - guides to planning and warns about label 
   const step = buildAnalysisOnlyNextStep();
   assertStringIncludes(step, "planning");
   assertStringIncludes(step, "needs-human");
+  // Issue #2688: names the one route by which the worker applies planning.
+  assertStringIncludes(step, "vibe-needs-planning");
 });
 
 Deno.test("buildAnalysisOnlyDedupKey - stable per issue", () => {
