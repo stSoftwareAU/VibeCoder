@@ -43,7 +43,11 @@ import {
   detectAlreadyResolved,
   formatAlreadyResolvedEvidence,
 } from "../already_resolved_outcome.ts";
-import { gateAlreadyResolvedClose } from "../image_conclusion_gate.ts";
+import {
+  gateAlreadyResolvedClose,
+  gatePlanningHandoff,
+} from "../image_conclusion_gate.ts";
+import { PLANNING_HANDOFF_ANCHOR } from "../planning_handoff_trust.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
 import {
@@ -219,12 +223,31 @@ export async function workOnIssueHandleNoChanges(
   const planningRequest = blocked ? undefined : detectPlanningHandoff(
     claudeOutput,
   );
+  // Label security trusts the worker's `planning` only while a human
+  // `work-on` add anchors it, so on any other pickup tier the label would be
+  // flagged and ignored — hand those to a human instead.
+  const planningImageGate = gatePlanningHandoff(ctx.untrustedImages);
   if (planningRequest && hasPriorPlanningHandoff(ctx.issueComments)) {
     logger.warn(
       "Planning requested again after an earlier hand-off — handing off to " +
         "a human instead",
       { repo, issueNumber },
     );
+  } else if (
+    planningRequest && !ctx.issueLabels.includes(PLANNING_HANDOFF_ANCHOR)
+  ) {
+    logger.warn(
+      `Planning requested on an issue without \`${PLANNING_HANDOFF_ANCHOR}\` ` +
+        "— the hand-off is trusted only on that anchor, so handing off to a " +
+        "human instead",
+      { repo, issueNumber, labels: ctx.issueLabels.join(",") },
+    );
+  } else if (planningRequest && planningImageGate.withheld) {
+    logger.warn(planningImageGate.auditMessage ?? "", {
+      repo,
+      issueNumber,
+      untrustedImages: planningImageGate.imageCount,
+    });
   } else if (planningRequest) {
     const handoff = await handOffToPlanning({
       ghClient: deps.github.createClient(logger),

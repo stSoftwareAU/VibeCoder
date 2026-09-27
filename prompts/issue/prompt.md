@@ -185,7 +185,10 @@ change, and end your final message with this marker on its own line:
 The worker applies `planning` through its audited hand-off, posts your reason
 on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
-goes to a human instead. Sheer volume in one coherent change is not a reason:
+goes to a human instead. The marker applies to `work-on` issues only: on any
+other pickup label, or when the issue body carried an image from an untrusted
+author, the worker hands the issue to a human rather than to planning. Sheer
+volume in one coherent change is not a reason:
 a large PR that lands as one unit is still one PR.
 
 ### Worked Examples

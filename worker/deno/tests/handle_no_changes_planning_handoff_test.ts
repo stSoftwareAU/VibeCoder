@@ -2,7 +2,8 @@
  * Phase tests for the `work-on` → `planning` hand-off (Issue #2688).
  *
  * An oversized `work-on` epic must move to `planning` without a human; a
- * repeat request or a blocked run must not.
+ * repeat request, a blocked run, a non-`work-on` pickup tier or an untrusted
+ * image in front of the agent must not.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -14,6 +15,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient } from "../types.ts";
 import { buildPlanningHandoffMarker } from "../lib/planning_handoff.ts";
+import { findImageReferences } from "../lib/untrusted_image_signal.ts";
 
 const REPO = "stSoftwareAU/Example";
 const ISSUE = 2688;
@@ -164,4 +166,44 @@ Deno.test("handle_no_changes_phase - a blocked run defers rather than planning",
   if (result.status !== "early_exit") return;
   assert(result.reason.startsWith("deferred: depends on"), result.reason);
   assert(!calls.addLabel.includes("planning"));
+});
+
+Deno.test("handle_no_changes_phase - an untrusted image withholds the planning hand-off", async () => {
+  const calls = makeCalls();
+  const deps = createMockDeps({
+    github: { createClient: () => makeClient(calls) },
+  });
+
+  const result = await workOnIssueHandleNoChanges(
+    makeContext({
+      untrustedImages: findImageReferences("![a](https://evil.test/a.png)"),
+    }),
+    makeState(PLANNING_OUTPUT),
+    deps,
+  );
+
+  assertEquals(result.status, "early_exit");
+  if (result.status !== "early_exit") return;
+  assertEquals(result.reason, "analysis_only_handed_off");
+  assert(!calls.addLabel.includes("planning"));
+  assert(calls.addLabel.includes("needs-human"));
+});
+
+Deno.test("handle_no_changes_phase - a non-work-on pickup tier is not handed to planning", async () => {
+  const calls = makeCalls();
+  const deps = createMockDeps({
+    github: { createClient: () => makeClient(calls) },
+  });
+
+  const result = await workOnIssueHandleNoChanges(
+    makeContext({ issueLabels: ["top-priority"] }),
+    makeState(PLANNING_OUTPUT),
+    deps,
+  );
+
+  assertEquals(result.status, "early_exit");
+  if (result.status !== "early_exit") return;
+  assertEquals(result.reason, "analysis_only_handed_off");
+  assert(!calls.addLabel.includes("planning"));
+  assert(calls.addLabel.includes("needs-human"));
 });

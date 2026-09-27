@@ -32,6 +32,11 @@
  * no-changes path that both ends the run *and* retires the work item with no
  * reviewable artefact, which is exactly what an image-borne injection wants.
  *
+ * Issue #2688 added a second: the planning hand-off. The worker applies
+ * `planning` itself, and the planning run then files sub-issues from the issue
+ * content and closes the parent — also with no human step — so
+ * {@link gatePlanningHandoff} withholds it on the same signal.
+ *
  * The other conclusions on that path already land in front of a human: the
  * analysis-only hand-off and the blocked deferral both leave the issue open,
  * and a cross-repo PR is reviewed before it merges. Gating them would cost
@@ -94,5 +99,31 @@ export function gateAlreadyResolvedClose(
       `on may have been drawn from an image whose instructions the agent can ` +
       `be told not to report (Issue #1385). Handing off for human review ` +
       `instead — the issue stays open.`,
+  };
+}
+
+/**
+ * Decide whether a planning hand-off may be acted on (Issue #2688).
+ *
+ * Same signal and direction as {@link gateAlreadyResolvedClose}: the hand-off
+ * retires the issue into sub-issues with no human step, so an untrusted image
+ * in front of the agent withholds it and the run falls through to the
+ * analysis-only hand-off.
+ */
+export function gatePlanningHandoff(
+  untrustedImages?: readonly ImageReference[],
+): ImageConclusionGateDecision {
+  const imageCount = untrustedImages?.length ?? 0;
+  if (imageCount === 0) return { withheld: false, imageCount: 0 };
+
+  return {
+    withheld: true,
+    imageCount,
+    auditMessage: `[SECURITY] Refusing to hand this issue off to planning on ` +
+      `the run's own "too large for one PR" request: the untrusted issue ` +
+      `body carried ${imageCount} image reference(s), so a conclusion the ` +
+      `worker would act on may have been drawn from an image whose ` +
+      `instructions the agent can be told not to report (Issue #2688). ` +
+      `Handing off for human review instead — the issue stays open.`,
   };
 }

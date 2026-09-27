@@ -1605,7 +1605,7 @@ outsider-authored cases in `conflict_abandon_restart_test.ts` and
 An implementation run that finds its `work-on` issue too large for one PR emits
 `<!-- vibe-needs-planning reason="…" -->`. The worker then adds `planning`
 itself rather than stopping at `needs-human`. This is the **only** workflow
-label the worker may apply, and it is narrowed three ways:
+label the worker may apply, and it is narrowed five ways:
 
 - **In-process guard.** `assertWorkerCanHandOffToPlanning`
   (`worker_label_guard.ts`) allows `planning` alone. Every allowed call logs
@@ -1629,12 +1629,23 @@ label the worker may apply, and it is narrowed three ways:
   human already scheduled with `work-on`. The posted hand-off comment passes
   the run's reason and output through `neutraliseAgentMarkers`, so agent text
   cannot forge a fleet marker in a worker-authored comment.
+- **`work-on` issues only.** `handle_no_changes_phase.ts` attempts the
+  hand-off only when the issue carries `work-on` (`PLANNING_HANDOFF_ANCHOR`).
+  On any other pickup tier the label would never be trusted, so the run goes
+  to `needs-human` instead of leaving an untrusted `planning` label behind.
+- **Untrusted-image gate.** The hand-off retires the issue into sub-issues with
+  no human step, so, like the already-resolved close, it is withheld when an
+  untrusted author's body carried an image. `gatePlanningHandoff`
+  (`image_conclusion_gate.ts`) logs a `[SECURITY]` audit line with the image
+  count, and the run falls through to the analysis-only hand-off.
 
 ```mermaid
 flowchart TD
     R["Run emits vibe-needs-planning"] --> P{"vibe-planning-handoff<br/>already on the issue?"}
     P -->|yes| H["needs-human"]
-    P -->|no| G{"Guard: label is planning?"}
+    P -->|no| W{"work-on on the issue<br/>and no untrusted image?"}
+    W -->|no| H
+    W -->|yes| G{"Guard: label is planning?"}
     G -->|no| H
     G -->|yes| A["Audit line + journal,<br/>add planning"]
     A --> S{"Label security scan:<br/>trusted non-worker work-on<br/>before it, still present?"}
@@ -1643,8 +1654,9 @@ flowchart TD
 ```
 
 The directions are pinned by `worker/deno/tests/planning_handoff_trust_test.ts`,
-the Issue #2688 cases in the `label_security` and `issue_query` tests, and
-`worker/deno/tests/planning_handoff_test.ts`.
+the Issue #2688 cases in the `label_security`, `issue_query` and
+`image_conclusion_gate` tests, `worker/deno/tests/planning_handoff_test.ts`,
+and `worker/deno/tests/handle_no_changes_planning_handoff_test.ts`.
 
 ### 6. Egress Containment — Per-Run Write-Repo Allowlist
 

@@ -12,7 +12,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { gateAlreadyResolvedClose } from "../lib/image_conclusion_gate.ts";
+import {
+  gateAlreadyResolvedClose,
+  gatePlanningHandoff,
+} from "../lib/image_conclusion_gate.ts";
 import { observeUntrustedIssueImages } from "../lib/issue_content_trust_filter.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
 
@@ -98,4 +101,24 @@ Deno.test("image conclusion gate - an untrusted body with no image does not gate
   );
   assertEquals(refs.length, 0);
   assertEquals(gateAlreadyResolvedClose(refs).withheld, false);
+});
+
+// ---------------------------------------------------------------------------
+// The planning hand-off (Issue #2688)
+// ---------------------------------------------------------------------------
+
+Deno.test("image conclusion gate - an untrusted image withholds the planning hand-off", () => {
+  const decision = gatePlanningHandoff(
+    findImageReferences("![a](https://evil.test/pwn.png)"),
+  );
+  assert(decision.withheld);
+  assertEquals(decision.imageCount, 1);
+  assertStringIncludes(decision.auditMessage ?? "", "[SECURITY]");
+  assertStringIncludes(decision.auditMessage ?? "", "planning");
+  assert(!(decision.auditMessage ?? "").includes("evil.test"));
+});
+
+Deno.test("image conclusion gate - no images leaves the planning hand-off alone", () => {
+  assertEquals(gatePlanningHandoff(undefined).withheld, false);
+  assertEquals(gatePlanningHandoff([]).auditMessage, undefined);
 });
