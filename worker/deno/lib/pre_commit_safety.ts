@@ -166,12 +166,17 @@ function parseEntries(
  * written, judged against its merged-in parent (Issue #2739). The caller
  * owns the claim that `mergedIn` is what the merge brought in.
  *
+ * The same comparison serves the default branch's tip (`mergedIn` =
+ * `refs/remotes/origin/<default>`, Issue #2774): a path already published
+ * there, byte for byte and mode for mode, discloses nothing either.
+ *
  * If `mergedIn` or either listing cannot be read, nothing is exempt (fail
  * closed).
  *
  * @param args.violations Paths the classifier refused
- * @param args.mergedIn Ref or SHA of the commit the merge brings in
+ * @param args.mergedIn Ref or SHA of the commit that vouches for a path
  * @param args.candidate Commit whose tree is judged; omitted, the index
+ * @param args.reason Why `mergedIn` vouches, for the INFO log line
  * @param args.options Git command options (cwd, env, timeout)
  * @returns The exempt paths (each logged at INFO), possibly empty
  */
@@ -179,9 +184,16 @@ export async function mergedInUnchanged(args: {
   violations: string[];
   mergedIn: string;
   candidate?: string;
+  reason?: string;
   options: GitCommandOptions;
 }): Promise<Set<string>> {
-  const { violations, mergedIn, candidate, options } = args;
+  const {
+    violations,
+    mergedIn,
+    candidate,
+    reason = "which the merge brings in",
+    options,
+  } = args;
   const exempt = new Set<string>();
   if (violations.length === 0) return exempt;
   const resolved = await runGitCommand(
@@ -239,12 +251,35 @@ export async function mergedInUnchanged(args: {
       exempt.add(path);
       console.log(
         `[pre-commit-safety] INFO: ${path} is exempt from the safety gate ` +
-          `(Issues #2737, #2739): its ${where} blob and mode are identical ` +
-          `to ${source}, which the merge brings in`,
+          `(Issues #2737, #2739, #2774): its ${where} blob and mode are ` +
+          `identical to ${source}, ${reason}`,
       );
     }
   }
   return exempt;
+}
+
+/**
+ * The local remote-tracking ref of origin's default branch, read from
+ * `refs/remotes/origin/HEAD` without touching the network (Issue #2774).
+ * Deliberately not `resolveOriginDefaultBranch()`, which may run
+ * `git remote set-head origin --auto` and so contact the remote. Returns
+ * `null` — nothing vouches — unless the symbolic ref names a ref under
+ * `refs/remotes/origin/`.
+ */
+async function originDefaultRef(
+  options: GitCommandOptions,
+): Promise<string | null> {
+  const result = await runGitCommand(
+    ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
+    options,
+  );
+  if (!result.ok || result.value.code !== 0) return null;
+  const ref = result.value.stdout.trim();
+  return /^refs\/remotes\/origin\/\S+$/.test(ref) &&
+      ref !== "refs/remotes/origin/HEAD"
+    ? ref
+    : null;
 }
 
 /**
@@ -253,7 +288,11 @@ export async function mergedInUnchanged(args: {
  * Returns `Ok(void)` when every staged path is safe (including the empty
  * stage). Returns `Err` listing every offending path and the recovery
  * command (`git reset HEAD <file>`). A path a merge in progress brings in
- * unchanged from `MERGE_HEAD` is exempt (Issue #2737).
+ * unchanged from `MERGE_HEAD` is exempt (Issue #2737), as is a path whose
+ * staged blob and mode are identical to that path on the default branch's
+ * tip, read from the local `origin/<default>` ref and never fetched (Issue
+ * #2774). If that ref cannot be resolved or read, nothing is exempt on its
+ * account (fail closed).
  *
  * @param options Git command options (cwd, env, timeout).
  */
@@ -267,12 +306,24 @@ export async function assertSafeToCommit(
     return { ok: true, value: undefined };
   }
 
-  const exempt = await mergedInUnchanged({
+  const merged = await mergedInUnchanged({
     violations: inspection.value.violations,
     mergedIn: "MERGE_HEAD",
     options,
   });
-  const violations = inspection.value.violations.filter((p) => !exempt.has(p));
+  let violations = inspection.value.violations.filter((p) => !merged.has(p));
+  const defaultRef = violations.length > 0
+    ? await originDefaultRef(options)
+    : null;
+  if (defaultRef !== null) {
+    const published = await mergedInUnchanged({
+      violations,
+      mergedIn: defaultRef,
+      reason: "the default branch's tip, which already publishes it",
+      options,
+    });
+    violations = violations.filter((p) => !published.has(p));
+  }
   if (violations.length === 0) {
     return { ok: true, value: undefined };
   }
