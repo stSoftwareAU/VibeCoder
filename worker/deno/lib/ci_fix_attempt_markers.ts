@@ -16,12 +16,16 @@
  *        outcome="pushed" -->
  *   <!-- vibe-ci-fix-deferred signature="…" check="…"
  *        depends-on="owner/repo#149" -->
- *   <!-- vibe-ci-human-gate check="…" -->
+ *   <!-- vibe-ci-human-gate check="…" head="…" -->
  *
  * The human-gate marker (Issue #2727) records that the fleet has already told
  * the pull request a check waits on a human step. It is keyed by **check
  * name** alone — not by failure signature or head — so a new push or a
- * changed log never produces a second gate comment.
+ * changed log never produces a second gate comment. Its `head` names the
+ * commit the gate was last confirmed on (PR #2762): the scanner parks the
+ * check only on that head, so a later, unrelated failure of the same check
+ * is re-classified rather than parked for ever. A marker without `head`
+ * (written before PR #2762) is still read, and simply parks nothing.
  *
  * All three use the canonical `vibe-` grammar — a bare prefix and `key="value"`
  * attributes, no colon payload — so none needs an `ACCEPTED_DEVIATIONS`
@@ -115,6 +119,11 @@ export interface CiFixDeferralMarker {
 export interface CiHumanGateMarker {
   /** Name of the gate check, as {@link sanitiseCheckName} renders it. */
   checkName: string;
+  /**
+   * Head SHA the gate was confirmed on (PR #2762). Absent on a marker
+   * written before the attribute existed.
+   */
+  head?: string;
 }
 
 /**
@@ -356,14 +365,33 @@ export function buildCiFixDeferralMarker(marker: CiFixDeferralMarker): string {
  * Build the marker recording that a human-gate check was announced
  * (Issue #2727).
  *
- * @param marker - The gate check to record.
+ * @param marker - The gate check to record, and the head it was confirmed on.
  * @returns The marker, as a single-line HTML comment.
- * @throws When the check name sanitises to nothing.
+ * @throws When the check name sanitises to nothing, or a head is given that
+ *   is not a 40-character SHA.
  */
 export function buildCiHumanGateMarker(marker: CiHumanGateMarker): string {
   const check = sanitiseCheckName(marker.checkName);
   requireField(check.length > 0, "check", marker.checkName);
-  return `<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="${check}" -->`;
+  if (marker.head === undefined) {
+    return `<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="${check}" -->`;
+  }
+  requireField(HEAD_SHA_PATTERN.test(marker.head), "head", marker.head);
+  return `<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="${check}" ` +
+    `head="${marker.head}" -->`;
+}
+
+/**
+ * Re-stamp every human-gate marker in a comment body with `marker`
+ * (PR #2762), leaving the prose around it untouched. The gate comment carries
+ * exactly one marker, so this moves its `head` without a second comment.
+ *
+ * @param body - The gate comment's current body.
+ * @param marker - The replacement marker, from {@link buildCiHumanGateMarker}.
+ * @returns The body with its gate marker replaced.
+ */
+export function restampHumanGateMarker(body: string, marker: string): string {
+  return body.replace(HUMAN_GATE_MARKER_RE, () => marker);
 }
 
 /**
@@ -431,17 +459,25 @@ export function parseCiFixDeferralMarkers(body: string): CiFixDeferralMarker[] {
 /**
  * Read every well-formed human-gate marker out of a comment body.
  *
+ * `head` is optional (a pre-PR #2762 marker has none); one present but not a
+ * 40-character SHA makes the whole marker malformed, so it is skipped.
+ *
  * @param body - The comment body.
  * @returns One record per valid marker, in the order they appear.
  */
 export function parseCiHumanGateMarkers(body: string): CiHumanGateMarker[] {
   const markers: CiHumanGateMarker[] = [];
   for (const match of body.matchAll(HUMAN_GATE_MARKER_RE)) {
-    const checkName = sanitiseCheckName(
-      attribute(match[1] ?? "", "check") ?? "",
-    );
+    const inner = match[1] ?? "";
+    const checkName = sanitiseCheckName(attribute(inner, "check") ?? "");
+    const head = attribute(inner, "head");
     if (checkName.length === 0) continue;
-    markers.push({ checkName });
+    if (head === undefined) {
+      markers.push({ checkName });
+      continue;
+    }
+    if (!HEAD_SHA_PATTERN.test(head)) continue;
+    markers.push({ checkName, head });
   }
   return markers;
 }
@@ -643,4 +679,29 @@ export function findHumanGate(
   checkName: string,
 ): CiHumanGateRecord | undefined {
   return markers.humanGates.get(sanitiseCheckName(checkName))?.[0];
+}
+
+/**
+ * Whether the fleet has confirmed a check's human gate on this exact head
+ * (PR #2762).
+ *
+ * The scanner parks a gate check only on this answer. A gate marker from an
+ * earlier head proves nothing about the current failure — the gate may have
+ * cleared and the check since failed for an ordinary reason — so a new head
+ * earns one processor pass that re-reads the log and either re-stamps the
+ * marker or fixes the failure.
+ *
+ * @param markers - Collected markers.
+ * @param checkName - The raw check name; sanitised the way the marker was.
+ * @param head - The pull request's current head SHA, when known.
+ * @returns True only when a fleet gate marker for the check names `head`.
+ */
+export function isHumanGateParkedAt(
+  markers: FleetCiFixMarkers,
+  checkName: string,
+  head: string | undefined,
+): boolean {
+  if (head === undefined || !HEAD_SHA_PATTERN.test(head)) return false;
+  return (markers.humanGates.get(sanitiseCheckName(checkName)) ?? [])
+    .some((record) => record.head === head);
 }
