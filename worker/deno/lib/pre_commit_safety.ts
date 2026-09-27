@@ -152,83 +152,95 @@ function parseEntries(
 }
 
 /**
- * Violations that a merge in progress merely brings in (Issue #2737).
+ * Violations that a merge merely brings in (Issues #2737, #2739).
  *
- * During a merge the index holds every path the merged-in branch changed,
- * so a hidden file that branch already tracks (`.claude/…`) would trip the
- * gate although committing it discloses nothing new. A violation is exempt
- * only when its staged entry — mode and object id, stage 0 — is identical
- * to that path's entry on `MERGE_HEAD`. Anything the agent added or
- * modified, a deletion, or an unresolved conflict entry is not exempt.
+ * A merge carries every path the merged-in branch changed, so a hidden file
+ * that branch already tracks (`.claude/…`) would trip the gate although
+ * committing it discloses nothing new. A violation is exempt only when its
+ * entry on the candidate — mode and object id — is identical to that path's
+ * entry on the merged-in commit. Anything the agent added or modified, a
+ * mode change, a deletion, or an unresolved conflict entry is not exempt.
  *
- * Outside a merge nothing is exempt: an unchanged tracked file is not
- * staged, so HEAD needs no comparison. If `MERGE_HEAD` or either listing
- * cannot be read, nothing is exempt (fail closed).
+ * The candidate is the index (stage 0 only) while a merge is in progress
+ * (`mergedIn` = `MERGE_HEAD`, Issue #2737), or a merge commit already
+ * written, judged against its merged-in parent (Issue #2739). The caller
+ * owns the claim that `mergedIn` is what the merge brought in.
  *
- * @param violations Staged paths the classifier refused
- * @param options Git command options (cwd, env, timeout)
+ * If `mergedIn` or either listing cannot be read, nothing is exempt (fail
+ * closed).
+ *
+ * @param args.violations Paths the classifier refused
+ * @param args.mergedIn Ref or SHA of the commit the merge brings in
+ * @param args.candidate Commit whose tree is judged; omitted, the index
+ * @param args.options Git command options (cwd, env, timeout)
  * @returns The exempt paths (each logged at INFO), possibly empty
  */
-async function mergedInUnchanged(
-  violations: string[],
-  options: GitCommandOptions,
-): Promise<Set<string>> {
+export async function mergedInUnchanged(args: {
+  violations: string[];
+  mergedIn: string;
+  candidate?: string;
+  options: GitCommandOptions;
+}): Promise<Set<string>> {
+  const { violations, mergedIn, candidate, options } = args;
   const exempt = new Set<string>();
-  const mergeHead = await runGitCommand(
-    ["rev-parse", "-q", "--verify", "MERGE_HEAD^{commit}"],
+  if (violations.length === 0) return exempt;
+  const resolved = await runGitCommand(
+    ["rev-parse", "-q", "--verify", `${mergedIn}^{commit}`],
     options,
   );
-  if (!mergeHead.ok || mergeHead.value.code !== 0) return exempt;
-  const mergeSha = mergeHead.value.stdout.trim();
+  if (!resolved.ok || resolved.value.code !== 0) return exempt;
+  const mergeSha = resolved.value.stdout.trim();
   if (!/^[0-9a-f]{40,64}$/.test(mergeSha)) return exempt;
 
-  const staged = await runGitCommand(
-    [
-      "--literal-pathspecs",
-      "ls-files",
-      "-s",
-      "-z",
-      "--full-name",
-      "--",
-      ...violations,
-    ],
-    options,
-  );
-  const merged = await runGitCommand(
-    [
-      "--literal-pathspecs",
-      "ls-tree",
-      "-r",
-      "-z",
-      "--full-tree",
-      mergeSha,
-      "--",
-      ...violations,
-    ],
-    options,
-  );
-  if (!staged.ok || staged.value.code !== 0) return exempt;
+  const listTree = (commit: string) =>
+    runGitCommand(
+      [
+        "--literal-pathspecs",
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        ...violations,
+      ],
+      options,
+    );
+  const judged = candidate === undefined
+    ? await runGitCommand(
+      [
+        "--literal-pathspecs",
+        "ls-files",
+        "-s",
+        "-z",
+        "--full-name",
+        "--",
+        ...violations,
+      ],
+      options,
+    )
+    : await listTree(candidate);
+  const merged = await listTree(mergeSha);
+  if (!judged.ok || judged.value.code !== 0) return exempt;
   if (!merged.ok || merged.value.code !== 0) return exempt;
 
-  // Stage 0 only: a conflicted path has stages 1–3 and is never exempt.
-  const stagedEntries = parseEntries(
-    staged.value.stdout,
-    1,
-    (f) => f[2] === "0",
-  );
-  const mergedEntries = parseEntries(
-    merged.value.stdout,
-    2,
-    (f) => f[1] === "blob",
-  );
+  // The index: stage 0 only, since a conflicted path has stages 1–3 and is
+  // never exempt. A tree: blobs only.
+  const isBlob = (f: string[]) => f[1] === "blob";
+  const judgedEntries = candidate === undefined
+    ? parseEntries(judged.value.stdout, 1, (f) => f[2] === "0")
+    : parseEntries(judged.value.stdout, 2, isBlob);
+  const mergedEntries = parseEntries(merged.value.stdout, 2, isBlob);
+  const where = candidate === undefined ? "staged" : `committed (${candidate})`;
+  const source = mergedIn === mergeSha ? mergeSha : `${mergedIn} (${mergeSha})`;
   for (const path of violations) {
-    const entry = stagedEntries.get(path);
+    const entry = judgedEntries.get(path);
     if (entry !== undefined && entry === mergedEntries.get(path)) {
       exempt.add(path);
       console.log(
         `[pre-commit-safety] INFO: ${path} is exempt from the safety gate ` +
-          `(Issue #2737): its staged blob is identical to MERGE_HEAD ` +
-          `(${mergeSha}), which the merge brings in`,
+          `(Issues #2737, #2739): its ${where} blob and mode are identical ` +
+          `to ${source}, which the merge brings in`,
       );
     }
   }
@@ -255,10 +267,11 @@ export async function assertSafeToCommit(
     return { ok: true, value: undefined };
   }
 
-  const exempt = await mergedInUnchanged(
-    inspection.value.violations,
+  const exempt = await mergedInUnchanged({
+    violations: inspection.value.violations,
+    mergedIn: "MERGE_HEAD",
     options,
-  );
+  });
   const violations = inspection.value.violations.filter((p) => !exempt.has(p));
   if (violations.length === 0) {
     return { ok: true, value: undefined };

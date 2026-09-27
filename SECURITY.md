@@ -706,6 +706,16 @@ edited during the merge, including an edit to a merged-in hidden file, is
 still refused. Outside a merge nothing is exempt, and a `MERGE_HEAD` that
 cannot be read exempts nothing (fail closed).
 
+The same rule covers a milestone merge commit the worker adopts rather than
+writes (`assertAdoptedMergeIsSafe()`, Issues #1964 and #2739). Each refused
+path the commit changes against the pre-merge commit is exempt only when its
+blob and mode in the commit are identical to that path on the default
+branch's tip, and only when that tip and the pre-merge commit are exactly the
+commit's two parents; a lookalike commit holding the same blobs vouches for
+nothing. Each exemption is logged at INFO. A hidden or secret file the agent
+added or edited in the merge is still refused, and if HEAD's parents or the
+default branch's tip cannot be read nothing is exempt (fail closed).
+
 **How It Works:**
 
 1. **`.gitignore` patterns**: The primary defence. Files matching these patterns won't be staged with normal `git add` commands.
