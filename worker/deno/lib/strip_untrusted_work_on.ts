@@ -10,8 +10,10 @@
  *
  * This helper turns that silent skip into a loud, self-correcting action: when
  * the most-recent `work-on` add is positively confirmed to come from an
- * untrusted author, strip the label and post exactly one explanatory comment so
- * the false "queued" state cannot persist.
+ * untrusted author, add `needs-human` and post exactly one explanatory comment
+ * so the false "queued" state is visible. The `work-on` label itself is never
+ * removed (Issue #2734): it records a human's decision, and a wrong trust
+ * verdict — such as an empty trusted set — must not destroy it.
  *
  * Fail-closed on uncertainty: if the label's most-recent adder cannot be
  * determined (timeline read failed, no `labeled` event), the helper does
@@ -43,7 +45,7 @@ export function buildUntrustedWorkOnMarker(issueNumber: number): string {
 
 /**
  * Build the explanatory comment body posted when an untrusted `work-on` label
- * is stripped. Exported for testing.
+ * is handed to a human. Exported for testing.
  */
 export function buildUntrustedWorkOnComment(opts: {
   issueNumber: number;
@@ -52,14 +54,14 @@ export function buildUntrustedWorkOnComment(opts: {
 }): string {
   const { issueNumber, workOnLabel, addedBy } = opts;
   return (
-    `## \`${workOnLabel}\` removed — added by an untrusted author\n\n` +
+    `## \`${workOnLabel}\` needs a human — added by an untrusted author\n\n` +
     `**Why:** the \`${workOnLabel}\` label on this issue was applied by ` +
     `\`${addedBy}\`, who is not on the worker's trusted-author allowlist. The ` +
     `worker ignores an untrusted \`${workOnLabel}\` label, so the issue looked ` +
-    `queued but would never have been picked up. The label has been removed so ` +
-    `this false "queued" state cannot persist silently.\n\n` +
-    `**Next step:** if this issue should be worked on, a trusted author must ` +
-    `re-apply the \`${workOnLabel}\` label.\n\n` +
+    `queued but would never have been picked up. The label is left in place ` +
+    `and \`needs-human\` added so this false "queued" state is visible.\n\n` +
+    `**Next step:** if this issue should be worked on, a trusted author ` +
+    `re-applies the \`${workOnLabel}\` label and removes \`needs-human\`.\n\n` +
     `${buildUntrustedWorkOnMarker(issueNumber)}`
   );
 }
@@ -91,6 +93,8 @@ export async function stripUntrustedWorkOnLabel(opts: {
   ghFn: GhFn;
   cache?: TimelineCache;
   logger?: Logger;
+  /** Label that hands the issue to a human (default `needs-human`). */
+  needsHumanLabel?: string;
 }): Promise<boolean> {
   const {
     repo,
@@ -209,8 +213,11 @@ export async function stripUntrustedWorkOnLabel(opts: {
     }
   }
 
-  // Remove the untrusted label — the actual fix that clears the false-queued
-  // state.
+  // Issue #2734: never remove the label — it records a human's scheduling
+  // decision, and a wrong trust verdict must not destroy it. Hand the issue to
+  // a human instead: `needs-human` makes the false-queued state visible and is
+  // undone by removing one label.
+  const needsHumanLabel = opts.needsHumanLabel ?? "needs-human";
   try {
     await ghFn([
       "issue",
@@ -218,10 +225,10 @@ export async function stripUntrustedWorkOnLabel(opts: {
       String(issueNumber),
       "--repo",
       repo,
-      "--remove-label",
-      workOnLabel,
+      "--add-label",
+      needsHumanLabel,
     ]);
-    logger.warn("Stripped untrusted work-on label at pickup", {
+    logger.warn("Untrusted work-on label left in place, needs-human added", {
       repo,
       issueNumber,
       addedBy: addInfo.addedBy,
@@ -230,7 +237,7 @@ export async function stripUntrustedWorkOnLabel(opts: {
     return true;
   } catch (err) {
     logger.warn(
-      "stripUntrustedWorkOnLabel: failed to remove label (non-fatal)",
+      "stripUntrustedWorkOnLabel: failed to add the needs-human label (non-fatal)",
       {
         repo,
         issueNumber,

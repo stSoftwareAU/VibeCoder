@@ -1523,9 +1523,9 @@ find_oldest_issue(github_user)
    (untrusted) result. A cached entry that _would_ grant trust is re-confirmed
    against a freshly paginated timeline, so a tampered-with cache file under
    `TMPDIR` can never make an attacker-applied `work-on` look trusted. The same
-   exhaustive read backs the untrusted-`work-on` strip
-   (`strip_untrusted_work_on.ts`), which both removes a label and names the
-   adder publicly.
+   exhaustive read backs the untrusted-`work-on` hand-off
+   (`strip_untrusted_work_on.ts`), which adds `needs-human` and names the
+   adder publicly, but never removes `work-on` (Issue #2734).
 2b. **Self-scheduled worker diagnostic** — no label at all. An issue the worker
    auto-filed about itself, in its own repo, carrying a recognised provenance
    marker, is claimable on that provenance alone
