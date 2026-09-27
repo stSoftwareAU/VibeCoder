@@ -13,7 +13,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { extractAcceptedScope } from "../lib/acceptance_criteria_gate.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
 import {
@@ -456,6 +461,37 @@ Deno.test("buildDegradedNoFollowUpSection - a verdict with no reason still names
     shortfalls: [{ criterion: "Do the thing.", status: "unassessed" }],
   });
   assertStringIncludes(section, "served by a fallback model");
+});
+
+Deno.test("buildDegradedNoFollowUpSection - throws when a shortfall is partial or missing", () => {
+  for (const status of ["partial", "missing"] as const) {
+    assertThrows(
+      () =>
+        buildDegradedNoFollowUpSection({
+          degraded: true,
+          delivered: [],
+          shortfalls: [
+            { criterion: "A.", status: "unassessed" },
+            { criterion: "B.", status },
+          ],
+        }),
+      Error,
+      "needs only unassessed shortfalls",
+    );
+  }
+});
+
+Deno.test("buildDegradedNoFollowUpSection - throws when there are no shortfalls", () => {
+  assertThrows(
+    () =>
+      buildDegradedNoFollowUpSection({
+        degraded: true,
+        delivered: ["A."],
+        shortfalls: [],
+      }),
+    Error,
+    "needs only unassessed shortfalls",
+  );
 });
 
 Deno.test("buildDegradedPrSection - (c) lists unassessed items alongside the partial one", () => {

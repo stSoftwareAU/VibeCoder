@@ -39,8 +39,8 @@
  *
  * Only a `partial` or `missing` shortfall files a follow-up (Issue #2695). An
  * `unassessed` item carries no evidence of a gap — the run said nothing about
- * it — and a follow-up built only from those restated whole issues as
- * `Finish #N` tickets that later runs could not act on. When every shortfall
+ * it — and a follow-up built only from those just restated the whole issue as
+ * a `Finish #N` ticket no later run could act on. When every shortfall
  * is `unassessed`, the PR still opens with a degraded section naming the
  * served model and reason and saying why nothing was filed.
  *
@@ -247,10 +247,16 @@ export function degradedNeedsFollowUp(
  * Build the PR-body section for a degraded run whose shortfalls are all
  * `unassessed`, so no follow-up is filed (Issue #2695). It names the served
  * model and reason, says why nothing was filed, and references no follow-up.
+ * Throws when the verdict does warrant a follow-up or has no shortfalls.
  */
 export function buildDegradedNoFollowUpSection(
   verdict: DegradedDeliveryVerdict,
 ): string {
+  if (verdict.shortfalls.length === 0 || degradedNeedsFollowUp(verdict)) {
+    throw new Error(
+      "buildDegradedNoFollowUpSection: needs only unassessed shortfalls",
+    );
+  }
   const unstated = verdict.shortfalls.length === 1 &&
     verdict.shortfalls[0]?.criterion === UNSTATED_SCOPE_ITEM;
   const why = unstated

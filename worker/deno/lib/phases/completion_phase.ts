@@ -2008,10 +2008,7 @@ async function completionBody(
   // follow-up the fleet picks up, and the PR body names the gap. A healthy
   // run, or a degraded one that met everything, is untouched.
   //
-  // Issue #2695: only a `partial` or `missing` shortfall files that follow-up.
-  // When every shortfall is `unassessed` (no stated criteria, or none the
-  // summary assessed), the PR still opens with a degraded note naming the
-  // model and reason, but no `Finish #N` issue is filed or reused.
+  // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
   // ---------------------------------------------------------------------
   const degradedDelivery = assessDegradedDelivery({
     claudeResults: state.claudeRunStats ?? [],

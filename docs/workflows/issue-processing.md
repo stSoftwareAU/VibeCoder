@@ -1147,8 +1147,8 @@ flowchart TD
   is a shortfall.
 - **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).
   An `unassessed` item carries no evidence of a gap, and a follow-up built only
-  from those restated whole issues as `Finish #N` tickets no later run could act
-  on. When every shortfall is `unassessed`, no follow-up is filed or reused; the
+  from those just restated the whole issue as a `Finish #N` ticket no later run
+  could act on. When every shortfall is `unassessed`, no follow-up is filed or reused; the
   PR still opens with a `Degraded run — no follow-up filed` section naming the
   served model and reason and saying why — "the issue states no acceptance
   criteria", or "no acceptance criterion was assessed `partial` or `missing`"

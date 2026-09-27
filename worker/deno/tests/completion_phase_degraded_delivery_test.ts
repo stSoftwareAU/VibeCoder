@@ -94,7 +94,7 @@ The parser mishandles a leap year.
 `;
 
 /** Issue #2695 (c): the first criterion `partial`, the second `met`. */
-const SUMMARY_ONE_PARTIAL = `## Summary
+const SUMMARY_PARTIAL_AND_MET = `## Summary
 
 Did a little.
 
@@ -354,7 +354,7 @@ Deno.test("completion - (a) a degraded run on an issue stating no criteria files
 Deno.test("completion - (c) a degraded run with one partial criterion files the follow-up as before (Issue #2695)", async () => {
   const outcome = await runCompletion({
     issueBody: ISSUE_WITH_CRITERIA,
-    summary: SUMMARY_ONE_PARTIAL,
+    summary: SUMMARY_PARTIAL_AND_MET,
     claudeRunStats: DEGRADED,
   });
 
