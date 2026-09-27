@@ -73,58 +73,21 @@ flowchart TD
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- A `token-scope` refusal releases the issue with no `failed-once`, no `failed`
-  and no `needs-human`. **Reviewer: met.**
-- The host logs the scope it lacks once, as a WARNING. **Reviewer: met.**
-- Tests for both. **Reviewer: met.**
-- Ideally, skip claiming workflow-touching issues on a host whose token lacks
-  the scope. **Reviewer: met.** reason: this is already done by
-  `issueLooksLikeWorkflowWork` in the claim scan (#1475,
-  `new_work_eligibility.ts`). That code is outside the diff and unchanged; this
-  PR covers the cases that check misses.
-- `docs/USAGE.md` and `docs/SETUP.md` updates. **Reviewer: unrequested.**
-  reason: a code change owes a docs change, and both documents described the
-  old failure path.
-- The per-refusal `logger.error` became a one-time WARN plus an INFO for each
-  refusal. **Reviewer: unrequested.** reason: AC2 asks for one WARNING per
-  host. The INFO line keeps every refusal visible in the log, so none passes
-  silently.
-- Control test for the ordinary ladder. **Reviewer: unrequested.** reason: it
-  proves the early return is limited to `token_scope`.
+- **met** — A `token-scope` refusal releases the issue with no `failed-once`, no `failed` and no `needs-human`, so a capable host claims it — evidence: `worker/deno/lib/coding_failure_ladder.ts:110`, `worker/deno/lib/label_failure.ts:456`, `tests/token_scope_release_2689_test.ts::handleIssueFailure - a missing workflow scope adds no failed-once, failed or needs-human label (Issue #2689)`, `tests/token_scope_release_2689_test.ts::applyCodingFailureLadder - a missing workflow scope never calls handleIssueFailure (Issue #2689)` — reviewer: met
+- **met** — The host logs which scope it lacks, once, as a WARNING — evidence: `worker/deno/lib/workflow_scope.ts:227`, `worker/deno/lib/phases/completion_phase.ts:1275`, `worker/deno/lib/phases/completion_phase.ts:1307`, `tests/token_scope_release_2689_test.ts::createMissingScopeWarner - names the missing scope once per process (Issue #2689)` — reviewer: met
+- **met** — Tests for both — evidence: `tests/token_scope_release_2689_test.ts` (6 tests), `tests/completion_phase_workflow_refusal_1952_test.ts::completion - GitHub's workflow-scope refusal fails once, with no rebase recovery (Issue #1952)`, `tests/completion_phase_workflow_refusal_1952_test.ts::completion - an unreadable diff falls back to the commit list, so the scope check still fires (Issue #1952)` — reviewer: met
+- **partial** — Ideally, skip claiming workflow-touching issues on a host whose token lacks the scope — evidence: `worker/deno/lib/new_work_eligibility.ts:285` (pre-existing, #1475) — reviewer: partial — reason: the existing claim-scan check only matches issues whose title or body mentions workflows, so an issue like GRQ#4939 that doesn't can still be claimed and refused again after each 600 s cooldown; this diff does not extend that check.
+- **unrequested** — The per-refusal `logger.error` became `logger.info` (`worker/deno/lib/phases/completion_phase.ts:1308`) — reviewer: unrequested — reason: follows from AC2; the single WARNING carries the action and every refusal is still logged.
+- **unrequested** — `docs/USAGE.md` and `docs/SETUP.md` updates — reviewer: unrequested — reason: they document this change; both described the old failure path.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **Violation: tests depended on a module-level warn-once latch.** Evidence:
-  the first commit reset a module flag between tests, which is not safe when
-  tests run in parallel. Fixed: the latch is now per instance
-  (`createMissingScopeWarner()`) and injected through `InfrastructureDeps`, so
-  each test owns its own.
-- **Violation: a stale label in the `docs/SETUP.md` Mermaid flow.** Fixed: the
-  node now reads `Fail the run — token_scope` and leads to the release node.
-- **Partial: fail loud.** Evidence: after the first refusal, the WARNING stops
-  repeating. Fixed: each refusal still logs its reason at INFO and returns
-  failure.
-- **Partial: the tests inspect gh arguments.** Evidence: `addedLabels` looks
-  for `--add-label` in the recorded `gh` calls. Reason: no change needed. That
-  inspection sits alongside assertions on the result fields
-  (`markedAsFailedOnce`, `markedAsFailed`). The `gh` calls are the observable
-  side effect, not source text.
-- **Partial: PR summary missing.** Reason: the file was written after the
-  review; this is that file.
-- **Known limit:** if no host in the fleet has the scope, the issue keeps
-  cycling on the flat cooldown and never escalates. The once-per-host WARNING,
-  with the fix, is what makes that visible to an operator.
-- **Clean areas:**
-  - Australian English
-  - KISS and DRY (one set entry, one early-return condition, one small
-    factory)
-  - no over-engineering
-  - real-code tests with happy, error and edge cases
-  - log levels
-  - no wall-clock thresholds
-  - regression test present
+- **violation** — Log levels: a WARNING that repeats an earlier one — evidence: `worker/deno/lib/phases/completion_phase.ts:1275` — reason: when the start-up verdict is `absent`, `run_worker.ts:474` has already warned about the missing scope, so the first pre-push refusal warns again. The reviewer rated it minor and non-blocking because each warning fires only once per process. Not changed here; the push-refusal path does need the WARNING.
+- **violation** — KISS nit: `MissingScopeWarner` returns a `boolean` that only tests read — evidence: `worker/deno/lib/workflow_scope.ts:228` — reason: harmless; left as is.
+- **violation** — Docs wording nit: an older `docs/SETUP.md` line says a push refusal "fails **once**", which can now be misread as the `failed-once` label — evidence: `docs/SETUP.md` (Issue #1952 bullet) — reason: the line predates this change; the reviewer's suggested rewording is optional, and it was left as is.
+- **clean** — Australian English; DRY (reuses `WORKFLOWS_DIR`, `WORKFLOW_SCOPE_REMEDIATION`, the `scheduled_release` early return and `TRANSIENT_FAILURE_CLASSES`); KISS / no over-engineering; TDD with a regression test that fails on the unfixed code; tests use real code, not source text; parallel-safe injected warner via `InfrastructureDeps`; no wall-clock thresholds; fail loud (the run still returns failure); Deno/TypeScript conventions; docs updated with code. `deno fmt --check` and `deno lint` pass on the changed files.
 
 ## Test Plan
 
