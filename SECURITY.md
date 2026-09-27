@@ -692,6 +692,20 @@ The worker's own state files are handled one layer earlier: at the
 before the pre-commit gate** (Issue #1661), with a warning naming each path, so
 they never reach the gate and never widen its allowlist.
 
+The worker's own staged-path gate (`assertSafeToCommit()`, Issue #1758)
+exempts exactly one other case: **a path a merge in progress brings in
+unchanged** (Issue #2737). During a merge the index holds every path the
+merged-in branch changed, so a hidden file that branch already tracks (for
+example `.claude/skills/…/SKILL.md`) used to refuse the whole
+conflict-resolution commit. A refused path is exempt only when its staged
+entry (mode and blob id, with no conflict stages) is identical to that path's
+entry on `MERGE_HEAD`. It is already in the repository's history, so
+committing it discloses nothing new, and each exemption is logged at INFO
+naming the path and the `MERGE_HEAD` commit. Anything the agent added or
+edited during the merge, including an edit to a merged-in hidden file, is
+still refused. Outside a merge nothing is exempt, and a `MERGE_HEAD` that
+cannot be read exempts nothing (fail closed).
+
 **How It Works:**
 
 1. **`.gitignore` patterns**: The primary defence. Files matching these patterns won't be staged with normal `git add` commands.
