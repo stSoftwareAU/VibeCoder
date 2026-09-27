@@ -460,6 +460,8 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "### What you may change",
   "### When the issue carries a workflow-sync template",
   "### Where Both Sides Cannot Stand — Judge, and Name the Call",
+  // Issue #2688: the planning hand-off section of prompts/issue/prompt.md.
+  "### Too large for one PR → emit the planning marker, and the worker plans it",
   "### Worked Examples",
   "### [UNTRUSTED] Failed Check ###",
   "### [UNTRUSTED] Issue Description ###",
