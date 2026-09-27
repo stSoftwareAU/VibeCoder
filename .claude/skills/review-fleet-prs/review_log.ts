@@ -22,9 +22,11 @@ export interface TestChangeNote {
   change: string;
 }
 
-// A problem Fable noticed outside the PR's scope: unfair to
-// ask this PR to fix it, too important to forget, so post.ts files it as an
-// issue in the PR's repo instead of letting it block or hold the PR.
+// A pre-existing problem Fable noticed that the PR did not cause (already on
+// the base branch, unchanged by the PR): unfair to ask this PR to fix it, too
+// important to forget, so post.ts files it as a new issue in the PR's repo
+// instead of letting it block or hold the PR. A problem the PR causes is a
+// finding, never one of these.
 export interface UnrelatedIssue {
   title: string;
   body: string;

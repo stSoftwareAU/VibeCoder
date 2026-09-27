@@ -57,6 +57,10 @@ interface PrState {
   failPost?: boolean;
   /** When set, the comment read fails. */
   failRead?: boolean;
+  /** Comment ids edited in place, in order (PR #2762). */
+  edited: number[];
+  /** When set, `updateComment` fails. */
+  failEdit?: boolean;
 }
 
 function newPrState(overrides: Partial<PrState> = {}): PrState {
@@ -66,6 +70,7 @@ function newPrState(overrides: Partial<PrState> = {}): PrState {
     labelCalls: [],
     agentRuns: 0,
     errors: [],
+    edited: [],
     ...overrides,
   };
 }
@@ -185,6 +190,16 @@ async function runPass(
           state.failRead
             ? Promise.reject(new Error("HTTP 500"))
             : Promise.resolve([...state.comments]),
+        updateComment: (_r: string, id: number, body: string) => {
+          if (state.failEdit) {
+            return Promise.reject(new Error("HTTP 502: Bad Gateway"));
+          }
+          state.edited.push(id);
+          state.comments = state.comments.map((c) =>
+            c.id === id ? { ...c, body } : c
+          );
+          return Promise.resolve();
+        },
         addLabel: (_r: string, _n: number, label: string) => {
           state.labelCalls.push(`add ${label}`);
           return Promise.resolve();
@@ -252,7 +267,9 @@ Deno.test("human gate - the first pass posts exactly one comment naming the step
   assertStringIncludes(body, `\` ${STEP} \``);
   assertStringIncludes(
     body,
-    `<!-- vibe-ci-human-gate check="${GATE_CHECK}" -->`,
+    `<!-- vibe-ci-human-gate check="${GATE_CHECK}" head="${
+      "a".repeat(40)
+    }" -->`,
   );
   assertEquals(state.labelCalls, []);
   assertEquals(state.agentRuns, 0);
@@ -277,6 +294,46 @@ Deno.test("human gate - second and third passes, one on a new head, stay silent"
   assertNoAttemptMarker(state);
   assertEquals(second.processed, true);
   assertEquals(third.processed, true);
+  // Same head: nothing edited. New head: the one comment is re-stamped.
+  assertEquals(state.edited, [1001]);
+  const body = state.comments[0]?.body ?? "";
+  assertStringIncludes(body, `head="${"b".repeat(40)}"`);
+  assertEquals(body.includes("a".repeat(40)), false);
+  assertStringIncludes(body, STEP);
+});
+
+Deno.test("human gate - a pre-#2762 marker without a head is re-stamped with this head, not re-posted", async () => {
+  const legacy = buildCiHumanGateMarker({ checkName: GATE_CHECK });
+  const state = newPrState({
+    comments: [fleetComment(5, `gate\n\n${legacy}`)],
+  });
+  const result = await runPass(state, gateInput());
+
+  assertEquals(result.processed, true);
+  assertEquals(state.posted, []);
+  assertEquals(state.edited, [5]);
+  assertStringIncludes(
+    state.comments[0]?.body ?? "",
+    `<!-- vibe-ci-human-gate check="${GATE_CHECK}" head="${
+      "a".repeat(40)
+    }" -->`,
+  );
+});
+
+Deno.test("human gate - a failed re-stamp on a new head is unprocessed and fails loud", async () => {
+  const state = newPrState();
+  await runPass(state, gateInput());
+  state.failEdit = true;
+  const result = await runPass(
+    state,
+    gateInput(GATE_CHECK, STEP, "222"),
+    "b".repeat(40),
+  );
+
+  assertEquals(result.processed, false);
+  assertEquals(state.posted.length, 1);
+  assertEquals(state.agentRuns, 0);
+  assertEquals(state.errors.some((e) => e.includes("PR #2762")), true);
 });
 
 Deno.test("human gate - a changed step on a later pass still posts nothing", async () => {

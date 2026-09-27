@@ -25,7 +25,9 @@
  * {@link findOpenDeferrals} lists the checks a fleet-authored
  * `vibe-ci-fix-deferred` marker has parked on an issue that is **still
  * open**, so `findFailedCiChecks` can leave them alone until the blocker
- * closes. Both halves resolve a blocker through {@link parseBlockerRef} and
+ * closes. {@link findParkedChecks} answers from the same read with the
+ * human gates (Issue #2744), so a gated check costs no second fetch. Both
+ * halves resolve a blocker through {@link parseBlockerRef} and
  * {@link isBlockerOpen}, so the `owner/repo#N` form is parsed in one place.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
@@ -320,31 +322,44 @@ function markerCommentsFromRest(
   return comments;
 }
 
+/** What {@link findParkedChecks} read off one pull request's comments. */
+export interface ParkedChecks {
+  /** Checks deferred on a still-open blocker (Issue #1881). */
+  deferrals: OpenDeferral[];
+  /**
+   * The fleet-authored markers the thread carries — `humanGates` is what
+   * `findHumanGate` consults (Issue #2744). Empty when the read failed.
+   */
+  markers: FleetCiFixMarkers;
+}
+
 /**
- * The checks on a pull request that a fleet-authored deferral marker has
- * parked on an issue that is still open (Issue #1881).
+ * The checks on a pull request the fleet has parked, from one comment read:
+ * those a deferral marker has parked on a still-open issue (Issue #1881),
+ * and the fleet-authored markers — human gates among them (Issue #2744).
  *
  * The base-branch deferral (#1880) posts the agent's diagnosis once with a
  * `vibe-ci-fix-deferred` marker naming the blocker. Until that issue closes,
  * nothing on the pull request's own branch can turn the check green, so the
  * scanner has no business re-diagnosing it — on this host or any other. Once
  * the blocker closes the check is returned as usual, and #1880's loop guard
- * refuses a silent second deferral on the same closed issue.
+ * refuses a silent second deferral on the same closed issue. A human gate
+ * (#2727) is parked the same way until a person approves it.
  *
  * **The fail direction is towards scanning.** A comment thread that cannot
  * be read, a marker from outside the fleet, an unresolved fleet identity, a
  * reference that is not `owner/repo#N`, or an issue whose state cannot be
- * read all leave the check *undeferred*: each is reported, and the ordinary
+ * read all leave the check *unparked*: each is reported, and the ordinary
  * scan goes ahead. A suppressed real failure is the outcome nobody would
  * notice, so no error is allowed to produce one.
  *
  * @param options - Repo, PR, `gh` runner, fleet logins and logger.
- * @returns One entry per deferred check, in marker order. Empty when nothing
- *   is deferred or nothing could be trusted.
+ * @returns The open deferrals, in marker order, and the fleet markers. The
+ *   markers are empty only when the comment read failed.
  */
-export async function findOpenDeferrals(
+export async function findParkedChecks(
   options: FindOpenDeferralsOptions,
-): Promise<OpenDeferral[]> {
+): Promise<ParkedChecks> {
   const { repo, prNumber, ghCommandFn, fleetLogins, logger } = options;
 
   let rows: unknown[];
@@ -353,15 +368,15 @@ export async function findOpenDeferrals(
   } catch (error: unknown) {
     logger.error(
       "Could not read the pull request's comments, so no CI-fix deferral " +
-        "can be honoured — every failing check is scanned as usual " +
-        "(Issue #1881)",
+        "or human gate can be honoured — every failing check is scanned as " +
+        "usual (Issue #1881, Issue #2744)",
       {
         repo,
         prNumber,
         error: error instanceof Error ? error.message : String(error),
       },
     );
-    return [];
+    return { deferrals: [], markers: emptyMarkers() };
   }
 
   const markers = collectFleetCiFixMarkers(
@@ -369,7 +384,7 @@ export async function findOpenDeferrals(
     fleetLogins,
     (message) => logger.warn(message),
   );
-  if (markers.deferrals.size === 0) return [];
+  if (markers.deferrals.size === 0) return { deferrals: [], markers };
 
   const open: OpenDeferral[] = [];
   const seen = new Set<string>();
@@ -402,7 +417,22 @@ export async function findOpenDeferrals(
       signature: record.signature,
     });
   }
-  return open;
+  return { deferrals: open, markers };
+}
+
+/**
+ * The checks on a pull request that a fleet-authored deferral marker has
+ * parked on an issue that is still open (Issue #1881) — the deferral half of
+ * {@link findParkedChecks}, with the same fail-towards-scanning contract.
+ *
+ * @param options - Repo, PR, `gh` runner, fleet logins and logger.
+ * @returns One entry per deferred check, in marker order. Empty when nothing
+ *   is deferred or nothing could be trusted.
+ */
+export async function findOpenDeferrals(
+  options: FindOpenDeferralsOptions,
+): Promise<OpenDeferral[]> {
+  return (await findParkedChecks(options)).deferrals;
 }
 
 /**
