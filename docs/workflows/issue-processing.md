@@ -1531,6 +1531,53 @@ flowchart TD
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 
+## ✂️ `Prompt is too long` — one uncounted fresh-session retry
+
+When the agent CLI refuses a run with `Prompt is too long`, the transcript the
+worker chose to **resume** no longer fits the model's context window. That is
+the worker's fault, not the issue's, and `/compact` cannot fix it because it
+resends the same oversized transcript. Until Issue #2682 the refusal was
+classified `unknown` and cost the issue `failed-once`
+([NEAT-AI-Discovery#2181](https://github.com/stSoftwareAU/NEAT-AI-Discovery/issues/2181)).
+
+After each execute attempt the phase checks the agent's output:
+
+- **Refused on a resumed session, first time:** the worker discards that session
+  and retries once on a fresh session. It deletes the session's stream slot and
+  the issue's resume pointer, and logs one line naming the discarded session and
+  the fresh session. No label is added, and the retry is not counted against the
+  failure budget. `/compact` is not tried first.
+- **Refused on a fresh session, or again after that retry:** this is a normal
+  failure with category `prompt-too-long`. The first gives `failed-once`, the
+  next gives `failed`. It is not an infrastructure failure, so the #1550 infra
+  retry does not apply.
+
+```mermaid
+flowchart TD
+  Run["Execute attempt"] --> Out{"Output is<br/>'Prompt is too long'?"}
+  Out -->|No| Normal["Ordinary outcome"]
+  Out -->|Yes| Resumed{"Resumed session<br/>and not yet retried?"}
+  Resumed -->|Yes| Discard["Discard the session<br/>(stream slot + resume pointer)<br/>log one line"]
+  Discard --> Fresh["Retry once on a fresh session<br/>no label, not counted"]
+  Fresh --> Run
+  Resumed -->|No| Fail["Failure: category prompt-too-long"]
+  Fail --> Ladder["failed-once, then failed"]
+  style Discard fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Fresh fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Fail fill:#d46a6a,stroke:#7a1f1f,color:#1a1a1a
+```
+
+The discard path is generic: a worker fault on a resumed session gets one
+uncounted fresh-session retry. Sibling faults (e.g. #2689) can reuse
+`discardResumedSession`.
+
+**Implementation:**
+[prompt_too_long.ts](../../worker/deno/lib/prompt_too_long.ts) (detect, decide,
+discard),
+[phases/execute_phase.ts](../../worker/deno/lib/phases/execute_phase.ts)
+(`executeWithFreshSessionFallback`), and the `prompt_too_long` category in
+[failure_diagnosis.ts](../../worker/deno/lib/failure_diagnosis.ts).
+
 ## 🔁 One run, one attempt per issue
 
 The scan ranks a **cached** issue list (`issues_all`, TTL 600 s), and until

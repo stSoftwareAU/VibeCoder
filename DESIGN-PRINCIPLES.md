@@ -358,9 +358,14 @@ access cannot direct the worker, whatever they write in an issue. The
 `!isBot` term is load-bearing on its own — a bot with write access must still
 not be able to schedule work, because write access alone does not confer the
 right to direct. Resolved every cycle by
-`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) and folded
-across the monitored repos as an **intersection**, so write access on one repo
-never confers trust on another.
+`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) per
+repository. A decision about one repository — a label adder, an edit to an
+approved body — reads that repository's own set through `trustedAuthorsFor()`
+(Issue #2734); only a genuinely fleet-wide decision reads the **intersection**
+across the monitored repos. Either way write access on one repo never confers
+trust on another. A host monitoring organisations whose writers share nobody
+folds the intersection to nothing: that is logged once at WARNING, naming the
+organisations, and each repository keeps working with its own writers.
 
 **Axis 2 — whose input we act on.** An explicit *known* list, because "known"
 is precisely the property that cannot be derived from repository permissions:
@@ -372,8 +377,11 @@ Vibe Coder logins plus `authorized_commenters`.
 accepted as input; neither may schedule or change work. Two mechanisms carry
 it and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any
 fleet login as an untrusted label applier (Issue #3416), and
-`strip_untrusted_work_on.ts` strips a self-applied `work-on` and comments once
-(Issue #3575), failing closed when the applier cannot be established.
+`strip_untrusted_work_on.ts` flags a self-applied `work-on` with `needs-human`
+and comments once (Issue #3575), failing closed when the applier cannot be
+established or the trusted set is empty. It never removes `work-on`: that label
+records a human's decision, and a wrong trust verdict must not destroy it
+(Issue #2734).
 
 **The fleet exclusion needs no configuration.** The Vibe Coder accounts hold
 repository write access by necessity — they push branches — so under a
@@ -924,6 +932,23 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
   a planning run that started late in a cycle fell back to the flat 600s — a
   third of the agent timeout it was meant to contain — and was abandoned
   mid-repair. Non-agent handlers keep exactly the flat budget.
+- **Abandonment is scoped to the handler** (Issue #2720): every agent a handler
+  dispatch starts is stamped with that dispatch as its owner
+  (`handler_watchdog.ts`), and an abandonment terminates only those runs and
+  retry ladders — never an issue slot's (`s1`/`s2`) run beside it. The scoped
+  termination leaves the process-global terminating flag alone, so the slots
+  keep launching. Only the run-ending cleanup still terminates every run.
+- **Progress re-arms the deadline** (Issue #2720): when the hard timeout
+  expires while the handler's own agent is still producing output (last tool
+  call or stdout chunk inside `progress_extension_stall_seconds`), the deadline
+  is re-armed by `progress_extension_grant_seconds` — the issue path's
+  progress-extension policy and liveness rule, not a second one. An absolute
+  ceiling bounds it: one default agent budget (`claude_timeout`, 3600s) from
+  dispatch, never below the base hard timeout. A handler whose agent has
+  stalled, or that has no live agent, is still abandoned at the base timeout.
+- **The abandonment says what it abandoned** (Issue #2720): the `[watchdog]`
+  ERROR line names the work item the handler noted — for PR Feedback,
+  `owner/repo#<pr> <comment type> <comment id>` — and why it was not re-armed.
 - **Deterministic testing**: the timer (`watchdogDelay`) and clock (`now`) are
   injected, following the existing `nowFn` style, so timeouts are tested with no
   real sleep. Production wires an **unref'd** `setTimeout` so a fast handler
@@ -937,9 +962,10 @@ symptom — a `scan_cursor` frozen at Priority 1.8).
 `worker/deno/lib/handler_watchdog.ts`, wired into the priority dispatch in
 `worker/deno/lib/run_core.ts` (`handlerHardTimeoutMs()` /
 `agentHandlerFloorMs()`). Tests: `tests/handler_watchdog_test.ts` (unit),
-`tests/run_core_watchdog_test.ts` (loop integration) and
+`tests/run_core_watchdog_test.ts` (loop integration),
 `tests/agent_run_termination_test.ts` (agent-backed bounds and the agent
-floor).
+floor) and `tests/handler_watchdog_scope_test.ts` (scoped termination, progress
+re-arm and ceiling).
 
 ### Per-cycle stale-assignment recovery
 

@@ -31,16 +31,44 @@ Optional argument: `owner/name` to review one repo only.
 3. **New functionality needs a test where appropriate.** Fable judges it: a
    refactor, docs, config or workflow change may not need one; new behaviour
    or a bug fix does.
-4. **Meaningful changes to existing tests are the owner's call.** The PR is
-   held for the owner with a comment-only review; it is neither approved nor
-   sent back. A removed test file is always meaningful. Trivial edits
-   (formatting, renames, imports, added cases, fixture paths) are not.
+4. **A test is never removed or loosened to make the quality gate pass.** A
+   test removed, skipped, weakened or loosened without the linked issue
+   requiring it is a blocking finding: the PR goes back to the fleet to
+   restore it. A deliberate change the issue does require (an expected value
+   or behaviour the issue changes, or deleting a test that only pinned the
+   old implementation) is the owner's call: the PR is held with a
+   comment-only review, neither approved nor sent back. Trivial edits
+   (formatting, renames, imports, added cases, fixture paths) are not, and
+   neither are edits that only **tighten** a test (it now asserts more or
+   allows less, as the issue asks): those are approved.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
 7. **Review each head commit once.** A new push gets a fresh review. When
    the fleet pushes a fix to a PR that was sent back, the re-review checks
    the earlier findings were fixed, and approves once they are.
+
+## Which repos
+
+This host's `.config.json` lists only the repos this host's worker looks
+after; other fleet hosts look after others. The gate therefore reviews fleet
+PRs in any repo, and Dependabot PRs in this host's repos plus any repo where
+a fleet account has had a PR in the last 30 days.
+
+## Dependabot PRs
+
+Each gate pass also looks after open Dependabot PRs into a default branch,
+with no model involved (`dependabot.ts`):
+
+- **Behind or conflicting:** comments `@dependabot rebase` once per head
+  commit, so Dependabot brings its own branch up to date and resolves the
+  conflict. Never push to a Dependabot branch: Dependabot stops updating a PR
+  someone else has pushed to.
+- **Approved at its head and not yet armed:** arms auto-merge (squash where
+  the repo allows it), so it merges as soon as every required check passes.
+
+Dependabot PRs are still reviewed by Fable like any other; this upkeep only
+gets an approved one merged. The pass reports what it did in `upkeep`.
 
 ## The loop
 
@@ -100,7 +128,17 @@ single message so they run in parallel, each with `model: "fable"` and
 >    **meaningful** if it removes a test case, weakens or deletes an
 >    assertion, changes an expected value or expected behaviour, or skips or
 >    loosens a test. It is **trivial** if it only reformats, renames,
->    updates imports or fixture paths, or adds cases or assertions.
+>    updates imports or fixture paths, or adds cases or assertions. It is
+>    **tightened** if an expected value or behaviour changes only to make
+>    the test stricter, as the issue asks: it now asserts more, allows less
+>    (e.g. no longer tolerates a permission or a call it used to allow), or
+>    pins a stricter count, and nothing it used to check is dropped. A change
+>    that tightens one thing and loosens another is **meaningful**.
+>    If a test is removed, skipped, weakened or loosened and the linked
+>    issue does not require it (for example it looks like it was changed to
+>    make the build pass), report it as a blocking **finding** asking for the
+>    test to be restored, not only under `testChanges`. Report it under
+>    `testChanges` as **meaningful** only when the issue requires the change.
 > 6. {previousFindings, if not empty: "An earlier review of this PR asked
 >    for these fixes: {previousFindings}. Check each one is fixed; one that
 >    is not is still a finding."}
@@ -110,12 +148,13 @@ single message so they run in parallel, each with `model: "fable"` and
 >
 > Only report **blocking** findings: things that are wrong, unsafe or
 > untested. Style preferences and optional polish are not blocking. A
-> meaningful test change is not a finding; report it under `testChanges`. Do
+> meaningful test change the issue requires is not a finding; report it under
+> `testChanges`. Do
 > not guess: every finding needs a file and line from the diff and a concrete
 > failure scenario.
 >
 > Reply with only this JSON:
-> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}]}`
+> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}]}`
 
 If an agent fails or returns something that isn't this JSON, post nothing for
 that PR; the next gate run reports it again.

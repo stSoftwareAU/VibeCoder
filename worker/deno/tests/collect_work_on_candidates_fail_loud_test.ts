@@ -35,6 +35,7 @@ function makeConfig(): WorkerConfig {
 
 interface StripRecorder {
   removed: Array<{ issue: number; label: string }>;
+  added: Array<{ issue: number; label: string }>;
   comments: Array<{ issue: number; body: string }>;
 }
 
@@ -89,12 +90,20 @@ function createMockGh(recorder: StripRecorder): (
       recorder.removed.push({ issue: Number(args[2]), label: args[idx + 1]! });
       return Promise.resolve("");
     }
+    if (
+      args[0] === "issue" && args[1] === "edit" &&
+      args.includes("--add-label")
+    ) {
+      const idx = args.indexOf("--add-label");
+      recorder.added.push({ issue: Number(args[2]), label: args[idx + 1]! });
+      return Promise.resolve("");
+    }
     return Promise.resolve("[]");
   };
 }
 
-Deno.test("collectWorkOnCandidates - untrusted work-on is stripped and explained, not silently skipped (Issue #3575)", async () => {
-  const recorder: StripRecorder = { removed: [], comments: [] };
+Deno.test("collectWorkOnCandidates - untrusted work-on is flagged needs-human and explained, not silently skipped (Issues #3575, #2734)", async () => {
+  const recorder: StripRecorder = { removed: [], added: [], comments: [] };
   const mockGh = createMockGh(recorder);
   const config = makeConfig();
 
@@ -125,8 +134,10 @@ Deno.test("collectWorkOnCandidates - untrusted work-on is stripped and explained
   // Not selected — the untrusted label does not queue work.
   assertEquals(result.candidates.length, 0);
 
-  // Fail loud: the label was stripped and one explanatory comment posted.
-  assertEquals(recorder.removed, [{ issue: 50, label: "work-on" }]);
+  // Fail loud without destroying the human's label (Issue #2734): work-on
+  // stays, needs-human is added and one explanatory comment posted.
+  assertEquals(recorder.removed, []);
+  assertEquals(recorder.added, [{ issue: 50, label: "needs-human" }]);
   assertEquals(recorder.comments.length, 1);
   assert(recorder.comments[0]!.issue === 50);
   assertStringIncludes(recorder.comments[0]!.body, "mallory");

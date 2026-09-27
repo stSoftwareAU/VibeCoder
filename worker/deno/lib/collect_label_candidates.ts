@@ -17,6 +17,7 @@
  */
 
 import type { WorkerConfig } from "../types.ts";
+import { trustedAuthorsFor } from "./trust_snapshot.ts";
 import { runGhCommand } from "./github.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import {
@@ -90,6 +91,11 @@ export async function collectLabelCandidates(
   considered: number;
 }> {
   const ghFn = options.ghCommandFn ?? runGhCommand;
+  // Issue #2734: every trust decision here is about this one repository, so
+  // it reads this repository's own writers — never the fleet-wide
+  // intersection, which two organisations with disjoint writers fold to
+  // nothing.
+  const repoAllowedAuthors = trustedAuthorsFor(config, repo);
   const diag = options.diagnostics;
   const candidates: IssueCandidate[] = [];
   const blocked: Array<{ repo: string; milestone: string }> = [];
@@ -184,7 +190,7 @@ export async function collectLabelCandidates(
         repo,
         issue.number,
         issue.labels,
-        config.allowedAuthors,
+        repoAllowedAuthors,
         batchedGh,
         options.githubUser,
         fleetWorkerLogins,
@@ -247,7 +253,7 @@ export async function collectLabelCandidates(
         repo,
         issue.number,
         label,
-        config.allowedAuthors,
+        repoAllowedAuthors,
         batchedGh,
         options.timelineCache,
         fleetWorkerLogins,
@@ -340,7 +346,7 @@ export async function collectLabelCandidates(
             repo,
             issue.number,
             label,
-            config.allowedAuthors,
+            repoAllowedAuthors,
             closedPR,
             batchedGh,
             options.timelineCache,
@@ -384,7 +390,7 @@ export async function collectLabelCandidates(
             config.workOnLabel === "work-on"
               ? "ignore-open-prs"
               : "ignore-open-prs",
-            config.allowedAuthors,
+            repoAllowedAuthors,
             batchedGh,
             options.timelineCache,
             options.cache,

@@ -100,7 +100,11 @@ current trusted-author set; the worker's own Deno process.
 That trusted-author set is **never** `allowed_authors` (Issue #1066). It is
 each monitored repo's write, maintain, or admin collaborators, minus the host
 login, `service_accounts`, `fleet_pr_authors`, optional `exclusion_team`
-members, and bot-shaped logins — intersected across the monitored repos.
+members, and bot-shaped logins. A decision about one repository — who applied a
+label, who edited an approved body — uses that repository's own set; only a
+fleet-wide decision uses the intersection across the monitored repos, and a
+repository the resolve could not list falls back to that intersection. Write
+access on one repository therefore never confers trust on another (Issue #2734).
 Anyone who can grant write access on a monitored repo can authorise an
 instructor of the worker. That is the intended design, and it is a wider set
 than a hand-edited allowlist.

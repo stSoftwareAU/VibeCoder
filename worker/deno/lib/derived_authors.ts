@@ -53,6 +53,15 @@
  * could edit would be a widening the whole design exists to prevent.
  * Team membership is fetched once per resolve, not once per repo.
  *
+ * **Two views of one resolve** (Issue #2734). `byRepo` is each repository's
+ * own set, and it is what every repository-scoped decision reads (label
+ * adders, content-approval edits — via `trustedAuthorsFor` in
+ * trust_snapshot.ts). {@link intersectDerivedAuthors} folds it into the
+ * fleet-wide floor for the decisions that are not about one repository, and
+ * for a repository the resolve skipped. Two organisations whose writers share
+ * nobody fold that floor to nothing; {@link formatDisjointTrustWarning} names
+ * them once at WARNING, and each repository keeps its own writers.
+ *
  * Australian English throughout (authorised, behaviour, normalise).
  */
 
@@ -488,12 +497,14 @@ async function resolveFresh(
  * of the per-repo sets, so a human with write on fourteen of fifteen repos
  * is not fleet-wide trusted. That is the fail-closed direction, and the
  * remedy — grant the access, or narrow `repos` — is visible and deliberate.
- * The per-repo map stays on {@link DerivedAuthorsResult} so a repo-scoped
- * call site can use that repo's exact set rather than this floor.
+ * The per-repo map stays on {@link DerivedAuthorsResult}, and every
+ * repo-scoped call site uses that repo's exact set rather than this floor
+ * (Issue #2734): a writer on repository A need not also write on an unrelated
+ * organisation's repository B for their `work-on` on A to count.
  *
  * An empty repo list yields empty sets: no repo has vouched for anyone, so
- * nobody is trusted. Combined with the skip-cycle gate, a misconfiguration
- * that empties the set stops the worker rather than opening it up.
+ * nobody is trusted. An empty set is never evidence that someone is
+ * untrusted: nothing destructive acts on it (Issue #2734).
  *
  * @param byRepo - Per-repo trusted sets from a successful resolve.
  * @returns The intersection, as the two arrays the snapshot holder takes.
@@ -541,4 +552,50 @@ export function formatDerivedAuthorsFoldSummary(
     .join(" ");
   return `[derived-authors] fleet-wide=${folded.allowedAuthors.length} ` +
     `(intersection of ${byRepo.size} repo(s)) ${perRepo}`;
+}
+
+/**
+ * The WARNING for an empty fleet-wide set over non-empty repositories
+ * (Issue #2734), or `null` when there is nothing to warn about.
+ *
+ * A host monitoring two organisations whose writers share nobody folds the
+ * intersection to nothing. That is not an outage: every repository-scoped
+ * decision reads its own set through `trustedAuthorsFor`, so the worker keeps
+ * working each repository. It is still worth one line, because anything
+ * genuinely fleet-wide now trusts nobody — so name the organisations that
+ * share no writer. `null` when the intersection is non-empty, or when no
+ * repository trusts anyone (the resolve has nothing to be disjoint about).
+ */
+export function formatDisjointTrustWarning(
+  byRepo: ReadonlyMap<string, TrustedAuthors>,
+  folded: TrustedAuthors,
+): string | null {
+  if (folded.allowedAuthors.length > 0) return null;
+  const writersByOrg = new Map<string, Set<string>>();
+  for (const [repo, t] of byRepo) {
+    const org = repo.split("/")[0] ?? repo;
+    const writers = writersByOrg.get(org) ?? new Set<string>();
+    t.allowedAuthors.forEach((login) => writers.add(login.toLowerCase()));
+    writersByOrg.set(org, writers);
+  }
+  if ([...writersByOrg.values()].every((w) => w.size === 0)) return null;
+
+  const orgs = [...writersByOrg.keys()];
+  const disjoint: string[] = [];
+  for (let i = 0; i < orgs.length; i++) {
+    for (let j = i + 1; j < orgs.length; j++) {
+      const a = writersByOrg.get(orgs[i]!)!;
+      const b = writersByOrg.get(orgs[j]!)!;
+      if (![...a].some((login) => b.has(login))) {
+        disjoint.push(`${orgs[i]} and ${orgs[j]}`);
+      }
+    }
+  }
+  const why = disjoint.length > 0
+    ? `${disjoint.join("; ")} share no writer`
+    : `no writer holds write on every monitored repository in ` +
+      orgs.join(", ");
+  return `[derived-authors] the fleet-wide trusted-author set is empty: ` +
+    `${why}. Each repository is worked with its own writers; only ` +
+    `fleet-wide decisions trust nobody (Issue #2734)`;
 }

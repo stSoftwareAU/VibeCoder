@@ -391,13 +391,16 @@ import {
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { resolveRunId } from "./audit_journal.ts";
 import {
+  allowedAuthorsByRepoFrom,
   createTrustSnapshotHolder,
   setLiveTrustedAuthors,
 } from "./trust_snapshot.ts";
 import {
   formatDerivedAuthorsFoldSummary,
+  formatDisjointTrustWarning,
   intersectDerivedAuthors,
   resolveDerivedAuthors,
+  type TrustedAuthors,
 } from "./derived_authors.ts";
 import { getMachineId } from "./machine_id.ts";
 
@@ -430,7 +433,9 @@ import {
 } from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
 import type { RunOutcome } from "./run_outcome.ts";
+import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
 import {
+  agentRunActivity,
   resetAgentRunsTerminating,
   terminateActiveAgentRuns,
 } from "./claude_runner.ts";
@@ -1176,10 +1181,13 @@ export async function createProductionRunCoreDeps(
    * Push a new snapshot into every consumer that used to hold a
    * construction-time copy (Issue #253).
    */
-  function applyTrustSnapshot(sets: {
-    allowedAuthors: string[];
-    authorisedCommenters: string[];
-  }): void {
+  function applyTrustSnapshot(
+    sets: {
+      allowedAuthors: string[];
+      authorisedCommenters: string[];
+    },
+    byRepo: ReadonlyMap<string, TrustedAuthors> = new Map(),
+  ): void {
     const snap = trustHolder.apply(sets);
     setLiveTrustedAuthors(snap);
     // Issue #1066: sub-commands (`work_on_issue`, `planning_processor`, the
@@ -1190,6 +1198,10 @@ export async function createProductionRunCoreDeps(
     // legitimate collaborator. One assignment keeps them on the same set as
     // the snapshot's own consumers.
     config.allowedAuthors = [...snap.allowedAuthors];
+    // Issue #2734: each repository's own writers, for the repository-scoped
+    // decisions (`trustedAuthorsFor`). The same resolve as the intersection
+    // above, so the two cannot drift.
+    config.allowedAuthorsByRepo = allowedAuthorsByRepoFrom(byRepo);
     config.authorisedCommenters = [...snap.authorisedCommenters];
     fleetAuthors = snap.fleetAuthors;
     authorisedCommenters = snap.allowedAuthors;
@@ -1229,6 +1241,8 @@ export async function createProductionRunCoreDeps(
   // it.
   const trustRefreshScope = `run-core-deps-${++productionDepsFactoryCount}`;
   let trustRefreshCycle = 0;
+  /** Issue #2734: the disjoint-writers WARNING last logged, so it logs once. */
+  let lastDisjointTrustWarning: string | null = null;
 
   applyTrustSnapshot(trustSeed);
 
@@ -1360,6 +1374,16 @@ export async function createProductionRunCoreDeps(
     // budget with it rather than being clipped by the flat 600 s.
     planningTimeoutSeconds: config.planningTimeout ??
       runCoreConfig.planningTimeoutSeconds,
+    // Issue #2720: the handler watchdog re-arms on the operator's own
+    // `progress_extension_*` settings, the ones the issue path uses.
+    handlerProgressExtension: {
+      enabled: config.progressExtensionEnabled ??
+        OPERATIONAL_DEFAULTS.progressExtensionEnabled,
+      grantSeconds: config.progressExtensionGrantSeconds ??
+        OPERATIONAL_DEFAULTS.progressExtensionGrantSeconds,
+      activityStallSeconds: config.progressExtensionStallSeconds ??
+        OPERATIONAL_DEFAULTS.progressExtensionStallSeconds,
+    },
     // Issue #2335: the pool's host-local blank-stream lock applies only when
     // runs join a stream's shared conversation.
     enableSessionResume: config.enableSessionResume ??
@@ -3495,7 +3519,9 @@ export async function createProductionRunCoreDeps(
                   candidate.repo,
                 ),
               }),
-            runAgent: async (_candidate, parts) => {
+            runAgent: async (candidate, parts) => {
+              // Issue #2720: the watchdog's abandonment line names it.
+              noteAgentRunWorkItem(`${candidate.repo}#${candidate.prNumber}`);
               const run = await workerDeps.claude.runClaudeWithRetry(
                 {
                   prompt: parts.prompt,
@@ -3809,10 +3835,12 @@ export async function createProductionRunCoreDeps(
     // Issue #4369: no agent runs detached or is relaunched after run end.
     terminateActiveAgentRuns: async (
       reason: string,
-      options?: { keepTerminating?: boolean },
+      options?: { keepTerminating?: boolean; owner?: string },
     ) => {
       await terminateActiveAgentRuns(reason, logger, options);
     },
+    // Issue #2720: the handler watchdog re-arms while its agent works.
+    agentRunActivity,
 
     // Minimum claim runway (Issues #4304/#425, VibeCoder#170): default 5
     // minutes — only a claim that cannot even finish setup is refused. Since
@@ -4799,7 +4827,8 @@ export async function createProductionRunCoreDeps(
     //     real, timestamped fetch (Issue #1453) — and a monitored repo this
     //     login cannot list is skipped and named, not treated as an outage.
     //  2. The fold is an intersection, not a union: write access on one
-    //     monitored repo must not confer trust on another.
+    //     monitored repo must not confer trust on another. Repository-scoped
+    //     decisions read that repo's own set instead (Issue #2734).
     //  3. `applyTrustSnapshot` is the only way in, so the comment-trust
     //     path, the fleet-PR guards, the heartbeat marker allowlist and
     //     the suppression allowlist all move together or not at all.
@@ -4844,7 +4873,15 @@ export async function createProductionRunCoreDeps(
       if (resolved.servedFrom?.snapshot !== "within-ttl") {
         logger.info(formatDerivedAuthorsFoldSummary(resolved.byRepo, folded));
       }
-      applyTrustSnapshot(folded);
+      // Issue #2734: organisations with disjoint writers fold to nothing.
+      // Not an outage — every repository keeps its own set — so one WARNING
+      // while it holds, not one per cycle, and the cycle carries on.
+      const disjoint = formatDisjointTrustWarning(resolved.byRepo, folded);
+      if (disjoint !== null && disjoint !== lastDisjointTrustWarning) {
+        logger.warn(disjoint);
+      }
+      lastDisjointTrustWarning = disjoint;
+      applyTrustSnapshot(folded, resolved.byRepo);
       return { ok: true as const };
     },
 
