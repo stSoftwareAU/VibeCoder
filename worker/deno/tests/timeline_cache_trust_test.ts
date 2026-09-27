@@ -208,7 +208,7 @@ Deno.test(
 );
 
 Deno.test(
-  "strip_untrusted_work_on - still strips when the exhaustive read confirms an untrusted adder (Issue #3709)",
+  "strip_untrusted_work_on - still hands to a human when the exhaustive read confirms an untrusted adder (Issue #3709, #2734)",
   async () => {
     const page1 = Array.from(
       { length: 100 },
@@ -243,8 +243,13 @@ Deno.test(
     assertEquals(stripped, true);
     assertEquals(
       mutations.some((m) => m.includes("--remove-label")),
+      false,
+      "work-on is never removed (Issue #2734)",
+    );
+    assertEquals(
+      mutations.some((m) => m.includes("--add-label")),
       true,
-      "the untrusted label must be removed",
+      "the untrusted label is handed to a human",
     );
   },
 );

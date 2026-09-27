@@ -358,9 +358,14 @@ access cannot direct the worker, whatever they write in an issue. The
 `!isBot` term is load-bearing on its own — a bot with write access must still
 not be able to schedule work, because write access alone does not confer the
 right to direct. Resolved every cycle by
-`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) and folded
-across the monitored repos as an **intersection**, so write access on one repo
-never confers trust on another.
+`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) per
+repository. A decision about one repository — a label adder, an edit to an
+approved body — reads that repository's own set through `trustedAuthorsFor()`
+(Issue #2734); only a genuinely fleet-wide decision reads the **intersection**
+across the monitored repos. Either way write access on one repo never confers
+trust on another. A host monitoring organisations whose writers share nobody
+folds the intersection to nothing: that is logged once at WARNING, naming the
+organisations, and each repository keeps working with its own writers.
 
 **Axis 2 — whose input we act on.** An explicit *known* list, because "known"
 is precisely the property that cannot be derived from repository permissions:
@@ -372,8 +377,11 @@ Vibe Coder logins plus `authorized_commenters`.
 accepted as input; neither may schedule or change work. Two mechanisms carry
 it and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any
 fleet login as an untrusted label applier (Issue #3416), and
-`strip_untrusted_work_on.ts` strips a self-applied `work-on` and comments once
-(Issue #3575), failing closed when the applier cannot be established.
+`strip_untrusted_work_on.ts` flags a self-applied `work-on` with `needs-human`
+and comments once (Issue #3575), failing closed when the applier cannot be
+established or the trusted set is empty. It never removes `work-on`: that label
+records a human's decision, and a wrong trust verdict must not destroy it
+(Issue #2734).
 
 **The fleet exclusion needs no configuration.** The Vibe Coder accounts hold
 repository write access by necessity — they push branches — so under a
@@ -1496,7 +1504,9 @@ repos via the idle-task framework:
 label **only**. The worker is not authorised to apply any workflow label
 (`planning`, `work-on`, `top-priority`, etc.) — `label_security.ts` strips any
 such label added by the worker on the next scan, so the developer toggles the
-next-phase label manually after triage. See
+next-phase label manually after triage. The one exception is the audited
+`work-on` → `planning` hand-off of an oversized issue, which does not apply to
+filed findings ([SECURITY.md §5g](SECURITY.md), Issue #2688). See
 [Supported Labels in README.md](README.md#-supported-labels) for the full
 list.
 
