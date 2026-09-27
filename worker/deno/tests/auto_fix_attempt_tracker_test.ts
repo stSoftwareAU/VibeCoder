@@ -156,6 +156,10 @@ Deno.test("auto_fix_attempt_tracker - infrastructure failures do not consume an 
   assertEquals(consumesAutoFixAttempt("unknown"), true);
 });
 
+Deno.test("auto_fix_attempt_tracker - human-gate failures do not consume an attempt", () => {
+  assertEquals(consumesAutoFixAttempt("human-gate"), false);
+});
+
 // ---------------------------------------------------------------------------
 // Consolidated summary
 // ---------------------------------------------------------------------------

@@ -2217,6 +2217,18 @@
       "paths": [
         "worker/deno/lib/prompt_too_long.ts"
       ]
+    },
+    {
+      "issue": 2727,
+      "chunk": "top-up-2727",
+      "title": "top-up: the human-gate CI comment",
+      "ledger": "docs/audits/security-sweep-2727-ci-human-gate-comment.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: ci_human_gate_comment.ts (#2727)",
+      "status": "swept",
+      "sweptAt": "bf65c46fb12191e3f67a3571766cec5221b0970e",
+      "paths": [
+        "worker/deno/lib/ci_human_gate_comment.ts"
+      ]
     }
   ],
   "roots": [
