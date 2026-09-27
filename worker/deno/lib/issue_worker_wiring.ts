@@ -11,6 +11,9 @@
  */
 
 import {
+  createMissingScopeWarner,
+  type MissingScopeWarner,
+  warnMissingWorkflowScopeOnce,
   type WorkflowScopeState,
   workflowScopeState,
 } from "./workflow_scope.ts";
@@ -427,6 +430,11 @@ export interface InfrastructureDeps {
    * to mutate the process environment.
    */
   workflowScopeState: () => WorkflowScopeState;
+  /**
+   * Logs, once per process, that the token lacks the `workflow` scope
+   * (Issue #2689). Injected so each test owns its latch.
+   */
+  warnMissingWorkflowScope: MissingScopeWarner;
 }
 
 /** Quality — quality gate, helpers. */
@@ -704,6 +712,7 @@ export function createDefaultDeps(
       shuffleArray,
       evaluateRunGuard,
       workflowScopeState: () => workflowScopeState(),
+      warnMissingWorkflowScope: warnMissingWorkflowScopeOnce,
     },
 
     quality: {
@@ -1318,6 +1327,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     ) => [...items]),
     // Issue #1475: a mocked host can push workflows unless a test says otherwise.
     workflowScopeState: () => "granted",
+    warnMissingWorkflowScope: createMissingScopeWarner(),
     evaluateRunGuard: mockFn<InfrastructureDeps["evaluateRunGuard"]>(() =>
       Promise.resolve({ action: "proceed", reason: "mock proceed" })
     ),

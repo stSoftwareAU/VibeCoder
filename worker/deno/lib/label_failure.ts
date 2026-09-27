@@ -451,8 +451,8 @@ export async function handleIssueFailure(
   //
   // A token lacking the `workflow` scope is the same: a gap in this host's
   // credential, not in the issue (Issue #2689). Another host's token may
-  // push it, so label nothing and leave it claimable — `failed-once`, then
-  // `failed` and `needs-human`, parked GRQ#4939 over one host's token.
+  // push it, so label nothing and leave it claimable. Laddering it parked
+  // GRQ#4939 with `failed-once` and `needs-human` over one host's token.
   if (
     failureCategory === "scheduled_release" || failureCategory === "token_scope"
   ) {

@@ -1528,7 +1528,7 @@ flowchart TD
     D -->|touches .github/workflows/, verdict absent| F["Fail before push — name the fix"]
     D -->|touches them, verdict unknown| WARN["WARN, then push"] --> P
     D -->|touches none, or cannot answer| P
-    P -->|GitHub refuses: no workflow scope| F2["Fail once — token_scope"]
+    P -->|GitHub refuses: no workflow scope| F2["Fail the run — token_scope"]
     F --> REL["Release, no label — a capable host claims it"]
     F2 --> REL
     P -->|other rejection| RC["Rebase recovery, retry"]

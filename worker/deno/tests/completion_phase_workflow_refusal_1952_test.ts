@@ -18,7 +18,8 @@ import type { GitHubClient, Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import {
-  resetMissingWorkflowScopeWarningForTests,
+  createMissingScopeWarner,
+  type MissingScopeWarner,
   type WorkflowScopeState,
 } from "../lib/workflow_scope.ts";
 
@@ -69,6 +70,8 @@ interface Scenario {
   changedFiles: string[];
   /** Whether the push is refused by GitHub for want of the scope. */
   pushRefused: boolean;
+  /** The host's warn-once latch, shared to model one process (Issue #2689). */
+  warner?: MissingScopeWarner;
 }
 
 interface Outcome {
@@ -159,7 +162,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       findExistingPrForBranch: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
     },
-    infrastructure: { workflowScopeState: () => scenario.scope },
+    infrastructure: {
+      workflowScopeState: () => scenario.scope,
+      warnMissingWorkflowScope: scenario.warner ?? createMissingScopeWarner(),
+    },
   });
   try {
     const result = await workOnIssueCompletion(ctx, state, deps);
@@ -180,7 +186,6 @@ Deno.test({
     "completion - GitHub's workflow-scope refusal fails once, with no rebase recovery (Issue #1952)",
   permissions: { read: true, write: true },
   async fn() {
-    resetMissingWorkflowScopeWarningForTests();
     const outcome = await runCompletion({
       // The launcher recorded no verdict, so the pre-push check cannot stop
       // this: the refusal arrives at the push itself.
@@ -212,12 +217,13 @@ Deno.test({
     "completion - an unreadable diff falls back to the commit list, so the scope check still fires (Issue #1952)",
   permissions: { read: true, write: true },
   async fn() {
-    resetMissingWorkflowScopeWarningForTests();
+    const warner = createMissingScopeWarner();
     const outcome = await runCompletion({
       scope: "absent",
       diffAnswers: false,
       changedFiles: [".github/workflows/gitleaks.yml", "README.md"],
       pushRefused: false,
+      warner,
     });
     assertEquals(outcome.status, "failure");
     assertEquals(outcome.pushes, 0, "no push may be attempted");
@@ -238,10 +244,10 @@ Deno.test({
       diffAnswers: true,
       changedFiles: [".github/workflows/gitleaks.yml"],
       pushRefused: false,
+      warner,
     });
     assertEquals(again.status, "failure");
     assertEquals(scopeWarnings(again.warnings), []);
-    resetMissingWorkflowScopeWarningForTests();
   },
 });
 

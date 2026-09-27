@@ -15,8 +15,7 @@ import {
 } from "../lib/coding_failure_ladder.ts";
 import { handleIssueFailure } from "../lib/label_failure.ts";
 import {
-  resetMissingWorkflowScopeWarningForTests,
-  warnMissingWorkflowScopeOnce,
+  createMissingScopeWarner,
   WORKFLOW_SCOPE_REMEDIATION,
   workflowScopePushRefusalMessage,
 } from "../lib/workflow_scope.ts";
@@ -122,7 +121,7 @@ Deno.test("handleIssueFailure - a missing workflow scope adds no failed-once, fa
   }
 });
 
-Deno.test("handleIssueFailure - an ordinary push failure still enters the ladder (Issue #2689)", async () => {
+Deno.test("handleIssueFailure - an ordinary quality failure still enters the ladder (Issue #2689)", async () => {
   const gh = recordingGh();
   const result = await handleIssueFailure({
     repo: REPO,
@@ -134,23 +133,21 @@ Deno.test("handleIssueFailure - an ordinary push failure still enters the ladder
   assertEquals(result.value.markedAsFailed, true);
 });
 
-Deno.test("warnMissingWorkflowScopeOnce - names the missing scope once per process (Issue #2689)", () => {
-  resetMissingWorkflowScopeWarningForTests();
+Deno.test("createMissingScopeWarner - names the missing scope once per process (Issue #2689)", () => {
+  const warnOnce = createMissingScopeWarner();
   const warnings: string[] = [];
   const warn = (message: string) => warnings.push(message);
 
-  assertEquals(warnMissingWorkflowScopeOnce(warn), true);
-  assertEquals(warnMissingWorkflowScopeOnce(warn), false);
-  assertEquals(warnMissingWorkflowScopeOnce(warn), false);
+  assertEquals(warnOnce(warn), true);
+  assertEquals(warnOnce(warn), false);
+  assertEquals(warnOnce(warn), false);
 
   assertEquals(warnings.length, 1);
-  assertStringIncludes(warnings[0], "`workflow` OAuth scope");
-  assertStringIncludes(warnings[0], "host that can push");
-  assertStringIncludes(warnings[0], WORKFLOW_SCOPE_REMEDIATION);
+  assertStringIncludes(warnings[0] ?? "", "`workflow` OAuth scope");
+  assertStringIncludes(warnings[0] ?? "", "host that can push");
+  assertStringIncludes(warnings[0] ?? "", WORKFLOW_SCOPE_REMEDIATION);
 
-  // The latch is per process: a reset (a fresh process) warns again.
-  resetMissingWorkflowScopeWarningForTests();
-  assertEquals(warnMissingWorkflowScopeOnce(warn), true);
+  // Each warner is its own latch: a fresh process warns again.
+  assertEquals(createMissingScopeWarner()(warn), true);
   assertEquals(warnings.length, 2);
-  resetMissingWorkflowScopeWarningForTests();
 });
