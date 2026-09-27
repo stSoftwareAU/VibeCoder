@@ -14,6 +14,7 @@
  */
 
 import type { WorkerConfig } from "../types.ts";
+import { trustedAuthorsFor } from "./trust_snapshot.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import type {
   IssueFinderDiagnostics,
@@ -384,7 +385,10 @@ async function findTrustedReapproval(args: {
   const addInfo = lastAddInfoFromTimeline(timeline, args.approvalLabel);
   if (
     addInfo !== null && addInfo.addedAt > args.capturedAt &&
-    isAuthorTrusted(addInfo.addedBy, args.config.allowedAuthors)
+    isAuthorTrusted(
+      addInfo.addedBy,
+      trustedAuthorsFor(args.config, args.repo),
+    )
   ) {
     signals.push({
       kind: "label-add",
@@ -399,7 +403,10 @@ async function findTrustedReapproval(args: {
   );
   if (
     removeInfo !== null && removeInfo.removedAt > args.capturedAt &&
-    isAuthorTrusted(removeInfo.removedBy, args.config.allowedAuthors) &&
+    isAuthorTrusted(
+      removeInfo.removedBy,
+      trustedAuthorsFor(args.config, args.repo),
+    ) &&
     !isAuthorTrusted(removeInfo.removedBy, args.fleetAuthors)
   ) {
     signals.push({
@@ -700,7 +707,10 @@ export async function resolveContentIntegrity(
 
       const judged = sinceSnapshot;
       const untrustedEditors = judged.filter(
-        (e) => !e.login || !isAuthorTrusted(e.login, config.allowedAuthors),
+        (e) =>
+          !e.login ||
+          // Issue #2734: this repository's own writers.
+          !isAuthorTrusted(e.login, trustedAuthorsFor(config, repo)),
       );
 
       // Issue #1561: If a trusted author re-added the work-on label AFTER

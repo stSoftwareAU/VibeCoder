@@ -1496,6 +1496,28 @@ The worker reads the scope at start-up and, without it (Issue #1475):
   `.github/workflows/`, naming the files and the fix, and classifies it as
   the host's credential (`token-scope`), never the issue's fault.
 
+Either refusal releases the issue for a host that can push it (Issue #2689):
+no attempt is consumed and no `failed-once`, `failed` or `needs-human` label
+is added, so a host whose token has the scope claims it on its next scan. The
+refusing host logs, once per process at WARN, that its token lacks the
+`workflow` OAuth scope, with the fix.
+
+Because the release consumes no attempt, two bounds stop it repeating:
+
+- **The refused host never re-claims it.** The refusal is recorded in the
+  cooldown state in the host's work directory, keyed on the install uuid in
+  `.machine-id` (never the container hostname, which changes every launch)
+  and on the scope verdict it happened under. The claim scan skips it
+  (`workflow-scope-missing`) on every route while that verdict stands, for up
+  to 30 days; granting the scope changes the verdict and lifts it at once.
+- **The fleet stops after three in a row.** After each refusal the host reads
+  the attempt tally on the issue's release comment. At three consecutive
+  `token-scope` releases it posts one comment naming the missing scope and
+  the fix. From then on a host whose token is not known to have the scope
+  leaves the issue before claiming it, and a host whose verdict is `granted`
+  still claims it. No label is added: granting the scope on any host is all
+  it takes.
+
 Neither check is allowed to pass by silence (Issue #1952):
 
 - the start-up verdict is recorded whenever detection established one, and a
@@ -1507,7 +1529,7 @@ Neither check is allowed to pass by silence (Issue #1952):
   names which of the two supplied the paths it acted on;
 - with no verdict recorded, a branch that touches `.github/workflows/` is
   logged at WARN rather than failed — GitHub decides at the push;
-- a push that still reaches GitHub's refusal fails **once**, with the fix in
+- a push that still reaches GitHub's refusal fails the run, with the fix in
   the message and the run recorded as `token-scope` — no rebase recovery and
   no in-process retry, because neither can supply a missing scope.
 
@@ -1522,7 +1544,11 @@ flowchart TD
     D -->|touches .github/workflows/, verdict absent| F["Fail before push — name the fix"]
     D -->|touches them, verdict unknown| WARN["WARN, then push"] --> P
     D -->|touches none, or cannot answer| P
-    P -->|GitHub refuses: no workflow scope| F2["Fail once — token_scope"]
+    P -->|GitHub refuses: no workflow scope| F2["Fail the run — token_scope"]
+    F --> REL["Release, no label — a capable host claims it"]
+    F2 --> REL
+    REL --> MEM["This install remembers it,<br/>never re-claims"]
+    REL -->|3rd token_scope release in a row| PARK["One comment; hosts without<br/>the scope leave it"]
     P -->|other rejection| RC["Rebase recovery, retry"]
     style F fill:#9d0208,stroke:#6a040f,color:#fff
     style F2 fill:#9d0208,stroke:#6a040f,color:#fff

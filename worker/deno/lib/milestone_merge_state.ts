@@ -28,7 +28,7 @@
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
-import { classifyStagedPath } from "./pre_commit_safety.ts";
+import { classifyStagedPath, mergedInUnchanged } from "./pre_commit_safety.ts";
 
 /** A `runGitCommand` result: git's output, or the failure to run it at all. */
 export type GitRunResult = Result<GitCommandOutput>;
@@ -197,15 +197,24 @@ export async function readMergeCommitState(args: {
  * commit is judged by exactly the set the index gate would have seen: every
  * path the merge changes against the branch's pre-merge commit.
  *
+ * A refused path the merge merely brings in — its blob and mode identical on
+ * the default branch's tip, which must be one of HEAD's two parents with the
+ * pre-merge commit the other — is exempt, as the index gate exempts it
+ * mid-merge (Issue #2739). If HEAD's parents or that tip cannot be read,
+ * nothing is exempt (fail closed). Anything the agent added or edited is
+ * still refused.
+ *
  * @param args.preMergeSha - Where the milestone branch stood before the merge
+ * @param args.defaultSha - The default-branch tip the merge brought in
  * @param args.options - Git options; `cwd` is the clone holding the merge
  * @returns Nothing when the commit is safe to adopt, or the refusal
  */
 export async function assertAdoptedMergeIsSafe(args: {
   preMergeSha: string;
+  defaultSha: string;
   options: GitCommandOptions;
 }): Promise<Result<void>> {
-  const { preMergeSha, options } = args;
+  const { preMergeSha, defaultSha, options } = args;
   const changed = await runGitCommand(
     ["diff", "--name-only", "-z", preMergeSha, "HEAD"],
     options,
@@ -220,9 +229,26 @@ export async function assertAdoptedMergeIsSafe(args: {
       ),
     };
   }
-  const violations = changed.value.stdout.split("\0")
+  const refused = changed.value.stdout.split("\0")
     .filter((path) => path.length > 0)
     .filter((path) => classifyStagedPath(path) === "violation");
+  if (refused.length === 0) return { ok: true, value: undefined };
+
+  // Only HEAD's own merged-in parent vouches for a path: a lookalike commit
+  // holding the same blobs is not what this merge brought in.
+  const head = await readHeadParents(options);
+  const exempt = head.ok && head.value.parents.length === 2 &&
+      [preMergeSha, defaultSha].every((want) =>
+        want.length > 0 && head.value.parents.includes(want)
+      )
+    ? await mergedInUnchanged({
+      violations: refused,
+      mergedIn: defaultSha,
+      candidate: head.value.sha,
+      options,
+    })
+    : new Set<string>();
+  const violations = refused.filter((path) => !exempt.has(path));
   if (violations.length === 0) return { ok: true, value: undefined };
   return {
     ok: false,

@@ -1067,7 +1067,11 @@ export async function syncMilestoneBranchWithDefault(
     // the adopted commit is judged on its safety alone.
     // The index gate saw nothing to inspect, so the commit's own changes are
     // held to it here rather than adopted unchecked (Issue #1758).
-    const safe = await assertAdoptedMergeIsSafe({ preMergeSha, options });
+    const safe = await assertAdoptedMergeIsSafe({
+      preMergeSha,
+      defaultSha,
+      options,
+    });
     if (!safe.ok) {
       return await refuseResolution(
         `the merge commit was written by another rung and ${safe.error.message}`,

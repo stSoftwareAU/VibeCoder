@@ -47,13 +47,14 @@ function timelineJson(login: string, label = "work-on"): string {
 
 /**
  * A recording `ghFn` routed by the gh args. `timeline`/`comments` seed the two
- * read endpoints; every `issue comment` and `issue edit --remove-label` call is
+ * read endpoints; every `issue comment` and `issue edit` label call is
  * recorded.
  */
 function fakeGh(opts: { timeline: string; comments?: string }) {
-  const calls: { comments: string[]; removed: string[] } = {
+  const calls: { comments: string[]; removed: string[]; added: string[] } = {
     comments: [],
     removed: [],
+    added: [],
   };
   const ghFn = (args: string[]): Promise<string> => {
     if (args[0] === "api" && args[1]?.includes("/timeline")) {
@@ -68,8 +69,9 @@ function fakeGh(opts: { timeline: string; comments?: string }) {
       return Promise.resolve("");
     }
     if (args[0] === "issue" && args[1] === "edit") {
-      // ["issue","edit",<n>,"--repo",<repo>,"--remove-label",<label>]
-      calls.removed.push(args[6] ?? "");
+      // ["issue","edit",<n>,"--repo",<repo>,"--remove-label"|"--add-label",<label>]
+      if (args[5] === "--remove-label") calls.removed.push(args[6] ?? "");
+      if (args[5] === "--add-label") calls.added.push(args[6] ?? "");
       return Promise.resolve("");
     }
     return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
@@ -77,7 +79,7 @@ function fakeGh(opts: { timeline: string; comments?: string }) {
   return { ghFn, calls };
 }
 
-Deno.test("stripUntrustedWorkOnLabel - untrusted adder: strips label and posts explanatory comment", async () => {
+Deno.test("stripUntrustedWorkOnLabel - untrusted adder: keeps work-on, adds needs-human and posts explanatory comment (Issue #2734)", async () => {
   const { ghFn, calls } = fakeGh({ timeline: timelineJson("rogue-bot") });
 
   const stripped = await stripUntrustedWorkOnLabel({
@@ -90,10 +92,38 @@ Deno.test("stripUntrustedWorkOnLabel - untrusted adder: strips label and posts e
   });
 
   assert(stripped, "expected the label to be stripped");
-  assertEquals(calls.removed, ["work-on"]);
+  assertEquals(calls.removed, [], "work-on is never removed");
+  assertEquals(calls.added, ["needs-human"]);
   assertEquals(calls.comments.length, 1);
   assertStringIncludes(calls.comments[0]!, "rogue-bot");
   assertStringIncludes(calls.comments[0]!, buildUntrustedWorkOnMarker(3489));
+});
+
+Deno.test("stripUntrustedWorkOnLabel - empty trusted set: fails closed, never strips (Issue #2734)", async () => {
+  // Observed 2026-09-27: a host monitoring two organisations with disjoint
+  // writers folded its trusted set to nothing, and every human `work-on`
+  // across the fleet was stripped as "untrusted". An empty set confirms
+  // nothing about the adder; it is a misconfiguration, never evidence.
+  const { ghFn, calls } = fakeGh({ timeline: timelineJson("nleck") });
+  const warnings: string[] = [];
+  const logger = { ...silentLogger(), warn: (m: string) => warnings.push(m) };
+
+  const stripped = await stripUntrustedWorkOnLabel({
+    repo: "org/repo",
+    issueNumber: 1507,
+    workOnLabel: "work-on",
+    allowedAuthors: [],
+    ghFn,
+    logger,
+  });
+
+  assertEquals(stripped, false);
+  assertEquals(calls.removed, []);
+  assertEquals(calls.comments, []);
+  assert(
+    warnings.some((w) => w.includes("empty")),
+    `expected a WARNING naming the empty trusted set, got ${warnings}`,
+  );
 });
 
 Deno.test("stripUntrustedWorkOnLabel - trusted adder: does nothing (never strips a genuine label)", async () => {
@@ -146,11 +176,12 @@ Deno.test("stripUntrustedWorkOnLabel - fleet worker adder is untrusted and strip
   });
 
   assert(stripped, "fleet-worker-applied work-on must be stripped");
-  assertEquals(calls.removed, ["work-on"]);
+  assertEquals(calls.removed, [], "work-on is never removed");
+  assertEquals(calls.added, ["needs-human"]);
   assertEquals(calls.comments.length, 1);
 });
 
-Deno.test("stripUntrustedWorkOnLabel - dedup: existing marker suppresses a second comment but still removes the label", async () => {
+Deno.test("stripUntrustedWorkOnLabel - dedup: existing marker suppresses a second comment but still adds needs-human", async () => {
   const priorComment = JSON.stringify([
     { id: 1, body: buildUntrustedWorkOnMarker(7), user: { login: "worker" } },
   ]);
@@ -168,12 +199,13 @@ Deno.test("stripUntrustedWorkOnLabel - dedup: existing marker suppresses a secon
     logger: silentLogger(),
   });
 
-  assert(stripped, "the label is still removed on a re-scan");
-  assertEquals(calls.removed, ["work-on"]);
+  assert(stripped, "needs-human is still added on a re-scan");
+  assertEquals(calls.removed, []);
+  assertEquals(calls.added, ["needs-human"]);
   assertEquals(calls.comments.length, 0, "no duplicate comment on re-scan");
 });
 
-Deno.test("stripUntrustedWorkOnLabel - removeLabel failure is non-fatal and returns false", async () => {
+Deno.test("stripUntrustedWorkOnLabel - needs-human add failure is non-fatal and returns false", async () => {
   const ghFn = (args: string[]): Promise<string> => {
     if (args[0] === "api" && args[1]?.includes("/timeline")) {
       return Promise.resolve(timelineJson("rogue-bot"));
@@ -185,7 +217,7 @@ Deno.test("stripUntrustedWorkOnLabel - removeLabel failure is non-fatal and retu
       return Promise.resolve("");
     }
     if (args[0] === "issue" && args[1] === "edit") {
-      return Promise.reject(new Error("remove failed"));
+      return Promise.reject(new Error("edit failed"));
     }
     return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
   };

@@ -24,6 +24,7 @@
  */
 
 import type { WorkerConfig } from "../types.ts";
+import { trustedAuthorsFor } from "./trust_snapshot.ts";
 import { runGhCommand } from "./github.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import {
@@ -189,6 +190,11 @@ export async function collectWorkOnCandidates(
   repoClosedPRs: ClosedPR[] = [],
 ): Promise<WorkOnCollectionResult> {
   const ghFn = options.ghCommandFn ?? runGhCommand;
+  // Issue #2734: every trust decision here is about this one repository, so
+  // it reads this repository's own writers — never the fleet-wide
+  // intersection, which two organisations with disjoint writers fold to
+  // nothing.
+  const repoAllowedAuthors = trustedAuthorsFor(config, repo);
   const diag = options.diagnostics;
   const candidates: IssueCandidate[] = [];
   /** Issue #4024: blocking PRs found this repo, keyed by PR number. */
@@ -297,7 +303,7 @@ export async function collectWorkOnCandidates(
       repo,
       issue.number,
       issue.labels,
-      config.allowedAuthors,
+      repoAllowedAuthors,
       batchedGh,
       options.githubUser,
       fleetWorkerLogins,
@@ -434,7 +440,7 @@ export async function collectWorkOnCandidates(
       repo,
       issue.number,
       config.workOnLabel,
-      config.allowedAuthors,
+      repoAllowedAuthors,
       batchedGh,
       options.timelineCache,
       fleetWorkerLogins,
@@ -452,10 +458,11 @@ export async function collectWorkOnCandidates(
         repo,
         issueNumber: issue.number,
         workOnLabel: config.workOnLabel,
-        allowedAuthors: config.allowedAuthors,
+        allowedAuthors: repoAllowedAuthors,
         fleetWorkerLogins,
         ghFn: batchedGh,
         cache: options.timelineCache,
+        needsHumanLabel: config.needsHumanLabel,
       });
       continue;
     }
@@ -489,6 +496,15 @@ export async function collectWorkOnCandidates(
     }
 
     const milestoneTitle = issue.milestone;
+
+    // Issue #2689: this install's token was refused this issue's push for
+    // want of the `workflow` scope. Claiming it again only repeats the agent
+    // run and the refusal; a host whose token has the scope still claims it.
+    if (options.isWorkflowScopeRefused?.(repo, issue.number) === true) {
+      noteBlocked(issue.number, milestoneTitle, "workflow-scope-missing");
+      diag?.logIssueSkipped(repo, issue.number, "workflow-scope-missing");
+      continue;
+    }
 
     // Issue #2532: no work-*stream* occupancy check here. `work-on` is work a
     // human has asked for now, and Issue #2530 already lets its claim join a
@@ -529,7 +545,7 @@ export async function collectWorkOnCandidates(
           repo,
           issue.number,
           config.workOnLabel,
-          config.allowedAuthors,
+          repoAllowedAuthors,
           closedPR,
           batchedGh,
           options.timelineCache,
@@ -572,7 +588,7 @@ export async function collectWorkOnCandidates(
           repo,
           issue.number,
           "ignore-open-prs",
-          config.allowedAuthors,
+          repoAllowedAuthors,
           batchedGh,
           options.timelineCache,
           options.cache,

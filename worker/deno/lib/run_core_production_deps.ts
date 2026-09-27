@@ -244,9 +244,16 @@ import {
 import {
   type CooldownConfig,
   type CooldownFailureKind,
+  isWorkflowScopeRefused,
   loadState as loadCooldownState,
   recordIssueCooldown as cooldownRecordFn,
+  recordWorkflowScopeRefusal,
 } from "./cooldown_state.ts";
+import {
+  enforceTokenScopeFleetBound,
+  isParkedForMissingWorkflowScope,
+} from "./token_scope_fleet_bound.ts";
+import { workflowScopeState } from "./workflow_scope.ts";
 // Issue #1949: every non-transient terminal coding failure enters the same
 // `failed-once` -> `failed` ladder the planning and question routes use.
 import {
@@ -391,15 +398,18 @@ import {
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { resolveRunId } from "./audit_journal.ts";
 import {
+  allowedAuthorsByRepoFrom,
   createTrustSnapshotHolder,
   setLiveTrustedAuthors,
 } from "./trust_snapshot.ts";
 import {
   formatDerivedAuthorsFoldSummary,
+  formatDisjointTrustWarning,
   intersectDerivedAuthors,
   resolveDerivedAuthors,
+  type TrustedAuthors,
 } from "./derived_authors.ts";
-import { getMachineId } from "./machine_id.ts";
+import { getMachineId, getOrCreateMachineUuid } from "./machine_id.ts";
 
 // Fault tolerance observability (Issue #1173)
 import { writeSummary as writeFtSummary } from "./fault_tolerance_counters.ts";
@@ -1178,10 +1188,13 @@ export async function createProductionRunCoreDeps(
    * Push a new snapshot into every consumer that used to hold a
    * construction-time copy (Issue #253).
    */
-  function applyTrustSnapshot(sets: {
-    allowedAuthors: string[];
-    authorisedCommenters: string[];
-  }): void {
+  function applyTrustSnapshot(
+    sets: {
+      allowedAuthors: string[];
+      authorisedCommenters: string[];
+    },
+    byRepo: ReadonlyMap<string, TrustedAuthors> = new Map(),
+  ): void {
     const snap = trustHolder.apply(sets);
     setLiveTrustedAuthors(snap);
     // Issue #1066: sub-commands (`work_on_issue`, `planning_processor`, the
@@ -1192,6 +1205,10 @@ export async function createProductionRunCoreDeps(
     // legitimate collaborator. One assignment keeps them on the same set as
     // the snapshot's own consumers.
     config.allowedAuthors = [...snap.allowedAuthors];
+    // Issue #2734: each repository's own writers, for the repository-scoped
+    // decisions (`trustedAuthorsFor`). The same resolve as the intersection
+    // above, so the two cannot drift.
+    config.allowedAuthorsByRepo = allowedAuthorsByRepoFrom(byRepo);
     config.authorisedCommenters = [...snap.authorisedCommenters];
     fleetAuthors = snap.fleetAuthors;
     authorisedCommenters = snap.allowedAuthors;
@@ -1231,6 +1248,8 @@ export async function createProductionRunCoreDeps(
   // it.
   const trustRefreshScope = `run-core-deps-${++productionDepsFactoryCount}`;
   let trustRefreshCycle = 0;
+  /** Issue #2734: the disjoint-writers WARNING last logged, so it logs once. */
+  let lastDisjointTrustWarning: string | null = null;
 
   applyTrustSnapshot(trustSeed);
 
@@ -1300,6 +1319,50 @@ export async function createProductionRunCoreDeps(
     issueRetryCooldown: 600,
   };
 
+  // Issue #2689: a workflow-scope refusal is remembered per install — the
+  // uuid in `.machine-id`, never the container hostname, which changes on
+  // every hourly launch — in the cooldown state beside it, so the memory
+  // survives the relaunch an in-process set would not.
+  const installUuid = await getOrCreateMachineUuid(workDir);
+  const recordThisHostsWorkflowScopeRefusal = async (
+    repo: string,
+    issueNumber: number,
+  ): Promise<void> => {
+    const recorded = await recordWorkflowScopeRefusal(cooldownConfig, {
+      repo,
+      issueNumber,
+      installUuid,
+      verdict: workflowScopeState(),
+    });
+    if (!recorded.ok) {
+      logger.warn(
+        `Could not record the workflow-scope refusal for ` +
+          `${repo}#${issueNumber}; this host may claim it again: ` +
+          recorded.error.message,
+      );
+    }
+  };
+  /** The claim scan's per-host skip: refused here, under today's verdict. */
+  const workflowScopeRefusalsIn = (
+    state: Awaited<ReturnType<typeof loadCooldownState>>,
+  ): (repo: string, issueNumber: number) => boolean => {
+    const verdict = workflowScopeState();
+    return (repo, issueNumber) =>
+      isWorkflowScopeRefused(state, {
+        repo,
+        issueNumber,
+        installUuid,
+        verdict,
+      });
+  };
+  const loadWorkflowScopeRefusals = async () =>
+    workflowScopeRefusalsIn(
+      await loadCooldownState(
+        cooldownConfig.workDir,
+        cooldownConfig.issueRetryCooldown,
+      ),
+    );
+
   /**
    * The holds this run puts on an issue whatever GitHub says (Issue #655):
    * the persisted retry cooldown, plus this run's processed-issue registry.
@@ -1321,9 +1384,13 @@ export async function createProductionRunCoreDeps(
     const cooldownSet = new Set(
       cooldownState.entries.map((e) => `${e.repo}|${e.issueNumber}`),
     );
+    // Issue #2689: this install's workflow-scope refusals hold too, so the
+    // census and idle detection model the same skip the scan makes.
+    const refused = workflowScopeRefusalsIn(cooldownState);
     return (repo, issueNumber) =>
       cooldownSet.has(`${repo}|${issueNumber}`) ||
-      processedIssues.has(repo, issueNumber);
+      processedIssues.has(repo, issueNumber) ||
+      refused(repo, issueNumber);
   };
 
   const circuitBreakerConfig: CircuitBreakerConfig = {
@@ -1508,6 +1575,8 @@ export async function createProductionRunCoreDeps(
         ? {
           gateNewWork: true,
           isIssueInCooldown: runLocalHold!,
+          // Issue #2689: skipped beside the #1475 workflow-scope gate.
+          isWorkflowScopeRefused: await loadWorkflowScopeRefusals(),
           closedPrCooldownSeconds: config.closedPrCooldownSeconds,
         }
         : {}),
@@ -3582,6 +3651,8 @@ export async function createProductionRunCoreDeps(
       // Load the run-local holds once before scanning (synchronous check
       // per issue). Issue #655: the same set the census models.
       const runLocalHold = await loadRunLocalHolds();
+      // Issue #2689: issues this install was refused for want of the scope.
+      const workflowScopeRefused = await loadWorkflowScopeRefusals();
       // Issue #1780: a milestone branch its conflict ledger is pacing cannot
       // take the default branch down yet, and a child run refuses to cut a
       // branch off a base that is behind — so claiming one of the milestone's
@@ -3646,6 +3717,7 @@ export async function createProductionRunCoreDeps(
         isIssueInCooldown: (repo, num) =>
           runLocalHold(repo, num) ||
           options?.excludeIssues?.has(issueClaimKey(repo, num)) === true,
+        isWorkflowScopeRefused: workflowScopeRefused,
         // Issue #1780: beside the scan's `milestone-occupied` gate — that one
         // refuses a stream a sibling holds, this one refuses a stream whose
         // branch is behind the default branch and paced by the ledger.
@@ -3953,6 +4025,28 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: { success: false, skipped: true } };
       }
 
+      // Issue #2689: the fleet parked this issue after repeated
+      // workflow-scope refusals. A host whose token is not known to have the
+      // scope leaves it, before claiming and before any agent run, and
+      // remembers it; a host whose token has the scope carries on.
+      if (
+        isParkedForMissingWorkflowScope(
+          issueData.comments ?? [],
+          fleetAuthors,
+          workflowScopeState(),
+        )
+      ) {
+        logger.info(
+          `Skipped ${issue.repo}#${issue.issueNumber}: parked for a host ` +
+            `whose token has the workflow scope (Issue #2689)`,
+        );
+        await recordThisHostsWorkflowScopeRefusal(
+          issue.repo,
+          issue.issueNumber,
+        );
+        return { ok: true, value: { success: false, skipped: true } };
+      }
+
       // Issue #2118: route idle-task wrappers through the template
       // runner before the standard issue pipeline. Without this branch
       // the orchestrator's `idle_task_guard` (in `issue_worker.ts`)
@@ -4188,6 +4282,42 @@ export async function createProductionRunCoreDeps(
               false,
             markedAsFailed: ladderOutcome.ladder?.markedAsFailed ?? false,
           });
+        }
+      }
+
+      // Issue #2689: a workflow-scope refusal is transient — no label, no
+      // attempt — so it owes two bounds instead. This install remembers the
+      // issue and its claim scan skips it; and once the issue's release
+      // tally shows the fleet-wide bound, one comment parks it for hosts
+      // without the scope. The heartbeat's final clear has already written
+      // this run's attempt to the tally (Issue #4330).
+      if (plan.decision?.failureClass === "token-scope") {
+        await recordThisHostsWorkflowScopeRefusal(
+          issue.repo,
+          issue.issueNumber,
+        );
+        try {
+          const bound = await enforceTokenScopeFleetBound({
+            repo: issue.repo,
+            issueNumber: issue.issueNumber,
+            fleetAuthors,
+          }, { ghFn: runGhCommand });
+          logger.info("Workflow-scope refusal recorded", {
+            repo: issue.repo,
+            issueNumber: issue.issueNumber,
+            consecutiveRefusals: bound.consecutive,
+            parked: bound.parked,
+            parkedNow: bound.posted,
+          });
+        } catch (err) {
+          logger.warn(
+            "Workflow-scope fleet bound could not be checked (non-fatal)",
+            {
+              repo: issue.repo,
+              issueNumber: issue.issueNumber,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
         }
       }
 
@@ -4815,7 +4945,8 @@ export async function createProductionRunCoreDeps(
     //     real, timestamped fetch (Issue #1453) — and a monitored repo this
     //     login cannot list is skipped and named, not treated as an outage.
     //  2. The fold is an intersection, not a union: write access on one
-    //     monitored repo must not confer trust on another.
+    //     monitored repo must not confer trust on another. Repository-scoped
+    //     decisions read that repo's own set instead (Issue #2734).
     //  3. `applyTrustSnapshot` is the only way in, so the comment-trust
     //     path, the fleet-PR guards, the heartbeat marker allowlist and
     //     the suppression allowlist all move together or not at all.
@@ -4860,7 +4991,15 @@ export async function createProductionRunCoreDeps(
       if (resolved.servedFrom?.snapshot !== "within-ttl") {
         logger.info(formatDerivedAuthorsFoldSummary(resolved.byRepo, folded));
       }
-      applyTrustSnapshot(folded);
+      // Issue #2734: organisations with disjoint writers fold to nothing.
+      // Not an outage — every repository keeps its own set — so one WARNING
+      // while it holds, not one per cycle, and the cycle carries on.
+      const disjoint = formatDisjointTrustWarning(resolved.byRepo, folded);
+      if (disjoint !== null && disjoint !== lastDisjointTrustWarning) {
+        logger.warn(disjoint);
+      }
+      lastDisjointTrustWarning = disjoint;
+      applyTrustSnapshot(folded, resolved.byRepo);
       return { ok: true as const };
     },
 
