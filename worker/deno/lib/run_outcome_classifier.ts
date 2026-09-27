@@ -74,6 +74,7 @@ export const RUN_FAILURE_CLASSES = [
   "agent-outcome",
   "workflow-gate",
   "repo-config",
+  "prompt-too-long",
   "unknown",
 ] as const;
 
@@ -410,6 +411,16 @@ export function classifyRunFailure(
         failureClass: "repo-config",
         rationale:
           "The repository refused the milestone branch (ruleset, protection or permission) — a repository configuration fault, not a worker defect.",
+      };
+    case "prompt_too_long":
+      // Issue #2682: the agent CLI refused the run because the transcript
+      // outgrew the context window. The worker already spent its one
+      // fresh-session retry, so this is stated plainly and never auto-filed.
+      return {
+        fixability: "not_code_fixable",
+        failureClass: "prompt-too-long",
+        rationale:
+          "The agent CLI refused the run as Prompt is too long, even on a fresh session — the issue's context outgrew the model, not a worker defect.",
       };
     case "push_failure":
       // A rejected push is usually permissions/protection or a race — not
