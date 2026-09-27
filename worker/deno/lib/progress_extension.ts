@@ -376,6 +376,125 @@ export function combineExternalEvidence(
   return fresh;
 }
 
+/** Whether the agent is still producing anything (Issues #767, #2720). */
+export type AgentLiveness =
+  | { live: true; activity: string }
+  | { live: false; reason: string };
+
+/**
+ * The liveness half of the progress-extension gate, shared by the issue path
+ * ({@link decideProgressExtension}) and the maintenance-handler watchdog
+ * ({@link decideHandlerExtension}, Issue #2720).
+ *
+ * Pure. Liveness is "is the agent still producing anything?" (Issue #767), so
+ * the fresher of the two clocks answers it: an agent waiting inside one long
+ * tool call issues no new `tool_use` while its stream keeps moving, and
+ * reading the tool clock alone killed exactly that agent on #732.
+ *
+ * @param input - Clock and the two activity timestamps.
+ * @param policy - Supplies the stall window.
+ * @returns Live with a phrase naming the clock that kept it alive, or not
+ *   live with the reason.
+ */
+export function assessAgentLiveness(
+  input: Pick<
+    ProgressExtensionInput,
+    "nowMs" | "lastToolCallAtMs" | "lastChunkAtMs"
+  >,
+  policy: Pick<ProgressExtensionPolicy, "activityStallSeconds">,
+): AgentLiveness {
+  if (input.lastToolCallAtMs === undefined) {
+    return { live: false, reason: "no tool activity recorded" };
+  }
+
+  const idleSeconds = seconds(input.nowMs - input.lastToolCallAtMs);
+  const streamIdleSeconds = input.lastChunkAtMs === undefined
+    ? undefined
+    : seconds(input.nowMs - input.lastChunkAtMs);
+  const liveSeconds = Math.min(idleSeconds, streamIdleSeconds ?? idleSeconds);
+  if (liveSeconds > policy.activityStallSeconds) {
+    return {
+      live: false,
+      reason: `tool activity stale (last tool call ${idleSeconds}s ago` +
+        (streamIdleSeconds === undefined
+          ? ""
+          : `, last agent output ${streamIdleSeconds}s ago`) +
+        `, window ${policy.activityStallSeconds}s)`,
+    };
+  }
+
+  // Name whichever clock kept the run alive, so the operator reading the log
+  // can tell "still calling tools" from "waiting inside one long tool call".
+  return {
+    live: true,
+    activity: streamIdleSeconds !== undefined && streamIdleSeconds < idleSeconds
+      ? `agent output ${streamIdleSeconds}s ago (last tool call ` +
+        `${idleSeconds}s ago)`
+      : `tool activity ${idleSeconds}s ago`,
+  };
+}
+
+/** Everything the maintenance-handler decision needs (Issue #2720). */
+export interface HandlerExtensionInput {
+  /** Current time, epoch-ms. */
+  nowMs: number;
+  /**
+   * The freshest activity across the handler's own live agent runs, or
+   * undefined when it has none — a handler wedged outside its agent.
+   */
+  activity?: { lastToolCallAtMs?: number; lastChunkAtMs?: number };
+  /** Absolute epoch-ms past which the handler is abandoned regardless. */
+  ceilingMs: number;
+}
+
+/**
+ * Decide whether a maintenance handler's expired watchdog deadline may be
+ * re-armed (Issue #2720).
+ *
+ * The handler twin of {@link decideProgressExtension}, on the same policy and
+ * the same liveness rule. It asks only about liveness: the handler's agent is
+ * the thing it is waiting on, and that agent's own runner already applies the
+ * full tree-and-descendant test to its own deadline. Bounded by an absolute
+ * ceiling, so a live but endless handler is still abandoned.
+ *
+ * Pure: same inputs, same decision, no side effects.
+ *
+ * @param input - Clock, the handler's agent activity and the ceiling.
+ * @param policy - Enable flag, grant increment and stall window.
+ * @returns Extend with the new deadline, or kill — each with a reason.
+ */
+export function decideHandlerExtension(
+  input: HandlerExtensionInput,
+  policy: ProgressExtensionPolicy,
+): ProgressExtensionDecision {
+  if (!policy.enabled) {
+    return { action: "kill", reason: "progress extension disabled" };
+  }
+  if (input.activity === undefined) {
+    return { action: "kill", reason: "no live agent run of this handler" };
+  }
+  const liveness = assessAgentLiveness(
+    { nowMs: input.nowMs, ...input.activity },
+    policy,
+  );
+  if (!liveness.live) return { action: "kill", reason: liveness.reason };
+  if (input.ceilingMs - input.nowMs <= 0) {
+    return {
+      action: "kill",
+      reason: `absolute ceiling reached despite ${liveness.activity}`,
+    };
+  }
+  return {
+    action: "extend",
+    newDeadlineMs: Math.min(
+      input.nowMs + policy.grantSeconds * 1000,
+      input.ceilingMs,
+    ),
+    reason: `${liveness.activity} (within the ` +
+      `${policy.activityStallSeconds}s window)`,
+  };
+}
+
 /**
  * Decide whether an expired deadline may be extended.
  *
@@ -394,37 +513,9 @@ export function decideProgressExtension(
     return { action: "kill", reason: "progress extension disabled" };
   }
 
-  if (input.lastToolCallAtMs === undefined) {
-    return { action: "kill", reason: "no tool activity recorded" };
-  }
-
-  const idleSeconds = seconds(input.nowMs - input.lastToolCallAtMs);
-  // Liveness is "is the agent still producing anything?" (Issue #767), so the
-  // fresher of the two clocks answers it: an agent waiting inside one long
-  // tool call issues no new `tool_use` while its stream keeps moving, and
-  // reading the tool clock alone killed exactly that agent on #732.
-  const streamIdleSeconds = input.lastChunkAtMs === undefined
-    ? undefined
-    : seconds(input.nowMs - input.lastChunkAtMs);
-  const liveSeconds = Math.min(idleSeconds, streamIdleSeconds ?? idleSeconds);
-  if (liveSeconds > policy.activityStallSeconds) {
-    return {
-      action: "kill",
-      reason: `tool activity stale (last tool call ${idleSeconds}s ago` +
-        (streamIdleSeconds === undefined
-          ? ""
-          : `, last agent output ${streamIdleSeconds}s ago`) +
-        `, window ${policy.activityStallSeconds}s)`,
-    };
-  }
-
-  // Name whichever clock kept the run alive, so the operator reading the log
-  // can tell "still calling tools" from "waiting inside one long tool call".
-  const activity =
-    streamIdleSeconds !== undefined && streamIdleSeconds < idleSeconds
-      ? `agent output ${streamIdleSeconds}s ago (last tool call ` +
-        `${idleSeconds}s ago)`
-      : `tool activity ${idleSeconds}s ago`;
+  const liveness = assessAgentLiveness(input, policy);
+  if (!liveness.live) return { action: "kill", reason: liveness.reason };
+  const activity = liveness.activity;
 
   if (input.treeState === "unknown") {
     // Fail-safe direction (Issue #4294): a probe that cannot answer is not

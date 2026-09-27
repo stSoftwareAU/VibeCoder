@@ -67,6 +67,7 @@ import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { verifyFollowUpIssueExists } from "./escape_hatch_verify.ts";
 import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
+import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -396,6 +397,8 @@ export async function processPrFeedback(
   const { logger, deps, workerId } = processorDeps;
 
   logger.info("Processing PR feedback", { repo, prNumber, commentType });
+  // Issue #2720: the watchdog's abandonment line names this item.
+  noteAgentRunWorkItem(`${repo}#${prNumber} ${commentType} ${commentId}`);
 
   // Issue #1774: the comment was found in a listing up to 10 minutes old, and
   // claiming it writes to the PR. Re-read the live state first — a PR closed
