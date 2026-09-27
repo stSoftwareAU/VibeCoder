@@ -9,6 +9,9 @@
  * no fs. Importing this module requires no Deno permissions.
  *
  * Routing precedence (when multiple categories' signals are present):
+ *   0. human-gate         (a line whose content starts `vibe-human-gate:` —
+ *                          the check itself declares that a human step, not a
+ *                          code change, is what clears it; Issue #2726).
  *   1. infrastructure     (specific external-failure patterns are unambiguous —
  *                          e.g. ETIMEDOUT, ENOTFOUND, 5xx — and runtime "Error:"
  *                          prefixes from such failures should not be misread as
@@ -53,6 +56,11 @@ export type CiFailureCategory =
   | "history-rewrite-required"
   | "timing"
   | "infrastructure"
+  /**
+   * The failing check declared, on a `vibe-human-gate: <step>` line, that a
+   * human action clears it (Issue #2726). The step is in `humanStep`.
+   */
+  | "human-gate"
   | "unknown";
 
 /** Result of classifying a CI failure. */
@@ -63,6 +71,12 @@ export interface CiFailureClassification {
   reason: string;
   /** Matched signals — check name plus log/annotation patterns. */
   signals: string[];
+  /**
+   * The human step a `human-gate` check declared — flattened, marker-neutralised
+   * and bounded to {@link HUMAN_STEP_MAX_LENGTH}, because a PR author can
+   * influence the log it came from. Absent for every other category.
+   */
+  humanStep?: string;
 }
 
 /** Annotation shape — a subset of the GitHub check annotation payload. */
@@ -71,6 +85,24 @@ export interface CiAnnotation {
   title?: string;
   path?: string;
 }
+
+import {
+  flattenControlCharacters,
+  truncateWholeCharacters,
+} from "./ci_fix_attempt_markers.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
+
+/** Upper bound, in UTF-16 code units, on a declared human step. */
+export const HUMAN_STEP_MAX_LENGTH = 300;
+
+const HUMAN_GATE_TOKEN = "vibe-human-gate:";
+
+/** GitHub Actions' per-line ISO-8601 timestamp, e.g. `2026-09-27T03:18:00.0000000Z`. */
+const LOG_TIMESTAMP_PREFIX =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z(?=\s|$)/;
+
+/** Error-annotation prefixes a gate line may carry. */
+const ERROR_PREFIXES: ReadonlyArray<string> = ["##[error]", "::error::"];
 
 // -----------------------------------------------------------------------------
 // Pattern tables — exhaustive, ordered for readability not precedence.
@@ -232,6 +264,18 @@ export function classifyCiFailure(
   logExcerpt?: string,
 ): CiFailureClassification {
   const lowerName = checkName.toLowerCase();
+
+  // ---- Human gate (Issue #2726) — the check's own declaration wins ----
+  const humanStep = findHumanStep(annotationTexts(annotations, logExcerpt));
+  if (humanStep !== undefined) {
+    return {
+      category: "human-gate",
+      reason: "the check declares a human step (vibe-human-gate)",
+      signals: [`check:${lowerName}`, "text:vibe-human-gate"],
+      humanStep,
+    };
+  }
+
   const haystack = buildHaystack(annotations, logExcerpt);
 
   // ---- Infrastructure signals (checked first — patterns are unambiguous) ----
@@ -351,6 +395,21 @@ export function classifyCiFailure(
   };
 }
 
+/** Every annotation field and the log excerpt, in their original case. */
+function annotationTexts(
+  annotations: ReadonlyArray<CiAnnotation>,
+  logExcerpt: string | undefined,
+): string[] {
+  const parts: string[] = [];
+  for (const a of annotations) {
+    if (a.message) parts.push(a.message);
+    if (a.title) parts.push(a.title);
+    if (a.path) parts.push(a.path);
+  }
+  if (logExcerpt) parts.push(logExcerpt);
+  return parts;
+}
+
 /**
  * Concatenate all annotation text and the log excerpt into a single
  * lower-cased haystack for substring/regex matching.
@@ -359,14 +418,38 @@ function buildHaystack(
   annotations: ReadonlyArray<CiAnnotation>,
   logExcerpt: string | undefined,
 ): string {
-  const parts: string[] = [];
-  for (const a of annotations) {
-    if (a.message) parts.push(a.message);
-    if (a.title) parts.push(a.title);
-    if (a.path) parts.push(a.path);
+  return annotationTexts(annotations, logExcerpt).join("\n").toLowerCase();
+}
+
+/**
+ * The step on the first `vibe-human-gate:` line, made safe for any consumer:
+ * control characters flattened, HTML-comment markers neutralised, and the
+ * result bounded on whole characters. A line whose step is empty is no gate.
+ *
+ * Prefixes are peeled procedurally rather than by one regex so that runs of
+ * whitespace cannot make the match backtrack.
+ */
+function findHumanStep(texts: ReadonlyArray<string>): string | undefined {
+  for (const text of texts) {
+    for (const line of text.split("\n")) {
+      let content = line.trimStart();
+      content = content.replace(LOG_TIMESTAMP_PREFIX, "").trimStart();
+      const errorPrefix = ERROR_PREFIXES.find((p) => content.startsWith(p));
+      if (errorPrefix !== undefined) {
+        content = content.slice(errorPrefix.length).trimStart();
+      }
+      if (!content.startsWith(HUMAN_GATE_TOKEN)) continue;
+      const step = flattenControlCharacters(
+        content.slice(HUMAN_GATE_TOKEN.length),
+      ).trim();
+      if (step.length === 0) continue;
+      return truncateWholeCharacters(
+        neutraliseAgentMarkers(step).text,
+        HUMAN_STEP_MAX_LENGTH,
+      );
+    }
   }
-  if (logExcerpt) parts.push(logExcerpt);
-  return parts.join("\n").toLowerCase();
+  return undefined;
 }
 
 /**

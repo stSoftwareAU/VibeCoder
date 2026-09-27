@@ -211,13 +211,13 @@ function attribute(inner: string, name: string): string | undefined {
  * renders as a replacement character. Dropping the orphaned half costs one
  * character from a name already being truncated.
  */
-function truncateWholeCharacters(text: string, max: number): string {
+export function truncateWholeCharacters(text: string, max: number): string {
   if (text.length <= max) return text;
   return text.slice(0, max).replace(/[\uD800-\uDBFF]$/, "");
 }
 
 /** Collapse control characters (newlines included) to spaces. */
-function flattenControlCharacters(text: string): string {
+export function flattenControlCharacters(text: string): string {
   // deno-lint-ignore no-control-regex
   return text.replace(/[\x00-\x1F\x7F]/g, " ");
 }
