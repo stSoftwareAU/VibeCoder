@@ -355,7 +355,7 @@ Deno.test("scanRepoSettings - a selected allow-list missing a required pattern i
 // Issue #4397 — code-owner review is a human gate
 // =============================================================================
 
-Deno.test("scanRepoSettings - a rule that requires code-owner review with zero approvals is the chosen policy, not a NO-REVIEW finding; neither gate is a finding (Issue #4397)", async () => {
+Deno.test("scanRepoSettings - code-owner review with zero approvals is still a NO-REVIEW finding; neither gate is both findings (Issues #4397 #2680)", async () => {
   const ownerOnly = {
     ...HARDENED,
     "/rules/branches/Develop": [
@@ -372,7 +372,9 @@ Deno.test("scanRepoSettings - a rule that requires code-owner review with zero a
     defaultBranch: "Develop",
     hasCodeowners: true,
   });
-  assertEquals(findings.map((f) => f.findingId), []);
+  assertEquals(findings.map((f) => f.findingId), [
+    "BP-REPO-RULESET-NO-REVIEW",
+  ]);
 
   const neither = {
     ...HARDENED,

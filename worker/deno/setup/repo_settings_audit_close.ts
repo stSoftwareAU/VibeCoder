@@ -96,7 +96,7 @@ export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
   "BP-REPO-ACTIONS-ALLOW-ALL": "actions-allow-list",
   "BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE": "actions-allow-list",
   "BP-REPO-SHA-PIN-NOT-ENFORCED": "sha-pinning-required",
-  "BP-REPO-RULESET-NO-REVIEW": "ruleset-reviews",
+  "BP-REPO-RULESET-NO-REVIEW": "default-branch-approval",
   "BP-REPO-CODEOWNERS-NOT-ENFORCED": "ruleset-reviews",
   "BP-REPO-SECRET-SCANNING-OFF": "secret-scanning",
   "BP-REPO-PUSH-PROTECTION-OFF": "secret-scanning",

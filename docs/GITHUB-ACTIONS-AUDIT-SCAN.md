@@ -1181,20 +1181,25 @@ not planned at all and the plan carries one line, `secret scanning / push
 protection: skipped — private repository needs paid GitHub Secret
 Protection`, so `--apply` sends no `security_and_analysis` write
 (Issue #2225).
-`--require-code-owner-review` turns `require_code_owner_review`
-on for the default branch's pull-request rule and leaves the approval count
-alone: a PR that touches a path named in `.github/CODEOWNERS` — the workflows,
-actions and scripts, i.e. every unreviewed grant of CI credentials — waits for
-an owner's approval, while every other PR (the fleet's included) merges as
-before. That is the recommended shape for an autonomous fleet, and the
-settings pre-filer treats "code-owner review on, zero approvals" as the chosen
-policy rather than a `BP-REPO-RULESET-NO-REVIEW` finding.
-`--require-reviews` additionally requires one approving review on every PR and
-code-owner review; it is opt-in only because it stops the fleet's autonomous
-auto-merge until a human approves each PR, and it wins when both flags are
-given. The review rule is written to the fleet's own `Vibe Coder default
-branch` ruleset when it exists, otherwise to an active ruleset named after the
+One approving review on the default branch is part of the default plan
+(Issue #2680): fleet PRs wait for the `/review-fleet-prs` skill or the owner
+before they merge. A `pull_request` rule below one is raised in the ruleset
+that carries it (everything else echoed); with none, one is added to the
+fleet's own `Vibe Coder default branch` ruleset, created if absent. A default
+branch that takes direct pushes, or has opted out (`direct-push` topic or the
+`.vibe/no-default-branch-ruleset` marker), gets no `pull_request` rule — it
+would refuse every push — and the plan reports the skip; an unreadable push
+history is a failed step, never a guess. This closes
+`BP-REPO-RULESET-NO-REVIEW`.
+`--require-code-owner-review` also turns `require_code_owner_review` on for
+the default branch's pull-request rule: a PR that touches a path named in
+`.github/CODEOWNERS` — the workflows, actions and scripts, i.e. every
+unreviewed grant of CI credentials — also waits for an owner's approval. The
+code-owner rule is written to the fleet's own `Vibe Coder default branch`
+ruleset when it exists, otherwise to an active ruleset named after the
 default branch; with neither, the step fails naming both (Issue #2626).
+`--require-reviews` is the retired spelling of `--require-code-owner-review`:
+it used to add the one-approval rule too, which is now always planned.
 Needs an admin token —
 an operator command, not a fleet task. Applied to VibeCoder on 2026-08-18
 (everything except the review rule).

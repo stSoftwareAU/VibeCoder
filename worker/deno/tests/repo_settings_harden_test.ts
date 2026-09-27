@@ -2,8 +2,8 @@
  * Tests for `repo-settings-harden` (Issues #4397, #4398, #4401): the
  * write-side twin of the settings pre-filer. It reads the same four
  * surfaces, plans the changes that close each open setting, and applies
- * them only under `--apply` — the ruleset review requirement is a separate
- * opt-in because it stops the fleet's autonomous merges.
+ * them only under `--apply`. One approving review on the default branch is
+ * part of the default plan (Issue #2680); code-owner review stays opt-in.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -88,10 +88,9 @@ Deno.test("buildAllowedActionPatterns - GitHub-owned stay implicit; each third-p
   ]);
 });
 
-Deno.test("planRepoSettingsHardening - an open repository plans every safe change; the review rule only under requireReviews (Issues #4397 #4398 #4401)", () => {
+Deno.test("planRepoSettingsHardening - an open repository plans every safe change; code-owner review only when asked for (Issues #4397 #4398 #4401)", () => {
   const plan = planRepoSettingsHardening(OPEN, {
     thirdPartyPatterns: ["denoland/setup-deno@*"],
-    requireReviews: false,
     defaultBranch: "Develop",
   });
   const kinds = plan.map((s) => s.kind).sort();
@@ -114,23 +113,16 @@ Deno.test("planRepoSettingsHardening - an open repository plans every safe chang
     verified_allowed: false,
     patterns_allowed: ["denoland/setup-deno@*"],
   });
-  assert(!plan.some((s) => s.kind === "ruleset-reviews"), "reviews are opt-in");
-
-  const withReviews = planRepoSettingsHardening(OPEN, {
-    thirdPartyPatterns: [],
-    requireReviews: true,
-    defaultBranch: "Develop",
-  });
-  const rule = withReviews.find((s) => s.kind === "ruleset-reviews");
-  assert(rule, "opt-in adds the ruleset step");
-  assert(rule.warning?.includes("auto-merge"), rule.warning);
+  assert(
+    !plan.some((s) => s.kind === "ruleset-reviews"),
+    "code-owner review is opt-in",
+  );
 });
 
 Deno.test("planRepoSettingsHardening - a hardened repository plans nothing (Issues #4397 #4398 #4401)", () => {
   assertEquals(
     planRepoSettingsHardening(HARDENED, {
       thirdPartyPatterns: ["x/y@*"],
-      requireReviews: true,
       defaultBranch: "Develop",
     }),
     [],
@@ -151,7 +143,6 @@ Deno.test("planRepoSettingsHardening - a private repository plans no secret-scan
     };
     const plan = planRepoSettingsHardening(snapshot, {
       thirdPartyPatterns: [],
-      requireReviews: false,
       defaultBranch: "Develop",
     });
     assert(
@@ -172,7 +163,6 @@ Deno.test("planRepoSettingsHardening - a public repository keeps the secret-scan
   };
   const plan = planRepoSettingsHardening(snapshot, {
     thirdPartyPatterns: [],
-    requireReviews: false,
     defaultBranch: "Develop",
   });
   const step = plan.find((s) => s.kind === "secret-scanning");
@@ -212,7 +202,6 @@ Deno.test("isSecretScanningSkipped - no skip when the settings already hold, or 
 Deno.test("applyRepoSettingsPlan - dry run touches nothing; apply issues each write once and reports per step; a failed write is reported, not thrown (Issue #4398)", async () => {
   const plan = planRepoSettingsHardening(OPEN, {
     thirdPartyPatterns: [],
-    requireReviews: false,
     defaultBranch: "Develop",
   });
   const calls: string[][] = [];
@@ -467,7 +456,6 @@ Deno.test("planRepoSettingsHardening - a selected allow-list missing a required 
         "aquasecurity/trivy-action@*",
         "denoland/setup-deno@*",
       ],
-      requireReviews: false,
       defaultBranch: "Develop",
     },
   );
@@ -500,7 +488,6 @@ Deno.test("planRepoSettingsHardening - a selected allow-list that already covers
     },
     {
       thirdPartyPatterns: ["aquasecurity/trivy-action@*"],
-      requireReviews: false,
       defaultBranch: "Develop",
     },
   );
@@ -547,7 +534,6 @@ Deno.test("allowListCovers - GitHub allow-list globs: owner/repo@*, owner/* and 
 Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans code-owner review only, leaving the approval count alone (Issue #4397)", () => {
   const plan = planRepoSettingsHardening(OPEN, {
     thirdPartyPatterns: [],
-    requireReviews: false,
     requireCodeOwnerReview: true,
     defaultBranch: "Develop",
   });
@@ -561,7 +547,7 @@ Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans code-owner r
   assert(!rule.warning?.includes("Stops the fleet"), rule.warning);
 });
 
-Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans nothing when the rule already enforces it, and requireReviews takes precedence when both are set (Issue #4397)", () => {
+Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans nothing when the rule already enforces it (Issue #4397)", () => {
   const ownerOnly = {
     ...HARDENED,
     rules: [{
@@ -575,21 +561,11 @@ Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans nothing when
   assertEquals(
     planRepoSettingsHardening(ownerOnly, {
       thirdPartyPatterns: ["x/y@*"],
-      requireReviews: false,
       requireCodeOwnerReview: true,
       defaultBranch: "Develop",
     }),
     [],
   );
-  const both = planRepoSettingsHardening(OPEN, {
-    thirdPartyPatterns: [],
-    requireReviews: true,
-    requireCodeOwnerReview: true,
-    defaultBranch: "Develop",
-  });
-  const rule = both.find((s) => s.kind === "ruleset-reviews")!;
-  const body = JSON.parse(rule.body ?? "{}") as Record<string, unknown>;
-  assertEquals(body.required_approving_review_count, 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -624,7 +600,6 @@ function milestoneRuleset(
 
 const PLAN_OPTS = {
   thirdPartyPatterns: [],
-  requireReviews: false,
   defaultBranch: "main",
 };
 
@@ -815,7 +790,10 @@ function hardenedRoutes(repo: string): Record<string, unknown> {
     },
     [`repos/${repo}/rules/branches/main`]: [{
       type: "pull_request",
-      parameters: { require_code_owner_review: true },
+      parameters: {
+        require_code_owner_review: true,
+        required_approving_review_count: 1,
+      },
     }],
     [`repos/${repo}/rulesets`]: [],
   };
@@ -849,9 +827,13 @@ function codeOwnerRoutes(
   rulesets: Array<Record<string, unknown>>,
 ): Record<string, unknown> {
   const routes = hardenedRoutes(repo);
+  // One approval already holds, so only the code-owner step is in play.
   routes[`repos/${repo}/rules/branches/main`] = [{
     type: "pull_request",
-    parameters: { require_code_owner_review: false },
+    parameters: {
+      require_code_owner_review: false,
+      required_approving_review_count: 1,
+    },
   }];
   routes[`repos/${repo}/rulesets`] = rulesets.map((r) => ({
     id: r["id"],
@@ -932,23 +914,6 @@ Deno.test("hardenRepo - no matching ruleset fails naming both the branch and the
     reviews?.detail?.includes("Vibe Coder default branch"),
     reviews?.detail,
   );
-});
-
-Deno.test("hardenRepo - review requirement stays off without requireReviews (Issue #2626)", async () => {
-  const repo = uniqueRepo();
-  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [VIBE_RULESET]));
-  const report = await hardenRepo(repo, {
-    apply: true,
-    ghCommandFn: gh,
-    workDir: await makeWorkDir(true),
-    defaultBranchCachePath: BRANCH_CACHE,
-    requireCodeOwnerReview: true,
-  });
-  const body = writes[0]?.body as {
-    rules: Array<{ parameters?: Record<string, unknown> }>;
-  };
-  assertEquals(body.rules[0]?.parameters?.required_approving_review_count, 0);
-  assertEquals(report.results.length, 1);
 });
 
 Deno.test("hardenRepo - without a local checkout the allow-list is skipped, never written (Issue #2626)", async () => {
@@ -1189,4 +1154,334 @@ Deno.test("hardenRepo - a checkout probe fault other than NotFound fails loud, n
   assert(report.results.length > 0);
   assert(report.results.every((r) => r.status === "failed"));
   assert(!report.results.some((r) => r.status === "skipped"));
+});
+
+// ---------------------------------------------------------------------------
+// One approving review on the default branch by default (Issue #2680)
+// ---------------------------------------------------------------------------
+
+/** GRQ's shape: a human ruleset carrying the pull_request rule at zero. */
+const REQUIRE_PULL_RULESET = {
+  id: 20,
+  name: "Develop Require pull",
+  target: "branch",
+  enforcement: "active",
+  source_type: "Repository",
+  bypass_actors: [
+    { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" },
+    { actor_id: 22807563, actor_type: "User", bypass_mode: "pull_request" },
+  ],
+  conditions: { ref_name: { include: ["refs/heads/main"], exclude: [] } },
+  rules: [{
+    type: "pull_request",
+    parameters: {
+      allowed_merge_methods: ["squash"],
+      dismiss_stale_reviews_on_push: false,
+      require_code_owner_review: false,
+      require_last_push_approval: false,
+      required_approving_review_count: 0,
+      required_review_thread_resolution: true,
+    } as Record<string, unknown>,
+  }],
+};
+
+/** A human ruleset with required checks and no pull_request rule. */
+const CHECKS_ONLY_RULESET = {
+  id: 21,
+  name: "Main",
+  target: "branch",
+  enforcement: "active",
+  source_type: "Repository",
+  bypass_actors: [
+    { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" },
+  ],
+  conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+  rules: [
+    { type: "deletion" },
+    {
+      type: "required_status_checks",
+      parameters: {
+        strict_required_status_checks_policy: true,
+        required_status_checks: [{ context: "quality" }],
+      } as Record<string, unknown>,
+    },
+  ],
+};
+
+type TestRuleset = {
+  id: number;
+  name: string;
+  target: string;
+  enforcement: string;
+  source_type: string;
+  bypass_actors: unknown[];
+  conditions: unknown;
+  rules: Array<{ type: string; parameters?: Record<string, unknown> }>;
+};
+
+/** The worker's own ruleset holding status checks only (NEAT-AI-Refinery). */
+const VIBE_CHECKS_ONLY: TestRuleset = {
+  ...CHECKS_ONLY_RULESET,
+  id: 7,
+  name: "Vibe Coder default branch",
+  bypass_actors: [],
+  rules: [CHECKS_ONLY_RULESET.rules[1]!],
+};
+
+/** The pull_request rule a create or an add writes: one approval, nothing more. */
+const NEW_PULL_REQUEST_RULE = {
+  type: "pull_request",
+  parameters: {
+    required_approving_review_count: 1,
+    dismiss_stale_reviews_on_push: false,
+    require_code_owner_review: false,
+    require_last_push_approval: false,
+    required_review_thread_resolution: false,
+  },
+};
+
+/** The effective branch rules GitHub reports for a set of rulesets. */
+function branchRulesOf(rulesets: readonly TestRuleset[]) {
+  return rulesets.flatMap((r) =>
+    r.rules.map((rule) => ({
+      ...rule,
+      ruleset_id: r.id,
+      ruleset_source_type: "Repository",
+    }))
+  );
+}
+
+interface ApprovalRepo {
+  rulesets: readonly TestRuleset[];
+  topics?: string[] | Error;
+  /** Default-branch history, newest first; a missing `pr` is a direct push. */
+  commits?: Array<{ sha: string; subject: string; pr?: boolean }>;
+}
+
+/** Routes for a hardened repo whose default-branch reviews are as given. */
+function approvalRoutes(
+  repo: string,
+  state: ApprovalRepo,
+): Record<string, unknown> {
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/rules/branches/main`] = branchRulesOf(state.rulesets);
+  routes[`repos/${repo}/rulesets`] = state.rulesets.map((r) => ({
+    id: r.id,
+    name: r.name,
+    target: r.target,
+    enforcement: r.enforcement,
+    source_type: r.source_type,
+  }));
+  for (const r of state.rulesets) routes[`repos/${repo}/rulesets/${r.id}`] = r;
+  routes[`repos/${repo}/topics`] = state.topics instanceof Error
+    ? state.topics
+    : { names: state.topics ?? [] };
+  const commits = state.commits ?? [
+    { sha: "a".repeat(40), subject: "Fix a thing (#12)", pr: true },
+  ];
+  routes[`repos/${repo}/commits?sha=main&per_page=20`] = commits.map((c) => ({
+    sha: c.sha,
+    commit: { message: c.subject },
+  }));
+  for (const c of commits) {
+    routes[`repos/${repo}/commits/${c.sha}/pulls`] = c.pr
+      ? [{ number: 1, merged_at: "2026-09-26T00:00:00Z" }]
+      : [];
+  }
+  return routes;
+}
+
+async function hardenApproval(repo: string, state: ApprovalRepo) {
+  const recorded = makeGh(approvalRoutes(repo, state));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: recorded.gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  const approval = report.results.filter((r) =>
+    r.step.kind === "default-branch-approval"
+  );
+  return { ...recorded, report, approval };
+}
+
+Deno.test("hardenRepo - a pull_request rule at zero approvals is raised to one in the ruleset that carries it, keeping every other rule, parameter and bypass actor (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const { writes, reads, approval } = await hardenApproval(repo, {
+    rulesets: [CHECKS_ONLY_RULESET, REQUIRE_PULL_RULESET],
+  });
+
+  assertEquals(writes.length, 1, JSON.stringify(writes));
+  assertEquals(writes[0]?.method, "PUT");
+  assertEquals(writes[0]?.endpoint, `repos/${repo}/rulesets/20`);
+  const raised = structuredClone(REQUIRE_PULL_RULESET.rules);
+  raised[0]!.parameters.required_approving_review_count = 1;
+  assertEquals(writes[0]?.body, {
+    name: REQUIRE_PULL_RULESET.name,
+    target: "branch",
+    enforcement: "active",
+    bypass_actors: REQUIRE_PULL_RULESET.bypass_actors,
+    conditions: REQUIRE_PULL_RULESET.conditions,
+    rules: raised,
+  });
+  assertEquals(approval.map((r) => r.status), ["applied"]);
+  // A pull_request rule already refuses direct pushes, so raising its count
+  // needs no push-policy read.
+  assert(!reads.includes(`repos/${repo}/topics`), reads.join("\n"));
+});
+
+Deno.test("hardenRepo - the worker's own ruleset without a pull_request rule gains one on a PR-only branch (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const { writes, approval } = await hardenApproval(repo, {
+    rulesets: [VIBE_CHECKS_ONLY],
+  });
+
+  assertEquals(writes.map((w) => `${w.method} ${w.endpoint}`), [
+    `PUT repos/${repo}/rulesets/7`,
+  ]);
+  const body = writes[0]?.body as { name: string; rules: unknown[] };
+  assertEquals(body.name, "Vibe Coder default branch");
+  assertEquals(body.rules, [...VIBE_CHECKS_ONLY.rules, NEW_PULL_REQUEST_RULE]);
+  assertEquals(approval.map((r) => r.status), ["applied"]);
+});
+
+Deno.test("hardenRepo - no ruleset covering the default branch creates the worker's own with one required approval (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const { writes, approval } = await hardenApproval(repo, { rulesets: [] });
+
+  assertEquals(writes.map((w) => `${w.method} ${w.endpoint}`), [
+    `POST repos/${repo}/rulesets`,
+  ]);
+  assertEquals(writes[0]?.body, {
+    name: "Vibe Coder default branch",
+    target: "branch",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+    rules: [NEW_PULL_REQUEST_RULE],
+  });
+  assertEquals(approval.map((r) => r.status), ["applied"]);
+});
+
+Deno.test("hardenRepo - a human ruleset with no pull_request rule is left alone; the approval goes in the worker's own new ruleset (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const { writes } = await hardenApproval(repo, {
+    rulesets: [CHECKS_ONLY_RULESET],
+  });
+
+  assertEquals(writes.map((w) => `${w.method} ${w.endpoint}`), [
+    `POST repos/${repo}/rulesets`,
+  ]);
+  const body = writes[0]?.body as { name: string; rules: unknown[] };
+  assertEquals(body.name, "Vibe Coder default branch");
+  assertEquals(body.rules, [NEW_PULL_REQUEST_RULE]);
+});
+
+Deno.test("hardenRepo - a default branch already requiring an approval gets no write and no push-policy read (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const compliant = structuredClone(REQUIRE_PULL_RULESET);
+  compliant.rules[0]!.parameters.required_approving_review_count = 1;
+  const { writes, reads, approval } = await hardenApproval(repo, {
+    rulesets: [CHECKS_ONLY_RULESET, compliant],
+  });
+
+  assertEquals(writes, []);
+  assertEquals(approval, []);
+  assert(!reads.includes(`repos/${repo}/topics`), reads.join("\n"));
+});
+
+Deno.test("planRepoSettingsHardening - the strictest pull_request rule decides: one at zero beside one at two is compliant (Issue #2680)", () => {
+  const two = structuredClone(REQUIRE_PULL_RULESET);
+  two.id = 30;
+  two.rules[0]!.parameters.required_approving_review_count = 2;
+  const rulesets = [REQUIRE_PULL_RULESET, two];
+  const plan = planRepoSettingsHardening(
+    { rules: branchRulesOf(rulesets), rulesets },
+    PLAN_OPTS,
+  );
+  assertEquals(plan, []);
+});
+
+Deno.test("planRepoSettingsHardening - the worker's own pull_request rule is raised, never duplicated, when the branch rules carry no ruleset id (Issue #2680)", () => {
+  const plan = planRepoSettingsHardening({
+    rules: [{
+      type: "pull_request",
+      parameters: { required_approving_review_count: 0 },
+    }],
+    rulesets: [VIBE_RULESET],
+  }, PLAN_OPTS);
+  assertEquals(plan.length, 1);
+  assertEquals(plan[0]?.endpoint, "rulesets/7");
+  assertEquals(plan[0]?.held, undefined);
+  const body = JSON.parse(plan[0]?.body ?? "{}") as {
+    rules: Array<{ type: string; parameters?: Record<string, unknown> }>;
+  };
+  const pullRequests = body.rules.filter((r) => r.type === "pull_request");
+  assertEquals(pullRequests.length, 1);
+  assertEquals(pullRequests[0]?.parameters, {
+    ...VIBE_RULESET.rules[0]!.parameters,
+    required_approving_review_count: 1,
+  });
+});
+
+Deno.test("hardenRepo - a direct-push default branch gets no pull_request rule, and the skip names the direct push for the owner (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const sha = "b".repeat(40);
+  const { writes, approval } = await hardenApproval(repo, {
+    rulesets: [CHECKS_ONLY_RULESET],
+    commits: [
+      { sha: "a".repeat(40), subject: "Fix a thing (#12)", pr: true },
+      { sha, subject: "Auto commit models" },
+    ],
+  });
+
+  assertEquals(writes, []);
+  assertEquals(approval.length, 1);
+  assertEquals(approval[0]?.status, "skipped");
+  const detail = approval[0]?.detail ?? "";
+  assert(detail.includes("direct-push"), detail);
+  assert(detail.includes("Auto commit models"), detail);
+  assert(detail.includes(sha.slice(0, 7)), detail);
+});
+
+Deno.test("hardenRepo - the direct-push topic opts a branch out of the approval rule, reported as a skip (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const { writes, approval } = await hardenApproval(repo, {
+    rulesets: [],
+    topics: ["direct-push"],
+  });
+
+  assertEquals(writes, []);
+  assertEquals(approval.map((r) => r.status), ["skipped"]);
+  assert(
+    approval[0]?.detail?.includes("direct-push"),
+    approval[0]?.detail,
+  );
+});
+
+Deno.test("hardenRepo - an unreadable push policy adds no pull_request rule and fails loud (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const { writes, approval } = await hardenApproval(repo, {
+    rulesets: [],
+    topics: SERVER_ERROR(),
+  });
+
+  assertEquals(writes, []);
+  assertEquals(approval.map((r) => r.status), ["failed"]);
+  assert(approval[0]?.detail?.includes("HTTP 500"), approval[0]?.detail);
+});
+
+Deno.test("hardenRepo - a dry run plans the approval create without writing (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(approvalRoutes(repo, { rulesets: [] }));
+  const report = await hardenRepo(repo, {
+    apply: false,
+    ghCommandFn: gh,
+    workDir: await makeWorkDir(true),
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(
+    report.results.map((r) => [r.step.kind, r.status]),
+    [["default-branch-approval", "planned"]],
+  );
 });

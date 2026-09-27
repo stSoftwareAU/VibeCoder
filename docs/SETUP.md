@@ -276,6 +276,19 @@ monitored repository, in order:
    - secret scanning and push protection are turned on for **public**
      repositories only. A private repository needs the paid GitHub Secret
      Protection add-on, so the step is skipped there and its line says so;
+   - the default branch requires **one approving review** (Issue #2680), so
+     fleet PRs wait for the `/review-fleet-prs` skill or the owner instead of
+     auto-merging unreviewed. A `pull_request` rule below one is raised in
+     the ruleset that carries it, keeping its other rules, parameters and
+     bypass actors. With no `pull_request` rule, one is added to the
+     worker's own `Vibe Coder default branch` ruleset, which is created if
+     absent — a ruleset someone else manages is never given a rule. A
+     default branch that takes direct pushes (seen in its recent history,
+     or opted out with the `direct-push` topic or the
+     `.vibe/no-default-branch-ruleset` marker) gets no `pull_request` rule,
+     because it would refuse every push; its line reports
+     `skipped: default-branch-approval: direct-push branch (…)` for the
+     owner to decide. Milestone branches never get one;
    - code-owner review is required on the Vibe ruleset **only when a
      CODEOWNERS file is already on the default branch**. A CODEOWNERS file
      written in step 1 reaches the default branch with the next worker PR,
@@ -283,10 +296,10 @@ monitored repository, in order:
 3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
    run fixed are commented on and closed.
 
-What it **never** changes: it never requires approving reviews (one required
-approval would stop the fleet's autonomous merges), never removes an entry
-from the action allow-list, never edits an existing CODEOWNERS file, and never
-buys or asks for GitHub Secret Protection.
+What it **never** changes: it never lowers an approval count, never adds a
+`pull_request` rule to a direct-push default branch or a milestone branch,
+never removes an entry from the action allow-list, never edits an existing
+CODEOWNERS file, and never buys or asks for GitHub Secret Protection.
 
 Each repository prints one line, followed by a totals line:
 
@@ -1631,7 +1644,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |
 | `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
-| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning on public repositories, and code-owner review once CODEOWNERS is on the default branch. Never requires approving reviews. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
+| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), and code-owner review once CODEOWNERS is on the default branch. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
 | `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
 | `hooks` | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only. | No. |

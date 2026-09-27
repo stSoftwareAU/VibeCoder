@@ -855,6 +855,14 @@ late: the deploy/publish workflows have already fired. Enforcement is
   gets an explanatory comment plus `needs-human`. A merge failure is never
   swallowed. Review requests stay informational; only branch protection can
   require an approval.
+- **One approval before the default branch.** Setup's `repo-settings-harden`
+  makes every monitored repository's default branch require one approving
+  review (Issue #2680), so a fleet PR's armed auto-merge waits for the
+  `/review-fleet-prs` skill or the owner instead of landing unreviewed.
+  Milestone branches carry no such rule, so child PRs still collect
+  hands-off. A default branch the fleet pushes to directly is never given a
+  pull_request rule — it would refuse every push — and is reported for the
+  owner instead. See [Repository settings hardening](docs/SETUP.md#repository-settings-hardening).
 
 See [`docs/MERGE.md`](docs/MERGE.md) for the operator manual (the dual-layer
 flow diagram, visibility-aware required checks, defer-and-retry sequence,
