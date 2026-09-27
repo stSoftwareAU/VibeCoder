@@ -246,7 +246,10 @@ Deno.test("syncMilestoneRuleset - creates the template, mirroring the default-br
       return Promise.resolve("42");
     },
     // Merged milestone PRs report both, so both are mirrored (Issue #2684).
-    { rulesets: [PINNED_DEFAULT], reportedChecks: ["gate", "lint"] },
+    {
+      rulesets: [PINNED_DEFAULT],
+      sample: { union: ["gate", "lint"], everyPr: ["gate", "lint"] },
+    },
   );
 
   assert(result.ok);

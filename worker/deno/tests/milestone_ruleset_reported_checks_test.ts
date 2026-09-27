@@ -22,6 +22,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   fetchMilestonePrCheckNames,
+  fetchMilestonePrCheckSample,
   planMilestoneRulesetSync,
   type RulesetDetail,
   syncMilestoneRuleset,
@@ -478,4 +479,90 @@ Deno.test("syncMilestoneRuleset - samples the milestone PRs itself when none are
     "update-version",
   ]);
   assertEquals(writes.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Nothing mirrored reports: require what every milestone PR does report
+// ---------------------------------------------------------------------------
+
+Deno.test("planMilestoneRulesetSync - TagsTS: none of the default branch's checks report, so every-PR checks are required instead", () => {
+  // The owner's spec is that milestone PRs must have clean CI, so an empty
+  // intersection must not leave `milestone/**` requiring nothing. The fallback
+  // takes only names EVERY sampled PR reported: a union would let one
+  // path-filtered job wedge the PRs that skip it.
+  const plan = planMilestoneRulesetSync(
+    [
+      defaultBranch(["gitleaks", "markdownlint", "dependency-review"]),
+      milestone(["gitleaks", "markdownlint", "dependency-review"]),
+    ],
+    "Develop",
+    ["spellcheck", "quality", "docs-only"],
+    ["spellcheck", "quality"],
+  );
+  const write = plan.writes[0];
+  assert(write?.kind === "align");
+  assertEquals(requiredContexts(write.body), ["spellcheck", "quality"]);
+  assertEquals(plan.dropped, ["gitleaks", "markdownlint", "dependency-review"]);
+  assertEquals(plan.substituted, ["spellcheck", "quality"]);
+});
+
+Deno.test("planMilestoneRulesetSync - the fallback never applies while any mirrored check reports", () => {
+  const plan = planMilestoneRulesetSync(
+    [defaultBranch(GRQ_DEFAULT)],
+    "Develop",
+    GRQ_REPORTED,
+    GRQ_REPORTED,
+  );
+  assertEquals(plan.substituted, []);
+});
+
+Deno.test("fetchMilestonePrCheckSample - separates the union from the names every PR reported", async () => {
+  const sample = await fetchMilestonePrCheckSample(
+    "org/repo",
+    () =>
+      Promise.resolve(JSON.stringify([
+        { statusCheckRollup: [{ name: "spellcheck" }, { name: "quality" }] },
+        {
+          statusCheckRollup: [
+            { name: "quality" },
+            { name: "spellcheck" },
+            { name: "docs-only" },
+          ],
+        },
+        { statusCheckRollup: [] },
+      ])),
+  );
+  assertEquals(sample.union, ["spellcheck", "quality", "docs-only"]);
+  // A PR with no rollup at all proves nothing and is not counted.
+  assertEquals(sample.everyPr, ["spellcheck", "quality"]);
+});
+
+Deno.test("reportMilestoneRuleset - TagsTS: names both the dropped and the substituted checks", async () => {
+  const mirrored = ["gitleaks", "markdownlint", "dependency-review"];
+  const current = [defaultBranch(mirrored), milestone(mirrored)];
+  const { seams, printed, writes } = seamsFor(current, [
+    "spellcheck",
+    "quality",
+  ]);
+
+  await reportMilestoneRuleset(
+    { repo: "stSoftwareAU/TagsTS", branch: "Develop" },
+    "VibeCoderST",
+    current,
+    seams,
+  );
+
+  assertEquals(writes.length, 1);
+  const success = printed.find((p) => p.severity === "success");
+  assert(success);
+  assertStringIncludes(success.message, "requiring 2 check(s)");
+  assertStringIncludes(success.message, "spellcheck, quality");
+  assertStringIncludes(
+    success.message,
+    "gitleaks, markdownlint, dependency-review",
+  );
+  assert(
+    !printed.some((p) => p.message.includes("requires no status")),
+    "milestone PRs must still be held to clean CI",
+  );
 });

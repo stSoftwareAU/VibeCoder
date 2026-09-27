@@ -633,8 +633,16 @@ export async function checkMilestoneRuleset(
   }, reportedChecks);
 }
 
-/** How many merged milestone PRs {@link fetchMilestonePrCheckNames} unions. */
+/** How many merged milestone PRs {@link fetchMilestonePrCheckSample} reads. */
 const MILESTONE_PR_SAMPLE = 5;
+
+/** What recent merged milestone PRs reported (Issue #2684). */
+export interface MilestonePrCheckSample {
+  /** Every name any sampled PR reported, in first-seen order. */
+  union: string[];
+  /** The names EVERY sampled PR reported, in first-seen order. */
+  everyPr: string[];
+}
 
 /**
  * Check names reported by recent MERGED PRs into a milestone branch.
@@ -651,16 +659,21 @@ const MILESTONE_PR_SAMPLE = 5;
  *   went through the gate, so no outsider can shrink the sample and have the
  *   aligner drop a check.
  *
- * The names of the last few are unioned, so one PR whose path filters
- * skipped a workflow does not drop that check either.
+ * `union` is the evidence a check CAN report, so one PR whose path filters
+ * skipped a workflow does not drop that check. `everyPr` is the stricter
+ * evidence the TagsTS fallback needs, because there a name is ADDED: only a
+ * check every PR reported can be required without wedging the next one.
+ * A PR with no rollup at all proves nothing and is left out of both.
  *
- * @returns The check names, or an empty list when no merged milestone PR
- *   could be sampled — in which case nothing is claimed.
+ * @returns Both lists, empty when no merged milestone PR could be sampled —
+ *   in which case nothing is claimed.
  */
-export async function fetchMilestonePrCheckNames(
+export async function fetchMilestonePrCheckSample(
   repo: string,
   ghFn: GhJson,
-): Promise<string[]> {
+): Promise<MilestonePrCheckSample> {
+  const none = { union: [], everyPr: [] };
+  let parsed: unknown;
   try {
     const raw = await ghFn([
       "pr",
@@ -676,24 +689,37 @@ export async function fetchMilestonePrCheckNames(
       "--json",
       "statusCheckRollup",
     ]);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    const names = new Set<string>();
-    for (const pr of parsed) {
-      const rollup = pr?.statusCheckRollup;
-      if (!Array.isArray(rollup)) continue;
-      for (
-        const check of rollup as Array<{ name?: string; context?: string }>
-      ) {
-        const name = check.name ?? check.context;
-        if (typeof name === "string" && name.length > 0) names.add(name);
-      }
-    }
-    return [...names];
+    parsed = raw ? JSON.parse(raw) : [];
   } catch {
     // A listing that cannot be read proves nothing.
-    return [];
+    return none;
   }
+  if (!Array.isArray(parsed)) return none;
+
+  const perPr: string[][] = [];
+  for (const pr of parsed) {
+    const rollup = pr?.statusCheckRollup;
+    if (!Array.isArray(rollup)) continue;
+    const names = (rollup as Array<{ name?: string; context?: string }>)
+      .map((check) => check.name ?? check.context)
+      .filter((name): name is string =>
+        typeof name === "string" && name.length > 0
+      );
+    if (names.length > 0) perPr.push(names);
+  }
+  const union = [...new Set(perPr.flat())];
+  return {
+    union,
+    everyPr: union.filter((name) => perPr.every((pr) => pr.includes(name))),
+  };
+}
+
+/** The union of {@link fetchMilestonePrCheckSample}, for the findings. */
+export async function fetchMilestonePrCheckNames(
+  repo: string,
+  ghFn: GhJson,
+): Promise<string[]> {
+  return (await fetchMilestonePrCheckSample(repo, ghFn)).union;
 }
 
 // ---------------------------------------------------------------------------
@@ -735,6 +761,12 @@ export interface MilestoneRulesetSyncPlan {
   dropped: string[];
   /** Whether any merged milestone PR's checks could be sampled. */
   sampled: boolean;
+  /**
+   * Checks required in place of the default branch's when none of those
+   * reports on a milestone PR (TagsTS, Issue #2684): the names every sampled
+   * milestone PR reported, so milestone PRs are still held to clean CI.
+   */
+  substituted: string[];
 }
 
 /**
@@ -873,13 +905,21 @@ function currentContexts(ruleset: RulesetDetail): Set<string> {
  * adding an unproven check, and never stripping a gate an armed PR is
  * waiting on.
  *
- * @param reportedChecks - Names from {@link fetchMilestonePrCheckNames};
- *   empty when nothing could be sampled.
+ * When the default branch requires checks but NONE of them reports on a
+ * milestone PR (TagsTS), requiring nothing would let a milestone PR merge on
+ * no CI at all, against the owner's spec. The names every sampled milestone
+ * PR reported are required instead, and named as substituted.
+ *
+ * @param reportedChecks - The sample's union, from
+ *   {@link fetchMilestonePrCheckSample}; empty when nothing could be sampled.
+ * @param everyPrChecks - The sample's names every PR reported; the only
+ *   evidence strong enough to ADD a check the default branch does not require.
  */
 export function planMilestoneRulesetSync(
   rulesets: readonly RulesetDetail[],
   defaultBranch: string | undefined,
   reportedChecks: readonly string[],
+  everyPrChecks: readonly string[] = [],
 ): MilestoneRulesetSyncPlan {
   const { checks, bypassActors } = milestoneTemplateSource(
     rulesets,
@@ -888,16 +928,25 @@ export function planMilestoneRulesetSync(
   const sampled = reportedChecks.length > 0;
   const reported = new Set(reportedChecks);
   const mirrored = [...new Set(checks.map((check) => check.context))];
+  const substituted = sampled && mirrored.length > 0 &&
+      !mirrored.some((c) => reported.has(c))
+    ? [...everyPrChecks]
+    : [];
   const plan: MilestoneRulesetSyncPlan = {
     writes: [],
     skipped: [],
     mirrored,
     dropped: sampled ? mirrored.filter((c) => !reported.has(c)) : [],
     sampled,
+    substituted,
   };
   /** The template's checks this evidence shows a milestone PR reports. */
-  const evidenced = (evidence: ReadonlySet<string>) =>
-    checks.filter((check) => evidence.has(check.context));
+  const evidenced = (
+    evidence: ReadonlySet<string>,
+  ): RequiredStatusCheckBody[] =>
+    substituted.length > 0 && evidence === reported
+      ? substituted.map((context) => ({ context }))
+      : checks.filter((check) => evidence.has(check.context));
 
   if (!rulesets.some(coversMilestoneBranches)) {
     plan.writes.push({
@@ -978,7 +1027,7 @@ export type MilestoneSyncResult =
     & { ok: true; outcomes: MilestoneSyncOutcome[] }
     & Pick<
       MilestoneRulesetSyncPlan,
-      "mirrored" | "dropped" | "sampled"
+      "mirrored" | "dropped" | "sampled" | "substituted"
     >
   )
   | { ok: false; error: Error };
@@ -995,8 +1044,8 @@ export type MilestoneSyncResult =
  *
  * @param options.rulesets - Injected for tests; production reads them.
  * @param options.defaultBranch - The branch whose checks are mirrored.
- * @param options.reportedChecks - A milestone-PR sample the caller already
- *   took; sampled here with {@link fetchMilestonePrCheckNames} when absent.
+ * @param options.sample - A milestone-PR sample the caller already took;
+ *   taken here with {@link fetchMilestonePrCheckSample} when absent.
  * @returns The outcomes, or the read error — an unreadable state is never
  *   taken for "nothing covers `milestone/**`" (Issue #678).
  */
@@ -1006,7 +1055,7 @@ export async function syncMilestoneRuleset(
   options: {
     rulesets?: RulesetDetail[];
     defaultBranch?: string;
-    reportedChecks?: readonly string[];
+    sample?: MilestonePrCheckSample;
   } = {},
 ): Promise<MilestoneSyncResult> {
   if (!isValidRepoSlug(repo)) {
@@ -1019,12 +1068,13 @@ export async function syncMilestoneRuleset(
     rulesets = read.rulesets;
   }
 
-  const reportedChecks = options.reportedChecks ??
-    await fetchMilestonePrCheckNames(repo, ghFn);
+  const sample = options.sample ??
+    await fetchMilestonePrCheckSample(repo, ghFn);
   const plan = planMilestoneRulesetSync(
     rulesets,
     options.defaultBranch,
-    reportedChecks,
+    sample.union,
+    sample.everyPr,
   );
   const outcomes: MilestoneSyncOutcome[] = plan.skipped.map((skip) => ({
     kind: "skipped",
@@ -1083,6 +1133,7 @@ export async function syncMilestoneRuleset(
     mirrored: plan.mirrored,
     dropped: plan.dropped,
     sampled: plan.sampled,
+    substituted: plan.substituted,
   };
 }
 

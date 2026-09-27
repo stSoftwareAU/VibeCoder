@@ -167,7 +167,11 @@ background service is offered, where files land — is covered in
      who can open a PR chooses which workflows it runs. With no merged
      milestone PR to sample, a new ruleset requires no checks and an existing
      one keeps the ones it has — setup never adds an unproven check, and never
-     strips a gate an armed PR is waiting on.
+     strips a gate an armed PR is waiting on. When the default branch requires
+     checks but **none** of them reports on a milestone PR (TagsTS), requiring
+     nothing would let milestone PRs merge on no CI at all, so setup requires
+     instead the checks **every** sampled merged milestone PR reported, and
+     names both lists on the repository's line.
      A ruleset whose include is exactly `refs/heads/milestone/**` and which
      differs in name, rules, checks, strict policy, create exemption or bypass
      actors is rewritten to match — any other rule is removed, and a later
