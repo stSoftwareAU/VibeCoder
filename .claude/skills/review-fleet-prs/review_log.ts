@@ -25,7 +25,9 @@ export interface TestChangeNote {
 export interface FableReview {
   summary: string;
   findings: Finding[];
-  testChanges: "none" | "trivial" | "meaningful";
+  // "tightened": an existing test's expectation changed only to make it
+  // stricter; approved like "trivial".
+  testChanges: "none" | "trivial" | "tightened" | "meaningful";
   testChangeNotes: TestChangeNote[];
 }
 
@@ -63,7 +65,7 @@ export function parseFableReview(text: string): FableReview {
   if (typeof r.summary !== "string" || !Array.isArray(r.findings)) {
     throw new Error("review JSON lacks summary or findings");
   }
-  if (!["none", "trivial", "meaningful"].includes(r.testChanges)) {
+  if (!["none", "trivial", "tightened", "meaningful"].includes(r.testChanges)) {
     throw new Error(`review JSON has testChanges=${r.testChanges}`);
   }
   return { ...r, testChangeNotes: r.testChangeNotes ?? [] };
