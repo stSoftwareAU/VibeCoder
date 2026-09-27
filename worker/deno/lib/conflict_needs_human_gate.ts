@@ -17,8 +17,18 @@ import { buildDedupMarker } from "./needs_human_escalation.ts";
  * Prefix every conflict-lane escalation's dedup marker opens with — the scan
  * and the processor both key their escalations `merge-conflict-…`.
  */
-const CONFLICT_ESCALATION_PREFIX = buildDedupMarker("merge-conflict-")
-  .replace(/ -->$/, "");
+const CONFLICT_ESCALATION_PREFIX = conflictEscalationPrefix();
+
+/** Strip the marker's closing suffix, failing loud if its format changed. */
+function conflictEscalationPrefix(): string {
+  const marker = buildDedupMarker("merge-conflict-");
+  if (!marker.endsWith(" -->")) {
+    throw new Error(
+      `needs-human dedup marker format changed: ${JSON.stringify(marker)}`,
+    );
+  }
+  return marker.slice(0, -" -->".length);
+}
 
 /** The string body of a raw REST comment, or `undefined`. */
 function commentBody(raw: unknown): string | undefined {
