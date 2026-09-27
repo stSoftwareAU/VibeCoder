@@ -430,7 +430,9 @@ import {
 } from "./processed_issue_registry.ts";
 import { SlotGovernor } from "./slot_governor.ts";
 import type { RunOutcome } from "./run_outcome.ts";
+import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
 import {
+  agentRunActivity,
   resetAgentRunsTerminating,
   terminateActiveAgentRuns,
 } from "./claude_runner.ts";
@@ -1360,6 +1362,16 @@ export async function createProductionRunCoreDeps(
     // budget with it rather than being clipped by the flat 600 s.
     planningTimeoutSeconds: config.planningTimeout ??
       runCoreConfig.planningTimeoutSeconds,
+    // Issue #2720: the handler watchdog re-arms on the operator's own
+    // `progress_extension_*` settings, the ones the issue path uses.
+    handlerProgressExtension: {
+      enabled: config.progressExtensionEnabled ??
+        OPERATIONAL_DEFAULTS.progressExtensionEnabled,
+      grantSeconds: config.progressExtensionGrantSeconds ??
+        OPERATIONAL_DEFAULTS.progressExtensionGrantSeconds,
+      activityStallSeconds: config.progressExtensionStallSeconds ??
+        OPERATIONAL_DEFAULTS.progressExtensionStallSeconds,
+    },
     // Issue #2335: the pool's host-local blank-stream lock applies only when
     // runs join a stream's shared conversation.
     enableSessionResume: config.enableSessionResume ??
@@ -3495,7 +3507,9 @@ export async function createProductionRunCoreDeps(
                   candidate.repo,
                 ),
               }),
-            runAgent: async (_candidate, parts) => {
+            runAgent: async (candidate, parts) => {
+              // Issue #2720: the watchdog's abandonment line names it.
+              noteAgentRunWorkItem(`${candidate.repo}#${candidate.prNumber}`);
               const run = await workerDeps.claude.runClaudeWithRetry(
                 {
                   prompt: parts.prompt,
@@ -3809,10 +3823,12 @@ export async function createProductionRunCoreDeps(
     // Issue #4369: no agent runs detached or is relaunched after run end.
     terminateActiveAgentRuns: async (
       reason: string,
-      options?: { keepTerminating?: boolean },
+      options?: { keepTerminating?: boolean; owner?: string },
     ) => {
       await terminateActiveAgentRuns(reason, logger, options);
     },
+    // Issue #2720: the handler watchdog re-arms while its agent works.
+    agentRunActivity,
 
     // Minimum claim runway (Issues #4304/#425, VibeCoder#170): default 5
     // minutes — only a claim that cannot even finish setup is refused. Since
