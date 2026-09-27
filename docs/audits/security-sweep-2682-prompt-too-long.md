@@ -32,3 +32,9 @@ The retry is bounded to one per run by `promptTooLongRetried` on the phase
 state, so a refusal cannot loop. A refusal on a fresh session, or after the
 retry, fails loud with category `prompt_too_long` and enters the ordinary
 `failed-once` → `failed` ladder. Nothing here masks a failure as success.
+
+The store's delete helpers never throw, so after deleting,
+`discardResumedSession` checks that neither the resume pointer nor a resumable
+slot for the refusing provider survives. If either does, it throws before
+logging the discard. The run then fails loud instead of retrying on a session it
+claimed to have dropped.

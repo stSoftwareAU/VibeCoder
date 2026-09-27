@@ -147,7 +147,7 @@ async function assertSessionDiscarded(
   if (input.streamSession && providerId !== undefined) {
     const { stream } = input.streamSession;
     const slot = await lookupStreamSession(input.workDir, stream, providerId);
-    if (slot.status !== "none") {
+    if (slot.status === "usable") {
       leftovers.push(
         `${providerId} slot in ${streamSessionPath(input.workDir, stream)}`,
       );
