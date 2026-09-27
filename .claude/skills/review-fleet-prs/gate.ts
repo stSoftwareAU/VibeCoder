@@ -218,18 +218,38 @@ function arg(name: string): string | undefined {
   return hit?.slice(name.length + 3);
 }
 
-async function gh(args: string[]): Promise<string> {
-  const out = await new Deno.Command("gh", {
+// A GitHub call that stalls mid-read can otherwise hang for many minutes (a
+// 14-minute GraphQL read ended only in "connection reset by peer"), and the
+// watch loop waits on it with no sign of trouble. Killed at the limit, it
+// fails like any other gh error and the next pass tries again.
+const GH_TIMEOUT_MS = 120_000;
+
+export async function runWithTimeout(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<string> {
+  const out = await new Deno.Command(cmd, {
     args,
     stdout: "piped",
     stderr: "piped",
+    signal: AbortSignal.timeout(timeoutMs),
   }).output();
+  if (out.signal !== null) {
+    throw new Error(
+      `${cmd} ${args[0] ?? ""} ${
+        args[1] ?? ""
+      }: timed out after ${timeoutMs} ms`,
+    );
+  }
   if (!out.success) {
     const err = new TextDecoder().decode(out.stderr).trim();
-    throw new Error(`gh ${args[0]} ${args[1] ?? ""}: ${err}`);
+    throw new Error(`${cmd} ${args[0] ?? ""} ${args[1] ?? ""}: ${err}`);
   }
   return new TextDecoder().decode(out.stdout);
 }
+
+const gh = (args: string[]) => runWithTimeout("gh", args, GH_TIMEOUT_MS);
 
 const SEARCH_QUERY = `
 query($q: String!, $after: String) {
