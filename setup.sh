@@ -1582,7 +1582,9 @@ main() {
 
     # Harden every monitored repo's GitHub settings, writing only what drifted
     # (Issue #2628 — part of #2611): read-only workflow token, SHA pinning, a
-    # selected-actions allow-list, secret scanning on public repos, one
+    # selected-actions allow-list, secret scanning on public repos, CodeQL
+    # default setup on public repos (Issue #2704 - only when not configured;
+    # a repo with its own CodeQL workflow is reported, never written), one
     # approving review on the default branch (Issue #2680 — a direct-push
     # branch is skipped and reported), and code-owner review once CODEOWNERS
     # is on the default branch; merge commits allowed with the default branch

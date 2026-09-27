@@ -347,6 +347,21 @@ For each monitored repository, in order:
    - secret scanning and push protection are turned on for **public**
      repositories only. A private repository needs the paid GitHub Secret
      Protection add-on, so the step is skipped there and its line says so;
+   - **CodeQL default setup** is turned on for **public** repositories only
+     (Issue #2704), behind the same visibility check as secret scanning: it
+     is free there, and includes Copilot Autofix at no charge, while a
+     private repository would need paid GitHub Code Security, so setup makes
+     no code-scanning call there and the line says it was skipped. It reads
+     `code-scanning/default-setup` and writes
+     `{"state":"configured","query_suite":"default"}` only when the state is
+     `not-configured`. The `default` suite is used, not `extended`, to keep
+     the alert noise down, and a repository already configured on either
+     suite is left as it is. A repository that runs its own CodeQL workflow
+     (**advanced setup**: a workflow named `*codeql*`, or one calling
+     `github/codeql-action/init` or `analyze`) is left alone and reported as
+     `skipped: codeql-default-setup: advanced setup: …`. A 403 or 404 on the
+     read is reported as skipped on that repository's line and does not fail
+     the run;
    - the default branch requires **one approving review** (Issue #2680), so
      fleet PRs wait for the `/review-fleet-prs` skill or the owner instead of
      auto-merging unreviewed. A `pull_request` rule below one is raised in
@@ -406,8 +421,9 @@ For each monitored repository, in order:
 What it **never** changes: it never lowers an approval count, never adds a
 `pull_request` rule to a direct-push default branch or a milestone branch,
 never removes an entry from the action allow-list, never edits an existing
-CODEOWNERS file, never buys or asks for GitHub Secret Protection, and never
-touches Copilot code review unless `copilot_code_review` says `on` or `off`.
+CODEOWNERS file, never buys or asks for GitHub Secret Protection or Code
+Security, never replaces a repository's own CodeQL workflow or changes the
+query suite of CodeQL already set up, and never touches Copilot code review unless `copilot_code_review` says `on` or `off`.
 
 Each repository prints one line, followed by a totals line:
 
@@ -1763,7 +1779,7 @@ re-run converges on the same state rather than piling up duplicates.
 | `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
 | `copilot-review-mode` | Host-only. Asks whether `repo-settings-harden` turns Copilot code review on, off, or leaves it, stating that each review is billed, and records the answer as `copilot_code_review` in `.config.json`. Never prompts or writes without a terminal. | Yes — an unanswered host is `leave`, which changes nothing. |
-| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), code-owner review once CODEOWNERS is on the default branch, and Copilot code review on or off as `copilot_code_review` says. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
+| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning and CodeQL default setup on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), code-owner review once CODEOWNERS is on the default branch, and Copilot code review on or off as `copilot_code_review` says. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
 | `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
 | `hooks` | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only. | No. |
