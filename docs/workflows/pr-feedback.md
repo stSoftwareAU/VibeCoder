@@ -116,7 +116,10 @@ monitor the PR — author is sufficient.
   PR title) in the same pass. The merged-PR close-out sweep remains the
   backstop for merges the worker did not perform.
 - Feedback is processed once: after handling, comments are marked (e.g. eyes
-  reaction) and reviews are dismissed so they are not picked up again.
+  reaction) and reviews are dismissed so they are not picked up again. For a
+  review the dismissal is the **only** retirement marker — a moved PR head no
+  longer is (Issue #2697) — so a dismissal that fails at claim time is logged
+  rather than swallowed.
 
 ## ✅ Happy path
 
@@ -137,6 +140,26 @@ match wins and the loop restarts.
    and that push is less than 15 minutes old, the comment is left for the next
    scan to re-evaluate (Issue #211). The window is a de-duplication guard, not
    a veto — an older fleet push never suppresses feedback permanently.
+   A `CHANGES_REQUESTED` review stays **outstanding after the PR head moves**
+   (Issue #2697): Priorities 1.6 and 1.65 update the branch *before* PR
+   feedback runs, and a rebase or merge-from-base does not address anything.
+   The scan reads every page of reviews, takes each reviewer's **latest**
+   submitted review (drafts and empty inline-reply containers do not count),
+   and acts only where that latest review still requests changes — one entry
+   per reviewer. A request is retired by its dismissal (the processed marker)
+   or by the same reviewer's later review; every change request it skips is
+   logged at INFO with the reason.
+
+   ```mermaid
+   flowchart TD
+       R["Read every page of reviews<br/>(gh api --paginate)"] --> L["Latest submitted review<br/>per reviewer"]
+       L --> Q{"Latest is<br/>CHANGES_REQUESTED?"}
+       Q -- "no: DISMISSED, APPROVED,<br/>later COMMENTED" --> S["Skip — INFO log<br/>with the reason"]
+       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?"}
+       O -- yes --> S
+       O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>then dismiss the review"]
+       C --> F["Feedback run"]
+   ```
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; commit and push.
