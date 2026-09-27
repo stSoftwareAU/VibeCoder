@@ -26,6 +26,7 @@
  */
 
 import type { WorkerConfig } from "../types.ts";
+import { trustedAuthorsFor } from "./trust_snapshot.ts";
 import { runGhCommand } from "./github.ts";
 import { IssueCache } from "./issue_cache.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
@@ -139,6 +140,9 @@ export async function findIssuesByLabel(
 
   for (const repo of repos) {
     if (!isRepoAllowed(config.repos, repo)) continue;
+    // Issue #2734: this repository's own writers, not the fleet-wide
+    // intersection — see `trustedAuthorsFor`.
+    const repoAllowedAuthors = trustedAuthorsFor(config, repo);
 
     let issues: FilterableIssue[];
     try {
@@ -181,7 +185,7 @@ export async function findIssuesByLabel(
         // Issue #3083: for operational dispatch labels every issue needs the
         // label-author check, so pre-fetch the timeline for all of them.
         strictLabelAdderCheck ||
-        !config.allowedAuthors.some(
+        !repoAllowedAuthors.some(
           (a) => a.toLowerCase() === i.author.toLowerCase(),
         ),
     );
@@ -204,7 +208,7 @@ export async function findIssuesByLabel(
 
     for (const issue of issues) {
       // Check author or label authorship
-      const authorAllowed = config.allowedAuthors.some(
+      const authorAllowed = repoAllowedAuthors.some(
         (a) => a.toLowerCase() === issue.author.toLowerCase(),
       );
 
@@ -216,7 +220,7 @@ export async function findIssuesByLabel(
           repo,
           issue.number,
           label,
-          config.allowedAuthors,
+          repoAllowedAuthors,
           batchedGh,
           options.timelineCache,
           fleetWorkerLogins,

@@ -66,8 +66,21 @@ export interface WorkerConfig {
    * `.config.json`: it is empty at load — trust starts closed — and is
    * filled by the per-cycle collaborator resolve. The `allowed_authors` key
    * in the file grants nothing.
+   *
+   * This is the fleet-wide floor. A decision about one repository reads
+   * that repository's own set through `trustedAuthorsFor(config, repo)` in
+   * lib/trust_snapshot.ts (Issue #2734), never this array directly.
    */
   allowedAuthors: string[];
+  /**
+   * Axis 1 per monitored repository, keyed by lower-cased `owner/name`
+   * (Issue #2734): the write-access humans of that repository alone, from the
+   * same per-cycle resolve as `allowedAuthors`. Two organisations with
+   * disjoint writers fold `allowedAuthors` to nothing, yet each repository
+   * still has its own humans. Read it through `trustedAuthorsFor`, which falls
+   * back to `allowedAuthors` for a repository with no entry. Unset at load.
+   */
+  allowedAuthorsByRepo?: ReadonlyMap<string, string[]>;
   /**
    * @deprecated Not a trust grant. The first `allowed_authors` entry, kept
    * only as the default PR reviewer / assignee when `pr_reviewers` is unset.

@@ -358,9 +358,14 @@ access cannot direct the worker, whatever they write in an issue. The
 `!isBot` term is load-bearing on its own — a bot with write access must still
 not be able to schedule work, because write access alone does not confer the
 right to direct. Resolved every cycle by
-`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) and folded
-across the monitored repos as an **intersection**, so write access on one repo
-never confers trust on another.
+`resolveDerivedAuthors()` (`worker/deno/lib/derived_authors.ts`) per
+repository. A decision about one repository — a label adder, an edit to an
+approved body — reads that repository's own set through `trustedAuthorsFor()`
+(Issue #2734); only a genuinely fleet-wide decision reads the **intersection**
+across the monitored repos. Either way write access on one repo never confers
+trust on another. A host monitoring organisations whose writers share nobody
+folds the intersection to nothing: that is logged once at WARNING, naming the
+organisations, and each repository keeps working with its own writers.
 
 **Axis 2 — whose input we act on.** An explicit *known* list, because "known"
 is precisely the property that cannot be derived from repository permissions:
