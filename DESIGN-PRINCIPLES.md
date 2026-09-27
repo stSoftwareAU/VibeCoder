@@ -371,14 +371,14 @@ processing Copilot reviews and Actions results. It is axis 1 plus the Vibe Coder
 logins plus `authorized_commenters`.
 
 **The asymmetry is the point.** A Vibe Coder's or a known bot's review is
-accepted as input; neither may schedule or change work. Two mechanisms carry it
-and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any fleet
-login as an untrusted label applier (Issue #3416), and
+accepted as input; neither may schedule or change work. Two mechanisms carry
+it and must survive any rewrite: `wasLabelAddedByAllowedAuthor()` treats any
+fleet login as an untrusted label applier (Issue #3416), and
 `strip_untrusted_work_on.ts` flags a self-applied `work-on` with `needs-human`
 and comments once (Issue #3575), failing closed when the applier cannot be
 established or the trusted set is empty. It never removes `work-on`: that label
-records a human's decision, and a wrong trust verdict must not destroy it (Issue
-#2734).
+records a human's decision, and a wrong trust verdict must not destroy it
+(Issue #2734).
 
 **The fleet exclusion needs no configuration.** The Vibe Coder accounts hold
 repository write access by necessity — they push branches — so under a
