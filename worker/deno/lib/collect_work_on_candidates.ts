@@ -456,6 +456,7 @@ export async function collectWorkOnCandidates(
         fleetWorkerLogins,
         ghFn: batchedGh,
         cache: options.timelineCache,
+        needsHumanLabel: config.needsHumanLabel,
       });
       continue;
     }
