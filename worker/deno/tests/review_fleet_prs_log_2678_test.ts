@@ -12,6 +12,8 @@ import {
   renderSummary,
   REVIEW_MARKER,
   reviewBody,
+  sameIssueTitle,
+  unrelatedIssueBody,
 } from "../../../.claude/skills/review-fleet-prs/review_log.ts";
 
 const review = (over: Partial<FableReview> = {}): FableReview => ({
@@ -19,6 +21,7 @@ const review = (over: Partial<FableReview> = {}): FableReview => ({
   findings: [],
   testChanges: "none",
   testChangeNotes: [],
+  unrelatedIssues: [],
   ...over,
 });
 const finding = { file: "a.ts", line: 3, problem: "off by one", fix: "use <=" };
@@ -82,6 +85,94 @@ Deno.test("reviewBody: every body ends with the marker; change requests list eac
   assert(held.includes("tests/gone_test.ts"));
   assert(held.includes("expected 2 now 3"));
   assert(reviewBody("approved", review(), []).includes(REVIEW_MARKER));
+});
+
+const unrelated = {
+  title: "Search page renders the query unescaped",
+  file: "web/search.ts",
+  line: 12,
+  body: "Cross-site scripting (class only): the query is echoed into HTML.",
+};
+
+Deno.test("parseFableReview: unrelatedIssues default to none, malformed ones are dropped, at most 3 are kept", () => {
+  assertEquals(
+    parseFableReview('{"summary":"ok","findings":[],"testChanges":"none"}')
+      .unrelatedIssues,
+    [],
+  );
+  const r = parseFableReview(JSON.stringify({
+    summary: "ok",
+    findings: [],
+    testChanges: "none",
+    unrelatedIssues: [
+      unrelated,
+      { title: "", body: "no title" },
+      { title: "no body" },
+      "not an object",
+      { ...unrelated, title: "two" },
+      { ...unrelated, title: "three" },
+      { ...unrelated, title: "four" },
+    ],
+  }));
+  assertEquals(r.unrelatedIssues.map((i) => i.title), [
+    unrelated.title,
+    "two",
+    "three",
+  ]);
+});
+
+Deno.test("decideOutcome: an unrelated issue never blocks or holds the PR", () => {
+  assertEquals(
+    decideOutcome(review({ unrelatedIssues: [unrelated] }), []),
+    "approved",
+  );
+});
+
+Deno.test("reviewBody lists the issues filed for problems outside the PR's scope", () => {
+  const body = reviewBody(
+    "approved",
+    review({ unrelatedIssues: [unrelated] }),
+    [],
+    [
+      {
+        number: 42,
+        url: "https://github.com/o/r/issues/42",
+        title: unrelated.title,
+      },
+    ],
+  );
+  assert(body.includes("outside this PR's scope"));
+  assert(body.includes("#42"));
+  assert(body.trimEnd().endsWith(`_${REVIEW_MARKER} (Fable)._`));
+  assert(
+    !reviewBody("approved", review(), []).includes("outside this PR's scope"),
+  );
+});
+
+Deno.test("unrelatedIssueBody names the location and the PR it was found in", () => {
+  const body = unrelatedIssueBody(unrelated, {
+    repo: "o/r",
+    number: 7,
+    url: "https://github.com/o/r/pull/7",
+  });
+  assert(body.includes("`web/search.ts:12`"));
+  assert(
+    body.split("\n").some((l) =>
+      l ===
+        "Found while reviewing https://github.com/o/r/pull/7, but outside that PR's scope."
+    ),
+  );
+  assert(body.includes(unrelated.body));
+  assert(body.includes(REVIEW_MARKER));
+});
+
+Deno.test("sameIssueTitle ignores case, spacing and trailing punctuation only", () => {
+  assert(
+    sameIssueTitle("Search page renders XSS.", " search  page renders xss"),
+  );
+  assert(
+    !sameIssueTitle("Search page renders XSS", "Search page renders XSS twice"),
+  );
 });
 
 const record = (over: Partial<LogRecord>): LogRecord => ({

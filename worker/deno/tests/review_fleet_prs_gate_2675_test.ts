@@ -3,7 +3,7 @@
  * It decides which fleet PRs are worth a model review; the review itself is
  * the skill's job.
  */
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   authorKind,
   existingTestChanges,
@@ -11,6 +11,7 @@ import {
   noTestAdded,
   REVIEW_MARKER,
   reviewedAtHead,
+  runWithTimeout,
   type SearchPr,
   skipReason,
 } from "../../../.claude/skills/review-fleet-prs/gate.ts";
@@ -193,4 +194,15 @@ Deno.test("reviewedAtHead: approvals, change requests and the skill's own commen
     ),
     false,
   );
+});
+
+Deno.test("runWithTimeout kills a command that hangs, so one stuck gh call cannot wedge the watch loop", async () => {
+  const started = Date.now();
+  await assertRejects(
+    () => runWithTimeout("sleep", ["30"], 200),
+    Error,
+    "timed out after 200 ms",
+  );
+  assertEquals(Date.now() - started < 5000, true);
+  assertEquals(await runWithTimeout("echo", ["ok"], 5000), "ok\n");
 });
