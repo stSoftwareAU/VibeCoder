@@ -64,7 +64,8 @@ export {
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
-import { findOpenDeferrals } from "./ci_fix_pr_markers.ts";
+import { findHumanGate } from "./ci_fix_attempt_markers.ts";
+import { findParkedChecks } from "./ci_fix_pr_markers.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import {
@@ -1461,21 +1462,22 @@ export async function findFailedCiChecks(
       }
 
       // Issue #1881: the checks a fleet-authored deferral marker has parked
-      // on an issue that is still open. Read only when a non-aggregator
-      // failure is left to decide, so a green or aggregator-only PR costs
-      // no comment fetch. Every degraded read is logged inside and leaves
-      // the check undeferred — the scan never goes quiet on an error.
-      const deferrals = failedChecks.some((check) =>
-          !aggregators.has(check.name)
-        )
-        ? await findOpenDeferrals({
+      // on an issue that is still open. Issue #2744: the same read carries
+      // the human gates the CI-fix lane parked (#2727). Read only when a
+      // non-aggregator failure is left to decide, so a green or
+      // aggregator-only PR costs no comment fetch. Every degraded read is
+      // logged inside and leaves the check unparked — the scan never goes
+      // quiet on an error.
+      const parked = failedChecks.some((check) => !aggregators.has(check.name))
+        ? await findParkedChecks({
           repo,
           prNumber,
           ghCommandFn,
           fleetLogins: scanAuthors,
           logger,
         })
-        : [];
+        : undefined;
+      const deferrals = parked?.deferrals ?? [];
       const deferredNames = new Set(deferrals.map((d) => d.checkName));
       if (deferrals.length > 0) {
         logger.skipReason(
@@ -1486,10 +1488,29 @@ export async function findFailedCiChecks(
           } deferred until the named issue closes (Issue #1881)`,
         );
       }
+      // A gate only a human can approve is not a fix target: skipped at
+      // info, before the retry cap, so it never reads as a stuck fix.
+      const gatedNames = new Set(
+        parked === undefined ? [] : failedChecks
+          .filter((check) =>
+            !aggregators.has(check.name) && !deferredNames.has(check.name) &&
+            findHumanGate(parked.markers, check.name) !== undefined
+          )
+          .map((check) => check.name),
+      );
+      if (gatedNames.size > 0) {
+        logger.skipReason(
+          "ci-human-gate",
+          `${repo}#${prNumber}: ${
+            [...gatedNames].join(", ")
+          } parked for a human to approve (Issue #2744)`,
+        );
+      }
 
       for (const check of failedChecks) {
         if (aggregators.has(check.name)) continue;
         if (deferredNames.has(check.name)) continue;
+        if (gatedNames.has(check.name)) continue;
 
         // Skip genuine spelling failures — handled by findFailedPrChecks.
         // The decision reads the failed *step*, so a non-spelling step

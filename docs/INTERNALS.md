@@ -2109,16 +2109,25 @@ route is never taken on a guess.
    and the `depends-on` issue it records is still open, that check is not
    returned — nothing on the branch can fix a failure the base branch
    already has (see [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)
-   `findOpenDeferrals`). Other failing checks on the same PR are still
+   `findParkedChecks`). Other failing checks on the same PR are still
    returned, and one `skipReason` line per PR names what was deferred and
    on which issue. Once the issue closes the check is returned as usual.
    A comment thread or issue state that cannot be read, a marker from
    outside the fleet, or a malformed reference all leave the check
    undeferred and are logged — an error never suppresses a real failure.
-6. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
+6. Skips checks **parked for a human** (Issue #2744): when a fleet-authored
+   `vibe-ci-human-gate` marker on the PR names the check — the CI-fix lane
+   posts it once for a gate only a person can approve (Issue #2727) — the
+   check is not returned, so it never reaches the retry cap below. The
+   same comment read as step 5 serves it, and one `skipReason` line
+   (`ci-human-gate`, info not warn) per PR names the gated checks. Other
+   failing checks on the same PR are still returned; a gate marker from
+   outside the fleet, or a thread that cannot be read, leaves the check
+   scanned (the read error is logged).
+7. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
-6. Prioritises PRs targeting the default branch (where integration tests run).
-7. Fetches check annotations and returns the highest-priority failure.
+8. Prioritises PRs targeting the default branch (where integration tests run).
+9. Fetches check annotations and returns the highest-priority failure.
 
 **Retry tracking** — uses local state files in `$CI_CHECK_STATE_DIR` (default
 `$WORK_DIR/.ci_check_state`, resolved to an **always absolute** path by
