@@ -1168,7 +1168,6 @@ prompt_interactive_config() {
         # Check if already authenticated in this config dir
         if GH_CONFIG_DIR="$expanded_gh_dir" gh auth status &>/dev/null; then
             print_success "Already authenticated in ${INTERACTIVE_GH_CONFIG_DIR}"
-            warn_if_token_lacks_workflow_scope "$expanded_gh_dir"
         elif [[ -n "$VIBE_PROVISIONED_GH_CONFIG_DIR" && "$expanded_gh_dir" == "$VIBE_PROVISIONED_GH_CONFIG_DIR" ]]; then
             # Provisioned non-interactively above — never offer a login prompt
             # for the directory the worker consumes at runtime (Issue #4064).
@@ -1343,24 +1342,6 @@ remind_obsolete_host_work_dirs() {
     if [[ "${found}" == "true" ]]; then
         print_info "Reclaim the space once you are happy with the containerised worker: rm -rf '${work_dir}' '${work_dir}-approval-state'"
         print_info "(Content-approval snapshots re-baseline on the new volume; repositories re-clone on first use.)"
-    fi
-}
-
-# Issue #1475: a token without the `workflow` OAuth scope cannot create or
-# update .github/workflows/ — every monitored repo in this fleet carries
-# workflows, and the worker claimed two workflow issues and lost both at the
-# push before anyone read the git rejection. Say it here, at setup, with the
-# fix, rather than leaving it to a log line at runtime.
-warn_if_token_lacks_workflow_scope() {
-    local gh_dir="$1"
-    local scopes
-    scopes="$(GH_CONFIG_DIR="$gh_dir" gh auth status 2>&1 | grep -i 'token scopes' | head -1 || true)"
-    # No scope line at all (a GitHub App token, or an older gh) — nothing to say.
-    [[ -n "$scopes" ]] || return 0
-    if ! grep -q -E "(^|[^a-z_])'?workflow'?([^a-z_]|$)" <<<"$scopes"; then
-        print_warning "The token in ${gh_dir} lacks the 'workflow' scope (${scopes#*:})."
-        print_warning "Pushes that create or update .github/workflows/ will be rejected, and the worker will skip workflow issues."
-        print_info "Fix: GH_CONFIG_DIR=\"${gh_dir}\" gh auth refresh -s workflow   (then re-run setup so gh/hosts.yml is re-provisioned)"
     fi
 }
 
@@ -1553,6 +1534,13 @@ main() {
     # coherent config file, and it never prompts without a terminal.
     run_setup_cli update-mode
 
+    # Check the fleet token has the repo, workflow and read:org scopes and
+    # print the exact `gh auth refresh` command for any it lacks (Issues
+    # #1475, #2690). Read only; runs once the config names gh_config_dir, so
+    # every host is checked, not only one answering the prompts. Non-fatal.
+    run_setup_cli token-scope-preflight \
+        || print_warning "The fleet token lacks a scope - see the fix above (non-fatal)"
+
     # Standardise labels across all monitored repos (Issue #864)
     run_setup_cli label-sync || print_warning "Some labels could not be synced (non-fatal)"
 
@@ -1588,7 +1576,10 @@ main() {
     # selected-actions allow-list, secret scanning on public repos, one
     # approving review on the default branch (Issue #2680 — a direct-push
     # branch is skipped and reported), and code-owner review once CODEOWNERS
-    # is on the default branch. Setup-time only; non-fatal. The writes need
+    # is on the default branch; merge commits allowed with the default branch
+    # kept squash-only, so milestone sync PRs land as merge commits, and the
+    # fleet accounts held at write (Issue #2690 - an organisation owner is
+    # reported once). Setup-time only; non-fatal. The writes need
     # repository admin, so it runs as your own gh login, not the fleet account
     # in gh_config_dir, and says "needs an admin login" once without it
     # (Issue #2685).

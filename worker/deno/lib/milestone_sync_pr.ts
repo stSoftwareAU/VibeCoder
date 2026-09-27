@@ -179,7 +179,8 @@ export function squashedSyncWarning(
     `armed as a SQUASH — ${repo} does not permit merge commits (${detail}). ` +
     `The default branch will not be an ancestor of '${milestoneBranch}', so ` +
     `its deletions can return as modify/delete conflicts. Enable merge ` +
-    `commits on ${repo} (Settings → Pull Requests → Allow merge commits) to ` +
+    `commits on ${repo} (Settings → Pull Requests → Allow merge commits; ` +
+    `setup does this, keeping the default branch squash-only — Issue #2690) to ` +
     `close this off; until then the check-resurrected-files gate is what ` +
     `catches the consequence (Issue #1048).`;
 }

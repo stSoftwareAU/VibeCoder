@@ -1676,6 +1676,13 @@ function Invoke-VibeSetupMain {
     Invoke-VibeSetupCliOrExit -Arguments @("config")
     Write-VibeInteractiveConfig -Answers $answers
 
+    # Check the fleet token has the repo, workflow and read:org scopes and
+    # print the exact `gh auth refresh` command for any it lacks (Issues
+    # #1475, #2690). Read only; non-fatal.
+    if (-not (Invoke-VibeSetupCli -Arguments @("token-scope-preflight"))) {
+        Write-VibeWarning "The fleet token lacks a scope - see the fix above (non-fatal)"
+    }
+
     # Standardise labels across all monitored repos (Issue #864).
     if (-not (Invoke-VibeSetupCli -Arguments @("label-sync"))) {
         Write-VibeWarning "Some labels could not be synced (non-fatal)"
@@ -1707,7 +1714,9 @@ function Invoke-VibeSetupMain {
     }
 
     # Harden every monitored repo's GitHub settings, drift only (Issue #2628),
-    # including one approving review on the default branch (Issue #2680).
+    # including one approving review on the default branch (Issue #2680),
+    # merge commits with a squash-only default branch and fleet accounts held
+    # at write (Issue #2690).
     # The writes need repository admin, so it runs as your own gh login, not
     # the fleet account in gh_config_dir, and says "needs an admin login" once
     # without it (Issue #2685).

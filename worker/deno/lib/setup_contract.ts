@@ -36,6 +36,7 @@ export type { LauncherDialect };
 export const SHARED_SETUP_SUBCOMMANDS: readonly string[] = [
   "prerequisites",
   "config",
+  "token-scope-preflight",
   "label-sync",
   "workflow-sync",
   "best-practices-sync",
