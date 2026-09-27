@@ -689,6 +689,13 @@ This is enforced at the single git-push choke-point by
   naming each path. The gate never sees them, so a stray worker file no longer
   costs the whole commit; the gate itself is unchanged and still refuses every
   genuinely hidden or secret-bearing path.
+- **A merge's already-tracked hidden files are not the agent's** (Issue #2737).
+  Merging the base branch in stages every path the base changed, including
+  hidden files it already tracks (`.claude/…`). The gate exempts a staged path
+  only when its blob and mode are identical to that path on `MERGE_HEAD`, and
+  logs each exemption at INFO. A hidden or secret file the agent adds or edits
+  during the merge is still refused; with no readable `MERGE_HEAD` nothing is
+  exempt. See [SECURITY.md](../SECURITY.md) for the full rule.
 
 Existing maintenance that touches files (bump-deps, gitignore/gitattributes
 sync) **stages locally and rides the next feature-branch PR** — it never pushes

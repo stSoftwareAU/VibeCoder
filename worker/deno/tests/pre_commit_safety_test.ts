@@ -442,3 +442,142 @@ Deno.test("inspectStagedFiles - paths with spaces are decoded correctly via -z",
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// --- merges that bring in already-tracked hidden files (Issue #2737) ----
+
+/** Run git in a fixture and fail the test loudly on a non-zero exit. */
+async function mustGit(args: string[], cwd: string): Promise<string> {
+  const out = await runGit(args, cwd);
+  if (out.code !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${out.stderr}`);
+  }
+  return out.stdout;
+}
+
+/**
+ * A repo whose `main` tracks `.claude/x.md` and `.github/y.yml`, committed
+ * after `feature` branched off, with `feature` checked out. Merging `main`
+ * into `feature` then stages both hidden paths — exactly the shape of the
+ * conflict-resolution merge in PR #2698.
+ */
+async function makeMergeRepo(prefix: string): Promise<string> {
+  const dir = await makeRepo(prefix);
+  await stageFile(dir, "README.md", "# project\n");
+  await mustGit(["commit", "-q", "-m", "base"], dir);
+  await mustGit(["branch", "feature"], dir);
+  await stageFile(dir, ".claude/x.md", "# skill\n");
+  await stageFile(dir, ".github/y.yml", "on: push\n");
+  await mustGit(["commit", "-q", "-m", "main adds hidden files"], dir);
+  await mustGit(["checkout", "-q", "feature"], dir);
+  await stageFile(dir, "src/work.ts", "export const w = 1;\n");
+  await mustGit(["commit", "-q", "-m", "feature work"], dir);
+  return dir;
+}
+
+/** Merge `main` into the checked-out branch, stopping before the commit. */
+async function mergeMainNoCommit(dir: string): Promise<void> {
+  await mustGit(["merge", "--no-ff", "--no-commit", "main"], dir);
+}
+
+Deno.test("assertSafeToCommit - a merge bringing in hidden files already tracked on the merged ref commits (Issue #2737)", async () => {
+  const dir = await makeMergeRepo("pre_commit_merge_ok_");
+  try {
+    await mergeMainNoCommit(dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(
+      result.ok,
+      `expected ok, got: ${!result.ok ? result.error.message : ""}`,
+    );
+    await mustGit(["commit", "-q", "--no-edit"], dir);
+    const tracked = await mustGit(["ls-files"], dir);
+    assert(tracked.includes(".claude/x.md"));
+    assert(tracked.includes(".github/y.yml"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - an agent-added .env or .claude/secret during a merge is refused (Issue #2737)", async () => {
+  const dir = await makeMergeRepo("pre_commit_merge_added_");
+  try {
+    await mergeMainNoCommit(dir);
+    await stageFile(dir, ".env", "SECRET=1\n");
+    await stageFile(dir, ".claude/secret", "token\n");
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "agent-added secrets must be refused mid-merge");
+    if (!result.ok) {
+      const msg = result.error.message;
+      assert(msg.includes(".env"), `expected .env in error, got: ${msg}`);
+      assert(
+        msg.includes(".claude/secret"),
+        `expected .claude/secret in error, got: ${msg}`,
+      );
+      assert(
+        !msg.includes(".claude/x.md"),
+        `the merged-in .claude/x.md is exempt and must not be listed: ${msg}`,
+      );
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - a tracked hidden file modified during the merge is refused (Issue #2737)", async () => {
+  const dir = await makeMergeRepo("pre_commit_merge_modified_");
+  try {
+    await mergeMainNoCommit(dir);
+    await stageFile(dir, ".claude/x.md", "# skill\nleaked=1\n");
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "a modified hidden file must be refused mid-merge");
+    if (!result.ok) {
+      assert(result.error.message.includes(".claude/x.md"));
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - a hidden file whose mode differs from the merged ref is refused (Issue #2737)", async () => {
+  const dir = await makeMergeRepo("pre_commit_merge_mode_");
+  try {
+    await mergeMainNoCommit(dir);
+    await mustGit(["update-index", "--chmod=+x", ".claude/x.md"], dir);
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "a mode change is a modification and must be refused");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - outside a merge, a hidden file identical to another branch's is still refused (Issue #2737)", async () => {
+  const dir = await makeMergeRepo("pre_commit_no_merge_");
+  try {
+    // Same bytes as main's .claude/x.md, but no merge is in progress, so
+    // nothing is being merged in and the gate behaves exactly as before.
+    await stageFile(dir, ".claude/x.md", "# skill\n");
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "without MERGE_HEAD there is no exemption");
+    if (!result.ok) {
+      assert(result.error.message.includes(".claude/x.md"));
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("assertSafeToCommit - an unreadable MERGE_HEAD fails closed (Issue #2737)", async () => {
+  const dir = await makeMergeRepo("pre_commit_merge_bad_head_");
+  try {
+    await mergeMainNoCommit(dir);
+    const gitDir = (await mustGit(["rev-parse", "--absolute-git-dir"], dir))
+      .trim();
+    await Deno.writeTextFile(`${gitDir}/MERGE_HEAD`, "not-a-commit\n");
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(!result.ok, "no exemption when MERGE_HEAD cannot be read");
+    if (!result.ok) {
+      assert(result.error.message.includes(".claude/x.md"));
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
