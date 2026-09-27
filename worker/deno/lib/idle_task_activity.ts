@@ -44,9 +44,9 @@
  * wrappers, or `null` when none was claimed.
  *
  * A `gh` failure on the primary issue listing returns
- * `{ lastRaisedEpoch: null, lastClaimedEpoch: null }` — no signal — to
- * match the fail-open convention of the existing gates (e.g.
- * `findExistingIdleTaskIssue`). Per-wrapper comment-lookup failures are
+ * `{ lastRaisedEpoch: null, lastClaimedEpoch: null }` — no signal — the
+ * fail-open convention of the cadence signals. (The open-wrapper lookup,
+ * `findExistingIdleTaskIssue`, fails closed instead — Issue #2750.) Per-wrapper comment-lookup failures are
  * best-effort: they leave that wrapper's claim epoch unresolved without
  * discarding signal already gathered from the others.
  *

@@ -27,7 +27,10 @@ claimable issues exist. The framework defines:
   are machine-recoverable
   ([`worker/deno/lib/idle_task_issue.ts`](../worker/deno/lib/idle_task_issue.ts)).
 - A label-only dedup query (`findExistingIdleTaskIssue`) that keeps the worker
-  from filing two idle-task issues against the same repo at once.
+  from filing two idle-task issues against the same repo at once. It fails
+  closed: a repo whose lookup fails (a `gh` error or malformed output) is never
+  treated as clean, so filing into it is blocked for that tick and logged as
+  `[idle-task] repo=<repo> action=skipped reason=lookup_failed`.
 - A claim handler
   ([`worker/deno/lib/idle_task_claim_handler.ts`](../worker/deno/lib/idle_task_claim_handler.ts))
   that the main loop calls when it picks up an `idle-task` issue. When the issue
