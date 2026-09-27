@@ -354,8 +354,8 @@ export interface ParkedChecks {
  * notice, so no error is allowed to produce one.
  *
  * @param options - Repo, PR, `gh` runner, fleet logins and logger.
- * @returns The open deferrals, in marker order, and the fleet markers. Both
- *   are empty when nothing is parked or nothing could be trusted.
+ * @returns The open deferrals, in marker order, and the fleet markers. The
+ *   markers are empty only when the comment read failed.
  */
 export async function findParkedChecks(
   options: FindOpenDeferralsOptions,
