@@ -558,6 +558,7 @@
         "worker/deno/lib/dependency_conflict_rules.ts",
         "worker/deno/lib/derived_authors.ts",
         "worker/deno/lib/descendant_progress.ts",
+        "worker/deno/lib/described_code_change.ts",
         "worker/deno/lib/diagnose_repo.ts",
         "worker/deno/lib/disk_telemetry.ts",
         "worker/deno/lib/docker_image_ref.ts",
