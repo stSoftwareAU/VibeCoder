@@ -79,6 +79,11 @@ export type PrLiveStateReading =
     armed?: boolean;
     /** True when `mergeStateStatus === "BEHIND"` (Issue #2462). */
     behind?: boolean;
+    /**
+     * Present, and true, only when `reviewDecision` is `CHANGES_REQUESTED`
+     * (Issue #2702) — the auto-merge sweep then never updates the branch.
+     */
+    changesRequested?: true;
     unknown?: undefined;
   }
   | PrNotOpenReading;
@@ -141,8 +146,17 @@ export async function readPrLiveState(
     };
   }
 
-  const { state, mergeable, armed, behind } = parsePrLiveFields(raw);
-  if (state === "OPEN") return { open: true, mergeable, armed, behind };
+  const { state, mergeable, armed, behind, changesRequested } =
+    parsePrLiveFields(raw);
+  if (state === "OPEN") {
+    return {
+      open: true,
+      mergeable,
+      armed,
+      behind,
+      ...(changesRequested ? { changesRequested } : {}),
+    };
+  }
   if (state === "CLOSED" || state === "MERGED") return { open: false, state };
   return {
     unknown: true,

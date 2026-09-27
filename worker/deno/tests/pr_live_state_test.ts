@@ -48,7 +48,7 @@ Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdic
     "--repo",
     "owner/repo",
     "--json",
-    "state,mergeable,autoMergeRequest,mergeStateStatus",
+    "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
   ]]);
 });
 
@@ -160,7 +160,7 @@ Deno.test("isPrLiveStateRead - recognises this read's own argv, and nothing else
       "view",
       "7",
       "--json",
-      "state,mergeable,autoMergeRequest,mergeStateStatus",
+      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
     ]),
   );
   assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state"]));
@@ -333,4 +333,41 @@ Deno.test("readPrLiveState - a null autoMergeRequest reads unarmed even when beh
     armed: false,
     behind: true,
   });
+});
+
+Deno.test("readPrLiveState - a CHANGES_REQUESTED review decision rides the same read (Issue #2702)", async () => {
+  const blocked = await readPrLiveState(
+    "owner/repo",
+    12,
+    () =>
+      Promise.resolve(
+        '{"autoMergeRequest":{"enabledAt":"2026-09-27T07:00:00Z"},' +
+          '"mergeStateStatus":"BEHIND","mergeable":"MERGEABLE",' +
+          '"reviewDecision":"CHANGES_REQUESTED","state":"OPEN"}',
+      ),
+  );
+  assertEquals(blocked, {
+    open: true,
+    mergeable: "MERGEABLE",
+    armed: true,
+    behind: true,
+    changesRequested: true,
+  });
+
+  // Every other decision — and no decision at all — never blocks.
+  for (const decision of ['"APPROVED"', '"REVIEW_REQUIRED"', "null"]) {
+    const reading = await readPrLiveState(
+      "owner/repo",
+      12,
+      () =>
+        Promise.resolve(
+          `{"mergeable":"MERGEABLE","reviewDecision":${decision},"state":"OPEN"}`,
+        ),
+    );
+    assertEquals(
+      reading.open === true && reading.changesRequested,
+      undefined,
+      decision,
+    );
+  }
 });

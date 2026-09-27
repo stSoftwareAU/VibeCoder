@@ -1930,9 +1930,20 @@ the fleet means "already processed" (Issue #1249, finding 5). A count alone
 would let any account, with no repository permission, retire a comment from the
 scan for good. PR reviews use dismissal instead of reactions.
 
-**Staleness check** — review commit IDs are compared against the PR's current
-HEAD SHA. If the review was left on an older commit, it is skipped (the worker
-has already pushed new commits since the review).
+**Staleness check** (Issue #2702) — a `CHANGES_REQUESTED` review is skipped
+only when a **fleet fix commit** landed after its `submitted_at`: a commit
+authored or committed by a fleet login that is neither a merge (the base branch
+merged in by update-branch) nor a bot's commit (`github-actions[bot]` formatting
+or version bumps). The head merely moving is not enough — on GRQ#5032 a base
+merge and a version bump moved the head after the owner's review, and the old
+`commit_id !== head` rule hid a review nobody had answered. A review on the
+current head costs no extra call; otherwise the PR's commits are read once
+(`pulls/{pr}/commits`, 100 a page), and an unreadable history keeps the review
+actionable. The skip is logged at info. The rule is the one fleet-push
+supersession uses (`isFleetAnswerAfter` in
+[pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts)),
+without the cool-off window; a handled review is dismissed, which is what stops
+it being processed twice.
 
 **Superseded by a fleet push** — a trusted comment is also deferred when the PR
 head was pushed by a **fleet login** _after_ the comment was written and within

@@ -1534,6 +1534,15 @@ main() {
     # coherent config file, and it never prompts without a terminal.
     run_setup_cli update-mode
 
+    # Ask whether repo-settings-harden turns Copilot code review on, off, or
+    # leaves it (Issue #2701). Each automatic review is billed to the PR
+    # author's Copilot plan or the organisation, even on a public repository,
+    # so it is the operator's call. Defaults to this host's current answer
+    # (leave when unset), never prompts without a terminal, and is recorded as
+    # copilot_code_review in .config.json. Non-fatal.
+    run_setup_cli copilot-review-mode \
+        || print_warning "Copilot code review setting not recorded - see above (non-fatal)"
+
     # Check the fleet token has the repo, workflow and read:org scopes and
     # print the exact `gh auth refresh` command for any it lacks (Issues
     # #1475, #2690). Read only; runs once the config names gh_config_dir, so
@@ -1573,13 +1582,18 @@ main() {
 
     # Harden every monitored repo's GitHub settings, writing only what drifted
     # (Issue #2628 — part of #2611): read-only workflow token, SHA pinning, a
-    # selected-actions allow-list, secret scanning on public repos, one
+    # selected-actions allow-list, secret scanning on public repos, CodeQL
+    # default setup on public repos (Issue #2704 - only when not configured;
+    # a repo with its own CodeQL workflow is reported, never written), one
     # approving review on the default branch (Issue #2680 — a direct-push
     # branch is skipped and reported), and code-owner review once CODEOWNERS
     # is on the default branch; merge commits allowed with the default branch
     # kept squash-only, so milestone sync PRs land as merge commits, and the
     # fleet accounts held at write (Issue #2690 - an organisation owner is
-    # reported once). Setup-time only; non-fatal. The writes need
+    # reported once); and Copilot code review on, off or left as
+    # copilot_code_review says (Issue #2701 - off removes the rule from every
+    # repository ruleset, deleting one it leaves empty). Setup-time only;
+    # non-fatal. The writes need
     # repository admin, so it runs as your own gh login, not the fleet account
     # in gh_config_dir, and says "needs an admin login" once without it
     # (Issue #2685).

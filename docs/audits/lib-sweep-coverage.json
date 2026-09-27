@@ -2144,30 +2144,6 @@
       ]
     },
     {
-      "issue": 2602,
-      "chunk": "top-up-2602",
-      "title": "top-up: the brief toolchain runner",
-      "ledger": "docs/audits/security-sweep-2602-brief-toolchain.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: brief_toolchain.ts (#2602)",
-      "status": "swept",
-      "sweptAt": "cb328358866cc29ffd3062427bd8108cda362eb0",
-      "paths": [
-        "worker/deno/lib/brief_toolchain.ts"
-      ]
-    },
-    {
-      "issue": 2603,
-      "chunk": "top-up-2603",
-      "title": "top-up: the brief toolchain switch",
-      "ledger": "docs/audits/security-sweep-2603-brief-toolchain-config.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: brief_toolchain_config.ts (#2603)",
-      "status": "swept",
-      "sweptAt": "a0b3fd6c5e78f050ae473bfd8e1bae694b547d25",
-      "paths": [
-        "worker/deno/lib/brief_toolchain_config.ts"
-      ]
-    },
-    {
       "issue": 2629,
       "chunk": "top-up-2629",
       "title": "top-up: the repo-settings audit-issue close-out",
@@ -2201,6 +2177,18 @@
       "sweptAt": "20cd3f5b2b7ec719640e445cba2b27191ba65fcf",
       "paths": [
         "worker/deno/setup/repo_settings_harden_sync.ts"
+      ]
+    },
+    {
+      "issue": 2701,
+      "chunk": "top-up-2701",
+      "title": "top-up: the Copilot code review setup question",
+      "ledger": "docs/audits/security-sweep-2701-copilot-review-setup.md",
+      "definition": "modules added to worker/deno/setup/ after 12a-12af recorded their coverage: copilot_review_setup.ts (#2701)",
+      "status": "swept",
+      "sweptAt": "d7418ce59f0ab608691cfe6b130a105706e8beff",
+      "paths": [
+        "worker/deno/setup/copilot_review_setup.ts"
       ]
     },
     {
