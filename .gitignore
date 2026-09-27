@@ -10,6 +10,12 @@
 # Except .markdownlint-cli2.jsonc (markdownlint quality gate config — Issue #1685)
 !.markdownlint-cli2.jsonc
 
+# Except the checked-in Claude Code skills (Issue #2675); the rest of
+# .claude/ (local settings, agent worktrees) stays ignored.
+!.claude
+.claude/*
+!.claude/skills
+
 # Except .vscode (editor workspace settings — Deno language server for worker/deno)
 !.vscode
 
