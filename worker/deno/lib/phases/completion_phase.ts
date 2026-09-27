@@ -103,6 +103,7 @@ import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
   isWorkflowScopePushRefusal,
+  warnMissingWorkflowScopeOnce,
   WORKFLOW_SCOPE_REMEDIATION,
   workflowPathsIn,
   workflowScopePushRefusalMessage,
@@ -1269,6 +1270,8 @@ async function completionBody(
       ? "the branch diff"
       : "the branch's commit list, the diff having failed";
     if (workflowPaths.length > 0 && scopeState === "absent") {
+      // Issue #2689: the host's gap, logged once; the run releases uncounted.
+      warnMissingWorkflowScopeOnce((message) => logger.warn(message));
       return {
         status: "failure",
         reason: `Cannot push: the token lacks the 'workflow' scope and the ` +
@@ -1298,7 +1301,9 @@ async function completionBody(
     // phrase that classifies the run as `token_scope`, not `push_failure`.
     if (isWorkflowScopePushRefusal(pushResult.error.message)) {
       const reason = workflowScopePushRefusalMessage(pushResult.error.message);
-      logger.error(reason);
+      // Issue #2689: a host capability gap, not an error in the issue — one
+      // WARNING per process, and the run releases uncounted.
+      warnMissingWorkflowScopeOnce((message) => logger.warn(message));
       return { status: "failure", reason };
     }
     // Attempt push rejection recovery (Issue #423)

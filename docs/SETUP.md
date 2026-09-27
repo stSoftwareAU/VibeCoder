@@ -1496,6 +1496,12 @@ The worker reads the scope at start-up and, without it (Issue #1475):
   `.github/workflows/`, naming the files and the fix, and classifies it as
   the host's credential (`token-scope`), never the issue's fault.
 
+Either refusal releases the issue for a host that can push it (Issue #2689):
+no attempt is consumed and no `failed-once`, `failed` or `needs-human` label
+is added, so a host whose token has the scope claims it on its next scan. The
+refusing host logs, once per process at WARN, that its token lacks the
+`workflow` OAuth scope, with the fix.
+
 Neither check is allowed to pass by silence (Issue #1952):
 
 - the start-up verdict is recorded whenever detection established one, and a
@@ -1523,6 +1529,8 @@ flowchart TD
     D -->|touches them, verdict unknown| WARN["WARN, then push"] --> P
     D -->|touches none, or cannot answer| P
     P -->|GitHub refuses: no workflow scope| F2["Fail once — token_scope"]
+    F --> REL["Release, no label — a capable host claims it"]
+    F2 --> REL
     P -->|other rejection| RC["Rebase recovery, retry"]
     style F fill:#9d0208,stroke:#6a040f,color:#fff
     style F2 fill:#9d0208,stroke:#6a040f,color:#fff

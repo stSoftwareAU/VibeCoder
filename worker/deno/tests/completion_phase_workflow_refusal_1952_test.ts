@@ -17,7 +17,15 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
-import type { WorkflowScopeState } from "../lib/workflow_scope.ts";
+import {
+  resetMissingWorkflowScopeWarningForTests,
+  type WorkflowScopeState,
+} from "../lib/workflow_scope.ts";
+
+/** The once-per-process WARNING naming the missing scope (Issue #2689). */
+function scopeWarnings(warnings: string[]): string[] {
+  return warnings.filter((w) => w.includes("`workflow` OAuth scope"));
+}
 
 const SHA = "1f0c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c";
 
@@ -172,6 +180,7 @@ Deno.test({
     "completion - GitHub's workflow-scope refusal fails once, with no rebase recovery (Issue #1952)",
   permissions: { read: true, write: true },
   async fn() {
+    resetMissingWorkflowScopeWarningForTests();
     const outcome = await runCompletion({
       // The launcher recorded no verdict, so the pre-push check cannot stop
       // this: the refusal arrives at the push itself.
@@ -190,6 +199,11 @@ Deno.test({
       "token_scope",
       "the record must carry token_scope, not push_failure",
     );
+    assertEquals(
+      scopeWarnings(outcome.warnings).length,
+      1,
+      "the host names the scope it lacks, as a WARNING (Issue #2689)",
+    );
   },
 });
 
@@ -198,6 +212,7 @@ Deno.test({
     "completion - an unreadable diff falls back to the commit list, so the scope check still fires (Issue #1952)",
   permissions: { read: true, write: true },
   async fn() {
+    resetMissingWorkflowScopeWarningForTests();
     const outcome = await runCompletion({
       scope: "absent",
       diffAnswers: false,
@@ -216,6 +231,17 @@ Deno.test({
       true,
       "the fallback must be logged, not silent",
     );
+    assertEquals(scopeWarnings(outcome.warnings).length, 1);
+    // A second refusal on the same host is the same fact: not repeated.
+    const again = await runCompletion({
+      scope: "absent",
+      diffAnswers: true,
+      changedFiles: [".github/workflows/gitleaks.yml"],
+      pushRefused: false,
+    });
+    assertEquals(again.status, "failure");
+    assertEquals(scopeWarnings(again.warnings), []);
+    resetMissingWorkflowScopeWarningForTests();
   },
 });
 

@@ -32,6 +32,11 @@
  * named, instead of spending five rebase attempts on a refusal no rebase can
  * fix and recording it as a generic push failure.
  *
+ * Issue #2689 made that failure the host's, not the issue's: it releases
+ * the issue with no label and no attempt consumed, so a host whose token has
+ * the scope claims it, and the host logs the gap once at WARN
+ * ({@link warnMissingWorkflowScopeOnce}).
+ *
  * Australian English throughout (behaviour, organisation).
  */
 
@@ -217,4 +222,41 @@ export function issueLooksLikeWorkflowWork(
   if (/\b(workflows?|github actions?)\b/i.test(title)) return true;
   if (/\.github\/workflows\b/i.test(title)) return true;
   return /\.github\/workflows\b/i.test(body ?? "");
+}
+
+/**
+ * Whether this process has already said its token lacks the scope.
+ * Per process on purpose: one host, one credential, one WARNING.
+ */
+let missingScopeWarned = false;
+
+/**
+ * Say, once per process, that this host cannot push workflow files
+ * (Issue #2689).
+ *
+ * A missing scope is the host's gap, not the issue's: the run is released
+ * uncounted so a host whose token has the scope can claim it. Every refusal
+ * after the first is the same fact again, so it is not repeated.
+ *
+ * @param warn - The WARNING sink (the run logger in production)
+ * @returns True when this call logged the warning, false when it was
+ *   already logged by this process
+ */
+export function warnMissingWorkflowScopeOnce(
+  warn: (message: string) => void,
+): boolean {
+  if (missingScopeWarned) return false;
+  missingScopeWarned = true;
+  warn(
+    `This host's token lacks the \`workflow\` OAuth scope, so it cannot ` +
+      `push anything under ${WORKFLOWS_DIR}. Such issues are released ` +
+      `without consuming an attempt, for a host that can push them ` +
+      `(Issue #2689). Fix: ${WORKFLOW_SCOPE_REMEDIATION}`,
+  );
+  return true;
+}
+
+/** Re-arm {@link warnMissingWorkflowScopeOnce}, as a fresh process would. */
+export function resetMissingWorkflowScopeWarningForTests(): void {
+  missingScopeWarned = false;
 }
