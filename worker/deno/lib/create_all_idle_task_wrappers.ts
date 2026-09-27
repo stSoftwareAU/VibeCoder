@@ -430,6 +430,10 @@ export async function createAllIdleTaskWrappers(
       },
     };
   }
+  if (blocker !== undefined) {
+    // Only reachable on `force`: name the open issue the sweep filed past.
+    log(`[idle-task] repo=${repo} issue=${blocker.number} action=forced`);
+  }
   // Exact canonical-title dedup — only reachable past the gate on `force`.
   const openTitles = new Set(
     openIssues.map((i) => (i.title ?? "").trim()).filter((t) =>

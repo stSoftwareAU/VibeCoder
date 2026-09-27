@@ -1564,9 +1564,14 @@ flowchart TD
   an `IdleTaskSweepError` — an unknown repo is never read as clean.
 - **`force`.** The optional `force` dependency bypasses the any-open gate; the
   exact-canonical-title dedup still applies, so a forced sweep never duplicates
-  an open wrapper. The CLI `--force` flag that sets it is follow-up work. Run it from the repository root so the
-template body builders can resolve their cwd-relative prompt paths (e.g.
-`prompts/best_practices/buckets/general.md`).
+  an open wrapper. A forced sweep logs
+  `[idle-task] repo=<repo> issue=<n> action=forced`, naming the open issue it
+  bypassed. Only the three raise commands below expose it, as `--force`
+  (Issue #2753); `create-all-idle-task-wrappers`, `seed-idle-tasks` and
+  `add-repo` never force.
+
+Run it from the repository root so the template body builders can resolve their
+cwd-relative prompt paths (e.g. `prompts/best_practices/buckets/general.md`).
 
 #### When a sweep fails part-way
 
@@ -1639,10 +1644,20 @@ deno run -A worker/deno/mod.ts raise-boy-scout-idle-tasks
 It reuses the same `createAllIdleTaskWrappers` seam with a template-name filter
 ([`BOY_SCOUT_TEMPLATE_NAMES`](../worker/deno/lib/boy_scout_idle_tasks.ts)), so
 it inherits the same per-repo **any-open gate** — a repo already holding an
-open `idle-task` issue is skipped whole, never seeded a second batch. A per-repo failure is
-recorded in the summary and the sweep continues to the next repo; the command
-reports `N filed, M already open, K failed`. Run it from the repository root for
-the same prompt-path reason as above.
+open `idle-task` issue is skipped whole, never seeded a second batch. A per-repo
+failure is recorded in the summary and the sweep continues to the next repo; the
+command reports `N filed, M already open, K failed`. Run it from the repository
+root for the same prompt-path reason as above.
+
+Pass `--force` to file past the gate (Issue #2753) — each bypassed repo logs
+`[idle-task] repo=<repo> issue=<n> action=forced`, and a wrapper whose exact
+canonical title is already open is still skipped. An unknown flag (e.g. a
+misspelt `--forse`) is refused before anything is filed:
+
+```bash
+deno run -A worker/deno/mod.ts raise-boy-scout-idle-tasks \
+  --monitored-repos owner/repo-a --force
+```
 
 ### Raising all wrappers across several repos
 
@@ -1669,6 +1684,15 @@ repo already holding an open `idle-task` issue is skipped whole. A
 per-repo failure is recorded in the summary and the sweep continues to the next
 repo; the command reports `N filed, M already open, K failed`. Run it from the
 repository root for the same prompt-path reason as above.
+
+`--force` files past the gate exactly as for `raise-boy-scout-idle-tasks`
+(Issue #2753): `action=forced` is logged per bypassed repo, exact-title dedup
+still applies, and an unknown flag is refused:
+
+```bash
+deno run -A worker/deno/mod.ts raise-all-idle-tasks \
+  --monitored-repos owner/repo-a --force
+```
 
 ### Raising one named template against a pinned repo
 
@@ -1703,6 +1727,15 @@ inherits the same per-repo **any-open gate** — a repo already holding an open
 summary and the sweep continues; the command reports
 `N filed, M already open, K failed`. Run it from the repository root for the
 same prompt-path reason as above.
+
+`--force` files past the gate (Issue #2753), logging `action=forced` for each
+bypassed repo; the named wrapper is still never duplicated when its exact
+canonical title is already open. An unknown flag is refused:
+
+```bash
+deno run -A worker/deno/mod.ts raise-single-idle-task \
+  --template documentation-audit --repo owner/repo-a --force
+```
 
 ### Requesting a sweep by issue, without a human `deno run`
 
