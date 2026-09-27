@@ -26,6 +26,15 @@
  * no tool calls at all while it waits, so it cannot trip this guard however
  * long the command takes.
  *
+ * Volume alone is not the shape, though (Issue #2773). A security sweep reads
+ * and greps dozens of modules before it writes a line, every call different,
+ * and crossed the volume line by design. What separates a poll loop from an
+ * investigation is repetition: the loop keeps issuing the same command, the
+ * investigation keeps reading things it has not read before. So the caller
+ * counts the *novel* calls in the window as well — distinct keys from
+ * {@link normaliseToolCall} — and a window is a storm only when the novel
+ * share is low too.
+ *
  * Fail-safe direction, deliberately the opposite of the extension policy's:
  * this guard *kills inside the budget*, so it fires only on affirmative
  * evidence. A tree probe that answers `unknown` never trips it — an
@@ -54,6 +63,15 @@ import type { TreeProgressState } from "./progress_extension.ts";
  */
 export const CALL_STORM_CONSECUTIVE_CHECKS = 2;
 
+/**
+ * Default novel share below which a busy window is a storm (Issue #2773).
+ *
+ * Under a quarter of the calls distinct: the #2230 poll loop cycled through
+ * three or four commands across well over a hundred calls, while a sweep
+ * reading one module after another is nearly all distinct.
+ */
+export const DEFAULT_CALL_STORM_NOVEL_SHARE = 0.25;
+
 /** Tunables the guard reads. Mirrors the `call_storm_*` config keys. */
 export interface CallStormPolicy {
   /** Off restores the pre-#2230 behaviour exactly: no early stop. */
@@ -62,12 +80,24 @@ export interface CallStormPolicy {
   windowSeconds: number;
   /** Calls inside the window at or above which the run is a storm. */
   callThreshold: number;
+  /**
+   * Novel calls over total calls at or above which a busy window is an
+   * investigation, not a storm (Issue #2773). Mirrors
+   * `call_storm_novel_share`.
+   */
+  novelShare: number;
 }
 
 /** Everything the decision needs. */
 export interface CallStormInput {
   /** Tool calls recorded inside the window. */
   toolCalls: number;
+  /**
+   * Distinct normalised tool calls inside the same window (Issue #2773) —
+   * see {@link normaliseToolCall}. A poll loop repeats itself; an
+   * investigation keeps reaching for something new.
+   */
+  novelToolCalls: number;
   /** The freshest working-tree verdict. */
   treeState: TreeProgressState;
   /**
@@ -115,12 +145,66 @@ export function decideCallStorm(
   // Only an affirmative "unchanged" stops a run early: `advanced` is
   // progress, and `unknown` is unverifiable rather than stalled.
   if (input.treeState !== "unchanged") return { stalled: false };
+  // Repetition, not volume, is the loop (Issue #2773): a window of mostly
+  // new reads is an investigation however busy it is.
+  const share = input.novelToolCalls / input.toolCalls;
+  if (share >= policy.novelShare) return { stalled: false };
   const last = input.lastToolSummary ? `; last: ${input.lastToolSummary}` : "";
   return {
     stalled: true,
     reason: `call storm: ${input.toolCalls} calls in ` +
-      `${formatWindow(windowMs)}, tree unchanged${last}`,
+      `${formatWindow(windowMs)}, ${input.novelToolCalls} novel ` +
+      `(${Math.round(share * 100)}%), tree unchanged${last}`,
   };
+}
+
+/**
+ * The identity of one tool call for the novelty count (Issue #2773): the
+ * tool name plus its primary target, with counters ignored.
+ *
+ * - `Read` / `Edit` / `Write` (and `MultiEdit`, `NotebookEdit`): the path.
+ * - `Grep` / `Glob`: the pattern plus the path.
+ * - `Bash`: the command with digit runs and whitespace runs collapsed, so
+ *   `echo w9` and `echo w252` — the #2230 loop's counter — are one call.
+ * - Anything else: the first of the usual target fields that is present.
+ *
+ * Pure: same call, same key.
+ *
+ * @param name - The tool name as the stream names it.
+ * @param input - The tool input, whatever shape the stream carried.
+ * @returns A key two repeats of the same call share.
+ */
+export function normaliseToolCall(name: string, input: unknown): string {
+  const record = typeof input === "object" && input !== null
+    ? input as Record<string, unknown>
+    : {};
+  const field = (...keys: string[]): string => {
+    for (const key of keys) {
+      const value = record[key];
+      if (value === undefined || value === null || value === "") continue;
+      return typeof value === "string" ? value : JSON.stringify(value);
+    }
+    return "";
+  };
+  switch (name) {
+    case "Read":
+    case "Edit":
+    case "MultiEdit":
+    case "Write":
+    case "NotebookEdit":
+      return `${name} ${field("file_path", "notebook_path", "path")}`;
+    case "Grep":
+    case "Glob":
+      return `${name} ${field("pattern")} ${field("path")}`;
+    case "Bash":
+      return `${name} ${
+        field("command").replace(/\d+/g, "#").replace(/\s+/g, " ").trim()
+      }`;
+    default:
+      return `${name} ${
+        field("file_path", "path", "command", "pattern", "url", "query")
+      }`;
+  }
 }
 
 /** Compact window: 45s, 5m, 5m30s. */
