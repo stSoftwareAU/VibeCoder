@@ -13,7 +13,17 @@ never claimed or acted on.
 The scan now follows the reviewer's own rule: **each reviewer's latest review
 decides**, whichever commit it was left on.
 
-- **New `lib/pr_review_outstanding.ts`:**
+**Merged with #2707 (Issue #2702).** Main fixed the same bug first: a
+`CHANGES_REQUESTED` review is superseded only by a fleet fix commit after its
+`submitted_at` (`isReviewSupersededByFleetFix` / `isFleetAnswerAfter`), and a
+blocked PR is never branch-updated. That stays the single staleness
+mechanism. This PR adds only what #2707 does not: every page of reviews is
+read, a reviewer's later review supersedes their earlier change request, and
+every skip is logged with its reason. The latest-review selection lives in
+`lib/pr_feedback_supersede.ts` beside the fleet-fix rule; the separate
+`lib/pr_review_outstanding.ts` module was folded in and removed.
+
+- **`lib/pr_feedback_supersede.ts` (latest-review selection):**
   - `selectOutstandingReviews` picks the latest review per reviewer (by
     `submitted_at`, falling back to list order; logins compared
     case-insensitively).
@@ -24,7 +34,7 @@ decides**, whichever commit it was left on.
     ignored.
   - `parsePrReviewPages` reads every page and throws on a malformed payload.
 - **`lib/pr_maintenance.ts`:**
-  - The stale-head skip is removed.
+  - After the latest-review selection, #2707's fleet-fix check still applies.
   - Reviews are read with `gh api --paginate`.
   - Each skipped change request is logged at INFO with its reason:
     superseded, the host's own review, or no body.
@@ -32,16 +42,15 @@ decides**, whichever commit it was left on.
 - **`lib/claim_pr_comment.ts`:** dismissal is now the only thing that stops a
   review being rediscovered, so a failed claim-time dismissal is logged.
 
-**Not done: optional item 4.** Leaving a PR alone in Update Branches and
-auto-merge while a change request is outstanding is not implemented. With the
-head check gone it is no longer needed for correctness, and it can be a
-follow-up if wanted.
+**Optional item 4** — leaving a PR alone in Update Branches while a change
+request is outstanding — was delivered by #2707 on main.
 
 ## Evidence
 
 This is backend work, so the tests are the evidence. The related suites pass
 (`pr_maintenance*`, `pr_feedback*`, `claim_pr_comment*`, `pr_comments*`,
-`pr_review_outstanding`, `lib_sweep_coverage`): **340 passed, 0 failed**.
+`review_supersession_2702`, `review_supersession_latest_review_2697`,
+`lib_sweep_coverage`): **349 passed, 0 failed** after merging main.
 
 ```mermaid
 flowchart TD
@@ -50,7 +59,9 @@ flowchart TD
     C -- "No: APPROVED / COMMENTED / DISMISSED" --> S["Skip; a superseded request<br/>is logged at INFO"]
     C -- Yes --> D{"Own review, unauthorised,<br/>or empty body?"}
     D -- Yes --> L["Skip + log with the reason"]
-    D -- No --> E["Return as pr_review<br/>(the head sha is ignored)"]
+    D -- No --> X{"Fleet fix commit after it?<br/>(#2707)"}
+    X -- Yes --> L
+    X -- No --> E["Return as pr_review"]
     E --> F["Claim (PR_COMMENT_CLAIM) + dismiss"]
     F --> G["Feedback run"]
 ```
@@ -85,7 +96,8 @@ Regression tests (each fails against the old code):
 - **met** — A dismissed review, or one followed by the same reviewer's
   `APPROVED`/`COMMENTED` review, is not returned.
   - Evidence: "a dismissed review is not returned"; "a later APPROVED/COMMENTED
-    review supersedes…"; the unit tests in `pr_review_outstanding_test.ts`.
+    review supersedes…"; the unit tests in
+    `review_supersession_latest_review_2697_test.ts`.
   - reviewer: met.
 - **met** — A review already claimed by a live worker is not claimed twice.
   - Evidence: `claim_pr_comment_review_test.ts` "a sibling's earlier claim on
@@ -93,7 +105,7 @@ Regression tests (each fails against the old code):
   - reviewer: met.
 - **met** — A skipped `CHANGES_REQUESTED` review is logged at INFO with the
   reason.
-  - Evidence: `logReviewSkip` in `lib/pr_maintenance.ts:641`, used for the
+  - Evidence: `logReviewSkip` in `lib/pr_maintenance.ts:642`, used for the
     superseded, own-review and empty-body cases, and asserted by three tests.
   - reviewer: partial.
   - reason: the reviewer flagged two paths. The unauthorised skip keeps its
@@ -104,11 +116,9 @@ Regression tests (each fails against the old code):
   - Evidence: no test on `main` pinned it. The `pr_maintenance_test.ts`
     fixtures only gained `state: "CHANGES_REQUESTED"`.
   - reviewer: met.
-- **missing (optional)** — Fix item 4: Update Branches and auto-merge leave a PR
-  alone while a change request is outstanding.
-  - reviewer: missing.
-  - reason: the issue marks it optional. It is not needed once the head check
-    is gone; it can be a follow-up.
+- **met (via #2707)** — Fix item 4: Update Branches leaves a PR alone while a
+  change request is outstanding.
+  - reason: delivered on main by #2707 (Issue #2702), merged into this branch.
 - **unrequested** — `--paginate` and `parsePrReviewPages`.
   - reviewer: unrequested.
   - reason: needed for the fix. "Latest review per reviewer" is wrong if later
@@ -131,10 +141,10 @@ Regression tests (each fails against the old code):
   - reviewer: unrequested.
   - reason: replaced by `PrReview`; it has no importers left.
 - **unrequested** — Docs (`pr-feedback.md` with a Mermaid flowchart,
-  `INTERNALS.md`) and the lib sweep ledger entry.
+  `INTERNALS.md`).
   - reviewer: unrequested.
-  - reason: required by the docs-with-code rule and by the manifest
-    completeness check.
+  - reason: required by the docs-with-code rule. No new module remains, so no
+    lib sweep ledger entry is needed.
 
 ## Standards Review
 
@@ -164,7 +174,7 @@ Violations raised by the reviewer, and how each was handled:
   - The dismissal is the external side effect under test, and the fake has no
     other state that records it.
 - **Kept, with reason** — `lib/pr_maintenance.ts` grows by about 65 lines.
-  - The selection logic moved out to the new module.
+  - The selection logic lives in `lib/pr_feedback_supersede.ts`.
   - What remains is the scan's I/O and logging, which belongs with the scan.
 - **Advisory** — one malformed row drops the whole review list for that scan.
   - This is deliberate: it logs a WARN and fails loud, rather than acting on a
@@ -172,18 +182,17 @@ Violations raised by the reviewer, and how each was handled:
     outstanding.
 
 Clean: Australian English; tests call real functions (no source grepping); the
-regression tests fail on the unfixed code; the new module has its own unit
+regression tests fail on the unfixed code; the selection logic has its own unit
 tests; the tests are parallel-safe; log levels are appropriate; the Result
 pattern is used; KISS (standard library only, no new dependencies); the docs
-are updated with Mermaid; the lib sweep ledger is updated; lint and fmt are
+are updated with Mermaid; lint and fmt are
 clean; the commits cite #2697; no secrets or hidden files are staged.
 
 ## Test Plan
 
-- [x] `deno test` on the related suites: 340 passed, 0 failed.
+- [x] `deno test` on the related suites after merging main: 349 passed, 0
+      failed.
 - [x] `deno fmt --check`, `deno lint` and `deno check` on the touched TS files.
-- [x] `deno task check:manifests`: 690 passed. It first failed because the new
-      module was missing from the lib sweep ledger; registering it was fix
-      cycle 1 of 3.
+- [x] `deno task check:manifests` after merging main: 679 passed.
 - [ ] Full `./quality.sh`: every stage passed except the full test stage, which
       exceeded the 900 s cap (exit 124). CI runs the full suite.

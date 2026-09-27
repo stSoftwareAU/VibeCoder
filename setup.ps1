@@ -1724,7 +1724,9 @@ function Invoke-VibeSetupMain {
     }
 
     # Harden every monitored repo's GitHub settings, drift only (Issue #2628),
-    # including one approving review on the default branch (Issue #2680),
+    # including CodeQL default setup on public repos (Issue #2704 - only when
+    # not configured; a repo with its own CodeQL workflow is reported, never
+    # written), one approving review on the default branch (Issue #2680),
     # merge commits with a squash-only default branch and fleet accounts held
     # at write (Issue #2690), and Copilot code review on, off or left as
     # copilot_code_review says (Issue #2701).

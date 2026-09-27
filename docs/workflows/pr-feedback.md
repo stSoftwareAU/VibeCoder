@@ -149,8 +149,8 @@ match wins and the loop restarts.
    per reviewer. A request is retired by its dismissal (the processed marker)
    or by the same reviewer's later review; every change request it skips is
    logged at INFO with the reason.
-   A `CHANGES_REQUESTED` review is skipped only when a **fleet fix commit**
-   landed after it — never because a base merge or a bot's formatting or
+   Of those still outstanding, a review is skipped only when a **fleet fix
+   commit** landed after it — never because a base merge or a bot's formatting or
    version bump moved the head (Issue #2702). That skip is logged at info.
 
    ```mermaid

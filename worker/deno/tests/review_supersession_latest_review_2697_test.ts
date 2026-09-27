@@ -1,5 +1,7 @@
 /**
- * Tests for lib/pr_review_outstanding.ts (Issue #2697).
+ * Each reviewer's latest review decides (Issue #2697) — the review
+ * supersession half of lib/pr_feedback_supersede.ts that sits beside the
+ * fleet-fix rule (Issue #2702).
  */
 
 import { assertEquals, assertThrows } from "@std/assert";
@@ -7,7 +9,7 @@ import {
   parsePrReviewPages,
   type PrReview,
   selectOutstandingReviews,
-} from "../lib/pr_review_outstanding.ts";
+} from "../lib/pr_feedback_supersede.ts";
 
 function review(
   id: number,

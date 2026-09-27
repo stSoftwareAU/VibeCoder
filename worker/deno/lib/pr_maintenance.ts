@@ -50,6 +50,10 @@ import {
   type HeadCommitInfo,
   isReviewSupersededByFleetFix,
   isSupersededByFleetPush,
+  parsePrReviewPages,
+  PR_REVIEWS_JQ,
+  type PrReview,
+  selectOutstandingReviews,
 } from "./pr_feedback_supersede.ts";
 // Re-exported so callers and tests can reason about the scan's supersession
 // decision without reaching past the module that makes it (Issue #211).
@@ -57,12 +61,6 @@ export {
   FLEET_PUSH_COOL_OFF_MS,
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
-import {
-  parsePrReviewPages,
-  PR_REVIEWS_JQ,
-  type PrReview,
-  selectOutstandingReviews,
-} from "./pr_review_outstanding.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";

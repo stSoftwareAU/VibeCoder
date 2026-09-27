@@ -1930,12 +1930,14 @@ the fleet means "already processed" (Issue #1249, finding 5). A count alone
 would let any account, with no repository permission, retire a comment from the
 scan for good. PR reviews use dismissal instead of reactions.
 
-**Latest review wins** — a review's commit is **not** compared with the PR
-head: a branch update, rebase or merge-from-base moves the head without
-addressing anything (Issue #2697). Each reviewer's latest review decides, so a
-`CHANGES_REQUESTED` review stays outstanding until it is dismissed or the same
-reviewer submits a newer one; see
-[pr_review_outstanding.ts](../worker/deno/lib/pr_review_outstanding.ts).
+**Latest review wins** (Issue #2697) — the scan reads every page of reviews
+(`gh api --paginate`) and keeps each reviewer's latest submitted review, so a
+`CHANGES_REQUESTED` review is retired by its dismissal or by the same
+reviewer's later `APPROVED` or non-empty `COMMENTED` review, never by the head
+moving. `PENDING` drafts and the empty `COMMENTED` containers an inline reply
+creates do not count. Each change request it skips is logged at info with the
+reason; see `selectOutstandingReviews` in
+[pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts).
 
 **Staleness check** (Issue #2702) — a `CHANGES_REQUESTED` review is skipped
 only when a **fleet fix commit** landed after its `submitted_at`: a commit
