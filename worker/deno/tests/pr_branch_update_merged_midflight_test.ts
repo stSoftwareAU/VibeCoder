@@ -176,7 +176,7 @@ Deno.test("makeGhPrStateFetcher - asks gh for state and mergeable, and returns t
   assertEquals(calls[0]!.includes("org/repo"), true);
   assertEquals(
     calls[0]!.includes(
-      "state,mergeable,autoMergeRequest,mergeStateStatus",
+      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
     ),
     true,
   );

@@ -130,11 +130,19 @@ export interface PrLiveFields {
    * field, so a shape the parser cannot see never triggers a branch update.
    */
   behind: boolean;
+  /**
+   * Present, and true, only when `reviewDecision` is `CHANGES_REQUESTED`
+   * (Issue #2702). A PR in that state cannot merge, and updating its branch
+   * only moves the head underneath the review. Absent for every other
+   * decision and for an absent field, so unknown never blocks an update.
+   */
+  changesRequested?: true;
 }
 
 /**
- * Parse one `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus`
- * payload (Issue #2307; Issue #2462 added the two auto-merge fields).
+ * Parse one `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision`
+ * payload (Issue #2307; Issue #2462 added the two auto-merge fields and
+ * Issue #2702 `reviewDecision`).
  *
  * A bare state string — what the fetcher asked for with `--jq .state` before
  * this issue, and what a `gh` stub still answers — reads as that state with
@@ -182,6 +190,9 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
     armed: fields.autoMergeRequest !== undefined &&
       fields.autoMergeRequest !== null,
     behind: fields.mergeStateStatus === "BEHIND",
+    ...(fields.reviewDecision === "CHANGES_REQUESTED"
+      ? { changesRequested: true as const }
+      : {}),
   };
 }
 
@@ -223,8 +234,9 @@ export function classifyPrLiveState(raw: string): PrLiveState {
  * merge-conflict drain must know a PR is *still* conflicting before it spends
  * a clone and an agent on it. Issue #2462 added `autoMergeRequest` and
  * `mergeStateStatus` to the same round trip, so the auto-merge sweep can see
- * an armed PR whose head has fallen behind without a second `gh` call. One
- * round trip answers all four.
+ * an armed PR whose head has fallen behind without a second `gh` call.
+ * Issue #2702 added `reviewDecision`, so the same read tells the sweep not to
+ * update a PR a reviewer has blocked. One round trip answers all five.
  */
 export function makeGhPrStateFetcher(
   ghFn: (args: string[]) => Promise<string>,
@@ -251,7 +263,7 @@ export function makeGhPrStateFetcher(
  * questions nobody asked it.
  */
 export const PR_LIVE_STATE_JSON_FIELDS =
-  "state,mergeable,autoMergeRequest,mergeStateStatus";
+  "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision";
 
 /** Overall result of executing PR branch updates (Issue #1233). */
 export interface PrBranchUpdateExecutionResult {
@@ -383,6 +395,12 @@ export interface PrBranchStateEntry {
   behindBy: number;
   /** GitHub mergeable state ("MERGEABLE" / "CONFLICTING" / etc.). */
   mergeable: string;
+  /**
+   * GitHub review decision, when the batch read it (Issue #2702). A PR at
+   * `CHANGES_REQUESTED` is never updated. The per-PR REST fallback does not
+   * read it, so an outage there updates as before.
+   */
+  reviewDecision?: string;
 }
 
 /** Injectable dependencies for PR branch update scanning. */
@@ -804,6 +822,18 @@ export async function scanPrBranchUpdates(
       let mergeableStatus = "";
 
       const cached = batchState?.get(pr.number);
+      // Issue #2702: a PR a reviewer has blocked cannot merge, so updating
+      // it unblocks nothing — and the update is what moved GRQ#5032's head
+      // underneath the owner's review. Behind or conflicting, it waits.
+      if (cached?.reviewDecision === "CHANGES_REQUESTED") {
+        skippedCount++;
+        deps.logger.info(
+          `PR #${pr.number} (${pr.headRefName}) has CHANGES_REQUESTED — ` +
+            `no branch update until the review is answered (Issue #2702)`,
+          { repo, prNumber: pr.number },
+        );
+        continue;
+      }
       if (cached) {
         behindBy = cached.behindBy;
         mergeableStatus = cached.mergeable;
