@@ -152,6 +152,14 @@ pass.
 One short line per round: approved, sent back, and held for the owner, each
 with PR links. Then go back to the loop.
 
+When the round held a PR for the owner or sent one back to the fleet, also
+send one PushNotification (status `proactive`) naming those PRs and why,
+under 200 characters, e.g. `GRQ-AutoTrader#1521 held for you: 2 page tests
+moved to the server; GRQ#5032 sent back: fresh-path test never inits the
+market`. It reaches the owner's phone when this session has Remote Control
+connected (`/remote-control` and the Claude app). Send nothing for rounds
+that only approved or had nothing ready.
+
 The owner's running view is `~/.review-fleet-prs/summary.md`: what is
 waiting for them, what was sent back to the fleet, and what was approved in
 the last 7 days. Every gate pass rewrites it at no token cost.

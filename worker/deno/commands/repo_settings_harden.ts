@@ -112,7 +112,10 @@ export const repoSettingsHardenCommand: Command = {
       (r.detail ? ` — ${r.detail}` : "")
     );
     // The exempted step is stated in the output, never silently absent.
-    const skipNote = outcome.skipNote ? `\n${outcome.skipNote}` : "";
+    const skipNote = [outcome.skipNote, outcome.codeqlSkipNote]
+      .filter((note) => note !== undefined)
+      .map((note) => `\n${note}`)
+      .join("");
     const message =
       (results.length === 0
         ? `${repo}: nothing to harden — every checked setting already holds.`

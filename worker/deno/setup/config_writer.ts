@@ -7,6 +7,7 @@
  *   - Git info/exclude pattern management
  *   - Retired hook cleanup
  *   - The update-mode fields a frozen host pins (Issue #626)
+ *   - The Copilot code review choice (Issue #2701)
  *
  * Issue #923: Migrate setup scripts to Deno TypeScript.
  */
@@ -22,8 +23,14 @@ import {
 } from "./config_setup.ts";
 import { UPDATE_MODES } from "../lib/config_defaults.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
+import { parseCopilotCodeReview } from "../lib/config_validator.ts";
 import { expandHome, runSetupCommand } from "./setup_command_runner.ts";
-import type { PinnedToolVersions, Result, UpdateMode } from "../types.ts";
+import type {
+  CopilotCodeReviewMode,
+  PinnedToolVersions,
+  Result,
+  UpdateMode,
+} from "../types.ts";
 
 export {
   applyServiceAccountDefault,
@@ -430,7 +437,7 @@ async function readConfigRecord(
       ok: false,
       error: new Error(
         `${configPath} contains invalid JSON — fix it by hand before ` +
-          `setup can record the update mode.`,
+          `setup can record your answers.`,
       ),
     };
   }
@@ -439,7 +446,7 @@ async function readConfigRecord(
       ok: false,
       error: new Error(
         `${configPath} is not a JSON object — fix it by hand before setup ` +
-          `can record the update mode.`,
+          `can record your answers.`,
       ),
     };
   }
@@ -566,11 +573,23 @@ export async function writeUpdateModeConfig(
   // One atomic write (Issue #691): every field lands together or none does,
   // so an interrupted upgrade can never leave a fresh pinned_ref beside stale
   // tool versions — the partial pin `pinned_tool_versions` exists to prevent.
-  // A path with no directory component is written in the working directory.
+  const written = await writeConfigRecord(configPath, next);
+  if (!written.ok) return written;
+  return { ok: true, value: true };
+}
+
+/**
+ * Write `record` to `.config.json` in one atomic, owner-only write. A path
+ * with no directory component is written in the working directory.
+ */
+async function writeConfigRecord(
+  configPath: string,
+  record: Record<string, unknown>,
+): Promise<Result<void>> {
   const target = configPath.includes("/") ? configPath : `./${configPath}`;
   const written = await atomicWrite({
     targetFile: target,
-    content: JSON.stringify(next, null, 2) + "\n",
+    content: JSON.stringify(record, null, 2) + "\n",
     mode: 0o600,
   });
   if (!written.ok) {
@@ -579,6 +598,55 @@ export async function writeUpdateModeConfig(
       error: new Error(`Cannot write ${configPath}: ${written.error.message}`),
     };
   }
+  return { ok: true, value: undefined };
+}
 
+// ── Copilot code review (Issue #2701) ───────────────────────────────────
+
+/**
+ * Read `copilot_code_review` from `.config.json` (Issue #2701): absent — or
+ * no file yet — is `leave`. A value that is not one of the three fails loud
+ * with the very message the config load gives, rather than being asked over.
+ */
+export async function readCopilotCodeReviewSetting(
+  configPath: string,
+): Promise<Result<CopilotCodeReviewMode>> {
+  const read = await readConfigRecord(configPath);
+  if (!read.ok) return read;
+  const parsed = parseCopilotCodeReview(
+    read.value.record["copilot_code_review"],
+  );
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      error: new Error(`${parsed.error} (in ${configPath})`),
+    };
+  }
+  return parsed;
+}
+
+/**
+ * Record `mode` as `copilot_code_review`, leaving every other key exactly as
+ * it was (Issue #2701). Nothing is written when the file already means it —
+ * an absent key already means `leave` — so accepting the default never
+ * churns the file.
+ *
+ * @returns True when the file was rewritten
+ */
+export async function writeCopilotCodeReviewConfig(
+  configPath: string,
+  mode: CopilotCodeReviewMode,
+): Promise<Result<boolean>> {
+  const read = await readConfigRecord(configPath);
+  if (!read.ok) return read;
+  const current = read.value.record["copilot_code_review"];
+  if (current === mode || (current === undefined && mode === "leave")) {
+    return { ok: true, value: false };
+  }
+  const written = await writeConfigRecord(configPath, {
+    ...read.value.record,
+    copilot_code_review: mode,
+  });
+  if (!written.ok) return written;
   return { ok: true, value: true };
 }

@@ -15,6 +15,8 @@ import {
   allowListCovers,
   applyRepoSettingsPlan,
   buildAllowedActionPatterns,
+  CODE_SECURITY_SKIP_NOTE,
+  COPILOT_RULESET_NAME,
   findCodeownersOnDefaultBranch,
   hardenRepo,
   isSecretScanningSkipped,
@@ -783,6 +785,10 @@ function hardenedRoutes(repo: string): Record<string, unknown> {
       },
     }],
     [`repos/${repo}/rulesets`]: [],
+    [`repos/${repo}/code-scanning/default-setup`]: {
+      state: "configured",
+      query_suite: "default",
+    },
   };
 }
 
@@ -1825,4 +1831,528 @@ Deno.test("buildMilestoneRulesetBody - a milestone ruleset carries no rule that 
   const types = body.rules.map((r) => r.type);
   assert(!types.includes("pull_request"), types.join(","));
   assert(!types.includes("required_linear_history"), types.join(","));
+});
+
+// ---------------------------------------------------------------------------
+// Copilot code review on / off / leave (Issue #2701)
+// ---------------------------------------------------------------------------
+
+const COPILOT_RULE = {
+  type: "copilot_code_review",
+  parameters: { review_on_push: true, review_draft_pull_requests: false },
+};
+
+/** The hand-made ruleset four monitored repos carried: Copilot alone. */
+const COPILOT_ONLY_RULESET = {
+  id: 21,
+  name: "Copilot review for default branch",
+  target: "branch",
+  enforcement: "active",
+  source_type: "Repository",
+  conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+  bypass_actors: [],
+  rules: [COPILOT_RULE],
+};
+
+/** A ruleset carrying the Copilot rule beside rules that must survive. */
+const MIXED_RULESET = {
+  ...VIBE_RULESET,
+  id: 22,
+  source_type: "Repository",
+  bypass_actors: [],
+  rules: [...VIBE_RULESET.rules, COPILOT_RULE],
+};
+
+/** A snapshot where nothing but the Copilot choice is in play. */
+function copilotSnapshot(
+  rulesets: Array<Record<string, unknown>>,
+): RepoSettingsSnapshot {
+  return {
+    rules: [
+      {
+        type: "pull_request",
+        ruleset_id: 7,
+        parameters: { required_approving_review_count: 1 },
+      },
+      ...rulesets.filter((r) => r["enforcement"] === "active").flatMap((r) =>
+        (r["rules"] as Array<{ type: string }>)
+          .filter((rule) => rule.type === "copilot_code_review")
+          .map((rule) => ({ ...rule, ruleset_id: r["id"] as number }))
+      ),
+    ],
+    rulesets: rulesets as unknown as RepoSettingsSnapshot["rulesets"],
+  };
+}
+
+function copilotSteps(
+  snapshot: RepoSettingsSnapshot,
+  mode: "on" | "off" | "leave" | undefined,
+) {
+  return planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: [],
+    defaultBranch: "main",
+    ...(mode ? { copilotCodeReview: mode } : {}),
+  }).filter((s) => s.kind === "copilot-code-review");
+}
+
+Deno.test("planRepoSettingsHardening - copilot off: a ruleset left with no rules is deleted (Issue #2701)", () => {
+  const steps = copilotSteps(copilotSnapshot([COPILOT_ONLY_RULESET]), "off");
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "DELETE");
+  assertEquals(steps[0]?.endpoint, "rulesets/21");
+  assertEquals(steps[0]?.body, undefined);
+  assert(steps[0]?.title.includes("Copilot review for default branch"));
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: a ruleset with other rules is PUT without the Copilot rule, echoing the rest (Issue #2701)", () => {
+  const steps = copilotSteps(copilotSnapshot([MIXED_RULESET]), "off");
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "PUT");
+  assertEquals(steps[0]?.endpoint, "rulesets/22");
+  const body = JSON.parse(steps[0]?.body ?? "{}");
+  assertEquals(body.rules, VIBE_RULESET.rules);
+  assertEquals(body.name, VIBE_RULESET.name);
+  assertEquals(body.conditions, VIBE_RULESET.conditions);
+  assertEquals(body.enforcement, "active");
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: already off plans no write (Issue #2701)", () => {
+  assertEquals(
+    copilotSteps(
+      copilotSnapshot([{ ...VIBE_RULESET, source_type: "Repository" }]),
+      "off",
+    ),
+    [],
+  );
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: an organisation ruleset is reported, never written (Issue #2701)", () => {
+  const steps = copilotSteps(
+    copilotSnapshot([{
+      ...COPILOT_ONLY_RULESET,
+      source_type: "Organization",
+    }]),
+    "off",
+  );
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.held?.status, "skipped");
+  assert(steps[0]?.held?.detail.includes("organisation"));
+});
+
+Deno.test("planRepoSettingsHardening - copilot off: another step writing the same ruleset never puts the Copilot rule back (Issue #2701)", () => {
+  // A milestone ruleset enforced on create is written by its own step; that
+  // write must echo the ruleset WITHOUT the Copilot rule.
+  const base = milestoneRuleset(false);
+  const milestone = {
+    ...base,
+    source_type: "Repository",
+    enforcement: "active",
+    rules: [...(base.rules ?? []), COPILOT_RULE],
+  };
+  const plan = planRepoSettingsHardening(
+    copilotSnapshot([milestone as unknown as Record<string, unknown>]),
+    { thirdPartyPatterns: [], defaultBranch: "main", copilotCodeReview: "off" },
+  );
+  const milestoneStep = plan.find((s) => s.kind === "milestone-branch-create");
+  assert(milestoneStep, "the milestone step is still planned");
+  const rules = JSON.parse(milestoneStep.body ?? "{}").rules as Array<
+    { type: string }
+  >;
+  assert(!rules.some((r) => r.type === "copilot_code_review"));
+  assert(plan.some((s) => s.kind === "copilot-code-review"));
+});
+
+Deno.test("planRepoSettingsHardening - copilot on with no rule: a dedicated ruleset is created on the default branch (Issue #2701)", () => {
+  const steps = copilotSteps(
+    copilotSnapshot([{ ...VIBE_RULESET, source_type: "Repository" }]),
+    "on",
+  );
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "POST");
+  assertEquals(steps[0]?.endpoint, "rulesets");
+  assertEquals(JSON.parse(steps[0]?.body ?? "{}"), {
+    name: COPILOT_RULESET_NAME,
+    target: "branch",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+    rules: [{
+      type: "copilot_code_review",
+      parameters: { review_on_push: false, review_draft_pull_requests: false },
+    }],
+  });
+});
+
+Deno.test("planRepoSettingsHardening - copilot on: a rule already on the default branch plans no write (Issue #2701)", () => {
+  assertEquals(
+    copilotSteps(copilotSnapshot([COPILOT_ONLY_RULESET]), "on"),
+    [],
+  );
+});
+
+Deno.test("planRepoSettingsHardening - copilot on: our own ruleset left disabled is re-enabled, not duplicated (Issue #2701)", () => {
+  const ours = {
+    ...COPILOT_ONLY_RULESET,
+    id: 30,
+    name: COPILOT_RULESET_NAME,
+    enforcement: "disabled",
+  };
+  const steps = copilotSteps(copilotSnapshot([ours]), "on");
+  assertEquals(steps.length, 1);
+  assertEquals(steps[0]?.method, "PUT");
+  assertEquals(steps[0]?.endpoint, "rulesets/30");
+  const body = JSON.parse(steps[0]?.body ?? "{}");
+  assertEquals(body.enforcement, "active");
+  assertEquals(
+    body.rules.filter((r: { type: string }) => r.type === "copilot_code_review")
+      .length,
+    1,
+  );
+});
+
+Deno.test("planRepoSettingsHardening - copilot leave, or no setting at all, plans nothing whatever the rulesets say (Issue #2701)", () => {
+  for (const mode of ["leave", undefined] as const) {
+    assertEquals(
+      copilotSteps(copilotSnapshot([COPILOT_ONLY_RULESET]), mode),
+      [],
+    );
+    assertEquals(copilotSteps(copilotSnapshot([]), mode), []);
+  }
+});
+
+Deno.test("planRepoSettingsHardening - copilot off or on plans nothing when the rulesets could not be read (Issue #2701)", () => {
+  for (const mode of ["on", "off"] as const) {
+    assertEquals(copilotSteps({}, mode), []);
+  }
+});
+
+/** Routes for a hardened repo whose rulesets are exactly `rulesets`. */
+function copilotRoutes(
+  repo: string,
+  rulesets: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/rules/branches/main`] = copilotSnapshot(rulesets).rules;
+  routes[`repos/${repo}/rulesets`] = rulesets.map((r) => ({
+    id: r["id"],
+    name: r["name"],
+    target: r["target"],
+    enforcement: r["enforcement"],
+    source_type: r["source_type"],
+  }));
+  for (const r of rulesets) routes[`repos/${repo}/rulesets/${r["id"]}`] = r;
+  return routes;
+}
+
+Deno.test("hardenRepo - copilot off deletes the Copilot-only ruleset and rewrites the mixed one, each once (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(
+    copilotRoutes(repo, [COPILOT_ONLY_RULESET, MIXED_RULESET]),
+  );
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+    copilotCodeReview: "off",
+  });
+  assertEquals(
+    writes.map((w) => `${w.method} ${w.endpoint}`),
+    [
+      `DELETE repos/${repo}/rulesets/21`,
+      `PUT repos/${repo}/rulesets/22`,
+    ],
+  );
+  assertEquals(writes[0]?.body, undefined);
+  assertEquals(
+    (writes[1]?.body as { rules: unknown }).rules,
+    VIBE_RULESET.rules,
+  );
+  assertEquals(report.results.map((r) => r.status), ["applied", "applied"]);
+});
+
+Deno.test("hardenRepo - copilot leave reads exactly what no setting reads and writes nothing (Issue #2701)", async () => {
+  const unset = uniqueRepo();
+  const absent = makeGh(copilotRoutes(unset, [COPILOT_ONLY_RULESET]));
+  await hardenRepo(unset, {
+    apply: true,
+    ghCommandFn: absent.gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  const left = uniqueRepo();
+  const leave = makeGh(copilotRoutes(left, [COPILOT_ONLY_RULESET]));
+  const report = await hardenRepo(left, {
+    apply: true,
+    ghCommandFn: leave.gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+    copilotCodeReview: "leave",
+  });
+  assertEquals(leave.writes, []);
+  assertEquals(report.results, []);
+  assertEquals(
+    leave.reads.map((r) => r.replace(left, "REPO")),
+    absent.reads.map((r) => r.replace(unset, "REPO")),
+  );
+});
+
+// =============================================================================
+// Issue #2704 — CodeQL default setup kept on for public repositories only
+// =============================================================================
+
+const CODEQL_BODY = { state: "configured", query_suite: "default" };
+
+function codeqlPlan(snapshot: RepoSettingsSnapshot) {
+  return planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: [],
+    defaultBranch: "main",
+  }).filter((s) => s.kind === "codeql-default-setup");
+}
+
+Deno.test("planRepoSettingsHardening - a public repo with CodeQL not configured plans the default suite (Issue #2704)", () => {
+  const plan = codeqlPlan({
+    visibility: "public",
+    codeScanning: { state: "not-configured" },
+    codeqlWorkflows: [],
+  });
+  assertEquals(plan.length, 1);
+  assertEquals(plan[0]?.method, "PATCH");
+  assertEquals(plan[0]?.endpoint, "code-scanning/default-setup");
+  assertEquals(JSON.parse(plan[0]?.body ?? "{}"), CODEQL_BODY);
+  assertEquals(plan[0]?.held, undefined);
+});
+
+Deno.test("planRepoSettingsHardening - CodeQL already configured plans nothing, whatever the suite (Issue #2704)", () => {
+  for (const query_suite of ["default", "extended"]) {
+    assertEquals(
+      codeqlPlan({
+        visibility: "public",
+        codeScanning: { state: "configured", query_suite },
+        codeqlWorkflows: [],
+      }),
+      [],
+    );
+  }
+});
+
+Deno.test("planRepoSettingsHardening - a repo running its own CodeQL workflow is held and named, never written (Issue #2704)", () => {
+  const plan = codeqlPlan({
+    visibility: "public",
+    codeScanning: { state: "not-configured" },
+    codeqlWorkflows: [".github/workflows/codeql.yml"],
+  });
+  assertEquals(plan.length, 1);
+  assertEquals(plan[0]?.held?.status, "skipped");
+  assert(
+    plan[0]?.held?.detail.includes(".github/workflows/codeql.yml"),
+    plan[0]?.held?.detail,
+  );
+  assert(plan[0]?.held?.detail.includes("advanced setup"));
+});
+
+Deno.test("planRepoSettingsHardening - unread workflows hold CodeQL: advanced setup cannot be ruled out (Issue #2704)", () => {
+  const plan = codeqlPlan({
+    visibility: "public",
+    codeScanning: { state: "not-configured" },
+  });
+  assertEquals(plan.map((s) => s.held?.status), ["skipped"]);
+});
+
+Deno.test("hardenRepo - a public repo with CodeQL not configured gets one PATCH with the default suite (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, [{
+    method: "PATCH",
+    endpoint: `repos/${repo}/code-scanning/default-setup`,
+    body: CODEQL_BODY,
+  }]);
+  assertEquals(
+    report.results.map((r) => `${r.step.kind} ${r.status}`),
+    ["codeql-default-setup applied"],
+  );
+});
+
+Deno.test("hardenRepo - CodeQL already configured on the extended suite is left as it is (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "configured",
+    query_suite: "extended",
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(report.results, []);
+});
+
+Deno.test("hardenRepo - a private repo makes no code-scanning call and says why (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}`] = {
+    visibility: "private",
+    private: true,
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  };
+  const { gh, writes, reads } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(reads.filter((r) => r.includes("code-scanning")), []);
+  assertEquals(report.results, []);
+  assertEquals(report.codeqlSkipNote, CODE_SECURITY_SKIP_NOTE);
+});
+
+for (
+  const [label, files] of [
+    ["a codeql workflow file", {
+      ".github/workflows/codeql-analysis.yml": "jobs: {}\n",
+    }],
+    ["a workflow calling codeql-action/init", {
+      ".github/workflows/security.yml": "jobs:\n  a:\n    steps:\n" +
+        "      - uses: github/codeql-action/init@" + "2".repeat(40) + "\n",
+    }],
+  ] as const
+) {
+  Deno.test(`hardenRepo - advanced setup (${label}) is reported and not written (Issue #2704)`, async () => {
+    const repo = uniqueRepo();
+    const routes = hardenedRoutes(repo);
+    routes[`repos/${repo}/code-scanning/default-setup`] = {
+      state: "not-configured",
+    };
+    const [path, body] = Object.entries(files)[0]!;
+    const name = path.split("/").pop()!;
+    routes[`repos/${repo}/contents/.github/workflows?ref=main`] = [
+      { name, path, type: "file" },
+    ];
+    routes[`repos/${repo}/contents/${path}?ref=main`] = body;
+    const { gh, writes } = makeGh(routes);
+    const report = await hardenRepo(repo, {
+      apply: true,
+      ghCommandFn: gh,
+      defaultBranchCachePath: BRANCH_CACHE,
+    });
+    assertEquals(writes, []);
+    const codeql = report.results.filter((r) =>
+      r.step.kind === "codeql-default-setup"
+    );
+    assertEquals(codeql.map((r) => r.status), ["skipped"]);
+    assert(codeql[0]?.detail?.includes(path), codeql[0]?.detail);
+  });
+}
+
+for (
+  const [label, error] of [
+    ["403", new Error("HTTP 403: Resource not accessible by integration")],
+    ["404", NOT_FOUND()],
+  ] as const
+) {
+  Deno.test(`hardenRepo - a ${label} on the CodeQL read is reported as skipped, and the other steps still run (Issue #2704)`, async () => {
+    const repo = uniqueRepo();
+    const routes = hardenedRoutes(repo);
+    routes[`repos/${repo}/code-scanning/default-setup`] = error;
+    routes[`repos/${repo}/actions/permissions/workflow`] = {
+      default_workflow_permissions: "write",
+      can_approve_pull_request_reviews: false,
+    };
+    const { gh, writes } = makeGh(routes);
+    const report = await hardenRepo(repo, {
+      apply: true,
+      ghCommandFn: gh,
+      defaultBranchCachePath: BRANCH_CACHE,
+    });
+    assertEquals(
+      writes.map((w) => w.endpoint),
+      [`repos/${repo}/actions/permissions/workflow`],
+    );
+    const codeql = report.results.filter((r) =>
+      r.step.kind === "codeql-default-setup"
+    );
+    assertEquals(codeql.map((r) => r.status), ["skipped"]);
+    assert(
+      codeql[0]?.detail?.includes("code-scanning/default-setup"),
+      codeql[0]?.detail,
+    );
+  });
+}
+
+Deno.test("hardenRepo - a PATCH refused because advanced setup is on is skipped, not failed (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  const { gh: inner } = makeGh(routes);
+  const gh = (args: string[]) =>
+    args.includes("--method")
+      ? Promise.reject(
+        new Error(
+          "HTTP 409: Code scanning default setup cannot be enabled " +
+            "because CodeQL advanced setup is configured",
+        ),
+      )
+      : inner(args);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(report.results.map((r) => r.status), ["skipped"]);
+  assert(report.results[0]?.detail?.includes("advanced setup"));
+});
+
+Deno.test("hardenRepo - any other refused CodeQL PATCH is a failed result, never a throw (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  const { gh: inner } = makeGh(routes);
+  const gh = (args: string[]) =>
+    args.includes("--method")
+      ? Promise.reject(new Error("HTTP 403: Resource not accessible"))
+      : inner(args);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(report.results.map((r) => r.status), ["failed"]);
+  assert(report.results[0]?.detail?.includes("HTTP 403"));
+});
+
+Deno.test("hardenRepo - an unreadable workflow tree holds CodeQL rather than risk overriding advanced setup (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/code-scanning/default-setup`] = {
+    state: "not-configured",
+  };
+  routes[`repos/${repo}/contents/.github/workflows?ref=main`] = SERVER_ERROR();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(
+    report.results.filter((r) => r.step.kind === "codeql-default-setup")
+      .map((r) => r.status),
+    ["skipped"],
+  );
 });

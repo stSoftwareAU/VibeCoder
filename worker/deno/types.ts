@@ -28,6 +28,16 @@ export type VerbosityLevel = "minimal" | "concise" | "standard" | "verbose";
 export type UpdateMode = "dynamic" | "frozen";
 
 /**
+ * What setup does about Copilot code review on each monitored repository
+ * (Issue #2701). Every automatic review is billed to the PR author's Copilot
+ * plan or the organisation, even on a public repository, so the operator
+ * decides: `"on"` makes sure the default branch carries the review rule,
+ * `"off"` removes it from every repository ruleset, and `"leave"` (the
+ * default, and what an absent key means) reads and writes nothing.
+ */
+export type CopilotCodeReviewMode = "on" | "off" | "leave";
+
+/**
  * Exact tool versions a frozen host installs (Issue #622, part of #583).
  *
  * Every entry is required under `update_mode: "frozen"` — a partially pinned
@@ -493,14 +503,6 @@ export interface WorkerConfig {
    */
   rtkOutput: RtkOutputConfig;
   /**
-   * The brief toolchain switch, read from the `.config.json`
-   * `brief_toolchain` block (Issue #2603, part of #2581) and validated by
-   * `parseBriefToolchain()` in `lib/brief_toolchain_config.ts`. Off unless the
-   * host asks for it; on, the implementation run's codebase map carries a
-   * Rust repository's Cargo commands from brief.
-   */
-  briefToolchain: BriefToolchainConfig;
-  /**
    * Cache TTL in seconds for the issue-timeline cache (Issue #1673).
    * Used by label-authorship checks (`wasLabelAddedByAllowedAuthor`,
    * `getLabelLastAddInfo`). Defaults to 300 seconds (5 minutes).
@@ -688,18 +690,6 @@ export interface CodegraphContextConfig {
  */
 export interface RtkOutputConfig {
   /** Whether a run offers the agent RTK output shaping (default: true). */
-  enabled: boolean;
-}
-
-/**
- * The brief toolchain switch as the worker reads it (Issue #2603, part of
- * #2581).
- *
- * Parsed from the `.config.json` `brief_toolchain` block by
- * `parseBriefToolchain()` in `lib/brief_toolchain_config.ts`.
- */
-export interface BriefToolchainConfig {
-  /** Whether the codebase map asks brief for Cargo commands (default: false). */
   enabled: boolean;
 }
 
@@ -1211,6 +1201,14 @@ export interface ConfigFile {
    */
   update_mode?: UpdateMode;
   /**
+   * Raw `copilot_code_review` setting (Issue #2701). Typed `unknown` because
+   * it is operator-written JSON: `parseCopilotCodeReview()` in
+   * `lib/config_validator.ts` turns it into a {@link CopilotCodeReviewMode}
+   * or fails the config load. Absent means `"leave"`. Only setup's
+   * repo-settings hardening acts on it.
+   */
+  copilot_code_review?: unknown;
+  /**
    * Commit SHA or tag the worker checkout is held at (Issue #622). Required
    * under `update_mode: "frozen"`; ignored in `dynamic` mode.
    */
@@ -1428,13 +1426,6 @@ export interface ConfigFile {
    * the config load.
    */
   rtk_output?: unknown;
-  /**
-   * Raw `brief_toolchain` block (Issue #2603). Typed `unknown` because it is
-   * operator-written JSON: `parseBriefToolchain()` in
-   * `lib/brief_toolchain_config.ts` is the trust boundary that turns it into a
-   * {@link BriefToolchainConfig} or fails the config load.
-   */
-  brief_toolchain?: unknown;
   /** Cache TTL in seconds for the issue-timeline cache (Issue #1673) */
   timeline_cache_ttl_seconds?: number;
   /** Whether to enable CLI session resume across phases (Issue #1324) */

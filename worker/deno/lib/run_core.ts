@@ -113,7 +113,6 @@ import {
 } from "./run_outcome.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
-import type { BriefRunReport } from "./brief_toolchain.ts";
 import type {
   CallbackGraftContext,
   CallbackRunTelemetry,
@@ -940,11 +939,6 @@ export interface RunCoreDeps {
        * a run that reported no RTK preparation at all.
        */
       rtk?: RtkOutputResult;
-      /**
-       * What brief did for the run's codebase map (Issue #2603, part of
-       * #2581). Absent on a run that reported no brief outcome.
-       */
-      brief?: BriefRunReport;
     }>
   >;
 
@@ -2219,8 +2213,6 @@ interface TerminalRun {
   codegraph?: CodegraphContextResult;
   /** What the run's RTK preparation decided (Issue #2386), when it ran. */
   rtk?: RtkOutputResult;
-  /** What brief did for the run's codebase map (Issue #2603), when reported. */
-  brief?: BriefRunReport;
   /**
    * The cycle's exactly-once guard. Every dispatch site for a claim shares
    * one, so a run reported by its own release is not reported again by the
@@ -2248,7 +2240,6 @@ function withProcessCallbackFacts(
       telemetryAbsentReason?: TelemetryAbsentReason;
       codegraph?: CodegraphContextResult;
       rtk?: RtkOutputResult;
-      brief?: BriefRunReport;
     };
   },
 ): TerminalRun {
@@ -2273,7 +2264,6 @@ function withProcessCallbackFacts(
       : { telemetryAbsentReason: "agent_not_invoked" }),
     ...(value.codegraph ? { codegraph: value.codegraph } : {}),
     ...(value.rtk ? { rtk: value.rtk } : {}),
-    ...(value.brief ? { brief: value.brief } : {}),
   };
 }
 
@@ -2321,7 +2311,6 @@ function dispatchIssueCallbacks(
           : {}),
         ...(ran.codegraph ? { codegraph: ran.codegraph } : {}),
         ...(ran.rtk ? { rtk: ran.rtk } : {}),
-        ...(ran.brief ? { brief: ran.brief } : {}),
       });
     } catch (error) {
       deps.logError(

@@ -35,7 +35,6 @@ import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
 import { parseCodegraphContext } from "./codegraph_context_config.ts";
 import { parseRtkOutput } from "./rtk_output_config.ts";
-import { parseBriefToolchain } from "./brief_toolchain_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
@@ -43,7 +42,10 @@ import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
   customPromptPathResolver,
 } from "./custom_prompt_mounts.ts";
-import { validateUpdateModeSettings } from "./config_validator.ts";
+import {
+  parseCopilotCodeReview,
+  validateUpdateModeSettings,
+} from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
   formatUnknownKeyWarnings,
@@ -364,6 +366,15 @@ async function loadConfigFile(
   if (updateModeErrors.length > 0) {
     throw new Error(
       `Config file ${configPath} is invalid: ${updateModeErrors.join(" ")}`,
+    );
+  }
+
+  // Issue #2701: only setup acts on it, but a hand-edited typo fails here,
+  // naming the field, rather than reading as "leave" and billing on.
+  const copilotCodeReview = parseCopilotCodeReview(file.copilot_code_review);
+  if (!copilotCodeReview.ok) {
+    throw new Error(
+      `Config file ${configPath} is invalid: ${copilotCodeReview.error}`,
     );
   }
 
@@ -1018,16 +1029,6 @@ export async function loadConfig(
   }
   const rtkOutput = parsedRtkOutput.value;
 
-  // brief toolchain (Issue #2603, part of #2581). Off unless the host opts
-  // in; a malformed block or an unknown key fails the load loudly.
-  const parsedBriefToolchain = parseBriefToolchain(file.brief_toolchain);
-  if (!parsedBriefToolchain.ok) {
-    throw new Error(
-      `Config file ${configPath} is invalid: ${parsedBriefToolchain.error}`,
-    );
-  }
-  const briefToolchain = parsedBriefToolchain.value;
-
   const config: WorkerConfig = {
     allowedAuthors,
     allowedAuthor,
@@ -1136,7 +1137,6 @@ export async function loadConfig(
     includeCodebaseMap,
     codegraphContext,
     rtkOutput,
-    briefToolchain,
     recentActivityMergedPrLimit,
     recentActivityCommitLimit,
     recentActivityMaxTokens,
