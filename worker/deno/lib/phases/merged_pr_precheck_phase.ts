@@ -31,6 +31,7 @@ import type {
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { ensureIssueClosedIfPrMerged } from "../issue_lifecycle.ts";
 import { isAuthorTrusted } from "../content_approval_tracker.ts";
+import { trustedAuthorsFor } from "../trust_snapshot.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   fetchCompleteTimeline,
@@ -361,7 +362,10 @@ async function findPostMergeApproval(
     const info = lastAddInfoFromTimeline(timeline, label);
     if (info === null) continue;
     if (info.addedAt <= mergedAtSeconds) continue;
-    if (!isAuthorTrusted(info.addedBy, config.allowedAuthors)) continue;
+    // Issue #2734: this repository's own writers.
+    if (!isAuthorTrusted(info.addedBy, trustedAuthorsFor(config, repo))) {
+      continue;
+    }
     if (isAuthorTrusted(info.addedBy, fleetAuthors)) continue;
     return { label, addedBy: info.addedBy, addedAt: info.addedAt };
   }

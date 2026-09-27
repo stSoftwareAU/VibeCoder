@@ -14,7 +14,9 @@
  * `escalateToHuman` (`needs_human_escalation.ts`) both assert through this
  * guard before any label mutation, so the invariant holds for every
  * worker-applied label rather than only for callers who opted in
- * (Issue #13).
+ * (Issue #13). The planning hand-off (`planning_handoff.ts`, Issue #2688)
+ * asserts through {@link assertWorkerCanHandOffToPlanning} instead — a
+ * separate, audited check that admits `planning` and nothing else.
  *
  * Issue #1276 closed the other half of that invariant. Those two call sites
  * only cover labels applied to an **existing** issue; the scan and idle-task
@@ -50,6 +52,7 @@ import type { AuditMutation } from "./audit_entry.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
 import { isAuditJournalEnabled } from "./audit_hook.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { PLANNING_HANDOFF_LABEL } from "./planning_handoff_trust.ts";
 
 /**
  * Literal label names the worker may apply to an existing issue.
@@ -201,6 +204,11 @@ export const WORKER_APPLIABLE_LABEL_PREFIXES: readonly string[] = [
  * takes the UNION of this list and `RESERVED_LABELS`, so this list is the
  * place for a label that is forbidden to the agent but not otherwise
  * reserved — `best-model` is the current example.
+ *
+ * `planning` stays here (Issue #2688). The worker's one audited way to apply
+ * it is {@link assertWorkerCanHandOffToPlanning}, used only when a `work-on`
+ * issue proves too large for one PR; `isWorkerPlanningHandoff` then trusts
+ * that add only while a trusted human's `work-on` still anchors it.
  */
 export const WORKER_FORBIDDEN_LABEL_LITERALS: readonly string[] = [
   "top-priority",
@@ -257,6 +265,30 @@ export function journalLabelRefusal(
   return recordMutation(mutation, { env });
 }
 
+/** Record a guard decision without blocking; a failed append is logged. */
+function journalGuardDecision(
+  verb: string,
+  outcome: "success" | "error",
+  target: string,
+  record: (mutation: AuditMutation) => Promise<Result<unknown>>,
+  log: (line: string) => void,
+): void {
+  const refused = (message: string) =>
+    log(`[SECURITY] [AUDIT_JOURNAL_REFUSED] ${verb}: ${message}`);
+  void record({
+    runId: resolveRunId(),
+    verb,
+    outcome,
+    target,
+    caller: "worker/deno/lib/worker_label_guard.ts",
+  }).then(
+    (result) => {
+      if (!result.ok) refused(result.error.message);
+    },
+    (err: unknown) => refused(err instanceof Error ? err.message : String(err)),
+  );
+}
+
 /**
  * Assert that the worker may apply `label`. Returns a `Result`:
  *   - `ok: true` when allowed (no log line emitted).
@@ -295,28 +327,12 @@ export function assertWorkerCanApplyLabel(
   // durable, tamper-evident record control C16 promises for a blocked
   // mutation. Best-effort and off the caller's critical path — this function
   // stays synchronous — but a failed append is said out loud, never hidden.
-  const record = context.record ?? journalLabelRefusal;
-  void record({
-    runId: resolveRunId(),
-    verb: WORKER_LABEL_REFUSAL_AUDIT_VERB,
-    outcome: "error",
-    target: `label=${label} caller=${caller}`,
-    caller: "worker/deno/lib/worker_label_guard.ts",
-  }).then(
-    (result) => {
-      if (!result.ok) {
-        log(
-          `[SECURITY] [AUDIT_JOURNAL_REFUSED] ${WORKER_LABEL_REFUSAL_AUDIT_VERB}: ` +
-            `${result.error.message}`,
-        );
-      }
-    },
-    (err: unknown) => {
-      log(
-        `[SECURITY] [AUDIT_JOURNAL_REFUSED] ${WORKER_LABEL_REFUSAL_AUDIT_VERB}: ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-      );
-    },
+  journalGuardDecision(
+    WORKER_LABEL_REFUSAL_AUDIT_VERB,
+    "error",
+    `label=${label} caller=${caller}`,
+    context.record ?? journalLabelRefusal,
+    log,
   );
 
   return {
@@ -327,4 +343,67 @@ export function assertWorkerCanApplyLabel(
         `allowed (see worker/deno/lib/worker_label_guard.ts).`,
     ),
   };
+}
+
+/** Audit-journal verb for the worker's planning hand-off (Issue #2688). */
+export const WORKER_PLANNING_HANDOFF_AUDIT_VERB = "worker-planning-handoff";
+
+/**
+ * Assert that the worker may hand its own `work-on` issue to `planning`
+ * (Issue #2688) — the single, audited exception to the reserved-label ban.
+ *
+ * `planning` stays out of {@link isWorkerAppliableLabel}, so no general
+ * label path can apply it; only the hand-off flow (`planning_handoff.ts`)
+ * calls this. Every allowed hand-off emits a
+ * `[SECURITY] [WORKER_PLANNING_HANDOFF]` line and a `success` journal entry;
+ * any other label is refused exactly as {@link assertWorkerCanApplyLabel}
+ * refuses it. `label_security.ts` honours the resulting label only while a
+ * trusted, non-worker `work-on` add still anchors it
+ * (`planning_handoff_trust.ts`).
+ */
+export function assertWorkerCanHandOffToPlanning(
+  label: string,
+  context: {
+    caller?: string;
+    /** The issue being handed off, e.g. `owner/repo#12`. */
+    target?: string;
+    logFn?: (line: string) => void;
+    record?: (mutation: AuditMutation) => Promise<Result<unknown>>;
+  } = {},
+): Result<void> {
+  const log = context.logFn ?? ((line: string) => console.warn(line));
+  const caller = context.caller ?? "unknown";
+  if (label.toLowerCase() !== PLANNING_HANDOFF_LABEL) {
+    log(
+      `[SECURITY] [WORKER_LABEL_REFUSED] label=${label} caller=${caller} ` +
+        `reason=not_the_planning_handoff_label`,
+    );
+    journalGuardDecision(
+      WORKER_LABEL_REFUSAL_AUDIT_VERB,
+      "error",
+      `label=${label} caller=${caller}`,
+      context.record ?? journalLabelRefusal,
+      log,
+    );
+    return {
+      ok: false,
+      error: new Error(
+        `The planning hand-off may only apply 'planning', not '${label}'.`,
+      ),
+    };
+  }
+
+  const target = context.target ?? "unknown";
+  log(
+    `[SECURITY] [WORKER_PLANNING_HANDOFF] label=${label} target=${target} ` +
+      `caller=${caller}`,
+  );
+  journalGuardDecision(
+    WORKER_PLANNING_HANDOFF_AUDIT_VERB,
+    "success",
+    `label=${label} target=${target} caller=${caller}`,
+    context.record ?? journalLabelRefusal,
+    log,
+  );
+  return { ok: true, value: undefined };
 }

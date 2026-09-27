@@ -18,7 +18,7 @@
  * ```mermaid
  * flowchart TD
  *     F["Coding run fails"] --> C{"classifyCodingFailure"}
- *     C -->|"account state: rate limit,<br/>out of credit, interrupted,<br/>scheduled release, deadline-bound timeout<br/>host state: OOM, full disk,<br/>crash, missing tools, external kill"| T["transient:<br/>flat 600 s cooldown,<br/>no attempt consumed"]
+ *     C -->|"account state: rate limit,<br/>out of credit, interrupted,<br/>scheduled release, deadline-bound timeout<br/>host state: OOM, full disk,<br/>crash, missing tools, external kill<br/>host capability: token lacks<br/>the workflow scope"| T["transient:<br/>flat 600 s cooldown,<br/>no attempt consumed"]
  *     C -->|"anything else"| L["ladder:<br/>failed-once → failed<br/>+ escalating cooldown"]
  *     L --> L1["1st: failed-once,<br/>2 h cooldown, retried once"]
  *     L1 --> L2["2nd: failed,<br/>excluded from discovery"]
@@ -77,7 +77,7 @@ export interface CodingFailureDecision {
 /**
  * The failure classes that are transient infrastructure, never the issue.
  *
- * Two groups, both of which would blame the issue for something that is not
+ * Three groups, all of which would blame the issue for something that is not
  * the issue:
  *
  * - **Account state** — `usage-limit`, `interrupted` and `scheduled-release`
@@ -91,6 +91,11 @@ export interface CodingFailureDecision {
  *   against the *worker*, so making them consume the issue's two attempts
  *   would permanently sideline a perfectly good issue after two host
  *   incidents.
+ * - **Host capability** — `token-scope` is this host's token lacking the
+ *   `workflow` scope a `.github/workflows/` change needs (Issue #2689).
+ *   Another host's token may have it, and the cooldown is per host, so the
+ *   issue is left unlabelled for that host to claim instead of being parked
+ *   for a human over one host's credential.
  */
 const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "usage-limit",
@@ -102,6 +107,7 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "killed-unknown",
   "worker-crash",
   "missing-tools",
+  "token-scope",
 ]);
 
 /**

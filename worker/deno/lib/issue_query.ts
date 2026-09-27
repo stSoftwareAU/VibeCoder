@@ -25,6 +25,7 @@ import { IssueCache } from "./issue_cache.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import { TimelineCache } from "./timeline_cache.ts";
+import { isWorkerPlanningHandoff } from "./planning_handoff_trust.ts";
 // Issue #4037: fold the per-tick issue-list fetch into the access store.
 import { classifyProbeFailure } from "./idle_detect_diagnostics.ts";
 import { recordRepoProbeBestEffort } from "./monitored_repo_access.ts";
@@ -2462,6 +2463,10 @@ export async function fetchCompleteTimeline(
  * `verifyOperationalLabels` (Issue #3225). Defaults to `[]` so non-fleet
  * callers keep the original behaviour exactly.
  *
+ * Planning hand-off (Issue #2688): the single exception is `planning`
+ * added by a fleet worker to hand off a `work-on` issue a trusted,
+ * non-worker author queued — see `isWorkerPlanningHandoff`.
+ *
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - Issue number
  * @param labelName - Label to check
@@ -2560,6 +2565,16 @@ function labelMatchesAllowedAuthor(
   if (!lastEvent?.actor?.login) return false;
 
   const adder = lastEvent.actor.login.toLowerCase();
+  // Issue #2688: the one fleet-worker add honoured — `planning` handed off
+  // from a `work-on` issue a trusted human queued.
+  if (
+    isWorkerPlanningHandoff(
+      timeline,
+      labelName,
+      allowedAuthors,
+      fleetWorkerLogins,
+    )
+  ) return true;
   // Issue #3416: a fleet worker login (own host + siblings) must appear in
   // allowedAuthors for PR-dedup, but must never be trusted to self-apply a
   // reserved discovery label — treat it as untrusted so it is stripped,

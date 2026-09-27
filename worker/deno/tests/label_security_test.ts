@@ -1211,3 +1211,141 @@ Deno.test("label_security - worker failure bookkeeping survives beside an untrus
     addedBy: "vibe-bot",
   }]);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2688: the worker's own work-on → planning hand-off
+// ---------------------------------------------------------------------------
+
+/** Timeline mock for the #2688 hand-off cases. */
+function handoffTimeline(
+  events: Array<[string, string, string]>,
+): (args: string[]) => Promise<string> {
+  return (_args: string[]) =>
+    Promise.resolve(JSON.stringify(
+      events.map(([event, name, login]) => ({
+        event,
+        label: { name },
+        actor: { login },
+      })),
+    ));
+}
+
+Deno.test("verifyOperationalLabels - worker planning hand-off of a trusted work-on issue is trusted (Issue #2688)", async () => {
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    2688,
+    ["work-on", "planning"],
+    ["alice", "Vibecoderbot"],
+    handoffTimeline([
+      ["labeled", "work-on", "alice"],
+      ["labeled", "planning", "stsvcbot"],
+    ]),
+    "stsvcbot",
+    ["Vibecoderbot", "stsvcbot"],
+  );
+
+  assertEquals(result.trustedLabels, ["planning"]);
+  assertEquals(result.untrustedLabels, []);
+});
+
+Deno.test("verifyOperationalLabels - hand-off from a sibling fleet worker is trusted (Issue #2688)", async () => {
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    2688,
+    ["work-on", "planning"],
+    ["alice", "Vibecoderbot"],
+    handoffTimeline([
+      ["labeled", "work-on", "alice"],
+      ["labeled", "planning", "Vibecoderbot"],
+    ]),
+    "stsvcbot",
+    ["Vibecoderbot", "stsvcbot"],
+  );
+
+  assertEquals(result.trustedLabels, ["planning"]);
+});
+
+Deno.test("verifyOperationalLabels - worker planning is stripped once work-on is no longer on the issue (Issue #2688)", async () => {
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    2688,
+    ["planning"],
+    ["alice"],
+    handoffTimeline([
+      ["labeled", "work-on", "alice"],
+      ["labeled", "planning", "stsvcbot"],
+    ]),
+    "stsvcbot",
+    ["stsvcbot"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "planning",
+    addedBy: "stsvcbot",
+  }]);
+});
+
+Deno.test("verifyOperationalLabels - outsider cannot trigger planning even on a trusted work-on issue (Issue #2688)", async () => {
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    2688,
+    ["work-on", "planning"],
+    ["alice"],
+    handoffTimeline([
+      ["labeled", "work-on", "alice"],
+      ["labeled", "planning", "mallory"],
+    ]),
+    "stsvcbot",
+    ["stsvcbot"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "planning",
+    addedBy: "mallory",
+  }]);
+});
+
+Deno.test("verifyOperationalLabels - worker planning on an outsider's work-on is stripped (Issue #2688)", async () => {
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    2688,
+    ["work-on", "planning"],
+    ["alice"],
+    handoffTimeline([
+      ["labeled", "work-on", "mallory"],
+      ["labeled", "planning", "stsvcbot"],
+    ]),
+    "stsvcbot",
+    ["stsvcbot"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [{
+    label: "planning",
+    addedBy: "stsvcbot",
+  }]);
+});
+
+Deno.test("verifyOperationalLabels - the hand-off exception covers planning only (Issue #2688)", async () => {
+  const result = await verifyOperationalLabels(
+    "owner/repo",
+    2688,
+    ["work-on", "question", "best-model"],
+    ["alice"],
+    handoffTimeline([
+      ["labeled", "work-on", "alice"],
+      ["labeled", "question", "stsvcbot"],
+      ["labeled", "best-model", "stsvcbot"],
+    ]),
+    "stsvcbot",
+    ["stsvcbot"],
+  );
+
+  assertEquals(result.trustedLabels, []);
+  assertEquals(result.untrustedLabels, [
+    { label: "question", addedBy: "stsvcbot" },
+    { label: "best-model", addedBy: "stsvcbot" },
+  ]);
+});

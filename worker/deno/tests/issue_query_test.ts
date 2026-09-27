@@ -1754,3 +1754,69 @@ Deno.test("parsePRListJson - carries isDraft through when the listing asked for 
   ]));
   assertEquals(prs.map((p) => p.isDraft), [true, false, undefined]);
 });
+
+// =============================================================================
+// Issue #2688: planning pickup trusts the worker's own work-on hand-off
+// =============================================================================
+
+function handoffGh(
+  events: Array<[string, string, string]>,
+): (args: string[]) => Promise<string> {
+  return (_args: string[]) =>
+    Promise.resolve(JSON.stringify(
+      events.map(([event, name, login]) => ({
+        event,
+        label: { name },
+        actor: { login },
+      })),
+    ));
+}
+
+Deno.test("issue_query - wasLabelAddedByAllowedAuthor trusts a worker planning hand-off (Issue #2688)", async () => {
+  const result = await wasLabelAddedByAllowedAuthor(
+    "owner/repo",
+    2688,
+    "planning",
+    ["alice", "stsvcbot"],
+    handoffGh([
+      ["labeled", "work-on", "alice"],
+      ["labeled", "planning", "stsvcbot"],
+    ]),
+    undefined,
+    ["stsvcbot"],
+  );
+  assertEquals(result, true);
+});
+
+Deno.test("issue_query - wasLabelAddedByAllowedAuthor strips worker planning after work-on is removed (Issue #2688)", async () => {
+  const result = await wasLabelAddedByAllowedAuthor(
+    "owner/repo",
+    2688,
+    "planning",
+    ["alice", "stsvcbot"],
+    handoffGh([
+      ["labeled", "work-on", "alice"],
+      ["labeled", "planning", "stsvcbot"],
+      ["unlabeled", "work-on", "alice"],
+    ]),
+    undefined,
+    ["stsvcbot"],
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("issue_query - wasLabelAddedByAllowedAuthor never trusts a worker-applied work-on (Issue #2688)", async () => {
+  const result = await wasLabelAddedByAllowedAuthor(
+    "owner/repo",
+    2688,
+    "work-on",
+    ["alice", "stsvcbot"],
+    handoffGh([
+      ["labeled", "planning", "alice"],
+      ["labeled", "work-on", "stsvcbot"],
+    ]),
+    undefined,
+    ["stsvcbot"],
+  );
+  assertEquals(result, false);
+});
