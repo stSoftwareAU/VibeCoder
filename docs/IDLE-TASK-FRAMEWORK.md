@@ -94,6 +94,11 @@ Key points:
 
 - The worker **files a real issue** for every idle task. Nothing runs without
   first being recorded as a claimable work item.
+- **Every filing path is gated on any open `idle-task` issue in the repo.** The
+  idle trigger's `findExistingIdleTaskIssue` and the on-demand sweeps'
+  any-open gate (Issue #2752 — see
+  [Seeding all wrappers on demand](#seeding-all-wrappers-on-demand)) both match
+  by label alone and fail closed on a lookup error.
 - The `idle-task` label is the **lowest priority** in the work queue (selected
   only when every higher tier is globally empty). See the prioritisation table
   in [README.md](../README.md#-work-prioritisation).
@@ -348,6 +353,11 @@ trawling the worker logs.
 Dedup is **two lines, both repo-wide**. Neither is scoped to the scan's own
 label: a finding already open under a *different* template's label, or under a
 workflow label alone, is still a duplicate.
+
+Wrappers are deduped more bluntly still: the on-demand sweeps file nothing into
+a repo holding **any** open `idle-task` issue, whatever its title or other
+labels (Issue #2752 — see
+[Seeding all wrappers on demand](#seeding-all-wrappers-on-demand)).
 
 `{{KNOWN_OPEN_FINDING_IDS}}` is the **deterministic first line**: a scan skips
 any finding whose `<!-- finding-id: … -->` marker is already open in the repo.
@@ -1520,10 +1530,41 @@ exposes the same `createAllIdleTaskWrappers` seam that the
 deno run -A worker/deno/mod.ts create-all-idle-task-wrappers --repo owner/repo
 ```
 
-It bypasses both the random single-pick and the cross-repo gate so one call
-seeds every registered wrapper at once. It is **idempotent** — any wrapper whose
-canonical title is already open is reported as skipped rather than duplicated —
-and reports `N created, M already open`. Run it from the repository root so the
+It bypasses the random single-pick so one call seeds every registered wrapper
+at once, and reports `N created, M already open`.
+
+**Any open `idle-task` issue blocks the whole sweep** (Issue #2752). Before a
+single body is built, the sweep asks once for every open `idle-task` issue in
+the target repo (`gh issue list --label idle-task --state open --json
+number,title,url`, parsed by the fail-closed `parseOpenIdleTaskIssues`). Title
+and labels do not matter: a hand-renamed wrapper, one triaged into
+`needs-human` or `failed`, and a `Finish #N:` continuation all count. The
+exact-canonical-title dedup this replaced let an open wrapper with any other
+title through, so a repo already holding idle work was seeded a second batch.
+
+```mermaid
+flowchart TD
+    S([Sweep starts]) --> Q["One lookup: open idle-task issues<br/>number, title, url"]
+    Q -- "gh error / non-JSON / non-array" --> E["reason=lookup_failed<br/>IdleTaskSweepError — nothing filed"]
+    Q -- "none open" --> F[File every wrapper]
+    Q -- "#N open" --> G{force?}
+    G -- no --> B["reason=existing_wrapper_open<br/>skip result, blockedBy = #N"]
+    G -- yes --> T["File, skipping exact<br/>canonical titles already open"]
+    style E fill:#c1121f,stroke:#780000,color:#fff
+    style B fill:#adb5bd,stroke:#6c757d,color:#000
+    style F fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **Blocked.** The sweep files nothing, logs
+  `[idle-task] repo=<repo> issue=<n> action=skipped reason=existing_wrapper_open`,
+  and returns a success result whose `blockedBy` names the open issue; every
+  selected template is reported as skipped.
+- **Fails closed.** A lookup that throws, or prints non-JSON or a non-array,
+  logs `[idle-task] repo=<repo> action=skipped reason=lookup_failed` and returns
+  an `IdleTaskSweepError` — an unknown repo is never read as clean.
+- **`force`.** The optional `force` dependency bypasses the any-open gate; the
+  exact-canonical-title dedup still applies, so a forced sweep never duplicates
+  an open wrapper. The CLI `--force` flag that sets it is follow-up work. Run it from the repository root so the
 template body builders can resolve their cwd-relative prompt paths (e.g.
 `prompts/best_practices/buckets/general.md`).
 
@@ -1597,8 +1638,8 @@ deno run -A worker/deno/mod.ts raise-boy-scout-idle-tasks
 
 It reuses the same `createAllIdleTaskWrappers` seam with a template-name filter
 ([`BOY_SCOUT_TEMPLATE_NAMES`](../worker/deno/lib/boy_scout_idle_tasks.ts)), so
-it inherits the same **idempotent** per-repo title dedup — an already-open Boy
-Scout wrapper is reported as skipped, never duplicated. A per-repo failure is
+it inherits the same per-repo **any-open gate** — a repo already holding an
+open `idle-task` issue is skipped whole, never seeded a second batch. A per-repo failure is
 recorded in the summary and the sweep continues to the next repo; the command
 reports `N filed, M already open, K failed`. Run it from the repository root for
 the same prompt-path reason as above.
@@ -1623,8 +1664,8 @@ deno run -A worker/deno/mod.ts raise-all-idle-tasks
 ```
 
 It reuses the same `createAllIdleTaskWrappers` seam per repo with **no**
-template-name filter, so it inherits the same **idempotent** per-repo title
-dedup — an already-open wrapper is reported as skipped, never duplicated. A
+template-name filter, so it inherits the same per-repo **any-open gate** — a
+repo already holding an open `idle-task` issue is skipped whole. A
 per-repo failure is recorded in the summary and the sweep continues to the next
 repo; the command reports `N filed, M already open, K failed`. Run it from the
 repository root for the same prompt-path reason as above.
@@ -1657,8 +1698,8 @@ template-name set
 nothing. It reuses the same `createAllIdleTaskWrappers` seam with a single-entry
 template-name filter
 ([`raiseSingleIdleTask`](../worker/deno/lib/raise_single_idle_task.ts)), so it
-inherits the same **idempotent** per-repo title dedup — an already-open wrapper
-is reported as skipped, never duplicated. A per-repo failure is recorded in the
+inherits the same per-repo **any-open gate** — a repo already holding an open
+`idle-task` issue is skipped whole. A per-repo failure is recorded in the
 summary and the sweep continues; the command reports
 `N filed, M already open, K failed`. Run it from the repository root for the
 same prompt-path reason as above.
@@ -1717,8 +1758,12 @@ Three properties make this safe to expose:
   allowlist still carries only the claimed issue's own repo, so the
    exfiltration boundary is unchanged.
 
-Seeding reuses the same idempotent `createAllIdleTaskWrappers` seam, so a
-re-filed request skips wrappers that are already open. A seeding failure is
+Seeding reuses the same `createAllIdleTaskWrappers` seam, so it inherits the
+any-open gate (Issue #2752): a target that already holds an open `idle-task`
+issue is not seeded, and the run logs
+`[idle-task] repo=<repo> issue=<n> action=skipped reason=existing_wrapper_open`.
+A failed lookup (`reason=lookup_failed`) seeds nothing and is reported as a
+failure. The `add-repo:` onboarding route applies the same gate. A seeding failure is
 reported on the issue and the issue is left **open** for a safe retry.
 
 ### Deciding *which* repo needs a sweep — the freshness report

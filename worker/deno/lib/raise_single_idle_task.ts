@@ -76,8 +76,8 @@ export interface RaiseSingleIdleTaskOptions {
   /** Forwarded to {@link createAllIdleTaskWrappers} per repo. */
   ghCommandFn?: CreateAllIdleTaskWrappersDeps["ghCommandFn"];
   ensureLabelFn?: CreateAllIdleTaskWrappersDeps["ensureLabelFn"];
-  findExistingWrapperTitlesFn?:
-    CreateAllIdleTaskWrappersDeps["findExistingWrapperTitlesFn"];
+  findOpenIdleTaskIssuesFn?:
+    CreateAllIdleTaskWrappersDeps["findOpenIdleTaskIssuesFn"];
   nowFn?: CreateAllIdleTaskWrappersDeps["nowFn"];
   runId?: string;
   /**
@@ -140,7 +140,7 @@ export async function raiseSingleIdleTask(
       templateNames,
       ghCommandFn: opts.ghCommandFn,
       ensureLabelFn: opts.ensureLabelFn,
-      findExistingWrapperTitlesFn: opts.findExistingWrapperTitlesFn,
+      findOpenIdleTaskIssuesFn: opts.findOpenIdleTaskIssuesFn,
       nowFn: opts.nowFn,
       runId: opts.runId,
       rootDir: opts.rootDir,

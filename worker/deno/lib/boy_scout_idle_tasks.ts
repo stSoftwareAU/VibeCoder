@@ -79,8 +79,8 @@ export interface RaiseBoyScoutIdleTasksOptions {
   /** Forwarded to {@link createAllIdleTaskWrappers} per repo. */
   ghCommandFn?: CreateAllIdleTaskWrappersDeps["ghCommandFn"];
   ensureLabelFn?: CreateAllIdleTaskWrappersDeps["ensureLabelFn"];
-  findExistingWrapperTitlesFn?:
-    CreateAllIdleTaskWrappersDeps["findExistingWrapperTitlesFn"];
+  findOpenIdleTaskIssuesFn?:
+    CreateAllIdleTaskWrappersDeps["findOpenIdleTaskIssuesFn"];
   nowFn?: CreateAllIdleTaskWrappersDeps["nowFn"];
   runId?: string;
   /**
@@ -121,7 +121,7 @@ export async function raiseBoyScoutIdleTasks(
       templateNames: BOY_SCOUT_TEMPLATE_NAMES,
       ghCommandFn: opts.ghCommandFn,
       ensureLabelFn: opts.ensureLabelFn,
-      findExistingWrapperTitlesFn: opts.findExistingWrapperTitlesFn,
+      findOpenIdleTaskIssuesFn: opts.findOpenIdleTaskIssuesFn,
       nowFn: opts.nowFn,
       runId: opts.runId,
       rootDir: opts.rootDir,

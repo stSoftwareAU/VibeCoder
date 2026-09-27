@@ -42,8 +42,8 @@ interface TestDeps {
   log?: (line: string) => void;
   ghCommandFn?: RaiseSingleIdleTaskOptions["ghCommandFn"];
   ensureLabelFn?: RaiseSingleIdleTaskOptions["ensureLabelFn"];
-  findExistingWrapperTitlesFn?:
-    RaiseSingleIdleTaskOptions["findExistingWrapperTitlesFn"];
+  findOpenIdleTaskIssuesFn?:
+    RaiseSingleIdleTaskOptions["findOpenIdleTaskIssuesFn"];
   nowFn?: RaiseSingleIdleTaskOptions["nowFn"];
   /**
    * Checkout root the wrapper bodies' prompt files are read from
@@ -105,7 +105,7 @@ export const raiseSingleIdleTaskCommand: Command = {
       repos,
       ghCommandFn: deps.ghCommandFn,
       ensureLabelFn: deps.ensureLabelFn,
-      findExistingWrapperTitlesFn: deps.findExistingWrapperTitlesFn,
+      findOpenIdleTaskIssuesFn: deps.findOpenIdleTaskIssuesFn,
       nowFn: deps.nowFn,
       rootDir: deps.rootDir,
       log,

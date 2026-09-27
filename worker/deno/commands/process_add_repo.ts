@@ -398,6 +398,8 @@ export const processAddRepoCommand: Command = {
         createAllIdleTaskWrappers(r, {
           ghCommandFn: runGhCommand,
           nowFn: now,
+          // Surfaces the any-open gate's skip lines (Issue #2752).
+          log: (line: string) => logger.info(line),
         }));
     // Label sync reuses the same inherited-env gh identity as the validate
     // path (defaultRunCommand); no ghConfigDir wiring is needed here.
