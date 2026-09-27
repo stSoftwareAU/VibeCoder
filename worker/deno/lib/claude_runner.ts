@@ -1859,6 +1859,7 @@ export async function runClaudeWithTimeout(
       const lastToolSummary = progress.snapshot().lastToolSummary;
       const verdict = decideCallStorm({
         toolCalls: progress.toolCallsSince(nowMs - windowMs),
+        novelToolCalls: progress.novelToolCallsSince(nowMs - windowMs),
         treeState,
         treeUnchangedForMs: nowMs - lastTreeAdvancedMs,
         ...(lastToolSummary ? { lastToolSummary } : {}),

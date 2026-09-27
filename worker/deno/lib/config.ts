@@ -668,6 +668,20 @@ export async function loadConfig(
     OPERATIONAL_DEFAULTS.callStormCalls;
   const callStormWindowSeconds = file.call_storm_window_seconds ??
     OPERATIONAL_DEFAULTS.callStormWindowSeconds;
+  const callStormNovelShare = file.call_storm_novel_share ??
+    OPERATIONAL_DEFAULTS.callStormNovelShare;
+  // A share of 0 or less can never be undercut, so the guard would never
+  // fire; above 1 is not a share at all (Issue #2773).
+  if (
+    !Number.isFinite(callStormNovelShare) || callStormNovelShare <= 0 ||
+    callStormNovelShare > 1
+  ) {
+    throw new Error(
+      `call_storm_novel_share must be above 0 and at most 1, got ` +
+        `${callStormNovelShare}. A share of 0 or less would never stop a ` +
+        `run. Set call_storm_enabled: false to turn the guard off instead.`,
+    );
+  }
   if (callStormCalls <= 0) {
     throw new Error(
       `call_storm_calls must be positive, got ${callStormCalls}. A ` +
@@ -1076,6 +1090,7 @@ export async function loadConfig(
     callStormEnabled,
     callStormCalls,
     callStormWindowSeconds,
+    callStormNovelShare,
     selfScheduleDiagnosticsEnabled,
     selfScheduleDiagnosticsMaxInFlight,
     prFeedbackTimeout,

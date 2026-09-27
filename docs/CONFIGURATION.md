@@ -1668,6 +1668,7 @@ unless explicitly overridden.
 | Call-storm guard | `call_storm_enabled` | `true` | Stop an issue-work run that is polling instead of working — dozens of tool calls a minute with no working-tree change (Issue #2230). Evaluated at each progress check; the stopped run keeps its preserved WIP. `false` gives a polling loop its whole budget back. See [Call storm — polling is not progress](#call-storm--polling-is-not-progress-issue-2230). |
 | Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped. |
 | Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
+| Call-storm novel share | `call_storm_novel_share` | `0.25` | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -2534,7 +2535,8 @@ write anything. Set a key only to change it:
   "progress_extension_check_seconds": 300,
   "call_storm_enabled": true,
   "call_storm_calls": 60,
-  "call_storm_window_seconds": 300
+  "call_storm_window_seconds": 300,
+  "call_storm_novel_share": 0.25
 }
 ```
 
@@ -2566,19 +2568,20 @@ extension only refused to extend a deadline still an hour away.
 
 The call-storm guard closes that gap at the **interim check**. A check that
 finds `call_storm_calls` or more tool calls inside the last
-`call_storm_window_seconds` **and** a working tree that has not advanced for a
-whole window reads as a storm window. One storm window is a warning:
+`call_storm_window_seconds`, fewer than `call_storm_novel_share` of them
+novel, **and** a working tree that has not advanced for a whole window reads as
+a storm window. One storm window is a warning:
 
 ```text
-[call-storm] call storm: 372 calls in 5m, tree unchanged; last: Bash echo w252
-— check 1 of 2; the run is stopped if the next check agrees
+[call-storm] call storm: 372 calls in 5m, 4 novel (1%), tree unchanged; last:
+Bash echo w252 — check 1 of 2; the run is stopped if the next check agrees
 ```
 
 **Two consecutive** storm windows stop the run, with a reason naming the loop:
 
 ```text
 [call-storm] stopping the agent after 1483s: call storm: 372 calls in 5m,
-tree unchanged; last: Bash echo w252
+4 novel (1%), tree unchanged; last: Bash echo w252
 ```
 
 The result carries `timeoutReason: "call-storm"` and the reason, so the worker
@@ -2587,8 +2590,17 @@ comment reads *"Claude was stopped as stalled before its timeout — call storm:
 …"* rather than claiming a timeout the run never reached. The ordinary
 WIP-preservation path keeps whatever the agent had committed.
 
-Four deliberate limits keep it from stopping healthy runs:
+Five deliberate limits keep it from stopping healthy runs:
 
+- **Repetition, not volume, is the loop (Issue #2773).** A security sweep reads
+  and greps dozens of modules before it writes its record, every call
+  different, and was stopped by volume alone. Each call in the window is
+  normalised to its tool name plus primary target — the file path for
+  `Read`/`Edit`/`Write`, the pattern plus path for `Grep`/`Glob`, the command
+  for `Bash` with digit and whitespace runs collapsed, so `echo w9` and
+  `echo w252` are one call — and a window is a storm only when the distinct
+  share is below `call_storm_novel_share`. The #2230 poll loop repeats three or
+  four commands; a sweep is nearly all novel.
 - **One window is never enough.** A read-heavy investigation can genuinely make
   twelve calls a minute before its first edit, so a single storm window only
   warns; ten minutes of that rate with nothing changed is the poll loop, not
