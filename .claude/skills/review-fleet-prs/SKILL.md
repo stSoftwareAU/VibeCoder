@@ -38,7 +38,9 @@ Optional argument: `owner/name` to review one repo only.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
-7. **Review each head commit once.** A new push gets a fresh review.
+7. **Review each head commit once.** A new push gets a fresh review. When
+   the fleet pushes a fix to a PR that was sent back, the re-review checks
+   the earlier findings were fixed, and approves once they are.
 
 ## The loop
 
@@ -50,7 +52,7 @@ night costs no tokens.
    the Bash tool's `run_in_background: true`:
 
    ```bash
-   deno run --allow-run=gh --allow-read gate.ts --watch=300 [--repo=owner/name]
+   deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME gate.ts --watch=300 [--repo=owner/name]
    ```
 
 2. Do nothing until it finishes: you are re-invoked when it exits. Do not
@@ -99,7 +101,10 @@ single message so they run in parallel, each with `model: "fable"` and
 >    assertion, changes an expected value or expected behaviour, or skips or
 >    loosens a test. It is **trivial** if it only reformats, renames,
 >    updates imports or fixture paths, or adds cases or assertions.
-> 6. For Dependabot: check the changelog or release notes for breaking changes
+> 6. {previousFindings, if not empty: "An earlier review of this PR asked
+>    for these fixes: {previousFindings}. Check each one is fixed; one that
+>    is not is still a finding."}
+> 7. For Dependabot: check the changelog or release notes for breaking changes
 >    that affect how this repo uses the dependency, and that a major bump is
 >    reflected in the code where needed.
 >
@@ -115,41 +120,41 @@ single message so they run in parallel, each with `model: "fable"` and
 If an agent fails or returns something that isn't this JSON, post nothing for
 that PR; the next gate run reports it again.
 
-### 2. Decide and post
+### 2. Post
 
-First re-read the head commit (`gh pr view {number} -R {repo} --json
-headRefOid`). If it moved since the gate ran, post nothing; the next gate run
-reports the new commit.
+For each reply, write `{"pr": <the gate's ready entry>, "review": <Fable's
+reply>}` to a file in the scratchpad and run, from this skill's base
+directory:
 
-Treat the test changes as meaningful if Fable said `meaningful` **or** the
-gate's `testChanges.removed` is not empty. Then, in this order:
+```bash
+deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME post.ts --input=<file>
+```
 
-| Outcome | Command |
-|---|---|
-| Fable `findings` not empty | `gh pr review {number} -R {repo} --request-changes --body-file <file>` |
-| Meaningful test changes | `gh pr review {number} -R {repo} --comment --body-file <file>` |
-| Anything else | `gh pr review {number} -R {repo} --approve --body-file <file>` |
+The script does the rest, so do not post anything yourself:
 
-Bodies:
+- It re-checks the head commit and posts nothing if it moved or the PR
+  closed; the next gate pass picks up the new commit.
+- It decides the outcome: Fable findings mean **request changes** (the
+  worker acts on those); otherwise a meaningful test change or a removed
+  test file means **held for the owner**, as a comment-only review the
+  worker ignores; otherwise **approve**.
+- It writes and posts the review body, appends the result to
+  `~/.review-fleet-prs/log.jsonl`, refreshes
+  `~/.review-fleet-prs/summary.md`, and raises a desktop notification when a
+  PR is sent back or held.
 
-- **Request changes:** each finding as `` `file:line` ``, the problem, then
-  the fix. If there are also meaningful test changes, list them too, so the
-  fix does not hide them.
-- **Held for the owner:** start with `Held for owner review: this PR changes
-  existing tests.` then each `testChangeNotes` entry (and each removed test
-  file), then the summary. Use a comment-only review: the worker ignores
-  those, so the fleet does not try to "fix" the hold.
-- **Approve:** the summary.
-
-Write bodies to a file in the scratchpad rather than inline, so backticks and
-quotes survive. End every body with the line
-`_Automated review by /review-fleet-prs (Fable)._`. The gate looks for that
-marker to know a comment-only review was already posted for a commit.
+It prints `{ posted, outcome?, reason? }`. Exit code 2 means Fable's reply
+was malformed: nothing was posted, and the PR comes back on the next gate
+pass.
 
 ### 3. Report
 
-One short line per round: approved, changes requested, and held for the
-owner, each with PR links. Then go back to the loop.
+One short line per round: approved, sent back, and held for the owner, each
+with PR links. Then go back to the loop.
+
+The owner's running view is `~/.review-fleet-prs/summary.md`: what is
+waiting for them, what was sent back to the fleet, and what was approved in
+the last 7 days. Every gate pass rewrites it at no token cost.
 
 ## Notes
 
@@ -161,3 +166,5 @@ owner, each with PR links. Then go back to the loop.
   let an author approve their own PR.
 - Cost while idle: one GraphQL search (about 2 points) every 5 minutes, and
   no model tokens. Each ready PR adds one REST call for its file list.
+- The log and summary live in `~/.review-fleet-prs/`, outside the checkout,
+  which the worker resets. Each machine keeps its own.
