@@ -138,8 +138,7 @@ Pre-PR security self-check:
 
 - [x] Input validation: the new functions take an internal verdict, and the
       precondition is enforced by a throw.
-- [x] Secrets: nothing is staged beyond the changed source, test and doc
-      files.
+- [x] Secrets — only the changed source, test and doc files are staged.
 - [x] Injection surface: there are no new shell, SQL, filesystem or HTTP
       calls.
 - [x] Output encoding: the note interpolates the worker's own reason text
