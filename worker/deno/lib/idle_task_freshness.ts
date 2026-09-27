@@ -22,9 +22,8 @@
  * `issue view`). No issue is created, closed, commented on or edited.
  *
  * A repo whose history cannot be read degrades to `unknown` with a warning
- * rather than failing the whole report — the same fail-open shape as
- * `cross_repo_check_failed` in `idle_task_issue.ts` — while a malformed `gh`
- * payload throws so it is never silently reconciled as "no history".
+ * rather than failing the whole report, while a malformed `gh` payload throws
+ * so it is never silently reconciled as "no history".
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */

@@ -27,7 +27,10 @@ claimable issues exist. The framework defines:
   are machine-recoverable
   ([`worker/deno/lib/idle_task_issue.ts`](../worker/deno/lib/idle_task_issue.ts)).
 - A label-only dedup query (`findExistingIdleTaskIssue`) that keeps the worker
-  from filing two idle-task issues against the same repo at once.
+  from filing two idle-task issues against the same repo at once. It fails
+  closed: a repo whose lookup fails (a `gh` error or malformed output) is never
+  treated as clean, so filing into it is blocked for that tick and logged as
+  `[idle-task] repo=<repo> action=skipped reason=lookup_failed`.
 - A claim handler
   ([`worker/deno/lib/idle_task_claim_handler.ts`](../worker/deno/lib/idle_task_claim_handler.ts))
   that the main loop calls when it picks up an `idle-task` issue. When the issue
@@ -671,6 +674,13 @@ reason=existing_wrapper_open scope=repo` — and only when *every* monitored rep
 holds one does the tick skip altogether
 (`reason=existing_wrapper_open scope=monitored_set held=<n>`).
 
+The census fails closed (Issue #2750). A repo whose lookup fails — a `gh` error
+or output that is not a JSON array — is unknown, never clean, so it is
+subtracted too and logged as
+`[idle-task] repo=<owner/repo> action=skipped reason=lookup_failed`. When no repo is left and any lookup
+failed, the whole-tick skip reports `reason=lookup_failed scope=monitored_set
+held=<n> failed=<n>`; a census that throws outright files nothing that tick.
+
 The gate used to be one open wrapper across the **entire** monitored set
 (#2092). That does prevent the #2089 fan-out, and it also prevents the fleet
 ever using more than one slot on idle work: Issue #1083 measured four Vibe
@@ -754,7 +764,7 @@ before filing a fresh wrapper. The full per-repo evaluation order (logged with
 
 | Order | Gate                          | Skips when                                                                                                                                                                                                                          |
 | ----- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 | Per-repo wrapper census | The target repo already holds an open `idle-task` issue, or every monitored repo does. Reason: `existing_wrapper_open` (`scope=repo` per refusal, `scope=monitored_set` for the whole-tick skip). |
+| 1 | Per-repo wrapper census | The target repo already holds an open `idle-task` issue, or every monitored repo does. Reason: `existing_wrapper_open` (`scope=repo` per refusal, `scope=monitored_set` for the whole-tick skip). A repo whose lookup failed is skipped too — reason `lookup_failed` (Issue #2750). |
 | 2     | Per-repo label dedup          | The target repo already has an open `idle-task` issue (defence-in-depth against the cross-repo TOCTOU). Reason: `duplicate`.                                                                                                        |
 | 3 | Output-backlog gate | The target repo has `BACKLOG_THRESHOLD` (currently 6) or more open issues carrying `template.outputLabel`. The previous batch is still being remediated. Reason: `output_backlog`. |
 | 4 | `shouldFile` veto | The template's own `shouldFile` returns `false`. `security-scan` uses this to refuse a new run while open `security` findings or an existing `Run a security scan` wrapper still exists. Reason: `pending_results`. |
@@ -1473,7 +1483,9 @@ applies two layered checks before filing.
    set, each with a logged refusal naming the repo and the issue
    (`action=skipped reason=existing_wrapper_open scope=repo`); only when every
    monitored repo holds one is the whole tick skipped
-   (`scope=monitored_set`). This guarantees at most one open `idle-task`
+   (`scope=monitored_set`). A repo whose lookup failed is also removed
+   (`reason=lookup_failed`, Issue #2750) and a census that throws skips the
+   tick, so an unknown repo is never filed into. This guarantees at most one open `idle-task`
    wrapper **per repository** (Issue #1083) — never one across the fleet, which
    capped eight slots at a single idle task — while keeping the protection
    #2089 was really built for: a tick files at most one wrapper, so successive
@@ -1758,11 +1770,11 @@ Three distinctions carry the report's meaning:
   a different problem from a scan that has simply aged out.
 - **`unknown` is not a clean result.** A repo whose history cannot be read
   degrades every one of its pairs to `unknown` plus a
-  `reason=history_read_failed` warning, in the same fail-open shape as
-  `cross_repo_check_failed` — one flaky repo never fails the whole report, and
-  the degradation is never reconciled as "never scanned". A malformed `gh`
-  payload throws for the same reason. Likewise a wrapper whose closing comment
-  cannot be read keeps its date and reports an `unknown` **outcome**.
+  `reason=history_read_failed` warning — one flaky repo never fails the whole
+  report, and the degradation is never reconciled as "never scanned". A
+  malformed `gh` payload throws for the same reason. Likewise a wrapper whose
+  closing comment cannot be read keeps its date and reports an `unknown`
+  **outcome**.
 - **Outcome is read from the template's own close comment.** Every template
   renders `"no findings"` or `"… Filed N issues: #A, #B, …"`, so the report can
   say whether the last run was a no-op or filed work. A third string —
@@ -1924,6 +1936,7 @@ weighted-template + shuffled-repo path.
 flowchart TD
     T["idle tick"] --> X{"every repo already<br/>holds a wrapper?"}
     X -- yes --> S1["skip — existing_wrapper_open"]
+    X -- "census failed" --> S0["skip — lookup_failed"]
     X -- no --> F{"startable repos ≥<br/>idle slots?"}
     F -- yes --> S2["skip — approved_work_in_flight"]
     F -- no --> D["due list (cached 6 h)"]

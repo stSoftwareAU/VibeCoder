@@ -48,6 +48,17 @@ export interface ExistingIdleTaskIssue {
   url: string;
 }
 
+/**
+ * Result of the per-repo wrapper census (Issues #1083, #2750). `wrappers`
+ * lists the repos confirmed to hold an open `idle-task` issue; `failedRepos`
+ * lists the repos whose lookup failed, in caller order. A failed repo is
+ * unknown, never clean — callers must not file into it.
+ */
+export interface IdleTaskWrapperCensus {
+  wrappers: ExistingIdleTaskWrapper[];
+  failedRepos: string[];
+}
+
 /** Cross-repo lookup result (#2092). */
 export interface ExistingIdleTaskWrapper {
   /** Repository where the open `idle-task` wrapper was found. */
@@ -62,9 +73,9 @@ export interface FindAnyOpenIdleTaskOptions {
   /**
    * Optional warning sink for per-repo `gh` failures. Defaults to
    * `console.warn`. When a single repo lookup fails the scan continues
-   * with the remaining repos and the failed repo is treated as
-   * "unknown — assume clean", matching the `busy_check_failed` pattern
-   * in `maybe_file_idle_task.ts`.
+   * with the remaining repos and the failed repo is reported in
+   * `failedRepos` — its state is unknown, so it is never treated as clean
+   * (fail closed, Issue #2750).
    */
   warn?: (message: string) => void;
 }
@@ -81,10 +92,52 @@ export const IDLE_TASK_LABEL = "idle-task";
 // ---------------------------------------------------------------------------
 
 /**
+ * Parses the JSON printed by
+ * `gh issue list --label idle-task --state open --json number,url` into the
+ * well-formed entries it holds (Issue #2750). Shared so every open-idle-task
+ * gate reads that payload the same way.
+ *
+ * Fails closed: output that is not JSON, or JSON that is not an array, throws
+ * with `repo` in the message rather than reading as "no open issue". Entries
+ * lacking a numeric `number` or string `url` are skipped.
+ */
+export function parseOpenIdleTaskIssues(
+  raw: string,
+  repo: string,
+): ExistingIdleTaskIssue[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `open idle-task lookup for ${repo} returned non-JSON output: ${message}`,
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `open idle-task lookup for ${repo} returned a non-array JSON value`,
+    );
+  }
+
+  const issues: ExistingIdleTaskIssue[] = [];
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== "object") continue;
+    const r = entry as Record<string, unknown>;
+    if (typeof r.number !== "number" || typeof r.url !== "string") continue;
+    issues.push({ number: r.number, url: r.url });
+  }
+  return issues;
+}
+
+/**
  * Returns the first open `idle-task` issue in `opts.repo`, or null when
  * there is none. Any open `idle-task`-labelled issue blocks further
  * idle-task filing — there is no per-template dedup, and no marker is
  * required (Issue #2077).
+ *
+ * Throws when `gh` fails or prints malformed output (Issue #2750): only a
+ * well-formed empty list means "no open issue".
  */
 export async function findExistingIdleTaskIssue(
   opts: FindExistingIdleTaskOptions,
@@ -104,43 +157,27 @@ export async function findExistingIdleTaskIssue(
     "--limit",
     "200",
   ]);
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(parsed)) return null;
-
-  for (const entry of parsed) {
-    if (entry === null || typeof entry !== "object") continue;
-    const r = entry as Record<string, unknown>;
-    const number = typeof r.number === "number" ? r.number : null;
-    const url = typeof r.url === "string" ? r.url : null;
-    if (number === null || url === null) continue;
-    return { number, url };
-  }
-  return null;
+  return parseOpenIdleTaskIssues(raw, opts.repo)[0] ?? null;
 }
 
 /**
  * Shared scan behind {@link findOpenIdleTaskWrappers} and
  * {@link findAnyOpenIdleTaskWrapper}.
  *
- * Per-repo `gh` failures are logged via `warn` and the failing repo is
- * treated as "unknown — assume clean" so a single transient hiccup never
- * silently disables the filer (matches the existing `busy_check_failed`
- * pattern in `maybe_file_idle_task.ts`).
+ * Per-repo lookup failures are logged via `warn` and reported in
+ * `failedRepos` (Issue #2750): the failing repo's state is unknown, so it is
+ * never treated as clean. The scan still continues, so one repo's hiccup does
+ * not hide the state of the others.
  */
 async function scanForOpenIdleTaskWrappers(
   repos: readonly string[],
   opts: FindAnyOpenIdleTaskOptions,
   stopAtFirst: boolean,
-): Promise<ExistingIdleTaskWrapper[]> {
+): Promise<IdleTaskWrapperCensus> {
   const gh = opts.ghCommandFn ?? runGhCommand;
   const warn = opts.warn ?? ((m: string) => console.warn(m));
   const found: ExistingIdleTaskWrapper[] = [];
+  const failedRepos: string[] = [];
   for (const repo of repos) {
     let existing: ExistingIdleTaskIssue | null;
     try {
@@ -150,21 +187,22 @@ async function scanForOpenIdleTaskWrappers(
       warn(
         `[idle-task] repo=${repo} action=warn reason=cross_repo_check_failed message=${message}`,
       );
+      failedRepos.push(repo);
       continue;
     }
     if (existing !== null) {
       found.push({ repo, number: existing.number, url: existing.url });
-      if (stopAtFirst) return found;
+      if (stopAtFirst) break;
     }
   }
-  return found;
+  return { wrappers: found, failedRepos };
 }
 
 /**
  * Per-repo wrapper census (Issue #1083). Scans every repo in `repos` and
  * returns one entry for **each** repo already holding an open
- * `idle-task`-labelled issue, in caller order. A clean set returns an empty
- * array.
+ * `idle-task`-labelled issue, in caller order, plus every repo whose lookup
+ * failed (`failedRepos`, Issue #2750). Only a repo in neither list is clean.
  *
  * The filer subtracts this from the monitored set rather than short-circuiting
  * on it: the operator's concurrency rule is *one issue in flight per work
@@ -183,15 +221,17 @@ async function scanForOpenIdleTaskWrappers(
 export function findOpenIdleTaskWrappers(
   repos: readonly string[],
   opts: FindAnyOpenIdleTaskOptions = {},
-): Promise<ExistingIdleTaskWrapper[]> {
+): Promise<IdleTaskWrapperCensus> {
   return scanForOpenIdleTaskWrappers(repos, opts, false);
 }
 
 /**
  * Cross-repo dedup query (Issue #2092). Returns the first open
  * `idle-task`-labelled issue found anywhere in `repos`, or `null` when the
- * entire set is clean. The first match in caller order wins — the result is
- * deterministic for a fixed input list, and the scan stops at it.
+ * entire set is confirmed clean. Throws when no wrapper was found but at least
+ * one repo's lookup failed (Issue #2750) — an unknown repo is never clean. The
+ * first match in caller order wins — the result is deterministic for a fixed
+ * input list, and the scan stops at it.
  *
  * This answers "does the monitored set hold **any** wrapper?". It is no
  * longer what gates filing — see {@link findOpenIdleTaskWrappers} for why —
@@ -202,6 +242,13 @@ export async function findAnyOpenIdleTaskWrapper(
   repos: readonly string[],
   opts: FindAnyOpenIdleTaskOptions = {},
 ): Promise<ExistingIdleTaskWrapper | null> {
-  const found = await scanForOpenIdleTaskWrappers(repos, opts, true);
-  return found[0] ?? null;
+  const census = await scanForOpenIdleTaskWrappers(repos, opts, true);
+  const first = census.wrappers[0];
+  if (first !== undefined) return first;
+  if (census.failedRepos.length > 0) {
+    throw new Error(
+      `open idle-task lookup failed for: ${census.failedRepos.join(", ")}`,
+    );
+  }
+  return null;
 }
