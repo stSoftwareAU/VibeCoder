@@ -33,6 +33,7 @@ import {
 import {
   DRY_RUN_SUBCOMMANDS,
   dryRunRefusal,
+  reportFleetTokenScopes,
   RUN_ALL_REPO_STEPS,
 } from "../setup/setup_cli.ts";
 
@@ -61,6 +62,10 @@ interface FakeRepo {
   admin?: boolean;
   /** Files on the default branch, by path (the workflows). */
   files?: Record<string, string>;
+  /** `allow_merge_commit` (Issue #2690); absent from the read when unset. */
+  allowMergeCommit?: boolean;
+  /** Each account's repository role (Issue #2690). */
+  collaborators?: Record<string, string>;
 }
 
 /** The login the fake GitHub says the gh identity is. */
@@ -148,12 +153,21 @@ function contentsAt(state: FakeRepo, path: string): unknown {
  * A gh seam over `repos`: each read answers from the repo's current state,
  * each write is recorded and applied, so the next run reads the result.
  */
-function makeFakeGitHub(repos: Record<string, FakeRepo>) {
+function makeFakeGitHub(
+  repos: Record<string, FakeRepo>,
+  orgOwners: readonly string[] = [],
+) {
   const writes: RecordedWrite[] = [];
   const reads: string[] = [];
 
   const route = (endpoint: string): unknown => {
     if (endpoint === "user") return { login: OPERATOR_LOGIN };
+    const membership = /^orgs\/[^/]+\/memberships\/([^/]+)$/.exec(endpoint);
+    if (membership) {
+      return orgOwners.includes(membership[1]!)
+        ? { role: "admin", state: "active" }
+        : { role: "member", state: "active" };
+    }
     for (const [slug, state] of Object.entries(repos)) {
       const base = `repos/${slug}`;
       if (endpoint === base) {
@@ -162,7 +176,18 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
           private: state.visibility !== "public",
           security_and_analysis: state.security,
           permissions: { admin: state.admin ?? true, push: true },
+          ...(state.allowMergeCommit === undefined
+            ? {}
+            : { allow_merge_commit: state.allowMergeCommit }),
         };
+      }
+      const collaborator = new RegExp(
+        `^${base}/collaborators/([^/]+)/permission$`,
+      ).exec(endpoint);
+      if (collaborator) {
+        const role = state.collaborators?.[collaborator[1]!];
+        if (role === undefined) throw NOT_FOUND();
+        return { role_name: role };
       }
       if (
         endpoint.startsWith(`${base}/contents/`) &&
@@ -222,7 +247,20 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
       const base = `repos/${slug}`;
       if (method === "PATCH" && endpoint === base) {
         const sec = body["security_and_analysis"] as FakeRepo["security"];
-        state.security = { ...state.security, ...sec };
+        if (sec) state.security = { ...state.security, ...sec };
+        if (typeof body["allow_merge_commit"] === "boolean") {
+          state.allowMergeCommit = body["allow_merge_commit"];
+        }
+        return;
+      }
+      const collaborator = endpoint.startsWith(`${base}/collaborators/`)
+        ? endpoint.slice(`${base}/collaborators/`.length)
+        : undefined;
+      if (method === "PUT" && collaborator) {
+        state.collaborators = {
+          ...state.collaborators,
+          [collaborator]: body["permission"] === "push" ? "write" : "?",
+        };
         return;
       }
       if (endpoint === `${base}/actions/permissions/workflow`) {
@@ -904,4 +942,178 @@ Deno.test("dryRunRefusal - a subcommand that would write for real refuses --dry-
     assertEquals(dryRunRefusal(subcommand), undefined, subcommand);
   }
   assert(DRY_RUN_SUBCOMMANDS.includes("repo-settings-harden"));
+});
+
+// ---------------------------------------------------------------------------
+// The fleet works without admin (Issue #2690)
+// ---------------------------------------------------------------------------
+
+Deno.test("reportFleetTokenScopes - a fleet token without workflow is reported with the exact refresh command for its config dir, and fails (Issue #2690)", async () => {
+  const warnings: string[] = [];
+  const asked: Array<{ args: string[]; dir?: string }> = [];
+  const ok = await reportFleetTokenScopes("/h/.config/gh-vibe", {
+    runGh: (args, dir) => {
+      asked.push({ args, ...(dir ? { dir } : {}) });
+      return Promise.resolve({
+        success: true,
+        output: "github.com\n  - Token: gho_****\n" +
+          "  - Token scopes: 'read:org', 'repo'",
+      });
+    },
+    log: () => {},
+    warn: (line) => warnings.push(line),
+  });
+  assertEquals(ok, false);
+  assertEquals(asked, [{
+    args: ["auth", "status", "-h", "github.com"],
+    dir: "/h/.config/gh-vibe",
+  }]);
+  const text = warnings.join("\n");
+  assertStringIncludes(text, "workflow");
+  assertStringIncludes(
+    text,
+    'GH_CONFIG_DIR="/h/.config/gh-vibe" gh auth refresh -h github.com -s workflow',
+  );
+});
+
+Deno.test("reportFleetTokenScopes - a complete or fine-grained token passes without a warning (Issue #2690)", async () => {
+  for (
+    const output of [
+      "  - Token: gho_****\n  - Token scopes: 'read:org', 'repo', 'workflow'",
+      "  - Token: github_pat_****\n  - Token scopes: none",
+    ]
+  ) {
+    const warnings: string[] = [];
+    const ok = await reportFleetTokenScopes(undefined, {
+      runGh: () => Promise.resolve({ success: true, output }),
+      log: () => {},
+      warn: (line) => warnings.push(line),
+    });
+    assertEquals([ok, warnings], [true, []], output);
+  }
+});
+
+/** A squash-only repo (merge commits off) whose default rule allows all. */
+function squashOnlyRepo(overrides: Partial<FakeRepo> = {}): FakeRepo {
+  const repo = driftedRepo(overrides);
+  const pr = (repo.rulesets[0]!["rules"] as Array<
+    { type: string; parameters: Record<string, unknown> }
+  >)[0]!;
+  pr.parameters["allowed_merge_methods"] = ["merge", "squash", "rebase"];
+  repo.rulesets.push({
+    id: 8,
+    name: "Vibe Coder milestone branches",
+    target: "branch",
+    enforcement: "active",
+    conditions: {
+      ref_name: { include: ["refs/heads/milestone/**"], exclude: [] },
+    },
+    rules: [{ type: "deletion" }],
+  });
+  return { allowMergeCommit: false, ...repo, ...overrides };
+}
+
+function pullRequestRule(state: FakeRepo) {
+  return (state.rulesets[0]!["rules"] as Array<
+    { type: string; parameters: Record<string, unknown> }
+  >).find((r) => r.type === "pull_request")!.parameters;
+}
+
+Deno.test("runRepoSettingsHarden - a squash-only repo ends with merge commits allowed, the default branch squash-only and the milestone ruleset untouched; a second run writes nothing (Issue #2690)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: squashOnlyRepo() };
+  const milestoneBefore = structuredClone(state[repo]!.rulesets[1]);
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  const ok = await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, workDir).deps,
+  );
+
+  assertEquals(ok, true);
+  assertEquals(state[repo]!.allowMergeCommit, true);
+  const rule = pullRequestRule(state[repo]!);
+  assertEquals(rule["allowed_merge_methods"], ["squash"]);
+  assertEquals(rule["required_approving_review_count"], 1);
+  assertEquals(state[repo]!.rulesets[1], milestoneBefore);
+  // The default branch is squash-only before merge commits are switched on.
+  const order = writes.map((w) => `${w.method} ${w.endpoint}`);
+  const merge = writes.findIndex((w) =>
+    w.method === "PATCH" && "allow_merge_commit" in w.body
+  );
+  assert(
+    merge > order.indexOf(`PUT repos/${repo}/rulesets/7`),
+    order.join("\n"),
+  );
+
+  writes.length = 0;
+  await runRepoSettingsHarden({ repos: [repo] }, harness(gh, workDir).deps);
+  assertEquals(writes, [], "a converged repo must see zero writes");
+});
+
+Deno.test("runRepoSettingsHarden - fleet accounts end at write, and an organisation owner is reported once with the setting to change, never written (Issue #2690)", async () => {
+  const [a, b] = [uniqueRepo(), uniqueRepo()];
+  const collaborators = { VibeCoderST: "admin", stservice: "admin" };
+  const state = {
+    [a]: driftedRepo({ collaborators: { ...collaborators } }),
+    [b]: driftedRepo({ collaborators: { ...collaborators } }),
+  };
+  const { gh, writes } = makeFakeGitHub(state, ["stservice"]);
+  const h = harness(gh, await makeWorkDir([a, b]));
+
+  await runRepoSettingsHarden({
+    repos: [a, b],
+    fleet_pr_authors: ["VibeCoderST", "stservice"],
+    service_accounts: ["stservice"],
+  }, h.deps);
+
+  for (const repo of [a, b]) {
+    assertEquals(state[repo]!.collaborators, {
+      VibeCoderST: "write",
+      stservice: "admin",
+    });
+  }
+  assert(!writes.some((w) => w.endpoint.includes("stservice")));
+  const owner = h.warnings.filter((w) => w.includes("stservice"));
+  assertEquals(owner.length, 1, h.warnings.join("\n"));
+  assertStringIncludes(
+    owner[0]!,
+    "https://github.com/orgs/harden-sync/people",
+  );
+  assertStringIncludes(owner[0]!, "Member");
+});
+
+Deno.test("runRepoSettingsHarden - a dry run plans the merge-commit, squash-only and fleet changes and writes none of them (Issue #2690)", async () => {
+  const repo = uniqueRepo();
+  const state = {
+    [repo]: squashOnlyRepo({ collaborators: { VibeCoderST: "admin" } }),
+  };
+  const attempted: string[] = [];
+  const { gh: real } = makeFakeGitHub(state);
+  const gh = (args: string[]) => {
+    if (args.includes("--method")) {
+      attempted.push(args.join(" "));
+      return Promise.reject(new Error(`dry run wrote: ${args.join(" ")}`));
+    }
+    return real(args);
+  };
+  const h = harness(gh, await makeWorkDir([repo]), { dryRun: true });
+
+  await runRepoSettingsHarden({
+    repos: [repo],
+    service_accounts: ["VibeCoderST"],
+  }, h.deps);
+
+  assertEquals(attempted, []);
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  for (
+    const kind of [
+      "default-branch-approval",
+      "merge-commit-allowed",
+      "fleet-account-write",
+    ]
+  ) {
+    assertStringIncludes(line, kind);
+  }
 });

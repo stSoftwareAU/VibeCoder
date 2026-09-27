@@ -25,6 +25,14 @@
  *    but never on a branch that takes direct pushes, where a pull_request
  *    rule would refuse every push — that is reported for the owner instead.
  *  - code-owner review (`requireCodeOwnerReview`) — opt-in, separately.
+ *  - merge commits allowed (Issue #2690), so a milestone sync PR lands as a
+ *    real merge commit and the milestone branch reads level afterwards,
+ *    with the default branch kept squash-only by its own ruleset's
+ *    `allowed_merge_methods: ["squash"]` — written first, and only into a
+ *    ruleset that targets the default branch alone.
+ *  - each fleet account (`fleetAccounts`) at write, never admin or
+ *    maintain (Issue #2690); an organisation owner is left to the caller to
+ *    report, since no repository setting can lower it.
  *
  * Every step is planned from the CURRENT settings (nothing is written that
  * already holds), shown in dry-run, and applied only under `--apply`.
@@ -109,6 +117,24 @@ export interface RepoSettingsSnapshot {
    * has no pull_request rule, since only then would one be added.
    */
   pushPolicy?: BranchPushPolicy;
+  /**
+   * The repository's `allow_merge_commit` (Issue #2690), from the same
+   * `repos/{repo}` read as `security`. `undefined` when not read: nothing
+   * about merge methods is planned then.
+   */
+  allowMergeCommit?: boolean;
+  /**
+   * Each fleet account's role on the repository (Issue #2690), from
+   * `collaborators/{login}/permission` `.role_name`.
+   */
+  fleetPermissions?: FleetPermission[];
+}
+
+/** One fleet account's repository role (Issue #2690). */
+export interface FleetPermission {
+  login: string;
+  /** `admin`, `maintain`, `write`, `triage`, `read` or `none`. */
+  role: string;
 }
 
 /** One branch ruleset, as the rulesets API returns it. */
@@ -135,6 +161,9 @@ export interface HardenStep {
     | "secret-scanning"
     | "ruleset-reviews"
     | "default-branch-approval"
+    | "default-branch-squash-only"
+    | "merge-commit-allowed"
+    | "fleet-account-write"
     | "milestone-branch-create";
   /** What the step closes. */
   title: string;
@@ -152,6 +181,11 @@ export interface HardenStep {
    * sent.
    */
   held?: { status: "skipped" | "failed"; detail: string };
+  /**
+   * Steps this one needs (Issue #2690): when any step of these kinds failed
+   * or was held earlier in the run, this one is skipped, never written.
+   */
+  dependsOn?: readonly HardenStep["kind"][];
 }
 
 /** Options for {@link planRepoSettingsHardening}. */
@@ -165,6 +199,17 @@ export interface PlanOptions {
    */
   requireCodeOwnerReview?: boolean;
   defaultBranch: string;
+  /**
+   * Fleet logins that own the repository's organisation (Issue #2690): an
+   * owner is admin everywhere and no repository write can lower that, so
+   * they are reported once by the caller and never written here.
+   */
+  orgOwners?: readonly string[];
+  /**
+   * The login setup runs as (Issue #2690). Lowering it would take away the
+   * admin the rest of the run needs, so it is reported instead.
+   */
+  setupLogin?: string;
 }
 
 const GITHUB_OWNED = new Set(["actions", "github"]);
@@ -534,8 +579,13 @@ export function planRepoSettingsHardening(
   }
   // The approval step comes first: when it adds the pull_request rule, the
   // code-owner step below re-reads the live ruleset and finds it there.
-  const approval = planDefaultBranchApproval(snapshot, options.defaultBranch);
-  if (approval) steps.push(approval);
+  const pullRequestSteps = planDefaultBranchPullRequest(
+    snapshot,
+    options.defaultBranch,
+  );
+  steps.push(...pullRequestSteps);
+  const mergeCommit = planMergeCommitAllowed(snapshot, pullRequestSteps);
+  if (mergeCommit) steps.push(mergeCommit);
   const pr = snapshot.rules?.find((r) => r.type === "pull_request")
     ?.parameters;
   if (
@@ -606,6 +656,7 @@ export function planRepoSettingsHardening(
     });
   }
 
+  steps.push(...planFleetAccountWrite(snapshot, options));
   return steps;
 }
 
@@ -679,68 +730,133 @@ const APPROVAL_WARNING =
   "Every PR into the default branch — the fleet's included — now waits for an approving review (/review-fleet-prs or the owner) before it merges (Issue #2680).";
 
 /**
- * Plan one required approving review on the default branch (Issue #2680).
+ * Plan the default branch's pull_request rule (Issues #2680, #2690): one
+ * required approving review, and — once merge commits are allowed on the
+ * repository, or about to be — squash as the only merge method, so the
+ * milestone sync's merge commits never reach the default branch.
  *
  * Nothing is planned when the branch already needs an approval (the
- * strictest pull_request rule decides, as GitHub does) or when the rules or
- * rulesets could not be read. Otherwise, in order of preference:
+ * strictest pull_request rule decides, as GitHub does) and is already
+ * squash-only, or when the rules or rulesets could not be read. Otherwise,
+ * in order of preference, the change goes into:
  *
- *  1. **Raise** a pull_request rule below one in the repository ruleset that
- *     carries it (the worker's own first), echoing everything else.
- *  2. **Add** a pull_request rule to the worker's own ruleset (raising the
- *     one it has instead, so a rule is never duplicated).
- *  3. **Create** the worker's own ruleset holding just that rule. It shares
+ *  1. the repository ruleset whose pull_request rule the branch already
+ *     carries (the worker's own first), echoing everything else;
+ *  2. the worker's own ruleset, gaining a pull_request rule;
+ *  3. a new worker ruleset holding just that rule. It shares
  *     {@link VIBE_RULESET_NAME} with the default-branch ruleset sync, which
  *     carries a rule it does not model through its updates and never
  *     creates a second ruleset of that name — so the two never fight.
  *
+ * Squash-only is written only into a ruleset that targets the default
+ * branch alone (Issue #2690): a pull_request rule that also covers the
+ * milestone branches would refuse the sync's merge commits there. When the
+ * approval and the squash-only change land in one ruleset they are one
+ * write, so neither overwrites the other.
+ *
  * Adding a pull_request rule where there was none refuses every direct push,
- * so 2 and 3 are held unless {@link RepoSettingsSnapshot.pushPolicy} says
- * the branch is PR-only: a direct-push or opted-out branch is a reported
- * skip, and an unreadable policy a failure — never a lock on uncertainty.
- * A human ruleset without a pull_request rule is never given one.
+ * so that is held unless {@link RepoSettingsSnapshot.pushPolicy} says the
+ * branch is PR-only: a direct-push or opted-out branch is a reported skip,
+ * and an unreadable policy a failure — never a lock on uncertainty. A human
+ * ruleset without a pull_request rule is never given one.
  */
-export function planDefaultBranchApproval(
+export function planDefaultBranchPullRequest(
   snapshot: RepoSettingsSnapshot,
   defaultBranch: string,
-): HardenStep | undefined {
+): HardenStep[] {
   const { rules, rulesets } = snapshot;
-  if (!rules || !rulesets) return undefined;
+  if (!rules || !rulesets) return [];
   const pullRequests = rules.filter((r) => r.type === "pull_request");
-  if (pullRequests.some((r) => approvalCount(r.parameters) >= 1)) {
-    return undefined;
-  }
+  const needApproval = !pullRequests.some((r) =>
+    approvalCount(r.parameters) >= 1
+  );
+  const needSquash = snapshot.allowMergeCommit !== undefined &&
+    !pullRequests.some((r) => isSquashOnly(r.parameters));
+  if (!needApproval && !needSquash) return [];
+
   const editable = rulesets.filter((r) =>
     (r.source_type === undefined || r.source_type === "Repository") &&
     (r.target === undefined || r.target === "branch")
   );
   const ours = editable.find((r) => r.name === VIBE_RULESET_NAME);
   const carrying = new Set(pullRequests.map((r) => r.ruleset_id));
-  const carrier = [ours, ...editable].find((r) =>
-    r !== undefined && carrying.has(r.id) &&
-    (r.rules ?? []).some((rule) => rule.type === "pull_request")
-  );
-  const title = `Require one approving review on ${defaultBranch}`;
+  const carriers = [
+    ...new Set(
+      [ours, ...editable].filter((r): r is RulesetSnapshot =>
+        r !== undefined && carrying.has(r.id) &&
+        (r.rules ?? []).some((rule) => rule.type === "pull_request")
+      ),
+    ),
+  ];
+  const approvalTarget = needApproval ? carriers[0] ?? ours ?? null : undefined;
+  const squashTarget = needSquash
+    ? carriers.find((r) => targetsOnlyDefaultBranch(r, defaultBranch)) ??
+      (ours && targetsOnlyDefaultBranch(ours, defaultBranch) ? ours : null)
+    : undefined;
 
-  // A pull_request rule already refuses direct pushes, so raising its count
+  // A pull_request rule already refuses direct pushes, so changing one
   // changes nothing about how the branch is fed. Adding the first one does,
   // so only then does the push policy decide.
-  const held = carrier || pullRequests.length > 0
+  const held = pullRequests.length > 0
     ? undefined
     : holdForPushPolicy(snapshot.pushPolicy);
+
+  // One write per ruleset; `null` is the worker ruleset still to be created.
+  const edits = new Map<
+    RulesetSnapshot | null,
+    { approval: boolean; squash: boolean }
+  >();
+  if (approvalTarget !== undefined) {
+    edits.set(approvalTarget, { approval: true, squash: false });
+  }
+  if (squashTarget !== undefined) {
+    const edit = edits.get(squashTarget) ?? { approval: false, squash: false };
+    edits.set(squashTarget, { ...edit, squash: true });
+  }
+  return [...edits].map(([target, edit]) => {
+    const step = pullRequestStep(target, edit, defaultBranch, held);
+    if (edit.squash) SQUASH_STEPS.add(step);
+    return step;
+  });
+}
+
+/** The steps that make the default branch squash-only (Issue #2690). */
+const SQUASH_STEPS = new WeakSet<HardenStep>();
+
+/** The one write that makes `edit` true of `target` (`null`: create ours). */
+function pullRequestStep(
+  target: RulesetSnapshot | null,
+  edit: { approval: boolean; squash: boolean },
+  defaultBranch: string,
+  held: HardenStep["held"],
+): HardenStep {
+  const wants = [
+    ...(edit.approval ? ["one approving review"] : []),
+    ...(edit.squash ? ["squash-only merges"] : []),
+  ].join(" and ");
   const common = {
-    kind: "default-branch-approval" as const,
-    warning: APPROVAL_WARNING,
+    kind: edit.approval
+      ? "default-branch-approval" as const
+      : "default-branch-squash-only" as const,
+    ...(edit.approval ? { warning: APPROVAL_WARNING } : {}),
     ...(held ? { held } : {}),
   };
-  const target = carrier ?? ours;
+  const newRule: RulesetRule = {
+    ...APPROVAL_PULL_REQUEST_RULE,
+    parameters: {
+      ...APPROVAL_PULL_REQUEST_RULE.parameters,
+      ...(edit.squash ? SQUASH_ONLY : {}),
+    },
+  };
   if (target) {
     const rules = target.rules ?? [];
     const raise = rules.some((rule) => rule.type === "pull_request");
     return {
       ...common,
-      title: `${title} (ruleset '${target.name ?? target.id}': ${
-        raise ? "raise its pull_request rule to one" : "add a pull_request rule"
+      title: `Require ${wants} on ${defaultBranch} (ruleset '${
+        target.name ?? target.id
+      }': ${
+        raise ? "update its pull_request rule" : "add a pull_request rule"
       })`,
       method: "PUT",
       endpoint: `rulesets/${target.id}`,
@@ -753,18 +869,22 @@ export function planDefaultBranchApproval(
                 ...rule,
                 parameters: {
                   ...(rule.parameters ?? {}),
-                  required_approving_review_count: 1,
+                  ...(edit.approval
+                    ? { required_approving_review_count: 1 }
+                    : {}),
+                  ...(edit.squash ? SQUASH_ONLY : {}),
                 },
               }
               : rule
           )
-          : [...rules, APPROVAL_PULL_REQUEST_RULE],
+          : [...rules, newRule],
       ),
     };
   }
   return {
     ...common,
-    title: `${title} (create ruleset '${VIBE_RULESET_NAME}')`,
+    title:
+      `Require ${wants} on ${defaultBranch} (create ruleset '${VIBE_RULESET_NAME}')`,
     method: "POST",
     endpoint: "rulesets",
     body: JSON.stringify({
@@ -773,9 +893,135 @@ export function planDefaultBranchApproval(
       enforcement: "active",
       // GitHub's alias keeps the rule on the default branch if it is renamed.
       conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
-      rules: [APPROVAL_PULL_REQUEST_RULE],
+      rules: [newRule],
     }),
   };
+}
+
+/** The pull_request parameter that keeps a branch squash-only (#2690). */
+const SQUASH_ONLY = { allowed_merge_methods: ["squash"] };
+
+/**
+ * Whether a pull_request rule allows squash alone (Issue #2690). GitHub
+ * applies the strictest of the rules on a branch, so one such rule is
+ * enough.
+ */
+function isSquashOnly(parameters: Record<string, unknown> | undefined) {
+  const methods = parameters?.allowed_merge_methods;
+  return Array.isArray(methods) && methods.length > 0 &&
+    methods.every((m) => m === "squash");
+}
+
+/**
+ * Whether `ruleset` targets the default branch and nothing else (Issue
+ * #2690): only there may squash-only go, or it would refuse the milestone
+ * sync's merge commits on whatever else the ruleset covers.
+ */
+function targetsOnlyDefaultBranch(
+  ruleset: RulesetSnapshot,
+  defaultBranch: string,
+): boolean {
+  const include: unknown = ruleset.conditions?.ref_name?.include;
+  if (!Array.isArray(include) || include.length === 0) return false;
+  return include.every((ref) =>
+    ref === "~DEFAULT_BRANCH" || ref === `refs/heads/${defaultBranch}`
+  );
+}
+
+/**
+ * Allow merge commits on the repository (Issue #2690), so a milestone sync
+ * PR lands as a real merge commit and the milestone branch reads level
+ * afterwards. A squashed sync leaves the default branch outside the
+ * milestone branch's history for ever; only an admin bypass ever levelled
+ * one.
+ *
+ * Planned only while the default branch stays squash-only: it runs after
+ * the step that makes it so and is skipped when that step failed. When the
+ * default branch cannot be made squash-only (a direct-push branch the owner
+ * has not decided on), merge commits stay off and the reason is reported.
+ */
+function planMergeCommitAllowed(
+  snapshot: RepoSettingsSnapshot,
+  pullRequestSteps: readonly HardenStep[],
+): HardenStep | undefined {
+  if (snapshot.allowMergeCommit !== false) return undefined;
+  const squash = pullRequestSteps.find((s) => SQUASH_STEPS.has(s));
+  const alreadySquashOnly = (snapshot.rules ?? []).some((r) =>
+    r.type === "pull_request" && isSquashOnly(r.parameters)
+  );
+  const step: HardenStep = {
+    kind: "merge-commit-allowed",
+    title:
+      "Allow merge commits, so milestone sync PRs land as merge commits (the default branch stays squash-only)",
+    method: "PATCH",
+    endpoint: "",
+    body: JSON.stringify({ allow_merge_commit: true }),
+  };
+  if (squash?.held || (!squash && !alreadySquashOnly)) {
+    return {
+      ...step,
+      held: {
+        status: "skipped",
+        detail: "merge commits left off: the default branch cannot be " +
+          `kept squash-only${
+            squash?.held ? ` (${squash.held.detail})` : ""
+          }, so milestone sync PRs still squash`,
+      },
+    };
+  }
+  return squash ? { ...step, dependsOn: [squash.kind] } : step;
+}
+
+/** A GitHub login: letters, digits and single hyphens, at most 39. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+
+/** Roles above write, which a fleet account must not hold (Issue #2690). */
+const ABOVE_WRITE = new Set(["admin", "maintain"]);
+
+/**
+ * Set each fleet account's repository role to write (Issue #2690): the
+ * fleet opens branches, pushes, labels and merges through PRs, all of
+ * which write allows, and an admin fleet account bypasses the very rulesets
+ * that keep its work reviewed.
+ *
+ * An organisation owner is admin on every repository whatever its
+ * repository role says, so it is never written here — the caller reports it
+ * once with the organisation setting to change. The login setup runs as is
+ * never lowered mid-run. An account below write is not written either: the
+ * collaborator precheck reports and invites it (Issue #2326).
+ */
+function planFleetAccountWrite(
+  snapshot: RepoSettingsSnapshot,
+  options: PlanOptions,
+): HardenStep[] {
+  const owners = new Set(
+    (options.orgOwners ?? []).map((l) => l.toLowerCase()),
+  );
+  const steps: HardenStep[] = [];
+  for (const { login, role } of snapshot.fleetPermissions ?? []) {
+    if (!ABOVE_WRITE.has(role) || owners.has(login.toLowerCase())) continue;
+    const step: HardenStep = {
+      kind: "fleet-account-write",
+      title: `Set fleet account ${login} to write (was ${role})`,
+      method: "PUT",
+      endpoint: `collaborators/${login}`,
+      body: JSON.stringify({ permission: "push" }),
+    };
+    steps.push(
+      login.toLowerCase() === options.setupLogin?.toLowerCase()
+        ? {
+          ...step,
+          held: {
+            status: "skipped",
+            detail: `${login} is the login setup runs as — lowering it ` +
+              "would take away the admin this run needs; run setup as " +
+              "another admin",
+          },
+        }
+        : step,
+    );
+  }
+  return steps;
 }
 
 /** Outcome of one step. */
@@ -804,6 +1050,18 @@ export async function applyRepoSettingsPlan(
       out.push({ step, status: step.held.status, detail: step.held.detail });
       continue;
     }
+    const unmet = out.find((r) =>
+      step.dependsOn?.includes(r.step.kind) &&
+      r.status !== "applied" && r.status !== "planned"
+    );
+    if (unmet) {
+      out.push({
+        step,
+        status: "skipped",
+        detail: `not attempted: ${unmet.step.kind} did not apply`,
+      });
+      continue;
+    }
     if (!options.apply) {
       out.push({ step, status: "planned" });
       continue;
@@ -812,6 +1070,10 @@ export async function applyRepoSettingsPlan(
       // Rulesets are updated by id, not by branch: resolve the ruleset that
       // targets the default branch and PUT its pull_request rule.
       out.push(await applyRulesetReviews(repo, step, options.ghCommandFn));
+      continue;
+    }
+    if (step.kind === "fleet-account-write") {
+      out.push(await applyFleetAccountWrite(repo, step, options.ghCommandFn));
       continue;
     }
     const endpoint = step.endpoint
@@ -864,6 +1126,44 @@ async function ghWrite(
     await gh([...args, "--input", file]);
   } finally {
     await Deno.remove(file).catch(() => {});
+  }
+}
+
+/**
+ * Set a fleet account to write, then read its role back (Issue #2690). A
+ * repository write cannot lower admin that a team or the organisation
+ * grants, so a role still above write is a failure naming where to look,
+ * never an "applied" that did nothing.
+ */
+async function applyFleetAccountWrite(
+  repo: string,
+  step: HardenStep,
+  gh: GhCommandFn,
+): Promise<HardenResult> {
+  const login = step.endpoint.replace(/^collaborators\//, "");
+  try {
+    await ghWrite(gh, step.method, `repos/${repo}/${step.endpoint}`, step.body);
+    const after = JSON.parse(
+      await gh(["api", `repos/${repo}/collaborators/${login}/permission`]),
+    ) as { role_name?: unknown };
+    const role = String(after.role_name ?? "unknown");
+    if (ABOVE_WRITE.has(role)) {
+      return {
+        step,
+        status: "failed",
+        detail: `${login} is still ${role} after the write: the role comes ` +
+          `from a team or the organisation (Settings → Collaborators and ` +
+          `teams on ${repo}, or the organisation's People page), so change ` +
+          `it there`,
+      };
+    }
+    return { step, status: "applied" };
+  } catch (err) {
+    return {
+      step,
+      status: "failed",
+      detail: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -1102,6 +1402,15 @@ export interface HardenRepoOptions {
   extraCoordinates?: readonly string[];
   /** Test seam: the default-branch disk cache (defaults to the worker's). */
   defaultBranchCachePath?: string;
+  /**
+   * Fleet logins (`fleet_pr_authors` ∪ `service_accounts`) to hold at write
+   * (Issue #2690). Absent: no fleet account is read or written.
+   */
+  fleetAccounts?: readonly string[];
+  /** Fleet logins that own the organisation: reported by the caller. */
+  orgOwners?: readonly string[];
+  /** The login setup runs as, never lowered mid-run. */
+  setupLogin?: string;
 }
 
 /** What {@link hardenRepo} found and did. */
@@ -1190,6 +1499,7 @@ async function hardenRepoInto(
     security_and_analysis?: RepoSettingsSnapshot["security"];
     visibility?: string;
     private?: boolean;
+    allow_merge_commit?: boolean;
   }>("secret-scanning", `repos/${repo}`);
   const snapshot: RepoSettingsSnapshot = {
     workflow: await read(
@@ -1203,6 +1513,10 @@ async function hardenRepoInto(
     security: repoInfo?.security_and_analysis,
     visibility: repoInfo?.visibility,
     private: repoInfo?.private,
+    // Only an admin read carries it; anything else plans no merge change.
+    ...(typeof repoInfo?.allow_merge_commit === "boolean"
+      ? { allowMergeCommit: repoInfo.allow_merge_commit }
+      : {}),
     rules: await read(
       "ruleset-reviews",
       `repos/${repo}/rules/branches/${encodeURIComponent(branch)}`,
@@ -1244,6 +1558,33 @@ async function hardenRepoInto(
     );
   }
 
+  // Each fleet account's role (Issue #2690). A login that is not a GitHub
+  // login never reaches an API path.
+  if (options.fleetAccounts && options.fleetAccounts.length > 0) {
+    const permissions: FleetPermission[] = [];
+    for (const login of new Set(options.fleetAccounts)) {
+      const endpoint = `repos/${repo}/collaborators/${login}/permission`;
+      if (!GITHUB_LOGIN.test(login)) {
+        results.push(
+          readFailure(
+            "fleet-account-write",
+            `collaborators/${JSON.stringify(login)}`,
+            "not a GitHub login — refusing to put it in an API path",
+          ),
+        );
+        continue;
+      }
+      const value = await read<{ role_name?: unknown }>(
+        "fleet-account-write",
+        endpoint,
+      );
+      if (typeof value?.role_name === "string") {
+        permissions.push({ login, role: value.role_name });
+      }
+    }
+    snapshot.fleetPermissions = permissions;
+  }
+
   // The allow-list is built from the default branch's workflows, read
   // through the API (Issue #2685), so no checkout is needed.
   let allowListFault: string | undefined;
@@ -1275,6 +1616,8 @@ async function hardenRepoInto(
     thirdPartyPatterns: buildAllowedActionPatterns(outcome.coordinates),
     requireCodeOwnerReview: options.requireCodeOwnerReview === true,
     defaultBranch: branch,
+    ...(options.orgOwners ? { orgOwners: options.orgOwners } : {}),
+    ...(options.setupLogin ? { setupLogin: options.setupLogin } : {}),
   });
   const allowListStep = plan.find((s) => s.kind === "actions-allow-list");
   const runnable = allowListFault

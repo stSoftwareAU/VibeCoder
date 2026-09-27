@@ -10,6 +10,7 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import { parseAllowActionArg } from "../commands/repo_settings_harden.ts";
+import { buildMilestoneRulesetBody } from "../lib/repo_rulesets.ts";
 import {
   allowListCovers,
   applyRepoSettingsPlan,
@@ -1515,4 +1516,313 @@ Deno.test("hardenRepo - a dry run plans the approval create without writing (Iss
     report.results.map((r) => [r.step.kind, r.status]),
     [["default-branch-approval", "planned"]],
   );
+});
+
+// ---------------------------------------------------------------------------
+// Milestone sync converges without admin; fleet accounts at write (Issue #2690)
+// ---------------------------------------------------------------------------
+
+/** A default-branch ruleset whose pull_request rule allows every method. */
+const ALL_METHODS_RULESET: TestRuleset = {
+  id: 40,
+  name: "Develop",
+  target: "branch",
+  enforcement: "active",
+  source_type: "Repository",
+  bypass_actors: [
+    { actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" },
+  ],
+  conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+  rules: [
+    { type: "deletion" },
+    {
+      type: "pull_request",
+      parameters: {
+        allowed_merge_methods: ["merge", "squash", "rebase"],
+        dismiss_stale_reviews_on_push: true,
+        require_code_owner_review: false,
+        require_last_push_approval: false,
+        required_approving_review_count: 1,
+        required_review_thread_resolution: false,
+      },
+    },
+    {
+      type: "required_status_checks",
+      parameters: { required_status_checks: [{ context: "quality" }] },
+    },
+  ],
+};
+
+/** The worker's milestone ruleset: no pull_request rule (Issue #2690). */
+const MILESTONE_RULESET: TestRuleset = {
+  id: 41,
+  name: "Vibe Coder milestone branches",
+  target: "branch",
+  enforcement: "active",
+  source_type: "Repository",
+  bypass_actors: [],
+  conditions: { ref_name: { include: [MILESTONE_REF_PATTERN], exclude: [] } },
+  rules: [
+    { type: "deletion" },
+    {
+      type: "required_status_checks",
+      parameters: {
+        do_not_enforce_on_create: true,
+        required_status_checks: [{ context: "quality" }],
+      },
+    },
+  ],
+};
+
+function mergeSnapshot(
+  rulesets: readonly TestRuleset[],
+  allowMergeCommit: boolean | undefined,
+  extra: Partial<RepoSettingsSnapshot> = {},
+): RepoSettingsSnapshot {
+  return {
+    rules: branchRulesOf(
+      rulesets.filter((r) => r.id !== MILESTONE_RULESET.id),
+    ),
+    rulesets: structuredClone(rulesets) as RepoSettingsSnapshot["rulesets"],
+    allowMergeCommit,
+    pushPolicy: { kind: "pr-only", sampled: 20 },
+    ...extra,
+  };
+}
+
+function pullRequestParams(body: string | undefined) {
+  const parsed = JSON.parse(body ?? "{}") as {
+    rules: Array<{ type: string; parameters?: Record<string, unknown> }>;
+  };
+  return parsed.rules.filter((r) => r.type === "pull_request").map((r) =>
+    r.parameters
+  );
+}
+
+Deno.test("planRepoSettingsHardening - a squash-only repo gets merge commits on and its default branch kept squash-only by its own ruleset, everything else echoed (Issue #2690)", () => {
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([ALL_METHODS_RULESET, MILESTONE_RULESET], false),
+    PLAN_OPTS,
+  );
+  assertEquals(plan.map((s) => s.kind), [
+    "default-branch-squash-only",
+    "merge-commit-allowed",
+  ]);
+  const squash = plan[0]!;
+  assertEquals(squash.method, "PUT");
+  assertEquals(squash.endpoint, "rulesets/40");
+  const expected = structuredClone(ALL_METHODS_RULESET.rules);
+  expected[1]!.parameters!.allowed_merge_methods = ["squash"];
+  assertEquals(JSON.parse(squash.body ?? "{}"), {
+    name: ALL_METHODS_RULESET.name,
+    target: "branch",
+    enforcement: "active",
+    bypass_actors: ALL_METHODS_RULESET.bypass_actors,
+    conditions: ALL_METHODS_RULESET.conditions,
+    rules: expected,
+  });
+  const merge = plan[1]!;
+  assertEquals(merge.method, "PATCH");
+  assertEquals(merge.endpoint, "");
+  assertEquals(JSON.parse(merge.body ?? "{}"), { allow_merge_commit: true });
+  assertEquals(merge.held, undefined);
+  // The milestone ruleset is never given a pull_request rule.
+  assert(!plan.some((s) => s.endpoint === "rulesets/41"));
+});
+
+Deno.test("planRepoSettingsHardening - a default branch already squash-only plans only the merge-commit switch (Issue #2690)", () => {
+  const squashOnly = structuredClone(ALL_METHODS_RULESET);
+  squashOnly.rules[1]!.parameters!.allowed_merge_methods = ["squash"];
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([squashOnly, MILESTONE_RULESET], false),
+    PLAN_OPTS,
+  );
+  assertEquals(plan.map((s) => s.kind), ["merge-commit-allowed"]);
+});
+
+Deno.test("planRepoSettingsHardening - merge commits already on still keeps the default branch squash-only; converged plans nothing (Issue #2690)", () => {
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([ALL_METHODS_RULESET, MILESTONE_RULESET], true),
+    PLAN_OPTS,
+  );
+  assertEquals(plan.map((s) => s.kind), ["default-branch-squash-only"]);
+
+  const squashOnly = structuredClone(ALL_METHODS_RULESET);
+  squashOnly.rules[1]!.parameters!.allowed_merge_methods = ["squash"];
+  assertEquals(
+    planRepoSettingsHardening(
+      mergeSnapshot([squashOnly, MILESTONE_RULESET], true),
+      PLAN_OPTS,
+    ),
+    [],
+  );
+});
+
+Deno.test("planRepoSettingsHardening - an unread merge setting plans no merge-method change (Issue #2690)", () => {
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([ALL_METHODS_RULESET], undefined),
+    PLAN_OPTS,
+  );
+  assertEquals(plan, []);
+});
+
+Deno.test("planRepoSettingsHardening - approval and squash-only on one ruleset are one write, never two that overwrite each other (Issue #2690)", () => {
+  const zero = structuredClone(ALL_METHODS_RULESET);
+  zero.rules[1]!.parameters!.required_approving_review_count = 0;
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([zero], false),
+    PLAN_OPTS,
+  );
+  assertEquals(plan.map((s) => s.kind), [
+    "default-branch-approval",
+    "merge-commit-allowed",
+  ]);
+  assertEquals(pullRequestParams(plan[0]!.body), [{
+    ...zero.rules[1]!.parameters,
+    required_approving_review_count: 1,
+    allowed_merge_methods: ["squash"],
+  }]);
+});
+
+Deno.test("planRepoSettingsHardening - a pull_request rule that also covers other branches is not made squash-only; the worker's own default-branch ruleset carries it (Issue #2690)", () => {
+  const broad = structuredClone(ALL_METHODS_RULESET);
+  broad.conditions = { ref_name: { include: ["~ALL"], exclude: [] } };
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([broad], false),
+    PLAN_OPTS,
+  );
+  assertEquals(plan.map((s) => [s.kind, s.method, s.endpoint]), [
+    ["default-branch-squash-only", "POST", "rulesets"],
+    ["merge-commit-allowed", "PATCH", ""],
+  ]);
+  const body = JSON.parse(plan[0]!.body ?? "{}");
+  assertEquals(body.name, "Vibe Coder default branch");
+  assertEquals(body.conditions, {
+    ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] },
+  });
+  assertEquals(
+    pullRequestParams(plan[0]!.body)[0]?.allowed_merge_methods,
+    ["squash"],
+  );
+});
+
+Deno.test("planRepoSettingsHardening - a direct-push default branch that cannot be kept squash-only keeps merge commits off, reported (Issue #2690)", () => {
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([CHECKS_ONLY_RULESET as TestRuleset], false, {
+      pushPolicy: {
+        kind: "direct-push",
+        sha: "b".repeat(40),
+        subject: "Auto commit models",
+        detail: "Auto commit models",
+      },
+    }),
+    PLAN_OPTS,
+  );
+  const merge = plan.find((s) => s.kind === "merge-commit-allowed");
+  assertEquals(merge?.held?.status, "skipped");
+  assert(
+    merge?.held?.detail.includes("squash-only") ?? false,
+    merge?.held?.detail,
+  );
+});
+
+Deno.test("applyRepoSettingsPlan - merge commits are not switched on when keeping the default branch squash-only failed (Issue #2690)", async () => {
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([ALL_METHODS_RULESET], false),
+    PLAN_OPTS,
+  );
+  const attempted: string[] = [];
+  const results = await applyRepoSettingsPlan("o/r", plan, {
+    apply: true,
+    ghCommandFn: (args) => {
+      attempted.push(`${args[2]} ${args[3]}`);
+      return args[3]?.includes("rulesets")
+        ? Promise.reject(new Error("HTTP 422: refused"))
+        : Promise.resolve("");
+    },
+  });
+  assertEquals(attempted, ["PUT repos/o/r/rulesets/40"]);
+  assertEquals(results.map((r) => [r.step.kind, r.status]), [
+    ["default-branch-squash-only", "failed"],
+    ["merge-commit-allowed", "skipped"],
+  ]);
+});
+
+Deno.test("planRepoSettingsHardening - a fleet account above write is set to write; write, org owners and the setup login itself are not written (Issue #2690)", () => {
+  const plan = planRepoSettingsHardening({
+    fleetPermissions: [
+      { login: "VibeCoderST", role: "admin" },
+      { login: "maintainer-bot", role: "maintain" },
+      { login: "writer-bot", role: "write" },
+      { login: "stservice", role: "admin" },
+      { login: "operator", role: "admin" },
+    ],
+  }, {
+    ...PLAN_OPTS,
+    orgOwners: ["stservice"],
+    setupLogin: "operator",
+  });
+  const fleet = plan.filter((s) => s.kind === "fleet-account-write");
+  assertEquals(
+    fleet.map((s) => [s.method, s.endpoint, s.body, s.held?.status]),
+    [
+      ["PUT", "collaborators/VibeCoderST", '{"permission":"push"}', undefined],
+      [
+        "PUT",
+        "collaborators/maintainer-bot",
+        '{"permission":"push"}',
+        undefined,
+      ],
+      ["PUT", "collaborators/operator", '{"permission":"push"}', "skipped"],
+    ],
+  );
+});
+
+Deno.test("hardenRepo - a fleet account set to write is re-read; admin that survives the write fails naming where it comes from (Issue #2690)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/collaborators/VibeCoderST/permission`] = {
+    permission: "admin",
+    role_name: "admin",
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+    fleetAccounts: ["VibeCoderST"],
+  });
+  assertEquals(writes.map((w) => [w.method, w.endpoint, w.body]), [
+    ["PUT", `repos/${repo}/collaborators/VibeCoderST`, { permission: "push" }],
+  ]);
+  const fleet = report.results.filter((r) =>
+    r.step.kind === "fleet-account-write"
+  );
+  assertEquals(fleet.map((r) => r.status), ["failed"]);
+  assert(fleet[0]?.detail?.includes("team"), fleet[0]?.detail);
+});
+
+Deno.test("hardenRepo - an invalid fleet login is never put in an API path (Issue #2690)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes, reads } = makeGh(hardenedRoutes(repo));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+    fleetAccounts: ["../../evil"],
+  });
+  assertEquals(writes, []);
+  assert(!reads.some((r) => r.includes("evil")), reads.join("\n"));
+  assertEquals(
+    report.results.filter((r) => r.step.kind === "fleet-account-write")
+      .map((r) => r.status),
+    ["failed"],
+  );
+});
+
+Deno.test("buildMilestoneRulesetBody - a milestone ruleset carries no rule that refuses a merge commit, so a sync PR lands as one (Issue #2690)", () => {
+  const body = buildMilestoneRulesetBody("m", [{ context: "quality" }]);
+  const types = body.rules.map((r) => r.type);
+  assert(!types.includes("pull_request"), types.join(","));
+  assert(!types.includes("required_linear_history"), types.join(","));
 });

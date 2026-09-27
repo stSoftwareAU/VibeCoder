@@ -12,6 +12,7 @@
  * Subcommands:
  *   prerequisites      Check all prerequisites
  *   config             Write config from VIBE_* env vars
+ *   token-scope-preflight  Check the fleet token has repo, workflow and read:org
  *   agent-providers    Print the configured coding-agent provider ids
  *   launchagent        Setup macOS LaunchAgent
  *   scheduled-task     Register the Windows Task Scheduler entry
@@ -119,7 +120,12 @@ import { syncCodeowners } from "./codeowners_sync.ts";
 import { runUpdateModeSetup } from "./update_mode_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { runGhOrThrow } from "../lib/gh_spawn.ts";
-import { expandHome } from "./setup_command_runner.ts";
+import { expandHome, runSetupCommand } from "./setup_command_runner.ts";
+import {
+  assessFleetTokenScopes,
+  FLEET_TOKEN_SCOPES,
+  fleetTokenScopeRefreshCommand,
+} from "../lib/gh_auth.ts";
 import { readConfiguredRunMode } from "../commands/run_mode.ts";
 
 // ── Colour helpers ──────────────────────────────────────────────────────
@@ -1433,6 +1439,94 @@ async function runBackfillIdleTaskLabels(configPath: string): Promise<boolean> {
   }
 }
 
+/** Seams for {@link reportFleetTokenScopes}. */
+export interface TokenScopeDeps {
+  /** Runs `gh` with `GH_CONFIG_DIR` set to `ghConfigDir` when given. */
+  runGh(
+    args: string[],
+    ghConfigDir?: string,
+  ): Promise<{ success: boolean; output: string }>;
+  log(line: string): void;
+  warn(line: string): void;
+}
+
+/**
+ * Check the fleet token on this host has the scopes the fleet needs
+ * (Issue #2690) and print the exact command that adds any it lacks. Read
+ * only: `gh auth status` prints a masked token, and only its prefix is read.
+ * `false` when a scope is missing or the token cannot be read.
+ */
+export async function reportFleetTokenScopes(
+  ghConfigDir: string | undefined,
+  deps: TokenScopeDeps,
+): Promise<boolean> {
+  const where = ghConfigDir ? `the token in ${ghConfigDir}` : "the gh token";
+  const status = await deps.runGh(
+    ["auth", "status", "-h", "github.com"],
+    ghConfigDir,
+  );
+  if (!status.success) {
+    deps.warn(
+      `Could not read ${where}: gh auth status failed. Log it in with ` +
+        `${
+          ghConfigDir ? `GH_CONFIG_DIR="${ghConfigDir}" ` : ""
+        }gh auth login -h github.com -s ${FLEET_TOKEN_SCOPES.join(",")}`,
+    );
+    return false;
+  }
+  const assessment = assessFleetTokenScopes(status.output);
+  if (assessment.kind === "fine-grained") {
+    deps.log(
+      `${where} is fine-grained or an app token, with no scope list: make ` +
+        "sure it grants Contents, Pull requests, Issues and Workflows " +
+        "(read and write) on every monitored repository, and Members (read) " +
+        "on the organisation.",
+    );
+    return true;
+  }
+  if (assessment.kind === "unknown") {
+    deps.log(`gh printed no scope list for ${where}; scopes not checked.`);
+    return true;
+  }
+  if (assessment.missing.length === 0) {
+    deps.log(`${where} has the ${FLEET_TOKEN_SCOPES.join(", ")} scopes.`);
+    return true;
+  }
+  deps.warn(
+    `${where} lacks the ${assessment.missing.join(", ")} scope(s)` +
+      (assessment.missing.includes("workflow")
+        ? ": pushes that create or update .github/workflows/ are rejected " +
+          "and the worker skips workflow issues"
+        : "") +
+      `. Fix: ${
+        fleetTokenScopeRefreshCommand(assessment.missing, ghConfigDir)
+      } (then re-run setup so gh/hosts.yml is re-provisioned).`,
+  );
+  return false;
+}
+
+/** The `token-scope-preflight` subcommand (Issue #2690). */
+async function runTokenScopePreflight(configPath: string): Promise<boolean> {
+  try {
+    const config = await loadExistingConfig(configPath);
+    return await reportFleetTokenScopes(expandHome(config.gh_config_dir), {
+      runGh: async (args, dir) => {
+        const r = await runSetupCommand(["gh", ...args], dir);
+        return { success: r.success, output: `${r.stdout}\n${r.stderr}` };
+      },
+      log: printSuccess,
+      warn: printWarning,
+    });
+  } catch (error) {
+    printWarning(
+      `Token-scope preflight failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return false;
+  }
+}
+
 /**
  * Harden every monitored repo's GitHub settings, writing only what drifted
  * (Issue #2628). Non-fatal: `false` when a repo failed.
@@ -1701,6 +1795,8 @@ async function runRepos(
  * would write for real, so it refuses the flag rather than ignore it.
  */
 export const DRY_RUN_SUBCOMMANDS: readonly string[] = [
+  // Read only: it writes nothing, dry run or not (Issue #2690).
+  "token-scope-preflight",
   "label-sync",
   "label-colour-reconcile",
   "best-practices-relabel",
@@ -1727,6 +1823,9 @@ Subcommands:
   prerequisites   Check all prerequisites (--auto-install consents in advance
                   to every offered install — Issue #33)
   config          Write config from VIBE_* env vars
+  token-scope-preflight  Check the fleet token (gh_config_dir) has the repo,
+                  workflow and read:org scopes, printing the gh auth refresh
+                  command for any it lacks (read only — Issue #2690)
   agent-providers Print the configured coding-agent provider ids, one per line
                   (Issue #730 — setup.sh runs each one's credential flow)
   launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
@@ -1830,6 +1929,9 @@ if (import.meta.main) {
         break;
       case "agent-providers":
         ok = await runAgentProviders(configPath);
+        break;
+      case "token-scope-preflight":
+        ok = await runTokenScopePreflight(configPath);
         break;
       case "launchagent":
         ok = status

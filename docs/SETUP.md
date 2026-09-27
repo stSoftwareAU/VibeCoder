@@ -351,7 +351,26 @@ For each monitored repository, in order:
      `pull_request` rule comes from — found by the rule's `ruleset_id`,
      never by the ruleset's name (Issue #2685). A CODEOWNERS file
      written in step 1 reaches the default branch with the next worker PR,
-     and the setup run after that turns the review on.
+     and the setup run after that turns the review on;
+   - **merge commits are allowed** on the repository, so a milestone sync
+     PR lands as a real merge commit and the milestone branch reads level
+     afterwards without an admin bypass (Issue #2690). A squashed sync
+     leaves the default branch outside the milestone branch's history for
+     ever. The default branch stays **squash-only** through its ruleset's
+     `pull_request` rule (`allowed_merge_methods: ["squash"]`), written
+     first and only into a ruleset that targets the default branch alone,
+     so ordinary PRs are unchanged and milestone branches (which carry no
+     `pull_request` rule) accept the merge commit. A default branch that
+     cannot be kept squash-only, such as a direct-push branch, keeps merge
+     commits off and its line says so;
+   - every fleet account (`fleet_pr_authors` and `service_accounts`) is
+     set to **write** on the repository, never admin or maintain
+     (Issue #2690). Write covers everything the fleet does: branches,
+     pushes, labels, PRs and milestone-branch creation. An account that is
+     an **owner of the organisation** is admin on every repository and no
+     repository setting can lower that, so setup reports it once with the
+     setting to change (Organisation → People → the account → Change role →
+     Member) and never changes organisation membership itself.
 3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
    run fixed are commented on and closed.
 
@@ -1463,8 +1482,19 @@ flowchart TD
     style F2 fill:#9d0208,stroke:#6a040f,color:#fff
 ```
 
-`setup.sh` warns when the provisioned token lacks the scope. The fix, for the
-worker account:
+Setup checks the fleet token on every run, on every host (`setup.sh` and
+`setup.ps1` both run `token-scope-preflight`, Issue #2690). It reads the
+token in `gh_config_dir` with `gh auth status` and warns when any of `repo`,
+`workflow` or `read:org` is missing (`write:org` or `admin:org` carries
+`read:org`), printing the exact command that adds them:
+
+```bash
+GH_CONFIG_DIR="$HOME/.config/gh-vibe" gh auth refresh -h github.com -s workflow,read:org
+```
+
+A fine-grained or GitHub App token has no scope list, so setup names the
+repository permissions it needs instead of reporting every scope missing.
+The fix, for the worker account:
 
 ```bash
 gh auth refresh -s workflow     # adds the scope to the existing login

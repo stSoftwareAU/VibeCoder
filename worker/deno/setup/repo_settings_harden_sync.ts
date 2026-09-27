@@ -15,7 +15,15 @@
  *    (it would refuse every push); its line says so for the owner to decide;
  *  - code-owner review on the Vibe ruleset, but only once CODEOWNERS is on
  *    the default branch — a ruleset demanding owners that do not exist would
- *    stop every merge.
+ *    stop every merge;
+ *  - merge commits allowed, with the default branch kept squash-only, so a
+ *    milestone sync PR lands as a merge commit and converges without an
+ *    admin bypass (Issue #2690);
+ *  - every fleet account (`fleet_pr_authors` ∪ `service_accounts`) at write,
+ *    never admin or maintain (Issue #2690). An organisation owner is admin
+ *    everywhere whatever its repository role, so it is reported ONCE per
+ *    organisation with the setting to change; setup never changes
+ *    organisation membership.
  *
  * Per repository, in order: the CODEOWNERS writer (#2627), `hardenRepo` with
  * `apply: true` (#2626), then the closer that retires fleet-filed `BP-REPO-*`
@@ -79,6 +87,8 @@ export interface RepoSettingsHardenConfig {
   repos?: string[];
   /** The fleet accounts whose audit issues the closer may close. */
   service_accounts?: string[];
+  /** Fleet PR authors; with `service_accounts`, held at write (#2690). */
+  fleet_pr_authors?: string[];
 }
 
 /** Everything the step touches, injectable. */
@@ -231,14 +241,88 @@ function formatLine(
   return parts.join("; ");
 }
 
+const UNKNOWN_LOGIN = "an unknown login";
+
 /** The login `gh` is running as, for the identity line (Issue #2685). */
 async function readLogin(gh: GhCommandFn): Promise<string> {
   try {
     const user = JSON.parse(await gh(["api", "user"])) as { login?: unknown };
-    return typeof user.login === "string" ? user.login : "an unknown login";
+    return typeof user.login === "string" ? user.login : UNKNOWN_LOGIN;
   } catch {
-    return "an unknown login";
+    return UNKNOWN_LOGIN;
   }
+}
+
+/**
+ * The fleet accounts held at write (Issue #2690): `fleet_pr_authors` ∪
+ * `service_accounts`, once each whatever the spelling.
+ */
+function fleetLogins(config: RepoSettingsHardenConfig): string[] {
+  const seen = new Map<string, string>();
+  for (
+    const login of [
+      ...(config.fleet_pr_authors ?? []),
+      ...(config.service_accounts ?? []),
+    ]
+  ) {
+    if (!seen.has(login.toLowerCase())) seen.set(login.toLowerCase(), login);
+  }
+  return [...seen.values()];
+}
+
+/**
+ * Which fleet accounts own each organisation, read once per organisation
+ * (Issue #2690). An owner is admin on every repository and no repository
+ * setting can lower that, so each is reported ONCE, with the organisation
+ * setting to change — setup never changes organisation membership. A user
+ * account, or a login that is not a member, reads as a 404: not an owner.
+ */
+function orgOwnerLookup(
+  fleetAccounts: readonly string[],
+  deps: RepoSettingsHardenDeps,
+): (org: string) => Promise<string[]> {
+  const cache = new Map<string, Promise<string[]>>();
+  const read = async (org: string): Promise<string[]> => {
+    const owners: string[] = [];
+    for (const login of fleetAccounts) {
+      try {
+        const membership = JSON.parse(
+          await deps.ghCommandFn([
+            "api",
+            `orgs/${org}/memberships/${login}`,
+          ]),
+        ) as { role?: unknown; state?: unknown };
+        if (membership.role === "admin" && membership.state === "active") {
+          owners.push(login);
+        }
+      } catch (err) {
+        if (/\b404\b|Not Found/i.test(errorMessage(err))) continue;
+        deps.warn(
+          `Could not read ${login}'s role in the ${org} organisation ` +
+            `(${errorMessage(err)}); its repository role is still checked.`,
+        );
+      }
+    }
+    for (const login of owners) {
+      deps.warn(
+        `${login} is an owner of the ${org} organisation, so it is admin on ` +
+          `every repository there and no repository setting can lower that. ` +
+          `Change it at https://github.com/orgs/${org}/people: find ${login}, ` +
+          `choose Change role, then Member. Setup never changes organisation ` +
+          `membership; once ${login} is a Member, the next setup run sets it ` +
+          `to write on each monitored repository.`,
+      );
+    }
+    return owners;
+  };
+  return (org) => {
+    let owners = cache.get(org);
+    if (!owners) {
+      owners = isValidRepoSlug(`${org}/x`) ? read(org) : Promise.resolve([]);
+      cache.set(org, owners);
+    }
+    return owners;
+  };
 }
 
 /**
@@ -271,6 +355,8 @@ export async function runRepoSettingsHarden(
   const needsAdmin: string[] = [];
 
   const login = await readLogin(deps.ghCommandFn);
+  const fleetAccounts = fleetLogins(config);
+  const ownersOf = orgOwnerLookup(fleetAccounts, deps);
   deps.log(
     `Repo-settings hardening runs as ${login}, your own gh login — not the ` +
       `fleet account in gh_config_dir, which holds write only` +
@@ -319,6 +405,9 @@ export async function runRepoSettingsHarden(
         apply: !dryRun,
         ghCommandFn: deps.ghCommandFn,
         requireCodeOwnerReview: location.state === "present",
+        fleetAccounts,
+        orgOwners: await ownersOf(repo.split("/")[0] ?? ""),
+        ...(login === UNKNOWN_LOGIN ? {} : { setupLogin: login }),
         ...(deps.defaultBranchCachePath
           ? { defaultBranchCachePath: deps.defaultBranchCachePath }
           : {}),
