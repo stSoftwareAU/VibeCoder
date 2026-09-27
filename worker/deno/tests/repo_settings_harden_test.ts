@@ -1732,6 +1732,43 @@ Deno.test("planRepoSettingsHardening - a direct-push default branch that cannot 
   );
 });
 
+Deno.test("planRepoSettingsHardening - code-owner review on a direct-push default branch with no pull_request rule is skipped, not failed", () => {
+  // Observed 2026-09-27 on GRQ-validation: main is fed by direct pushes
+  // ("Auto commit models"), so the approval step rightly held off adding a
+  // pull_request rule, and the code-owner step then reported "failed" for
+  // want of the rule the approval step had declined to add.
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([CHECKS_ONLY_RULESET as TestRuleset], false, {
+      pushPolicy: {
+        kind: "direct-push",
+        sha: "b".repeat(40),
+        subject: "Auto commit models",
+        detail: "Auto commit models",
+      },
+    }),
+    { ...PLAN_OPTS, requireCodeOwnerReview: true },
+  );
+  const review = plan.find((s) => s.kind === "ruleset-reviews");
+  assert(review, "the code-owner step is still planned, and reported");
+  assertEquals(review.held?.status, "skipped");
+  assert(
+    review.held?.detail.includes("direct-push") ?? false,
+    review.held?.detail,
+  );
+});
+
+Deno.test("planRepoSettingsHardening - code-owner review on a PR-only default branch with no pull_request rule is not held", () => {
+  // The approval step adds the pull_request rule there, and the code-owner
+  // step finds it when it re-reads the live ruleset.
+  const plan = planRepoSettingsHardening(
+    mergeSnapshot([CHECKS_ONLY_RULESET as TestRuleset], false),
+    { ...PLAN_OPTS, requireCodeOwnerReview: true },
+  );
+  const review = plan.find((s) => s.kind === "ruleset-reviews");
+  assert(review, "the code-owner step is planned");
+  assertEquals(review.held, undefined);
+});
+
 Deno.test("applyRepoSettingsPlan - merge commits are not switched on when keeping the default branch squash-only failed (Issue #2690)", async () => {
   const plan = planRepoSettingsHardening(
     mergeSnapshot([ALL_METHODS_RULESET], false),
