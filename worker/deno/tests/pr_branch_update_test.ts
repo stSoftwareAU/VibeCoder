@@ -1230,3 +1230,56 @@ Deno.test("isHostPushedBotPr - a blank author, blank host or missing commit list
     false,
   );
 });
+
+// =============================================================================
+// scanPrBranchUpdates — a blocked PR is left alone (Issue #2702)
+// =============================================================================
+
+Deno.test("scanPrBranchUpdates - never updates a PR whose review decision is CHANGES_REQUESTED (Issue #2702)", async () => {
+  // Updating a blocked PR cannot help it merge, and on GRQ#5032 the update
+  // is what moved the head underneath the owner's review. PR 12 is the
+  // other direction: the same state without the block is still updated.
+  const infos: string[] = [];
+  const deps = makeBaseDeps({
+    logger: {
+      ...makeSilentLogger(),
+      info: (message: string) => {
+        infos.push(message);
+      },
+    },
+    listPrs: async () => [
+      makePr({ number: 10, headRefName: "issue-10-a" }),
+      makePr({ number: 11, headRefName: "issue-11-b" }),
+      makePr({ number: 12, headRefName: "issue-12-c" }),
+    ],
+    fetchBranchStateBatch: async () =>
+      new Map([
+        [10, {
+          behindBy: 5,
+          mergeable: "MERGEABLE",
+          reviewDecision: "CHANGES_REQUESTED",
+        }],
+        [11, {
+          behindBy: 0,
+          mergeable: "CONFLICTING",
+          reviewDecision: "CHANGES_REQUESTED",
+        }],
+        [12, {
+          behindBy: 5,
+          mergeable: "MERGEABLE",
+          reviewDecision: "APPROVED",
+        }],
+      ]),
+  });
+
+  const result = await scanPrBranchUpdates(deps);
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.actions.map((a) => a.prNumber), [12]);
+  assertEquals(result.value.skippedCount, 2);
+  assertEquals(
+    infos.filter((message) => message.includes("CHANGES_REQUESTED")).length,
+    2,
+  );
+});
