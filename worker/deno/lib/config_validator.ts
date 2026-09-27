@@ -8,14 +8,25 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
 
-import type { ConfigFile, PinnedToolVersions, WorkerConfig } from "../types.ts";
+import type {
+  ConfigFile,
+  CopilotCodeReviewMode,
+  PinnedToolVersions,
+  Result,
+  WorkerConfig,
+} from "../types.ts";
 import { EXCLUSION_TEAM_PATTERN } from "./validation.ts";
 import {
   FLEET_LOGIN_CONFIG_KEYS,
   isBotLogin,
   resolveVibeCoderLogins,
 } from "./trust_exclusions.ts";
-import { PINNED_TOOLS, UPDATE_MODES } from "./config_defaults.ts";
+import {
+  COPILOT_CODE_REVIEW_MODES,
+  DEFAULT_COPILOT_CODE_REVIEW,
+  PINNED_TOOLS,
+  UPDATE_MODES,
+} from "./config_defaults.ts";
 
 /**
  * Validation result with structured errors and warnings.
@@ -342,6 +353,36 @@ export function validateUpdateModeSettings(
   }
 
   return errors;
+}
+
+/**
+ * Parse `copilot_code_review` (Issue #2701), failing loud on anything but
+ * the three accepted values.
+ *
+ * Only an absent key means {@link DEFAULT_COPILOT_CODE_REVIEW}: a typo read
+ * as `leave` would keep billing a host that asked for `off`, with nothing to
+ * say the setting was never understood.
+ *
+ * @param raw - The value as it appeared in `.config.json`, or `undefined`
+ * @returns The mode, or an error naming the field and the accepted values
+ */
+export function parseCopilotCodeReview(
+  raw: unknown,
+): Result<CopilotCodeReviewMode, string> {
+  if (raw === undefined) {
+    return { ok: true, value: DEFAULT_COPILOT_CODE_REVIEW };
+  }
+  if (
+    typeof raw === "string" &&
+    (COPILOT_CODE_REVIEW_MODES as readonly string[]).includes(raw)
+  ) {
+    return { ok: true, value: raw as CopilotCodeReviewMode };
+  }
+  return {
+    ok: false,
+    error: `Invalid copilot_code_review ${JSON.stringify(raw)}. ` +
+      `Accepted values: ${COPILOT_CODE_REVIEW_MODES.join(", ")}.`,
+  };
 }
 
 /**

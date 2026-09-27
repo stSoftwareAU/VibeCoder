@@ -43,7 +43,10 @@ import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
   customPromptPathResolver,
 } from "./custom_prompt_mounts.ts";
-import { validateUpdateModeSettings } from "./config_validator.ts";
+import {
+  parseCopilotCodeReview,
+  validateUpdateModeSettings,
+} from "./config_validator.ts";
 import {
   detectUnknownConfigKeys,
   formatUnknownKeyWarnings,
@@ -364,6 +367,15 @@ async function loadConfigFile(
   if (updateModeErrors.length > 0) {
     throw new Error(
       `Config file ${configPath} is invalid: ${updateModeErrors.join(" ")}`,
+    );
+  }
+
+  // Issue #2701: only setup acts on it, but a hand-edited typo fails here,
+  // naming the field, rather than reading as "leave" and billing on.
+  const copilotCodeReview = parseCopilotCodeReview(file.copilot_code_review);
+  if (!copilotCodeReview.ok) {
+    throw new Error(
+      `Config file ${configPath} is invalid: ${copilotCodeReview.error}`,
     );
   }
 
