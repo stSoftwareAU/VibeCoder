@@ -863,6 +863,12 @@ late: the deploy/publish workflows have already fired. Enforcement is
   hands-off. A default branch the fleet pushes to directly is never given a
   pull_request rule — it would refuse every push — and is reported for the
   owner instead. See [Repository settings hardening](docs/SETUP.md#repository-settings-hardening).
+- **The fleet needs no admin.** Setup allows merge commits on every
+  monitored repository and keeps the default branch squash-only through its
+  ruleset, so a milestone sync PR lands as a merge commit and converges
+  without an admin bypass (Issue #2690). Fleet accounts are held at write;
+  an organisation owner cannot be lowered per repository, so setup reports
+  it with the organisation setting to change and leaves membership alone.
 
 See [`docs/MERGE.md`](docs/MERGE.md) for the operator manual (the dual-layer
 flow diagram, visibility-aware required checks, defer-and-retry sequence,

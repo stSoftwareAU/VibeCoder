@@ -6,7 +6,13 @@
 | **Switch**       | `brief_toolchain.enabled` in a host's `.config.json`, default `false`                                                           |
 | **Bar**          | ≥ 10% lower tokens **or** cost per completed implementation run, no lower success rate, brief's own run time counted against it |
 | **First judged** | after **2 days** or **20** qualifying runs, whichever is later                                                                  |
-| **Status**       | ⚪ not started — no host named, switch off everywhere                                                                           |
+| **Status**       | 🗑️ removed on analysis before any window opened ([#2699](https://github.com/stSoftwareAU/VibeCoder/issues/2699)) — see §8       |
+
+> **Removed.** brief was taken out of the image, the config, the run stats, the
+> callback and the codebase map by
+> [#2699](https://github.com/stSoftwareAU/VibeCoder/issues/2699) before any
+> window opened. The verdict and its reasoning are in §8; the rest of this page
+> is kept as the record of the protocol as written.
 
 This page is the protocol the brief trial
 ([#2581](https://github.com/stSoftwareAU/VibeCoder/issues/2581)) is judged by.
@@ -168,24 +174,28 @@ A cached `ok` spent no brief time on that run: the map came from the cache.
 
 ## 8. 📊 Results — the brief window
 
-> **No window has opened.** The table stays empty until §4 names a host, the
-> switch-on date is recorded, and the window has closed.
+**No window opened.** No trial host was ever named and the switch was never
+turned on, so there are no trial figures. brief was removed on analysis
+instead, because the mechanism in §2 has nothing to act on in this fleet:
 
-| Measure                                 | brief (trial) | Control | Delta |
-| --------------------------------------- | ------------- | ------- | ----- |
-| Qualifying runs (`Brief: ok`)           | —             | —       | —     |
-| Tokens per completed implementation run | —             | —       | —%    |
-| Cost per completed implementation run   | —             | —       | —%    |
-| Success rate                            | —             | —       | —     |
-| brief seconds — total / mean            | — / —         | n/a     | n/a   |
-| `Brief: failed` runs                    | —             | n/a     | n/a   |
+- **The gap §2 describes does not exist here.** Every monitored repository with
+  a `Cargo.toml` also has a `quality.sh` that runs `cargo test`, `clippy`,
+  `fmt` and `build`, and the codebase map already lists `./quality.sh` as the
+  gate to run before a PR. The agent was never rediscovering Cargo commands.
+- **The block could only add tokens.** It kept nothing but allowlisted
+  `cargo …` strings — commands the model already knows. On every Rust run it
+  added prompt text and brief's own run time, and it could save nothing.
+- **A window would have spent a host to measure a zero.** Clause 1 of §3 (≥ 10%
+  fewer tokens or lower cost) had no mechanism by which it could pass.
 
-- **Window:** — to —
-- **Tokens or cost ≥ 10% lower:** — (tokens: —%, cost: —%)
-- **Success rate no lower:** — (trial —, control —)
-- **brief's time counted:** — (total —s, mean —s)
-- **Verdict:** — (keep / remove — cites each clause of §3)
-- **Judged on:** — by —
+- **Verdict:** remove — clause 1 of §3 cannot be met; clauses 2 and 3 were not
+  measured.
+- **Judged on:** 2026-09-27 by the owner, on analysis.
+- **Removal:** [#2699](https://github.com/stSoftwareAU/VibeCoder/issues/2699)
+  followed §9 in full, and also removed the callback's `brief` block and
+  `VIBECODER_BRIEF_ENABLED`, which no deployed extension read. A host whose
+  `.config.json` still carries a `brief_toolchain` key gets the standard
+  unknown-key warning; no host had set it.
 
 ## 9. 🔀 What the verdict changes
 

@@ -25,6 +25,8 @@ import {
 } from "../lib/fleet_telemetry.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
 import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
+import { GRQ_4871_OUTPUT } from "./support/grq_4871_output.ts";
 
 // Side-effect import: register the security-scan template so its
 // title and body fingerprint are visible to the suppression check.
@@ -165,6 +167,97 @@ Deno.test(
     // Worker claim released exactly once.
     assertEquals(calls.unassignIssue.length, 1);
     assertEquals(calls.unassignIssue[0]!.assignees, ["testbot"]);
+  },
+);
+
+// -------------------------------------------------------------------------
+// Described-but-not-made code change — retry, never analysis-only (#2687)
+// -------------------------------------------------------------------------
+
+Deno.test(
+  "handle_no_changes_phase - GRQ#4871 output (described fix, no change) is retried, not handed off (Issue #2687)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({ claudeOutput: GRQ_4871_OUTPUT });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals(result.status, "failure");
+    const reason = (result as { reason: string }).reason;
+    // Counted against the normal retry budget as a no-change failure.
+    assertEquals(detectFailureCategory(reason), "no_changes");
+    assertStringIncludes(reason, "worker/shared/heap_clamp_skip.sh");
+    // Never escalated as analysis-only.
+    assertEquals(
+      calls.addLabel.filter((c) => c.label === ctx.config.needsHumanLabel),
+      [],
+    );
+    assertEquals(calls.unassignIssue, []);
+    assert(
+      calls.postComment.every((c) =>
+        !c.body.includes("Analysis-only issue") &&
+        !c.body.includes("Partial Answer")
+      ),
+      "no Partial Answer or analysis-only hand-off comment",
+    );
+    // One nudge comment the retry's prompt carries.
+    assertEquals(calls.postComment.length, 1);
+    const nudge = calls.postComment[0]!.body;
+    assertStringIncludes(nudge, "## Retry: make the code change");
+    assertStringIncludes(
+      nudge,
+      "`test/worker/IntelligentDesignHeapClampSkip.ts`",
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - nudge comment failure still returns the retry failure (Issue #2687)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const client = makeStubGhClient(calls);
+    client.postComment = () => Promise.reject(new Error("GitHub 502"));
+    const deps = createMockDeps({
+      github: { createClient: () => client },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext(),
+      makeState({ claudeOutput: GRQ_4871_OUTPUT }),
+      deps,
+    );
+
+    assertEquals(result.status, "failure");
+    assertEquals(calls.addLabel, []);
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - described change on an analysis-only issue still hands off (Issue #2687)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext({
+      issueBody: "Audit the heap clamp.\n\n<!-- analysis-only -->",
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      ctx,
+      makeState({ claudeOutput: GRQ_4871_OUTPUT }),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
   },
 );
 

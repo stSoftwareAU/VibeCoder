@@ -17,6 +17,13 @@
  *    repositories only: a private or internal repo needs the paid GitHub
  *    Secret Protection add-on, so the step is not planned there and the
  *    skip is printed rather than a write attempted and refused (Issue #2225)
+ *  - CodeQL default setup (Issue #2704) — public repositories only, behind
+ *    the same visibility gate ({@link needsPaidSecretProtection}): it is free
+ *    there, and a private repository would need paid GitHub Code Security,
+ *    so nothing about code scanning is even read. Written only when the
+ *    state is `not-configured`, with the `default` query suite; a repository
+ *    already configured, on either suite, is left as it is, and one that runs
+ *    its own CodeQL workflow (advanced setup) is reported, never written.
  *  - one approving review on the default branch (GHA-PERM-004, Issue #2680)
  *    — by default: fleet PRs wait for `/review-fleet-prs` or the owner to
  *    approve instead of auto-merging unreviewed. A pull_request rule below
@@ -25,6 +32,21 @@
  *    but never on a branch that takes direct pushes, where a pull_request
  *    rule would refuse every push — that is reported for the owner instead.
  *  - code-owner review (`requireCodeOwnerReview`) — opt-in, separately.
+ *  - merge commits allowed (Issue #2690), so a milestone sync PR lands as a
+ *    real merge commit and the milestone branch reads level afterwards,
+ *    with the default branch kept squash-only by its own ruleset's
+ *    `allowed_merge_methods: ["squash"]` — written first, and only into a
+ *    ruleset that targets the default branch alone.
+ *  - each fleet account (`fleetAccounts`) at write, never admin or
+ *    maintain (Issue #2690); an organisation owner is left to the caller to
+ *    report, since no repository setting can lower it.
+ *  - Copilot code review as the host's `copilot_code_review` says (Issue
+ *    #2701) — it is billed per review, so it is the operator's call:
+ *    `off` removes the `copilot_code_review` rule from every repository
+ *    ruleset (deleting a ruleset it leaves empty; an organisation ruleset is
+ *    reported, never written), `on` makes sure one applies to the default
+ *    branch (creating {@link COPILOT_RULESET_NAME} when none does), and
+ *    `leave` — the default — plans nothing.
  *
  * Every step is planned from the CURRENT settings (nothing is written that
  * already holds), shown in dry-run, and applied only under `--apply`.
@@ -52,8 +74,9 @@ import {
   type BranchPushPolicy,
 } from "./branch_push_policy.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
-import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import { extractUsesValue } from "./action_pin_scanner.ts";
+import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
+import type { CopilotCodeReviewMode } from "../types.ts";
 
 type GhCommandFn = (args: string[]) => Promise<string>;
 
@@ -91,6 +114,17 @@ export interface RepoSettingsSnapshot {
   visibility?: string;
   /** The boolean `private` flag, used when `visibility` is absent. */
   private?: boolean;
+  /**
+   * CodeQL default setup (`code-scanning/default-setup`, Issue #2704). Read
+   * on a public repository only; absent, nothing about CodeQL is planned.
+   */
+  codeScanning?: { state?: string; query_suite?: string };
+  /**
+   * The default branch's workflow files that run CodeQL themselves (advanced
+   * setup, Issue #2704). `undefined` when the workflows could not be read,
+   * so advanced setup cannot be ruled out and nothing is written.
+   */
+  codeqlWorkflows?: string[];
   /** The default branch's effective rules (`rules/branches/{branch}`). */
   rules?: Array<{
     type?: string;
@@ -110,6 +144,24 @@ export interface RepoSettingsSnapshot {
    * has no pull_request rule, since only then would one be added.
    */
   pushPolicy?: BranchPushPolicy;
+  /**
+   * The repository's `allow_merge_commit` (Issue #2690), from the same
+   * `repos/{repo}` read as `security`. `undefined` when not read: nothing
+   * about merge methods is planned then.
+   */
+  allowMergeCommit?: boolean;
+  /**
+   * Each fleet account's role on the repository (Issue #2690), from
+   * `collaborators/{login}/permission` `.role_name`.
+   */
+  fleetPermissions?: FleetPermission[];
+}
+
+/** One fleet account's repository role (Issue #2690). */
+export interface FleetPermission {
+  login: string;
+  /** `admin`, `maintain`, `write`, `triage`, `read` or `none`. */
+  role: string;
 }
 
 /** One branch ruleset, as the rulesets API returns it. */
@@ -134,12 +186,17 @@ export interface HardenStep {
     | "sha-pinning-required"
     | "actions-allow-list"
     | "secret-scanning"
+    | "codeql-default-setup"
     | "ruleset-reviews"
     | "default-branch-approval"
-    | "milestone-branch-create";
+    | "default-branch-squash-only"
+    | "merge-commit-allowed"
+    | "fleet-account-write"
+    | "milestone-branch-create"
+    | "copilot-code-review";
   /** What the step closes. */
   title: string;
-  method: "PUT" | "PATCH" | "POST";
+  method: "PUT" | "PATCH" | "POST" | "DELETE";
   /** `repos/{repo}/…` — the repo is filled in at apply time. */
   endpoint: string;
   body?: string;
@@ -153,6 +210,11 @@ export interface HardenStep {
    * sent.
    */
   held?: { status: "skipped" | "failed"; detail: string };
+  /**
+   * Steps this one needs (Issue #2690): when any step of these kinds failed
+   * or was held earlier in the run, this one is skipped, never written.
+   */
+  dependsOn?: readonly HardenStep["kind"][];
 }
 
 /** Options for {@link planRepoSettingsHardening}. */
@@ -166,6 +228,22 @@ export interface PlanOptions {
    */
   requireCodeOwnerReview?: boolean;
   defaultBranch: string;
+  /**
+   * Fleet logins that own the repository's organisation (Issue #2690): an
+   * owner is admin everywhere and no repository write can lower that, so
+   * they are reported once by the caller and never written here.
+   */
+  orgOwners?: readonly string[];
+  /**
+   * The login setup runs as (Issue #2690). Lowering it would take away the
+   * admin the rest of the run needs, so it is reported instead.
+   */
+  setupLogin?: string;
+  /**
+   * The host's `copilot_code_review` (Issue #2701). Absent is `leave`:
+   * nothing about Copilot code review is planned.
+   */
+  copilotCodeReview?: CopilotCodeReviewMode;
 }
 
 const GITHUB_OWNED = new Set(["actions", "github"]);
@@ -417,12 +495,62 @@ export function isSecretScanningSkipped(
   return needsPaidSecretProtection(snapshot.visibility, snapshot.private);
 }
 
+/**
+ * The note printed for a private or internal repository (Issue #2704):
+ * CodeQL default setup is skipped there, and says so.
+ */
+export const CODE_SECURITY_SKIP_NOTE =
+  "code scanning default setup: skipped — private repository needs " +
+  "paid GitHub Code Security";
+
+/** The endpoint for CodeQL default setup, under `repos/{repo}/`. */
+const CODEQL_DEFAULT_SETUP = "code-scanning/default-setup";
+
+/**
+ * Turn CodeQL default setup on when it is `not-configured` (Issue #2704).
+ * Configured on any suite is left alone; a repository that runs its own
+ * CodeQL workflow, or whose workflows could not be read, is held — enabling
+ * default setup there would fight the owner's advanced setup.
+ */
+function planCodeqlDefaultSetup(
+  snapshot: RepoSettingsSnapshot,
+): HardenStep[] {
+  if (snapshot.codeScanning?.state !== "not-configured") return [];
+  const step: HardenStep = {
+    kind: "codeql-default-setup",
+    title: "Turn on CodeQL default setup (default query suite)",
+    method: "PATCH",
+    endpoint: CODEQL_DEFAULT_SETUP,
+    body: JSON.stringify({ state: "configured", query_suite: "default" }),
+  };
+  const workflows = snapshot.codeqlWorkflows;
+  if (workflows === undefined) {
+    step.held = {
+      status: "skipped",
+      detail: "the workflows could not be read, so advanced setup cannot " +
+        "be ruled out; CodeQL default setup left alone",
+    };
+  } else if (workflows.length > 0) {
+    step.held = {
+      status: "skipped",
+      detail: `advanced setup: ${workflows.join(", ")} runs CodeQL; ` +
+        `left alone`,
+    };
+  }
+  return [step];
+}
+
 /** Plan the writes that close each open setting; empty when hardened. */
 export function planRepoSettingsHardening(
-  snapshot: RepoSettingsSnapshot,
+  current: RepoSettingsSnapshot,
   options: PlanOptions,
 ): HardenStep[] {
-  const steps: HardenStep[] = [];
+  // Copilot code review is planned first, and every later step plans from
+  // the rulesets as they will be once it has run (Issue #2701): a step that
+  // echoes a whole ruleset must not put back the rule this one removes.
+  const copilot = planCopilotCodeReview(current, options.copilotCodeReview);
+  const snapshot = copilot.snapshot;
+  const steps: HardenStep[] = [...copilot.steps];
   const w = snapshot.workflow;
   if (
     w &&
@@ -533,10 +661,16 @@ export function planRepoSettingsHardening(
       });
     }
   }
+  steps.push(...planCodeqlDefaultSetup(snapshot));
   // The approval step comes first: when it adds the pull_request rule, the
   // code-owner step below re-reads the live ruleset and finds it there.
-  const approval = planDefaultBranchApproval(snapshot, options.defaultBranch);
-  if (approval) steps.push(approval);
+  const pullRequestSteps = planDefaultBranchPullRequest(
+    snapshot,
+    options.defaultBranch,
+  );
+  steps.push(...pullRequestSteps);
+  const mergeCommit = planMergeCommitAllowed(snapshot, pullRequestSteps);
+  if (mergeCommit) steps.push(mergeCommit);
   const pr = snapshot.rules?.find((r) => r.type === "pull_request")
     ?.parameters;
   if (
@@ -607,6 +741,7 @@ export function planRepoSettingsHardening(
     });
   }
 
+  steps.push(...planFleetAccountWrite(snapshot, options));
   return steps;
 }
 
@@ -680,68 +815,133 @@ const APPROVAL_WARNING =
   "Every PR into the default branch — the fleet's included — now waits for an approving review (/review-fleet-prs or the owner) before it merges (Issue #2680).";
 
 /**
- * Plan one required approving review on the default branch (Issue #2680).
+ * Plan the default branch's pull_request rule (Issues #2680, #2690): one
+ * required approving review, and — once merge commits are allowed on the
+ * repository, or about to be — squash as the only merge method, so the
+ * milestone sync's merge commits never reach the default branch.
  *
  * Nothing is planned when the branch already needs an approval (the
- * strictest pull_request rule decides, as GitHub does) or when the rules or
- * rulesets could not be read. Otherwise, in order of preference:
+ * strictest pull_request rule decides, as GitHub does) and is already
+ * squash-only, or when the rules or rulesets could not be read. Otherwise,
+ * in order of preference, the change goes into:
  *
- *  1. **Raise** a pull_request rule below one in the repository ruleset that
- *     carries it (the worker's own first), echoing everything else.
- *  2. **Add** a pull_request rule to the worker's own ruleset (raising the
- *     one it has instead, so a rule is never duplicated).
- *  3. **Create** the worker's own ruleset holding just that rule. It shares
+ *  1. the repository ruleset whose pull_request rule the branch already
+ *     carries (the worker's own first), echoing everything else;
+ *  2. the worker's own ruleset, gaining a pull_request rule;
+ *  3. a new worker ruleset holding just that rule. It shares
  *     {@link VIBE_RULESET_NAME} with the default-branch ruleset sync, which
  *     carries a rule it does not model through its updates and never
  *     creates a second ruleset of that name — so the two never fight.
  *
+ * Squash-only is written only into a ruleset that targets the default
+ * branch alone (Issue #2690): a pull_request rule that also covers the
+ * milestone branches would refuse the sync's merge commits there. When the
+ * approval and the squash-only change land in one ruleset they are one
+ * write, so neither overwrites the other.
+ *
  * Adding a pull_request rule where there was none refuses every direct push,
- * so 2 and 3 are held unless {@link RepoSettingsSnapshot.pushPolicy} says
- * the branch is PR-only: a direct-push or opted-out branch is a reported
- * skip, and an unreadable policy a failure — never a lock on uncertainty.
- * A human ruleset without a pull_request rule is never given one.
+ * so that is held unless {@link RepoSettingsSnapshot.pushPolicy} says the
+ * branch is PR-only: a direct-push or opted-out branch is a reported skip,
+ * and an unreadable policy a failure — never a lock on uncertainty. A human
+ * ruleset without a pull_request rule is never given one.
  */
-export function planDefaultBranchApproval(
+export function planDefaultBranchPullRequest(
   snapshot: RepoSettingsSnapshot,
   defaultBranch: string,
-): HardenStep | undefined {
+): HardenStep[] {
   const { rules, rulesets } = snapshot;
-  if (!rules || !rulesets) return undefined;
+  if (!rules || !rulesets) return [];
   const pullRequests = rules.filter((r) => r.type === "pull_request");
-  if (pullRequests.some((r) => approvalCount(r.parameters) >= 1)) {
-    return undefined;
-  }
+  const needApproval = !pullRequests.some((r) =>
+    approvalCount(r.parameters) >= 1
+  );
+  const needSquash = snapshot.allowMergeCommit !== undefined &&
+    !pullRequests.some((r) => isSquashOnly(r.parameters));
+  if (!needApproval && !needSquash) return [];
+
   const editable = rulesets.filter((r) =>
     (r.source_type === undefined || r.source_type === "Repository") &&
     (r.target === undefined || r.target === "branch")
   );
   const ours = editable.find((r) => r.name === VIBE_RULESET_NAME);
   const carrying = new Set(pullRequests.map((r) => r.ruleset_id));
-  const carrier = [ours, ...editable].find((r) =>
-    r !== undefined && carrying.has(r.id) &&
-    (r.rules ?? []).some((rule) => rule.type === "pull_request")
-  );
-  const title = `Require one approving review on ${defaultBranch}`;
+  const carriers = [
+    ...new Set(
+      [ours, ...editable].filter((r): r is RulesetSnapshot =>
+        r !== undefined && carrying.has(r.id) &&
+        (r.rules ?? []).some((rule) => rule.type === "pull_request")
+      ),
+    ),
+  ];
+  const approvalTarget = needApproval ? carriers[0] ?? ours ?? null : undefined;
+  const squashTarget = needSquash
+    ? carriers.find((r) => targetsOnlyDefaultBranch(r, defaultBranch)) ??
+      (ours && targetsOnlyDefaultBranch(ours, defaultBranch) ? ours : null)
+    : undefined;
 
-  // A pull_request rule already refuses direct pushes, so raising its count
+  // A pull_request rule already refuses direct pushes, so changing one
   // changes nothing about how the branch is fed. Adding the first one does,
   // so only then does the push policy decide.
-  const held = carrier || pullRequests.length > 0
+  const held = pullRequests.length > 0
     ? undefined
     : holdForPushPolicy(snapshot.pushPolicy);
+
+  // One write per ruleset; `null` is the worker ruleset still to be created.
+  const edits = new Map<
+    RulesetSnapshot | null,
+    { approval: boolean; squash: boolean }
+  >();
+  if (approvalTarget !== undefined) {
+    edits.set(approvalTarget, { approval: true, squash: false });
+  }
+  if (squashTarget !== undefined) {
+    const edit = edits.get(squashTarget) ?? { approval: false, squash: false };
+    edits.set(squashTarget, { ...edit, squash: true });
+  }
+  return [...edits].map(([target, edit]) => {
+    const step = pullRequestStep(target, edit, defaultBranch, held);
+    if (edit.squash) SQUASH_STEPS.add(step);
+    return step;
+  });
+}
+
+/** The steps that make the default branch squash-only (Issue #2690). */
+const SQUASH_STEPS = new WeakSet<HardenStep>();
+
+/** The one write that makes `edit` true of `target` (`null`: create ours). */
+function pullRequestStep(
+  target: RulesetSnapshot | null,
+  edit: { approval: boolean; squash: boolean },
+  defaultBranch: string,
+  held: HardenStep["held"],
+): HardenStep {
+  const wants = [
+    ...(edit.approval ? ["one approving review"] : []),
+    ...(edit.squash ? ["squash-only merges"] : []),
+  ].join(" and ");
   const common = {
-    kind: "default-branch-approval" as const,
-    warning: APPROVAL_WARNING,
+    kind: edit.approval
+      ? "default-branch-approval" as const
+      : "default-branch-squash-only" as const,
+    ...(edit.approval ? { warning: APPROVAL_WARNING } : {}),
     ...(held ? { held } : {}),
   };
-  const target = carrier ?? ours;
+  const newRule: RulesetRule = {
+    ...APPROVAL_PULL_REQUEST_RULE,
+    parameters: {
+      ...APPROVAL_PULL_REQUEST_RULE.parameters,
+      ...(edit.squash ? SQUASH_ONLY : {}),
+    },
+  };
   if (target) {
     const rules = target.rules ?? [];
     const raise = rules.some((rule) => rule.type === "pull_request");
     return {
       ...common,
-      title: `${title} (ruleset '${target.name ?? target.id}': ${
-        raise ? "raise its pull_request rule to one" : "add a pull_request rule"
+      title: `Require ${wants} on ${defaultBranch} (ruleset '${
+        target.name ?? target.id
+      }': ${
+        raise ? "update its pull_request rule" : "add a pull_request rule"
       })`,
       method: "PUT",
       endpoint: `rulesets/${target.id}`,
@@ -754,18 +954,22 @@ export function planDefaultBranchApproval(
                 ...rule,
                 parameters: {
                   ...(rule.parameters ?? {}),
-                  required_approving_review_count: 1,
+                  ...(edit.approval
+                    ? { required_approving_review_count: 1 }
+                    : {}),
+                  ...(edit.squash ? SQUASH_ONLY : {}),
                 },
               }
               : rule
           )
-          : [...rules, APPROVAL_PULL_REQUEST_RULE],
+          : [...rules, newRule],
       ),
     };
   }
   return {
     ...common,
-    title: `${title} (create ruleset '${VIBE_RULESET_NAME}')`,
+    title:
+      `Require ${wants} on ${defaultBranch} (create ruleset '${VIBE_RULESET_NAME}')`,
     method: "POST",
     endpoint: "rulesets",
     body: JSON.stringify({
@@ -774,9 +978,292 @@ export function planDefaultBranchApproval(
       enforcement: "active",
       // GitHub's alias keeps the rule on the default branch if it is renamed.
       conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
-      rules: [APPROVAL_PULL_REQUEST_RULE],
+      rules: [newRule],
     }),
   };
+}
+
+/** The pull_request parameter that keeps a branch squash-only (#2690). */
+const SQUASH_ONLY = { allowed_merge_methods: ["squash"] };
+
+/**
+ * Whether a pull_request rule allows squash alone (Issue #2690). GitHub
+ * applies the strictest of the rules on a branch, so one such rule is
+ * enough.
+ */
+function isSquashOnly(parameters: Record<string, unknown> | undefined) {
+  const methods = parameters?.allowed_merge_methods;
+  return Array.isArray(methods) && methods.length > 0 &&
+    methods.every((m) => m === "squash");
+}
+
+/**
+ * Whether `ruleset` targets the default branch and nothing else (Issue
+ * #2690): only there may squash-only go, or it would refuse the milestone
+ * sync's merge commits on whatever else the ruleset covers.
+ */
+function targetsOnlyDefaultBranch(
+  ruleset: RulesetSnapshot,
+  defaultBranch: string,
+): boolean {
+  const include: unknown = ruleset.conditions?.ref_name?.include;
+  if (!Array.isArray(include) || include.length === 0) return false;
+  return include.every((ref) =>
+    ref === "~DEFAULT_BRANCH" || ref === `refs/heads/${defaultBranch}`
+  );
+}
+
+/**
+ * Allow merge commits on the repository (Issue #2690), so a milestone sync
+ * PR lands as a real merge commit and the milestone branch reads level
+ * afterwards. A squashed sync leaves the default branch outside the
+ * milestone branch's history for ever; only an admin bypass ever levelled
+ * one.
+ *
+ * Planned only while the default branch stays squash-only: it runs after
+ * the step that makes it so and is skipped when that step failed. When the
+ * default branch cannot be made squash-only (a direct-push branch the owner
+ * has not decided on), merge commits stay off and the reason is reported.
+ */
+function planMergeCommitAllowed(
+  snapshot: RepoSettingsSnapshot,
+  pullRequestSteps: readonly HardenStep[],
+): HardenStep | undefined {
+  if (snapshot.allowMergeCommit !== false) return undefined;
+  const squash = pullRequestSteps.find((s) => SQUASH_STEPS.has(s));
+  const alreadySquashOnly = (snapshot.rules ?? []).some((r) =>
+    r.type === "pull_request" && isSquashOnly(r.parameters)
+  );
+  const step: HardenStep = {
+    kind: "merge-commit-allowed",
+    title:
+      "Allow merge commits, so milestone sync PRs land as merge commits (the default branch stays squash-only)",
+    method: "PATCH",
+    endpoint: "",
+    body: JSON.stringify({ allow_merge_commit: true }),
+  };
+  if (squash?.held || (!squash && !alreadySquashOnly)) {
+    return {
+      ...step,
+      held: {
+        status: "skipped",
+        detail: "merge commits left off: the default branch cannot be " +
+          `kept squash-only${
+            squash?.held ? ` (${squash.held.detail})` : ""
+          }, so milestone sync PRs still squash`,
+      },
+    };
+  }
+  return squash ? { ...step, dependsOn: [squash.kind] } : step;
+}
+
+/** The rule type GitHub gives Copilot code review in a ruleset. */
+const COPILOT_RULE_TYPE = "copilot_code_review";
+
+/**
+ * The ruleset `on` creates when no Copilot review rule applies to the
+ * default branch (Issue #2701). Its own ruleset, apart from
+ * {@link VIBE_RULESET_NAME}, so turning the review off again deletes it
+ * whole and leaves the default-branch ruleset untouched.
+ */
+export const COPILOT_RULESET_NAME = "Vibe Coder Copilot review";
+
+/**
+ * The rule `on` writes (Issue #2701): one review when a pull request is
+ * opened, none per push and none on drafts — each review is billed.
+ */
+const COPILOT_RULE: RulesetRule = {
+  type: COPILOT_RULE_TYPE,
+  parameters: { review_on_push: false, review_draft_pull_requests: false },
+};
+
+const COPILOT_BILLING_WARNING =
+  "Every automatic Copilot review is billed to the PR author's Copilot plan, or to the organisation — never free, even on a public repository (Issue #2701).";
+
+/** Whether setup may edit `ruleset`: only a repository ruleset. */
+function isRepositoryRuleset(ruleset: RulesetSnapshot): boolean {
+  return ruleset.source_type === undefined ||
+    ruleset.source_type === "Repository";
+}
+
+/** `'name'`, or the id when the ruleset has no name. */
+function rulesetLabel(ruleset: RulesetSnapshot): string {
+  return `'${ruleset.name ?? ruleset.id}'`;
+}
+
+/**
+ * Plan Copilot code review as the host asked (Issue #2701), returning the
+ * steps and the snapshot as it will read once they have run. Nothing is
+ * planned from a surface that could not be read.
+ */
+function planCopilotCodeReview(
+  snapshot: RepoSettingsSnapshot,
+  mode: CopilotCodeReviewMode | undefined,
+): { snapshot: RepoSettingsSnapshot; steps: HardenStep[] } {
+  if (mode === "off") return planCopilotOff(snapshot);
+  if (mode === "on") return { snapshot, steps: planCopilotOn(snapshot) };
+  return { snapshot, steps: [] };
+}
+
+/**
+ * `off`: take the Copilot rule out of every repository ruleset that carries
+ * it, deleting a ruleset left with no rules. An organisation ruleset cannot
+ * be edited from the repository, so it is reported for the owner.
+ */
+function planCopilotOff(
+  snapshot: RepoSettingsSnapshot,
+): { snapshot: RepoSettingsSnapshot; steps: HardenStep[] } {
+  if (!snapshot.rulesets) return { snapshot, steps: [] };
+  const steps: HardenStep[] = [];
+  const after: RulesetSnapshot[] = [];
+  for (const ruleset of snapshot.rulesets) {
+    const rules = ruleset.rules ?? [];
+    if (!rules.some((rule) => rule.type === COPILOT_RULE_TYPE)) {
+      after.push(ruleset);
+      continue;
+    }
+    const label = rulesetLabel(ruleset);
+    if (!isRepositoryRuleset(ruleset)) {
+      after.push(ruleset);
+      steps.push({
+        kind: "copilot-code-review",
+        title: `Remove Copilot code review from ruleset ${label}`,
+        method: "PUT",
+        endpoint: `rulesets/${ruleset.id}`,
+        held: {
+          status: "skipped",
+          detail: `Copilot code review comes from organisation ruleset ` +
+            `${label}, which a repository cannot edit — turn it off in the ` +
+            `organisation's rulesets`,
+        },
+      });
+      continue;
+    }
+    const remaining = rules.filter((rule) => rule.type !== COPILOT_RULE_TYPE);
+    if (remaining.length === 0) {
+      // Deleted, so no later step can pick it as a target.
+      steps.push({
+        kind: "copilot-code-review",
+        title: `Turn off Copilot code review: delete ruleset ${label}, ` +
+          `which held nothing else`,
+        method: "DELETE",
+        endpoint: `rulesets/${ruleset.id}`,
+      });
+      continue;
+    }
+    after.push({ ...ruleset, rules: remaining });
+    steps.push({
+      kind: "copilot-code-review",
+      title: `Turn off Copilot code review: remove its rule from ruleset ` +
+        label,
+      method: "PUT",
+      endpoint: `rulesets/${ruleset.id}`,
+      body: rulesetPutBody(ruleset, remaining),
+    });
+  }
+  return { snapshot: { ...snapshot, rulesets: after }, steps };
+}
+
+/**
+ * `on`: make sure a Copilot review rule applies to the default branch. The
+ * branch's effective rules decide — whatever ruleset, repository or
+ * organisation, carries it. With none, {@link COPILOT_RULESET_NAME} is
+ * created, or re-enabled when it exists but no longer applies.
+ */
+function planCopilotOn(snapshot: RepoSettingsSnapshot): HardenStep[] {
+  const { rules, rulesets } = snapshot;
+  if (!rules || !rulesets) return [];
+  if (rules.some((rule) => rule.type === COPILOT_RULE_TYPE)) return [];
+  const ours = rulesets.find((r) =>
+    isRepositoryRuleset(r) && r.name === COPILOT_RULESET_NAME
+  );
+  if (ours) {
+    return [{
+      kind: "copilot-code-review",
+      title: `Turn on Copilot code review on the default branch (ruleset ` +
+        `${rulesetLabel(ours)}: enforce it with the review rule)`,
+      method: "PUT",
+      endpoint: `rulesets/${ours.id}`,
+      body: rulesetPutBody({ ...ours, enforcement: "active" }, [
+        ...(ours.rules ?? []).filter((r) => r.type !== COPILOT_RULE_TYPE),
+        COPILOT_RULE,
+      ]),
+      warning: COPILOT_BILLING_WARNING,
+    }];
+  }
+  return [{
+    kind: "copilot-code-review",
+    title: `Turn on Copilot code review on the default branch (create ` +
+      `ruleset '${COPILOT_RULESET_NAME}')`,
+    method: "POST",
+    endpoint: "rulesets",
+    body: JSON.stringify({
+      name: COPILOT_RULESET_NAME,
+      target: "branch",
+      enforcement: "active",
+      // GitHub's alias keeps the rule on the default branch if it is renamed.
+      conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+      rules: [COPILOT_RULE],
+    }),
+    warning: COPILOT_BILLING_WARNING,
+  }];
+}
+
+/** A GitHub login: letters, digits and hyphens, at most 39. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+
+/** Whether `login` is safe to put in an API path (Issue #2690). */
+export function isGitHubLogin(login: string): boolean {
+  return GITHUB_LOGIN.test(login);
+}
+
+/** Roles above write, which a fleet account must not hold (Issue #2690). */
+const ABOVE_WRITE = new Set(["admin", "maintain"]);
+
+/**
+ * Set each fleet account's repository role to write (Issue #2690): the
+ * fleet opens branches, pushes, labels and merges through PRs, all of
+ * which write allows, and an admin fleet account bypasses the very rulesets
+ * that keep its work reviewed.
+ *
+ * An organisation owner is admin on every repository whatever its
+ * repository role says, so it is never written here — the caller reports it
+ * once with the organisation setting to change. The login setup runs as is
+ * never lowered mid-run. An account below write is not written either: the
+ * collaborator precheck reports and invites it (Issue #2326).
+ */
+function planFleetAccountWrite(
+  snapshot: RepoSettingsSnapshot,
+  options: PlanOptions,
+): HardenStep[] {
+  const owners = new Set(
+    (options.orgOwners ?? []).map((l) => l.toLowerCase()),
+  );
+  const steps: HardenStep[] = [];
+  for (const { login, role } of snapshot.fleetPermissions ?? []) {
+    if (!ABOVE_WRITE.has(role) || owners.has(login.toLowerCase())) continue;
+    const step: HardenStep = {
+      kind: "fleet-account-write",
+      title: `Set fleet account ${login} to write (was ${role})`,
+      method: "PUT",
+      endpoint: `collaborators/${login}`,
+      body: JSON.stringify({ permission: "push" }),
+    };
+    steps.push(
+      login.toLowerCase() === options.setupLogin?.toLowerCase()
+        ? {
+          ...step,
+          held: {
+            status: "skipped",
+            detail: `${login} is the login setup runs as — lowering it ` +
+              "would take away the admin this run needs; run setup as " +
+              "another admin",
+          },
+        }
+        : step,
+    );
+  }
+  return steps;
 }
 
 /** Outcome of one step. */
@@ -805,6 +1292,18 @@ export async function applyRepoSettingsPlan(
       out.push({ step, status: step.held.status, detail: step.held.detail });
       continue;
     }
+    const unmet = out.find((r) =>
+      step.dependsOn?.includes(r.step.kind) &&
+      r.status !== "applied" && r.status !== "planned"
+    );
+    if (unmet) {
+      out.push({
+        step,
+        status: "skipped",
+        detail: `not attempted: ${unmet.step.kind} did not apply`,
+      });
+      continue;
+    }
     if (!options.apply) {
       out.push({ step, status: "planned" });
       continue;
@@ -813,6 +1312,10 @@ export async function applyRepoSettingsPlan(
       // Rulesets are updated by id, not by branch: resolve the ruleset that
       // targets the default branch and PUT its pull_request rule.
       out.push(await applyRulesetReviews(repo, step, options.ghCommandFn));
+      continue;
+    }
+    if (step.kind === "fleet-account-write") {
+      out.push(await applyFleetAccountWrite(repo, step, options.ghCommandFn));
       continue;
     }
     const endpoint = step.endpoint
@@ -830,6 +1333,19 @@ export async function applyRepoSettingsPlan(
       await ghWrite(options.ghCommandFn, step.method, endpoint, step.body);
       out.push({ step, status: "applied" });
     } catch (err) {
+      // GitHub refuses default setup where advanced setup is on (Issue
+      // #2704): that is the owner's own workflow, reported, not failed.
+      if (
+        step.kind === "codeql-default-setup" &&
+        /advanced setup/i.test(errorMessage(err))
+      ) {
+        out.push({
+          step,
+          status: "skipped",
+          detail: `advanced setup: ${errorMessage(err)}; left alone`,
+        });
+        continue;
+      }
       out.push({
         step,
         status: "failed",
@@ -868,43 +1384,96 @@ async function ghWrite(
   }
 }
 
+/**
+ * Set a fleet account to write, then read its role back (Issue #2690). A
+ * repository write cannot lower admin that a team or the organisation
+ * grants, so a role still above write is a failure naming where to look,
+ * never an "applied" that did nothing.
+ */
+async function applyFleetAccountWrite(
+  repo: string,
+  step: HardenStep,
+  gh: GhCommandFn,
+): Promise<HardenResult> {
+  const login = step.endpoint.replace(/^collaborators\//, "");
+  try {
+    await ghWrite(gh, step.method, `repos/${repo}/${step.endpoint}`, step.body);
+    const after = JSON.parse(
+      await gh(["api", `repos/${repo}/collaborators/${login}/permission`]),
+    ) as { role_name?: unknown };
+    const role = String(after.role_name ?? "unknown");
+    if (ABOVE_WRITE.has(role)) {
+      return {
+        step,
+        status: "failed",
+        detail: `${login} is still ${role} after the write: the role comes ` +
+          `from a team or the organisation (Settings → Collaborators and ` +
+          `teams on ${repo}, or the organisation's People page), so change ` +
+          `it there`,
+      };
+    }
+    return { step, status: "applied" };
+  } catch (err) {
+    return {
+      step,
+      status: "failed",
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 async function applyRulesetReviews(
   repo: string,
   step: HardenStep,
   gh: GhCommandFn,
 ): Promise<HardenResult> {
   try {
-    const raw = await gh(["api", `repos/${repo}/rulesets`]);
-    const rulesets = JSON.parse(raw) as Array<
-      { id: number; name: string; enforcement: string }
-    >;
     const branch = step.endpoint.replace(/^rulesets\//, "");
-    // The fleet's own ruleset wins over a legacy one named after the branch
-    // (Issue #2626): it is the one `ensureDefaultBranchRuleset` maintains.
-    const active = (name: string) =>
-      rulesets.find((r) => r.name === name && r.enforcement === "active");
-    const target = active(VIBE_RULESET_NAME) ?? active(branch);
+    // The ruleset is the one the branch's pull_request rule comes from
+    // (Issue #2685), read live so a rule the approval step just added is
+    // found. A name never decides it: GRQ's is called neither after the
+    // branch nor "Vibe Coder default branch".
+    const rules = JSON.parse(
+      await gh([
+        "api",
+        `repos/${repo}/rules/branches/${encodeURIComponent(branch)}`,
+      ]),
+    ) as RepoSettingsSnapshot["rules"];
+    const carriers = [
+      ...new Set(
+        (rules ?? []).filter((r) => r.type === "pull_request")
+          .map((r) => r.ruleset_id)
+          .filter((id): id is number => typeof id === "number"),
+      ),
+    ];
+    const candidates: RulesetSnapshot[] = [];
+    for (const id of carriers) {
+      candidates.push(
+        JSON.parse(
+          await gh(["api", `repos/${repo}/rulesets/${id}`]),
+        ) as RulesetSnapshot,
+      );
+    }
+    const editable = candidates.filter((r) =>
+      (r.source_type === undefined || r.source_type === "Repository") &&
+      (r.rules ?? []).some((rule) => rule.type === "pull_request")
+    );
+    // The fleet's own ruleset wins when several carry one (Issue #2626).
+    const target = editable.find((r) => r.name === VIBE_RULESET_NAME) ??
+      editable[0];
     if (!target) {
       return {
         step,
         status: "failed",
-        detail: `no active ruleset named ${branch} or "${VIBE_RULESET_NAME}"`,
+        detail: carriers.length === 0
+          ? `no pull_request rule on ${branch} to add code-owner review to`
+          : `the pull_request rule on ${branch} comes from a ruleset this ` +
+            `repository cannot edit (ruleset ${carriers.join(", ")})`,
       };
     }
-    const full = JSON.parse(
-      await gh(["api", `repos/${repo}/rulesets/${target.id}`]),
-    ) as {
-      rules?: Array<{ type: string; parameters?: Record<string, unknown> }>;
-    };
+    const full = target;
     const desired = JSON.parse(step.body ?? "{}") as Record<string, unknown>;
-    if (!(full.rules ?? []).some((r) => r.type === "pull_request")) {
-      return {
-        step,
-        status: "failed",
-        detail: `ruleset ${target.id} has no pull_request rule to update`,
-      };
-    }
-    const rules = (full.rules ?? []).map((r) =>
+    const updated = (full.rules ?? []).map((r) =>
       r.type === "pull_request"
         ? { ...r, parameters: { ...(r.parameters ?? {}), ...desired } }
         : r
@@ -913,7 +1482,7 @@ async function applyRulesetReviews(
       gh,
       "PUT",
       `repos/${repo}/rulesets/${target.id}`,
-      JSON.stringify({ rules }),
+      JSON.stringify({ rules: updated }),
     );
     return { step, status: "applied" };
   } catch (err) {
@@ -925,29 +1494,149 @@ async function applyRulesetReviews(
   }
 }
 
+/** Where the workflows live, as `readWorkflowFiles` reads them. */
+const WORKFLOWS_DIR = ".github/workflows";
+/** Where local composite actions live (`<dir>/**\/action.{yml,yaml}`). */
+const LOCAL_ACTIONS_DIR = ".github/actions";
+/** How deep under {@link LOCAL_ACTIONS_DIR} the walk goes. */
+const MAX_LOCAL_ACTION_DEPTH = 4;
+
+/** One entry of a contents-API directory listing. */
+interface ContentsEntry {
+  type?: string;
+  name?: string;
+  path?: string;
+}
+
 /**
- * Every repository `uses:` reference in the checkout's workflows, with its
- * ref (`owner/repo@sha`), so composite manifests can be read at the pinned
- * revision (Issue #4424). Local and docker steps are not repository actions.
+ * A contents-API path with each segment encoded. A listing's `path` comes
+ * back from GitHub, so a `.` or `..` segment is refused rather than let it
+ * steer the endpoint (Issue #1235's rule for untrusted coordinates).
+ */
+function contentsPath(path: string): string {
+  const segments = path.split("/");
+  if (segments.some((s) => s === "" || s === "." || s === "..")) {
+    throw new Error(`refusing an unsafe repository path: ${path}`);
+  }
+  return segments.map(encodeURIComponent).join("/");
+}
+
+/**
+ * The workflow files and local composite-action manifests on `branch`, read
+ * through the contents API (Issue #2685) — the same set `readWorkflowFiles`
+ * reads from a checkout, so no clone is needed. A 404 is an absent
+ * directory; any other failure throws.
+ */
+async function listActionFiles(
+  repo: string,
+  branch: string,
+  gh: GhCommandFn,
+): Promise<string[]> {
+  const ref = `?ref=${encodeURIComponent(branch)}`;
+  const list = async (dir: string): Promise<ContentsEntry[]> => {
+    try {
+      const value = JSON.parse(
+        await gh(["api", `repos/${repo}/contents/${contentsPath(dir)}${ref}`]),
+      );
+      return Array.isArray(value) ? value : [];
+    } catch (err) {
+      if (isNotFoundError(err)) return [];
+      throw err;
+    }
+  };
+  // Only a child of the directory asked for is followed.
+  const childOf = (
+    dir: string,
+    e: ContentsEntry,
+  ): e is ContentsEntry & { path: string } =>
+    typeof e.path === "string" && e.path.startsWith(`${dir}/`);
+
+  const files: string[] = [];
+  for (const entry of await list(WORKFLOWS_DIR)) {
+    if (
+      entry.type === "file" && childOf(WORKFLOWS_DIR, entry) &&
+      /\.ya?ml$/.test(entry.path)
+    ) files.push(entry.path);
+  }
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    for (const entry of await list(dir)) {
+      if (!childOf(dir, entry)) continue;
+      if (entry.type === "file" && /^action\.ya?ml$/.test(entry.name ?? "")) {
+        files.push(entry.path);
+      } else if (entry.type === "dir" && depth < MAX_LOCAL_ACTION_DEPTH) {
+        await walk(entry.path, depth + 1);
+      }
+    }
+  };
+  await walk(LOCAL_ACTIONS_DIR, 0);
+  return files.sort();
+}
+
+/**
+ * Every repository `uses:` reference in the default branch's workflows and
+ * local composite actions, with its ref (`owner/repo@sha`), so composite
+ * manifests can be read at the pinned revision (Issue #4424). Read through
+ * the API at `branch` (Issue #2685): setup hosts keep no clones, and a clone
+ * on a feature branch is not what the allow-list must admit. Local and docker
+ * steps are not repository actions.
  */
 export async function collectUsesReferences(
-  workDir: string,
+  repo: string,
+  branch: string,
+  gh: GhCommandFn,
 ): Promise<string[]> {
-  const files = await readWorkflowFiles(workDir);
+  return (await scanActionFiles(repo, branch, gh)).references;
+}
+
+/** What {@link scanActionFiles} found on the default branch. */
+interface ActionFileScan {
+  /** Every repository `uses:` reference, as {@link collectUsesReferences}. */
+  references: string[];
+  /** The files that run CodeQL themselves: advanced setup (Issue #2704). */
+  codeqlWorkflows: string[];
+}
+
+/**
+ * The CodeQL steps that make a workflow advanced setup (Issue #2704).
+ * `upload-sarif` alone is not: other scanners use it to publish results.
+ */
+const CODEQL_ANALYSIS_ACTION = /^github\/codeql-action\/(init|analyze)(@|$)/;
+
+/**
+ * One read of the default branch's workflows and local actions, giving
+ * both the allow-list's references and the files that run CodeQL — by name
+ * (`*codeql*`) or by calling `github/codeql-action/init` or `analyze`.
+ */
+async function scanActionFiles(
+  repo: string,
+  branch: string,
+  gh: GhCommandFn,
+): Promise<ActionFileScan> {
+  const ref = `?ref=${encodeURIComponent(branch)}`;
   const out = new Set<string>();
-  for (const file of files) {
-    for (const line of file.rawText.split("\n")) {
+  const codeql: string[] = [];
+  for (const file of await listActionFiles(repo, branch, gh)) {
+    const rawText = await gh([
+      "api",
+      `repos/${repo}/contents/${contentsPath(file)}${ref}`,
+      "-H",
+      "Accept: application/vnd.github.raw+json",
+    ]);
+    let runsCodeql = /codeql/i.test(file.split("/").pop() ?? "");
+    for (const line of rawText.split("\n")) {
       const value = extractUsesValue(line);
       if (!value || value.startsWith(".") || value.startsWith("docker://")) {
         continue;
       }
+      if (CODEQL_ANALYSIS_ACTION.test(value)) runsCodeql = true;
       const at = value.indexOf("@");
       const path = at >= 0 ? value.slice(0, at) : value;
       const [owner, repo] = path.split("/");
       if (owner && repo) out.add(value);
     }
+    if (runsCodeql) codeql.push(file);
   }
-  return [...out].sort();
+  return { references: [...out].sort(), codeqlWorkflows: codeql };
 }
 
 function errorMessage(err: unknown): string {
@@ -990,17 +1679,56 @@ function readFailure(
   };
 }
 
+/**
+ * Read CodeQL default setup (Issue #2704). A 403 or 404 — code scanning
+ * unavailable to this login or on this repository — is a `skipped` result
+ * naming the endpoint, reported on the repository's line; any other error
+ * is `failed`, like every other unreadable surface.
+ */
+async function readCodeScanning(
+  repo: string,
+  gh: GhCommandFn,
+): Promise<
+  { value: RepoSettingsSnapshot["codeScanning"] } | { result: HardenResult }
+> {
+  const endpoint = `repos/${repo}/${CODEQL_DEFAULT_SETUP}`;
+  try {
+    return { value: JSON.parse(await gh(["api", endpoint])) };
+  } catch (err) {
+    const category = classifyGitHubError(errorMessage(err)).category;
+    const unavailable = category === GitHubErrorCategory.NotFound ||
+      category === GitHubErrorCategory.Permission;
+    const result = readFailure(
+      "codeql-default-setup",
+      endpoint,
+      `could not read ${endpoint}: ${errorMessage(err)}`,
+    );
+    return {
+      result: unavailable ? { ...result, status: "skipped" } : result,
+    };
+  }
+}
+
 /** Options for {@link hardenRepo}. */
 export interface HardenRepoOptions {
   apply: boolean;
   ghCommandFn: GhCommandFn;
-  /** The repo's local checkout; its workflows feed the allow-list. */
-  workDir: string;
   requireCodeOwnerReview?: boolean;
   /** Operator-vouched `owner/repo` coordinates (`--allow-action`). */
   extraCoordinates?: readonly string[];
   /** Test seam: the default-branch disk cache (defaults to the worker's). */
   defaultBranchCachePath?: string;
+  /**
+   * Fleet logins (`fleet_pr_authors` ∪ `service_accounts`) to hold at write
+   * (Issue #2690). Absent: no fleet account is read or written.
+   */
+  fleetAccounts?: readonly string[];
+  /** Fleet logins that own the organisation: reported by the caller. */
+  orgOwners?: readonly string[];
+  /** The login setup runs as, never lowered mid-run. */
+  setupLogin?: string;
+  /** The host's `copilot_code_review` (Issue #2701); absent is `leave`. */
+  copilotCodeReview?: CopilotCodeReviewMode;
 }
 
 /** What {@link hardenRepo} found and did. */
@@ -1008,7 +1736,9 @@ export interface HardenRepoOutcome {
   results: HardenResult[];
   /** {@link SECRET_PROTECTION_SKIP_NOTE} when that step was exempted. */
   skipNote?: string;
-  /** The allow-list's action coordinates (empty without a checkout). */
+  /** {@link CODE_SECURITY_SKIP_NOTE} on a private repository (Issue #2704). */
+  codeqlSkipNote?: string;
+  /** The allow-list's action coordinates (empty when the workflows were unreadable). */
   coordinates: string[];
   /** How many workflow `uses:` references fed the allow-list. */
   referenceCount: number;
@@ -1089,6 +1819,7 @@ async function hardenRepoInto(
     security_and_analysis?: RepoSettingsSnapshot["security"];
     visibility?: string;
     private?: boolean;
+    allow_merge_commit?: boolean;
   }>("secret-scanning", `repos/${repo}`);
   const snapshot: RepoSettingsSnapshot = {
     workflow: await read(
@@ -1102,6 +1833,10 @@ async function hardenRepoInto(
     security: repoInfo?.security_and_analysis,
     visibility: repoInfo?.visibility,
     private: repoInfo?.private,
+    // Only an admin read carries it; anything else plans no merge change.
+    ...(typeof repoInfo?.allow_merge_commit === "boolean"
+      ? { allowMergeCommit: repoInfo.allow_merge_commit }
+      : {}),
     rules: await read(
       "ruleset-reviews",
       `repos/${repo}/rules/branches/${encodeURIComponent(branch)}`,
@@ -1143,29 +1878,61 @@ async function hardenRepoInto(
     );
   }
 
-  // Without a checkout the allow-list would be built from nothing, so the
-  // step is skipped and said so rather than writing an empty list.
-  const hasCheckout = await Deno.stat(`${options.workDir}/.git`).then(
-    () => true,
-    (err) => {
-      // Only a missing `.git` means "no checkout"; any other fault is loud.
-      if (err instanceof Deno.errors.NotFound) return false;
-      throw err;
-    },
-  );
-  let allowListFault: string | undefined;
-  if (hasCheckout) {
-    let references: string[];
-    try {
-      references = await collectUsesReferences(options.workDir);
-    } catch (err) {
-      // An unreadable workflow tree fails the allow-list alone — never an
-      // empty list written in its place.
-      allowListFault = `could not read the workflows in ${options.workDir}: ${
-        errorMessage(err)
-      }`;
-      references = [];
+  // CodeQL default setup (Issue #2704): read on a public repository only —
+  // a private one would need paid Code Security, so it is not even asked.
+  if (repoInfo) {
+    if (needsPaidSecretProtection(repoInfo.visibility, repoInfo.private)) {
+      outcome.codeqlSkipNote = CODE_SECURITY_SKIP_NOTE;
+    } else {
+      const codeql = await readCodeScanning(repo, gh);
+      if ("value" in codeql) snapshot.codeScanning = codeql.value;
+      else results.push(codeql.result);
     }
+  }
+
+  // Each fleet account's role (Issue #2690). A login that is not a GitHub
+  // login never reaches an API path.
+  if (options.fleetAccounts && options.fleetAccounts.length > 0) {
+    const permissions: FleetPermission[] = [];
+    for (const login of new Set(options.fleetAccounts)) {
+      const endpoint = `repos/${repo}/collaborators/${login}/permission`;
+      if (!GITHUB_LOGIN.test(login)) {
+        results.push(
+          readFailure(
+            "fleet-account-write",
+            `collaborators/${JSON.stringify(login)}`,
+            "not a GitHub login — refusing to put it in an API path",
+          ),
+        );
+        continue;
+      }
+      const value = await read<{ role_name?: unknown }>(
+        "fleet-account-write",
+        endpoint,
+      );
+      if (typeof value?.role_name === "string") {
+        permissions.push({ login, role: value.role_name });
+      }
+    }
+    snapshot.fleetPermissions = permissions;
+  }
+
+  // The allow-list is built from the default branch's workflows, read
+  // through the API (Issue #2685), so no checkout is needed.
+  let allowListFault: string | undefined;
+  let references: string[] = [];
+  try {
+    const scan = await scanActionFiles(repo, branch, gh);
+    references = scan.references;
+    snapshot.codeqlWorkflows = scan.codeqlWorkflows;
+  } catch (err) {
+    // An unreadable workflow tree fails the allow-list alone — never an
+    // empty list written in its place.
+    allowListFault = `could not read the workflows on ${branch}: ${
+      errorMessage(err)
+    }`;
+  }
+  if (!allowListFault) {
     const transitive = await resolveTransitiveActionCoordinates(
       references,
       gh,
@@ -1183,18 +1950,23 @@ async function hardenRepoInto(
     thirdPartyPatterns: buildAllowedActionPatterns(outcome.coordinates),
     requireCodeOwnerReview: options.requireCodeOwnerReview === true,
     defaultBranch: branch,
+    ...(options.orgOwners ? { orgOwners: options.orgOwners } : {}),
+    ...(options.setupLogin ? { setupLogin: options.setupLogin } : {}),
+    ...(options.copilotCodeReview
+      ? { copilotCodeReview: options.copilotCodeReview }
+      : {}),
   });
   const allowListStep = plan.find((s) => s.kind === "actions-allow-list");
-  const runnable = hasCheckout && !allowListFault
-    ? plan
-    : plan.filter((s) => s.kind !== "actions-allow-list");
+  const runnable = allowListFault
+    ? plan.filter((s) => s.kind !== "actions-allow-list")
+    : plan;
   results.push(
     ...await applyRepoSettingsPlan(repo, runnable, {
       apply: options.apply,
       ghCommandFn: gh,
     }),
   );
-  if (!hasCheckout || allowListFault) {
+  if (allowListFault) {
     results.push({
       step: allowListStep ?? {
         kind: "actions-allow-list",
@@ -1202,8 +1974,8 @@ async function hardenRepoInto(
         method: "PUT",
         endpoint: "actions/permissions/selected-actions",
       },
-      status: allowListFault ? "failed" : "skipped",
-      detail: allowListFault ?? "no local checkout",
+      status: "failed",
+      detail: allowListFault,
     });
   }
   // The exempted step is stated in the output, never silently absent.

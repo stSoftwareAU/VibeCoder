@@ -663,3 +663,35 @@ Deno.test("a failed branch update is recorded and the sweep continues", async ()
   // production wiring); the sweep itself never throws and never retries.
   assertEquals(warnings.length, 0);
 });
+
+Deno.test("an armed, behind PR with changes requested gets no branch update (Issue #2702)", async () => {
+  // On GRQ#5032 this update moved the head underneath the owner's
+  // CHANGES_REQUESTED review. A blocked PR cannot merge, so there is nothing
+  // to unblock: no update, no merge attempt, and an info line saying why.
+  infos.length = 0;
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+        changesRequested: true,
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, []);
+  assert(
+    infos.some((line) =>
+      line.message.includes("CHANGES_REQUESTED") &&
+      line.context?.prNumber === 42
+    ),
+    JSON.stringify(infos),
+  );
+});

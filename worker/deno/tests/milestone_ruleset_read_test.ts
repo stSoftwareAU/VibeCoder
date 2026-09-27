@@ -71,6 +71,12 @@ const DEFAULT_BRANCH: RulesetDetail = {
   bypass_actors: [],
 };
 
+/**
+ * What merged milestone PRs report in these fixtures: every check they mirror,
+ * so the plan's intersection keeps them all (Issue #2684).
+ */
+const REPORTED = ["semgrep", "gitleaks", "quality"];
+
 /** A `gh` stub serving the list and detail endpoints from fixtures. */
 function ghServing(details: RulesetDetail[]) {
   return (args: string[]): Promise<string> => {
@@ -275,13 +281,17 @@ const ALIGNED: RulesetDetail = {
 };
 
 Deno.test("planMilestoneRulesetSync - a ruleset already on the template needs no write", () => {
-  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, ALIGNED], "main");
+  const plan = planMilestoneRulesetSync(
+    [DEFAULT_BRANCH, ALIGNED],
+    "main",
+    REPORTED,
+  );
   assertEquals(plan.writes, []);
   assertEquals(plan.skipped, []);
 });
 
 Deno.test("planMilestoneRulesetSync - a missing ruleset is created, active, mirroring the checks", () => {
-  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH], "main");
+  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH], "main", REPORTED);
   assertEquals(plan.writes.length, 1);
   const write = plan.writes[0]!;
   assert(write.kind === "create");
@@ -291,7 +301,7 @@ Deno.test("planMilestoneRulesetSync - a missing ruleset is created, active, mirr
 
 Deno.test("planMilestoneRulesetSync - a repository with no rulesets at all still gets one", () => {
   // Nothing to mirror: deletion and force-push protection only, no bypass.
-  const plan = planMilestoneRulesetSync([], "main");
+  const plan = planMilestoneRulesetSync([], "main", REPORTED);
   const write = plan.writes[0];
   assert(write?.kind === "create");
   assertEquals(write.body.rules.map((r) => r.type), [
@@ -315,7 +325,11 @@ Deno.test("planMilestoneRulesetSync - a hand-made ruleset is aligned: renamed, s
       },
     ],
   };
-  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, handMade], "main");
+  const plan = planMilestoneRulesetSync(
+    [DEFAULT_BRANCH, handMade],
+    "main",
+    REPORTED,
+  );
   assertEquals(plan.writes.length, 1);
   const write = plan.writes[0]!;
   assert(write.kind === "align");
@@ -354,7 +368,11 @@ Deno.test("planMilestoneRulesetSync - an aligned ruleset mirrors the default bra
       },
     }],
   };
-  const plan = planMilestoneRulesetSync([develop, MILESTONE], "Develop");
+  const plan = planMilestoneRulesetSync(
+    [develop, MILESTONE],
+    "Develop",
+    REPORTED,
+  );
   const write = plan.writes[0];
   assert(write?.kind === "align");
   assertEquals(
@@ -383,7 +401,11 @@ Deno.test("planMilestoneRulesetSync - a later hand edit to a Vibe-named ruleset 
         : rule
     ),
   };
-  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, edited], "main");
+  const plan = planMilestoneRulesetSync(
+    [DEFAULT_BRANCH, edited],
+    "main",
+    REPORTED,
+  );
   assertEquals(plan.writes.map((w) => w.kind), ["align"]);
 });
 
@@ -392,6 +414,7 @@ Deno.test("planMilestoneRulesetSync - aligning never changes a human-chosen enfo
     const plan = planMilestoneRulesetSync(
       [DEFAULT_BRANCH, { ...MILESTONE, enforcement }],
       "main",
+      REPORTED,
     );
     const write = plan.writes[0];
     assert(write?.kind === "align", enforcement);
@@ -401,6 +424,7 @@ Deno.test("planMilestoneRulesetSync - aligning never changes a human-chosen enfo
   const plan = planMilestoneRulesetSync(
     [DEFAULT_BRANCH, { ...ALIGNED, enforcement: "disabled" }],
     "main",
+    REPORTED,
   );
   assertEquals(plan.writes, []);
 });
@@ -414,7 +438,11 @@ Deno.test("planMilestoneRulesetSync - a broader ruleset covering milestone branc
       },
     },
   };
-  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, broad], "main");
+  const plan = planMilestoneRulesetSync(
+    [DEFAULT_BRANCH, broad],
+    "main",
+    REPORTED,
+  );
   assertEquals(plan.writes, [], "covered, and not setup's to align");
 });
 
@@ -422,6 +450,7 @@ Deno.test("planMilestoneRulesetSync - an unrecognised enforcement is skipped wit
   const plan = planMilestoneRulesetSync(
     [DEFAULT_BRANCH, { ...MILESTONE, enforcement: "paused" }],
     "main",
+    REPORTED,
   );
   assertEquals(plan.writes, []);
   assertEquals(plan.skipped.length, 1);
@@ -475,7 +504,11 @@ Deno.test("syncMilestoneRuleset - rejects an invalid slug before reaching gh", a
 });
 
 Deno.test("applyMilestoneSyncOutcomes - reports the repository setup leaves behind", () => {
-  const plan = planMilestoneRulesetSync([DEFAULT_BRANCH, MILESTONE], "main");
+  const plan = planMilestoneRulesetSync(
+    [DEFAULT_BRANCH, MILESTONE],
+    "main",
+    REPORTED,
+  );
   const write = plan.writes[0];
   assert(write?.kind === "align");
   const after = applyMilestoneSyncOutcomes([DEFAULT_BRANCH, MILESTONE], [{
@@ -486,7 +519,7 @@ Deno.test("applyMilestoneSyncOutcomes - reports the repository setup leaves behi
     body: write.body,
   }]);
   assertEquals(after.length, 2);
-  assertEquals(planMilestoneRulesetSync(after, "main").writes, []);
+  assertEquals(planMilestoneRulesetSync(after, "main", REPORTED).writes, []);
 });
 
 // ---------------------------------------------------------------------------

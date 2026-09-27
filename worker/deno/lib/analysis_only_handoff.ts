@@ -16,7 +16,9 @@
  *       to declare the issue analysis-only — {@link hasAnalysisOnlyMarker};
  *       and
  *   (b) the post-run signal — Claude made no code changes (the existing
- *       "unable to make code changes" partial-answer path).
+ *       "unable to make code changes" partial-answer path). Output that
+ *       names files to change is excluded: it is a failed implementation,
+ *       retried rather than handed off (Issue #2687).
  *
  * Both route through {@link escalateToHuman}, which applies `needs-human`
  * plus a paired explanation comment (Issue #1471). The label drops the

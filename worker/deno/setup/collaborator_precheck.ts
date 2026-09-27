@@ -125,7 +125,7 @@ export interface CollaboratorPrecheckResult {
 export const PRECHECK_DEDUP_TAG = "<!-- vibe-coder:collaborator-precheck -->";
 
 /** Repo the consolidated issue is filed against by default. */
-const DEFAULT_TARGET_REPO = "stSoftwareAU/VibeCoder";
+export const COLLABORATOR_PRECHECK_REPO = "stSoftwareAU/VibeCoder";
 
 // ---------------------------------------------------------------------------
 // Command runner
@@ -386,7 +386,7 @@ export async function verifyMonitoredCollaborators(
 ): Promise<CollaboratorPrecheckResult> {
   const runner = options.runCommand ??
     createSetupRunCommand(options.ghConfigDir);
-  const targetRepo = options.targetRepo ?? DEFAULT_TARGET_REPO;
+  const targetRepo = options.targetRepo ?? COLLABORATOR_PRECHECK_REPO;
 
   // Undefined means the caller did not ask for the identity check.
   const identityGuardInactive = options.serviceAccounts !== undefined &&

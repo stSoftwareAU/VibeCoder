@@ -5,8 +5,9 @@
  * seam that behaves like a small GitHub: reads answer from per-repo state and
  * writes change it, so a second run sees what the first one wrote. The
  * CODEOWNERS writer (#2627) and the audit-issue closer (#2629) are injected
- * stubs, and every checkout lives under a temp `WORK_DIR`. Nothing touches
- * the network and nothing sleeps.
+ * stubs. The workflows are served through the contents API at the default
+ * branch (Issue #2685), as GitHub does, so no checkout is involved. Nothing
+ * touches the network and nothing sleeps.
  *
  * Australian English throughout (behaviour, organisation, etc.).
  */
@@ -25,11 +26,17 @@ import {
   type SyncCodeownersFn,
 } from "../setup/repo_settings_harden_sync.ts";
 import {
+  CODE_SECURITY_SKIP_NOTE,
   hardenRepo,
   type HardenRepoOptions,
   SECRET_PROTECTION_SKIP_NOTE,
 } from "../lib/repo_settings_harden.ts";
-import { RUN_ALL_REPO_STEPS } from "../setup/setup_cli.ts";
+import {
+  DRY_RUN_SUBCOMMANDS,
+  dryRunRefusal,
+  reportFleetTokenScopes,
+  RUN_ALL_REPO_STEPS,
+} from "../setup/setup_cli.ts";
 
 // ---------------------------------------------------------------------------
 // A stateful fake GitHub behind the gh seam
@@ -52,7 +59,25 @@ interface FakeRepo {
   topics?: string[];
   /** Where CODEOWNERS sits on the default branch; an Error fails the read. */
   codeowners?: string | Error;
+  /** Whether the gh identity holds admin (Issue #2685); default true. */
+  admin?: boolean;
+  /** Files on the default branch, by path (the workflows). */
+  files?: Record<string, string>;
+  /** `allow_merge_commit` (Issue #2690); absent from the read when unset. */
+  allowMergeCommit?: boolean;
+  /** Each account's repository role (Issue #2690). */
+  collaborators?: Record<string, string>;
+  /** CodeQL default setup (Issue #2704); an Error fails the read. */
+  codeScanning?: { state: string; query_suite?: string } | Error;
 }
+
+/** The login the fake GitHub says the gh identity is. */
+const OPERATOR_LOGIN = "operator-admin";
+
+/** One pinned workflow using one third-party action. */
+const CI_WORKFLOW = "jobs:\n  a:\n    steps:\n" +
+  "      - uses: actions/checkout@0000000000000000000000000000000000000000\n" +
+  "      - uses: acme/deploy-action@1111111111111111111111111111111111111111\n";
 
 const NOT_FOUND = () => new Error("gh: Not Found (HTTP 404)");
 
@@ -100,19 +125,53 @@ function driftedRepo(overrides: Partial<FakeRepo> = {}): FakeRepo {
       ],
     }],
     codeowners: ".github/CODEOWNERS",
+    files: { ".github/workflows/ci.yml": CI_WORKFLOW },
+    codeScanning: { state: "not-configured" },
     ...overrides,
   };
+}
+
+/** The contents-API answer for `path` on the default branch, if any. */
+function contentsAt(state: FakeRepo, path: string): unknown {
+  const files = state.files ?? {};
+  if (path in files) return files[path];
+  const entries = new Map<
+    string,
+    { name: string; path: string; type: string }
+  >();
+  for (const file of Object.keys(files)) {
+    if (!file.startsWith(`${path}/`)) continue;
+    const name = file.slice(path.length + 1).split("/")[0]!;
+    const child = `${path}/${name}`;
+    entries.set(child, {
+      name,
+      path: child,
+      type: child === file ? "file" : "dir",
+    });
+  }
+  if (entries.size === 0) throw NOT_FOUND();
+  return [...entries.values()];
 }
 
 /**
  * A gh seam over `repos`: each read answers from the repo's current state,
  * each write is recorded and applied, so the next run reads the result.
  */
-function makeFakeGitHub(repos: Record<string, FakeRepo>) {
+function makeFakeGitHub(
+  repos: Record<string, FakeRepo>,
+  orgOwners: readonly string[] = [],
+) {
   const writes: RecordedWrite[] = [];
   const reads: string[] = [];
 
   const route = (endpoint: string): unknown => {
+    if (endpoint === "user") return { login: OPERATOR_LOGIN };
+    const membership = /^orgs\/[^/]+\/memberships\/([^/]+)$/.exec(endpoint);
+    if (membership) {
+      return orgOwners.includes(membership[1]!)
+        ? { role: "admin", state: "active" }
+        : { role: "member", state: "active" };
+    }
     for (const [slug, state] of Object.entries(repos)) {
       const base = `repos/${slug}`;
       if (endpoint === base) {
@@ -120,7 +179,28 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
           visibility: state.visibility,
           private: state.visibility !== "public",
           security_and_analysis: state.security,
+          permissions: { admin: state.admin ?? true, push: true },
+          ...(state.allowMergeCommit === undefined
+            ? {}
+            : { allow_merge_commit: state.allowMergeCommit }),
         };
+      }
+      const collaborator = new RegExp(
+        `^${base}/collaborators/([^/]+)/permission$`,
+      ).exec(endpoint);
+      if (collaborator) {
+        const role = state.collaborators?.[collaborator[1]!];
+        if (role === undefined) throw NOT_FOUND();
+        return { role_name: role };
+      }
+      if (
+        endpoint.startsWith(`${base}/contents/`) &&
+        endpoint.endsWith("?ref=main")
+      ) {
+        return contentsAt(
+          state,
+          endpoint.slice(`${base}/contents/`.length, -"?ref=main".length),
+        );
       }
       if (endpoint === `${base}/actions/permissions/workflow`) {
         return state.workflow;
@@ -141,6 +221,10 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
           );
       }
       if (endpoint === `${base}/topics`) return { names: state.topics ?? [] };
+      if (endpoint === `${base}/code-scanning/default-setup`) {
+        if (state.codeScanning instanceof Error) throw state.codeScanning;
+        if (state.codeScanning) return state.codeScanning;
+      }
       if (endpoint === `${base}/rulesets`) {
         return state.rulesets.map((r) => ({
           id: r["id"],
@@ -171,7 +255,27 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
       const base = `repos/${slug}`;
       if (method === "PATCH" && endpoint === base) {
         const sec = body["security_and_analysis"] as FakeRepo["security"];
-        state.security = { ...state.security, ...sec };
+        if (sec) state.security = { ...state.security, ...sec };
+        if (typeof body["allow_merge_commit"] === "boolean") {
+          state.allowMergeCommit = body["allow_merge_commit"];
+        }
+        return;
+      }
+      const collaborator = endpoint.startsWith(`${base}/collaborators/`)
+        ? endpoint.slice(`${base}/collaborators/`.length)
+        : undefined;
+      if (method === "PUT" && collaborator) {
+        state.collaborators = {
+          ...state.collaborators,
+          [collaborator]: body["permission"] === "push" ? "write" : "?",
+        };
+        return;
+      }
+      if (
+        method === "PATCH" &&
+        endpoint === `${base}/code-scanning/default-setup`
+      ) {
+        state.codeScanning = body as { state: string };
         return;
       }
       if (endpoint === `${base}/actions/permissions/workflow`) {
@@ -189,6 +293,10 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
       const ruleset = state.rulesets.find((r) =>
         endpoint === `${base}/rulesets/${r["id"]}`
       );
+      if (ruleset && method === "DELETE") {
+        state.rulesets = state.rulesets.filter((r) => r !== ruleset);
+        return;
+      }
       if (ruleset) {
         Object.assign(ruleset, body);
         return;
@@ -219,7 +327,9 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
     }
     const endpoint = args[1] ?? "";
     reads.push(endpoint);
-    return JSON.stringify(route(endpoint));
+    const value = route(endpoint);
+    // A string is a raw file body (`Accept: application/vnd.github.raw+json`).
+    return typeof value === "string" ? value : JSON.stringify(value);
   };
   return { gh, writes, reads };
 }
@@ -248,21 +358,14 @@ function uniqueRepo(): string {
   return `harden-sync/repo-${Date.now()}-${counter}`;
 }
 
-/** A temp WORK_DIR holding a checkout (one third-party action) per repo. */
-async function makeWorkDir(repos: readonly string[]): Promise<string> {
+/**
+ * A temp WORK_DIR for the CODEOWNERS writer. The allow-list no longer reads
+ * it (Issue #2685), so it holds no workflows: an allow-list built from a
+ * checkout would be missing `acme/deploy-action@*`.
+ */
+async function makeWorkDir(_repos: readonly string[]): Promise<string> {
   const workDir = await Deno.makeTempDir({ prefix: "vibe-harden-work-" });
   TEMP_PATHS.push(workDir);
-  for (const repo of repos) {
-    const dir = `${workDir}/${repo.split("/")[1]}`;
-    await Deno.mkdir(`${dir}/.git`, { recursive: true });
-    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
-    await Deno.writeTextFile(
-      `${dir}/.github/workflows/ci.yml`,
-      "jobs:\n  a:\n    steps:\n" +
-        "      - uses: actions/checkout@0000000000000000000000000000000000000000\n" +
-        "      - uses: acme/deploy-action@1111111111111111111111111111111111111111\n",
-    );
-  }
   return workDir;
 }
 
@@ -348,6 +451,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
     writes.map((w) => `${w.method} ${w.endpoint}`).sort(),
     [
       `PATCH repos/${repo}`,
+      `PATCH repos/${repo}/code-scanning/default-setup`,
       `PUT repos/${repo}/actions/permissions`,
       `PUT repos/${repo}/actions/permissions/selected-actions`,
       `PUT repos/${repo}/actions/permissions/workflow`,
@@ -367,7 +471,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(state[repo]!.actions["sha_pinning_required"], true);
   assertStringIncludes(
     first.lines.join("\n"),
-    `${repo}: 6 applied, 0 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 7 applied, 0 unchanged, 0 skipped, 0 failed`,
   );
 
   writes.length = 0;
@@ -378,7 +482,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(writes, [], "a converged repo must see zero writes");
   assertStringIncludes(
     second.lines.join("\n"),
-    `${repo}: 0 applied, 6 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`,
   );
 });
 
@@ -396,7 +500,7 @@ Deno.test("runRepoSettingsHarden - a converged repo reads only, and the totals l
   const last = h.lines[h.lines.length - 1] ?? "";
   assertMatch(
     last,
-    /^Repo-settings hardening: 0 applied, 6 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
+    /^Repo-settings hardening: 0 applied, 7 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
   );
 });
 
@@ -476,7 +580,7 @@ Deno.test("runRepoSettingsHarden - a repo whose hardenRepo throws never stops th
   assertStringIncludes(out, "boom: rulesets unreachable");
   assertStringIncludes(
     out,
-    `${healthy}: 6 applied, 0 unchanged, 0 skipped, 0 failed`,
+    `${healthy}: 7 applied, 0 unchanged, 0 skipped, 0 failed`,
   );
   assertStringIncludes(out, "1 repo(s) failed");
 });
@@ -498,7 +602,7 @@ Deno.test("runRepoSettingsHarden - a failed step inside hardenRepo is never swal
   const out = [...h.lines, ...h.warnings].join("\n");
   assertStringIncludes(
     out,
-    `${repo}: 5 applied, 0 unchanged, 0 skipped, 1 failed`,
+    `${repo}: 6 applied, 0 unchanged, 0 skipped, 1 failed`,
   );
   assertStringIncludes(out, "workflow-token");
   assertStringIncludes(out, "HTTP 403: Resource not accessible");
@@ -542,8 +646,9 @@ Deno.test("runRepoSettingsHarden - a private repo gets no secret-scanning write 
     [],
   );
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "5 applied, 0 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 0 unchanged, 2 skipped, 0 failed");
   assertStringIncludes(line, SECRET_PROTECTION_SKIP_NOTE);
+  assertStringIncludes(line, CODE_SECURITY_SKIP_NOTE);
 });
 
 Deno.test("runRepoSettingsHarden - a public repo's secret-scanning write is made (Issue #2628)", async () => {
@@ -554,7 +659,8 @@ Deno.test("runRepoSettingsHarden - a public repo's secret-scanning write is made
   await runRepoSettingsHarden({ repos: [repo] }, harness(gh, workDir).deps);
 
   assertEquals(
-    writes.filter((w) => w.method === "PATCH").map((w) => w.body),
+    writes.filter((w) => w.method === "PATCH" && w.endpoint === `repos/${repo}`)
+      .map((w) => w.body),
     [{
       security_and_analysis: {
         secret_scanning: { status: "enabled" },
@@ -741,4 +847,507 @@ Deno.test("runAll - repo-settings-harden runs right after branch-protection-sync
   assert(harden > 0, `missing from runAll: ${names.join(", ")}`);
   assertEquals(names[harden - 1], "branch-protection-sync");
   assertEquals(names[harden + 1], "backfill-idle-task-labels");
+});
+
+// ---------------------------------------------------------------------------
+// Admin identity, and a dry run that writes nothing (Issue #2685)
+// ---------------------------------------------------------------------------
+
+/** Any argv that would change something on GitHub. */
+function isWrite(args: readonly string[]): boolean {
+  const method = args.indexOf("--method");
+  if (method >= 0 && args[method + 1] !== "GET") return true;
+  if (args.includes("-X") || args.includes("--input")) return true;
+  if (args.some((a) => /^-[fF]$|^--(raw-)?field$/.test(a))) return true;
+  // Everything but `gh api <read>` (issue close, pr comment, label edit, …).
+  return args[0] !== "api";
+}
+
+Deno.test("runRepoSettingsHarden - a dry run performs no write, runs no CODEOWNERS writer or closer, and reports what it would apply (Issue #2685)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: driftedRepo() };
+  const before = structuredClone(state);
+  const { gh: inner } = makeFakeGitHub(state);
+  const attempted: string[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    if (isWrite(args)) {
+      attempted.push(args.join(" "));
+      return Promise.reject(new Error(`dry run wrote: ${args.join(" ")}`));
+    }
+    return inner(args);
+  };
+  const h = harness(gh, await makeWorkDir([repo]), { dryRun: true });
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(attempted, [], "a dry run must not attempt a single write");
+  assertEquals(state, before);
+  assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
+  assertEquals(h.codeownersCalls, [], "the CODEOWNERS writer writes a file");
+  assertEquals(h.closerCalls, [], "the closer comments on and closes issues");
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "7 planned, 0 unchanged, 0 skipped, 0 failed");
+  assertStringIncludes(line, "workflow-token");
+  assertStringIncludes(line, "codeowners: skipped (dry run)");
+  assertStringIncludes(h.lines.join("\n"), "dry run");
+});
+
+Deno.test("runRepoSettingsHarden - says which login it runs as, and that it is not the fleet account (Issue #2685)", async () => {
+  const repo = uniqueRepo();
+  const { gh } = makeFakeGitHub({ [repo]: driftedRepo() });
+  const h = harness(gh, await makeWorkDir([repo]));
+
+  await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  const first = h.lines[0] ?? "";
+  assertStringIncludes(first, OPERATOR_LOGIN);
+  assertStringIncludes(first, "gh_config_dir");
+});
+
+Deno.test("runRepoSettingsHarden - without admin, repos are left alone and 'needs an admin login' is said once, with no raw 403 or 404 (Issue #2685)", async () => {
+  const a = uniqueRepo();
+  const b = uniqueRepo();
+  const admin = uniqueRepo();
+  const { gh, writes, reads } = makeFakeGitHub({
+    [a]: driftedRepo({ admin: false }),
+    [b]: driftedRepo({ admin: false }),
+    [admin]: driftedRepo(),
+  });
+  const h = harness(gh, await makeWorkDir([a, b, admin]));
+
+  const ok = await runRepoSettingsHarden({ repos: [a, b, admin] }, h.deps);
+
+  assertEquals(ok, false);
+  const out = [...h.lines, ...h.warnings].join("\n");
+  assertEquals(out.split("needs an admin login").length - 1, 1, out);
+  const notice = h.warnings.find((w) => w.includes("needs an admin login"));
+  assertStringIncludes(notice ?? "", a);
+  assertStringIncludes(notice ?? "", b);
+  assertStringIncludes(notice ?? "", OPERATOR_LOGIN);
+  assert(!/HTTP 40[34]/.test(out), out);
+  // The non-admin repos are not touched past the one permission read.
+  for (const repo of [a, b]) {
+    assert(
+      !reads.some((r) => r.startsWith(`repos/${repo}/`)),
+      reads.filter((r) => r.startsWith(`repos/${repo}/`)).join("\n"),
+    );
+    assert(!writes.some((w) => w.endpoint.startsWith(`repos/${repo}`)));
+  }
+  assertEquals(h.codeownersCalls.map((c) => c.repo), [admin]);
+  assert(writes.some((w) => w.endpoint.startsWith(`repos/${admin}`)));
+});
+
+// ---------------------------------------------------------------------------
+// --dry-run is refused by a subcommand that cannot honour it (Issue #2685)
+// ---------------------------------------------------------------------------
+
+Deno.test("dryRunRefusal - a subcommand that would write for real refuses --dry-run; one that honours it runs (Issue #2685)", () => {
+  for (
+    const subcommand of [
+      "all",
+      "workflow-sync",
+      "best-practices-sync",
+      "gitignore-sync",
+      "verify-monitored-collaborator",
+      "branch-protection-sync",
+      "backfill-idle-task-labels",
+      "config",
+      "hooks",
+    ]
+  ) {
+    const refusal = dryRunRefusal(subcommand);
+    assert(refusal, `${subcommand} must refuse --dry-run`);
+    assertStringIncludes(refusal, subcommand);
+    assertStringIncludes(refusal, "nothing was run");
+  }
+  for (const subcommand of DRY_RUN_SUBCOMMANDS) {
+    assertEquals(dryRunRefusal(subcommand), undefined, subcommand);
+  }
+  assert(DRY_RUN_SUBCOMMANDS.includes("repo-settings-harden"));
+});
+
+// ---------------------------------------------------------------------------
+// The fleet works without admin (Issue #2690)
+// ---------------------------------------------------------------------------
+
+Deno.test("reportFleetTokenScopes - a fleet token without workflow is reported with the exact refresh command for its config dir, and fails (Issue #2690)", async () => {
+  const warnings: string[] = [];
+  const asked: Array<{ args: string[]; dir?: string }> = [];
+  const ok = await reportFleetTokenScopes("/h/.config/gh-vibe", {
+    runGh: (args, dir) => {
+      asked.push({ args, ...(dir ? { dir } : {}) });
+      return Promise.resolve({
+        success: true,
+        output: "github.com\n  - Token: gho_****\n" +
+          "  - Token scopes: 'read:org', 'repo'",
+      });
+    },
+    log: () => {},
+    warn: (line) => warnings.push(line),
+  });
+  assertEquals(ok, false);
+  assertEquals(asked, [{
+    args: ["auth", "status", "-h", "github.com"],
+    dir: "/h/.config/gh-vibe",
+  }]);
+  const text = warnings.join("\n");
+  assertStringIncludes(text, "workflow");
+  assertStringIncludes(
+    text,
+    'GH_CONFIG_DIR="/h/.config/gh-vibe" gh auth refresh -h github.com -s workflow',
+  );
+});
+
+Deno.test("reportFleetTokenScopes - a complete or fine-grained token passes without a warning (Issue #2690)", async () => {
+  for (
+    const output of [
+      "  - Token: gho_****\n  - Token scopes: 'read:org', 'repo', 'workflow'",
+      "  - Token: github_pat_****\n  - Token scopes: none",
+    ]
+  ) {
+    const warnings: string[] = [];
+    const ok = await reportFleetTokenScopes(undefined, {
+      runGh: () => Promise.resolve({ success: true, output }),
+      log: () => {},
+      warn: (line) => warnings.push(line),
+    });
+    assertEquals([ok, warnings], [true, []], output);
+  }
+});
+
+/** A squash-only repo (merge commits off) whose default rule allows all. */
+function squashOnlyRepo(overrides: Partial<FakeRepo> = {}): FakeRepo {
+  const repo = driftedRepo(overrides);
+  const pr = (repo.rulesets[0]!["rules"] as Array<
+    { type: string; parameters: Record<string, unknown> }
+  >)[0]!;
+  pr.parameters["allowed_merge_methods"] = ["merge", "squash", "rebase"];
+  repo.rulesets.push({
+    id: 8,
+    name: "Vibe Coder milestone branches",
+    target: "branch",
+    enforcement: "active",
+    conditions: {
+      ref_name: { include: ["refs/heads/milestone/**"], exclude: [] },
+    },
+    rules: [{ type: "deletion" }],
+  });
+  return { allowMergeCommit: false, ...repo, ...overrides };
+}
+
+function pullRequestRule(state: FakeRepo) {
+  return (state.rulesets[0]!["rules"] as Array<
+    { type: string; parameters: Record<string, unknown> }
+  >).find((r) => r.type === "pull_request")!.parameters;
+}
+
+Deno.test("runRepoSettingsHarden - a squash-only repo ends with merge commits allowed, the default branch squash-only and the milestone ruleset untouched; a second run writes nothing (Issue #2690)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: squashOnlyRepo() };
+  const milestoneBefore = structuredClone(state[repo]!.rulesets[1]);
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  const ok = await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, workDir).deps,
+  );
+
+  assertEquals(ok, true);
+  assertEquals(state[repo]!.allowMergeCommit, true);
+  const rule = pullRequestRule(state[repo]!);
+  assertEquals(rule["allowed_merge_methods"], ["squash"]);
+  assertEquals(rule["required_approving_review_count"], 1);
+  assertEquals(state[repo]!.rulesets[1], milestoneBefore);
+  // The default branch is squash-only before merge commits are switched on.
+  const order = writes.map((w) => `${w.method} ${w.endpoint}`);
+  const merge = writes.findIndex((w) =>
+    w.method === "PATCH" && "allow_merge_commit" in w.body
+  );
+  assert(
+    merge > order.indexOf(`PUT repos/${repo}/rulesets/7`),
+    order.join("\n"),
+  );
+
+  writes.length = 0;
+  await runRepoSettingsHarden({ repos: [repo] }, harness(gh, workDir).deps);
+  assertEquals(writes, [], "a converged repo must see zero writes");
+});
+
+Deno.test("runRepoSettingsHarden - fleet accounts end at write, and an organisation owner is reported once with the setting to change, never written (Issue #2690)", async () => {
+  const [a, b] = [uniqueRepo(), uniqueRepo()];
+  const collaborators = { VibeCoderST: "admin", stservice: "admin" };
+  const state = {
+    [a]: driftedRepo({ collaborators: { ...collaborators } }),
+    [b]: driftedRepo({ collaborators: { ...collaborators } }),
+  };
+  const { gh, writes } = makeFakeGitHub(state, ["stservice"]);
+  const h = harness(gh, await makeWorkDir([a, b]));
+
+  await runRepoSettingsHarden({
+    repos: [a, b],
+    fleet_pr_authors: ["VibeCoderST", "stservice"],
+    service_accounts: ["stservice"],
+  }, h.deps);
+
+  for (const repo of [a, b]) {
+    assertEquals(state[repo]!.collaborators, {
+      VibeCoderST: "write",
+      stservice: "admin",
+    });
+  }
+  assert(!writes.some((w) => w.endpoint.includes("stservice")));
+  const owner = h.warnings.filter((w) => w.includes("stservice"));
+  assertEquals(owner.length, 1, h.warnings.join("\n"));
+  assertStringIncludes(
+    owner[0]!,
+    "https://github.com/orgs/harden-sync/people",
+  );
+  assertStringIncludes(owner[0]!, "Member");
+});
+
+Deno.test("runRepoSettingsHarden - a dry run plans the merge-commit, squash-only and fleet changes and writes none of them (Issue #2690)", async () => {
+  const repo = uniqueRepo();
+  const state = {
+    [repo]: squashOnlyRepo({ collaborators: { VibeCoderST: "admin" } }),
+  };
+  const attempted: string[] = [];
+  const { gh: real } = makeFakeGitHub(state);
+  const gh = (args: string[]) => {
+    if (args.includes("--method")) {
+      attempted.push(args.join(" "));
+      return Promise.reject(new Error(`dry run wrote: ${args.join(" ")}`));
+    }
+    return real(args);
+  };
+  const h = harness(gh, await makeWorkDir([repo]), { dryRun: true });
+
+  await runRepoSettingsHarden({
+    repos: [repo],
+    service_accounts: ["VibeCoderST"],
+  }, h.deps);
+
+  assertEquals(attempted, []);
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  for (
+    const kind of [
+      "default-branch-approval",
+      "merge-commit-allowed",
+      "fleet-account-write",
+    ]
+  ) {
+    assertStringIncludes(line, kind);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Copilot code review on / off / leave (Issue #2701)
+// ---------------------------------------------------------------------------
+
+/** The hand-made ruleset four monitored repos carried: Copilot alone. */
+function copilotOnlyRuleset(): Record<string, unknown> {
+  return {
+    id: 40,
+    name: "Copilot review for default branch",
+    target: "branch",
+    enforcement: "active",
+    conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } },
+    rules: [{
+      type: "copilot_code_review",
+      parameters: { review_on_push: true, review_draft_pull_requests: false },
+    }],
+  };
+}
+
+/** Every Copilot rule anywhere in the repo's rulesets. */
+function copilotRules(state: FakeRepo): unknown[] {
+  return state.rulesets.flatMap((r) =>
+    (r["rules"] as Array<{ type: string }>).filter((rule) =>
+      rule.type === "copilot_code_review"
+    )
+  );
+}
+
+Deno.test("runRepoSettingsHarden - copilot off deletes the Copilot-only ruleset, names it on the repo line, and converges (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const state = {
+    [repo]: driftedRepo({
+      rulesets: [...driftedRepo().rulesets, copilotOnlyRuleset()],
+    }),
+  };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+  const first = harness(gh, workDir);
+
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "off" },
+    first.deps,
+  );
+
+  assert(
+    writes.some((w) =>
+      w.method === "DELETE" && w.endpoint === `repos/${repo}/rulesets/40`
+    ),
+  );
+  assertEquals(copilotRules(state[repo]!), []);
+  assertEquals(state[repo]!.rulesets.length, 1, "the Vibe ruleset stays");
+  assertStringIncludes(
+    first.lines.join("\n"),
+    "Turn off Copilot code review: delete ruleset " +
+      "'Copilot review for default branch'",
+  );
+
+  writes.length = 0;
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "off" },
+    harness(gh, workDir).deps,
+  );
+  assertEquals(writes, [], "already off: no write");
+});
+
+Deno.test("runRepoSettingsHarden - copilot on creates the dedicated ruleset once (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: driftedRepo() };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "on" },
+    harness(gh, workDir).deps,
+  );
+  assertEquals(copilotRules(state[repo]!), [{
+    type: "copilot_code_review",
+    parameters: { review_on_push: false, review_draft_pull_requests: false },
+  }]);
+
+  writes.length = 0;
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "on" },
+    harness(gh, workDir).deps,
+  );
+  assertEquals(writes, [], "already on: no write");
+});
+
+Deno.test("runRepoSettingsHarden - copilot leave leaves a Copilot ruleset exactly as it is (Issue #2701)", async () => {
+  const repo = uniqueRepo();
+  const state = {
+    [repo]: driftedRepo({
+      rulesets: [...driftedRepo().rulesets, copilotOnlyRuleset()],
+    }),
+  };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  await runRepoSettingsHarden(
+    { repos: [repo], copilot_code_review: "leave" },
+    harness(gh, workDir).deps,
+  );
+
+  assertEquals(copilotRules(state[repo]!).length, 1);
+  assert(!writes.some((w) => w.endpoint === `repos/${repo}/rulesets/40`));
+});
+
+// ---------------------------------------------------------------------------
+// CodeQL default setup on public repositories only (Issue #2704)
+// ---------------------------------------------------------------------------
+
+/** The CodeQL writes among `writes`. */
+function codeqlWrites(writes: readonly RecordedWrite[]): RecordedWrite[] {
+  return writes.filter((w) =>
+    w.endpoint.endsWith("/code-scanning/default-setup")
+  );
+}
+
+Deno.test("runRepoSettingsHarden - a public repo gets CodeQL default setup once, and a second run writes nothing (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: driftedRepo() };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  await runRepoSettingsHarden({ repos: [repo] }, harness(gh, workDir).deps);
+
+  assertEquals(codeqlWrites(writes), [{
+    method: "PATCH",
+    endpoint: `repos/${repo}/code-scanning/default-setup`,
+    body: { state: "configured", query_suite: "default" },
+  }]);
+
+  writes.length = 0;
+  const second = harness(gh, workDir);
+  await runRepoSettingsHarden({ repos: [repo] }, second.deps);
+  assertEquals(writes, [], "CodeQL already configured: no write");
+  assertStringIncludes(
+    second.lines.join("\n"),
+    `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`,
+  );
+});
+
+Deno.test("runRepoSettingsHarden - CodeQL already on the extended suite is left alone (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeFakeGitHub({
+    [repo]: driftedRepo({
+      codeScanning: { state: "configured", query_suite: "extended" },
+    }),
+  });
+
+  await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, await makeWorkDir([repo])).deps,
+  );
+
+  assertEquals(codeqlWrites(writes), []);
+});
+
+Deno.test("runRepoSettingsHarden - a private repo makes no code-scanning call at all (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes, reads } = makeFakeGitHub({
+    [repo]: driftedRepo({ visibility: "private" }),
+  });
+
+  await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, await makeWorkDir([repo])).deps,
+  );
+
+  assertEquals(reads.filter((r) => r.includes("code-scanning")), []);
+  assertEquals(codeqlWrites(writes), []);
+});
+
+Deno.test("runRepoSettingsHarden - a repo with its own CodeQL workflow is reported on its line and not written (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeFakeGitHub({
+    [repo]: driftedRepo({
+      files: {
+        ".github/workflows/ci.yml": CI_WORKFLOW,
+        ".github/workflows/codeql.yml": "jobs: {}\n",
+      },
+    }),
+  });
+  const h = harness(gh, await makeWorkDir([repo]));
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
+  assertEquals(codeqlWrites(writes), []);
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "6 applied, 0 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "codeql-default-setup");
+  assertStringIncludes(line, ".github/workflows/codeql.yml");
+});
+
+Deno.test("runRepoSettingsHarden - a refused CodeQL read is reported on the repo's line and never stops the run (Issue #2704)", async () => {
+  const repo = uniqueRepo();
+  const { gh } = makeFakeGitHub({
+    [repo]: driftedRepo({
+      codeScanning: new Error("HTTP 403: Resource not accessible"),
+    }),
+  });
+  const h = harness(gh, await makeWorkDir([repo]));
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "6 applied, 0 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "HTTP 403");
 });

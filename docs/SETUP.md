@@ -117,6 +117,19 @@ background service is offered, where files land — is covered in
    what the fields mean is the
    [Configuration Reference](CONFIGURATION.md#-update-mode)'s job.
 
+   Straight after it, on both `setup.sh` and `setup.ps1`, `setup
+   copilot-review-mode` (Issue #2701) asks one question:
+   `Copilot code review (on/off/leave)`. Copilot code review is **billed per
+   review, never free — even on a public repository**: GitHub charges each
+   automatic review to the pull request author's Copilot plan, or to the
+   organisation. `on` has `repo-settings-harden` request a review on every PR
+   into the default branch, `off` removes the review rule from every
+   repository ruleset, and `leave` changes nothing. The default is this
+   host's current answer, `leave` on a fresh host, so Enter never changes
+   anything. The answer is recorded as `copilot_code_review` in
+   `.config.json`; without a terminal nothing is asked and nothing is
+   written. A failure is a warning, never fatal.
+
 7. **Repository sync phases** — eight subcommands, each acting on the
    monitored GitHub repositories rather than the host, each idempotent, and
    each **non-fatal**:
@@ -145,6 +158,33 @@ background service is offered, where files land — is covered in
      `do_not_enforce_on_create: true`; bypass actors are mirrored from the
      default-branch ruleset. With no default-branch checks to mirror it
      carries the first two rules only. A missing ruleset is created `active`.
+
+     **The owner's spec** (Issue #2684). `milestone/**`: required status
+     checks must pass, the branch need **not** be up to date
+     (`strict_required_status_checks_policy: false`), and there is **no**
+     `pull_request` rule, so no approval is required. The default branch: at
+     least one approving review, required status checks, and
+     `strict_required_status_checks_policy: true`. The milestone template
+     cannot express a strict policy or a `pull_request` rule, and aligning
+     removes either from a ruleset setup owns.
+
+     **Only checks a milestone PR reports are mirrored** (Issue #2684). The
+     default branch's checks are intersected with the check names reported by
+     the last few *merged* PRs into a milestone branch — the same rule the
+     default-branch ruleset follows. A check whose workflow runs only for PRs
+     into the default branch (a `pull_request.branches: [Develop]` filter, a
+     version bump, CodeQL's default-branch analysis) never reports on a
+     milestone PR, and requiring it held every milestone PR BLOCKED for ever.
+     The checks left off are named on the repository's line. Open PRs are not
+     sampled: one still running has not reported its last jobs, and anyone
+     who can open a PR chooses which workflows it runs. With no merged
+     milestone PR to sample, a new ruleset requires no checks and an existing
+     one keeps the ones it has — setup never adds an unproven check, and never
+     strips a gate an armed PR is waiting on. When the default branch requires
+     checks but **none** of them reports on a milestone PR (TagsTS), requiring
+     nothing would let milestone PRs merge on no CI at all, so setup requires
+     instead the checks **every** sampled merged milestone PR reported, and
+     names both lists on the repository's line.
      A ruleset whose include is exactly `refs/heads/milestone/**` and which
      differs in name, rules, checks, strict policy, create exemption or bypass
      actors is rewritten to match — any other rule is removed, and a later
@@ -152,7 +192,10 @@ background service is offered, where files land — is covered in
      changed: a `disabled` or `evaluate` ruleset keeps it, with a warning. A
      broader ruleset that merely also covers milestone branches is left
      alone. Each write prints one success line, each failure one warning;
-     an already-aligned ruleset gets neither. The write runs as the operator,
+     an already-aligned ruleset gets neither. A service account that cannot
+     bypass the ruleset is the intended policy and earns no warning: its
+     refused sync push raises or updates a sync PR instead (Issue #589). The
+     write runs as the operator,
      re-reading the rulesets under that identity (Issue #595), and a read
      that fails is a warning — never "missing" (Issue #678).
      Every ruleset failure is non-fatal and named: a **private repository on
@@ -234,7 +277,8 @@ flowchart TD
     IC --> IP["4 · interactive configuration prompts<br/>(terminal only)"]
     IP --> W["5 · config write<br/>env first, answers merged over"]
     W --> UM["6 · update mode<br/>dynamic or frozen + pins (terminal only)"]
-    UM --> L["label-sync"]
+    UM --> CR["6 · Copilot code review<br/>on / off / leave (terminal only)"]
+    CR --> L["label-sync"]
     subgraph SY["7 · repository sync — warn and continue, never fatal"]
         L --> WS["workflow-sync"]
         WS --> BS["best-practices-sync"]
@@ -258,13 +302,37 @@ flowchart TD
 
 ## Repository settings hardening
 
-`repo-settings-harden` runs straight after the ruleset sync, through the same
-admin `gh_config_dir` identity, and reads each repository's checkout from the
-same `WORK_DIR` (default `~/auto-issue-work`) as `gitignore-sync`. For each
-monitored repository, in order:
+`repo-settings-harden` runs straight after the ruleset sync.
+
+**Identity.** Every write it makes needs repository **admin**, so it runs as
+**your own `gh` login** — the one `gh auth status` shows with no
+`GH_CONFIG_DIR` set, the same `operator` identity the milestone-ruleset
+aligner uses — and never as the fleet account in `gh_config_dir`, which
+holds `write` by design (Issue #2685). Its first line names the login.
+Before touching a repository it checks that login holds admin there
+(`repos/{repo}` `.permissions.admin`). A repository without it is left
+alone, and one line lists them all:
+
+```text
+Repo-settings hardening needs an admin login: someone is not an admin on 2 repo(s) (owner/a, owner/b), so they were left alone. Run setup logged in to gh as a repository admin (gh auth login).
+```
+
+So run setup logged in to `gh` as a repository admin. The fleet worker is
+unaffected: at run time it keeps using the fleet token, and nothing here
+widens that token's rights.
+
+**Dry run.** `setup_cli.ts repo-settings-harden --dry-run` reads and plans
+every repository and writes nothing: no setting, no CODEOWNERS file, no
+audit-issue comment or close. Each line then counts `planned` instead of
+`applied` and lists the steps it `would apply`. A subcommand without a dry
+run refuses `--dry-run` rather than ignoring it and writing for real.
+
+For each monitored repository, in order:
 
 1. **CODEOWNERS** — the default `.github/CODEOWNERS` writer runs against the
-   local checkout. The owners come from the `codeowners_owners` setup key.
+   local checkout under `WORK_DIR` (default `~/auto-issue-work`), as
+   `gitignore-sync` does. The owners come from the `codeowners_owners` setup
+   key.
 2. **Settings** — every setting below is read first and written only when it
    differs, so a second run against a hardened repository makes no writes:
    - the default workflow token is read-only, and Actions may not create or
@@ -272,10 +340,28 @@ monitored repository, in order:
    - actions must be pinned to a full-length commit SHA;
    - `allowed_actions` is `selected`, and every `owner/repo@*` the workflows
      need, including the actions their composite actions call, is **added
-     to** the existing allow-list. Nothing on the list is removed;
+     to** the existing allow-list. Nothing on the list is removed. The
+     workflows (`.github/workflows/*.yml`) and local composite actions
+     (`.github/actions/**/action.yml`) are read through the GitHub API at
+     the default branch, so no checkout is needed (Issue #2685);
    - secret scanning and push protection are turned on for **public**
      repositories only. A private repository needs the paid GitHub Secret
      Protection add-on, so the step is skipped there and its line says so;
+   - **CodeQL default setup** is turned on for **public** repositories only
+     (Issue #2704), behind the same visibility check as secret scanning: it
+     is free there, and includes Copilot Autofix at no charge, while a
+     private repository would need paid GitHub Code Security, so setup makes
+     no code-scanning call there and the line says it was skipped. It reads
+     `code-scanning/default-setup` and writes
+     `{"state":"configured","query_suite":"default"}` only when the state is
+     `not-configured`. The `default` suite is used, not `extended`, to keep
+     the alert noise down, and a repository already configured on either
+     suite is left as it is. A repository that runs its own CodeQL workflow
+     (**advanced setup**: a workflow named `*codeql*`, or one calling
+     `github/codeql-action/init` or `analyze`) is left alone and reported as
+     `skipped: codeql-default-setup: advanced setup: …`. A 403 or 404 on the
+     read is reported as skipped on that repository's line and does not fail
+     the run;
    - the default branch requires **one approving review** (Issue #2680), so
      fleet PRs wait for the `/review-fleet-prs` skill or the owner instead of
      auto-merging unreviewed. A `pull_request` rule below one is raised in
@@ -289,17 +375,55 @@ monitored repository, in order:
      because it would refuse every push; its line reports
      `skipped: default-branch-approval: direct-push branch (…)` for the
      owner to decide. Milestone branches never get one;
-   - code-owner review is required on the Vibe ruleset **only when a
-     CODEOWNERS file is already on the default branch**. A CODEOWNERS file
+   - code-owner review is required **only when a CODEOWNERS file is
+     already on the default branch**, in the ruleset the default branch's
+     `pull_request` rule comes from — found by the rule's `ruleset_id`,
+     never by the ruleset's name (Issue #2685). A CODEOWNERS file
      written in step 1 reaches the default branch with the next worker PR,
-     and the setup run after that turns the review on.
+     and the setup run after that turns the review on;
+   - **merge commits are allowed** on the repository, so a milestone sync
+     PR lands as a real merge commit and the milestone branch reads level
+     afterwards without an admin bypass (Issue #2690). A squashed sync
+     leaves the default branch outside the milestone branch's history for
+     ever. The default branch stays **squash-only** through its ruleset's
+     `pull_request` rule (`allowed_merge_methods: ["squash"]`), written
+     first and only into a ruleset that targets the default branch alone,
+     so ordinary PRs are unchanged and milestone branches (which carry no
+     `pull_request` rule) accept the merge commit. A default branch that
+     cannot be kept squash-only, such as a direct-push branch, keeps merge
+     commits off and its line says so;
+   - every fleet account (`fleet_pr_authors` and `service_accounts`) is
+     set to **write** on the repository, never admin or maintain
+     (Issue #2690). Write covers everything the fleet does: branches,
+     pushes, labels, PRs and milestone-branch creation. An account that is
+     an **owner of the organisation** is admin on every repository and no
+     repository setting can lower that, so setup reports it once with the
+     setting to change (Organisation → People → the account → Change role →
+     Member) and never changes organisation membership itself. An account
+     below write is left to the collaborator precheck, which prints the
+     commands that grant it;
+   - **Copilot code review** follows the host's `copilot_code_review`
+     (Issue #2701), because each automatic review is billed to the PR
+     author's Copilot plan or the organisation. `off` removes the
+     `copilot_code_review` rule from every repository ruleset that carries
+     it — a ruleset left with no rules is deleted, one with other rules is
+     rewritten with those rules intact — and an **organisation** ruleset
+     carrying it is reported as skipped, since a repository cannot edit it.
+     `on` makes sure a Copilot review rule applies to the default branch
+     (`review_on_push: false`, `review_draft_pull_requests: false`),
+     creating a `Vibe Coder Copilot review` ruleset on `~DEFAULT_BRANCH` when
+     none does. `leave` — the default, and what an absent key means — reads
+     and writes nothing for it. Each change is named on the repository's
+     line.
 3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
    run fixed are commented on and closed.
 
 What it **never** changes: it never lowers an approval count, never adds a
 `pull_request` rule to a direct-push default branch or a milestone branch,
 never removes an entry from the action allow-list, never edits an existing
-CODEOWNERS file, and never buys or asks for GitHub Secret Protection.
+CODEOWNERS file, never buys or asks for GitHub Secret Protection or Code
+Security, never replaces a repository's own CodeQL workflow or changes the
+query suite of CodeQL already set up, and never touches Copilot code review unless `copilot_code_review` says `on` or `off`.
 
 Each repository prints one line, followed by a totals line:
 
@@ -311,8 +435,7 @@ Repo-settings hardening: 2 applied, 3 unchanged, 0 skipped, 0 failed across 1 re
 A failed step is named on its repository's line with GitHub's message.
 Each repository runs on its own, so one repository's failure never stops the
 next. The step is non-fatal: setup prints a warning and carries on, the same
-as the other repository sync phases. The admin token in `gh_config_dir` needs
-repository-admin rights, the same assumption the ruleset sync makes.
+as the other repository sync phases.
 `setup.sh` and `setup.ps1` both call the same `repo-settings-harden`
 subcommand of the Deno setup CLI, so Windows and macOS behave the same.
 
@@ -1405,8 +1528,19 @@ flowchart TD
     style F2 fill:#9d0208,stroke:#6a040f,color:#fff
 ```
 
-`setup.sh` warns when the provisioned token lacks the scope. The fix, for the
-worker account:
+Setup checks the fleet token on every run, on every host (`setup.sh` and
+`setup.ps1` both run `token-scope-preflight`, Issue #2690). It reads the
+token in `gh_config_dir` with `gh auth status` and warns when any of `repo`,
+`workflow` or `read:org` is missing (`write:org` or `admin:org` carries
+`read:org`), printing the exact command that adds them:
+
+```bash
+GH_CONFIG_DIR="$HOME/.config/gh-vibe" gh auth refresh -h github.com -s workflow,read:org
+```
+
+A fine-grained or GitHub App token has no scope list, so setup names the
+repository permissions it needs instead of reporting every scope missing.
+The fix, for the worker account:
 
 ```bash
 gh auth refresh -s workflow     # adds the scope to the existing login
@@ -1644,7 +1778,8 @@ re-run converges on the same state rather than piling up duplicates.
 | `gitignore-sync` | Repo-side. Applies the canonical `.gitignore` and `.gitattributes` safety blocks to every monitored repository, so worker artefacts and credential-shaped files stay out of commits. | Yes, but recommended — the safety blocks exist for a reason. |
 | `verify-monitored-collaborator` | Repo-side, read-mostly. Verifies the worker account has push access on every monitored repository — triage alone lets it be assigned issues but not list collaborators or push a branch (Issue #1455); files (or updates) a precheck issue naming the push grant for any repository that fails, and warns when `service_accounts` is empty. | Yes, but it is the step that tells you access is wrong *before* the first run does. |
 | `branch-protection-sync` | Repo-side. Applies the worker's default-branch ruleset to every monitored repository; repositories whose default branch takes direct pushes, or that opted out, are skipped, and leftover classic branch protection is flagged for manual removal. | Yes — but without it merges are not gated the way a scripted setup leaves them. |
-| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), and code-owner review once CODEOWNERS is on the default branch. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
+| `copilot-review-mode` | Host-only. Asks whether `repo-settings-harden` turns Copilot code review on, off, or leaves it, stating that each review is billed, and records the answer as `copilot_code_review` in `.config.json`. Never prompts or writes without a terminal. | Yes — an unanswered host is `leave`, which changes nothing. |
+| `repo-settings-harden` | Repo-side. Hardens every monitored repository's GitHub settings, writing only what drifted: a read-only workflow token, SHA pinning, a `selected` action allow-list extended with what the workflows use, secret scanning and CodeQL default setup on public repositories, one approving review on the default branch (skipped and reported on a direct-push branch), code-owner review once CODEOWNERS is on the default branch, and Copilot code review on or off as `copilot_code_review` says. See [Repository settings hardening](#repository-settings-hardening). | Yes — but the repositories stay open to the settings findings the weekly audit files. |
 | `backfill-idle-task-labels` | Repo-side. One-off back-fill of the `idle-task` label onto security-scan wrapper issues that predate the label. | Yes — a fresh setup has nothing to back-fill. |
 | `label-colour-reconcile` | Repo-side. Repaints fleet-managed labels whose colour drifted from the canonical table — the `severity:*` / `confidence:*` ramps, `security`, `lang:*` and the per-scan category labels. Only labels the table **names** are touched, and none are created; a label a human added is left as they set it. Supports `--dry-run`. | Yes — a fresh setup has nothing to reconcile; run it on a fleet that predates the canonical table. |
 | `hooks` | Installs the pre-commit hook and git exclude patterns into the VibeCoder checkout itself. Host-only. | No. |
