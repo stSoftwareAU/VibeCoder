@@ -29,6 +29,8 @@ import {
   saveStreamSession,
 } from "../lib/resume_state_store.ts";
 import { resolveStreamId } from "../lib/stream_identity.ts";
+import { handleIssueFailure } from "../lib/label_manager.ts";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 
 const REPO = "acme/widgets";
 const ISSUE = 2682;
@@ -200,4 +202,75 @@ Deno.test("#2682 discardResumedSession - no stream joined and nothing persisted 
     assertEquals(fresh.phaseCount, 0);
     assertEquals(logger.warns.length, 1);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The fresh-session refusal is an ordinary failure: failed-once, then failed
+// ---------------------------------------------------------------------------
+
+function ghRecorder(existingLabels: string) {
+  const calls: string[][] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const joined = args.join(" ");
+    if (joined.includes("issue view") && joined.includes("labels")) {
+      return Promise.resolve(existingLabels);
+    }
+    if (joined.includes("label list")) {
+      return Promise.resolve("failed\nfailed-once\n");
+    }
+    if (joined.includes("Automated Processing Failed")) {
+      return Promise.resolve("0");
+    }
+    return Promise.resolve("");
+  };
+  const commentBody = () => {
+    const call = calls.find((c) => c[0] === "issue" && c[1] === "comment");
+    const idx = call ? call.indexOf("--body") : -1;
+    return call && idx >= 0 ? call[idx + 1] ?? "" : "";
+  };
+  return { calls, ghCommandFn, commentBody };
+}
+
+Deno.test("#2682 handleIssueFailure - a fresh-session refusal marks failed-once and reports prompt-too-long", async () => {
+  await withWorkDir(async (cacheDir) => {
+    const gh = ghRecorder("bug");
+    const result = await handleIssueFailure({
+      repo: REPO,
+      issueNumber: ISSUE,
+      githubUser: "worker-user",
+      failureMessage: buildPromptTooLongReason("Prompt is too long"),
+    }, { ghCommandFn: gh.ghCommandFn, cacheDir });
+
+    assert(result.ok);
+    assertEquals(result.value.markedAsFailedOnce, true);
+    assertEquals(result.value.markedAsFailed, false);
+    assertEquals(result.value.failureCategory, "prompt_too_long");
+    assertEquals(result.value.isInfrastructure, false);
+    assertStringIncludes(gh.commentBody(), "prompt-too-long");
+  });
+});
+
+Deno.test("#2682 handleIssueFailure - a repeat refusal after failed-once marks failed", async () => {
+  await withWorkDir(async (cacheDir) => {
+    const gh = ghRecorder("bug,failed-once");
+    const result = await handleIssueFailure({
+      repo: REPO,
+      issueNumber: ISSUE,
+      githubUser: "worker-user",
+      failureMessage: buildPromptTooLongReason("Prompt is too long"),
+    }, { ghCommandFn: gh.ghCommandFn, cacheDir });
+
+    assert(result.ok);
+    assertEquals(result.value.markedAsFailed, true);
+    assertEquals(result.value.failureCategory, "prompt_too_long");
+  });
+});
+
+Deno.test("#2682 classifyCodingFailure - a fresh-session refusal enters the ladder", () => {
+  const decision = classifyCodingFailure(
+    buildPromptTooLongReason("Prompt is too long"),
+  );
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.failureClass, "prompt-too-long");
 });

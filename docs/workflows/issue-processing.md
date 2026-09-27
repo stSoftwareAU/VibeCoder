@@ -1,12 +1,31 @@
 # 🔍 Workflow: Issue processing (implementation)
 
-This page is part of the **user manual** for the Vibe Coder. It describes how issues move from discovery to an open pull request (the standard implementation path — code changes). For internal implementation details, see **Further reading** at the end.
+This page is part of the **user manual** for the Vibe Coder. It describes how
+issues move from discovery to an open pull request (the standard implementation
+path — code changes). For internal implementation details, see **Further
+reading** at the end.
 
 ---
 
 ## ⚡ TL;DR
 
-**Issue → branch → Claude → quality → PR (Pull Request).** The worker picks the next eligible issue from a four-tier priority order: **`top-priority`** → **`work-on`** → **`low-priority`** → **`idle-task`** (lowest tier). All four labels mean the same thing — _work on this issue_ — and differ only in priority; `idle-task` is simply last and is the only one the Vibe Coder may self-apply. Within the chosen tier the **globally oldest** by creation date wins. The legacy `help wanted` and `claude` discovery labels were retired in; only `idle-task` is self-appliable by the Vibe Coder. Repo scan order is **fair by default** — `shuffle_repos` (enabled by default) randomises the order in which repos are queried, but the final selection is always the globally oldest eligible issue across all repos ("fair scanning, then oldest first"). After filters and the open-PR gate (one fleet PR per slot on the default branch, one per milestone branch) it **claims** the issue (assign self, verify; tie-break if two workers claimed), sets up the repo and branch (default or milestone), optionally asks for clarification, runs Claude and `./quality.sh`, commits, pushes, and opens a PR with auto-merge. Fail once → retry; fail twice → label and skip until you remove it.
+**Issue → branch → Claude → quality → PR (Pull Request).** The worker picks the
+next eligible issue from a four-tier priority order: **`top-priority`** →
+**`work-on`** → **`low-priority`** → **`idle-task`** (lowest tier). All four
+labels mean the same thing — _work on this issue_ — and differ only in priority;
+`idle-task` is simply last and is the only one the Vibe Coder may self-apply.
+Within the chosen tier the **globally oldest** by creation date wins. The legacy
+`help wanted` and `claude` discovery labels were retired in; only `idle-task` is
+self-appliable by the Vibe Coder. Repo scan order is **fair by default** —
+`shuffle_repos` (enabled by default) randomises the order in which repos are
+queried, but the final selection is always the globally oldest eligible issue
+across all repos ("fair scanning, then oldest first"). After filters and the
+open-PR gate (one fleet PR per slot on the default branch, one per milestone
+branch) it **claims** the issue (assign self, verify; tie-break if two workers
+claimed), sets up the repo and branch (default or milestone), optionally asks
+for clarification, runs Claude and `./quality.sh`, commits, pushes, and opens a
+PR with auto-merge. Fail once → retry; fail twice → label and skip until you
+remove it.
 
 ```mermaid
 flowchart TD
@@ -33,43 +52,108 @@ flowchart TD
 
 ## 🎯 Purpose and scope
 
-- **Purpose:** Define how the worker should discover, claim, and implement issues that result in a feature branch, Claude-driven changes, quality checks, and a PR.
-- **Scope:** Issue discovery (across configured repos), claiming under concurrency, repo setup, clarification phase, implementation, quality gate, commit, push, PR creation, and auto-merge. Milestone-aware open-PR blocking (checking for existing open PRs **by the configured GitHub user** before starting a new issue) is part of issue selection — this is separate from PR monitoring/upkeep, which is covered in [pr-feedback.md](pr-feedback.md).
+- **Purpose:** Define how the worker should discover, claim, and implement
+  issues that result in a feature branch, Claude-driven changes, quality checks,
+  and a PR.
+- **Scope:** Issue discovery (across configured repos), claiming under
+  concurrency, repo setup, clarification phase, implementation, quality gate,
+  commit, push, PR creation, and auto-merge. Milestone-aware open-PR blocking
+  (checking for existing open PRs **by the configured GitHub user** before
+  starting a new issue) is part of issue selection — this is separate from PR
+  monitoring/upkeep, which is covered in [pr-feedback.md](pr-feedback.md).
 
 ## 🎭 Actors and triggers
 
-- **Trigger:** An issue exists in a configured repo with the `top-priority` label, the `work-on` label (added by an allowed author), or — when both higher tiers are globally empty — an auto-filed worker diagnostic the worker schedules itself (tier 2b, no label) or the `low-priority` label (added by an allowed author), or — when every other tier is empty — an `idle-task` issue filed by the worker itself. Tiers are evaluated in order; the globally oldest eligible issue within the highest non-empty tier is selected. See [Issue selection priority](#-issue-selection-priority). The issue must be unassigned or assigned to this worker and not blocked (no `failed`, `needs-human`, dependency issues, or open sub-issues; repo/milestone PR blocking applies — see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
-- **Actors:** The worker (single process per machine); GitHub API (Application Programming Interface); optional Deno/Claude.
+- **Trigger:** An issue exists in a configured repo with the `top-priority`
+  label, the `work-on` label (added by an allowed author), or — when both higher
+  tiers are globally empty — an auto-filed worker diagnostic the worker
+  schedules itself (tier 2b, no label) or the `low-priority` label (added by an
+  allowed author), or — when every other tier is empty — an `idle-task` issue
+  filed by the worker itself. Tiers are evaluated in order; the globally oldest
+  eligible issue within the highest non-empty tier is selected. See
+  [Issue selection priority](#-issue-selection-priority). The issue must be
+  unassigned or assigned to this worker and not blocked (no `failed`,
+  `needs-human`, dependency issues, or open sub-issues; repo/milestone PR
+  blocking applies — see
+  [resilience-and-concurrency.md](resilience-and-concurrency.md)).
+- **Actors:** The worker (single process per machine); GitHub API (Application
+  Programming Interface); optional Deno/Claude.
 
 ## 📏 Preconditions / invariants
 
-- Configuration is valid; repos are in allowlist; labels are set. The trusted-author set is derived from each repo's write collaborators minus the Vibe Coder logins and bots (Issue #1066).
-- The worker has not already chosen a higher-priority work item in this loop iteration.
-- **Label priority:** A four-tier order — `top-priority` → `work-on` → `low-priority` → `idle-task`, with the label-less self-scheduled diagnostic tier 2b sitting between `work-on` and `low-priority` (Issue #505). A lower tier is only considered when the higher tier yields **no eligible candidate in any scanned repo**. If a configured-label search fails (API error), the worker waits for the API to recover rather than falling back to `work-on` or `low-priority` — this prevents accidentally processing a lower-priority issue when higher-priority ones may exist but were invisible due to API errors. Among candidates of the same tier, the worker selects the **globally oldest** by creation date across all configured repos (after filtering and milestone-aware open-PR blocking). See [Issue selection priority](#-issue-selection-priority) for the full rules. Claim happens **before** any work.
+- Configuration is valid; repos are in allowlist; labels are set. The
+  trusted-author set is derived from each repo's write collaborators minus the
+  Vibe Coder logins and bots (Issue #1066).
+- The worker has not already chosen a higher-priority work item in this loop
+  iteration.
+- **Label priority:** A four-tier order — `top-priority` → `work-on` →
+  `low-priority` → `idle-task`, with the label-less self-scheduled diagnostic
+  tier 2b sitting between `work-on` and `low-priority` (Issue #505). A lower
+  tier is only considered when the higher tier yields **no eligible candidate in
+  any scanned repo**. If a configured-label search fails (API error), the worker
+  waits for the API to recover rather than falling back to `work-on` or
+  `low-priority` — this prevents accidentally processing a lower-priority issue
+  when higher-priority ones may exist but were invisible due to API errors.
+  Among candidates of the same tier, the worker selects the **globally oldest**
+  by creation date across all configured repos (after filtering and
+  milestone-aware open-PR blocking). See
+  [Issue selection priority](#-issue-selection-priority) for the full rules.
+  Claim happens **before** any work.
 
 ## 🥇 Issue selection priority
 
-When the worker scans for eligible issues it groups every candidate into one of four **tiers** and selects from the highest non-empty tier. Within a tier, the globally oldest issue (by `createdAt`) wins. After `top-priority` and before `work-on`, leftovers that finish a **started, fleet-viable milestone** are lifted into a close-out band (Issue #2009) so a long-lived milestone branch is merged before another one is opened.
+When the worker scans for eligible issues it groups every candidate into one of
+four **tiers** and selects from the highest non-empty tier. Within a tier, the
+globally oldest issue (by `createdAt`) wins. After `top-priority` and before
+`work-on`, leftovers that finish a **started, fleet-viable milestone** are
+lifted into a close-out band (Issue #2009) so a long-lived milestone branch is
+merged before another one is opened.
 
-| Tier | Source | Global rule |
-|------|--------|-------------|
-| 1 | **`top-priority`** discovery label | Selected before any lower tier. The human urgency signal — close-out does not override it. |
-| 1b | **close-out** — leftover in a started, fleet-viable milestone | Selected after `top-priority` and **before** `work-on`, regardless of the leftover's own tier. A `low-priority` issue that completes a started milestone beats a `work-on` issue that would open a new branch. See [Finish a started milestone](#-finish-a-started-milestone-before-starting-another). |
-| 2 | **`work-on`** label (added by an allowed author) | Selected only when **no** eligible `top-priority` or close-out candidate exists in **any** scanned repo. |
-| 2b | **self-scheduled worker diagnostic** (no label — provenance) | An issue the worker auto-filed about itself, in its own repo, carrying a recognised provenance marker. Selected only when **no** eligible `top-priority`, close-out or `work-on` candidate exists in **any** scanned repo, and always ahead of the backlog. See [Self-scheduled worker diagnostics](#-self-scheduled-worker-diagnostics-tier-2b). |
-| 3 | **`low-priority`** label | Selected only when **no** eligible `top-priority`, close-out, `work-on` **or** self-scheduled diagnostic candidate exists in **any** scanned repo. |
-| 4 | **`idle-task`** label | The lowest-priority "work on this" tier. An `idle-task` issue is worked exactly like any other — it raises a fix PR through the standard pipeline — **except** a registered scan _wrapper_ (identified by title or body) runs its scan template instead of raising a PR. A **fleet-global floor**: selected only when **no** repo in **any** `nice` tier has a selectable `top-priority` / `work-on` / `low-priority` candidate. The single label the Vibe Coder may self-apply. |
+| Tier | Source                                                        | Global rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---- | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **`top-priority`** discovery label                            | Selected before any lower tier. The human urgency signal — close-out does not override it.                                                                                                                                                                                                                                                                                                                                                                                       |
+| 1b   | **close-out** — leftover in a started, fleet-viable milestone | Selected after `top-priority` and **before** `work-on`, regardless of the leftover's own tier. A `low-priority` issue that completes a started milestone beats a `work-on` issue that would open a new branch. See [Finish a started milestone](#-finish-a-started-milestone-before-starting-another).                                                                                                                                                                           |
+| 2    | **`work-on`** label (added by an allowed author)              | Selected only when **no** eligible `top-priority` or close-out candidate exists in **any** scanned repo.                                                                                                                                                                                                                                                                                                                                                                         |
+| 2b   | **self-scheduled worker diagnostic** (no label — provenance)  | An issue the worker auto-filed about itself, in its own repo, carrying a recognised provenance marker. Selected only when **no** eligible `top-priority`, close-out or `work-on` candidate exists in **any** scanned repo, and always ahead of the backlog. See [Self-scheduled worker diagnostics](#-self-scheduled-worker-diagnostics-tier-2b).                                                                                                                                |
+| 3    | **`low-priority`** label                                      | Selected only when **no** eligible `top-priority`, close-out, `work-on` **or** self-scheduled diagnostic candidate exists in **any** scanned repo.                                                                                                                                                                                                                                                                                                                               |
+| 4    | **`idle-task`** label                                         | The lowest-priority "work on this" tier. An `idle-task` issue is worked exactly like any other — it raises a fix PR through the standard pipeline — **except** a registered scan _wrapper_ (identified by title or body) runs its scan template instead of raising a PR. A **fleet-global floor**: selected only when **no** repo in **any** `nice` tier has a selectable `top-priority` / `work-on` / `low-priority` candidate. The single label the Vibe Coder may self-apply. |
 
-The label priority order is therefore: `top-priority` > `work-on` > `low-priority` > `idle-task`. The legacy `help wanted` and `claude` discovery labels were retired in; only `idle-task` is self-appliable by the Vibe Coder. Tier 2b carries **no label at all** — it is claimable on provenance — so it does not change that order.
+The label priority order is therefore: `top-priority` > `work-on` >
+`low-priority` > `idle-task`. The legacy `help wanted` and `claude` discovery
+labels were retired in; only `idle-task` is self-appliable by the Vibe Coder.
+Tier 2b carries **no label at all** — it is claimable on provenance — so it does
+not change that order.
 
 > [!IMPORTANT]
-> **All four labels mean "work on this issue" — they differ only in priority** (`top-priority` > `work-on` > `low-priority` > `idle-task`). No other logic is attached to any of them.
+> **All four labels mean "work on this issue" — they differ only in priority**
+> (`top-priority` > `work-on` > `low-priority` > `idle-task`). No other logic is
+> attached to any of them.
 >
-> `idle-task` is **not** a scan-only marker. Any `idle-task` issue — a scan finding, a chore, a hand-written task — is worked through the standard issue→PR pipeline just like a `work-on` issue, only last. The **only** thing special about `idle-task` is **who may apply it**: the Vibe Coder may self-apply `idle-task`, whereas `top-priority` / `work-on` / `low-priority` are reserved for trusted humans and are stripped if the worker self-applies them (see `RESERVED_LABELS` in [`config_defaults.ts`](../../worker/deno/lib/config_defaults.ts)).
+> `idle-task` is **not** a scan-only marker. Any `idle-task` issue — a scan
+> finding, a chore, a hand-written task — is worked through the standard
+> issue→PR pipeline just like a `work-on` issue, only last. The **only** thing
+> special about `idle-task` is **who may apply it**: the Vibe Coder may
+> self-apply `idle-task`, whereas `top-priority` / `work-on` / `low-priority`
+> are reserved for trusted humans and are stripped if the worker self-applies
+> them (see `RESERVED_LABELS` in
+> [`config_defaults.ts`](../../worker/deno/lib/config_defaults.ts)).
 >
-> When a claimed `idle-task` issue happens to be a registered scan _wrapper_ (its title matches a template's `buildIssueTitle`, or its body matches `matchesIdleTaskBody`), the worker runs that scan instead of raising a PR. That is simply _how that particular work item is done_ — not an extra priority gate. Every other `idle-task` issue flows through the normal fix pipeline. To get the worker to fix a scan _finding_, any of the four priority labels works — `idle-task` alone is enough; it will just be done last.
+> When a claimed `idle-task` issue happens to be a registered scan _wrapper_
+> (its title matches a template's `buildIssueTitle`, or its body matches
+> `matchesIdleTaskBody`), the worker runs that scan instead of raising a PR.
+> That is simply _how that particular work item is done_ — not an extra priority
+> gate. Every other `idle-task` issue flows through the normal fix pipeline. To
+> get the worker to fix a scan _finding_, any of the four priority labels works
+> — `idle-task` alone is enough; it will just be done last.
 
-The global guarantee for `low-priority` follows from the cross-repo collection in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts): every scannable repo contributes its candidates before [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) picks a tier. A single eligible `top-priority` issue in repo A will suppress every `work-on` and `low-priority` issue across repos B, C, … That keeps `low-priority` strictly idle-time work — backlog items the worker only reaches when there is genuinely nothing else to do anywhere.
+The global guarantee for `low-priority` follows from the cross-repo collection
+in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts): every
+scannable repo contributes its candidates before
+[`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) picks a tier.
+A single eligible `top-priority` issue in repo A will suppress every `work-on`
+and `low-priority` issue across repos B, C, … That keeps `low-priority` strictly
+idle-time work — backlog items the worker only reaches when there is genuinely
+nothing else to do anywhere.
 
 ```mermaid
 flowchart TD
@@ -98,15 +182,32 @@ flowchart TD
 
 ### 🏁 Finish a started milestone before starting another
 
-Long-lived milestone branches drift from the default branch and then fail to merge. Selection is the cheapest place to prevent that: **finish a started milestone before opening another**, when everything left in it is fleet-viable (Issue #2009).
+Long-lived milestone branches drift from the default branch and then fail to
+merge. Selection is the cheapest place to prevent that: **finish a started
+milestone before opening another**, when everything left in it is fleet-viable
+(Issue #2009).
 
-- **Started:** the open milestone already has at least one closed child (`closed_issues > 0` on the cached milestone listing).
-- **Fleet-viable:** every remaining open non-tracking issue already passed the existing gates — it carries a work-tier label (or is a self-diagnostic) and is not blocked (`needs-human`, `failed`, `grill-me`, `planning`, `refine-issue`, unresolved dependency, open sub-issue, occupied stream, paced behind). If any leftover needs a human, the rule does not apply.
-- **Order inside the band:** fewest remaining viable issues first, then in-milestone `priority-high` / `priority-low`, then oldest. `nice` does not apply.
-- **What it must not override:** `top-priority` stays first. The open-PR gate (one fleet PR per slot on the default branch, one per milestone branch), dependency blocking, milestone-behind pacing, and the weekly quota pace gate for tiers 3 and 4 are unchanged — the band only re-orders candidates those gates have already admitted. A paced or blocked started milestone contributes nothing, so the fleet does not sit idle waiting for it.
-- **Non-milestone `work-on`** still beats non-milestone `low-priority`. The promotion applies only to leftovers that close out a started milestone.
+- **Started:** the open milestone already has at least one closed child
+  (`closed_issues > 0` on the cached milestone listing).
+- **Fleet-viable:** every remaining open non-tracking issue already passed the
+  existing gates — it carries a work-tier label (or is a self-diagnostic) and is
+  not blocked (`needs-human`, `failed`, `grill-me`, `planning`, `refine-issue`,
+  unresolved dependency, open sub-issue, occupied stream, paced behind). If any
+  leftover needs a human, the rule does not apply.
+- **Order inside the band:** fewest remaining viable issues first, then
+  in-milestone `priority-high` / `priority-low`, then oldest. `nice` does not
+  apply.
+- **What it must not override:** `top-priority` stays first. The open-PR gate
+  (one fleet PR per slot on the default branch, one per milestone branch),
+  dependency blocking, milestone-behind pacing, and the weekly quota pace gate
+  for tiers 3 and 4 are unchanged — the band only re-orders candidates those
+  gates have already admitted. A paced or blocked started milestone contributes
+  nothing, so the fleet does not sit idle waiting for it.
+- **Non-milestone `work-on`** still beats non-milestone `low-priority`. The
+  promotion applies only to leftovers that close out a started milestone.
 
-The decision is logged once per selection (`close-out: has N viable issues left, selecting #X over tier-2 #Y`).
+The decision is logged once per selection
+(`close-out: has N viable issues left, selecting #X over tier-2 #Y`).
 
 ### ⏳ Weekly Claude quota pace gate (tiers 3 and 4)
 
@@ -117,8 +218,8 @@ last hours of a spent week went on backlog and busywork while `top-priority`
 issues waited for the reset.
 
 Issue #1885 adds a pace gate over those two tiers only. Once per scan cycle a
-single-token host reads the seven-day window of the token this run selected —
-a pooled host reads every credential's, see
+single-token host reads the seven-day window of the token this run selected — a
+pooled host reads every credential's, see
 [below](#a-credential-pool-is-judged-as-a-pool-issue-2647) — through the
 existing budget probe, re-measured only when the reading is older than the
 credential pool's **ten-minute** snapshot age — and projects it linearly:
@@ -127,11 +228,11 @@ credential pool's **ten-minute** snapshot age — and projects it linearly:
 projected share at reset = used share ÷ elapsed share
 ```
 
-| Verdict | When | Effect on pickup |
-|---------|------|------------------|
-| **engaged** | at least **24 h** of the 168-hour window has elapsed **and** the projection is **≥ 1.0** | tiers 3 (`low-priority`) and 4 (`idle-task`) are dropped from the ladder this scan |
-| **off** | inside the first 24 h, projection under 1.0, or the reported reset is already in the past | every tier is eligible, exactly as before |
-| **unknown** | the probe reported no seven-day window (a failed probe, or a response carrying only the five-hour one) | every tier is eligible; one WARNING line |
+| Verdict     | When                                                                                                   | Effect on pickup                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| **engaged** | at least **24 h** of the 168-hour window has elapsed **and** the projection is **≥ 1.0**               | tiers 3 (`low-priority`) and 4 (`idle-task`) are dropped from the ladder this scan |
+| **off**     | inside the first 24 h, projection under 1.0, or the reported reset is already in the past              | every tier is eligible, exactly as before                                          |
+| **unknown** | the probe reported no seven-day window (a failed probe, or a response carrying only the five-hour one) | every tier is eligible; one WARNING line                                           |
 
 ```mermaid
 flowchart TD
@@ -150,55 +251,54 @@ flowchart TD
 #### A credential pool is judged as a pool (Issue #2647)
 
 The table above is how a **single-token** host is judged, unchanged. On a host
-with two or more Claude subscriptions (GRQ-23 has three) one nearly spent
-token says nothing about whether the host lasts: another may have plenty left,
-or reopen within hours. There, "will not last" is judged across **every**
+with two or more Claude subscriptions (GRQ-23 has three) one nearly spent token
+says nothing about whether the host lasts: another may have plenty left, or
+reopen within hours. There, "will not last" is judged across **every**
 credential the pool holds, from the pool's own ten-minute snapshots
 ([`claudePoolWeekPaceVerdict`](../../worker/deno/lib/claude_week_pace.ts)):
 
-1. **Burn rate** — the sum over credentials of `used share ÷ elapsed hours`
-   of each one's own window, in windows per hour. A credential inside its
-   24 h grace, or whose window has rolled over, gives no rate.
-2. **Capacity walk** — start from the sum of every credential's remaining
-   share and step through the reset times in order, drawing capacity down at
-   the burn rate (soonest-expiring credential first) and adding a full window
-   as each credential's week reopens. The walk ends at the latest reset in
-   the pool, at most 168 h out.
-3. **Verdict** — **engaged** if capacity reaches zero before the next
-   reopening would refill it; **off** otherwise. A credential whose reading
-   is unknown is left out of both the rate and the capacity (headroom has to
-   be evidenced); no usable reading at all is **unknown**, with a WARNING.
+1. **Burn rate** — the sum over credentials of `used share ÷ elapsed hours` of
+   each one's own window, in windows per hour. A credential inside its 24 h
+   grace, or whose window has rolled over, gives no rate.
+2. **Capacity walk** — start from the sum of every credential's remaining share
+   and step through the reset times in order, drawing capacity down at the burn
+   rate (soonest-expiring credential first) and adding a full window as each
+   credential's week reopens. The walk ends at the latest reset in the pool, at
+   most 168 h out.
+3. **Verdict** — **engaged** if capacity reaches zero before the next reopening
+   would refill it; **off** otherwise. A credential whose reading is unknown is
+   left out of both the rate and the capacity (headroom has to be evidenced); no
+   usable reading at all is **unknown**, with a WARNING.
 
-The five-hour window takes no part in it — it keeps its role in token
-selection only. The pool line names the figures, never a token:
+The five-hour window takes no part in it — it keeps its role in token selection
+only. The pool line names the figures, never a token:
 
 ```text
 claude-week-pace: engaged — pool counted=3/3 rated=3 remaining=43.0% burn=2.95%/h runs-out=2026-09-27T07:26:49.497Z next-reopen=2026-09-29T01:00:00.000Z; the pool runs out before capacity reopens, …
 ```
 
-That is GRQ-23's reading on 2026-09-25 at 06:54Z: 68 %, 90 % and 99 % used,
-the last reopening at 09:00Z. Even with that credential's fresh window
-counted, the pool burns about 2.95 % of a window an hour, so the capacity is
-spent around 07:27Z on the 27th — some 42 hours before the next credential
-reopens — and the guard stays engaged on the pool's own figures.
+That is GRQ-23's reading on 2026-09-25 at 06:54Z: 68 %, 90 % and 99 % used, the
+last reopening at 09:00Z. Even with that credential's fresh window counted, the
+pool burns about 2.95 % of a window an hour, so the capacity is spent around
+07:27Z on the 27th — some 42 hours before the next credential reopens — and the
+guard stays engaged on the pool's own figures.
 
 Boundaries worth stating:
 
 - **Tiers 1, 2 and 2b are never gated.** The point is to redirect what is left
   of the quota, never to stop working. A run that has already **claimed** a
   `low-priority` or `idle-task` issue finishes it.
-- **The idle-task *filer* is deferred while the gate is engaged** (Issue
-  #1915). Nothing it files could be claimed before the window resets, and
-  deciding where to file walks every monitored repository — ~800 GraphQL
-  points a cycle on GRQ-25, out of the fleet's shared 5,000. The idle hooks
-  log one `reason=week_pace_engaged` line instead, and the fleet's
-  idle-starvation detector treats the deferral as by-design rather than as a
-  starved fleet. See
+- **The idle-task _filer_ is deferred while the gate is engaged** (Issue #1915).
+  Nothing it files could be claimed before the window resets, and deciding where
+  to file walks every monitored repository — ~800 GraphQL points a cycle on
+  GRQ-25, out of the fleet's shared 5,000. The idle hooks log one
+  `reason=week_pace_engaged` line instead, and the fleet's idle-starvation
+  detector treats the deferral as by-design rather than as a starved fleet. See
   [The week-pace guard defers idle-task filing](../IDLE-TASK-FRAMEWORK.md#the-week-pace-guard-defers-idle-task-filing-issue-1915).
 - **A failed probe never refuses work.** `unknown` leaves the gate off — the
   same rule the five-hour selection gate follows.
 - **No hysteresis, and no reserve.** The verdict is re-read from the fresh
-  reading each cycle, and the target is full use *exactly* at the reset, so
+  reading each cycle, and the target is full use _exactly_ at the reset, so
   nothing is held back below 100%.
 - **The 24 h grace and the 1.0 threshold are code constants**
   (`CLAUDE_WEEK_PACE_GRACE_HOURS`, `CLAUDE_WEEK_PACE_THRESHOLD` in
@@ -208,28 +308,28 @@ Boundaries worth stating:
   one host is configured.
 
 - **The idle-decision census models the refusal.** A tier the gate skipped is
-  reported as `low_priority_suppressed`, not as claimable work the scan
-  refused, so an engaged week cannot file a false idle-inversion issue about
-  the worker's own pace gate. The idle-detect audit models it the same way
-  (Issue #1915), reporting `reason=pace_suppressed` rather than counting the
-  skipped tiers in its claimable total.
-- **Only a Claude run is paced.** A run on another coding agent is never
-  gated, even if a stale `CLAUDE_CODE_OAUTH_TOKEN` is left in the shared
-  environment, and a mid-run token switch discards the previous token's
-  reading rather than judging the new subscription on it.
-- **The gate never moves work to another provider** (Issue #2637). An
-  engaged gate drops tiers 3 and 4 and switches nothing, even with an
-  `ordered` `agent_provider_fallback` configured: a projection is not
-  exhaustion, and Claude is drained completely before any fallback runs.
-  Issue #2470 briefly routed the paced backlog to the fallback by switching
-  the whole host's provider; on GRQ-23 that put `top-priority` and `work-on`
-  claims on DeepSeek with a third of the week still unspent, and DeepSeek
-  refused them for want of balance. The fallback now takes over only at the
-  health gate, once **every** Claude credential in the pool is exhausted on
-  its five-hour window or its weekly limit — see
+  reported as `low_priority_suppressed`, not as claimable work the scan refused,
+  so an engaged week cannot file a false idle-inversion issue about the worker's
+  own pace gate. The idle-detect audit models it the same way (Issue #1915),
+  reporting `reason=pace_suppressed` rather than counting the skipped tiers in
+  its claimable total.
+- **Only a Claude run is paced.** A run on another coding agent is never gated,
+  even if a stale `CLAUDE_CODE_OAUTH_TOKEN` is left in the shared environment,
+  and a mid-run token switch discards the previous token's reading rather than
+  judging the new subscription on it.
+- **The gate never moves work to another provider** (Issue #2637). An engaged
+  gate drops tiers 3 and 4 and switches nothing, even with an `ordered`
+  `agent_provider_fallback` configured: a projection is not exhaustion, and
+  Claude is drained completely before any fallback runs. Issue #2470 briefly
+  routed the paced backlog to the fallback by switching the whole host's
+  provider; on GRQ-23 that put `top-priority` and `work-on` claims on DeepSeek
+  with a third of the week still unspent, and DeepSeek refused them for want of
+  balance. The fallback now takes over only at the health gate, once **every**
+  Claude credential in the pool is exhausted on its five-hour window or its
+  weekly limit — see
   [Which Claude token a run uses](../SETUP.md#which-claude-token-a-run-uses).
-  The claim scan, the idle census and the filer all read the gate's one
-  recorded verdict, so none of them can disagree about what is claimable.
+  The claim scan, the idle census and the filer all read the gate's one recorded
+  verdict, so none of them can disagree about what is claimable.
 
 The verdict itself is the pure
 [`claudeWeekPaceVerdict`](../../worker/deno/lib/claude_week_pace.ts); the gate
@@ -241,11 +341,11 @@ is GitHub's API budget, this one is the Claude subscription's.
 
 ### 🩺 Self-scheduled worker diagnostics (tier 2b)
 
-The worker detects its own faults, files them accurately, and states the
-remedy — and until Issue #505 it stopped there, because scheduling a fix
-means applying `work-on`, the one label it must never self-apply. Unattended,
-nobody applied it: `NEAT-AI-Rebase#39` waited two days for a label, and the
-fix took 79 minutes once it arrived.
+The worker detects its own faults, files them accurately, and states the remedy
+— and until Issue #505 it stopped there, because scheduling a fix means applying
+`work-on`, the one label it must never self-apply. Unattended, nobody applied
+it: `NEAT-AI-Rebase#39` waited two days for a label, and the fix took 79 minutes
+once it arrived.
 
 Tier 2b closes that loop **without weakening any label guard**. Nothing is
 self-labelled; instead an auto-filed diagnostic becomes claimable on its
@@ -253,8 +353,8 @@ provenance, collected by
 [`collect_self_diagnostic_candidates.ts`](../../worker/deno/lib/collect_self_diagnostic_candidates.ts).
 `top-priority` and `work-on` remain human-only, unconditionally.
 
-**Four signals must agree** (`self_diagnostic_provenance.ts`) — author alone
-is not enough, because an injected agent can file issues too:
+**Four signals must agree** (`self_diagnostic_provenance.ts`) — author alone is
+not enough, because an injected agent can file issues too:
 
 1. **Repo** — the issue is in the worker's own repo (`stSoftwareAU/VibeCoder`),
    where the deciding code lives. A worker-filed issue in a **product** repo is
@@ -271,41 +371,41 @@ is not enough, because an injected agent can file issues too:
    (`self_diagnostic_attestation.ts`, Issue #1277).
 
 Signals 1–3 are all things the **agent subprocess** can produce: it holds the
-run's `gh` credential, its writes are allowed in the claimed repo, and it
-writes the very body the marker lives in — so on their own they reduce to
-"filed by the worker account", which is not provenance. Signal 4 cannot be
-produced through GitHub at all: the journal lives outside every working tree,
-the agent's own `gh` calls are journalled under the mutation classifier's verb
-rather than this one, and only a journal whose hash chain reconciles with its
-chain anchor is read — so a hand-appended line, a rewritten entry, and a
-freshly dropped unanchored journal file are all skipped rather than believed.
-The audit store is tamper-*evident* rather than tamper-proof, so an agent with
-unrestricted local shell could still forge a journal, its anchor and its roster
-entry together; that is a far higher bar than typing a marker into an issue
-body, and it leaves a permanent record outside the repo.
+run's `gh` credential, its writes are allowed in the claimed repo, and it writes
+the very body the marker lives in — so on their own they reduce to "filed by the
+worker account", which is not provenance. Signal 4 cannot be produced through
+GitHub at all: the journal lives outside every working tree, the agent's own
+`gh` calls are journalled under the mutation classifier's verb rather than this
+one, and only a journal whose hash chain reconciles with its chain anchor is
+read — so a hand-appended line, a rewritten entry, and a freshly dropped
+unanchored journal file are all skipped rather than believed. The audit store is
+tamper-_evident_ rather than tamper-proof, so an agent with unrestricted local
+shell could still forge a journal, its anchor and its roster entry together;
+that is a far higher bar than typing a marker into an issue body, and it leaves
+a permanent record outside the repo.
 
 The content digest closes the follow-on move — rewriting a genuinely-filed
 diagnostic's title or body no longer makes it self-schedulable, because the
 attestation covers what the filer posted.
 
-Two consequences worth knowing: attestations are **host-local**, so a
-diagnostic is self-scheduled by the host that filed it and waits for a human on
-any other; and diagnostics filed before this gate existed carry no attestation,
-so they too wait for a human `work-on`. An unattested marker-bearing issue is
-never lost — the refusal is logged, the issue stays open, and a human `work-on`
-schedules it exactly as before.
+Two consequences worth knowing: attestations are **host-local**, so a diagnostic
+is self-scheduled by the host that filed it and waits for a human on any other;
+and diagnostics filed before this gate existed carry no attestation, so they too
+wait for a human `work-on`. An unattested marker-bearing issue is never lost —
+the refusal is logged, the issue stays open, and a human `work-on` schedules it
+exactly as before.
 
 **Bounded, visible and reversible:**
 
-| Property | How |
-|---|---|
-| Bounded | At most `self_schedule_diagnostics_max_in_flight` (default `1`) in flight, counting assigned diagnostics — the assignee is the fleet's claim lock. The surplus is refused and logged, never dropped silently. |
-| Visible | The decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (posted once, deduped by marker). If either fails the diagnostic is **not** scheduled that scan — an untraceable privilege-bearing decision is worse than one more cycle of waiting. |
-| Escalating | A diagnostic blocked **permanently** (a merged fleet PR names it, which never self-clears) gets `needs-human` plus one explanatory comment instead of sitting open as an alarm nobody is obliged to read. |
-| Reversible | `self_schedule_diagnostics_enabled: false` restores the previous behaviour exactly — the diagnostic waits for a human `work-on`. |
+| Property   | How                                                                                                                                                                                                                                                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Bounded    | At most `self_schedule_diagnostics_max_in_flight` (default `1`) in flight, counting assigned diagnostics — the assignee is the fleet's claim lock. The surplus is refused and logged, never dropped silently.                                                                                                                  |
+| Visible    | The decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (posted once, deduped by marker). If either fails the diagnostic is **not** scheduled that scan — an untraceable privilege-bearing decision is worse than one more cycle of waiting. |
+| Escalating | A diagnostic blocked **permanently** (a merged fleet PR names it, which never self-clears) gets `needs-human` plus one explanatory comment instead of sitting open as an alarm nobody is obliged to read.                                                                                                                      |
+| Reversible | `self_schedule_diagnostics_enabled: false` restores the previous behaviour exactly — the diagnostic waits for a human `work-on`.                                                                                                                                                                                               |
 
-A human `work-on` still works, and still wins: tier 2 is evaluated before
-tier 2b, so applying the label schedules a diagnostic *sooner*.
+A human `work-on` still works, and still wins: tier 2 is evaluated before tier
+2b, so applying the label schedules a diagnostic _sooner_.
 
 ```mermaid
 flowchart LR
@@ -326,48 +426,217 @@ flowchart LR
 
 ### Intra-tier ordering — oldest first, with a small randomisation pool
 
-Inside a single tier, candidates are sorted by `createdAt` (oldest first) by [`selectOldestCandidate`](../../worker/deno/lib/issue_priority.ts). To reduce claim races when several workers scan simultaneously, introduced a small randomisation pool: when `SelectionOptions.randomFn` is supplied, the worker picks at random from the **N oldest** candidates (default `randomPoolSize = 3`) rather than always taking the single oldest. The fairness guarantee — the worker never picks a far-younger issue over an older one — is preserved by capping the pool at the top of the sorted list.
+Inside a single tier, candidates are sorted by `createdAt` (oldest first) by
+[`selectOldestCandidate`](../../worker/deno/lib/issue_priority.ts). To reduce
+claim races when several workers scan simultaneously, introduced a small
+randomisation pool: when `SelectionOptions.randomFn` is supplied, the worker
+picks at random from the **N oldest** candidates (default `randomPoolSize = 3`)
+rather than always taking the single oldest. The fairness guarantee — the worker
+never picks a far-younger issue over an older one — is preserved by capping the
+pool at the top of the sorted list.
 
 ### Per-repo `nice` tiering and fair within-tier rotation
 
-Within a label tier, the final cross-repo selection is **`nice`-aware**. Each repo carries an optional operator-side `nice` integer (`repo_config.nice`, default `0`; see [CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#-per-repo-nice-rotation-tier)). Borrowing Unix-`nice` semantics, **lower `nice` is worked sooner**:
+Within a label tier, the final cross-repo selection is **`nice`-aware**. Each
+repo carries an optional operator-side `nice` integer (`repo_config.nice`,
+default `0`; see
+[CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#-per-repo-nice-rotation-tier)).
+Borrowing Unix-`nice` semantics, **lower `nice` is worked sooner**:
 
-1. **Label tier decides first, fleet-wide.** [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) walks the label ladder (`top-priority` → `work-on` → self-scheduled diagnostic → `low-priority` → `idle-task`) as the **outermost** grouping and drains each tier across *every* repo before considering the next. `nice` is a tie-breaker inside a band, never a band of its own (Issue #1063).
-2. **Partition by `nice` within the tier.** The candidates of the winning tier are partitioned by their repo's resolved `nice` value, resolved through [`getRepoNice`](../../worker/deno/lib/repo_config.ts), and the lowest-`nice` group wins. A `nice: -1` repo therefore jumps ahead of every default-`nice: 0` repo **of the same tier**; a `nice: 99` filler repo is reached only when every lower-`nice` repo in that tier is idle.
-3. **Fair within a `nice` group.** Among repos sharing one `nice` value, [`selectFairWithinTier`](../../worker/deno/lib/issue_priority.ts) rotates fairly across equal repos (oldest-first within a repo, fair rotation across repos when a `randomFn` is injected), so a busy repo in a tier never starves its peers. With the default `nice: 0` everywhere, every repo shares one group and the behaviour reduces to the existing oldest-first selection.
+1. **Label tier decides first, fleet-wide.**
+   [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) walks the
+   label ladder (`top-priority` → `work-on` → self-scheduled diagnostic →
+   `low-priority` → `idle-task`) as the **outermost** grouping and drains each
+   tier across _every_ repo before considering the next. `nice` is a tie-breaker
+   inside a band, never a band of its own (Issue #1063).
+2. **Partition by `nice` within the tier.** The candidates of the winning tier
+   are partitioned by their repo's resolved `nice` value, resolved through
+   [`getRepoNice`](../../worker/deno/lib/repo_config.ts), and the lowest-`nice`
+   group wins. A `nice: -1` repo therefore jumps ahead of every
+   default-`nice: 0` repo **of the same tier**; a `nice: 99` filler repo is
+   reached only when every lower-`nice` repo in that tier is idle.
+3. **Fair within a `nice` group.** Among repos sharing one `nice` value,
+   [`selectFairWithinTier`](../../worker/deno/lib/issue_priority.ts) rotates
+   fairly across equal repos (oldest-first within a repo, fair rotation across
+   repos when a `randomFn` is injected), so a busy repo in a tier never starves
+   its peers. With the default `nice: 0` everywhere, every repo shares one group
+   and the behaviour reduces to the existing oldest-first selection.
 
-**Why the label wins.** Until Issue #1063, `nice` was the outermost partition: a `nice: -20` repo's ordinary `work-on` backlog was drained before a `nice: -15` repo's `top-priority` issues were even looked at, so `top-priority` meant "top priority *within a repo's `nice` tier*". An urgency signal another repo's routine backlog can outrank is not an urgency signal, so the ordering was inverted to the one the module header always documented. The worked winner-per-combination table lives with the setting itself, in [CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#-per-repo-nice-rotation-tier).
+**Why the label wins.** Until Issue #1063, `nice` was the outermost partition: a
+`nice: -20` repo's ordinary `work-on` backlog was drained before a `nice: -15`
+repo's `top-priority` issues were even looked at, so `top-priority` meant "top
+priority _within a repo's `nice` tier_". An urgency signal another repo's
+routine backlog can outrank is not an urgency signal, so the ordering was
+inverted to the one the module header always documented. The worked
+winner-per-combination table lives with the setting itself, in
+[CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#-per-repo-nice-rotation-tier).
 
-**`idle-task` is still the fleet-global floor.** `idle-task` sits below every real-work tier in *every* repo, not just within its own `nice` tier — a low-`nice` repo's tier-4 idle-task scan is never selected ahead of a higher-`nice` repo's tier-2 `work-on` issue (the inversion fixed by Issue #2812). With the label tier now outermost this falls out of the ladder directly: `idle-task` is the last tier walked, so it is reached only when no repo has selectable real work. The per-repo idle suppression is unchanged.
+**`idle-task` is still the fleet-global floor.** `idle-task` sits below every
+real-work tier in _every_ repo, not just within its own `nice` tier — a
+low-`nice` repo's tier-4 idle-task scan is never selected ahead of a
+higher-`nice` repo's tier-2 `work-on` issue (the inversion fixed by Issue
+#2812). With the label tier now outermost this falls out of the ladder directly:
+`idle-task` is the last tier walked, so it is reached only when no repo has
+selectable real work. The per-repo idle suppression is unchanged.
 
-**Scope: new-work selection only.** `nice` tiers the **new-work** scans — the Priority 2 new-issue scan ([`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts)), the label scan ([`find_issues_by_label.ts`](../../worker/deno/lib/find_issues_by_label.ts)), and the planning scan ([`find_planning_issues.ts`](../../worker/deno/lib/find_planning_issues.ts)). It does **not** reorder Priority 1.x in-flight maintenance (PR feedback, CI fixes, revisions): once a piece of work is in flight the worker finishes it regardless of its repo's tier.
+**Scope: new-work selection only.** `nice` tiers the **new-work** scans — the
+Priority 2 new-issue scan
+([`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts)), the
+label scan
+([`find_issues_by_label.ts`](../../worker/deno/lib/find_issues_by_label.ts)),
+and the planning scan
+([`find_planning_issues.ts`](../../worker/deno/lib/find_planning_issues.ts)). It
+does **not** reorder Priority 1.x in-flight maintenance (PR feedback, CI fixes,
+revisions): once a piece of work is in flight the worker finishes it regardless
+of its repo's tier.
 
 ### Suppression rules — what can knock out a higher-priority candidate
 
-A `top-priority` issue is **not** automatically picked just because the label is present. Five filters are applied during candidate collection (in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts), [`collect_label_candidates.ts`](../../worker/deno/lib/collect_label_candidates.ts), [`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts), and [`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts)). Any one of them removes the candidate from its tier — the next-oldest issue in the same tier is then considered, and only if every tier 1 candidate is suppressed does the worker fall through to tier 2.
+A `top-priority` issue is **not** automatically picked just because the label is
+present. Five filters are applied during candidate collection (in
+[`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts),
+[`collect_label_candidates.ts`](../../worker/deno/lib/collect_label_candidates.ts),
+[`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts),
+and
+[`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts)).
+Any one of them removes the candidate from its tier — the next-oldest issue in
+the same tier is then considered, and only if every tier 1 candidate is
+suppressed does the worker fall through to tier 2.
 
-1. **Milestone occupancy** — [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) skips an issue when a Vibe Coder — this host or a sibling in `fleet_pr_authors`/`service_accounts` — already has another issue assigned in the same `repo + milestone` work stream. Enforces "one issue per milestone per repo at a time". Human-assigned issues do not count: the match set is the fleet-identity set (`resolveFleetMaintenanceAuthorSet`), never the `allowed_authors` permission list. Since Issue #2532 the gate binds `low-priority` and `idle-task` only — a `top-priority` or `work-on` claim shares a busy stream in its own fresh conversation (Issue #2530), and only the single issue a sibling slot on this host already holds is refused, as `slot-in-flight`.
-2. **Open PR blocking** — [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) applies the owner's rule: **one fleet PR per slot; multiple milestones mean multiple PRs** (Issue #2663).
-   - **Non-milestone issues** are held only while the fleet's open PRs on the repository's default branch number at least the slot cap, `fleet_pr_slots` (default `8`; per repository via `repo_config.<repo>.fleet_pr_slots` — see [Configuration](../CONFIGURATION.md)). Below the cap the issue is claimable, so every free slot can have its own PR in flight. PRs onto a `milestone/*` branch, and milestone-merge PRs, are on other streams and never count.
-   - **Milestone issues** are held while a fleet PR targets their own `milestone/<name>` branch — one PR per milestone stream, so several milestones run several PRs at once.
-   - Only fleet accounts count — `github_user` plus the union of `fleet_pr_authors` and `service_accounts`, which `loadConfig` folds together so a host naming a sibling under either key counts its PRs. A human's open PR never counts: the developer manages their own PR.
-   - The held issue's gate comment states the count against the cap — e.g. "6 fleet PRs are open on this repo's default branch (cap 6)" — rather than naming one PR as the blocker. The idle census, the idle-detect audit and the idle-task filer's own gate apply the same call with the same cap, so none can call work claimable that the scan holds (the #460 / #2563 invariant).
-   - Until Issue #2663 any single fleet PR held every non-milestone issue: one fleet PR at a time on the default branch, per repository, fleet-wide. On stSoftwareAU/GRQ-AutoTrader all 13 `work-on` issues waited three hours behind one PR.
-3. **Recently-closed PR cooldown** — [`fetchRecentlyClosedPRsByUser`](../../worker/deno/lib/issue_query.ts) plus [`isBlockedByRecentlyClosedPR`](../../worker/deno/lib/issue_query.ts) suppress candidates whose target branch was the subject of a worker-closed (un-merged) PR inside the cooldown window.: prevents the worker from immediately re-opening a PR that was just closed (e.g. a reviewer rejected the approach) before a human has had time to react.
-4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails open on API errors so a transient outage cannot stall the worker.
-5. **Content modified after approval** — [`verifyWorkOnContentIntegrity`](../../worker/deno/lib/work_on_content_integrity.ts), backed by [`content_approval_tracker.ts`](../../worker/deno/lib/content_approval_tracker.ts), compares a SHA-256 hash of the issue title + body against the snapshot captured when an allowed author added `work-on`: if the issue content has been edited by an untrusted author after approval, the candidate is suppressed and `needs-human` is added. The approval label itself is left in place (Issue #3964) — stripping it destroyed the record of who had approved what. TOCTOU protection, so a mutated issue body cannot ride a stale approval.
+1. **Milestone occupancy** —
+   [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) skips an issue
+   when a Vibe Coder — this host or a sibling in
+   `fleet_pr_authors`/`service_accounts` — already has another issue assigned in
+   the same `repo + milestone` work stream. Enforces "one issue per milestone
+   per repo at a time". Human-assigned issues do not count: the match set is the
+   fleet-identity set (`resolveFleetMaintenanceAuthorSet`), never the
+   `allowed_authors` permission list. Since Issue #2532 the gate binds
+   `low-priority` and `idle-task` only — a `top-priority` or `work-on` claim
+   shares a busy stream in its own fresh conversation (Issue #2530), and only
+   the single issue a sibling slot on this host already holds is refused, as
+   `slot-in-flight`.
+2. **Open PR blocking** —
+   [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) applies the
+   owner's rule: **one fleet PR per slot; multiple milestones mean multiple
+   PRs** (Issue #2663).
+   - **Non-milestone issues** are held only while the fleet's open PRs on the
+     repository's default branch number at least the slot cap, `fleet_pr_slots`
+     (default `8`; per repository via `repo_config.<repo>.fleet_pr_slots` — see
+     [Configuration](../CONFIGURATION.md)). Below the cap the issue is
+     claimable, so every free slot can have its own PR in flight. PRs onto a
+     `milestone/*` branch, and milestone-merge PRs, are on other streams and
+     never count.
+   - **Milestone issues** are held while a fleet PR targets their own
+     `milestone/<name>` branch — one PR per milestone stream, so several
+     milestones run several PRs at once.
+   - Only fleet accounts count — `github_user` plus the union of
+     `fleet_pr_authors` and `service_accounts`, which `loadConfig` folds
+     together so a host naming a sibling under either key counts its PRs. A
+     human's open PR never counts: the developer manages their own PR.
+   - The held issue's gate comment states the count against the cap — e.g. "6
+     fleet PRs are open on this repo's default branch (cap 6)" — rather than
+     naming one PR as the blocker. The idle census, the idle-detect audit and
+     the idle-task filer's own gate apply the same call with the same cap, so
+     none can call work claimable that the scan holds (the #460 / #2563
+     invariant).
+   - Until Issue #2663 any single fleet PR held every non-milestone issue: one
+     fleet PR at a time on the default branch, per repository, fleet-wide. On
+     stSoftwareAU/GRQ-AutoTrader all 13 `work-on` issues waited three hours
+     behind one PR.
+3. **Recently-closed PR cooldown** —
+   [`fetchRecentlyClosedPRsByUser`](../../worker/deno/lib/issue_query.ts) plus
+   [`isBlockedByRecentlyClosedPR`](../../worker/deno/lib/issue_query.ts)
+   suppress candidates whose target branch was the subject of a worker-closed
+   (un-merged) PR inside the cooldown window.: prevents the worker from
+   immediately re-opening a PR that was just closed (e.g. a reviewer rejected
+   the approach) before a human has had time to react.
+4. **Dependency blocking** —
+   [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts)
+   and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read
+   `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues)
+   from the issue body and skip the candidate if any referenced issue is still
+   open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails
+   open on API errors so a transient outage cannot stall the worker.
+5. **Content modified after approval** —
+   [`verifyWorkOnContentIntegrity`](../../worker/deno/lib/work_on_content_integrity.ts),
+   backed by
+   [`content_approval_tracker.ts`](../../worker/deno/lib/content_approval_tracker.ts),
+   compares a SHA-256 hash of the issue title + body against the snapshot
+   captured when an allowed author added `work-on`: if the issue content has
+   been edited by an untrusted author after approval, the candidate is
+   suppressed and `needs-human` is added. The approval label itself is left in
+   place (Issue #3964) — stripping it destroyed the record of who had approved
+   what. TOCTOU protection, so a mutated issue body cannot ride a stale
+   approval.
 
-   **Two signals count as re-approval** (Issues #1561, #1617). A trusted author re-adding the approval label is one; a **trusted human removing `needs-human`** is the other — the escalation comment asks for exactly that, so honouring it makes the instruction do what it says. Either signal must post-date **both** the snapshot and the newest recorded edit; an older signal is genuine but stale (`[REAPPROVAL_PREDATES_EDIT]`) and the block stands. A `needs-human` removal by a fleet login (`service_accounts` / `fleet_pr_authors`) is label maintenance rather than review, and never reads as a human's re-approval. A counted re-approval logs `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION]`, re-baselines the snapshot onto the current content, and proceeds; a later untrusted edit blocks again with its own fresh comment.
+   **Two signals count as re-approval** (Issues #1561, #1617). A trusted author
+   re-adding the approval label is one; a **trusted human removing
+   `needs-human`** is the other — the escalation comment asks for exactly that,
+   so honouring it makes the instruction do what it says. Either signal must
+   post-date **both** the snapshot and the newest recorded edit; an older signal
+   is genuine but stale (`[REAPPROVAL_PREDATES_EDIT]`) and the block stands. A
+   `needs-human` removal by a fleet login (`service_accounts` /
+   `fleet_pr_authors`) is label maintenance rather than review, and never reads
+   as a human's re-approval. A counted re-approval logs
+   `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION]`, re-baselines the snapshot
+   onto the current content, and proceeds; a later untrusted edit blocks again
+   with its own fresh comment.
 
-   **The block path re-reads the timeline uncached once** (Issue #1617). The re-approval scan is served by the file-backed [`timeline_cache.ts`](../../worker/deno/lib/timeline_cache.ts) (300 s TTL by default), so a re-approval made minutes ago can be invisible to it — NEAT-AI-core#593 blocked at 01:53:34 on a `work-on` re-add made at 01:46:51. Immediately before escalating, and only when a cache is configured, the gate invalidates that issue's entry and evaluates the two signals once more against a live read; a re-approval found this way logs `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION] … (uncached re-read)` and proceeds. The pass paths cost nothing extra: unchanged content never reads the timeline, and a cached read that already shows re-approval never invalidates. Only the block path pays — at most one extra live read per scan of an issue that is about to be escalated, which is the cheap half of that trade.
+   **The block path re-reads the timeline uncached once** (Issue #1617). The
+   re-approval scan is served by the file-backed
+   [`timeline_cache.ts`](../../worker/deno/lib/timeline_cache.ts) (300 s TTL by
+   default), so a re-approval made minutes ago can be invisible to it —
+   NEAT-AI-core#593 blocked at 01:53:34 on a `work-on` re-add made at 01:46:51.
+   Immediately before escalating, and only when a cache is configured, the gate
+   invalidates that issue's entry and evaluates the two signals once more
+   against a live read; a re-approval found this way logs
+   `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION] … (uncached re-read)` and
+   proceeds. The pass paths cost nothing extra: unchanged content never reads
+   the timeline, and a cached read that already shows re-approval never
+   invalidates. Only the block path pays — at most one extra live read per scan
+   of an issue that is about to be escalated, which is the cheap half of that
+   trade.
 
-   **Exact-form `Depends on` lines are outside the signed content** (Issue #1616). The worker's own blocked-deferral path appends `Depends on owner/repo#N` to an approved body as the fleet login, which this gate read as an untrusted edit on every scan. The digest (`content-approval/v3`) is therefore taken over the body with whole lines of exactly the form `Depends on owner/repo#N` / `Depends on #N` removed, so adding one verifies as `unchanged` whoever made the edit — no label change and no comment. Nothing wider is tolerated: prose around the ref, a second ref on the line, a different case, a changed title or any other added or altered text is still `changed`, and so is *removing* a dependency line that was present at approval, because the refs approved with the snapshot are recorded alongside the digest. Snapshots stamped `content-approval/v2` (or unstamped) are re-checked against the normalised body as well, so a host holding a pre-fix snapshot migrates silently on its next scan rather than needing a fleet-wide re-baseline.
+   **Exact-form `Depends on` lines are outside the signed content** (Issue
+   #1616). The worker's own blocked-deferral path appends
+   `Depends on owner/repo#N` to an approved body as the fleet login, which this
+   gate read as an untrusted edit on every scan. The digest
+   (`content-approval/v3`) is therefore taken over the body with whole lines of
+   exactly the form `Depends on owner/repo#N` / `Depends on #N` removed, so
+   adding one verifies as `unchanged` whoever made the edit — no label change
+   and no comment. Nothing wider is tolerated: prose around the ref, a second
+   ref on the line, a different case, a changed title or any other added or
+   altered text is still `changed`, and so is _removing_ a dependency line that
+   was present at approval, because the refs approved with the snapshot are
+   recorded alongside the digest. Snapshots stamped `content-approval/v2` (or
+   unstamped) are re-checked against the normalised body as well, so a host
+   holding a pre-fix snapshot migrates silently on its next scan rather than
+   needing a fleet-wide re-baseline.
 
 ### PR-blocked configured-label suppresses `work-on` in the same repo + milestone
 
-Even when tier 1 yields no *selectable* candidate, [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not blindly fall through to tier 2. If a configured-label candidate was found but held by the open-PR gate on its work stream, every `work-on` candidate in the same `repo + milestone` is dropped before the tier 2 pool is considered. The intent is to keep a full work stream from being over-filled — the stream is already at its PR limit (its slot cap on the default branch, or its one PR on a milestone branch), and the worker should wait rather than race ahead with a lower-priority issue on the same branch. Surviving `work-on` candidates from other repos / milestones remain eligible. If suppression empties tier 2 entirely, selection falls through to tier 3 (`low-priority`) under the same global gate.
+Even when tier 1 yields no _selectable_ candidate,
+[`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not
+blindly fall through to tier 2. If a configured-label candidate was found but
+held by the open-PR gate on its work stream, every `work-on` candidate in the
+same `repo + milestone` is dropped before the tier 2 pool is considered. The
+intent is to keep a full work stream from being over-filled — the stream is
+already at its PR limit (its slot cap on the default branch, or its one PR on a
+milestone branch), and the worker should wait rather than race ahead with a
+lower-priority issue on the same branch. Surviving `work-on` candidates from
+other repos / milestones remain eligible. If suppression empties tier 2
+entirely, selection falls through to tier 3 (`low-priority`) under the same
+global gate.
 
-A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream — so the `work-on` issues beside it stay eligible: top priority starves nothing, and a tier that is truly blocked means working elsewhere. Until #2563 the dependency wait parked the stream whenever the repo had any open fleet PR, even a milestone rollup PR that blocks nothing in the stream. On stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed for hours with no skip reason recorded, while the idle-decision census rightly counted them as claimable and filed an idle-inversion issue.
+A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue
+#2563). The wait belongs to that one issue — it says nothing about its stream —
+so the `work-on` issues beside it stay eligible: top priority starves nothing,
+and a tier that is truly blocked means working elsewhere. Until #2563 the
+dependency wait parked the stream whenever the repo had any open fleet PR, even
+a milestone rollup PR that blocks nothing in the stream. On
+stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed
+for hours with no skip reason recorded, while the idle-decision census rightly
+counted them as claimable and filed an idle-inversion issue.
 
 ```mermaid
 flowchart TD
@@ -391,56 +660,129 @@ flowchart TD
 
 ### Per-repo tier suppression — a suppressing `work-on` issue parks the lower tiers
 
-Alongside the per-candidate filters above there is one **per-repo** gate. A repo that holds a *suppressing* open `work-on` issue contributes **no** `low-priority` or `idle-task` candidate to selection at all, and a repo with any open `low-priority` issue contributes no `idle-task` candidate. [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts) collects the two sets (`reposWithOpenWorkOn`, `reposWithOpenLowPriority`) and [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) filters the lower tiers by them. The intent is serialisation: a repo with higher-tier work pending should wait rather than open a backlog PR beside it.
+Alongside the per-candidate filters above there is one **per-repo** gate. A repo
+that holds a _suppressing_ open `work-on` issue contributes **no**
+`low-priority` or `idle-task` candidate to selection at all, and a repo with any
+open `low-priority` issue contributes no `idle-task` candidate.
+[`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts) collects
+the two sets (`reposWithOpenWorkOn`, `reposWithOpenLowPriority`) and
+[`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) filters the
+lower tiers by them. The intent is serialisation: a repo with higher-tier work
+pending should wait rather than open a backlog PR beside it.
 
-"Suppressing" is narrower than "open", because a `work-on` issue the worker can **never** action would otherwise deadlock the repo's whole backlog behind it. [`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts) counts, over the post-`filterAndSort` set, the issues whose refusal **clears by itself** — and nothing else. Which gates those are is not written into the rule: it is declared once, per gate, in `SKIP_REASON_CLEARING` ([`skip_reason_clearing.ts`](../../worker/deno/lib/skip_reason_clearing.ts), Issue #524), a map total over `SkipReason`, so a new gate fails the type check until somebody says how it clears.
+"Suppressing" is narrower than "open", because a `work-on` issue the worker can
+**never** action would otherwise deadlock the repo's whole backlog behind it.
+[`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts)
+counts, over the post-`filterAndSort` set, the issues whose refusal **clears by
+itself** — and nothing else. Which gates those are is not written into the rule:
+it is declared once, per gate, in `SKIP_REASON_CLEARING`
+([`skip_reason_clearing.ts`](../../worker/deno/lib/skip_reason_clearing.ts),
+Issue #524), a map total over `SkipReason`, so a new gate fails the type check
+until somebody says how it clears.
 
-| `work-on` issue is… | Clearing | Suppresses tier 3/4? | Why |
-|---|---|---|---|
-| Eligible, or deferred by an open PR / occupied stream / closed-**unmerged** PR cooldown | `self` | **Yes** | Every one of these clears by itself, so waiting is correct. |
-| Assigned, carrying a blocking label, or a milestone-tracking tracker | `human` | No — dropped by `filterAndSort` before it is counted | The worker never actions it. |
-| Blocked solely by an open dependency | `human` | No | The dependency is often a `low-priority` issue in the same repo; suppressing would deadlock the chain. |
-| Named by a **merged** fleet PR (`merged-pr-permanent`) | `permanent` | No | The block is permanent — only a trusted re-label dated after the merge lifts it, or the housekeeping sweep closes the issue outright. |
-| Refused for an untrusted label add, or a content change needing re-approval | `human` | No | A person must act before the issue can ever be claimed, so it must not park the backlog meanwhile. |
+| `work-on` issue is…                                                                     | Clearing    | Suppresses tier 3/4?                                 | Why                                                                                                                                   |
+| --------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Eligible, or deferred by an open PR / occupied stream / closed-**unmerged** PR cooldown | `self`      | **Yes**                                              | Every one of these clears by itself, so waiting is correct.                                                                           |
+| Assigned, carrying a blocking label, or a milestone-tracking tracker                    | `human`     | No — dropped by `filterAndSort` before it is counted | The worker never actions it.                                                                                                          |
+| Blocked solely by an open dependency                                                    | `human`     | No                                                   | The dependency is often a `low-priority` issue in the same repo; suppressing would deadlock the chain.                                |
+| Named by a **merged** fleet PR (`merged-pr-permanent`)                                  | `permanent` | No                                                   | The block is permanent — only a trusted re-label dated after the merge lifts it, or the housekeeping sweep closes the issue outright. |
+| Refused for an untrusted label add, or a content change needing re-approval             | `human`     | No                                                   | A person must act before the issue can ever be claimed, so it must not park the backlog meanwhile.                                    |
 
-The rule is checked at the loop's own altitude rather than per gate. `claim_path_monotonicity_test.ts` asserts that adding an issue never leaves the scan with nothing to claim, and that a gate parks the lower tiers **iff** it is declared `self`-clearing; `claim_path_differential_test.ts` replays generated repo states through both the claim scan and the idle-decision census and fails on any disagreement.
+The rule is checked at the loop's own altitude rather than per gate.
+`claim_path_monotonicity_test.ts` asserts that adding an issue never leaves the
+scan with nothing to claim, and that a gate parks the lower tiers **iff** it is
+declared `self`-clearing; `claim_path_differential_test.ts` replays generated
+repo states through both the claim scan and the idle-decision census and fails
+on any disagreement.
 
 Issue #504 attacks the other end of the same fault: the worker only closed an
 issue whose PR merged from inside the run working that issue, so a fix merged by
 anyone else left the issue open for ever in exactly this refused state. The
 housekeeping `merged-pr-issue-sweep` step now closes those issues — see
-[INTERNALS.md](../INTERNALS.md) → *Worker driver*, step 4 — so
+[INTERNALS.md](../INTERNALS.md) → _Worker driver_, step 4 — so
 `merged-pr-permanent` stops being a standing strand rather than merely being
 excluded from the suppression signal.
 
-The merged-PR carve-out is Issue #499. `stSoftwareAU/NEAT-AI-Rebase#48` carried `work-on` and was named by merged PR #49, so the scan refused it on every cycle while it parked all 28 of the repo's `low-priority` issues indefinitely — neither the suppressing issue nor anything it suppressed could ever be claimed. The idle-decision census, which does model the merged-PR gate, kept reporting those 28 as claimable and escalated the disagreement as "the claim scan keeps refusing this work". The census now mirrors this gate too and reports a suppressed backlog as `low_priority_suppressed=<n>` (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census)).
+The merged-PR carve-out is Issue #499. `stSoftwareAU/NEAT-AI-Rebase#48` carried
+`work-on` and was named by merged PR #49, so the scan refused it on every cycle
+while it parked all 28 of the repo's `low-priority` issues indefinitely —
+neither the suppressing issue nor anything it suppressed could ever be claimed.
+The idle-decision census, which does model the merged-PR gate, kept reporting
+those 28 as claimable and escalated the disagreement as "the claim scan keeps
+refusing this work". The census now mirrors this gate too and reports a
+suppressed backlog as `low_priority_suppressed=<n>` (see
+[IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census)).
 
-Issue #655 is the same shape one step later in the pipeline. After every collector has passed a candidate, `find_oldest_issue.ts` drops the ones `isIssueInCooldown` names — the persisted retry cooldown plus this run's processed-issue registry, whose entries live as long as the process. `stSoftwareAU/VibeCoder#622` and `#623` were both handed back earlier the same day, so the scan refused them silently on every later cycle while the census counted them claimable. The hold set is now resolved once and shared by both readers (`run_local_hold=<n>` in the census line), and the cooldown filters record their refusal in `blockedDetails` so the escalation can name the gate instead of listing the issues and nothing else.
+Issue #655 is the same shape one step later in the pipeline. After every
+collector has passed a candidate, `find_oldest_issue.ts` drops the ones
+`isIssueInCooldown` names — the persisted retry cooldown plus this run's
+processed-issue registry, whose entries live as long as the process.
+`stSoftwareAU/VibeCoder#622` and `#623` were both handed back earlier the same
+day, so the scan refused them silently on every later cycle while the census
+counted them claimable. The hold set is now resolved once and shared by both
+readers (`run_local_hold=<n>` in the census line), and the cooldown filters
+record their refusal in `blockedDetails` so the escalation can name the gate
+instead of listing the issues and nothing else.
 
-Issue #898 is the same disagreement one level up: not a gate the census missed, but a repository the scan was never shown. `find_oldest_issue.ts` skips every repo in its `excludeRepos` set — since Issue #1091 those the maintenance lane (Issue #213) has leased wholesale — before any collector runs, so it records no skip reason for a single one of their issues. A sibling slot's hold no longer removes a repository: it occupies one work stream (Issue #1091), and the scan refuses that stream through `isMilestoneOccupied` while evaluating the rest of the repository. `stSoftwareAU/VibeCoder` escalated on three consecutive cycles with nine claimable `work-on` issues and an empty "what the claim scan did with them" section, while the lane was busy servicing one of its own PRs. The pool now keeps that exclusion set and hands it to both readers, which report the repo as `skip_reason=repo_held_in_flight` and raise neither the escalation nor the `mis_classification` ALERT for it (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#a-repo-the-scan-was-never-shown-issue-898)).
+Issue #898 is the same disagreement one level up: not a gate the census missed,
+but a repository the scan was never shown. `find_oldest_issue.ts` skips every
+repo in its `excludeRepos` set — since Issue #1091 those the maintenance lane
+(Issue #213) has leased wholesale — before any collector runs, so it records no
+skip reason for a single one of their issues. A sibling slot's hold no longer
+removes a repository: it occupies one work stream (Issue #1091), and the scan
+refuses that stream through `isMilestoneOccupied` while evaluating the rest of
+the repository. `stSoftwareAU/VibeCoder` escalated on three consecutive cycles
+with nine claimable `work-on` issues and an empty "what the claim scan did with
+them" section, while the lane was busy servicing one of its own PRs. The pool
+now keeps that exclusion set and hands it to both readers, which report the repo
+as `skip_reason=repo_held_in_flight` and raise neither the escalation nor the
+`mis_classification` ALERT for it (see
+[IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#a-repo-the-scan-was-never-shown-issue-898)).
 
 ### Why was X picked over Y? — diagnostic surfaces
 
-Two diagnostics answer the "why was this issue selected and not that one?" question without reading TypeScript:
+Two diagnostics answer the "why was this issue selected and not that one?"
+question without reading TypeScript:
 
-- **`selection-reasoning` log line** — emitted unconditionally by [`logSelectionReasoning`](../../worker/deno/lib/issue_finder_logger.ts) whenever the worker selects a `work-on` (or lower-tier) candidate while configured-label candidates were considered or blocked. The line includes the selected issue, how many configured-label candidates were considered, and which were blocked (`repo#N(reason)`), making the bypass auditable from the worker log alone.
-- **`ISSUE_FINDER_DEBUG=true`** — set this environment variable to enable the per-issue trace from [`createDiagnostics`](../../worker/deno/lib/issue_finder_logger.ts). Every candidate considered, eligible, or skipped is emitted to stderr with its skip reason (`milestone-occupied`, `pr-blocked`, `closed-pr-cooldown`, `dependency-blocked`, `content-modified-after-approval`, `cooldown`, `needs-human`, …). Use this when the unconditional `selection-reasoning` line is not enough — for example when no candidate at all was selected.
+- **`selection-reasoning` log line** — emitted unconditionally by
+  [`logSelectionReasoning`](../../worker/deno/lib/issue_finder_logger.ts)
+  whenever the worker selects a `work-on` (or lower-tier) candidate while
+  configured-label candidates were considered or blocked. The line includes the
+  selected issue, how many configured-label candidates were considered, and
+  which were blocked (`repo#N(reason)`), making the bypass auditable from the
+  worker log alone.
+- **`ISSUE_FINDER_DEBUG=true`** — set this environment variable to enable the
+  per-issue trace from
+  [`createDiagnostics`](../../worker/deno/lib/issue_finder_logger.ts). Every
+  candidate considered, eligible, or skipped is emitted to stderr with its skip
+  reason (`milestone-occupied`, `pr-blocked`, `closed-pr-cooldown`,
+  `dependency-blocked`, `content-modified-after-approval`, `cooldown`,
+  `needs-human`, …). Use this when the unconditional `selection-reasoning` line
+  is not enough — for example when no candidate at all was selected.
 
 ### How to use `low-priority`
 
 `low-priority` is opt-in per repository. To start using it:
 
-1. Create the label in the target repository (default name `low-priority`, configurable via `low_priority_label` — see [CONFIGURATION.md](../CONFIGURATION.md)). For example:
+1. Create the label in the target repository (default name `low-priority`,
+   configurable via `low_priority_label` — see
+   [CONFIGURATION.md](../CONFIGURATION.md)). For example:
 
    ```bash
    gh label create low-priority --repo my-org/my-repo \
      --description "Worker picks up only when idle" --color cccccc
    ```
 
-2. Apply the label to issues you want the worker to handle only when its higher-priority queues are empty — typical examples are backlog documentation tasks, low-risk cleanups, or speculative refactors. As with `work-on`, the label must be added by an allowed author; a non-trusted adder is ignored.
-3. Leave higher-priority labels off the issue. If an issue carries both `top-priority` and `low-priority`, tier 1 wins — the `low-priority` label has no effect while a higher tier is in play.
+2. Apply the label to issues you want the worker to handle only when its
+   higher-priority queues are empty — typical examples are backlog documentation
+   tasks, low-risk cleanups, or speculative refactors. As with `work-on`, the
+   label must be added by an allowed author; a non-trusted adder is ignored.
+3. Leave higher-priority labels off the issue. If an issue carries both
+   `top-priority` and `low-priority`, tier 1 wins — the `low-priority` label has
+   no effect while a higher tier is in play.
 
-The worker never self-applies `low-priority` — it is a human scheduling signal, listed alongside `top-priority` in the reserved-label set.
+The worker never self-applies `low-priority` — it is a human scheduling signal,
+listed alongside `top-priority` in the reserved-label set.
 
 ## 🛡️ The one-PR-per-issue fleet invariant
 
@@ -448,50 +790,49 @@ The desired end state is **exactly one PR per issue across the whole fleet**.
 The fleet runs on several machines, each authenticated as a different GitHub
 account (e.g. `Vibecoderbot` on one host, `stsvcbot` on another). Without
 fleet-wide guards, two hosts can each open a PR for the same issue — the
-duplicate-PR class of bugs seen after /  /. This section
-documents the invariant, the two ways it can break, the guard stack that
-enforces it, and the single recovery path.
+duplicate-PR class of bugs seen after / /. This section documents the invariant,
+the two ways it can break, the guard stack that enforces it, and the single
+recovery path.
 
 ### The two failure modes
 
-| Mode | What happens | Guard that closes it |
-|------|--------------|----------------------|
-| **A — concurrent cross-account** | Two hosts discover the same open issue at nearly the same time; each passes the discovery open-PR guard because neither PR existed yet, then both open a PR. | Claim-time live re-check. |
-| **B — post-merge re-pickup** | An issue's PR has already **merged** (by a sibling account **or** this host's own account), but a later scan re-picks the issue after the cooldown window and opens a *second* PR. | Permanent merged-lock. |
+| Mode                             | What happens                                                                                                                                                                       | Guard that closes it      |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| **A — concurrent cross-account** | Two hosts discover the same open issue at nearly the same time; each passes the discovery open-PR guard because neither PR existed yet, then both open a PR.                       | Claim-time live re-check. |
+| **B — post-merge re-pickup**     | An issue's PR has already **merged** (by a sibling account **or** this host's own account), but a later scan re-picks the issue after the cooldown window and opens a _second_ PR. | Permanent merged-lock.    |
 
 ### The guard stack (a duplicate is prevented if ANY layer fires)
 
 1. **Fleet-author union** — every guard resolves its fleet set through
    [`resolveFleetAuthors`](../../worker/deno/lib/fleet_authors.ts), which unions
    the host's own login, `allowed_authors`, `fleet_pr_authors` **and**
-   `service_accounts` (case-insensitively de-duplicated). A sibling listed in *only one* of those
-   keys is still covered — the structural blind spot behind the original
-   incident.
+   `service_accounts` (case-insensitively de-duplicated). A sibling listed in
+   _only one_ of those keys is still covered — the structural blind spot behind
+   the original incident.
 2. **Milestone occupancy** —
    [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) treats a work
    stream as occupied when **any account the fleet operates** already has an
    assigned issue in the same `repo + milestone`, so a sibling host's assignment
    stops a second host starting the same work stream. The set is
-   `resolveFleetMaintenanceAuthorSet()` — the same push-capable set layer 3
-   uses — so a *human* assignee never occupies a stream.
+   `resolveFleetMaintenanceAuthorSet()` — the same push-capable set layer 3 uses
+   — so a _human_ assignee never occupies a stream.
 3. **Discovery open-PR guard** — during candidate collection,
    [`getBlockingPRForIssue`](../../worker/deno/lib/issue_query.ts) over
    [`fetchOpenPRsForFleet`](../../worker/deno/lib/issue_query.ts) skips an issue
    when the push-capable fleet accounts' open PRs fill its work stream — one PR
    on a milestone branch, or the `fleet_pr_slots` cap on the default branch
    (Issue #2663). A human's PR is filtered out first. The duplicate itself is
-   stopped by the claim, the claim-time re-check and the merged-lock below:
-   the deterministic branch `issue-<n>-<slug>` means one issue has one PR.
-4. **Claim-time live re-check** — closes Mode A's residual window. After
-   this host wins the atomic-claim comment race and **before any Claude/token
-   work begins**, [`claimIssue`](../../worker/deno/lib/claim_issue.ts) performs a
+   stopped by the claim, the claim-time re-check and the merged-lock below: the
+   deterministic branch `issue-<n>-<slug>` means one issue has one PR.
+4. **Claim-time live re-check** — closes Mode A's residual window. After this
+   host wins the atomic-claim comment race and **before any Claude/token work
+   begins**, [`claimIssue`](../../worker/deno/lib/claim_issue.ts) performs a
    live, **cache-bypassing** (`forceRefresh`) fleet open-PR re-check with the
    same gate and cap as discovery. If the fleet's PRs now fill the work stream
-   the claim is **aborted** — the claim
-   comment is removed, the assignment released, and the caller receives
-   `reason: "fleet_pr_exists"` — so no tokens are spent and no second PR is
-   opened. Fails open (a transient API error never blocks a legitimate claim)
-   and is skipped when no fleet authors are supplied.
+   the claim is **aborted** — the claim comment is removed, the assignment
+   released, and the caller receives `reason: "fleet_pr_exists"` — so no tokens
+   are spent and no second PR is opened. Fails open (a transient API error never
+   blocks a legitimate claim) and is skipped when no fleet authors are supplied.
 5. **Permanent merged-lock** — closes Mode B.
    [`fetchRecentlyClosedPRsForFleet`](../../worker/deno/lib/issue_query.ts)
    unions every fleet account's closed PRs. A **merged** fleet PR blocks
@@ -500,8 +841,8 @@ enforces it, and the single recovery path.
    retry path. The claim's `fetchIssueState` check additionally **fails closed**
    (treats the issue as closed) after exhausting retries, so a transient error
    never starts work on an already-merged issue.
-6. **Branch reuse on retry** — a retry after a **closed-unmerged**
-   attempt lands on the same deterministic branch (`issue-<n>-<slug>`);
+6. **Branch reuse on retry** — a retry after a **closed-unmerged** attempt lands
+   on the same deterministic branch (`issue-<n>-<slug>`);
    [`findClosedUnmergedPrForBranch`](../../worker/deno/lib/pr_issue_linking.ts)
    **reopens** that PR instead of opening a fresh one. A **merged** prior PR is
    never eligible for reuse.
@@ -527,14 +868,14 @@ flowchart TD
 
 ### Configuration requirement — every host must name all fleet accounts
 
-The guards are only as good as the fleet configuration that feeds them.
-**Every host must name every fleet account** in `service_accounts` or
-`fleet_pr_authors` (its own `github_user` is always covered). Those fleet
-logins are write collaborators on the monitored repos — and are then excluded
-from the trusted-author set, so they cannot instruct the worker (Issue #1066).
+The guards are only as good as the fleet configuration that feeds them. **Every
+host must name every fleet account** in `service_accounts` or `fleet_pr_authors`
+(its own `github_user` is always covered). Those fleet logins are write
+collaborators on the monitored repos — and are then excluded from the
+trusted-author set, so they cannot instruct the worker (Issue #1066).
 `allowed_authors` plays no part in this any more:
-[`validateFleetConfig`](../../worker/deno/lib/fleet_config_validation.ts) runs at
-startup and in `diagnose-repo`, emitting a `[fleet-config] WARNING` for a
+[`validateFleetConfig`](../../worker/deno/lib/fleet_config_validation.ts) runs
+at startup and in `diagnose-repo`, emitting a `[fleet-config] WARNING` for a
 `fleet_pr_authors` sibling missing from `allowed_authors` and a
 `[fleet-config] ERROR` when the effective fleet set is empty (the guard would be
 inoperative). See [CONFIGURATION.md](../CONFIGURATION.md) and
@@ -542,60 +883,94 @@ inoperative). See [CONFIGURATION.md](../CONFIGURATION.md) and
 
 ### Recovery path — human re-open / re-label
 
-Once a fleet PR **merges**, the issue is **done for the fleet** and the permanent
-merged-lock keeps it out of discovery. The **only** way an issue becomes eligible
-again after a merged PR is a **human** action: re-open the issue, or re-apply the
-discovery label (`work-on` / `top-priority` / `low-priority`). This is
-prevention-only — there is no auto-close or duplicate-cleanup machinery, and
-multi-account fleet operation is retained. A **closed-unmerged** PR needs
-no human action: it expires with the cooldown window and the retry path
-(branch reuse) takes over automatically.
+Once a fleet PR **merges**, the issue is **done for the fleet** and the
+permanent merged-lock keeps it out of discovery. The **only** way an issue
+becomes eligible again after a merged PR is a **human** action: re-open the
+issue, or re-apply the discovery label (`work-on` / `top-priority` /
+`low-priority`). This is prevention-only — there is no auto-close or
+duplicate-cleanup machinery, and multi-account fleet operation is retained. A
+**closed-unmerged** PR needs no human action: it expires with the cooldown
+window and the retry path (branch reuse) takes over automatically.
 
 ## Per-cycle trusted-author refresh
 
 Every scan cycle begins by asking for the trusted-author snapshot
-(`refreshTrustedAuthors` in
-[`run_core.ts`](../../worker/deno/lib/run_core.ts)). A resolve is one
-paginated `gh api` collaborator list per monitored repo, plus one
-team-members call when `exclusion_team` is set, and its result is reused
-for `trusted_authors_cache_hours` (default one hour, Issue #1453) before it
-is fetched again — inside that window a cycle makes no trust call at all.
-There is no local-array mode to short-circuit it. See
+(`refreshTrustedAuthors` in [`run_core.ts`](../../worker/deno/lib/run_core.ts)).
+A resolve is one paginated `gh api` collaborator list per monitored repo, plus
+one team-members call when `exclusion_team` is set, and its result is reused for
+`trusted_authors_cache_hours` (default one hour, Issue #1453) before it is
+fetched again — inside that window a cycle makes no trust call at all. There is
+no local-array mode to short-circuit it. See
 [CONFIGURATION.md — Snapshot, refresh and `gh` cost](../CONFIGURATION.md#snapshot-refresh-and-gh-cost).
 
 A monitored repo the worker's login cannot list (404, or 403 "Must have push
-access") is **skipped**, named once, and left out of the fold: it is a
-property of the deployment, and the worker could not write there anyway.
-Only when every repo is skipped is there nothing to trust.
+access") is **skipped**, named once, and left out of the fold: it is a property
+of the deployment, and the worker could not write there anyway. Only when every
+repo is skipped is there nothing to trust.
 
-A failed refresh is otherwise **fail-closed**: the cycle logs
-`[TRUST_REFRESH]`, marks the host unhealthy, and skips claiming and every
-other trust-dependent pass. The one thing it may serve instead is the
-worker's own in-memory snapshot of a real fetch, when the failure was
-transient and the snapshot is under six hours old — said in the log with
-its age. A 403 on the team fetch (missing `read:org`) is the searchable
-symptom of a misconfigured token — the worker does not become silently
-permissive. See
+A failed refresh is otherwise **fail-closed**: the cycle logs `[TRUST_REFRESH]`,
+marks the host unhealthy, and skips claiming and every other trust-dependent
+pass. The one thing it may serve instead is the worker's own in-memory snapshot
+of a real fetch, when the failure was transient and the snapshot is under six
+hours old — said in the log with its age. A 403 on the team fetch (missing
+`read:org`) is the searchable symptom of a misconfigured token — the worker does
+not become silently permissive. See
 [Setup — Token scopes for derived trust](../SETUP.md#token-scopes-for-derived-trust).
 
 ## ✅ Happy path
 
-1. **Select issue** — After the trusted-author refresh, scan configured repos for eligible issues (scan order is randomised by default via `shuffle_repos` for fairness — see below); apply filters (labels, authors, blocking labels, dependencies, open PRs (Pull Requests), one-issue-per-milestone —); choose the globally oldest by `createdAt` across all repos.
-2. **Claim issue** — Assign self to the issue; brief pause; re-read assignees; if contested, use alphabetical tie-break; losers unassign themselves.
-3. **Setup repo** — Clone or update target repo; reset worker repo to `origin/Develop`; create or sync feature branch from default or `milestone/<name>`.
-4. **Quality baseline** — Run `./quality.sh` on the clean repo (if it exists) to establish a baseline of any pre-existing quality failures. This baseline is threaded through to failure comments so reviewers can distinguish pre-existing issues from worker-introduced regressions. Non-blocking: work continues regardless of baseline result.
-5. **Clarification (important)** — Unless max rounds reached: the worker runs the clarification phase. **(1)** If the issue is **unclear**, it posts questions, adds `needs-human` (the standalone `needs-clarification` label was retired and the handoff consolidated onto `needs-human`), unassigns, and exits (no implementation this run). **(2)** It checks whether the issue is small enough to complete without timing out. **(3)** If **clear but too complex** for a single PR, it posts an escalation comment asking a trusted human to add the `planning` label and unassigns — once the label is added, the issue is processed via the planning workflow to create sub-issues. The worker does not add operational labels itself (see [Worker Label Policy](../../README.md#-supported-labels)). See [Clarification](planning-and-questions.md#clarification) and [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour).
-6. **Implement** — Run Claude with issue prompt; run `./quality.sh`; commit changes; push branch.
-7. **PR** — Build PR body from `docs/pr-summary-<issue>.md` (or `docs/archive/pr-summaries/pr-summary-<issue>.md`, or legacy `.pr_summary`); create or recover PR; enable auto-merge; resolve mergeability as needed.
+1. **Select issue** — After the trusted-author refresh, scan configured repos
+   for eligible issues (scan order is randomised by default via `shuffle_repos`
+   for fairness — see below); apply filters (labels, authors, blocking labels,
+   dependencies, open PRs (Pull Requests), one-issue-per-milestone —); choose
+   the globally oldest by `createdAt` across all repos.
+2. **Claim issue** — Assign self to the issue; brief pause; re-read assignees;
+   if contested, use alphabetical tie-break; losers unassign themselves.
+3. **Setup repo** — Clone or update target repo; reset worker repo to
+   `origin/Develop`; create or sync feature branch from default or
+   `milestone/<name>`.
+4. **Quality baseline** — Run `./quality.sh` on the clean repo (if it exists) to
+   establish a baseline of any pre-existing quality failures. This baseline is
+   threaded through to failure comments so reviewers can distinguish
+   pre-existing issues from worker-introduced regressions. Non-blocking: work
+   continues regardless of baseline result.
+5. **Clarification (important)** — Unless max rounds reached: the worker runs
+   the clarification phase. **(1)** If the issue is **unclear**, it posts
+   questions, adds `needs-human` (the standalone `needs-clarification` label was
+   retired and the handoff consolidated onto `needs-human`), unassigns, and
+   exits (no implementation this run). **(2)** It checks whether the issue is
+   small enough to complete without timing out. **(3)** If **clear but too
+   complex** for a single PR, it posts an escalation comment asking a trusted
+   human to add the `planning` label and unassigns — once the label is added,
+   the issue is processed via the planning workflow to create sub-issues. The
+   worker does not add operational labels itself (see
+   [Worker Label Policy](../../README.md#-supported-labels)). See
+   [Clarification](planning-and-questions.md#clarification) and
+   [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour).
+6. **Implement** — Run Claude with issue prompt; run `./quality.sh`; commit
+   changes; push branch.
+7. **PR** — Build PR body from `docs/pr-summary-<issue>.md` (or
+   `docs/archive/pr-summaries/pr-summary-<issue>.md`, or legacy `.pr_summary`);
+   create or recover PR; enable auto-merge; resolve mergeability as needed.
 
 ## 🔀 Repository scan order: fair scanning, then oldest first
 
-When multiple repos are configured, the worker must decide the **order** in which to query them for eligible issues. This is controlled by the `shuffle_repos` configuration option (default: `true`).
+When multiple repos are configured, the worker must decide the **order** in
+which to query them for eligible issues. This is controlled by the
+`shuffle_repos` configuration option (default: `true`).
 
-- **`shuffle_repos: true` (default)** — Repo scan order is **randomised** each iteration using a Fisher-Yates shuffle. This prevents any single repo from being consistently queried first, avoiding starvation in multi-repo setups. All repos are still scanned; only the query order changes.
-- **`shuffle_repos: false`** — Repos are scanned in the order they appear in the `repos` configuration array. This is useful in multi-worker setups where each worker has a different repo list to create per-worker priority.
+- **`shuffle_repos: true` (default)** — Repo scan order is **randomised** each
+  iteration using a Fisher-Yates shuffle. This prevents any single repo from
+  being consistently queried first, avoiding starvation in multi-repo setups.
+  All repos are still scanned; only the query order changes.
+- **`shuffle_repos: false`** — Repos are scanned in the order they appear in the
+  `repos` configuration array. This is useful in multi-worker setups where each
+  worker has a different repo list to create per-worker priority.
 
-**Important:** Scan order affects only which repos are **queried first**, not which issue is **selected**. After all repos are scanned and candidates collected, the worker always selects the **globally oldest** eligible issue by creation date. In short: **fair scanning, then oldest first**.
+**Important:** Scan order affects only which repos are **queried first**, not
+which issue is **selected**. After all repos are scanned and candidates
+collected, the worker always selects the **globally oldest** eligible issue by
+creation date. In short: **fair scanning, then oldest first**.
 
 See [CONFIGURATION.md](../CONFIGURATION.md) for the `shuffle_repos` setting.
 
@@ -637,36 +1012,62 @@ flowchart TD
 
 ## 🔗 Dependency and parent/child filtering
 
-During issue selection (step 1 of the happy path), the worker checks each candidate issue for **dependency** and **parent/child** relationships before considering it eligible. This filtering happens after label and author checks but before the final oldest-first selection.
+During issue selection (step 1 of the happy path), the worker checks each
+candidate issue for **dependency** and **parent/child** relationships before
+considering it eligible. This filtering happens after label and author checks
+but before the final oldest-first selection.
 
 ### 🔗 Forward dependencies: "Depends on" / "Blocked by"
 
-If an issue body contains `Depends on #N` or `Blocked by #N` (case-insensitive), the worker checks whether issue #N is still open. If **any** referenced dependency is open, the issue is **skipped**. Both `Depends on` and `Blocked by` are treated identically — either one blocks the issue.
+If an issue body contains `Depends on #N` or `Blocked by #N` (case-insensitive),
+the worker checks whether issue #N is still open. If **any** referenced
+dependency is open, the issue is **skipped**. Both `Depends on` and `Blocked by`
+are treated identically — either one blocks the issue.
 
-Cross-repo dependencies are also supported (e.g. `Depends on org/other-repo#42`). The worker queries the referenced repository to check the dependency's state.
+Cross-repo dependencies are also supported (e.g.
+`Depends on org/other-repo#42`). The worker queries the referenced repository to
+check the dependency's state.
 
 ### 👪 Parent/child (sub-issues)
 
-If an issue body contains GitHub task list items referencing other issues (e.g. `- [] `, `- [x] `), the issue is treated as a **parent**. A parent issue is blocked until **all** referenced child issues are closed. Children can be worked on independently (and in dependency order if they have dependencies among themselves).
+If an issue body contains GitHub task list items referencing other issues (e.g.
+`- []`, `- [x]`), the issue is treated as a **parent**. A parent issue is
+blocked until **all** referenced child issues are closed. Children can be worked
+on independently (and in dependency order if they have dependencies among
+themselves).
 
 ### 🔒 One-issue-per-milestone enforcement
 
-The worker enforces that **only one lower-tier issue per repo/milestone combination** can be in progress at a time. During issue selection, the `is_milestone_occupied()` check ensures that if any issue in the same repo and milestone is already assigned, no additional `low-priority` or `idle-task` issues from that milestone are eligible. `top-priority` and `work-on` issues share the stream instead (Issues #2530, #2532). This prevents multiple workers from simultaneously working on different issues in the same milestone — ensuring each issue builds on the completed work from the previous one.
+The worker enforces that **only one lower-tier issue per repo/milestone
+combination** can be in progress at a time. During issue selection, the
+`is_milestone_occupied()` check ensures that if any issue in the same repo and
+milestone is already assigned, no additional `low-priority` or `idle-task`
+issues from that milestone are eligible. `top-priority` and `work-on` issues
+share the stream instead (Issues #2530, #2532). This prevents multiple workers
+from simultaneously working on different issues in the same milestone — ensuring
+each issue builds on the completed work from the previous one.
 
 - **Milestone issues** — Only one issue per milestone per repo at a time.
 - **Non-milestone issues** — Only one non-milestone issue per repo at a time.
 
-This is separate from the open-PR gate (which caps the fleet's open PRs per target branch — one per slot on the default branch, one per milestone branch). The milestone occupation check operates at the **issue assignment** level, while open-PR blocking operates at the **PR** level.
+This is separate from the open-PR gate (which caps the fleet's open PRs per
+target branch — one per slot on the default branch, one per milestone branch).
+The milestone occupation check operates at the **issue assignment** level, while
+open-PR blocking operates at the **PR** level.
 
 ### 🔓 Fail-open design
 
-If the GitHub API (Application Programming Interface) is temporarily unavailable, the dependency checker **fails open** — the issue is treated as **not blocked** rather than stalling the worker indefinitely.
+If the GitHub API (Application Programming Interface) is temporarily
+unavailable, the dependency checker **fails open** — the issue is treated as
+**not blocked** rather than stalling the worker indefinitely.
 
-For full details on dependency relationships, milestones, and circular dependencies, see [projects-and-dependencies.md](projects-and-dependencies.md).
+For full details on dependency relationships, milestones, and circular
+dependencies, see [projects-and-dependencies.md](projects-and-dependencies.md).
 
 ## 📊 Diagram: branching and merge flow (gitGraph)
 
-The following `gitGraph` diagram shows how feature branches are created from the `Develop` branch, worked on, and merged back via PR with auto-merge:
+The following `gitGraph` diagram shows how feature branches are created from the
+`Develop` branch, worked on, and merged back via PR with auto-merge:
 
 ```mermaid
 gitGraph
@@ -681,27 +1082,165 @@ gitGraph
     commit id: "Next issue..."
 ```
 
-*The `main` line represents the `Develop` branch (default). Each issue gets its own feature branch (`issue-<number>-<title>`), which is merged back via a squash-merge PR with auto-merge enabled.*
+_The `main` line represents the `Develop` branch (default). Each issue gets its
+own feature branch (`issue-<number>-<title>`), which is merged back via a
+squash-merge PR with auto-merge enabled._
 
 ## 🔀 Decision points and exceptions
 
-- **No eligible issue:** Skip implementation this iteration; continue to sleep and next loop.
-- **Claim fails:** Log and skip; do not retry same issue this run (another worker may have won).
-- **Clarification requested:** Post questions, add `needs-human`, unassign; user removes label and responds; next run re-evaluates.
-- **Complexity escalation (target behaviour):** If the issue is clear but too complex for a single PR, the worker posts an explanatory comment asking a trusted human to add the `planning` label, and unassigns. The planning workflow then breaks it into sub-issues once the label is added. The worker does not add `planning` itself — see [Worker Label Policy](../../README.md#-supported-labels). See also [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour). *Note: This is the target workflow — implementation may not yet fully match this documented behaviour.*
-- **Implementation failure (first):** Comment, add `failed-once`, clean stale branch, unassign; next run may retry. **Second failure:** Replace with `failed`, skip thereafter until user removes label.
-- **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
-- **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
-- **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
-- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
-- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins. See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
-- **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
-- **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
-- **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
-- **Timed-out run — WIP preserved, but no half-done PR:** A hard timeout with a dirty tree commits the work as a `wip:` commit on the claim-locked issue branch and pushes it, so the next claim (or a human) resumes from the branch instead of starting from zero; the release comment names the branch. Because that commit leaves the branch *ahead of base*, the completion phase adds a second guard beside the ahead-of-base check: when **every** commit ahead of base is a worker-authored WIP marker (`wip: …` or `WIP checkpoint: …`) **and** the branch tip is exactly where it stood before this run's agent started, no PR is raised — the resume must advance the branch first. Anything the guard cannot determine (the pre-run HEAD was unreadable, the commit log failed) fails open and the PR proceeds. See [`wip_commit_marker.ts`](../../worker/deno/lib/wip_commit_marker.ts) and [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
-- **Preservation runs before the existing-PR lookup:** An interrupted execute (timeout, SIGKILL, external SIGTERM) preserves its work **first**, then asks whether a PR exists. The order matters: the "a PR already exists → treat the run as a success" self-heal used to run first, so *any* PR for the issue — including a sibling host's, and including one already merged — skipped preservation entirely and the run's uncommitted work was discarded. The completion phase's "no commits ahead" bail-out preserves the tree the same way instead of only reporting that uncommitted changes were present. See [`phases/run_wip_preservation.ts`](../../worker/deno/lib/phases/run_wip_preservation.ts).
-- **Portable handover note (Issue #769):** Preservation saves the run's *code*; the note saves its *intent*. Beside the `wip:` commit the worker writes `docs/archive/handover/issue-<N>.md` into the clone **before** the commit runs, so the same `commitAndPushPending` carries it to the issue branch. It names the interruption cause, the branch, what was done (the commits this run added and the files it left uncommitted), what remains, and whether a wind-down notice was delivered — all from what the worker already knows, so it needs no agent call and works on the timeout path where no agent is alive. Everything in it is provider-neutral: no host paths, no session ids, nothing specific to one agent. Each interruption **rewrites** the note and keeps a short "previous attempts" tail, so a third claim can see two prior runs were interrupted. The path is the single constant `handoverFilePath()` in [`preserved_wip_branch.ts`](../../worker/deno/lib/preserved_wip_branch.ts), shared with the release comment that advertises it (Issue #770) and the resuming prompt that reads it (Issue #771) — not the `.vibe/…` the issue sketched, because [`gitignore_enforcer.ts`](../../worker/deno/lib/gitignore_enforcer.ts) ignores every hidden path in a monitored repo and [`pre_commit_safety.ts`](../../worker/deno/lib/pre_commit_safety.ts) refuses to commit one, so `git add -A` would have dropped the note silently; `docs/archive/` is excluded from the markdownlint globs, so free agent prose on a WIP branch cannot trip a docs gate. When the phase-end checkpoint has already left the tree clean, the note alone is committed as `wip: handover note …`, which the #148 WIP-only gate still refuses to build a PR from. A failed write is logged and non-fatal: losing the note never costs the code. See [`handover_note.ts`](../../worker/deno/lib/handover_note.ts).
-- **Superseded by another PR (`superseded:pr#N`):** The existing-PR lookup distinguishes an **open** PR (work in flight — the run continues, as before) from a **merged or closed** one (this run has nothing left to raise). A merged sibling PR stops the run cleanly: the claim releases with a `superseded` outcome naming the PR and the branch any preserved WIP is on, the issue is **not** labelled failed, and no `unknown`-class run-failure issue is filed. Every lookup failure fails safe to "open", so a `gh` hiccup can never invent a superseded stop. See [`superseding_pr.ts`](../../worker/deno/lib/superseding_pr.ts) and [`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts).
+- **No eligible issue:** Skip implementation this iteration; continue to sleep
+  and next loop.
+- **Claim fails:** Log and skip; do not retry same issue this run (another
+  worker may have won).
+- **Clarification requested:** Post questions, add `needs-human`, unassign; user
+  removes label and responds; next run re-evaluates.
+- **Complexity escalation (target behaviour):** If the issue is clear but too
+  complex for a single PR, the worker posts an explanatory comment asking a
+  trusted human to add the `planning` label, and unassigns. The planning
+  workflow then breaks it into sub-issues once the label is added. The worker
+  does not add `planning` itself — see
+  [Worker Label Policy](../../README.md#-supported-labels). See also
+  [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour).
+  _Note: This is the target workflow — implementation may not yet fully match
+  this documented behaviour._
+- **Implementation failure (first):** Comment, add `failed-once`, clean stale
+  branch, unassign; next run may retry. **Second failure:** Replace with
+  `failed`, skip thereafter until user removes label.
+- **Unrecoverable blocker (`needs-human` escalation):** If the worker determines
+  the task cannot be completed autonomously — e.g. it needs credentials only a
+  human can grant, or depends on a product decision — it adds the `needs-human`
+  label, posts a comment explaining what a human must do next, and stops. The
+  issue is **excluded from discovery** on every subsequent scan until a human
+  removes the label. The worker never self-applies `top-priority` or any other
+  reserved workflow label for this purpose. See
+  [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human)
+  below.
+- **Zero output — prior work on remote branch:** If Claude produces no changes
+  but the remote feature branch has commits from a prior attempt (e.g., worker
+  crashed after push but before PR creation), the worker fast-forwards the local
+  branch and proceeds to create the PR. The issue is completed, not failed.
+- **Zero output — already-complete check:** If Claude produces no changes and no
+  prior work is found on the remote branch, the worker runs a short follow-up
+  Claude prompt asking "is this issue already complete in the current codebase?"
+  If Claude confirms the work is done (e.g., completed via a different PR or
+  branch), the issue is auto-closed with a comment. If not complete, normal
+  failure handling continues.
+- **Blocked on a dependency — deferral:** A run that produces no code changes
+  because the work is blocked on **another issue** is deferred, not closed and
+  not escalated. When the output opens a `Blocked` / `Depends on` section naming
+  an issue other than the one being worked, the worker posts a deferral comment
+  quoting the run's own reason, records `Depends on owner/repo#N` in the issue
+  body inside a delimited machine-owned block (the form the dependency gate
+  reads; the `blocked` label is the fallback when the body cannot be edited).
+  The content-approval gate strips that block before hashing, so the worker's
+  own bookkeeping write is not read as a content change after approval — the
+  exemption covers the _edit_, not the author, and only lines matching
+  `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue
+  open with its discovery label — no `needs-human` — and releases the claim with
+  the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue
+  until that dependency closes. A run that reports the **same** dependency a
+  second time is not deferred again (the deferral comment carries a hidden
+  marker): the gate did not hold, so the repeat falls through to the
+  analysis-only hand-off and a human sees it rather than the worker spending an
+  agent run per scan. See
+  [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and
+  [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
+- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR
+  deliverable — their outcome is a recommendation, a coverage matrix, or
+  "populate the issue" analysis posted as a comment, with no code/prompt change.
+  Because the pipeline treats a raised PR as its completion signal, a no-PR run
+  used to read as "not done" and the issue was re-picked-up and re-run
+  indefinitely (the loop seen in). Now, when Claude produces useful analysis but
+  no code changes — **or** the issue body declares itself analysis-only up front
+  via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker
+  posts the analysis once, hands the issue off to a human via `needs-human` (so
+  discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a
+  failure — the issue is not marked `failed`. **Exception — a described code
+  change is retried, not handed off:** when the run's output names files to
+  change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN
+  regression test in a named file) yet it committed nothing, that is a failed
+  implementation, not analysis. The worker posts a
+  `## Retry: make the code change` nudge — which the retry's prompt carries —
+  and returns a `no_changes` failure, so the issue is retried within the normal
+  `failed-once` → `failed` budget and never escalated as analysis-only. An
+  explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins.
+  See
+  [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts)
+  (Issue #2687). A human reviews the analysis, then adds `planning` to break it
+  into sub-issues or re-adds `work-on` if a code change is genuinely expected. A
+  loop guard sits beneath the clean hand-off: if a prior hand-off comment is
+  already present (the hand-off did not stop the loop — e.g. the label was
+  stripped), the worker escalates the repeat run through the `failed-once` →
+  `failed` ladder so it can never spin forever. See
+  [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts)
+  and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **Zero output — cooldown:** After a failure, the issue is skipped for a
+  configurable cooldown period (default 10 minutes) so the worker can process
+  other issues instead of immediately re-picking the same one. The cooldown is
+  per-issue and resets on worker restart.
+- **Quality gate fails:** Treated as implementation failure (comment, labels,
+  unassign).
+- **Push rejected:** Pull/rebase and retry push; if conflict, create fresh
+  branch and retry (see
+  [resilience-and-concurrency.md](resilience-and-concurrency.md)).
+- **Timed-out run — WIP preserved, but no half-done PR:** A hard timeout with a
+  dirty tree commits the work as a `wip:` commit on the claim-locked issue
+  branch and pushes it, so the next claim (or a human) resumes from the branch
+  instead of starting from zero; the release comment names the branch. Because
+  that commit leaves the branch _ahead of base_, the completion phase adds a
+  second guard beside the ahead-of-base check: when **every** commit ahead of
+  base is a worker-authored WIP marker (`wip: …` or `WIP checkpoint: …`) **and**
+  the branch tip is exactly where it stood before this run's agent started, no
+  PR is raised — the resume must advance the branch first. Anything the guard
+  cannot determine (the pre-run HEAD was unreadable, the commit log failed)
+  fails open and the PR proceeds. See
+  [`wip_commit_marker.ts`](../../worker/deno/lib/wip_commit_marker.ts) and
+  [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
+- **Preservation runs before the existing-PR lookup:** An interrupted execute
+  (timeout, SIGKILL, external SIGTERM) preserves its work **first**, then asks
+  whether a PR exists. The order matters: the "a PR already exists → treat the
+  run as a success" self-heal used to run first, so _any_ PR for the issue —
+  including a sibling host's, and including one already merged — skipped
+  preservation entirely and the run's uncommitted work was discarded. The
+  completion phase's "no commits ahead" bail-out preserves the tree the same way
+  instead of only reporting that uncommitted changes were present. See
+  [`phases/run_wip_preservation.ts`](../../worker/deno/lib/phases/run_wip_preservation.ts).
+- **Portable handover note (Issue #769):** Preservation saves the run's _code_;
+  the note saves its _intent_. Beside the `wip:` commit the worker writes
+  `docs/archive/handover/issue-<N>.md` into the clone **before** the commit
+  runs, so the same `commitAndPushPending` carries it to the issue branch. It
+  names the interruption cause, the branch, what was done (the commits this run
+  added and the files it left uncommitted), what remains, and whether a
+  wind-down notice was delivered — all from what the worker already knows, so it
+  needs no agent call and works on the timeout path where no agent is alive.
+  Everything in it is provider-neutral: no host paths, no session ids, nothing
+  specific to one agent. Each interruption **rewrites** the note and keeps a
+  short "previous attempts" tail, so a third claim can see two prior runs were
+  interrupted. The path is the single constant `handoverFilePath()` in
+  [`preserved_wip_branch.ts`](../../worker/deno/lib/preserved_wip_branch.ts),
+  shared with the release comment that advertises it (Issue #770) and the
+  resuming prompt that reads it (Issue #771) — not the `.vibe/…` the issue
+  sketched, because
+  [`gitignore_enforcer.ts`](../../worker/deno/lib/gitignore_enforcer.ts) ignores
+  every hidden path in a monitored repo and
+  [`pre_commit_safety.ts`](../../worker/deno/lib/pre_commit_safety.ts) refuses
+  to commit one, so `git add -A` would have dropped the note silently;
+  `docs/archive/` is excluded from the markdownlint globs, so free agent prose
+  on a WIP branch cannot trip a docs gate. When the phase-end checkpoint has
+  already left the tree clean, the note alone is committed as
+  `wip: handover note …`, which the #148 WIP-only gate still refuses to build a
+  PR from. A failed write is logged and non-fatal: losing the note never costs
+  the code. See [`handover_note.ts`](../../worker/deno/lib/handover_note.ts).
+- **Superseded by another PR (`superseded:pr#N`):** The existing-PR lookup
+  distinguishes an **open** PR (work in flight — the run continues, as before)
+  from a **merged or closed** one (this run has nothing left to raise). A merged
+  sibling PR stops the run cleanly: the claim releases with a `superseded`
+  outcome naming the PR and the branch any preserved WIP is on, the issue is
+  **not** labelled failed, and no `unknown`-class run-failure issue is filed.
+  Every lookup failure fails safe to "open", so a `gh` hiccup can never invent a
+  superseded stop. See
+  [`superseding_pr.ts`](../../worker/deno/lib/superseding_pr.ts) and
+  [`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts).
 
 ```mermaid
 flowchart TD
@@ -717,7 +1256,9 @@ flowchart TD
 
 ## 🤝 Worker escalation via `needs-human`
 
-Some issues cannot be completed autonomously. Rather than looping or self-applying `top-priority`, the worker escalates through a single, dedicated label: `needs-human` (config key `needs_human_label`, default colour `fbca04`).
+Some issues cannot be completed autonomously. Rather than looping or
+self-applying `top-priority`, the worker escalates through a single, dedicated
+label: `needs-human` (config key `needs_human_label`, default colour `fbca04`).
 
 **Flow:**
 
@@ -747,34 +1288,74 @@ flowchart TD
 
 **Typical triggers:**
 
-- The change touches files that require GitHub OAuth scopes or permissions the worker account does not hold.
+- The change touches files that require GitHub OAuth scopes or permissions the
+  worker account does not hold.
 - Credentials or system access only a human can grant are needed.
 - A product or architectural question only a human stakeholder can answer.
 
-**What the worker does not do:** it never self-applies `top-priority`, `work-on`, `low-priority`, `refine-issue`, `planning`, `question`, `best-model`, or the deprecated `help wanted` / `claude` / `needs-clarification` / `skip-clarification` / `answered` labels as an escalation signal. Those are human-scheduling or internal-state labels, not escalation. The single label the Vibe Coder may self-apply is `idle-task`. `needs-human` is the worker's **only** way to hand an issue back to a person.
+**What the worker does not do:** it never self-applies `top-priority`,
+`work-on`, `low-priority`, `refine-issue`, `planning`, `question`, `best-model`,
+or the deprecated `help wanted` / `claude` / `needs-clarification` /
+`skip-clarification` / `answered` labels as an escalation signal. Those are
+human-scheduling or internal-state labels, not escalation. The single label the
+Vibe Coder may self-apply is `idle-task`. `needs-human` is the worker's **only**
+way to hand an issue back to a person.
 
-**Comment dedup:** a caller that passes a `dedupKey` gets one hand-off comment per key per 24 hours — [`escalateToHuman`](../../worker/deno/lib/needs_human_escalation.ts) tags its comment with `<!-- needs-human-escalation: <key> -->` and skips the duplicate when a fleet-authored comment already carries that marker inside the window (the label is still re-applied). The scan reads the **newest 50** comments: [`gh_escalation_client.ts`](../../worker/deno/lib/gh_escalation_client.ts) fetches every page at 100 per request (capped at 1 000 comments) because GitHub's default page is the oldest 30 and a `direction=desc` request against this endpoint came back in the same ascending order when checked live, so on a busy issue the marker would otherwise never be fetched and the escalation would repeat every scan (Issue #1619).
+**Comment dedup:** a caller that passes a `dedupKey` gets one hand-off comment
+per key per 24 hours —
+[`escalateToHuman`](../../worker/deno/lib/needs_human_escalation.ts) tags its
+comment with `<!-- needs-human-escalation: <key> -->` and skips the duplicate
+when a fleet-authored comment already carries that marker inside the window (the
+label is still re-applied). The scan reads the **newest 50** comments:
+[`gh_escalation_client.ts`](../../worker/deno/lib/gh_escalation_client.ts)
+fetches every page at 100 per request (capped at 1 000 comments) because
+GitHub's default page is the oldest 30 and a `direction=desc` request against
+this endpoint came back in the same ascending order when checked live, so on a
+busy issue the marker would otherwise never be fetched and the escalation would
+repeat every scan (Issue #1619).
 
-**Discovery behaviour:** [issue_filter.ts](../../worker/deno/lib/issue_filter.ts) and [issue_finder.ts](../../worker/deno/lib/issue_finder.ts) exclude any issue whose labels include `config.needsHumanLabel`, with a `"needs-human"` skip reason recorded via `diag.logIssueSkipped(...)`. `needs-human` is also part of `OPERATIONAL_LABEL_NAMES` in [label_security.ts](../../worker/deno/lib/label_security.ts) so the timeline check ignores it if a non-trusted user adds it.
+**Discovery behaviour:**
+[issue_filter.ts](../../worker/deno/lib/issue_filter.ts) and
+[issue_finder.ts](../../worker/deno/lib/issue_finder.ts) exclude any issue whose
+labels include `config.needsHumanLabel`, with a `"needs-human"` skip reason
+recorded via `diag.logIssueSkipped(...)`. `needs-human` is also part of
+`OPERATIONAL_LABEL_NAMES` in
+[label_security.ts](../../worker/deno/lib/label_security.ts) so the timeline
+check ignores it if a non-trusted user adds it.
 
-**To resume work:** a human resolves the blocker (e.g. grants the missing scope), removes the `needs-human` label, and the worker picks the issue up on the next scan cycle.
+**To resume work:** a human resolves the blocker (e.g. grants the missing
+scope), removes the `needs-human` label, and the worker picks the issue up on
+the next scan cycle.
 
-**Removing `needs-human` is also a re-approval** (Issue #1617). When the label was added by the content-approval gate ([`work_on_content_integrity.ts`](../../worker/deno/lib/work_on_content_integrity.ts)) because the issue was edited after approval, a **trusted human's** removal that post-dates the newest edit re-baselines the approval snapshot onto the current content and the issue proceeds — the label is not re-added on the next scan. A removal by a fleet login is worker maintenance and does not count, and neither does one that predates the edit. Before blocking, that gate drops the cached timeline for the issue and re-reads it live once, so a removal made minutes earlier is never hidden behind the 300-second cache.
+**Removing `needs-human` is also a re-approval** (Issue #1617). When the label
+was added by the content-approval gate
+([`work_on_content_integrity.ts`](../../worker/deno/lib/work_on_content_integrity.ts))
+because the issue was edited after approval, a **trusted human's** removal that
+post-dates the newest edit re-baselines the approval snapshot onto the current
+content and the issue proceeds — the label is not re-added on the next scan. A
+removal by a fleet login is worker maintenance and does not count, and neither
+does one that predates the edit. Before blocking, that gate drops the cached
+timeline for the issue and re-reads it live once, so a removal made minutes
+earlier is never hidden behind the 300-second cache.
 
-For user-facing guidance, see [USAGE.md — Worker escalation via `needs-human`](../USAGE.md#-worker-escalation-via-needs-human). For the config key, see [CONFIGURATION.md — `needs_human_label`](../CONFIGURATION.md#-configuration-defaults).
+For user-facing guidance, see
+[USAGE.md — Worker escalation via `needs-human`](../USAGE.md#-worker-escalation-via-needs-human).
+For the config key, see
+[CONFIGURATION.md — `needs_human_label`](../CONFIGURATION.md#-configuration-defaults).
 
 ## 🧭 Analysis-only / no-PR hand-off
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
-deliverable is analysis — a gap analysis, coverage matrix, or
-"populate the issue" recommendation posted as a comment — produces no PR, so
-the "no PR" outcome reads as "not done". Without a dedicated exit the worker
-re-picks-up and re-runs the issue indefinitely (the loop, which re-posted
-the same matrix plus an "unable to make code changes" note about five times).
+deliverable is analysis — a gap analysis, coverage matrix, or "populate the
+issue" recommendation posted as a comment — produces no PR, so the "no PR"
+outcome reads as "not done". Without a dedicated exit the worker re-picks-up and
+re-runs the issue indefinitely (the loop, which re-posted the same matrix plus
+an "unable to make code changes" note about five times).
 
 The worker now detects an analysis-only / no-PR issue from **two signals** and
 hands it off cleanly to `needs-human` (the only operational label the worker may
-apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):
+apply, routed through the
+[escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):
 
 - **(a) Up-front body marker.** An author, grill-me, or planning can declare an
   issue analysis-only by adding the HTML-comment marker `<!-- analysis-only -->`
@@ -785,8 +1366,8 @@ apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_hu
   worker posts the partial answer (the analysis is the deliverable) and then
   hands off.
 
-Both paths apply `needs-human` plus a paired explanation comment,
-which drops the issue from discovery and triggers
+Both paths apply `needs-human` plus a paired explanation comment, which drops
+the issue from discovery and triggers
 [`stripDiscoveryLabelsOnEscalation`](../../worker/deno/lib/escalation_cleanup.ts)
 to remove `work-on` server-side, so the issue never loops. A clean hand-off is
 **not** a `failed` outcome — the task did its job.
@@ -817,26 +1398,27 @@ the issue already resolved **and cites the evidence** — a commit and/or PR, pl
 how it checked — the worker closes the issue with that evidence in the comment.
 The agent declares it with
 `<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`
-(`prompts/issue/prompt.md`); a broadened keyword list remains as a
-fallback for output that carries no marker. A claim with no commit or PR behind
-it is *not* enough to close a live issue — that falls through to the analysis-only
-hand-off below. See
+(`prompts/issue/prompt.md`); a broadened keyword list remains as a fallback for
+output that carries no marker. A claim with no commit or PR behind it is _not_
+enough to close a live issue — that falls through to the analysis-only hand-off
+below. See
 [already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 
-**A blocked run is checked first.** "Blocked on another issue" is a deferral, not
-an analysis-only hand-off — and it is decided before the already-complete check,
-because a blocked answer routinely contains phrases such as "no changes needed"
-and closing a live task is the one outcome the next scan cannot undo. The agent
-cannot make that call itself either: the `gh` guard refuses
+**A blocked run is checked first.** "Blocked on another issue" is a deferral,
+not an analysis-only hand-off — and it is decided before the already-complete
+check, because a blocked answer routinely contains phrases such as "no changes
+needed" and closing a live task is the one outcome the next scan cannot undo.
+The agent cannot make that call itself either: the `gh` guard refuses
 `gh issue close|reopen|delete|transfer|lock` on the claimed repo.
 
 **Fallback loop guard.** When neither clean signal fires — Claude produces no
 changes **and** no useful output — the run returns a failure and the existing
 `failed-once` → `failed` / `needs-human` ladder
-([label_failure.ts](../../worker/deno/lib/label_failure.ts)) ensures the issue is
-never re-run indefinitely.
+([label_failure.ts](../../worker/deno/lib/label_failure.ts)) ensures the issue
+is never re-run indefinitely.
 
-**Implementation:** [analysis_only_handoff.ts](../../worker/deno/lib/analysis_only_handoff.ts)
+**Implementation:**
+[analysis_only_handoff.ts](../../worker/deno/lib/analysis_only_handoff.ts)
 (marker detection + hand-off), wired into
 [issue_worker.ts](../../worker/deno/lib/issue_worker.ts) (signal a) and
 [handle_no_changes_phase.ts](../../worker/deno/lib/phases/handle_no_changes_phase.ts)
@@ -848,13 +1430,13 @@ The planner writes a `## Acceptance Criteria` checklist into every published
 sub-issue, and until Issue #518 nothing downstream ever read it back: the
 implementing run never saw the criteria as a target, and the PR summary never
 said which of them were met, so a reviewer had to re-derive the list by hand.
-Adopted from GitHub spec-kit's `/speckit.converge` — the *assessment* half of it,
-inside the existing implementation run rather than as a new loop (see
+Adopted from GitHub spec-kit's `/speckit.converge` — the _assessment_ half of
+it, inside the existing implementation run rather than as a new loop (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
 
 **What the run must produce.** When the issue body carries a
-`## Acceptance Criteria` section, `prompts/issue/` requires the run to walk
-each criterion before writing the PR summary and record the assessment as a
+`## Acceptance Criteria` section, `prompts/issue/` requires the run to walk each
+criterion before writing the PR summary and record the assessment as a
 `## Acceptance Criteria` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md`:
 
@@ -862,10 +1444,11 @@ each criterion before writing the PR summary and record the assessment as a
 - **`partial`** — evidence plus a one-line reason for what is still outstanding.
 - **`missing`** — a one-line reason why it is not done.
 - **`unrequested`** — a change in the diff not traceable to the issue, with a
-  one-line reason. This is the output surface the prose "Change Scope" rule never
-  had: scope creep is named in the PR rather than found at review.
+  one-line reason. This is the output surface the prose "Change Scope" rule
+  never had: scope creep is named in the PR rather than found at review.
 
-**The gate.** [`acceptance_criteria_gate.ts`](../../worker/deno/lib/acceptance_criteria_gate.ts)
+**The gate.**
+[`acceptance_criteria_gate.ts`](../../worker/deno/lib/acceptance_criteria_gate.ts)
 parses both artefacts and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
 when a criteria-bearing issue produces a summary with no closure block, with
@@ -882,9 +1465,9 @@ independent-review gate below. A blocked run writes its next summary from the
 comment it was just handed, so two templates meant two shapes: the closure
 gate's `unrequested` line carried no `reviewer:` field, the independent gate
 rejected exactly that, and Issue #728 died in `completion` four times over
-copying one gate's answer into the other's rejection. `review_block_template_test.ts`
-feeds the printed block back through both validators, so the shapes cannot
-drift apart again (Issue #751).
+copying one gate's answer into the other's rejection.
+`review_block_template_test.ts` feeds the printed block back through both
+validators, so the shapes cannot drift apart again (Issue #751).
 
 ```mermaid
 flowchart TD
@@ -932,11 +1515,12 @@ see, so the run may depart from its verdict — but only out loud, keeping the
 `reviewer:` field as written and adding a one-line `reason:`. An unrecorded
 departure is the self-assessment the axis exists to remove.
 
-**The gate.** [`independent_review_gate.ts`](../../worker/deno/lib/independent_review_gate.ts)
+**The gate.**
+[`independent_review_gate.ts`](../../worker/deno/lib/independent_review_gate.ts)
 runs beside the closure gate at the same PR-creation chokepoint and blocks when
-the criteria block carries no `vibe-spec-review` provenance marker, when an entry
-names no `reviewer:` verdict, when a departure from that verdict carries no
-reason, when the `## Standards Review` section is absent, unsourced or empty,
+the criteria block carries no `vibe-spec-review` provenance marker, when an
+entry names no `reviewer:` verdict, when a departure from that verdict carries
+no reason, when the `## Standards Review` section is absent, unsourced or empty,
 when a `violation` names no evidence or outcome, or when either axis carries the
 other's findings — never merged, never reranked, because a change can pass one
 axis and fail the other and reporting them together lets one mask the other.
@@ -963,12 +1547,12 @@ flowchart TD
 ## 🐛 Reproduction status on a bug fix
 
 All three work-tier labels run the **same pipeline** and `bug` is a purely
-descriptive label, so until Issue #521 a PR summary that said "added a regression
-test" read identically whether the test had been watched to fail before the fix
-or merely written afterwards — precisely the over-claim the fail-loud standard
-exists to prevent. Adopted from GitHub spec-kit's `bug` extension, whose
-guardrail is worth taking whole: *a reproduction that was not actually performed
-is reported as `partial` or `not-run`, not `verified`* (see
+descriptive label, so until Issue #521 a PR summary that said "added a
+regression test" read identically whether the test had been watched to fail
+before the fix or merely written afterwards — precisely the over-claim the
+fail-loud standard exists to prevent. Adopted from GitHub spec-kit's `bug`
+extension, whose guardrail is worth taking whole: _a reproduction that was not
+actually performed is reported as `partial` or `not-run`, not `verified`_ (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)). The vocabulary is adopted,
 not the three-command structure: no new label, no new priority tier, no separate
 lane — just a conditional block in the existing PR-summary contract.
@@ -982,8 +1566,10 @@ symptom, the status, and the regression test that covers it:
 ## Reproduction
 
 - **symptom** — `parseDate("2024-02-29")` threw `RangeError` on a leap day
-- **status** — `verified` — the regression test was observed failing against the unfixed code and passing after the fix
-- **regression test** — `worker/deno/tests/date_parser_test.ts::parses a leap day`
+- **status** — `verified` — the regression test was observed failing against the
+  unfixed code and passing after the fix
+- **regression test** —
+  `worker/deno/tests/date_parser_test.ts::parses a leap day`
 ```
 
 - **`verified`** — the regression test was actually observed failing against the
@@ -993,25 +1579,27 @@ symptom, the status, and the regression test that covers it:
 - **`not-run`** — the reproduction was not performed, with a one-line `reason:`.
   This is a legitimate, reportable outcome, not a failure to hide.
 
-**How a run climbs to `verified`.** The three statuses defined what to report but
-not how to get there, so a hard bug degraded to `not-run` with no ladder to
+**How a run climbs to `verified`.** The three statuses defined what to report
+but not how to get there, so a hard bug degraded to `not-run` with no ladder to
 climb (Issue #661). The prompt now names the method, and it is the same loop the
-[CI-fix workflow](ci-fix.md#-the-reproduction-loop-before-the-fix) gained: build a
-**red-capable command** first — deterministic, seconds, unattended (`< /dev/null`),
-narrow — run it against the unfixed code and watch it go red; **minimise** the red
-scenario one element at a time until removing anything left turns it green, and
-that minimised scenario is the regression test; apply the fix and watch the same
-command go green. The attempt is bounded, and a loop that never went red is
-reported as `partial` or `not-run` naming what was tried — the ladder has an
-honest bottom rung, which is why it does not become a licence to over-claim.
+[CI-fix workflow](ci-fix.md#-the-reproduction-loop-before-the-fix) gained: build
+a **red-capable command** first — deterministic, seconds, unattended
+(`< /dev/null`), narrow — run it against the unfixed code and watch it go red;
+**minimise** the red scenario one element at a time until removing anything left
+turns it green, and that minimised scenario is the regression test; apply the
+fix and watch the same command go green. The attempt is bounded, and a loop that
+never went red is reported as `partial` or `not-run` naming what was tried — the
+ladder has an honest bottom rung, which is why it does not become a licence to
+over-claim.
 
-**The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
+**The gate.**
+[`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
 when a `bug`-labelled issue produces a summary with no `## Reproduction` block,
 no symptom, no recognised status, a `verified` claim that names no regression
-test or states no fail-before/pass-after observation, or a downgraded status with
-no reason. The gate comments on the issue naming every rule broken and the
+test or states no fail-before/pass-after observation, or a downgraded status
+with no reason. The gate comments on the issue naming every rule broken and the
 required shape. Issues **without** the `bug` label are unaffected.
 
 ```mermaid
@@ -1039,7 +1627,8 @@ template produces still ships a file the
 [`github-actions-audit`](../GITHUB-ACTIONS-AUDIT-SCAN.md) idle task files a
 finding against days later, in a repository the fleet does not own.
 
-**The gate.** [`changed_workflow_gate.ts`](../../worker/deno/lib/changed_workflow_gate.ts)
+**The gate.**
+[`changed_workflow_gate.ts`](../../worker/deno/lib/changed_workflow_gate.ts)
 runs every entry in
 [`WORKFLOW_FILE_CHECKS`](../../worker/deno/lib/workflow_file_checks.ts) over the
 `.github/workflows/` files the branch **added or changed**, at the same
@@ -1052,14 +1641,14 @@ branch diff they cost milliseconds. Any finding blocks the PR, and the failure
 names the check id, the file, the line and the detail, so the next attempt fixes
 the file rather than guessing.
 
-**Only what the run touched is in scope.** A repository whose *pre-existing*
-workflow files already carry findings is the idle-task audit's business, not this
-PR's: an untouched offender must never block an unrelated change. Deletions are
-out of scope too — the diff is collected with `--diff-filter=ACMR`, so a removed
-workflow has no text to check and its absence is never read as an unreadable
-file.
+**Only what the run touched is in scope.** A repository whose _pre-existing_
+workflow files already carry findings is the idle-task audit's business, not
+this PR's: an untouched offender must never block an unrelated change. Deletions
+are out of scope too — the diff is collected with `--diff-filter=ACMR`, so a
+removed workflow has no text to check and its absence is never read as an
+unreadable file.
 
-**And only what the run *introduced*** (Issue #2043). Scoping to changed *files*
+**And only what the run _introduced_** (Issue #2043). Scoping to changed _files_
 was not enough: a file a run appended two steps to was still checked whole, so a
 `push:` trigger that had sat on the base commit for months blocked the PR that
 touched the file for an unrelated reason — a `severity:low` audit finding turned
@@ -1070,9 +1659,10 @@ base. The comparison is per check, by `(finding id, file)`, and it counts — tw
 findings sharing an id where base carried one report the extra one, so a second
 offender is never masked by the first. Line numbers are excluded from the key,
 because appending a step shifts every line below it without changing what is
-wrong. A path absent at base is one the branch **added**, so it is checked whole;
-a base version that cannot be **read** is a fault and blocks, while one that
-cannot be **parsed** is not — that is often the very state the run is fixing.
+wrong. A path absent at base is one the branch **added**, so it is checked
+whole; a base version that cannot be **read** is a fault and blocks, while one
+that cannot be **parsed** is not — that is often the very state the run is
+fixing.
 
 **Not deciding is a failure, not a pass** (see
 [Never fail silently](../../CODING-STANDARDS.md)). A diff that cannot be
@@ -1116,7 +1706,8 @@ wrote no PR summary, and its PR closed the issue. The rest had to be
 rediscovered by hand and refiled as #2560.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
-gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+gap in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
 after the summary gates and before the PR is raised:
 
 ```mermaid
@@ -1134,8 +1725,8 @@ flowchart TD
   refined by grill-me — its `### Accepted scope so far` list. An issue stating
   neither is named whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
-  `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
-  is a shortfall.
+  `partial` or `missing` entry, or no entry at all (no summary, as on #2543), is
+  a shortfall.
 - **The follow-up** carries the `idle-task` label — the one work-trigger label
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run
@@ -1152,37 +1743,39 @@ flowchart TD
 The three summary gates above — acceptance-criteria closure, independent review,
 reproduction status — sit at the completion phase's PR-creation chokepoint, so
 blocking one normally costs the next attempt a rewrite and nothing else. The
-chokepoint is not always ahead of the PR: the agent raises its own PR from inside
-the execute phase often enough that the completion phase carries a self-healing
-recovery path for exactly that.
+chokepoint is not always ahead of the PR: the agent raises its own PR from
+inside the execute phase often enough that the completion phase carries a
+self-healing recovery path for exactly that.
 
 On 2026-09-05 that gap cost the fleet nearly half its spend. Four of six failed
 runs created their PR **25–68 seconds before** being recorded as failures, and
 all four PRs merged. Nine of the day's twenty-five phase failures were summary
-format rules — most of them an `unrequested` entry naming no `reviewer:` verdict.
-A `failure` cools the issue down, releases the claim and returns the issue to the
-claimable pool, so a sibling host redid finished work at a mean $10.80 a run; and
-with nine format blocks in the channel, a genuine defect was one signal in noise.
+format rules — most of them an `unrequested` entry naming no `reviewer:`
+verdict. A `failure` cools the issue down, releases the claim and returns the
+issue to the claimable pool, so a sibling host redid finished work at a mean
+$10.80 a run; and with nine format blocks in the channel, a genuine defect was
+one signal in noise.
 
 **The rule.** A document rule broken when the run has already raised its PR is
 reported as what it is — the work is done, the summary is short:
 
-| Outcome | When | What follows |
-| --- | --- | --- |
-| `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists and a summary rule is unmet | PR finalised and auto-merge armed; issue stays attached to the PR |
-| `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
-| `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
+| Outcome              | When                                    | What follows                                                                            |
+| -------------------- | --------------------------------------- | --------------------------------------------------------------------------------------- |
+| `no_pr`              | the run failed                          | failure label, cooldown, failure streak, run-failure issue                              |
+| `summary_incomplete` | a PR exists and a summary rule is unmet | PR finalised and auto-merge armed; issue stays attached to the PR                       |
+| `pr` + `blocked`     | a PR exists and a _defect_ gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
+| `no_pr` (`timeout`)  | the deadline was exceeded               | the timeout cooldown ladder                                                             |
 
 With **no** PR for the run's branch the run recovers in-run before the block
-stands — see [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
-below. Either way the gate's remediation comment is posted, so the shortfall is
-on the issue thread rather than only in one host's log.
+stands — see
+[the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
+Either way the gate's remediation comment is posted, so the shortfall is on the
+issue thread rather than only in one host's log.
 
-**Two gates are deliberate exceptions, and they run first.** The changed-workflow
-file checks above are the second: a workflow file carrying a finding is a defect
-in the change, so it stops the run PR or no PR, exactly as the security gate
-does.
+**Two gates are deliberate exceptions, and they run first.** The
+changed-workflow file checks above are the second: a workflow file carrying a
+finding is a defect in the change, so it stops the run PR or no PR, exactly as
+the security gate does.
 
 **An exception still has to report the PR it blocked.** Stopping the run is the
 gate's call; pretending no PR exists is not. On 2026-09-12 a run's agent raised
@@ -1193,17 +1786,17 @@ archived the host as having delivered nothing. The PR merged unchanged three
 hours later. So when the gate blocks and the run's own head already carries an
 open PR:
 
-| What | With no PR on the head | With a PR on the head |
-| --- | --- | --- |
-| Run result | `failure` | `failure` — the finding is still a defect |
-| Comment | "so no PR was raised" | names the PR and says the finding must be fixed on it |
-| Category | `workflow_gate` | `workflow_gate` — never `unknown` |
-| Outcome | `no_pr` | `pr` with `prNumber`, plus the block's phase and category |
+| What       | With no PR on the head | With a PR on the head                                     |
+| ---------- | ---------------------- | --------------------------------------------------------- |
+| Run result | `failure`              | `failure` — the finding is still a defect                 |
+| Comment    | "so no PR was raised"  | names the PR and says the finding must be fixed on it     |
+| Category   | `workflow_gate`        | `workflow_gate` — never `unknown`                         |
+| Outcome    | `no_pr`                | `pr` with `prNumber`, plus the block's phase and category |
 
 The outcome kind is what downstream health reporting counts, so "delivered, one
-finding outstanding" is now countable apart from "delivered nothing"
-(Issue #1947). `deriveRunOutcome` attaches the block to **any**
-PR-then-later-step failure, not only this gate's.
+finding outstanding" is now countable apart from "delivered nothing" (Issue
+#1947). `deriveRunOutcome` attaches the block to **any** PR-then-later-step
+failure, not only this gate's.
 
 **Implementation.** `lookupBlockedGatePr` and the gate block in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
@@ -1215,25 +1808,26 @@ the `workflow_gate` category in
 [`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts) (Issue #2044).
 
 **The security gate is the deliberate exception among the summary gates, and it
-runs first.** A PR that
-closes a `security`-labelled finding without its vulnerability-fix evidence stops
-the run, PR or no PR: that one is not a documentation shortfall. Order is what
-enforces it — a `security` run whose summary also broke a format rule would
-otherwise leave through the first summary gate and never be asked for its
-evidence, so the security gate is now evaluated ahead of all three.
+runs first.** A PR that closes a `security`-labelled finding without its
+vulnerability-fix evidence stops the run, PR or no PR: that one is not a
+documentation shortfall. Order is what enforces it — a `security` run whose
+summary also broke a format rule would otherwise leave through the first summary
+gate and never be asked for its evidence, so the security gate is now evaluated
+ahead of all three.
 
 **Satisfy the rule rather than fail it.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
 `prompts/issue/` now states the verdict field on every surface that names
-`unrequested` (the reviewer brief, the closure rules, the summary contents list),
-not only in the example block.
+`unrequested` (the reviewer brief, the closure rules, the summary contents
+list), not only in the example block.
 
 **Implementation.** `reportSummaryRuleBlock` in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
 `summaryIncompleteOutcome` in
-[`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts), and the release-comment
-rendering in [`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts)
-(Issue #1140).
+[`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts), and the
+release-comment rendering in
+[`heartbeat_storage.ts`](../../worker/deno/lib/heartbeat_storage.ts) (Issue
+#1140).
 
 ```mermaid
 flowchart TD
@@ -1266,15 +1860,15 @@ flowchart TD
 A block with no PR still ended the run, and that was the whole cost. GRQ-23's
 logs for the fortnight from 2026-09-15 on one host: 12 runs reached a PR, the
 acceptance-criteria closure gate blocked 4, and 3 of those were failed
-`no_pr:unknown:completion`. Both overnight blocks — VibeCoder#2099 (top-priority)
-and VibeCoder#2156 — carried the same verdict, *the PR summary carries no
-`## Acceptance Criteria` closure block*, on a branch that was pushed and
-quality-gated. The next run, a whole agent session, existed only to add a
+`no_pr:unknown:completion`. Both overnight blocks — VibeCoder#2099
+(top-priority) and VibeCoder#2156 — carried the same verdict, _the PR summary
+carries no `## Acceptance Criteria` closure block_, on a branch that was pushed
+and quality-gated. The next run, a whole agent session, existed only to add a
 documentation block to it.
 
 The prompt is not the lever: `prompts/issue/prompt.md` already documents the
 block and its rules in full, and the agent still omits it in a quarter of the
-runs that reach completion here. The gate's *response* is. So the summary gates
+runs that reach completion here. The gate's _response_ is. So the summary gates
 now recover the way the security-fix gate does
 ([Issue #1575](../security-fix-gate-feedback.md#the-in-run-retry-issue-1575)):
 
@@ -1332,10 +1926,9 @@ The shape is fixed and machine-checked, so the worker owns it:
    sanitised to one line with the label keywords stripped, so the model's own
    text cannot forge a `reviewer:` verdict or open a third section;
 3. a verdict that does not cover every criterion — or names no evidence where
-   the gate requires it — is asked for **once** more with the shortfall named.
-   A second short verdict is rendered as it stands and the gate blocks on it:
-   the content stays the model's, so a genuine gap is reported, never papered
-   over;
+   the gate requires it — is asked for **once** more with the shortfall named. A
+   second short verdict is rendered as it stands and the gate blocks on it: the
+   content stays the model's, so a genuine gap is reported, never papered over;
 4. a reply carrying no readable verdict leaves the summary exactly as the agent
    wrote it, and the block stands.
 
@@ -1362,11 +1955,12 @@ coverage, render),
 
 GitHub runs **two** rate limits, and only one of them was understood here. The
 primary hourly quota has a published reset and a REST way round it (Issue #42).
-The **secondary** limit is a burst throttle on *content creation*: it refuses the
-write, asks for "a few minutes", and refuses REST just as readily as GraphQL.
+The **secondary** limit is a burst throttle on _content creation_: it refuses
+the write, asks for "a few minutes", and refuses REST just as readily as
+GraphQL.
 
-`runGhCommand` retried a refused `gh pr create` for about fourteen seconds —
-2 s, 4 s, 8 s — and gave up. The run was then recorded as a **failure** with the
+`runGhCommand` retried a refused `gh pr create` for about fourteen seconds — 2
+s, 4 s, 8 s — and gave up. The run was then recorded as a **failure** with the
 branch pushed and no PR on it, and because every `rate_limit` category mapped to
 `usage-limit`, a self-clearing GitHub throttle was indistinguishable in the
 record from an exhausted model subscription. A week of transcripts made this the
@@ -1374,12 +1968,12 @@ single most common shape of "failure whose work was complete".
 
 **The rule.** The work is finished, quality-gated and pushed; the create is the
 only thing outstanding. So the run waits in minutes, and if the limit outlasts
-the run it *parks* the PR instead of failing:
+the run it _parks_ the PR instead of failing:
 
-| Outcome | When | What follows |
-| --- | --- | --- |
-| `pr_deferred` | the secondary limit outlasted the run | no failure, no cooldown, no failure streak; the branch stands, the resume state stands, and Priority 0.9 raises the PR next cycle |
-| `github-abuse-limit` | any run failure whose message names the secondary limit | classified apart from `usage-limit`, so fleet records can count a GitHub throttle separately from a spent subscription |
+| Outcome              | When                                                    | What follows                                                                                                                      |
+| -------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `pr_deferred`        | the secondary limit outlasted the run                   | no failure, no cooldown, no failure streak; the branch stands, the resume state stands, and Priority 0.9 raises the PR next cycle |
+| `github-abuse-limit` | any run failure whose message names the secondary limit | classified apart from `usage-limit`, so fleet records can count a GitHub throttle separately from a spent subscription            |
 
 - **Minute-scale backoff** — 60 s / 120 s / 240 s, or the `Retry-After` GitHub
   sent when it sends one: the limit itself saying when it clears outranks our
@@ -1393,8 +1987,8 @@ the run it *parks* the PR instead of failing:
   still takes the Issue #42 REST fallback and opens the PR at once. Only if REST
   is refused too does the PR park.
 - **Parked, not lost** — `deferred_pr_store.ts` records the branch, base, title
-  and the body the run had already composed, the issue thread gets a `PR pending`
-  note naming the branch, and the release comment says the same.
+  and the body the run had already composed, the issue thread gets a
+  `PR pending` note naming the branch, and the release comment says the same.
 - **Raised with no agent run** — Priority 0.9 (`deferred_pr_drain.ts`) opens the
   PR over REST on the next cycle. A PR that turned up some other way drops the
   record; a refusal that is still the throttle leaves it parked; any other
@@ -1411,8 +2005,8 @@ the run it *parks* the PR instead of failing:
 `deferPrCreation` in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
 and `drainDeferredPrs` in
-[`deferred_pr_drain.ts`](../../worker/deno/lib/deferred_pr_drain.ts)
-(Issue #1951).
+[`deferred_pr_drain.ts`](../../worker/deno/lib/deferred_pr_drain.ts) (Issue
+#1951).
 
 ```mermaid
 flowchart TD
@@ -1438,18 +2032,18 @@ A merged PR is not a landed change. When a child PR merges into
 `milestone/<n>-…` **after** that milestone's rollup PR has already merged into
 the default branch, the merge commit is unreachable from the default branch and
 the work went nowhere, so
-[`verifyMergeLanded`](../../worker/deno/lib/merge_landing.ts) reports
-`orphaned` and the merged-PR pre-check refuses to close the issue.
+[`verifyMergeLanded`](../../worker/deno/lib/merge_landing.ts) reports `orphaned`
+and the merged-PR pre-check refuses to close the issue.
 
-Refusing is only half a fix. Reported as a *success*, the refusal made the scan
+Refusing is only half a fix. Reported as a _success_, the refusal made the scan
 forget the issue immediately, so both pool slots re-claimed the same issue every
 cycle for a whole run (GRQ#4173, 13 bounces in 40 minutes) while every other
 claimable issue in the fleet went untouched. Two behaviours close the loop:
 
 - **Self-heal.** The milestone branch is genuinely ahead of the default branch,
   so [`repairOrphanedMilestoneMerge`](../../worker/deno/lib/orphaned_rollup.ts)
-  raises a fresh rollup PR (`milestone/<n>-… → <default>`) in the same cycle.
-  It is idempotent — an already-open rollup PR for that branch is reported, not
+  raises a fresh rollup PR (`milestone/<n>-… → <default>`) in the same cycle. It
+  is idempotent — an already-open rollup PR for that branch is reported, not
   duplicated — and a branch that is not ahead raises nothing. Once the rollup
   lands, the merge commit becomes reachable and the ordinary close-on-merge path
   closes the issue with no human action.
@@ -1470,30 +2064,31 @@ an orphaned merge too:
   an issue a human re-approved this morning. When an approval label still on the
   issue (`top-priority` or `work-on`) was last added by a trusted author —
   `allowed_authors` minus the fleet's own push-capable logins — **after** the
-  PR's `mergedAt`, the pre-check logs `Merged PR pre-check: NOT closing —
-  approval post-dates merge` with the issue, PR, label, adder and both
-  timestamps, and continues so the run works the re-approved scope. #1562 was
-  grilled to Ready and given `top-priority` at 00:21 and closed at 00:41 on a PR
-  merged at 22:49 the night before; re-opening by hand achieved nothing, because
-  the pre-check runs on every claim. Once the re-approved run's own PR merges,
-  its merge is newer than the approval and the ordinary close path resumes. The
-  approval is by definition the newest label event, so the check reads the
-  **complete** timeline (`fetchCompleteTimeline`), not the page-1 slice a busy
-  issue outgrows. An unverifiable approval time — no or unparseable `mergedAt`,
-  or a timeline read that fails or exceeds the page cap — is stated at
-  `WARNING` and keeps the close.
-- **The re-approval that says nothing (Issue #1862).** Honouring the
-  re-approval keeps the issue open, and the #218 superseded release honours the
-  merge — and nothing in between asked what the re-approval was *for*. On
-  GRQ-AutoTrader#106 the two combined into a per-cycle loop: `work-on` re-added
-  6h14m after PR #116 merged, a fresh agent started on the original description
-  that PR already satisfied, the level branch released as superseded, a success
-  with no output and the label untouched, so the next scan claimed it again —
-  three Opus invocations in four hours. The pre-check now records the
-  re-approval on the phase state, and a run that **then** ends superseded is
-  handed to a human: one marker-deduped comment naming the PR that resolved the
-  issue and asking what the re-approval should change, `needs-human` applied
-  through the shared escalation chokepoint, and the discovery labels stripped by
+  PR's `mergedAt`, the pre-check logs
+  `Merged PR pre-check: NOT closing —
+  approval post-dates merge` with the
+  issue, PR, label, adder and both timestamps, and continues so the run works
+  the re-approved scope. #1562 was grilled to Ready and given `top-priority` at
+  00:21 and closed at 00:41 on a PR merged at 22:49 the night before; re-opening
+  by hand achieved nothing, because the pre-check runs on every claim. Once the
+  re-approved run's own PR merges, its merge is newer than the approval and the
+  ordinary close path resumes. The approval is by definition the newest label
+  event, so the check reads the **complete** timeline (`fetchCompleteTimeline`),
+  not the page-1 slice a busy issue outgrows. An unverifiable approval time — no
+  or unparseable `mergedAt`, or a timeline read that fails or exceeds the page
+  cap — is stated at `WARNING` and keeps the close.
+- **The re-approval that says nothing (Issue #1862).** Honouring the re-approval
+  keeps the issue open, and the #218 superseded release honours the merge — and
+  nothing in between asked what the re-approval was _for_. On GRQ-AutoTrader#106
+  the two combined into a per-cycle loop: `work-on` re-added 6h14m after PR #116
+  merged, a fresh agent started on the original description that PR already
+  satisfied, the level branch released as superseded, a success with no output
+  and the label untouched, so the next scan claimed it again — three Opus
+  invocations in four hours. The pre-check now records the re-approval on the
+  phase state, and a run that **then** ends superseded is handed to a human: one
+  marker-deduped comment naming the PR that resolved the issue and asking what
+  the re-approval should change, `needs-human` applied through the shared
+  escalation chokepoint, and the discovery labels stripped by
   `stripDiscoveryLabelsOnEscalation` — so the issue is not re-claimed until
   someone answers. Both facts are required: a re-approved run that raised a PR
   was worked normally, and a superseded release with no re-approval is the
@@ -1523,13 +2118,61 @@ flowchart TD
   style Wait fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
 ```
 
-**Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
-(the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
+**Implementation:**
+[orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts) (the repair),
+[phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
 (detect → self-heal → bounce, and the re-approval skip),
 [reapproval_superseded_handoff.ts](../../worker/deno/lib/reapproval_superseded_handoff.ts)
 (the re-approved-then-superseded hand-off), `isExpectedSkipResult` in
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
+
+## ✂️ `Prompt is too long` — one uncounted fresh-session retry
+
+When the agent CLI refuses a run with `Prompt is too long`, the transcript the
+worker chose to **resume** no longer fits the model's context window. That is
+the worker's fault, not the issue's, and `/compact` cannot fix it because it
+resends the same oversized transcript. Until Issue #2682 the refusal was
+classified `unknown` and cost the issue `failed-once`
+([NEAT-AI-Discovery#2181](https://github.com/stSoftwareAU/NEAT-AI-Discovery/issues/2181)).
+
+After each execute attempt the phase checks the agent's output:
+
+- **Refused on a resumed session, first time:** the worker discards that session
+  and retries once on a fresh session. It deletes the session's stream slot and
+  the issue's resume pointer, and logs one line naming the discarded session and
+  the fresh session. No label is added, and the retry is not counted against the
+  failure budget. `/compact` is not tried first.
+- **Refused on a fresh session, or again after that retry:** this is a normal
+  failure with category `prompt-too-long`. The first gives `failed-once`, the
+  next gives `failed`. It is not an infrastructure failure, so the #1550 infra
+  retry does not apply.
+
+```mermaid
+flowchart TD
+  Run["Execute attempt"] --> Out{"Output is<br/>'Prompt is too long'?"}
+  Out -->|No| Normal["Ordinary outcome"]
+  Out -->|Yes| Resumed{"Resumed session<br/>and not yet retried?"}
+  Resumed -->|Yes| Discard["Discard the session<br/>(stream slot + resume pointer)<br/>log one line"]
+  Discard --> Fresh["Retry once on a fresh session<br/>no label, not counted"]
+  Fresh --> Run
+  Resumed -->|No| Fail["Failure: category prompt-too-long"]
+  Fail --> Ladder["failed-once, then failed"]
+  style Discard fill:#e0a050,stroke:#8b4500,color:#1a1a1a
+  style Fresh fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Fail fill:#d46a6a,stroke:#7a1f1f,color:#1a1a1a
+```
+
+The discard path is generic: a worker fault on a resumed session gets one
+uncounted fresh-session retry. Sibling faults (e.g. #2689) can reuse
+`discardResumedSession`.
+
+**Implementation:**
+[prompt_too_long.ts](../../worker/deno/lib/prompt_too_long.ts) (detect, decide,
+discard),
+[phases/execute_phase.ts](../../worker/deno/lib/phases/execute_phase.ts)
+(`executeWithFreshSessionFallback`), and the `prompt_too_long` category in
+[failure_diagnosis.ts](../../worker/deno/lib/failure_diagnosis.ts).
 
 ## 🔁 One run, one attempt per issue
 
@@ -1549,31 +2192,52 @@ itself closes is now recorded in a per-run
   the next claimable issue instead of re-reading the same stale top candidate.
 - **The claim refuses it.** A claim against an issue this run closed returns
   `already_closed` before any API call — a stale "OPEN" can no longer let a
-  closed issue be claimed. The claim's own state check
-  (`fetchIssueState`) deliberately reads through the **uncached**
-  `runGhCommand`.
+  closed issue be claimed. The claim's own state check (`fetchIssueState`)
+  deliberately reads through the **uncached** `runGhCommand`.
 - **The caches are dropped.** A successful `gh issue close` (or `reopen`) at the
   `gh` chokepoint invalidates that repo's `issues_all`, `issues_closed_all` and
   the issue's own cache entries — see
-  [GH-API-OPTIMISATION](../GH-API-OPTIMISATION.md) → *Issue closes are never
-  left to the TTL*.
+  [GH-API-OPTIMISATION](../GH-API-OPTIMISATION.md) → _Issue closes are never
+  left to the TTL_.
 
 The registry is in-process and one process is one run, so an entry lives exactly
 as long as the run: the next run reconsiders the issue normally, and a
 `gh issue reopen` clears the entry immediately.
 
-**Diagnosing:** an excluded candidate is logged by
-`ISSUE_FINDER_DEBUG=true` with the `cooldown` skip reason; a refused claim logs
+**Diagnosing:** an excluded candidate is logged by `ISSUE_FINDER_DEBUG=true`
+with the `cooldown` skip reason; a refused claim logs
 `claim_refused … reason=closed_by_this_run`.
 
 **Implementation:**
 [processed_issue_registry.ts](../../worker/deno/lib/processed_issue_registry.ts),
-[issue_close_notifier.ts](../../worker/deno/lib/issue_close_notifier.ts)
-(the chokepoint hook), `noteIssueProcessed` in
+[issue_close_notifier.ts](../../worker/deno/lib/issue_close_notifier.ts) (the
+chokepoint hook), `noteIssueProcessed` in
 [run_core.ts](../../worker/deno/lib/run_core.ts).
 
 ## 📚 Further reading
 
-- **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue selection, PR monitoring, milestone/dependency handling.
-- **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts), [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts), [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts) (orchestrator — refactored into sub-modules,), [worker/deno/lib/issue_query.ts](../../worker/deno/lib/issue_query.ts) (GitHub API queries), [worker/deno/lib/issue_filter.ts](../../worker/deno/lib/issue_filter.ts) (filtering, milestone occupation), [worker/deno/lib/issue_priority.ts](../../worker/deno/lib/issue_priority.ts) (candidate ranking), [worker/deno/lib/issue_cache.ts](../../worker/deno/lib/issue_cache.ts) (caching), [worker/deno/lib/issue_data.ts](../../worker/deno/lib/issue_data.ts) (data extraction), [worker/deno/lib/issue_dependencies.ts](../../worker/deno/lib/issue_dependencies.ts), [worker/deno/lib/claim_issue.ts](../../worker/deno/lib/claim_issue.ts), [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts), [worker/deno/lib/pr_ci_checks.ts](../../worker/deno/lib/pr_ci_checks.ts).
-- **User docs:** [README.md](../../README.md), [USAGE.md](../USAGE.md), [CONFIGURATION.md](../CONFIGURATION.md), [projects-and-dependencies.md](projects-and-dependencies.md), [resilience-and-concurrency.md](resilience-and-concurrency.md).
+- **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue
+  selection, PR monitoring, milestone/dependency handling.
+- **Implementation details:**
+  [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),
+  [worker/deno/lib/issue_worker.ts](../../worker/deno/lib/issue_worker.ts),
+  [worker/deno/lib/issue_finder.ts](../../worker/deno/lib/issue_finder.ts)
+  (orchestrator — refactored into sub-modules,),
+  [worker/deno/lib/issue_query.ts](../../worker/deno/lib/issue_query.ts) (GitHub
+  API queries),
+  [worker/deno/lib/issue_filter.ts](../../worker/deno/lib/issue_filter.ts)
+  (filtering, milestone occupation),
+  [worker/deno/lib/issue_priority.ts](../../worker/deno/lib/issue_priority.ts)
+  (candidate ranking),
+  [worker/deno/lib/issue_cache.ts](../../worker/deno/lib/issue_cache.ts)
+  (caching),
+  [worker/deno/lib/issue_data.ts](../../worker/deno/lib/issue_data.ts) (data
+  extraction),
+  [worker/deno/lib/issue_dependencies.ts](../../worker/deno/lib/issue_dependencies.ts),
+  [worker/deno/lib/claim_issue.ts](../../worker/deno/lib/claim_issue.ts),
+  [worker/deno/lib/git_branch.ts](../../worker/deno/lib/git_branch.ts),
+  [worker/deno/lib/pr_ci_checks.ts](../../worker/deno/lib/pr_ci_checks.ts).
+- **User docs:** [README.md](../../README.md), [USAGE.md](../USAGE.md),
+  [CONFIGURATION.md](../CONFIGURATION.md),
+  [projects-and-dependencies.md](projects-and-dependencies.md),
+  [resilience-and-concurrency.md](resilience-and-concurrency.md).

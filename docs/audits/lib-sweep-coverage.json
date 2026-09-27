@@ -2202,6 +2202,18 @@
       "paths": [
         "worker/deno/setup/repo_settings_harden_sync.ts"
       ]
+    },
+    {
+      "issue": 2682,
+      "chunk": "top-up-2682",
+      "title": "top-up: the Prompt-is-too-long fresh-session retry",
+      "ledger": "docs/audits/security-sweep-2682-prompt-too-long.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: prompt_too_long.ts (#2682)",
+      "status": "swept",
+      "sweptAt": "d7418ce59f0ab608691cfe6b130a105706e8beff",
+      "paths": [
+        "worker/deno/lib/prompt_too_long.ts"
+      ]
     }
   ],
   "roots": [
