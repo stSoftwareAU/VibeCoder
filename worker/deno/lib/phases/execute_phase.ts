@@ -88,7 +88,14 @@ import {
 import {
   buildScheduledReleaseReason,
   detectFailureCategory,
+  getFailureCategoryDisplay,
 } from "../failure_diagnosis.ts";
+import {
+  buildPromptTooLongReason,
+  decidePromptTooLong,
+  discardResumedSession,
+  resumedSessionIdOf,
+} from "../prompt_too_long.ts";
 import { describeMemoryPressure } from "../memory_pressure.ts";
 import {
   checkContextBudget,
@@ -281,7 +288,7 @@ export async function workOnIssueExecuteClaude(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
-  const result = await executeClaudeBody(ctx, state, deps);
+  const result = await executeWithFreshSessionFallback(ctx, state, deps);
   if (result.status !== "failure") return result;
 
   // Issue #4374: a SIGKILL under memory pressure that is still high at the
@@ -348,7 +355,65 @@ export async function workOnIssueExecuteClaude(
   );
   if (!shouldRetry) return result;
 
-  return await executeClaudeBody(ctx, state, deps);
+  return await executeWithFreshSessionFallback(ctx, state, deps);
+}
+
+/**
+ * One execute attempt, plus the `Prompt is too long` fallback (Issue #2682).
+ *
+ * A refusal on a resumed session is the worker's fault — it resumed an
+ * oversized transcript, and `/compact` would resend it — so the session is
+ * discarded and the attempt re-run once on a fresh session, with no label and
+ * no retry budget spent. A refusal on a fresh session becomes a counted
+ * `prompt_too_long` failure.
+ */
+async function executeWithFreshSessionFallback(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<PhaseResult> {
+  // Read before the attempt: a completed run advances the phase count.
+  const resumedSessionId = resumedSessionIdOf(state.sessionResumeState);
+  const result = await executeClaudeBody(ctx, state, deps);
+  const decision = decidePromptTooLong({
+    output: state.claudeOutput,
+    resumedSessionId,
+    alreadyRetried: state.promptTooLongRetried === true,
+  });
+  if (decision === "none") return result;
+
+  if (decision === "fail" || !resumedSessionId) {
+    deps.logger.error(
+      "Agent CLI refused the run as Prompt is too long on a fresh session",
+      {
+        phase: "execute",
+        category: getFailureCategoryDisplay("prompt_too_long"),
+      },
+    );
+    return {
+      status: "failure",
+      reason: buildPromptTooLongReason(state.claudeOutput),
+    };
+  }
+
+  state.promptTooLongRetried = true;
+  state.sessionResumeState = await discardResumedSession({
+    workDir: ctx.config.workDir,
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    sessionId: resumedSessionId,
+    ...(state.streamSession ? { streamSession: state.streamSession } : {}),
+    ...(state.sessionResumeState?.providerId
+      ? { providerId: state.sessionResumeState.providerId }
+      : {}),
+    logger: deps.logger,
+    reason: "agent CLI refused it as Prompt is too long (Issue #2682)",
+  });
+  // The window was sized for the discarded transcript; the fresh one starts
+  // at the CLI default.
+  delete state.autocompactTokens;
+  state.claudeOutput = "";
+  return await executeWithFreshSessionFallback(ctx, state, deps);
 }
 
 /** Single-attempt execute-phase body — see `workOnIssueExecuteClaude`. */
