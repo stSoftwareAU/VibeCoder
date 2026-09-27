@@ -162,7 +162,15 @@ import {
   isPrimaryRateLimitMessage,
 } from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
-import { runWithWatchdog } from "./handler_watchdog.ts";
+import {
+  newAgentRunOwner,
+  runAsAgentRunOwner,
+  runWithWatchdog,
+} from "./handler_watchdog.ts";
+import {
+  decideHandlerExtension,
+  type ProgressExtensionPolicy,
+} from "./progress_extension.ts";
 import { resolveStartPriority, type ScanCursor } from "./scan_cursor.ts";
 import {
   formatBuildStamp,
@@ -234,6 +242,12 @@ export interface RunCoreConfig {
    * `PLANNING_TAIL_SECONDS` for the post-publish gate and self-repair.
    */
   planningTimeoutSeconds: number;
+  /**
+   * The progress-extension policy the handler watchdog re-arms on (Issue
+   * #2720) — the same `progress_extension_*` settings the issue path uses.
+   * Optional: absent, a handler is abandoned at its first hard timeout.
+   */
+  handlerProgressExtension?: ProgressExtensionPolicy;
   /**
    * Directory the worker clones repositories into — the work volume root
    * (Issue #966).
@@ -997,7 +1011,7 @@ export interface RunCoreDeps {
    */
   terminateActiveAgentRuns?: (
     reason: string,
-    options?: { keepTerminating?: boolean },
+    options?: { keepTerminating?: boolean; owner?: string },
   ) => Promise<void>;
 
   // Failure tracking
@@ -1313,6 +1327,16 @@ export interface RunCoreDeps {
    * real `setTimeout`-based timer.
    */
   watchdogDelay?: (ms: number) => Promise<void>;
+
+  /**
+   * The freshest activity across the live agent runs one handler dispatch
+   * started (Issue #2720), keyed by its `handler_watchdog.ts` id; undefined
+   * when it has none. The watchdog re-arms a handler's hard timeout while its
+   * agent is still working. Optional — absent, no handler is ever re-armed.
+   */
+  agentRunActivity?: (
+    owner: string,
+  ) => { lastToolCallAtMs?: number; lastChunkAtMs?: number } | undefined;
 
   /**
    * Reset iteration-scoped in-memory caches at the start of each
@@ -1636,6 +1660,12 @@ export function createDefaultRunCoreConfig(): RunCoreConfig {
     // Issue #62: mirrors `OPERATIONAL_DEFAULTS.planningTimeout` so Planning
     // Mode's watchdog floor tracks the agent timeout it wraps.
     planningTimeoutSeconds: OPERATIONAL_DEFAULTS.planningTimeout,
+    // Issue #2720: the issue path's progress-extension settings.
+    handlerProgressExtension: {
+      enabled: OPERATIONAL_DEFAULTS.progressExtensionEnabled,
+      grantSeconds: OPERATIONAL_DEFAULTS.progressExtensionGrantSeconds,
+      activityStallSeconds: OPERATIONAL_DEFAULTS.progressExtensionStallSeconds,
+    },
     // Issue #2335: follows the shipped default — on since Issue #2339 —
     // unless the operator turned session resume off.
     enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
@@ -2992,6 +3022,15 @@ export { isPrimaryRateLimitMessage };
 export const AGENT_HANDLER_GRACE_MS = 5 * 60 * 1000;
 
 /**
+ * The absolute ceiling, from dispatch, on re-arming a handler whose agent is
+ * still making progress (Issue #2720) — one full default agent budget
+ * (`claude_timeout`). Never below the handler's base hard timeout, so the
+ * re-arm only ever adds time.
+ */
+export const HANDLER_PROGRESS_CEILING_MS = OPERATIONAL_DEFAULTS.claudeTimeout *
+  1000;
+
+/**
  * Allowance in seconds for Planning Mode's **post-agent tail** (Issue #62).
  *
  * Planning does not finish when its agent returns: the Failure-Detection gate
@@ -3111,18 +3150,59 @@ async function executePriorityHandler(
       // Failure-Detection self-repair) stops cleanly and defers what it
       // cannot finish instead of being killed mid-way.
       const handlerDeadlineEpochMs = dispatchNowMs + hardTimeoutMs;
+      // Issue #2720: every agent this dispatch starts is stamped with its
+      // owner, so an abandonment terminates this handler's runs only —
+      // never an issue slot's beside it.
+      const owner = newAgentRunOwner(handler.name);
+      // Issue #2720: while the handler's own agent is still working, the
+      // hard timeout is re-armed on the issue path's progress-extension
+      // policy, up to an absolute ceiling.
+      const ceilingMs = dispatchNowMs +
+        Math.max(hardTimeoutMs, HANDLER_PROGRESS_CEILING_MS);
+      let abandonReason: string | undefined;
+      const extend = (): number => {
+        const policy = config.handlerProgressExtension;
+        if (!policy || !deps.agentRunActivity) return 0;
+        const nowMs = deps.now();
+        const decision = decideHandlerExtension({
+          nowMs,
+          activity: deps.agentRunActivity(owner.id),
+          ceilingMs,
+        }, policy);
+        if (decision.action === "kill") {
+          abandonReason = decision.reason;
+          return 0;
+        }
+        const grantMs = decision.newDeadlineMs - nowMs;
+        deps.log(
+          `${logPrefix}[watchdog] Priority ${handler.priority} (${handler.name}) ` +
+            `still making progress — ${decision.reason}; deadline extended ` +
+            `by ${Math.round(grantMs / 1000)}s`,
+        );
+        return grantMs;
+      };
       const watch = await runWithWatchdog(
-        () => handler.execute({ deadlineEpochMs: handlerDeadlineEpochMs }),
+        () =>
+          runAsAgentRunOwner(
+            owner,
+            () => handler.execute({ deadlineEpochMs: handlerDeadlineEpochMs }),
+          ),
         {
           hardTimeoutMs,
           softTimeoutMs: config.handlerSoftTimeoutSeconds * 1000,
           now: deps.now,
           delay: deps.watchdogDelay ??
             ((ms) => new Promise((r) => setTimeout(r, ms))),
+          extend,
           onTimeout: () => {
+            // Issue #2720: name what was abandoned and why, so the line
+            // can be diagnosed without piecing the log together.
+            const workItem = owner.workItem ? ` on ${owner.workItem}` : "";
+            const why = abandonReason ? ` (${abandonReason})` : "";
             deps.logError(
               `${logPrefix}[watchdog] Priority ${handler.priority} (${handler.name}) ` +
-                `exceeded hard timeout ${Math.round(hardTimeoutMs / 1000)}s ` +
+                `exceeded hard timeout ${Math.round(hardTimeoutMs / 1000)}s` +
+                `${workItem}${why} ` +
                 `— abandoning handler and continuing to next priority`,
             );
             // Nothing runs detached (Issue #4369): the agent the
@@ -3132,9 +3212,10 @@ async function executePriorityHandler(
               // Issue #55: a handler abandonment is transient — clear
               // the terminating flag once its agents are dead so the
               // next priority can still launch its own agent.
+              // Issue #2720: scoped to this handler's own runs.
               deps.terminateActiveAgentRuns(
                 `handler ${handler.name} abandoned by the watchdog`,
-                { keepTerminating: false },
+                { keepTerminating: false, owner: owner.id },
               ).catch(() => {});
             }
           },
