@@ -17,7 +17,16 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
-import type { WorkflowScopeState } from "../lib/workflow_scope.ts";
+import {
+  createMissingScopeWarner,
+  type MissingScopeWarner,
+  type WorkflowScopeState,
+} from "../lib/workflow_scope.ts";
+
+/** The once-per-process WARNING naming the missing scope (Issue #2689). */
+function scopeWarnings(warnings: string[]): string[] {
+  return warnings.filter((w) => w.includes("`workflow` OAuth scope"));
+}
 
 const SHA = "1f0c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c";
 
@@ -61,6 +70,8 @@ interface Scenario {
   changedFiles: string[];
   /** Whether the push is refused by GitHub for want of the scope. */
   pushRefused: boolean;
+  /** The host's warn-once latch, shared to model one process (Issue #2689). */
+  warner?: MissingScopeWarner;
 }
 
 interface Outcome {
@@ -151,7 +162,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       findExistingPrForBranch: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
     },
-    infrastructure: { workflowScopeState: () => scenario.scope },
+    infrastructure: {
+      workflowScopeState: () => scenario.scope,
+      warnMissingWorkflowScope: scenario.warner ?? createMissingScopeWarner(),
+    },
   });
   try {
     const result = await workOnIssueCompletion(ctx, state, deps);
@@ -190,6 +204,11 @@ Deno.test({
       "token_scope",
       "the record must carry token_scope, not push_failure",
     );
+    assertEquals(
+      scopeWarnings(outcome.warnings).length,
+      1,
+      "the host names the scope it lacks, as a WARNING (Issue #2689)",
+    );
   },
 });
 
@@ -198,11 +217,13 @@ Deno.test({
     "completion - an unreadable diff falls back to the commit list, so the scope check still fires (Issue #1952)",
   permissions: { read: true, write: true },
   async fn() {
+    const warner = createMissingScopeWarner();
     const outcome = await runCompletion({
       scope: "absent",
       diffAnswers: false,
       changedFiles: [".github/workflows/gitleaks.yml", "README.md"],
       pushRefused: false,
+      warner,
     });
     assertEquals(outcome.status, "failure");
     assertEquals(outcome.pushes, 0, "no push may be attempted");
@@ -216,6 +237,17 @@ Deno.test({
       true,
       "the fallback must be logged, not silent",
     );
+    assertEquals(scopeWarnings(outcome.warnings).length, 1);
+    // A second refusal on the same host is the same fact: not repeated.
+    const again = await runCompletion({
+      scope: "absent",
+      diffAnswers: true,
+      changedFiles: [".github/workflows/gitleaks.yml"],
+      pushRefused: false,
+      warner,
+    });
+    assertEquals(again.status, "failure");
+    assertEquals(scopeWarnings(again.warnings), []);
   },
 });
 

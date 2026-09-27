@@ -425,6 +425,7 @@
         "worker/deno/lib/shell_helpers.ts",
         "worker/deno/lib/stuck_issue_detector.ts",
         "worker/deno/lib/timeline_cache.ts",
+        "worker/deno/lib/token_scope_fleet_bound.ts",
         "worker/deno/lib/unit_test_passes.ts",
         "worker/deno/lib/unit_test_time_budget.ts",
         "worker/deno/lib/workflow_scope.ts"

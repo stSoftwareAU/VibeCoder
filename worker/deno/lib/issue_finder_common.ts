@@ -75,6 +75,13 @@ export interface FindIssuesOptions {
    */
   hasWorkflowScope?: boolean;
   /**
+   * Whether this install was refused the issue's push for want of the
+   * `workflow` scope, under the verdict it still has (Issue #2689). Catches
+   * what the title/body read above cannot: an issue that never names a
+   * workflow but whose change touches one. Absent: nothing is skipped.
+   */
+  isWorkflowScopeRefused?: (repo: string, issueNumber: number) => boolean;
+  /**
    * Repositories leased **wholesale** on this host (Issue #4176, narrowed by
    * Issue #1091) — the maintenance lane's leases (Issue #213), whose pass
    * may touch any branch of the clone. Skipped entirely, before any
