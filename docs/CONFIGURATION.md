@@ -4770,9 +4770,10 @@ with `./run.sh` (or via cron/launchd as in the
 [Deployment Guide](DEPLOYMENT.md)); no environment variables needed at runtime.
 
 > 🔄 **Already deployed and need to switch to a different account?** See
-> Switching the Worker GitHub Identity for the
-> fleet-wide migration procedure (the `switch-worker-identity.sh` walkthrough,
-> draining old assignments, decommissioning the old account).
+> [Switching the Worker GitHub Identity](#-switching-the-worker-github-identity)
+> for the fleet-wide migration procedure (allowing the new account on every
+> host, replacing the container credential, draining the old account's PRs and
+> claims, retiring it).
 
 Two paths are stored in `.config.json`:
 
@@ -4986,6 +4987,197 @@ flowchart TD
     G -->|"no (drifted mid-run)"| Y["Refuse write — fail loud, no PR/issue"]
     G -->|"yes / inactive"| H["Create tracking issue + summary PR"]
 ```
+
+### 🔄 Switching the Worker GitHub Identity
+
+Moving a deployed fleet from one GitHub account to another (say `stsvcbot` to
+`vibebot`) is a documented procedure, not a script. Every step below is an
+ordinary `gh`, `ssh-keygen` or `./setup.sh` action, checked against the code it
+names.
+
+Two things make the order matter:
+
+- The worker holds the identity in **two places**. `gh_config_dir` in
+  `.config.json` is the host-side `gh` login, and
+  `~/.vibe-coder/credentials/gh/hosts.yml` is the copy the container is
+  given (read-only, then staged writable by `container/entrypoint.sh` and
+  [`gh_credential_stage.ts`](../worker/deno/lib/gh_credential_stage.ts)).
+  Inside the container git runs over HTTPS with that token, so the SSH key
+  never crosses into it; `ssh_key_path` serves host-side git.
+- The [identity guard](#-service-account-identity-guard) exits at startup
+  on any login not in `service_accounts`, and every sibling host decides
+  whether a PR is fleet work from the same lists. So the new account is
+  allowed **everywhere first**, and the old one is removed **everywhere
+  last**.
+
+```mermaid
+flowchart TD
+    A["1. Every host: add the new login<br/>to service_accounts (old stays)"] --> B["2. New SSH key per host<br/>→ ssh_key_path"]
+    B --> C["3. gh auth login as the new account<br/>in a fresh dir → gh_config_dir"]
+    C --> D["4. Move credentials/gh aside"]
+    D --> E["5. Run setup: copy offer,<br/>scope preflight, collaborator precheck"]
+    E --> F{"hosts.yml user =<br/>new login?"}
+    F -->|"no"| D
+    F -->|"yes"| G["Next run's PRs and comments<br/>carry the new author"]
+    G --> H{"Old account's open PRs<br/>and claims drained?"}
+    H -->|"not yet"| H
+    H -->|"yes"| I["6. Every host: remove the old login"]
+```
+
+#### Step 1: Allow the new account on every host first
+
+On **every** host, before any host switches, add the new login to
+`service_accounts` and keep the old one:
+
+```json
+{
+  "service_accounts": ["stsvcbot", "vibebot"]
+}
+```
+
+Edit `.config.json`, or pass the list to setup:
+`VIBE_SERVICE_ACCOUNTS="stsvcbot,vibebot" ./setup.sh` (the variable replaces
+the list, so name both). A host that has not yet switched still runs as
+`stsvcbot` and must accept `vibebot`'s PRs as fleet work, and a switched host
+running as `vibebot` must not fail the guard.
+
+`fleet_pr_authors` needs no separate edit: `loadConfig` unions
+`service_accounts` into the effective fleet PR authors
+([`fleet_authors.ts`](../worker/deno/lib/fleet_authors.ts),
+[Service accounts are fleet PR authors too](#service-accounts-are-fleet-pr-authors-too)).
+Listing the new login there as well is harmless.
+
+Give the new account **write** access to every monitored repository (an
+organisation invitation or a collaborator invitation, accepted as the new
+account). Write is enough: setup holds fleet accounts at write, never admin
+(Issue #2690, [Repository settings hardening](SETUP.md#repository-settings-hardening)).
+
+#### Step 2: A new SSH key per host
+
+A GitHub SSH key belongs to one account, so the old account's key cannot be
+reused. On each host, generate a key, add its public half to the new account,
+and point `ssh_key_path` at it — exactly
+[Step 1](#step-1-generate-a-dedicated-ssh-key) and
+[Step 2](#step-2-add-the-public-key-to-the-service-account-on-github) of the
+one-time setup above:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/vibebot_ed25519 -C "vibebot@$(hostname -s)" -N ""
+ssh -i ~/.ssh/vibebot_ed25519 -o IdentitiesOnly=yes -T git@github.com
+```
+
+#### Step 3: Log `gh` in as the new account
+
+Use a **fresh** directory, so the old login is left intact for a rollback and
+`gh` never holds two accounts in one config:
+
+```bash
+mkdir -p ~/.config/gh-vibebot
+GH_CONFIG_DIR=~/.config/gh-vibebot gh auth login -h github.com -p ssh -s repo,workflow,read:org
+GH_CONFIG_DIR=~/.config/gh-vibebot gh auth status
+```
+
+Then set `gh_config_dir` to `~/.config/gh-vibebot` in `.config.json` **by
+hand, before running setup**. Setup's offer to copy the identity into the
+credential directory reads `gh_config_dir` from the config file as it stands
+when setup starts, ahead of the prompts (`prompt_interactive_credentials` in
+`setup.sh`), so answering the prompt in the same run is too late for the copy.
+
+The scopes are the ones the token-scope preflight checks
+(`FLEET_TOKEN_SCOPES` in [`gh_auth.ts`](../worker/deno/lib/gh_auth.ts)):
+`repo` to clone, push and open PRs, `workflow` to push
+`.github/workflows/` changes, and `read:org` for team and organisation reads.
+A **fine-grained** token has no scope list; it needs Contents, Pull requests,
+Issues and Workflows (read and write) on every monitored repository, and
+Members (read) on the organisation.
+
+#### Step 4: Replace the container credential
+
+Setup **never overwrites an existing `hosts.yml`**. With one present and no
+token variable set it reports the credential directory "left unchanged", and
+the copy offer only appears when `hosts.yml` is missing (`setup.sh`,
+`provision_vibe_credentials` and `interactive_credentials_flow`). Move the old
+one aside first:
+
+```bash
+mv ~/.vibe-coder/credentials/gh ~/.vibe-coder/credentials/gh.stsvcbot
+```
+
+> **⚠️ Ambient tokens win.** If `VIBE_LAUNCHAGENT_GH_TOKEN` or `GH_TOKEN` is
+> set when setup runs, setup **does** rewrite `hosts.yml` — with that token's
+> account, whoever it is. Unset both (or set `VIBE_LAUNCHAGENT_GH_TOKEN` to the
+> new account's token deliberately) before Step 5.
+
+#### Step 5: Run setup and verify
+
+```bash
+./setup.sh
+```
+
+Answer **Y** to "Copy the worker gh identity from ~/.config/gh-vibebot into
+~/.vibe-coder/credentials/gh?". Setup extracts the token with `gh auth token`
+(the host login usually keeps it in the keychain, which the container cannot
+reach) and writes a self-contained, owner-only `hosts.yml`. The same run then
+does the checks that matter for a new account:
+
+- **token-scope preflight** — names any missing scope with the exact
+  `gh auth refresh` command, or lists the fine-grained permissions to check;
+- **collaborator precheck** — files one issue naming every monitored
+  repository the new account cannot reach, with the commands that grant it.
+
+Verify the credential the container will be given:
+
+```bash
+sed -n 's/^ *user: //p' ~/.vibe-coder/credentials/gh/hosts.yml
+```
+
+It must print the new login. (A token-only `hosts.yml`, with no `user:` line,
+means setup could not resolve the login; its warning says why.) The container
+mounts the credential directory at every launch, so the **next** run picks it
+up; a run already in flight finishes as the old account. Confirm on that run's
+first PR or comment that the author is the new account.
+
+**Windows (`setup.ps1`).** The same steps apply, with PowerShell equivalents.
+The credential lives at `%USERPROFILE%\.vibe-coder\credentials\gh\hosts.yml`
+(`Get-VibeCredentialDir`; `VIBE_CREDENTIAL_DIR` overrides it on either
+platform), and `setup.ps1` has the same never-overwrite rule and copy offer:
+
+```powershell
+$env:GH_CONFIG_DIR = "$env:USERPROFILE\.config\gh-vibebot"
+gh auth login -h github.com -p ssh -s repo,workflow,read:org
+Remove-Item Env:GH_CONFIG_DIR
+Move-Item "$env:USERPROFILE\.vibe-coder\credentials\gh" "$env:USERPROFILE\.vibe-coder\credentials\gh.stsvcbot"
+.\setup.ps1
+Select-String -Path "$env:USERPROFILE\.vibe-coder\credentials\gh\hosts.yml" -Pattern '^\s*user:'
+```
+
+#### Step 6: Retire the old account
+
+Keep the old login in `service_accounts` until nothing of its own is open —
+its PRs are still fleet PRs to be maintained and merged, and its claims are
+still fleet claims:
+
+```bash
+gh search prs --author stsvcbot --state open
+gh search issues --assignee stsvcbot --state open
+```
+
+When both are empty, remove it from `service_accounts` (and
+`fleet_pr_authors`, if you listed it there) on **every** host, then revoke its
+SSH keys and tokens and delete the moved-aside `gh.stsvcbot` directory.
+
+#### Consequences to expect
+
+- **Milestone sync becomes sync PRs.** An admin account could push a
+  milestone-branch sync straight past a `milestone/**` ruleset; a write
+  account cannot. A push the ruleset refuses now lands through a
+  `sync/milestone-*` PR, merged as a merge commit. That is by design
+  (Issue #2690), not a fault — see
+  [the sync PR](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
+- **One login, one API budget.** GitHub rate-limits per account, so every host
+  running as the new login shares its one REST and GraphQL budget. A fleet
+  that used to spread over two accounts now draws on one; see
+  [GH-API-OPTIMISATION.md](GH-API-OPTIMISATION.md).
 
 ## 📡 Monitored Repositories
 
