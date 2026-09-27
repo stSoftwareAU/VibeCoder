@@ -329,6 +329,7 @@
         "worker/deno/lib/pr_maintenance.ts",
         "worker/deno/lib/pr_retarget.ts",
         "worker/deno/lib/pr_review_context.ts",
+        "worker/deno/lib/pr_review_outstanding.ts",
         "worker/deno/lib/pr_spelling_processor.ts",
         "worker/deno/lib/productive_work_check.ts",
         "worker/deno/lib/question_clarification.ts",
