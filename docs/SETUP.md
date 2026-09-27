@@ -288,13 +288,37 @@ flowchart TD
 
 ## Repository settings hardening
 
-`repo-settings-harden` runs straight after the ruleset sync, through the same
-admin `gh_config_dir` identity, and reads each repository's checkout from the
-same `WORK_DIR` (default `~/auto-issue-work`) as `gitignore-sync`. For each
-monitored repository, in order:
+`repo-settings-harden` runs straight after the ruleset sync.
+
+**Identity.** Every write it makes needs repository **admin**, so it runs as
+**your own `gh` login** — the one `gh auth status` shows with no
+`GH_CONFIG_DIR` set, the same `operator` identity the milestone-ruleset
+aligner uses — and never as the fleet account in `gh_config_dir`, which
+holds `write` by design (Issue #2685). Its first line names the login.
+Before touching a repository it checks that login holds admin there
+(`repos/{repo}` `.permissions.admin`). A repository without it is left
+alone, and one line lists them all:
+
+```text
+Repo-settings hardening needs an admin login: someone is not an admin on 2 repo(s) (owner/a, owner/b), so they were left alone. Run setup logged in to gh as a repository admin (gh auth login).
+```
+
+So run setup logged in to `gh` as a repository admin. The fleet worker is
+unaffected: at run time it keeps using the fleet token, and nothing here
+widens that token's rights.
+
+**Dry run.** `setup_cli.ts repo-settings-harden --dry-run` reads and plans
+every repository and writes nothing: no setting, no CODEOWNERS file, no
+audit-issue comment or close. Each line then counts `planned` instead of
+`applied` and lists the steps it `would apply`. A subcommand without a dry
+run refuses `--dry-run` rather than ignoring it and writing for real.
+
+For each monitored repository, in order:
 
 1. **CODEOWNERS** — the default `.github/CODEOWNERS` writer runs against the
-   local checkout. The owners come from the `codeowners_owners` setup key.
+   local checkout under `WORK_DIR` (default `~/auto-issue-work`), as
+   `gitignore-sync` does. The owners come from the `codeowners_owners` setup
+   key.
 2. **Settings** — every setting below is read first and written only when it
    differs, so a second run against a hardened repository makes no writes:
    - the default workflow token is read-only, and Actions may not create or
@@ -302,7 +326,10 @@ monitored repository, in order:
    - actions must be pinned to a full-length commit SHA;
    - `allowed_actions` is `selected`, and every `owner/repo@*` the workflows
      need, including the actions their composite actions call, is **added
-     to** the existing allow-list. Nothing on the list is removed;
+     to** the existing allow-list. Nothing on the list is removed. The
+     workflows (`.github/workflows/*.yml`) and local composite actions
+     (`.github/actions/**/action.yml`) are read through the GitHub API at
+     the default branch, so no checkout is needed (Issue #2685);
    - secret scanning and push protection are turned on for **public**
      repositories only. A private repository needs the paid GitHub Secret
      Protection add-on, so the step is skipped there and its line says so;
@@ -319,8 +346,10 @@ monitored repository, in order:
      because it would refuse every push; its line reports
      `skipped: default-branch-approval: direct-push branch (…)` for the
      owner to decide. Milestone branches never get one;
-   - code-owner review is required on the Vibe ruleset **only when a
-     CODEOWNERS file is already on the default branch**. A CODEOWNERS file
+   - code-owner review is required **only when a CODEOWNERS file is
+     already on the default branch**, in the ruleset the default branch's
+     `pull_request` rule comes from — found by the rule's `ruleset_id`,
+     never by the ruleset's name (Issue #2685). A CODEOWNERS file
      written in step 1 reaches the default branch with the next worker PR,
      and the setup run after that turns the review on.
 3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
@@ -341,8 +370,7 @@ Repo-settings hardening: 2 applied, 3 unchanged, 0 skipped, 0 failed across 1 re
 A failed step is named on its repository's line with GitHub's message.
 Each repository runs on its own, so one repository's failure never stops the
 next. The step is non-fatal: setup prints a warning and carries on, the same
-as the other repository sync phases. The admin token in `gh_config_dir` needs
-repository-admin rights, the same assumption the ruleset sync makes.
+as the other repository sync phases.
 `setup.sh` and `setup.ps1` both call the same `repo-settings-harden`
 subcommand of the Deno setup CLI, so Windows and macOS behave the same.
 

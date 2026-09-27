@@ -5,8 +5,9 @@
  * seam that behaves like a small GitHub: reads answer from per-repo state and
  * writes change it, so a second run sees what the first one wrote. The
  * CODEOWNERS writer (#2627) and the audit-issue closer (#2629) are injected
- * stubs, and every checkout lives under a temp `WORK_DIR`. Nothing touches
- * the network and nothing sleeps.
+ * stubs. The workflows are served through the contents API at the default
+ * branch (Issue #2685), as GitHub does, so no checkout is involved. Nothing
+ * touches the network and nothing sleeps.
  *
  * Australian English throughout (behaviour, organisation, etc.).
  */
@@ -29,7 +30,11 @@ import {
   type HardenRepoOptions,
   SECRET_PROTECTION_SKIP_NOTE,
 } from "../lib/repo_settings_harden.ts";
-import { RUN_ALL_REPO_STEPS } from "../setup/setup_cli.ts";
+import {
+  DRY_RUN_SUBCOMMANDS,
+  dryRunRefusal,
+  RUN_ALL_REPO_STEPS,
+} from "../setup/setup_cli.ts";
 
 // ---------------------------------------------------------------------------
 // A stateful fake GitHub behind the gh seam
@@ -52,7 +57,19 @@ interface FakeRepo {
   topics?: string[];
   /** Where CODEOWNERS sits on the default branch; an Error fails the read. */
   codeowners?: string | Error;
+  /** Whether the gh identity holds admin (Issue #2685); default true. */
+  admin?: boolean;
+  /** Files on the default branch, by path (the workflows). */
+  files?: Record<string, string>;
 }
+
+/** The login the fake GitHub says the gh identity is. */
+const OPERATOR_LOGIN = "operator-admin";
+
+/** One pinned workflow using one third-party action. */
+const CI_WORKFLOW = "jobs:\n  a:\n    steps:\n" +
+  "      - uses: actions/checkout@0000000000000000000000000000000000000000\n" +
+  "      - uses: acme/deploy-action@1111111111111111111111111111111111111111\n";
 
 const NOT_FOUND = () => new Error("gh: Not Found (HTTP 404)");
 
@@ -100,8 +117,31 @@ function driftedRepo(overrides: Partial<FakeRepo> = {}): FakeRepo {
       ],
     }],
     codeowners: ".github/CODEOWNERS",
+    files: { ".github/workflows/ci.yml": CI_WORKFLOW },
     ...overrides,
   };
+}
+
+/** The contents-API answer for `path` on the default branch, if any. */
+function contentsAt(state: FakeRepo, path: string): unknown {
+  const files = state.files ?? {};
+  if (path in files) return files[path];
+  const entries = new Map<
+    string,
+    { name: string; path: string; type: string }
+  >();
+  for (const file of Object.keys(files)) {
+    if (!file.startsWith(`${path}/`)) continue;
+    const name = file.slice(path.length + 1).split("/")[0]!;
+    const child = `${path}/${name}`;
+    entries.set(child, {
+      name,
+      path: child,
+      type: child === file ? "file" : "dir",
+    });
+  }
+  if (entries.size === 0) throw NOT_FOUND();
+  return [...entries.values()];
 }
 
 /**
@@ -113,6 +153,7 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
   const reads: string[] = [];
 
   const route = (endpoint: string): unknown => {
+    if (endpoint === "user") return { login: OPERATOR_LOGIN };
     for (const [slug, state] of Object.entries(repos)) {
       const base = `repos/${slug}`;
       if (endpoint === base) {
@@ -120,7 +161,17 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
           visibility: state.visibility,
           private: state.visibility !== "public",
           security_and_analysis: state.security,
+          permissions: { admin: state.admin ?? true, push: true },
         };
+      }
+      if (
+        endpoint.startsWith(`${base}/contents/`) &&
+        endpoint.endsWith("?ref=main")
+      ) {
+        return contentsAt(
+          state,
+          endpoint.slice(`${base}/contents/`.length, -"?ref=main".length),
+        );
       }
       if (endpoint === `${base}/actions/permissions/workflow`) {
         return state.workflow;
@@ -219,7 +270,9 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
     }
     const endpoint = args[1] ?? "";
     reads.push(endpoint);
-    return JSON.stringify(route(endpoint));
+    const value = route(endpoint);
+    // A string is a raw file body (`Accept: application/vnd.github.raw+json`).
+    return typeof value === "string" ? value : JSON.stringify(value);
   };
   return { gh, writes, reads };
 }
@@ -248,21 +301,14 @@ function uniqueRepo(): string {
   return `harden-sync/repo-${Date.now()}-${counter}`;
 }
 
-/** A temp WORK_DIR holding a checkout (one third-party action) per repo. */
-async function makeWorkDir(repos: readonly string[]): Promise<string> {
+/**
+ * A temp WORK_DIR for the CODEOWNERS writer. The allow-list no longer reads
+ * it (Issue #2685), so it holds no workflows: an allow-list built from a
+ * checkout would be missing `acme/deploy-action@*`.
+ */
+async function makeWorkDir(_repos: readonly string[]): Promise<string> {
   const workDir = await Deno.makeTempDir({ prefix: "vibe-harden-work-" });
   TEMP_PATHS.push(workDir);
-  for (const repo of repos) {
-    const dir = `${workDir}/${repo.split("/")[1]}`;
-    await Deno.mkdir(`${dir}/.git`, { recursive: true });
-    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
-    await Deno.writeTextFile(
-      `${dir}/.github/workflows/ci.yml`,
-      "jobs:\n  a:\n    steps:\n" +
-        "      - uses: actions/checkout@0000000000000000000000000000000000000000\n" +
-        "      - uses: acme/deploy-action@1111111111111111111111111111111111111111\n",
-    );
-  }
   return workDir;
 }
 
@@ -741,4 +787,121 @@ Deno.test("runAll - repo-settings-harden runs right after branch-protection-sync
   assert(harden > 0, `missing from runAll: ${names.join(", ")}`);
   assertEquals(names[harden - 1], "branch-protection-sync");
   assertEquals(names[harden + 1], "backfill-idle-task-labels");
+});
+
+// ---------------------------------------------------------------------------
+// Admin identity, and a dry run that writes nothing (Issue #2685)
+// ---------------------------------------------------------------------------
+
+/** Any argv that would change something on GitHub. */
+function isWrite(args: readonly string[]): boolean {
+  const method = args.indexOf("--method");
+  if (method >= 0 && args[method + 1] !== "GET") return true;
+  if (args.includes("-X") || args.includes("--input")) return true;
+  if (args.some((a) => /^-[fF]$|^--(raw-)?field$/.test(a))) return true;
+  // Everything but `gh api <read>` (issue close, pr comment, label edit, …).
+  return args[0] !== "api";
+}
+
+Deno.test("runRepoSettingsHarden - a dry run performs no write, runs no CODEOWNERS writer or closer, and reports what it would apply (Issue #2685)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: driftedRepo() };
+  const before = structuredClone(state);
+  const { gh: inner } = makeFakeGitHub(state);
+  const attempted: string[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    if (isWrite(args)) {
+      attempted.push(args.join(" "));
+      return Promise.reject(new Error(`dry run wrote: ${args.join(" ")}`));
+    }
+    return inner(args);
+  };
+  const h = harness(gh, await makeWorkDir([repo]), { dryRun: true });
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(attempted, [], "a dry run must not attempt a single write");
+  assertEquals(state, before);
+  assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
+  assertEquals(h.codeownersCalls, [], "the CODEOWNERS writer writes a file");
+  assertEquals(h.closerCalls, [], "the closer comments on and closes issues");
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "6 planned, 0 unchanged, 0 skipped, 0 failed");
+  assertStringIncludes(line, "workflow-token");
+  assertStringIncludes(line, "codeowners: skipped (dry run)");
+  assertStringIncludes(h.lines.join("\n"), "dry run");
+});
+
+Deno.test("runRepoSettingsHarden - says which login it runs as, and that it is not the fleet account (Issue #2685)", async () => {
+  const repo = uniqueRepo();
+  const { gh } = makeFakeGitHub({ [repo]: driftedRepo() });
+  const h = harness(gh, await makeWorkDir([repo]));
+
+  await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  const first = h.lines[0] ?? "";
+  assertStringIncludes(first, OPERATOR_LOGIN);
+  assertStringIncludes(first, "gh_config_dir");
+});
+
+Deno.test("runRepoSettingsHarden - without admin, repos are left alone and 'needs an admin login' is said once, with no raw 403 or 404 (Issue #2685)", async () => {
+  const a = uniqueRepo();
+  const b = uniqueRepo();
+  const admin = uniqueRepo();
+  const { gh, writes, reads } = makeFakeGitHub({
+    [a]: driftedRepo({ admin: false }),
+    [b]: driftedRepo({ admin: false }),
+    [admin]: driftedRepo(),
+  });
+  const h = harness(gh, await makeWorkDir([a, b, admin]));
+
+  const ok = await runRepoSettingsHarden({ repos: [a, b, admin] }, h.deps);
+
+  assertEquals(ok, false);
+  const out = [...h.lines, ...h.warnings].join("\n");
+  assertEquals(out.split("needs an admin login").length - 1, 1, out);
+  const notice = h.warnings.find((w) => w.includes("needs an admin login"));
+  assertStringIncludes(notice ?? "", a);
+  assertStringIncludes(notice ?? "", b);
+  assertStringIncludes(notice ?? "", OPERATOR_LOGIN);
+  assert(!/HTTP 40[34]/.test(out), out);
+  // The non-admin repos are not touched past the one permission read.
+  for (const repo of [a, b]) {
+    assert(
+      !reads.some((r) => r.startsWith(`repos/${repo}/`)),
+      reads.filter((r) => r.startsWith(`repos/${repo}/`)).join("\n"),
+    );
+    assert(!writes.some((w) => w.endpoint.startsWith(`repos/${repo}`)));
+  }
+  assertEquals(h.codeownersCalls.map((c) => c.repo), [admin]);
+  assert(writes.some((w) => w.endpoint.startsWith(`repos/${admin}`)));
+});
+
+// ---------------------------------------------------------------------------
+// --dry-run is refused by a subcommand that cannot honour it (Issue #2685)
+// ---------------------------------------------------------------------------
+
+Deno.test("dryRunRefusal - a subcommand that would write for real refuses --dry-run; one that honours it runs (Issue #2685)", () => {
+  for (
+    const subcommand of [
+      "all",
+      "workflow-sync",
+      "best-practices-sync",
+      "gitignore-sync",
+      "verify-monitored-collaborator",
+      "branch-protection-sync",
+      "backfill-idle-task-labels",
+      "config",
+      "hooks",
+    ]
+  ) {
+    const refusal = dryRunRefusal(subcommand);
+    assert(refusal, `${subcommand} must refuse --dry-run`);
+    assertStringIncludes(refusal, subcommand);
+    assertStringIncludes(refusal, "nothing was run");
+  }
+  for (const subcommand of DRY_RUN_SUBCOMMANDS) {
+    assertEquals(dryRunRefusal(subcommand), undefined, subcommand);
+  }
+  assert(DRY_RUN_SUBCOMMANDS.includes("repo-settings-harden"));
 });

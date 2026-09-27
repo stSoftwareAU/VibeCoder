@@ -52,7 +52,6 @@ import {
   type BranchPushPolicy,
 } from "./branch_push_policy.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
-import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import { extractUsesValue } from "./action_pin_scanner.ts";
 
 type GhCommandFn = (args: string[]) => Promise<string>;
@@ -874,37 +873,52 @@ async function applyRulesetReviews(
   gh: GhCommandFn,
 ): Promise<HardenResult> {
   try {
-    const raw = await gh(["api", `repos/${repo}/rulesets`]);
-    const rulesets = JSON.parse(raw) as Array<
-      { id: number; name: string; enforcement: string }
-    >;
     const branch = step.endpoint.replace(/^rulesets\//, "");
-    // The fleet's own ruleset wins over a legacy one named after the branch
-    // (Issue #2626): it is the one `ensureDefaultBranchRuleset` maintains.
-    const active = (name: string) =>
-      rulesets.find((r) => r.name === name && r.enforcement === "active");
-    const target = active(VIBE_RULESET_NAME) ?? active(branch);
+    // The ruleset is the one the branch's pull_request rule comes from
+    // (Issue #2685), read live so a rule the approval step just added is
+    // found. A name never decides it: GRQ's is called neither after the
+    // branch nor "Vibe Coder default branch".
+    const rules = JSON.parse(
+      await gh([
+        "api",
+        `repos/${repo}/rules/branches/${encodeURIComponent(branch)}`,
+      ]),
+    ) as RepoSettingsSnapshot["rules"];
+    const carriers = [
+      ...new Set(
+        (rules ?? []).filter((r) => r.type === "pull_request")
+          .map((r) => r.ruleset_id)
+          .filter((id): id is number => typeof id === "number"),
+      ),
+    ];
+    const candidates: RulesetSnapshot[] = [];
+    for (const id of carriers) {
+      candidates.push(
+        JSON.parse(
+          await gh(["api", `repos/${repo}/rulesets/${id}`]),
+        ) as RulesetSnapshot,
+      );
+    }
+    const editable = candidates.filter((r) =>
+      (r.source_type === undefined || r.source_type === "Repository") &&
+      (r.rules ?? []).some((rule) => rule.type === "pull_request")
+    );
+    // The fleet's own ruleset wins when several carry one (Issue #2626).
+    const target = editable.find((r) => r.name === VIBE_RULESET_NAME) ??
+      editable[0];
     if (!target) {
       return {
         step,
         status: "failed",
-        detail: `no active ruleset named ${branch} or "${VIBE_RULESET_NAME}"`,
+        detail: carriers.length === 0
+          ? `no pull_request rule on ${branch} to add code-owner review to`
+          : `the pull_request rule on ${branch} comes from a ruleset this ` +
+            `repository cannot edit (ruleset ${carriers.join(", ")})`,
       };
     }
-    const full = JSON.parse(
-      await gh(["api", `repos/${repo}/rulesets/${target.id}`]),
-    ) as {
-      rules?: Array<{ type: string; parameters?: Record<string, unknown> }>;
-    };
+    const full = target;
     const desired = JSON.parse(step.body ?? "{}") as Record<string, unknown>;
-    if (!(full.rules ?? []).some((r) => r.type === "pull_request")) {
-      return {
-        step,
-        status: "failed",
-        detail: `ruleset ${target.id} has no pull_request rule to update`,
-      };
-    }
-    const rules = (full.rules ?? []).map((r) =>
+    const updated = (full.rules ?? []).map((r) =>
       r.type === "pull_request"
         ? { ...r, parameters: { ...(r.parameters ?? {}), ...desired } }
         : r
@@ -913,7 +927,7 @@ async function applyRulesetReviews(
       gh,
       "PUT",
       `repos/${repo}/rulesets/${target.id}`,
-      JSON.stringify({ rules }),
+      JSON.stringify({ rules: updated }),
     );
     return { step, status: "applied" };
   } catch (err) {
@@ -925,18 +939,107 @@ async function applyRulesetReviews(
   }
 }
 
+/** Where the workflows live, as `readWorkflowFiles` reads them. */
+const WORKFLOWS_DIR = ".github/workflows";
+/** Where local composite actions live (`<dir>/**\/action.{yml,yaml}`). */
+const LOCAL_ACTIONS_DIR = ".github/actions";
+/** How deep under {@link LOCAL_ACTIONS_DIR} the walk goes. */
+const MAX_LOCAL_ACTION_DEPTH = 4;
+
+/** One entry of a contents-API directory listing. */
+interface ContentsEntry {
+  type?: string;
+  name?: string;
+  path?: string;
+}
+
 /**
- * Every repository `uses:` reference in the checkout's workflows, with its
- * ref (`owner/repo@sha`), so composite manifests can be read at the pinned
- * revision (Issue #4424). Local and docker steps are not repository actions.
+ * A contents-API path with each segment encoded. A listing's `path` comes
+ * back from GitHub, so a `.` or `..` segment is refused rather than let it
+ * steer the endpoint (Issue #1235's rule for untrusted coordinates).
+ */
+function contentsPath(path: string): string {
+  const segments = path.split("/");
+  if (segments.some((s) => s === "" || s === "." || s === "..")) {
+    throw new Error(`refusing an unsafe repository path: ${path}`);
+  }
+  return segments.map(encodeURIComponent).join("/");
+}
+
+/**
+ * The workflow files and local composite-action manifests on `branch`, read
+ * through the contents API (Issue #2685) — the same set `readWorkflowFiles`
+ * reads from a checkout, so no clone is needed. A 404 is an absent
+ * directory; any other failure throws.
+ */
+async function listActionFiles(
+  repo: string,
+  branch: string,
+  gh: GhCommandFn,
+): Promise<string[]> {
+  const ref = `?ref=${encodeURIComponent(branch)}`;
+  const list = async (dir: string): Promise<ContentsEntry[]> => {
+    try {
+      const value = JSON.parse(
+        await gh(["api", `repos/${repo}/contents/${contentsPath(dir)}${ref}`]),
+      );
+      return Array.isArray(value) ? value : [];
+    } catch (err) {
+      if (isNotFoundError(err)) return [];
+      throw err;
+    }
+  };
+  // Only a child of the directory asked for is followed.
+  const childOf = (
+    dir: string,
+    e: ContentsEntry,
+  ): e is ContentsEntry & { path: string } =>
+    typeof e.path === "string" && e.path.startsWith(`${dir}/`);
+
+  const files: string[] = [];
+  for (const entry of await list(WORKFLOWS_DIR)) {
+    if (
+      entry.type === "file" && childOf(WORKFLOWS_DIR, entry) &&
+      /\.ya?ml$/.test(entry.path)
+    ) files.push(entry.path);
+  }
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    for (const entry of await list(dir)) {
+      if (!childOf(dir, entry)) continue;
+      if (entry.type === "file" && /^action\.ya?ml$/.test(entry.name ?? "")) {
+        files.push(entry.path);
+      } else if (entry.type === "dir" && depth < MAX_LOCAL_ACTION_DEPTH) {
+        await walk(entry.path, depth + 1);
+      }
+    }
+  };
+  await walk(LOCAL_ACTIONS_DIR, 0);
+  return files.sort();
+}
+
+/**
+ * Every repository `uses:` reference in the default branch's workflows and
+ * local composite actions, with its ref (`owner/repo@sha`), so composite
+ * manifests can be read at the pinned revision (Issue #4424). Read through
+ * the API at `branch` (Issue #2685): setup hosts keep no clones, and a clone
+ * on a feature branch is not what the allow-list must admit. Local and docker
+ * steps are not repository actions.
  */
 export async function collectUsesReferences(
-  workDir: string,
+  repo: string,
+  branch: string,
+  gh: GhCommandFn,
 ): Promise<string[]> {
-  const files = await readWorkflowFiles(workDir);
+  const ref = `?ref=${encodeURIComponent(branch)}`;
   const out = new Set<string>();
-  for (const file of files) {
-    for (const line of file.rawText.split("\n")) {
+  for (const path of await listActionFiles(repo, branch, gh)) {
+    const rawText = await gh([
+      "api",
+      `repos/${repo}/contents/${contentsPath(path)}${ref}`,
+      "-H",
+      "Accept: application/vnd.github.raw+json",
+    ]);
+    for (const line of rawText.split("\n")) {
       const value = extractUsesValue(line);
       if (!value || value.startsWith(".") || value.startsWith("docker://")) {
         continue;
@@ -994,8 +1097,6 @@ function readFailure(
 export interface HardenRepoOptions {
   apply: boolean;
   ghCommandFn: GhCommandFn;
-  /** The repo's local checkout; its workflows feed the allow-list. */
-  workDir: string;
   requireCodeOwnerReview?: boolean;
   /** Operator-vouched `owner/repo` coordinates (`--allow-action`). */
   extraCoordinates?: readonly string[];
@@ -1008,7 +1109,7 @@ export interface HardenRepoOutcome {
   results: HardenResult[];
   /** {@link SECRET_PROTECTION_SKIP_NOTE} when that step was exempted. */
   skipNote?: string;
-  /** The allow-list's action coordinates (empty without a checkout). */
+  /** The allow-list's action coordinates (empty when the workflows were unreadable). */
   coordinates: string[];
   /** How many workflow `uses:` references fed the allow-list. */
   referenceCount: number;
@@ -1143,29 +1244,20 @@ async function hardenRepoInto(
     );
   }
 
-  // Without a checkout the allow-list would be built from nothing, so the
-  // step is skipped and said so rather than writing an empty list.
-  const hasCheckout = await Deno.stat(`${options.workDir}/.git`).then(
-    () => true,
-    (err) => {
-      // Only a missing `.git` means "no checkout"; any other fault is loud.
-      if (err instanceof Deno.errors.NotFound) return false;
-      throw err;
-    },
-  );
+  // The allow-list is built from the default branch's workflows, read
+  // through the API (Issue #2685), so no checkout is needed.
   let allowListFault: string | undefined;
-  if (hasCheckout) {
-    let references: string[];
-    try {
-      references = await collectUsesReferences(options.workDir);
-    } catch (err) {
-      // An unreadable workflow tree fails the allow-list alone — never an
-      // empty list written in its place.
-      allowListFault = `could not read the workflows in ${options.workDir}: ${
-        errorMessage(err)
-      }`;
-      references = [];
-    }
+  let references: string[] = [];
+  try {
+    references = await collectUsesReferences(repo, branch, gh);
+  } catch (err) {
+    // An unreadable workflow tree fails the allow-list alone — never an
+    // empty list written in its place.
+    allowListFault = `could not read the workflows on ${branch}: ${
+      errorMessage(err)
+    }`;
+  }
+  if (!allowListFault) {
     const transitive = await resolveTransitiveActionCoordinates(
       references,
       gh,
@@ -1185,16 +1277,16 @@ async function hardenRepoInto(
     defaultBranch: branch,
   });
   const allowListStep = plan.find((s) => s.kind === "actions-allow-list");
-  const runnable = hasCheckout && !allowListFault
-    ? plan
-    : plan.filter((s) => s.kind !== "actions-allow-list");
+  const runnable = allowListFault
+    ? plan.filter((s) => s.kind !== "actions-allow-list")
+    : plan;
   results.push(
     ...await applyRepoSettingsPlan(repo, runnable, {
       apply: options.apply,
       ghCommandFn: gh,
     }),
   );
-  if (!hasCheckout || allowListFault) {
+  if (allowListFault) {
     results.push({
       step: allowListStep ?? {
         kind: "actions-allow-list",
@@ -1202,8 +1294,8 @@ async function hardenRepoInto(
         method: "PUT",
         endpoint: "actions/permissions/selected-actions",
       },
-      status: allowListFault ? "failed" : "skipped",
-      detail: allowListFault ?? "no local checkout",
+      status: "failed",
+      detail: allowListFault,
     });
   }
   // The exempted step is stated in the output, never silently absent.

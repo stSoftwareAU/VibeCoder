@@ -1435,11 +1435,24 @@ async function runBackfillIdleTaskLabels(configPath: string): Promise<boolean> {
 
 /**
  * Harden every monitored repo's GitHub settings, writing only what drifted
- * (Issue #2628). Same admin `gh_config_dir` seam as the ruleset sync, same
- * `WORK_DIR` as the gitignore sync. Non-fatal: `false` when a repo failed.
+ * (Issue #2628). Non-fatal: `false` when a repo failed.
+ *
+ * Runs as the `operator` identity (Issue #2685): the operator's own `gh`
+ * login, which is the only one that can hold the admin these writes need.
+ * The fleet account in `gh_config_dir` holds `write` by design, so it was
+ * refused on every repository. `dryRun` is required, not defaulted, so a
+ * caller cannot drop it on the floor again: `--dry-run` once applied 34 real
+ * changes because this step never received it.
  */
-async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
-  printInfo("Hardening repository settings on monitored repositories...");
+async function runRepoSettingsHardenStep(
+  configPath: string,
+  dryRun: boolean,
+): Promise<boolean> {
+  printInfo(
+    `Hardening repository settings on monitored repositories${
+      dryRun ? " (dry run — nothing is written)" : ""
+    }...`,
+  );
 
   try {
     const config = await loadExistingConfig(configPath);
@@ -1448,13 +1461,12 @@ async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
       printWarning("No repos configured — skipping repo-settings hardening");
       return true;
     }
-    const ghConfigDir = config.gh_config_dir
-      ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
-      : undefined;
     const workDir = setupWorkDir();
 
     return await runRepoSettingsHarden(config, {
-      ghCommandFn: createSetupGhJson(ghConfigDir),
+      // No `gh_config_dir`: the operator's own login (Issue #2685).
+      ghCommandFn: createSetupGhJson(),
+      dryRun,
       workDir,
       owners: resolveCodeownersOwners(config, configPath),
       syncCodeowners,
@@ -1495,7 +1507,10 @@ export const RUN_ALL_REPO_STEPS: ReadonlyArray<{
   { name: "branch-protection-sync", run: runBranchProtectionSync },
   // Repo-settings hardening (Issue #2628), once the ruleset it may add
   // code-owner review to exists. Setup-time only.
-  { name: "repo-settings-harden", run: runRepoSettingsHardenStep },
+  {
+    name: "repo-settings-harden",
+    run: (p) => runRepoSettingsHardenStep(p, false),
+  },
   // Back-fill the `idle-task` label on security-scan wrappers (Issue #2131).
   { name: "backfill-idle-task-labels", run: runBackfillIdleTaskLabels },
 ];
@@ -1681,6 +1696,29 @@ async function runRepos(
   return true;
 }
 
+/**
+ * The subcommands that honour `--dry-run` (Issue #2685). Every other one
+ * would write for real, so it refuses the flag rather than ignore it.
+ */
+export const DRY_RUN_SUBCOMMANDS: readonly string[] = [
+  "label-sync",
+  "label-colour-reconcile",
+  "best-practices-relabel",
+  "repo-settings-harden",
+];
+
+/**
+ * Why `subcommand` refuses `--dry-run`, or `undefined` when it honours it
+ * (Issue #2685). A dry run that writes is worse than no dry run: the
+ * operator believes nothing changed.
+ */
+export function dryRunRefusal(subcommand: string): string | undefined {
+  if (DRY_RUN_SUBCOMMANDS.includes(subcommand)) return undefined;
+  return `--dry-run is not supported by '${subcommand}' — it would write ` +
+    `for real, so nothing was run. Subcommands with a dry run: ` +
+    `${DRY_RUN_SUBCOMMANDS.join(", ")}.`;
+}
+
 function usage(): void {
   console.log(
     `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
@@ -1704,13 +1742,18 @@ Subcommands:
   verify-monitored-collaborator  Precheck worker collaborator access on every repo
   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
   repo-settings-harden  Harden every monitored repo's GitHub settings, writing only drift
+                  (runs as your own gh login, which needs repository admin;
+                  supports --dry-run)
   backfill-idle-task-labels  Apply idle-task label to existing security-scan wrappers
   repos           List monitored repositories (--add owner/repo, --remove owner/repo)
   update-mode     Ask for the update mode (dynamic/frozen) and, when frozen,
                   the pinned ref and the exact Claude CLI / gh / Deno versions
   hooks           Install pre-commit hook and git exclude patterns
   scheduled-task  Register the Windows Task Scheduler entry (--status / --uninstall to query or remove it)
-  all             Run full setup (default)`,
+  all             Run full setup (default)
+
+--dry-run is refused by every subcommand that does not support it: it would
+write for real.`,
   );
 }
 
@@ -1771,6 +1814,12 @@ if (import.meta.main) {
 
   let ok = true;
 
+  const refusal = dryRun ? dryRunRefusal(subcommand) : undefined;
+  if (refusal) {
+    printError(refusal);
+    Deno.exit(1);
+  }
+
   const dispatch = async (): Promise<void> => {
     switch (subcommand) {
       case "prerequisites":
@@ -1824,7 +1873,7 @@ if (import.meta.main) {
         ok = await runBranchProtectionSync(configPath);
         break;
       case "repo-settings-harden":
-        ok = await runRepoSettingsHardenStep(configPath);
+        ok = await runRepoSettingsHardenStep(configPath, dryRun);
         break;
       case "backfill-idle-task-labels":
         ok = await runBackfillIdleTaskLabels(configPath);
