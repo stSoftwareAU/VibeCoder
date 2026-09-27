@@ -19,8 +19,8 @@
  *   3. `seedWriteRepoAllowlist(requestRepo)` + `registerWriteRepo(target)` —
  *      the run may now write to the requesting repo (comment/close) and to
  *      the operator-approved target, and nothing else.
- *   4. {@link createAllIdleTaskWrappers} — idempotent; already-open wrappers
- *      are reported as skipped rather than duplicated.
+ *   4. {@link createAllIdleTaskWrappers} — gated: any open `idle-task`
+ *      issue in the target skips the whole sweep (Issue #2752).
  *   5. A per-template created/skipped summary is posted on the requesting
  *      issue, which is then closed as completed. A seeding failure is
  *      reported loudly and the issue is left **open** so the next loop

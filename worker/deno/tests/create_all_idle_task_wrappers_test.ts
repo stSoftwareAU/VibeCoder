@@ -547,6 +547,25 @@ Deno.test(
 );
 
 Deno.test(
+  "formatIdleTaskOutcomeTable - a blocked sweep names the blocking issue (Issue #2752)",
+  () => {
+    const text = formatIdleTaskOutcomeTable("org/table", {
+      created: [],
+      skipped: ["test-audit"],
+      blockedBy: {
+        number: 638,
+        url: "https://github.com/org/table/issues/638",
+      },
+    }).join("\n");
+    assertStringIncludes(text, "existing_wrapper_open #638");
+    assert(
+      !text.includes("already_open"),
+      "blocked rows must not read as title dedup",
+    );
+  },
+);
+
+Deno.test(
   "createAllIdleTaskWrappers - surfaces gh issue create failure",
   async () => {
     const gh = makeMockGh({ createThrows: true });
