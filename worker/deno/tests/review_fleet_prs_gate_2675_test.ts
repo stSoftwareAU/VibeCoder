@@ -95,6 +95,7 @@ const searchPr = (
 ): SearchPr => ({
   number: 1,
   title: "t",
+  url: "https://github.com/o/r/pull/1",
   isDraft: false,
   mergeable: "MERGEABLE",
   headRefOid: "head",
@@ -175,6 +176,10 @@ Deno.test("reviewedAtHead: approvals, change requests and the skill's own commen
       "head",
     ),
     false,
+  );
+  assertEquals(
+    reviewedAtHead([review("DISMISSED", "head")], "nleck", "head"),
+    true,
   );
   assertEquals(
     reviewedAtHead([review("APPROVED", "older")], "nleck", "head"),

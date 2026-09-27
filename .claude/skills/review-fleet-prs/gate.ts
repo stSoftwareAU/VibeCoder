@@ -11,7 +11,9 @@
 // until something is ready and only then exits, so an idle night costs no
 // model tokens at all.
 //
-// Usage: deno run --allow-run=gh --allow-read gate.ts
+// Each pass also rewrites ~/.review-fleet-prs/summary.md (see review_log.ts).
+//
+// Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME gate.ts
 //          [--config=<path>] [--repo=<owner/name>] [--watch=<seconds>]
 //          [--sleep-first]
 // --sleep-first waits one interval before the first poll, so a PR whose
@@ -22,9 +24,19 @@
 // checkout's own .config.json.
 const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
 
+import {
+  type Finding,
+  previousFindings,
+  prKey,
+  readLog,
+  REVIEW_MARKER,
+  stateDir,
+  writeSummary,
+} from "./review_log.ts";
+
 // Every review body the skill posts ends with this marker, so a comment-only
 // "held for the owner" review still counts as this commit's review.
-export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
+export { REVIEW_MARKER };
 
 const DEPENDABOT_LOGINS = new Set([
   "app/dependabot",
@@ -48,6 +60,7 @@ export interface ReadyPr {
   repo: string;
   number: number;
   title: string;
+  url: string;
   author: string;
   kind: "dependabot" | "fleet";
   headSha: string;
@@ -58,6 +71,9 @@ export interface ReadyPr {
   // Set when a fleet PR changes code but adds no test; the model review
   // decides whether a test was appropriate.
   noTestAdded: boolean;
+  // Findings of this PR's last review when it was sent back: the re-review
+  // checks each one was fixed.
+  previousFindings: Finding[];
 }
 
 export interface Review {
@@ -70,6 +86,7 @@ export interface Review {
 export interface SearchPr {
   number: number;
   title: string;
+  url: string;
   isDraft: boolean;
   mergeable: string;
   headRefOid: string;
@@ -141,8 +158,11 @@ export function noTestAdded(files: PrFile[], kind: ReadyPr["kind"]): boolean {
   return codeChanged && !testsAdded;
 }
 
-// An approval or change request always counts; a comment-only review counts
-// only when this skill posted it (the owner's own comments do not).
+// An approval or change request always counts, even once dismissed: the
+// worker dismisses a change request when it claims the feedback, before it
+// pushes the fix, and the fix's new commit is what earns a fresh review. A
+// comment-only review counts only when this skill posted it (the owner's
+// own comments do not).
 export function reviewedAtHead(
   reviews: Review[],
   reviewer: string,
@@ -151,6 +171,7 @@ export function reviewedAtHead(
   return reviews.some((r) =>
     r.author?.login === reviewer && r.commit?.oid === headSha &&
     (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" ||
+      r.state === "DISMISSED" ||
       (r.state === "COMMENTED" && (r.body ?? "").includes(REVIEW_MARKER)))
   );
 }
@@ -205,7 +226,7 @@ query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      number title isDraft mergeable headRefOid baseRefName
+      number title url isDraft mergeable headRefOid baseRefName
       repository { nameWithOwner defaultBranchRef { name } }
       author { login }
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
@@ -251,10 +272,13 @@ async function pass(
   const logins = ["app/dependabot", ...fleet];
   const ready: ReadyPr[] = [];
   const skipped: Record<string, number> = {};
+  const open = new Set<string>();
+  const log = await readLog(stateDir());
   for (const pr of await searchOpenPrs(owners, logins)) {
     const repo = pr.repository.nameWithOwner;
     const kind = authorKind(pr.author?.login ?? "", fleet);
     if (!repos.has(repo) || !kind) continue;
+    open.add(prKey(repo, pr.number));
     const skip = skipReason(pr, reviewer);
     if (skip) {
       skipped[skip] = (skipped[skip] ?? 0) + 1;
@@ -267,14 +291,19 @@ async function pass(
       repo,
       number: pr.number,
       title: pr.title,
+      url: pr.url,
       author: pr.author!.login,
       kind,
       headSha: pr.headRefOid,
       baseRef: pr.baseRefName,
       testChanges: existingTestChanges(files),
       noTestAdded: noTestAdded(files, kind),
+      previousFindings: previousFindings(log, repo, pr.number),
     });
   }
+  // A single --repo run sees only part of the fleet, so it leaves the
+  // summary's open set alone.
+  if (repos.size > 1) await writeSummary(stateDir(), open);
   return { ready, skipped };
 }
 
