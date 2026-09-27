@@ -243,6 +243,12 @@ export interface PhaseState {
    */
   infraRetryCounts?: Record<string, number>;
   /**
+   * True once the execute phase has discarded a resumed session the agent CLI
+   * refused as `Prompt is too long` and retried on a fresh one (Issue #2682).
+   * Caps that uncounted retry at one per `workOnIssue` invocation.
+   */
+  promptTooLongRetried?: boolean;
+  /**
    * Memory-pressure reading taken when the execute run was SIGKILLed
    * (Issue #4374). Set by the killed branch of the execute phase for the
    * most recent attempt; the #1550 retry wrapper refuses to retry a kill

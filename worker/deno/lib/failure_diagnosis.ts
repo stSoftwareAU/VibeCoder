@@ -82,6 +82,13 @@ export type FailureCategory =
    * one `do_not_enforce_on_create: false` flag.
    */
   | "repo_config"
+  /**
+   * The agent CLI refused the run with `Prompt is too long` (Issue #2682) — the
+   * transcript no longer fits the model's context window. A worker fault: the
+   * first on a resumed session is retried on a fresh session uncounted, so a
+   * failure recorded here is one a fresh session could not clear either.
+   */
+  | "prompt_too_long"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -104,6 +111,8 @@ export type CategoryDisplay =
   | "scheduled-release"
   /** Issue #2220: the repository refused the milestone branch. */
   | "repo-config"
+  /** Issue #2682: the agent CLI refused the run as `Prompt is too long`. */
+  | "prompt-too-long"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -158,6 +167,14 @@ export const SCHEDULED_RELEASE_MARKER = "Released on schedule:";
  */
 export const WORKFLOW_GATE_MARKER =
   "did not pass the GitHub Actions file checks";
+
+/**
+ * Phrase the worker opens a `Prompt is too long` failure reason with (Issue
+ * #2682). Worker-authored, like {@link WORKFLOW_GATE_MARKER}: the detector
+ * keys off the worker's own words, never the agent's prose.
+ */
+export const PROMPT_TOO_LONG_MARKER =
+  "The agent CLI refused the run: Prompt is too long";
 
 /**
  * The operator-facing reason line for a scheduled release (Issue #424).
@@ -269,6 +286,12 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // here the message is the worker's own refusal.
   if (failureMessage.includes(WORKFLOW_GATE_MARKER)) {
     return "workflow_gate";
+  }
+
+  // The worker's own `Prompt is too long` reason (Issue #2682) — checked
+  // after the same rules as the gate above, for the same reason.
+  if (failureMessage.includes(PROMPT_TOO_LONG_MARKER)) {
+    return "prompt_too_long";
   }
 
   if (
@@ -412,6 +435,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "scheduled_release",
   "workflow_gate",
   "repo_config",
+  "prompt_too_long",
   "unknown",
 ]);
 
@@ -472,6 +496,11 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // the ladder is reached.
     case "repo_config":
       return false;
+    // Not infrastructure (Issue #2682): the one uncounted fresh-session retry
+    // has already been spent by the time this category is recorded, so a
+    // second in-process retry would only resend the same oversized prompt.
+    case "prompt_too_long":
+      return false;
     default:
       return false;
   }
@@ -514,6 +543,8 @@ export function getFailureCategoryDisplay(
       return "scheduled-release";
     case "repo_config":
       return "repo-config";
+    case "prompt_too_long":
+      return "prompt-too-long";
     case "unknown":
       return "unknown";
     default:
@@ -822,6 +853,12 @@ export function getFailureDiagnosis(
 - No \`failed-once\` or \`failed\` label was applied, and the issue stays claimable — once the repository is fixed, the next scan picks it up with no human action
 - The most common cause is a \`milestone/**\` ruleset whose \`required_status_checks\` rule has \`do_not_enforce_on_create: false\`, which refuses the very push that would create the branch`;
 
+    case "prompt_too_long":
+      return `- The agent CLI refused the run with \`Prompt is too long\` — the conversation no longer fits the model's context window
+- This is a **worker fault**, not a property of the issue: a resumed session that overflows is discarded and retried once on a fresh session without counting against the issue (Issue #2682)
+- This failure is counted because the fresh session overflowed too, so the issue's own context (body, comments, prompt) is likely too large for one run
+- Consider trimming the issue body or splitting the task into smaller sub-issues`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -914,6 +951,8 @@ export function getFailureDiagnosisOneliner(
     // gate refused the run and named the finding (Issue #2044).
     case "workflow_gate":
       return "Blocked by the changed-workflow file checks: a workflow file this run touched carries a finding the base commit did not.";
+    case "prompt_too_long":
+      return "Likely cause: the agent CLI refused the run as 'Prompt is too long' even on a fresh session (Issue #2682).";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":
