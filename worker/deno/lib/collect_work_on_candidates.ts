@@ -497,6 +497,15 @@ export async function collectWorkOnCandidates(
 
     const milestoneTitle = issue.milestone;
 
+    // Issue #2689: this install's token was refused this issue's push for
+    // want of the `workflow` scope. Claiming it again only repeats the agent
+    // run and the refusal; a host whose token has the scope still claims it.
+    if (options.isWorkflowScopeRefused?.(repo, issue.number) === true) {
+      noteBlocked(issue.number, milestoneTitle, "workflow-scope-missing");
+      diag?.logIssueSkipped(repo, issue.number, "workflow-scope-missing");
+      continue;
+    }
+
     // Issue #2532: no work-*stream* occupancy check here. `work-on` is work a
     // human has asked for now, and Issue #2530 already lets its claim join a
     // busy stream in its own fresh conversation, so refusing the candidate

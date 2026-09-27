@@ -297,7 +297,12 @@ Three groups are exempt and consume no attempt, keeping the flat retry cooldown:
   cannot push a change under `.github/workflows/` (Issue #2689). The issue is
   released with no `failed-once`, `failed` or `needs-human` label, so a host
   whose token has the scope claims it; the host logs the missing scope once
-  at WARN.
+  at WARN. Two bounds replace the ladder's cap: the refused host remembers
+  the issue (keyed on its install uuid, across relaunches) and never
+  re-claims it while its scope verdict stands; and after three consecutive
+  `token-scope` releases on the issue, one comment names the scope and the
+  fix, and every host whose token is not known to have the scope stops
+  claiming it. See [SETUP.md](SETUP.md#the-workflow-scope).
 
 Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h →
 24 h) so a doomed issue cannot burn consecutive cycles while its attempts play

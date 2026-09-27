@@ -284,10 +284,13 @@ export async function filterNewWorkEligible(
 
     // Issue #1475: a token without the `workflow` scope cannot push a
     // workflow file, and GitHub only says so at the push — after the agent
-    // has run. Skip what the title or body already gives away.
+    // has run. Skip what the title or body already gives away — and, since
+    // Issue #2689, what this install has already been refused, which the
+    // title and body may never mention (GRQ#4939 did not).
     if (
-      !ctx.hasWorkflowScope &&
-      issueLooksLikeWorkflowWork(issue.title, issue.body)
+      options.isWorkflowScopeRefused?.(repo, issue.number) === true ||
+      (!ctx.hasWorkflowScope &&
+        issueLooksLikeWorkflowWork(issue.title, issue.body))
     ) {
       note(
         issue,
