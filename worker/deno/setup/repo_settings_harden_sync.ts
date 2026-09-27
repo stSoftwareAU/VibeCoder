@@ -9,12 +9,13 @@
  *  - `allowed_actions: selected`, with every transitive `owner/repo@*` the
  *    workflows need unioned onto the existing list;
  *  - secret scanning and push protection on public repositories only;
+ *  - one approving review on the default branch (Issue #2680), so fleet PRs
+ *    wait for `/review-fleet-prs` or the owner instead of auto-merging
+ *    unreviewed. A branch that takes direct pushes gets no pull_request rule
+ *    (it would refuse every push); its line says so for the owner to decide;
  *  - code-owner review on the Vibe ruleset, but only once CODEOWNERS is on
  *    the default branch — a ruleset demanding owners that do not exist would
  *    stop every merge.
- *
- * It NEVER enables required approving reviews: one required approval stops
- * the fleet's autonomous merges, which is a policy choice for the operator.
  *
  * Per repository, in order: the CODEOWNERS writer (#2627), `hardenRepo` with
  * `apply: true` (#2626), then the closer that retires fleet-filed `BP-REPO-*`
@@ -102,6 +103,7 @@ const CHECKED_KINDS: readonly HardenStep["kind"][] = [
   "sha-pinning-required",
   "actions-allow-list",
   "secret-scanning",
+  "default-branch-approval",
   "ruleset-reviews",
 ];
 
@@ -245,8 +247,6 @@ export async function runRepoSettingsHarden(
         ghCommandFn: deps.ghCommandFn,
         workDir: `${deps.workDir}/${repo.split("/")[1]}`,
         requireCodeOwnerReview: location.state === "present",
-        // Never the fleet-stopping approval rule — see the module comment.
-        requireReviews: false,
         ...(deps.defaultBranchCachePath
           ? { defaultBranchCachePath: deps.defaultBranchCachePath }
           : {}),

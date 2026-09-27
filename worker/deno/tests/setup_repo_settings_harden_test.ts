@@ -48,6 +48,8 @@ interface FakeRepo {
   actions: Record<string, unknown>;
   selected: Record<string, unknown>;
   rulesets: Array<Record<string, unknown>>;
+  /** Repository topics; `direct-push` opts the default branch out. */
+  topics?: string[];
   /** Where CODEOWNERS sits on the default branch; an Error fails the read. */
   codeowners?: string | Error;
 }
@@ -130,8 +132,15 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
       if (endpoint === `${base}/rules/branches/main`) {
         return state.rulesets
           .filter((r) => r["enforcement"] === "active")
-          .flatMap((r) => r["rules"] as unknown[]);
+          .flatMap((r) =>
+            (r["rules"] as Array<Record<string, unknown>>).map((rule) => ({
+              ...rule,
+              ruleset_id: r["id"],
+              ruleset_source_type: "Repository",
+            }))
+          );
       }
+      if (endpoint === `${base}/topics`) return { names: state.topics ?? [] };
       if (endpoint === `${base}/rulesets`) {
         return state.rulesets.map((r) => ({
           id: r["id"],
@@ -182,6 +191,10 @@ function makeFakeGitHub(repos: Record<string, FakeRepo>) {
       );
       if (ruleset) {
         Object.assign(ruleset, body);
+        return;
+      }
+      if (method === "POST" && endpoint === `${base}/rulesets`) {
+        state.rulesets.push({ id: 100 + state.rulesets.length, ...body });
         return;
       }
     }
@@ -339,6 +352,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
       `PUT repos/${repo}/actions/permissions/selected-actions`,
       `PUT repos/${repo}/actions/permissions/workflow`,
       `PUT repos/${repo}/rulesets/7`,
+      `PUT repos/${repo}/rulesets/7`,
     ],
   );
   // The allow-list is the existing list unioned with the workflow's action.
@@ -353,7 +367,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(state[repo]!.actions["sha_pinning_required"], true);
   assertStringIncludes(
     first.lines.join("\n"),
-    `${repo}: 5 applied, 0 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 6 applied, 0 unchanged, 0 skipped, 0 failed`,
   );
 
   writes.length = 0;
@@ -364,7 +378,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(writes, [], "a converged repo must see zero writes");
   assertStringIncludes(
     second.lines.join("\n"),
-    `${repo}: 0 applied, 5 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 0 applied, 6 unchanged, 0 skipped, 0 failed`,
   );
 });
 
@@ -382,46 +396,56 @@ Deno.test("runRepoSettingsHarden - a converged repo reads only, and the totals l
   const last = h.lines[h.lines.length - 1] ?? "";
   assertMatch(
     last,
-    /^Repo-settings hardening: 0 applied, 5 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
+    /^Repo-settings hardening: 0 applied, 6 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
   );
 });
 
 // ---------------------------------------------------------------------------
-// Never required approving reviews
+// One required approval on the default branch (Issue #2680)
 // ---------------------------------------------------------------------------
 
-Deno.test("runRepoSettingsHarden - no request ever sets required_approving_review_count above 0 (Issue #2628)", async () => {
+Deno.test("runRepoSettingsHarden - the default branch ends requiring one approval, with code-owner review and the other pull_request parameters kept (Issue #2680)", async () => {
   const repo = uniqueRepo();
-  const { gh, writes } = makeFakeGitHub({ [repo]: driftedRepo() });
+  const state = { [repo]: driftedRepo() };
+  const { gh } = makeFakeGitHub(state);
   const workDir = await makeWorkDir([repo]);
-  const seen: HardenRepoOptions[] = [];
-  const h = harness(gh, workDir, {
-    hardenRepo: (r, options) => {
-      seen.push(options);
-      return hardenRepo(r, options);
-    },
+
+  await runRepoSettingsHarden({ repos: [repo] }, harness(gh, workDir).deps);
+
+  const rules = state[repo]!.rulesets[0]!["rules"] as Array<
+    { type: string; parameters?: Record<string, unknown> }
+  >;
+  assertEquals(rules.find((r) => r.type === "pull_request")?.parameters, {
+    require_code_owner_review: true,
+    required_approving_review_count: 1,
+    dismiss_stale_reviews_on_push: true,
   });
-
-  await runRepoSettingsHarden({ repos: [repo] }, h.deps);
-  await runRepoSettingsHarden({ repos: [repo] }, h.deps);
-
-  assert(writes.length > 0, "the drifted run must have written something");
-  for (const write of writes) {
-    for (const [key, value] of deepEntries(write.body)) {
-      if (key !== "required_approving_review_count") continue;
-      assert(
-        typeof value === "number" && value <= 0,
-        `${write.method} ${write.endpoint} sets ${key}=${value}`,
-      );
-    }
-  }
-  assertEquals(seen.map((o) => o.requireReviews === true), [false, false]);
-  assertEquals(seen.map((o) => o.apply), [true, true]);
 });
 
-// ---------------------------------------------------------------------------
-// Per-repo isolation
-// ---------------------------------------------------------------------------
+Deno.test("runRepoSettingsHarden - a direct-push default branch gets no ruleset write, and its line says why for the owner (Issue #2680)", async () => {
+  const repo = uniqueRepo();
+  const state = {
+    [repo]: driftedRepo({
+      rulesets: [],
+      topics: ["direct-push"],
+      codeowners: undefined,
+    }),
+  };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+  const h = harness(gh, workDir);
+
+  await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assert(
+    !writes.some((w) => w.endpoint.includes("/rulesets")),
+    writes.map((w) => `${w.method} ${w.endpoint}`).join("\n"),
+  );
+  assertEquals(state[repo]!.rulesets, []);
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "skipped: default-branch-approval: direct-push");
+  assertStringIncludes(line, "the owner decides");
+});
 
 Deno.test("runRepoSettingsHarden - a repo whose hardenRepo throws never stops the next, and the step returns false (Issue #2628)", async () => {
   const broken = uniqueRepo();
@@ -452,7 +476,7 @@ Deno.test("runRepoSettingsHarden - a repo whose hardenRepo throws never stops th
   assertStringIncludes(out, "boom: rulesets unreachable");
   assertStringIncludes(
     out,
-    `${healthy}: 5 applied, 0 unchanged, 0 skipped, 0 failed`,
+    `${healthy}: 6 applied, 0 unchanged, 0 skipped, 0 failed`,
   );
   assertStringIncludes(out, "1 repo(s) failed");
 });
@@ -474,7 +498,7 @@ Deno.test("runRepoSettingsHarden - a failed step inside hardenRepo is never swal
   const out = [...h.lines, ...h.warnings].join("\n");
   assertStringIncludes(
     out,
-    `${repo}: 4 applied, 0 unchanged, 0 skipped, 1 failed`,
+    `${repo}: 5 applied, 0 unchanged, 0 skipped, 1 failed`,
   );
   assertStringIncludes(out, "workflow-token");
   assertStringIncludes(out, "HTTP 403: Resource not accessible");
@@ -518,7 +542,7 @@ Deno.test("runRepoSettingsHarden - a private repo gets no secret-scanning write 
     [],
   );
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "4 applied, 0 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 0 unchanged, 1 skipped, 0 failed");
   assertStringIncludes(line, SECRET_PROTECTION_SKIP_NOTE);
 });
 

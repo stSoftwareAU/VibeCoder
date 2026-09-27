@@ -1706,7 +1706,8 @@ function Invoke-VibeSetupMain {
         Write-VibeWarning "Ruleset sync had issues (non-fatal)"
     }
 
-    # Harden every monitored repo's GitHub settings, drift only (Issue #2628).
+    # Harden every monitored repo's GitHub settings, drift only (Issue #2628),
+    # including one approving review on the default branch (Issue #2680).
     if (-not (Invoke-VibeSetupCli -Arguments @("repo-settings-harden"))) {
         Write-VibeWarning "Repo-settings hardening had issues - see the per-repository lines above (non-fatal)"
     }

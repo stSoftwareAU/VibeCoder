@@ -1585,9 +1585,10 @@ main() {
 
     # Harden every monitored repo's GitHub settings, writing only what drifted
     # (Issue #2628 — part of #2611): read-only workflow token, SHA pinning, a
-    # selected-actions allow-list, secret scanning on public repos, and
-    # code-owner review once CODEOWNERS is on the default branch. Never
-    # required approving reviews. Setup-time only; non-fatal.
+    # selected-actions allow-list, secret scanning on public repos, one
+    # approving review on the default branch (Issue #2680 — a direct-push
+    # branch is skipped and reported), and code-owner review once CODEOWNERS
+    # is on the default branch. Setup-time only; non-fatal.
     run_setup_cli repo-settings-harden \
         || print_warning "Repo-settings hardening had issues — see the per-repository lines above (non-fatal)"
 
