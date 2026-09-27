@@ -130,11 +130,130 @@ export async function inspectStagedFiles(
 }
 
 /**
+ * Parse NUL-separated `<mode> <…> <oid>\t<path>` records into a map of
+ * path to `"<mode> <oid>"`. Serves both `git ls-files -s -z` (`mode oid
+ * stage`) and `git ls-tree -z` (`mode type oid`); `oidField` names which
+ * space-separated field holds the object id.
+ */
+function parseEntries(
+  stdout: string,
+  oidField: number,
+  keep: (fields: string[]) => boolean,
+): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const record of stdout.split("\0")) {
+    const tab = record.indexOf("\t");
+    if (tab < 0) continue;
+    const fields = record.slice(0, tab).split(" ");
+    if (!keep(fields)) continue;
+    entries.set(record.slice(tab + 1), `${fields[0]} ${fields[oidField]}`);
+  }
+  return entries;
+}
+
+/**
+ * Violations that a merge merely brings in (Issues #2737, #2739).
+ *
+ * A merge carries every path the merged-in branch changed, so a hidden file
+ * that branch already tracks (`.claude/…`) would trip the gate although
+ * committing it discloses nothing new. A violation is exempt only when its
+ * entry on the candidate — mode and object id — is identical to that path's
+ * entry on the merged-in commit. Anything the agent added or modified, a
+ * mode change, a deletion, or an unresolved conflict entry is not exempt.
+ *
+ * The candidate is the index (stage 0 only) while a merge is in progress
+ * (`mergedIn` = `MERGE_HEAD`, Issue #2737), or a merge commit already
+ * written, judged against its merged-in parent (Issue #2739). The caller
+ * owns the claim that `mergedIn` is what the merge brought in.
+ *
+ * If `mergedIn` or either listing cannot be read, nothing is exempt (fail
+ * closed).
+ *
+ * @param args.violations Paths the classifier refused
+ * @param args.mergedIn Ref or SHA of the commit the merge brings in
+ * @param args.candidate Commit whose tree is judged; omitted, the index
+ * @param args.options Git command options (cwd, env, timeout)
+ * @returns The exempt paths (each logged at INFO), possibly empty
+ */
+export async function mergedInUnchanged(args: {
+  violations: string[];
+  mergedIn: string;
+  candidate?: string;
+  options: GitCommandOptions;
+}): Promise<Set<string>> {
+  const { violations, mergedIn, candidate, options } = args;
+  const exempt = new Set<string>();
+  if (violations.length === 0) return exempt;
+  const resolved = await runGitCommand(
+    ["rev-parse", "-q", "--verify", `${mergedIn}^{commit}`],
+    options,
+  );
+  if (!resolved.ok || resolved.value.code !== 0) return exempt;
+  const mergeSha = resolved.value.stdout.trim();
+  if (!/^[0-9a-f]{40,64}$/.test(mergeSha)) return exempt;
+
+  const listTree = (commit: string) =>
+    runGitCommand(
+      [
+        "--literal-pathspecs",
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        commit,
+        "--",
+        ...violations,
+      ],
+      options,
+    );
+  const judged = candidate === undefined
+    ? await runGitCommand(
+      [
+        "--literal-pathspecs",
+        "ls-files",
+        "-s",
+        "-z",
+        "--full-name",
+        "--",
+        ...violations,
+      ],
+      options,
+    )
+    : await listTree(candidate);
+  const merged = await listTree(mergeSha);
+  if (!judged.ok || judged.value.code !== 0) return exempt;
+  if (!merged.ok || merged.value.code !== 0) return exempt;
+
+  // The index: stage 0 only, since a conflicted path has stages 1–3 and is
+  // never exempt. A tree: blobs only.
+  const isBlob = (f: string[]) => f[1] === "blob";
+  const judgedEntries = candidate === undefined
+    ? parseEntries(judged.value.stdout, 1, (f) => f[2] === "0")
+    : parseEntries(judged.value.stdout, 2, isBlob);
+  const mergedEntries = parseEntries(merged.value.stdout, 2, isBlob);
+  const where = candidate === undefined ? "staged" : `committed (${candidate})`;
+  const source = mergedIn === mergeSha ? mergeSha : `${mergedIn} (${mergeSha})`;
+  for (const path of violations) {
+    const entry = judgedEntries.get(path);
+    if (entry !== undefined && entry === mergedEntries.get(path)) {
+      exempt.add(path);
+      console.log(
+        `[pre-commit-safety] INFO: ${path} is exempt from the safety gate ` +
+          `(Issues #2737, #2739): its ${where} blob and mode are identical ` +
+          `to ${source}, which the merge brings in`,
+      );
+    }
+  }
+  return exempt;
+}
+
+/**
  * Refuse to proceed when any staged path violates the safety gate.
  *
  * Returns `Ok(void)` when every staged path is safe (including the empty
  * stage). Returns `Err` listing every offending path and the recovery
- * command (`git reset HEAD <file>`).
+ * command (`git reset HEAD <file>`). A path a merge in progress brings in
+ * unchanged from `MERGE_HEAD` is exempt (Issue #2737).
  *
  * @param options Git command options (cwd, env, timeout).
  */
@@ -148,7 +267,17 @@ export async function assertSafeToCommit(
     return { ok: true, value: undefined };
   }
 
-  const list = inspection.value.violations.map((p) => `  - ${p}`).join("\n");
+  const exempt = await mergedInUnchanged({
+    violations: inspection.value.violations,
+    mergedIn: "MERGE_HEAD",
+    options,
+  });
+  const violations = inspection.value.violations.filter((p) => !exempt.has(p));
+  if (violations.length === 0) {
+    return { ok: true, value: undefined };
+  }
+
+  const list = violations.map((p) => `  - ${p}`).join("\n");
   return {
     ok: false,
     error: new Error(

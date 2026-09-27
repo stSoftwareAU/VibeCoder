@@ -116,6 +116,45 @@ export function readLiveTrustedAuthors(): TrustedAuthorSets | null {
   };
 }
 
+/**
+ * Who may direct work **on one repository** — axis 1, repository-scoped
+ * (Issue #2734).
+ *
+ * That repository's own write-access humans when the per-cycle resolve
+ * listed it; otherwise (it was skipped as unlistable, or nothing has resolved
+ * yet) the fleet-wide intersection in `allowedAuthors`. Either way trust
+ * never widens: a writer on an unrelated organisation's repository is not in
+ * this repository's set.
+ *
+ * @param config - Worker configuration holding the resolved sets
+ * @param repo - The repository the decision is about (`owner/name`)
+ * @returns The logins trusted to direct work on `repo`
+ */
+export function trustedAuthorsFor(
+  config: {
+    allowedAuthors: string[];
+    allowedAuthorsByRepo?: ReadonlyMap<string, string[]>;
+  },
+  repo: string,
+): string[] {
+  return config.allowedAuthorsByRepo?.get(repo.trim().toLowerCase()) ??
+    config.allowedAuthors;
+}
+
+/**
+ * Key the resolver's per-repo sets for {@link trustedAuthorsFor}: lower-cased
+ * `owner/name` to that repository's axis-1 logins (Issue #2734).
+ */
+export function allowedAuthorsByRepoFrom(
+  byRepo: ReadonlyMap<string, { allowedAuthors: string[] }>,
+): Map<string, string[]> {
+  return new Map(
+    [...byRepo].map((
+      [repo, t],
+    ) => [repo.trim().toLowerCase(), [...t.allowedAuthors]]),
+  );
+}
+
 /** Forget the published sets. Test-only. */
 export function _resetLiveTrustedAuthors(): void {
   liveTrustedAuthors = null;

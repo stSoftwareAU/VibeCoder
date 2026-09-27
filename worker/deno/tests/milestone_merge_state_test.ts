@@ -252,7 +252,7 @@ Deno.test(
 Deno.test(
   "assertAdoptedMergeIsSafe - a commit the worker did not write still faces the pre-commit safety gate (Issue #1964)",
   async () => {
-    const { dir, preMergeSha } = await conflictedRepo();
+    const { dir, preMergeSha, defaultSha } = await conflictedRepo();
     try {
       await Deno.writeTextFile(`${dir}/f.txt`, "topic and main\n");
       await Deno.writeTextFile(`${dir}/.env`, "TOKEN=secret\n");
@@ -261,6 +261,7 @@ Deno.test(
 
       const refused = await assertAdoptedMergeIsSafe({
         preMergeSha,
+        defaultSha,
         options: { cwd: dir },
       });
       assert(!refused.ok, "a merge commit carrying .env is not adoptable");
@@ -275,19 +276,21 @@ Deno.test(
 Deno.test(
   "assertAdoptedMergeIsSafe - an ordinary resolution is adoptable, and an unreadable one never is (Issue #1964)",
   async () => {
-    const { dir, preMergeSha } = await conflictedRepo();
+    const { dir, preMergeSha, defaultSha } = await conflictedRepo();
     try {
       await Deno.writeTextFile(`${dir}/f.txt`, "topic and main\n");
       await git(["add", "-A"], dir);
       await git(["commit", "--no-edit"], dir);
       const safe = await assertAdoptedMergeIsSafe({
         preMergeSha,
+        defaultSha,
         options: { cwd: dir },
       });
       assert(safe.ok, `${!safe.ok && safe.error.message}`);
 
       const unreadable = await assertAdoptedMergeIsSafe({
         preMergeSha: "c".repeat(40),
+        defaultSha,
         options: { cwd: dir },
       });
       assert(
@@ -295,6 +298,174 @@ Deno.test(
         "a check that could not run must never read as a pass",
       );
       assertStringIncludes(unreadable.error.message, "could not be listed");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+/**
+ * A conflicted merge whose default branch also tracks hidden files
+ * (`.claude/…`, `.github/…`) the milestone branch never had (Issue #2739).
+ * The conflict is resolved and staged; the caller commits it.
+ */
+async function conflictedRepoWithHiddenFiles(): Promise<
+  { dir: string; preMergeSha: string; defaultSha: string }
+> {
+  const dir = await Deno.makeTempDir({ prefix: "issue-2739-adopted-" });
+  await git(["init", "--initial-branch=main", "."], dir);
+  await git(["config", "user.email", "t@example.com"], dir);
+  await git(["config", "user.name", "Test"], dir);
+  await Deno.writeTextFile(`${dir}/f.txt`, "seed\n");
+  await git(["add", "-A"], dir);
+  await git(["commit", "-m", "Seed"], dir);
+  await git(["checkout", "-b", "topic"], dir);
+  await Deno.writeTextFile(`${dir}/f.txt`, "topic\n");
+  await git(["commit", "-am", "Topic"], dir);
+  await git(["checkout", "main"], dir);
+  await Deno.writeTextFile(`${dir}/f.txt`, "main\n");
+  await Deno.mkdir(`${dir}/.claude/skills/s`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/.claude/skills/s/SKILL.md`, "# skill\n");
+  await Deno.mkdir(`${dir}/.github`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/.github/y.yml`, "on: push\n");
+  // Forced past any .gitignore, as a default branch may legitimately track it.
+  await git(["add", "-A", "-f"], dir);
+  await git(["commit", "-m", "Main"], dir);
+  const defaultSha = (await git(["rev-parse", "main"], dir)).trim();
+  await git(["checkout", "topic"], dir);
+  const preMergeSha = (await git(["rev-parse", "HEAD"], dir)).trim();
+  await new Deno.Command("git", {
+    args: ["merge", "main", "--no-edit"],
+    cwd: dir,
+    stdout: "null",
+    stderr: "null",
+  }).output();
+  await Deno.writeTextFile(`${dir}/f.txt`, "topic and main\n");
+  await git(["add", "f.txt"], dir);
+  return { dir, preMergeSha, defaultSha };
+}
+
+Deno.test(
+  "assertAdoptedMergeIsSafe - hidden files the default branch tracks, brought in unchanged, are adopted (Issue #2739)",
+  async () => {
+    const { dir, preMergeSha, defaultSha } =
+      await conflictedRepoWithHiddenFiles();
+    try {
+      await git(["commit", "--no-edit"], dir);
+      const safe = await assertAdoptedMergeIsSafe({
+        preMergeSha,
+        defaultSha,
+        options: { cwd: dir },
+      });
+      assert(safe.ok, `${!safe.ok && safe.error.message}`);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "assertAdoptedMergeIsSafe - a hidden or secret file the agent added to the merge is still refused (Issue #2739)",
+  async () => {
+    const { dir, preMergeSha, defaultSha } =
+      await conflictedRepoWithHiddenFiles();
+    try {
+      await Deno.writeTextFile(`${dir}/.env`, "TOKEN=secret\n");
+      await Deno.writeTextFile(`${dir}/.claude/secret`, "token\n");
+      await git(["add", "-f", ".env", ".claude/secret"], dir);
+      await git(["commit", "--no-edit"], dir);
+      const refused = await assertAdoptedMergeIsSafe({
+        preMergeSha,
+        defaultSha,
+        options: { cwd: dir },
+      });
+      assert(!refused.ok, "an agent-added .env or .claude file is refused");
+      assertStringIncludes(refused.error.message, ".env");
+      assertStringIncludes(refused.error.message, ".claude/secret");
+      assert(
+        !refused.error.message.includes("SKILL.md"),
+        `the merged-in SKILL.md is exempt and must not be listed: ${refused.error.message}`,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "assertAdoptedMergeIsSafe - a merged-in hidden file the agent edited or re-moded is still refused (Issue #2739)",
+  async () => {
+    const edited = await conflictedRepoWithHiddenFiles();
+    try {
+      await Deno.writeTextFile(
+        `${edited.dir}/.claude/skills/s/SKILL.md`,
+        "# skill\nleaked=1\n",
+      );
+      await git(["add", "-f", ".claude/skills/s/SKILL.md"], edited.dir);
+      await git(["commit", "--no-edit"], edited.dir);
+      const refused = await assertAdoptedMergeIsSafe({
+        preMergeSha: edited.preMergeSha,
+        defaultSha: edited.defaultSha,
+        options: { cwd: edited.dir },
+      });
+      assert(!refused.ok, "an edited merged-in hidden file is refused");
+      assertStringIncludes(refused.error.message, ".claude/skills/s/SKILL.md");
+    } finally {
+      await Deno.remove(edited.dir, { recursive: true });
+    }
+
+    const moded = await conflictedRepoWithHiddenFiles();
+    try {
+      await git(
+        ["update-index", "--chmod=+x", ".claude/skills/s/SKILL.md"],
+        moded.dir,
+      );
+      await git(["commit", "--no-edit"], moded.dir);
+      const refused = await assertAdoptedMergeIsSafe({
+        preMergeSha: moded.preMergeSha,
+        defaultSha: moded.defaultSha,
+        options: { cwd: moded.dir },
+      });
+      assert(!refused.ok, "a mode change is a modification and is refused");
+      assertStringIncludes(refused.error.message, ".claude/skills/s/SKILL.md");
+    } finally {
+      await Deno.remove(moded.dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "assertAdoptedMergeIsSafe - a merged-in parent that cannot be read, or is not HEAD's parent, exempts nothing (Issue #2739)",
+  async () => {
+    const { dir, preMergeSha, defaultSha } =
+      await conflictedRepoWithHiddenFiles();
+    try {
+      await git(["commit", "--no-edit"], dir);
+
+      const unreadable = await assertAdoptedMergeIsSafe({
+        preMergeSha,
+        defaultSha: "d".repeat(40),
+        options: { cwd: dir },
+      });
+      assert(!unreadable.ok, "an unreadable parent must fail closed");
+      assertStringIncludes(
+        unreadable.error.message,
+        ".claude/skills/s/SKILL.md",
+      );
+
+      // A commit holding the very same blobs that is not HEAD's parent is
+      // not what the merge brought in, so it vouches for nothing.
+      await git(["checkout", "-q", "-b", "lookalike", defaultSha], dir);
+      await git(["commit", "--allow-empty", "-m", "Lookalike"], dir);
+      const lookalike = (await git(["rev-parse", "HEAD"], dir)).trim();
+      await git(["checkout", "-q", "topic"], dir);
+      const stranger = await assertAdoptedMergeIsSafe({
+        preMergeSha,
+        defaultSha: lookalike,
+        options: { cwd: dir },
+      });
+      assert(!stranger.ok, "only HEAD's own merged-in parent is trusted");
+      assertStringIncludes(stranger.error.message, ".claude/skills/s/SKILL.md");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }

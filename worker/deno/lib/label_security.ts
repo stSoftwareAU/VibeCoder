@@ -18,6 +18,10 @@
  */
 
 import { runGhCommand } from "./github.ts";
+import {
+  isWorkerPlanningHandoff,
+  PLANNING_HANDOFF_ANCHOR,
+} from "./planning_handoff_trust.ts";
 
 /**
  * Labels that affect worker behaviour and require trusted authorship.
@@ -206,6 +210,12 @@ export interface OperationalLabelResult {
  * therefore treated as untrusted for every operational label, retaining only
  * the deliberate `needs-human` self-escalation exception above.
  *
+ * Planning hand-off exception (Issue #2688): `planning` applied by a fleet
+ * worker login is trusted only while `work-on` is still on the issue and its
+ * latest add came from a trusted, non-worker author before the `planning` add
+ * — the worker handing off an epic too large for one PR. See
+ * `planning_handoff_trust.ts`; every other worker-applied label is stripped.
+ *
  * Emits [SECURITY] [UNTRUSTED_LABEL_CHANGE] audit events for any
  * operational labels added by untrusted users.
  *
@@ -309,6 +319,14 @@ export async function verifyOperationalLabels(
     return result;
   }
 
+  // Issue #2688: the hand-off anchor must still be on the issue.
+  const workOnPresent = issueLabels.some(
+    (l) => l.toLowerCase() === PLANNING_HANDOFF_ANCHOR,
+  );
+  const workerLogins = workerUser === undefined
+    ? fleetWorkerLogins
+    : [workerUser, ...fleetWorkerLogins];
+
   // Check each operational label against the timeline
   for (const label of operationalPresent) {
     const labelEvents = timeline.filter(
@@ -364,10 +382,21 @@ export async function verifyOperationalLabels(
       // failing issue would be re-picked forever.
       const isWorkerFailureMark = WORKER_FAILURE_LABELS.has(labelLower) &&
         (isSelf || isFleetWorker);
+      // Issue #2688: a worker's own work-on → planning hand-off.
+      const isPlanningHandoff = workOnPresent &&
+        isWorkerPlanningHandoff(timeline, label, allowedAuthors, workerLogins);
       const isTrusted = isSuppressionOnlyLabel || isWorkerFailureMark ||
+        isPlanningHandoff ||
         (!isFleetWorker &&
           allowedAuthors.some((a) => a.toLowerCase() === adderLower));
 
+      if (isPlanningHandoff) {
+        console.error(
+          `[SECURITY] [WORKER_PLANNING_HANDOFF_TRUSTED] Label '${label}' on ` +
+            `${repo}#${issueNumber} added by worker '${adder}' as a hand-off ` +
+            `of a trusted work-on issue — honouring`,
+        );
+      }
       if (isTrusted) {
         result.trustedLabels.push(label);
       } else {

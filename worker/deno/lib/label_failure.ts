@@ -448,7 +448,14 @@ export async function handleIssueFailure(
   // and a second one would permanently `failed` an issue nothing is wrong
   // with. The claim-release comment carries the scheduled-release wording,
   // so the outcome is still recorded — just not as a fault.
-  if (failureCategory === "scheduled_release") {
+  //
+  // A token lacking the `workflow` scope is the same: a gap in this host's
+  // credential, not in the issue (Issue #2689). Another host's token may
+  // push it, so label nothing and leave it claimable. Laddering it parked
+  // GRQ#4939 with `failed-once` and `needs-human` over one host's token.
+  if (
+    failureCategory === "scheduled_release" || failureCategory === "token_scope"
+  ) {
     return {
       ok: true,
       value: {

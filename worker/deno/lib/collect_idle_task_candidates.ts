@@ -36,6 +36,7 @@
  */
 
 import type { WorkerConfig } from "../types.ts";
+import { trustedAuthorsFor } from "./trust_snapshot.ts";
 import { runGhCommand } from "./github.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import {
@@ -97,6 +98,11 @@ export async function collectIdleTaskCandidates(
   repoClosedPRs: ClosedPR[] = [],
 ): Promise<IssueCandidate[]> {
   const ghFn = options.ghCommandFn ?? runGhCommand;
+  // Issue #2734: every trust decision here is about this one repository, so
+  // it reads this repository's own writers — never the fleet-wide
+  // intersection, which two organisations with disjoint writers fold to
+  // nothing.
+  const repoAllowedAuthors = trustedAuthorsFor(config, repo);
   const diag = options.diagnostics;
   const candidates: IssueCandidate[] = [];
 
@@ -168,7 +174,7 @@ export async function collectIdleTaskCandidates(
   // the worker must stay able to claim wrappers it (or a sibling host) filed.
   const idleTaskTrustedAuthors = resolveFleetAuthors(
     options.githubUser,
-    config.allowedAuthors,
+    repoAllowedAuthors,
     config.fleetPrAuthors,
   );
 
@@ -184,7 +190,7 @@ export async function collectIdleTaskCandidates(
       repo,
       issue.number,
       issue.labels,
-      config.allowedAuthors,
+      repoAllowedAuthors,
       batchedGh,
       options.githubUser,
       fleetWorkerLogins,
@@ -277,7 +283,13 @@ export async function collectIdleTaskCandidates(
     const contentCheckResult = await verifyWorkOnContentIntegrity(
       repo,
       issue,
-      { ...config, allowedAuthors: idleTaskTrustedAuthors },
+      // Issue #2734: the per-repo map is dropped so the integrity check
+      // reads this widened set, not the narrower per-repo one it holds.
+      {
+        ...config,
+        allowedAuthors: idleTaskTrustedAuthors,
+        allowedAuthorsByRepo: undefined,
+      },
       ghFn,
       diag,
       options.contentApprovalDeps,
@@ -355,7 +367,7 @@ export async function collectIdleTaskCandidates(
           repo,
           issue.number,
           "ignore-open-prs",
-          config.allowedAuthors,
+          repoAllowedAuthors,
           batchedGh,
           options.timelineCache,
           options.cache,
