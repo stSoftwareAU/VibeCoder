@@ -204,3 +204,144 @@ Deno.test(
     assertEquals(result.output.includes("|22|"), true);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #2751: a low-priority issue waiting on a human must not hide the
+// repo's idle tasks, while a workable-but-blocked one still does.
+// ---------------------------------------------------------------------------
+
+const IDLE_TASK_NUMBER = 701;
+const LOW_PRIORITY_NUMBER = 90;
+
+/**
+ * One repo holding a low-priority issue (#90, carrying `extraLabels` and
+ * the given `body`) and a worker-filed idle-task issue (#701).
+ */
+function createIdleTaskRepoMockGh(
+  extraLabels: string[],
+  lowPriorityBody: string,
+  lowPriorityTitle = "Low-priority chore",
+): (args: string[]) => Promise<string> {
+  const bodyFor = (args: string[]): string =>
+    args.includes(String(LOW_PRIORITY_NUMBER))
+      ? lowPriorityBody
+      : "Scan the repo for issues";
+  return (args: string[]): Promise<string> => {
+    const command = args.join(" ");
+    if (command.includes("issue list")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: LOW_PRIORITY_NUMBER,
+          title: lowPriorityTitle,
+          url: `https://github.com/owner/repo-a/issues/${LOW_PRIORITY_NUMBER}`,
+          assignees: [],
+          labels: ["low-priority", ...extraLabels].map((name) => ({ name })),
+          createdAt: "2024-01-01T00:00:00Z",
+          author: ALICE,
+          milestone: null,
+        },
+        {
+          number: IDLE_TASK_NUMBER,
+          title: "Idle-task scan",
+          url: `https://github.com/owner/repo-a/issues/${IDLE_TASK_NUMBER}`,
+          assignees: [],
+          labels: [{ name: "idle-task" }],
+          createdAt: "2024-06-01T00:00:00Z",
+          author: { login: "bot" },
+          milestone: null,
+        },
+      ]));
+    }
+    if (command.includes("pr list")) return Promise.resolve("[]");
+    if (command.includes("timeline")) {
+      return Promise.resolve(JSON.stringify([
+        { event: "labeled", label: { name: "low-priority" }, actor: ALICE },
+        ...extraLabels.map((name) => ({
+          event: "labeled",
+          label: { name },
+          actor: ALICE,
+        })),
+        {
+          event: "labeled",
+          label: { name: "idle-task" },
+          actor: { login: "bot" },
+        },
+      ]));
+    }
+    if (command.includes("issue view")) {
+      if (command.includes("title,body")) {
+        return Promise.resolve(
+          JSON.stringify({ title: "Issue", body: bodyFor(args) }),
+        );
+      }
+      if (command.includes("--json body")) {
+        return Promise.resolve(JSON.stringify({ body: bodyFor(args) }));
+      }
+      if (command.includes("number,state,title")) {
+        return Promise.resolve(
+          JSON.stringify({ number: 91, state: "OPEN", title: "Dependency" }),
+        );
+      }
+    }
+    if (command.includes("api repos/")) {
+      return Promise.resolve(JSON.stringify({ body: bodyFor(args) }));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+async function findInIdleTaskRepo(
+  extraLabels: string[],
+  lowPriorityBody: string,
+  lowPriorityTitle?: string,
+) {
+  const config = makeConfig({
+    repos: ["owner/repo-a"],
+    allowedAuthors: ["alice", "bot"],
+  });
+  return await findOldestIssue(config, {
+    githubUser: "bot",
+    ghCommandFn: createIdleTaskRepoMockGh(
+      extraLabels,
+      lowPriorityBody,
+      lowPriorityTitle,
+    ),
+    cache: createTestCache(),
+    isIssueInCooldown: () => false,
+    selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+  });
+}
+
+Deno.test(
+  "findOldestIssue - a needs-human low-priority issue no longer hides the repo's idle task (Issue #2751)",
+  async () => {
+    const result = await findInIdleTaskRepo(["needs-human"], "Tidy logs");
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes(`|${IDLE_TASK_NUMBER}|`), true);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a dependency-blocked low-priority issue still hides the repo's idle task (Issue #2751)",
+  async () => {
+    const result = await findInIdleTaskRepo([], "Depends on #91");
+
+    assertEquals(result.output.includes(`|${IDLE_TASK_NUMBER}|`), false);
+    assertEquals(result.found, false);
+  },
+);
+
+Deno.test(
+  "findOldestIssue - a claimable Finish follow-up low-priority issue still beats the idle task (Issue #2751)",
+  async () => {
+    const result = await findInIdleTaskRepo(
+      [],
+      "Finish the remaining work",
+      "Finish #42: remaining work",
+    );
+
+    assertEquals(result.found, true);
+    assertEquals(result.output.includes(`|${LOW_PRIORITY_NUMBER}|`), true);
+  },
+);

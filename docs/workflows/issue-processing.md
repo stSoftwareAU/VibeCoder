@@ -391,7 +391,7 @@ flowchart TD
 
 ### Per-repo tier suppression — a suppressing `work-on` issue parks the lower tiers
 
-Alongside the per-candidate filters above there is one **per-repo** gate. A repo that holds a *suppressing* open `work-on` issue contributes **no** `low-priority` or `idle-task` candidate to selection at all, and a repo with any open `low-priority` issue contributes no `idle-task` candidate. [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts) collects the two sets (`reposWithOpenWorkOn`, `reposWithOpenLowPriority`) and [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) filters the lower tiers by them. The intent is serialisation: a repo with higher-tier work pending should wait rather than open a backlog PR beside it.
+Alongside the per-candidate filters above there is one **per-repo** gate. A repo that holds a *suppressing* open `work-on` issue contributes **no** `low-priority` or `idle-task` candidate to selection at all, and a repo with an open `low-priority` issue **not waiting on a human** contributes no `idle-task` candidate. [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts) collects the two sets (`reposWithOpenWorkOn`, `reposWithOpenLowPriority`) and [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) filters the lower tiers by them. The intent is serialisation: a repo with higher-tier work pending should wait rather than open a backlog PR beside it.
 
 "Suppressing" is narrower than "open", because a `work-on` issue the worker can **never** action would otherwise deadlock the repo's whole backlog behind it. [`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts) counts, over the post-`filterAndSort` set, the issues whose refusal **clears by itself** — and nothing else. Which gates those are is not written into the rule: it is declared once, per gate, in `SKIP_REASON_CLEARING` ([`skip_reason_clearing.ts`](../../worker/deno/lib/skip_reason_clearing.ts), Issue #524), a map total over `SkipReason`, so a new gate fails the type check until somebody says how it clears.
 
@@ -402,6 +402,13 @@ Alongside the per-candidate filters above there is one **per-repo** gate. A repo
 | Blocked solely by an open dependency | `human` | No | The dependency is often a `low-priority` issue in the same repo; suppressing would deadlock the chain. |
 | Named by a **merged** fleet PR (`merged-pr-permanent`) | `permanent` | No | The block is permanent — only a trusted re-label dated after the merge lifts it, or the housekeeping sweep closes the issue outright. |
 | Refused for an untrusted label add, or a content change needing re-approval | `human` | No | A person must act before the issue can ever be claimed, so it must not park the backlog meanwhile. |
+
+The `low-priority` → `idle-task` gate follows the same idea (Issue #2751). [`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts) reports `hasSuppressingLowPriority` from the raw open list — taken before `cleanStaleLabels` and the per-issue skips — counting only issues **not waiting on a human**. A `low-priority` issue is waiting on a human, and so leaves the repo's `idle-task` issues selectable, when it carries any of:
+
+- a handoff label — `failed`, `refine-issue`, `planning`, `question`, `needs-revision` or `needs-human` (the configured names), or
+- an assignee outside the fleet-identity set (`resolveFleetMaintenanceAuthorSet`), i.e. a human has taken it.
+
+Every other open `low-priority` issue still suppresses the repo's `idle-task` tier — including one blocked by an open dependency or an open PR, or assigned to a fleet account — because that work clears by itself. A claimable `low-priority` issue (a `Finish #N:` follow-up included) is still selected ahead of any `idle-task` issue by the tier ladder.
 
 The rule is checked at the loop's own altitude rather than per gate. `claim_path_monotonicity_test.ts` asserts that adding an issue never leaves the scan with nothing to claim, and that a gate parks the lower tiers **iff** it is declared `self`-clearing; `claim_path_differential_test.ts` replays generated repo states through both the claim scan and the idle-decision census and fails on any disagreement.
 

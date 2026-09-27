@@ -64,10 +64,11 @@ export const LOW_PRIORITY_LABEL_INDEX = 199;
  * Result of low-priority candidate collection.
  *
  * Issue #2164: `hasOpenIssues` carries the raw "any open low-priority
- * issue in this repo" flag separately from `candidates` so the selection
- * step can suppress idle-task selection from repos that have pending
- * low-priority work even when every low-priority candidate is currently
- * filtered out.
+ * issue in this repo" flag separately from `candidates`. Issue #2751:
+ * `hasSuppressingLowPriority` narrows it to issues not waiting on a human,
+ * so the selection step suppresses idle tasks only while the repo has
+ * low-priority work the fleet could still pick up — even when every
+ * low-priority candidate is currently filtered out.
  */
 export interface LowPriorityCollectionResult {
   /** Eligible candidates that survived every filter. */
@@ -78,6 +79,33 @@ export interface LowPriorityCollectionResult {
    * the per-issue eligibility checks.
    */
   hasOpenIssues: boolean;
+  /**
+   * Issue #2751: true when the repo has at least one open low-priority
+   * issue that is not waiting on a human — no handoff label (failed,
+   * refine-issue, planning, question, needs-revision, needs-human) and no
+   * assignee outside the fleet. Dependency-blocked, PR-blocked and
+   * fleet-assigned issues still count. This, not `hasOpenIssues`, gates
+   * the repo's idle tasks.
+   */
+  hasSuppressingLowPriority: boolean;
+}
+
+/**
+ * Issue #2751: whether any issue in `issues` is still the fleet's to work —
+ * it carries none of `waitingLabels` and every assignee is in `fleetLogins`
+ * (compared case-insensitively).
+ */
+function hasWorkableLowPriority(
+  issues: readonly FilterableIssue[],
+  waitingLabels: readonly string[],
+  fleetLogins: readonly string[],
+): boolean {
+  const waiting = new Set(waitingLabels);
+  const fleet = new Set(fleetLogins.map((login) => login.toLowerCase()));
+  return issues.some((issue) =>
+    !issue.labels.some((label) => waiting.has(label)) &&
+    issue.assignees.every((login) => fleet.has(login.toLowerCase()))
+  );
 }
 
 /**
@@ -120,10 +148,23 @@ export async function collectLowPriorityCandidates(
   );
 
   // Issue #2164: snapshot raw "has any open low-priority issue" before any
-  // filter strips the list. Used by `selectHighestPriority` to suppress
-  // idle-task selection from this repo even when every low-priority issue
-  // is currently filtered out.
+  // filter (or `cleanStaleLabels`) strips the list.
   const hasOpenIssues = issues.length > 0;
+
+  // Issue #4133: the push-capable fleet set — only the fleet's own open
+  // PRs defer an issue; a human's PR is theirs to manage.
+  const pushCapableAuthors = resolveFleetMaintenanceAuthorSet({
+    githubUser: options.githubUser,
+    fleetPrAuthors: config.fleetPrAuthors,
+  });
+
+  // Issue #2751: taken from the same raw list, but an issue waiting on a
+  // human (a handoff label, or a non-fleet assignee) no longer counts.
+  const hasSuppressingLowPriority = hasWorkableLowPriority(
+    issues,
+    Object.values(filterLabels),
+    pushCapableAuthors,
+  );
 
   issues = await cleanStaleLabels(
     issues,
@@ -175,13 +216,6 @@ export async function collectLowPriorityCandidates(
     [],
     config.fleetPrAuthors,
   );
-
-  // Issue #4133: the push-capable fleet set — only the fleet's own open
-  // PRs defer an issue; a human's PR is theirs to manage.
-  const pushCapableAuthors = resolveFleetMaintenanceAuthorSet({
-    githubUser: options.githubUser,
-    fleetPrAuthors: config.fleetPrAuthors,
-  });
 
   for (const issue of issues) {
     const verification = await verifyOperationalLabels(
@@ -380,5 +414,5 @@ export async function collectLowPriorityCandidates(
     });
   }
 
-  return { candidates, hasOpenIssues };
+  return { candidates, hasOpenIssues, hasSuppressingLowPriority };
 }
