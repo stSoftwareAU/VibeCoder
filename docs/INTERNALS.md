@@ -1921,7 +1921,7 @@ feedback:
 | ---------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Inline review comments**         | `repos/{repo}/pulls/{pr}/comments`  | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (a bare `+1` count is not trusted, since any user can self-react). |
 | **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments.                                                                                                                                                        |
-| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt.                                |
+| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt. Only each reviewer's latest review counts, whatever commit it was left on (Issue #2697). |
 
 **Processed-comment tracking** — comments are marked as processed by adding an
 "eyes" (👀) reaction. The discovery query returns every comment with its `eyes`
@@ -1929,6 +1929,15 @@ count, and the scan resolves the *reactor* before skipping one: only a 👀 from
 the fleet means "already processed" (Issue #1249, finding 5). A count alone
 would let any account, with no repository permission, retire a comment from the
 scan for good. PR reviews use dismissal instead of reactions.
+
+**Latest review wins** (Issue #2697) — the scan reads every page of reviews
+(`gh api --paginate`) and keeps each reviewer's latest submitted review, so a
+`CHANGES_REQUESTED` review is retired by its dismissal or by the same
+reviewer's later `APPROVED` or `CHANGES_REQUESTED` review, never by the head
+moving. `PENDING` drafts and every `COMMENTED` review do not count — GitHub
+keeps `reviewDecision` at `CHANGES_REQUESTED` after a Comment review. Each change request it skips is logged at info with the
+reason; see `selectOutstandingReviews` in
+[pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts).
 
 **Staleness check** (Issue #2702) — a `CHANGES_REQUESTED` review is skipped
 only when a **fleet fix commit** landed after its `submitted_at`: a commit
