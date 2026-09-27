@@ -557,6 +557,20 @@ Deno.test("ci_failure_classifier - human step is flattened, neutralised and boun
   assertEquals(split.humanStep, "a".repeat(HUMAN_STEP_MAX_LENGTH - 1));
 });
 
+Deno.test("ci_failure_classifier - a secret in the step is redacted before the bound (Issue #2727)", () => {
+  // A token straddling the bound would survive as an unmatchable fragment if
+  // the step were cut first.
+  const token = "ghp_" + "A1b2C3d4E5".repeat(4);
+  const step = "x".repeat(HUMAN_STEP_MAX_LENGTH - 10) + ` ${token}`;
+  const result = classifyCiFailure("gate", [], `vibe-human-gate: ${step}`);
+  const redacted = result.humanStep ?? "";
+
+  assertEquals(result.category, "human-gate");
+  assertEquals(redacted.includes("ghp_"), false);
+  assertEquals(redacted.includes("A1b2C3"), false);
+  assertEquals(redacted.length <= HUMAN_STEP_MAX_LENGTH, true);
+});
+
 Deno.test("ci_failure_classifier - a gate-free log keeps humanStep absent", () => {
   const result = classifyCiFailure("semgrep", [], "Blocking code rules fired");
   assertEquals(result.category, "code-fix-required");
