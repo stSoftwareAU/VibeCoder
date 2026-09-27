@@ -22,20 +22,23 @@ Optional argument: `owner/name` to review one repo only.
 
 ## Rules
 
-1. **Nothing is reviewed until CI is green.** Pending checks wait; failing
+1. **Only PRs into the default branch are reviewed.** A PR into a milestone
+   branch needs no approval; the milestone's own PR into the default branch
+   gets the review.
+2. **Nothing is reviewed until CI is green.** Pending checks wait; failing
    checks, merge conflicts and drafts belong to the fleet, so leave them
    alone and post nothing.
-2. **New functionality needs a test where appropriate.** Fable judges it: a
+3. **New functionality needs a test where appropriate.** Fable judges it: a
    refactor, docs, config or workflow change may not need one; new behaviour
    or a bug fix does.
-3. **Meaningful changes to existing tests are the owner's call.** The PR is
+4. **Meaningful changes to existing tests are the owner's call.** The PR is
    held for the owner with a comment-only review; it is neither approved nor
    sent back. A removed test file is always meaningful. Trivial edits
    (formatting, renames, imports, added cases, fixture paths) are not.
-4. **Blocking problems go back to the fleet** as a request for changes. The
+5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
-5. **Otherwise approve.** Never approve on doubt.
-6. **Review each head commit once.** A new push gets a fresh review.
+6. **Otherwise approve.** Never approve on doubt.
+7. **Review each head commit once.** A new push gets a fresh review.
 
 ## The loop
 

@@ -99,7 +99,7 @@ const searchPr = (
   mergeable: "MERGEABLE",
   headRefOid: "head",
   baseRefName: "main",
-  repository: { nameWithOwner: "o/r" },
+  repository: { nameWithOwner: "o/r", defaultBranchRef: { name: "main" } },
   author: { login: "stservice" },
   commits: {
     nodes: [{
@@ -117,6 +117,10 @@ Deno.test("skipReason: only a green, mergeable, unreviewed, non-draft PR is read
   assertEquals(skipReason(searchPr({}, "FAILURE"), "nleck"), "ci-failed");
   assertEquals(skipReason(searchPr({}, "ERROR"), "nleck"), "ci-failed");
   assertEquals(skipReason(searchPr({ isDraft: true }), "nleck"), "draft");
+  assertEquals(
+    skipReason(searchPr({ baseRefName: "milestone/42-x" }), "nleck"),
+    "not-default-branch",
+  );
   assertEquals(
     skipReason(searchPr({ mergeable: "CONFLICTING" }), "nleck"),
     "conflicting",

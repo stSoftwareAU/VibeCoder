@@ -1,8 +1,9 @@
 // Deterministic pre-review gate for /review-fleet-prs (Issue #2675).
 //
 // Finds the open PRs by Dependabot and the fleet accounts in the repos of the
-// VibeCoder .config.json that are ready for a model review: CI green, no
-// conflict, not a draft, and not yet reviewed at their head commit. It never
+// VibeCoder .config.json that are ready for a model review: into the default
+// branch, CI green, no conflict, not a draft, and not yet reviewed at their
+// head commit. It never
 // posts anything itself.
 //
 // One GraphQL search (about 2 points a page) covers every repo, so polling
@@ -40,6 +41,7 @@ type Skip =
   | "ci-failed" // the fleet fixes it; no review
   | "conflicting" // the fleet resolves it; no review
   | "draft"
+  | "not-default-branch" // e.g. into a milestone branch: the merge to the default branch gets the review
   | "already-reviewed"; // reviewed at this exact head commit
 
 export interface ReadyPr {
@@ -72,7 +74,10 @@ export interface SearchPr {
   mergeable: string;
   headRefOid: string;
   baseRefName: string;
-  repository: { nameWithOwner: string };
+  repository: {
+    nameWithOwner: string;
+    defaultBranchRef: { name: string } | null;
+  };
   author: { login: string } | null;
   commits: {
     nodes: { commit: { statusCheckRollup: { state: string } | null } }[];
@@ -153,6 +158,11 @@ export function reviewedAtHead(
 // Sorts one searched PR: null when it is ready for review, else why not.
 // GitHub's rollup already treats skipped and neutral checks as passing.
 export function skipReason(pr: SearchPr, reviewer: string): Skip | null {
+  // Only a merge into the default branch needs an approval; PRs into
+  // milestone branches are reviewed when the milestone merges.
+  if (pr.baseRefName !== pr.repository.defaultBranchRef?.name) {
+    return "not-default-branch";
+  }
   if (pr.isDraft) return "draft";
   if (pr.mergeable === "CONFLICTING") return "conflicting";
   const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state;
@@ -196,7 +206,7 @@ query($q: String!, $after: String) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number title isDraft mergeable headRefOid baseRefName
-      repository { nameWithOwner }
+      repository { nameWithOwner defaultBranchRef { name } }
       author { login }
       commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
