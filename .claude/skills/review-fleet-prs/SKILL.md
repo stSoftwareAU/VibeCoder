@@ -31,9 +31,13 @@ Optional argument: `owner/name` to review one repo only.
 3. **New functionality needs a test where appropriate.** Fable judges it: a
    refactor, docs, config or workflow change may not need one; new behaviour
    or a bug fix does.
-4. **Meaningful changes to existing tests are the owner's call.** The PR is
-   held for the owner with a comment-only review; it is neither approved nor
-   sent back. A removed test file is always meaningful. Trivial edits
+4. **A test is never removed or loosened to make the quality gate pass.** A
+   test removed, skipped, weakened or loosened without the linked issue
+   requiring it is a blocking finding: the PR goes back to the fleet to
+   restore it. A deliberate change the issue does require (an expected value
+   or behaviour the issue changes, or deleting a test that only pinned the
+   old implementation) is the owner's call: the PR is held with a
+   comment-only review, neither approved nor sent back. Trivial edits
    (formatting, renames, imports, added cases, fixture paths) are not, and
    neither are edits that only **tighten** a test (it now asserts more or
    allows less, as the issue asks): those are approved.
@@ -108,6 +112,11 @@ single message so they run in parallel, each with `model: "fable"` and
 >    (e.g. no longer tolerates a permission or a call it used to allow), or
 >    pins a stricter count, and nothing it used to check is dropped. A change
 >    that tightens one thing and loosens another is **meaningful**.
+>    If a test is removed, skipped, weakened or loosened and the linked
+>    issue does not require it (for example it looks like it was changed to
+>    make the build pass), report it as a blocking **finding** asking for the
+>    test to be restored, not only under `testChanges`. Report it under
+>    `testChanges` as **meaningful** only when the issue requires the change.
 > 6. {previousFindings, if not empty: "An earlier review of this PR asked
 >    for these fixes: {previousFindings}. Check each one is fixed; one that
 >    is not is still a finding."}
@@ -117,7 +126,8 @@ single message so they run in parallel, each with `model: "fable"` and
 >
 > Only report **blocking** findings: things that are wrong, unsafe or
 > untested. Style preferences and optional polish are not blocking. A
-> meaningful test change is not a finding; report it under `testChanges`. Do
+> meaningful test change the issue requires is not a finding; report it under
+> `testChanges`. Do
 > not guess: every finding needs a file and line from the diff and a concrete
 > failure scenario.
 >
