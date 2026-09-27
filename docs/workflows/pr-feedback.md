@@ -137,6 +137,9 @@ match wins and the loop restarts.
    and that push is less than 15 minutes old, the comment is left for the next
    scan to re-evaluate (Issue #211). The window is a de-duplication guard, not
    a veto — an older fleet push never suppresses feedback permanently.
+   A `CHANGES_REQUESTED` review is skipped only when a **fleet fix commit**
+   landed after it — never because a base merge or a bot's formatting or
+   version bump moved the head (Issue #2702). That skip is logged at info.
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; commit and push.
@@ -250,6 +253,12 @@ checks pass. The worker does the following:
    base, rebases and resolves conflicts **before** enabling auto-merge.
    **Auto-merge is only enabled once the PR is mergeable.**
 
+5. **Leave a blocked PR alone** (Issue #2702) — A PR whose review decision is
+   `CHANGES_REQUESTED` is not updated, behind or conflicting: it cannot merge
+   until the review is answered, and the update only moves the head underneath
+   the review. The decision rides the batched branch-state query, so it costs
+   no extra call; the skip is logged at info.
+
 So: **PRs are always kept mergeable when possible**. If a PR is out of date, the
 branch is automatically updated and merge issues resolved; if automatic
 resolution fails, the run continues and the next cycle may retry or the user can
@@ -269,6 +278,11 @@ intervene.
   and the repo supports it and the PR **is mergeable**: enable auto-merge. This
   catches PRs where auto-merge was not set due to transient failures during
   creation or where merge issues have since been fixed.
+- **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
+  its base gets one `update-branch` request per pass, since GitHub never
+  updates it under the strict up-to-date rule. Not when a reviewer has
+  requested changes (Issue #2702): that PR cannot merge anyway, so it gets
+  neither the update nor a merge attempt, and the sweep logs why at info.
 
 ## 🛡️ The dual-layer pre-merge gate
 

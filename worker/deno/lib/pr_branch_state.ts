@@ -4,7 +4,9 @@
  * Replaces the per-PR pair of REST calls
  * (`repos/<repo>/compare/<base>...<head>` + `gh pr view --json mergeable`)
  * with a single GraphQL query that returns aheadBy/behindBy and
- * mergeable for every open worker PR in a repo at once.
+ * mergeable for every open worker PR in a repo at once. Issue #2702 added
+ * reviewDecision to the same query, so the branch-update scan can leave a
+ * PR a reviewer has blocked alone without another call.
  *
  * For N open PRs in one repo this turns 2N REST calls into 1 GraphQL
  * call. Callers must retain the per-PR REST pair as a fallback for the
@@ -43,6 +45,13 @@ export interface PRBranchState {
   behindBy: number;
   /** GitHub mergeable state (e.g. "MERGEABLE", "CONFLICTING", "UNKNOWN"). */
   mergeable: string;
+  /**
+   * GitHub review decision ("APPROVED", "CHANGES_REQUESTED",
+   * "REVIEW_REQUIRED"), or "" when there is none (Issue #2702). Always set
+   * by the fetcher; optional so a state cached before the field existed, and
+   * a caller that never reads it, still type-check.
+   */
+  reviewDecision?: string;
 }
 
 /** Result of a batched PR branch-state fetch. */
@@ -141,6 +150,7 @@ export function buildBatchQuery(
         headRefName
         baseRefName
         mergeable
+        reviewDecision
         baseRef {
           compare(headRef: "${head}") {
             aheadBy
@@ -165,6 +175,7 @@ interface BatchResponse {
 interface BatchPRNode {
   number?: number;
   mergeable?: string | null;
+  reviewDecision?: string | null;
   /**
    * Comparison hung off the **base** ref with the PR head as its argument,
    * so `aheadBy`/`behindBy` describe the PR relative to its base
@@ -287,6 +298,9 @@ export async function fetchPRBranchStateBatch(
       aheadBy: typeof compare?.aheadBy === "number" ? compare.aheadBy : 0,
       behindBy: typeof compare?.behindBy === "number" ? compare.behindBy : 0,
       mergeable: typeof node.mergeable === "string" ? node.mergeable : "",
+      reviewDecision: typeof node.reviewDecision === "string"
+        ? node.reviewDecision
+        : "",
     });
   }
 

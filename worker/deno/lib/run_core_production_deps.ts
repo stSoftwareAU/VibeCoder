@@ -2429,6 +2429,7 @@ export async function createProductionRunCoreDeps(
               out.set(num, {
                 behindBy: state.behindBy,
                 mergeable: state.mergeable,
+                reviewDecision: state.reviewDecision,
               });
             }
             return out;

@@ -56,11 +56,13 @@ Deno.test("pr_branch_state - each PR in a batch gets its own base comparison", a
     aheadBy: 4,
     behindBy: 0,
     mergeable: "MERGEABLE",
+    reviewDecision: "",
   });
   assertEquals(result.states.get(20), {
     aheadBy: 1,
     behindBy: 7,
     mergeable: "MERGEABLE",
+    reviewDecision: "",
   });
 });
 // ---------------------------------------------------------------------------
@@ -301,4 +303,42 @@ Deno.test("pr_branch_state - missing compare node defaults to zero ahead/behind"
   assertEquals(result.states.get(1)?.aheadBy, 0);
   assertEquals(result.states.get(1)?.behindBy, 0);
   assertEquals(result.states.get(1)?.mergeable, "UNKNOWN");
+});
+
+Deno.test("pr_branch_state - asks for and returns each PR's review decision (Issue #2702)", async () => {
+  let query = "";
+  const gh = (args: string[]): Promise<string> => {
+    query = args[3] ?? "";
+    return Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          p0: {
+            number: 1,
+            mergeable: "MERGEABLE",
+            reviewDecision: "CHANGES_REQUESTED",
+            baseRef: { compare: { aheadBy: 1, behindBy: 3 } },
+          },
+          p1: {
+            number: 2,
+            mergeable: "MERGEABLE",
+            reviewDecision: null,
+            baseRef: { compare: { aheadBy: 1, behindBy: 3 } },
+          },
+        },
+      },
+    }));
+  };
+  const result = await fetchPRBranchStateBatch(
+    "acme/tools",
+    [
+      { number: 1, baseRefName: "main", headRefName: "feature-1" },
+      { number: 2, baseRefName: "main", headRefName: "feature-2" },
+    ],
+    gh,
+  );
+  assert(query.includes("reviewDecision"));
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(result.states.get(1)?.reviewDecision, "CHANGES_REQUESTED");
+  assertEquals(result.states.get(2)?.reviewDecision, "");
 });
