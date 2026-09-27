@@ -62,6 +62,24 @@ flowchart TD
 - `worker/deno/tests/conflict_needs_human_gate_test.ts` has 5 unit tests for
   `isCiFixEscalationOnly`.
 
+## Reproduction
+
+- **Status:** verified
+- **Before (red):** `lib/pr_merge_conflict_scan.ts` and `lib/pr_maintenance.ts`
+  were restored to `origin/main`. Then
+  `deno task test:unit tests/pr_merge_conflict_scan_test.ts` ran:
+  `76 passed | 4 failed`. The four failures were:
+  - `resolves a needs-human PR the CI-fix lane escalated`: skipped as
+    `needs-human`.
+  - `clears a stale merge-conflict label from a mergeable PR`: no DELETE.
+  - `reads the stale label from the listing when it carries labels`: no DELETE.
+  - `a failed label DELETE is logged and the pass continues`: no WARN.
+- **After (green):** with the fix in place, the same file passes
+  `80 passed | 0 failed`.
+- The skip-preservation tests (no marker, outsider marker, own escalation,
+  no-label, `UNKNOWN`) pass both before and after the fix, by design: they pin
+  behaviour the fix must not change.
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
@@ -74,7 +92,7 @@ flowchart TD
 - **met** — A `MERGEABLE` PR without the label makes no DELETE call, and an `UNKNOWN` PR keeps its label — evidence: `tests/pr_merge_conflict_scan_test.ts::findConflictingPr - a mergeable PR without the label issues no DELETE (Issue #2728)`, `tests/pr_merge_conflict_scan_test.ts::findConflictingPr - an UNKNOWN PR keeps its merge-conflict label (Issue #2728)` — reviewer: met
 - **met** — A failed DELETE is logged and the pass continues to the next PR — evidence: `tests/pr_merge_conflict_scan_test.ts::findConflictingPr - a failed label DELETE is logged and the pass continues (Issue #2728)` — reviewer: met
 - **met** — `docs/workflows/merge-conflicts.md` describes both behaviours — evidence: `docs/workflows/merge-conflicts.md` ("Not in scope" exception, "A stale label is cleared" paragraph, reason-table rows) — reviewer: met
-- **met** — The Deno quality gate (fmt, lint, check, test) passes — evidence: the reviewer ran `deno fmt --check`, `deno lint` and `deno check` on the 5 changed TS files, and the targeted tests: 118 passed and 31 lib-sweep tests passed. The full gate is re-run by the worker before the PR is raised — reviewer: met
+- **met** — The Deno quality gate (fmt, lint, check, test) passes — evidence: `./quality.sh` on a clean detached worktree of HEAD: fmt, lint and type check passed, and deno tests gave 24442 passed / 2 failed. Both failures are in `cache_secret_redaction_1261_test.ts`, which refuses a checkout under `/tmp`. That file passes `7 passed | 0 failed` from the real worktree. — reviewer: met
 - **unrequested** — New module `lib/conflict_needs_human_gate.ts` with its own test file — reviewer: unrequested — reason: the issue placed the rule in `pr_merge_conflict_scan.ts`. It was split out so the gate can be unit-tested and the scan file does not grow further.
 - **unrequested** — `docs/audits/lib-sweep-coverage.json` entry — reviewer: unrequested — reason: required by the new module, because `lib_sweep_coverage_test.ts` fails on any unlisted `lib/` module.
 - **unrequested** — `PR_FIELDS` in `pr_merge_conflict_scan.ts` gains `labels` — reviewer: unrequested — reason: without it, the uncached listing has no labels and every `MERGEABLE` PR costs a label read. The issue asked to avoid that read.
@@ -104,4 +122,8 @@ flowchart TD
   `tests/conflict_needs_human_gate_test.ts` and the listing and cache tests
   that use `PR_MAINTENANCE_LIST_FIELDS` all pass.
 - `deno fmt --check`, `deno lint` and `deno check` pass on the changed files.
-- The worker re-runs the full quality gate before it raises the PR.
+- `./quality.sh` ran on a clean worktree of HEAD. Every check passed except
+  two `/tmp`-location artefacts in `cache_secret_redaction_1261_test.ts`, which
+  pass in place. In this worktree the gate also trips on the unstaged
+  `.claude/skills/review-fleet-prs/` deletions that were already there before
+  this change.
