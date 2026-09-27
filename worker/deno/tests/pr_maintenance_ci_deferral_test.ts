@@ -70,6 +70,10 @@ function makeRecordingLogger(): RecordingLogger {
 
 const FLEET_LOGIN = "testbot";
 const SIGNATURE = "a1b2c3d4e5f6";
+/** The stub PR's current head. */
+const HEAD = "c".repeat(40);
+/** An earlier head of the same PR. */
+const OLD_HEAD = "d".repeat(40);
 
 /** One REST comment row, as `repos/…/issues/…/comments` returns it. */
 function commentRow(
@@ -101,17 +105,21 @@ function deferralComment(
   );
 }
 
-/** A human-gate announcement for `checkName` (Issue #2727). */
+/**
+ * A human-gate announcement for `checkName` (Issue #2727), confirmed on
+ * `head` — the PR's current head unless stated (PR #2762).
+ */
 function humanGateComment(
   id: number,
   author: string,
   checkName: string,
+  head: string | null = HEAD,
 ): Record<string, unknown> {
   return commentRow(
     id,
     author,
     `${checkName} needs a human to approve it.\n\n` +
-      buildCiHumanGateMarker({ checkName }),
+      buildCiHumanGateMarker({ checkName, head: head ?? undefined }),
   );
 }
 
@@ -141,7 +149,12 @@ function makeGh(
     calls.push(key);
     if (key.includes("pr list")) {
       return Promise.resolve(JSON.stringify([
-        { number: 7, headRefName: "issue-1-fix", baseRefName: "main" },
+        {
+          number: 7,
+          headRefName: "issue-1-fix",
+          headRefOid: HEAD,
+          baseRefName: "main",
+        },
       ]));
     }
     if (key.includes("check-runs") && !key.includes("annotations")) {
@@ -361,6 +374,36 @@ Deno.test("findFailedCiChecks - a check the fleet parked as a human gate is not 
   assertStringIncludes(logger.skips[0] ?? "", "ci-human-gate");
   assertStringIncludes(logger.skips[0] ?? "", "Project Validation");
   assertEquals(logger.errors, []);
+});
+
+Deno.test("findFailedCiChecks - a gate marker from an earlier head does not park a later failure of the same check (PR #2762)", async () => {
+  // Head A parked the gate; it cleared; head B fails the same job for an
+  // ordinary reason. The scanner must hand it to the processor to re-read.
+  const logger = makeRecordingLogger();
+  const result = await scan({
+    checks: [{ id: 1, name: "Project Validation" }],
+    comments: [
+      humanGateComment(10, FLEET_LOGIN, "Project Validation", OLD_HEAD),
+    ],
+  }, logger);
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "Project Validation");
+  assertEquals(logger.skips, []);
+});
+
+Deno.test("findFailedCiChecks - a pre-#2762 gate marker with no head parks nothing (PR #2762)", async () => {
+  const logger = makeRecordingLogger();
+  const result = await scan({
+    checks: [{ id: 1, name: "Project Validation" }],
+    comments: [
+      humanGateComment(10, FLEET_LOGIN, "Project Validation", null),
+    ],
+  }, logger);
+
+  assert(result.ok);
+  assertEquals(result.value?.checkName, "Project Validation");
+  assertEquals(logger.skips, []);
 });
 
 Deno.test("findFailedCiChecks - a human-gate marker authored outside the fleet does not park the check (Issue #2744)", async () => {

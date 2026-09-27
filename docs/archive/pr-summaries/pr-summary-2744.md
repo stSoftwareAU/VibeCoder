@@ -120,3 +120,13 @@ The reviewer confirmed:
   warning" fail without the `gatedNames` skip, because the gated check is
   returned.
 - `./quality.sh < /dev/null` passes.
+
+## Review follow-up — head-pinned gate park
+
+A gate marker keyed by check name alone outlived the gate: once the gate
+cleared, a later ordinary failure of the same check was parked for ever. The
+marker now carries `head="<sha>"`; `_parkHumanGate` re-stamps the one gate
+comment in place when it re-confirms the gate on a new head, and the scanner
+parks a check only via `isHumanGateParkedAt` — a fleet marker naming the PR's
+current `headRefOid`. A marker from an older head, or a legacy one without
+`head`, gets one processor pass that re-classifies from the log.

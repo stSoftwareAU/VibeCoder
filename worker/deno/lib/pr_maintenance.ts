@@ -64,7 +64,7 @@ export {
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
-import { findHumanGate } from "./ci_fix_attempt_markers.ts";
+import { isHumanGateParkedAt } from "./ci_fix_attempt_markers.ts";
 import { findParkedChecks } from "./ci_fix_pr_markers.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
@@ -1414,7 +1414,8 @@ export async function findFailedCiChecks(
     const prs = await listActionablePrs(
       repo,
       scanAuthors,
-      "number,headRefName,baseRefName",
+      // headRefOid pins a human-gate park to the head it was confirmed on.
+      "number,headRefName,headRefOid,baseRefName",
       options,
     );
 
@@ -1489,12 +1490,15 @@ export async function findFailedCiChecks(
         );
       }
       // A gate only a human can approve is not a fix target: skipped at
-      // info, before the retry cap, so it never reads as a stuck fix.
+      // info, before the retry cap, so it never reads as a stuck fix. Only
+      // a marker naming this head parks it (PR #2762): a new head gets one
+      // processor pass that re-reads the log, so a gate that cleared and a
+      // later ordinary failure of the same check is fixed, not parked.
       const gatedNames = new Set(
         parked === undefined ? [] : failedChecks
           .filter((check) =>
             !aggregators.has(check.name) && !deferredNames.has(check.name) &&
-            findHumanGate(parked.markers, check.name) !== undefined
+            isHumanGateParkedAt(parked.markers, check.name, pr.headRefOid)
           )
           .map((check) => check.name),
       );

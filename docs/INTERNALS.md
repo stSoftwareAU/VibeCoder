@@ -2116,9 +2116,14 @@ route is never taken on a guess.
    outside the fleet, or a malformed reference all leave the check
    undeferred and are logged — an error never suppresses a real failure.
 6. Skips checks **parked for a human** (Issue #2744): when a fleet-authored
-   `vibe-ci-human-gate` marker on the PR names the check — the CI-fix lane
-   posts it once for a gate only a person can approve (Issue #2727) — the
-   check is not returned, so it never reaches the retry cap below. The
+   `vibe-ci-human-gate` marker on the PR names the check **and the PR's
+   current head** — the CI-fix lane posts it once for a gate only a person
+   can approve (Issue #2727) and re-stamps its `head` in place each time it
+   re-confirms the gate on a new head (PR #2762) — the check is not
+   returned. A marker from an earlier head, or one with no `head`, parks
+   nothing: the processor re-reads the new head's log once, so a gate that
+   cleared and a later ordinary failure of the same check is fixed rather
+   than parked for ever. A parked check is not returned, so it never reaches the retry cap below. The
    same comment read as step 5 serves it, and one `skipReason` line
    (`ci-human-gate`, info not warn) per PR names the gated checks. Other
    failing checks on the same PR are still returned; a gate marker from
