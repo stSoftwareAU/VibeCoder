@@ -44,8 +44,11 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import {
+  type CommitProvenance,
+  fetchPrCommitProvenance,
   fetchPrHeadCommit,
   type HeadCommitInfo,
+  isReviewSupersededByFleetFix,
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
 // Re-exported so callers and tests can reason about the scan's supersession
@@ -141,6 +144,8 @@ export interface ReviewEntry {
   id: number;
   body: string;
   commit_id: string;
+  /** ISO 8601 time the review was submitted (Issue #2702). */
+  submitted_at?: string;
 }
 
 /** Check run entry from the GitHub API. */
@@ -657,7 +662,7 @@ async function fetchPrReviews(
       "api",
       `repos/${repo}/pulls/${prNumber}/reviews`,
       "--jq",
-      '[.[] | select(.state == "CHANGES_REQUESTED" and .body != "") | {login: .user.login, id: .id, body: .body, commit_id: .commit_id}]',
+      '[.[] | select(.state == "CHANGES_REQUESTED" and .body != "") | {login: .user.login, id: .id, body: .body, commit_id: .commit_id, submitted_at: .submitted_at}]',
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -897,7 +902,25 @@ export async function findPrCommentsToFix(
         }
       }
 
-      // Check PR reviews (CHANGES_REQUESTED)
+      // Check PR reviews (CHANGES_REQUESTED). The PR's commit history is read
+      // at most once, and only for a review that is not on the head.
+      let prCommits: CommitProvenance[] | null | undefined;
+      const reviewSupersededByFleetFix = async (
+        reviewSubmittedAt: string | undefined,
+      ): Promise<boolean> => {
+        if (prCommits === undefined) {
+          prCommits = await fetchPrCommitProvenance(
+            repo,
+            prNumber,
+            ghCommandFn,
+          );
+        }
+        return isReviewSupersededByFleetFix({
+          reviewSubmittedAt,
+          commits: prCommits,
+          fleetAuthors: scanAuthors,
+        });
+      };
       const reviews = await fetchPrReviews(repo, prNumber, ghCommandFn);
       for (const review of reviews) {
         if (!review.body) continue;
@@ -921,13 +944,26 @@ export async function findPrCommentsToFix(
           continue;
         }
 
-        // Skip if commits pushed since review
-        if (headRefOid && review.commit_id !== headRefOid) {
-          logger.debug("Skipping stale CHANGES_REQUESTED review", {
-            reviewId: review.id,
-            commitId: review.commit_id,
-            headSha: headRefOid,
-          });
+        // Issue #2702: the head moving is not the review being answered. A
+        // base merge and a bot's version bump moved GRQ#5032's head after the
+        // owner's review, and a `commit_id !== head` rule hid it for good.
+        // Only a fleet fix commit after the review supersedes it. A review on
+        // the current head cannot have been answered, so it costs no read.
+        if (
+          headRefOid && review.commit_id !== headRefOid &&
+          await reviewSupersededByFleetFix(review.submitted_at)
+        ) {
+          logger.info(
+            "Skipping CHANGES_REQUESTED review superseded by a fleet fix commit",
+            {
+              repo,
+              prNumber,
+              reviewId: review.id,
+              commitId: review.commit_id,
+              submittedAt: review.submitted_at,
+              headSha: headRefOid,
+            },
+          );
           continue;
         }
 

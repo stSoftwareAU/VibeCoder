@@ -1676,6 +1676,23 @@ function Invoke-VibeSetupMain {
     Invoke-VibeSetupCliOrExit -Arguments @("config")
     Write-VibeInteractiveConfig -Answers $answers
 
+    # Ask whether repo-settings-harden turns Copilot code review on, off, or
+    # leaves it (Issue #2701): each automatic review is billed to the PR
+    # author's Copilot plan or the organisation, even on a public repository.
+    # Defaults to this host's current answer (leave when unset) and never
+    # prompts without a terminal. Passthrough, so the question reaches the
+    # console instead of being captured into the condition. Non-fatal.
+    if ((Invoke-VibeSetupCliPassthrough -Arguments @("copilot-review-mode")) -ne 0) {
+        Write-VibeWarning "Copilot code review setting not recorded - see above (non-fatal)"
+    }
+
+    # Check the fleet token has the repo, workflow and read:org scopes and
+    # print the exact `gh auth refresh` command for any it lacks (Issues
+    # #1475, #2690). Read only; non-fatal.
+    if (-not (Invoke-VibeSetupCli -Arguments @("token-scope-preflight"))) {
+        Write-VibeWarning "The fleet token lacks a scope - see the fix above (non-fatal)"
+    }
+
     # Standardise labels across all monitored repos (Issue #864).
     if (-not (Invoke-VibeSetupCli -Arguments @("label-sync"))) {
         Write-VibeWarning "Some labels could not be synced (non-fatal)"
@@ -1707,9 +1724,17 @@ function Invoke-VibeSetupMain {
     }
 
     # Harden every monitored repo's GitHub settings, drift only (Issue #2628),
-    # including one approving review on the default branch (Issue #2680).
+    # including CodeQL default setup on public repos (Issue #2704 - only when
+    # not configured; a repo with its own CodeQL workflow is reported, never
+    # written), one approving review on the default branch (Issue #2680),
+    # merge commits with a squash-only default branch and fleet accounts held
+    # at write (Issue #2690), and Copilot code review on, off or left as
+    # copilot_code_review says (Issue #2701).
+    # The writes need repository admin, so it runs as your own gh login, not
+    # the fleet account in gh_config_dir, and says "needs an admin login" once
+    # without it (Issue #2685).
     if (-not (Invoke-VibeSetupCli -Arguments @("repo-settings-harden"))) {
-        Write-VibeWarning "Repo-settings hardening had issues - see the per-repository lines above (non-fatal)"
+        Write-VibeWarning "Repo-settings hardening had issues - see the per-repository lines above; it needs your own gh login to be a repository admin (non-fatal)"
     }
 
     # Back-fill `idle-task` label on existing security-scan wrappers (#2131).

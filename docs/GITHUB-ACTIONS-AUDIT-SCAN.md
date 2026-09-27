@@ -1167,8 +1167,10 @@ something (a hardened repository plans nothing), prints the plan by default
 and applies it under `--apply`: read-only default token and no approve-PRs;
 `sha_pinning_required`; `allowed_actions=selected` with GitHub-owned actions
 implicit and one `<owner>/<repo>@*` pattern per third-party action found in
-the checkout's workflows (`--work-dir`) **and per action those actions pull
-in** — a composite action's own `uses:` is enforced by the allow-list exactly
+the default branch's workflows and local composite actions
+(`.github/workflows/*.yml`, `.github/actions/**/action.yml`), read through the
+contents API so no checkout is needed (Issue #2685), **and per action those
+actions pull in** — a composite action's own `uses:` is enforced by the allow-list exactly
 like a workflow's, so `aquasecurity/trivy-action` needs
 `aquasecurity/setup-trivy@*` too (the command reads each
 third-party action's `action.yml` at its pinned ref via `gh api` and follows
@@ -1195,9 +1197,11 @@ history is a failed step, never a guess. This closes
 the default branch's pull-request rule: a PR that touches a path named in
 `.github/CODEOWNERS` — the workflows, actions and scripts, i.e. every
 unreviewed grant of CI credentials — also waits for an owner's approval. The
-code-owner rule is written to the fleet's own `Vibe Coder default branch`
-ruleset when it exists, otherwise to an active ruleset named after the
-default branch; with neither, the step fails naming both (Issue #2626).
+code-owner rule is written to the ruleset the default branch's
+`pull_request` rule comes from — found by the rule's `ruleset_id`, never by
+the ruleset's name (Issue #2685), preferring the fleet's own
+`Vibe Coder default branch` ruleset when several carry one; with no
+`pull_request` rule on the branch, the step fails naming the branch.
 `--require-reviews` is the retired spelling of `--require-code-owner-review`:
 it used to add the one-approval rule too, which is now always planned.
 Needs an admin token —
@@ -1210,10 +1214,9 @@ which a fleet-wide caller can reuse per repository (Issue #2626). It never
 throws: every fault is a `[failed]` line. A settings read that fails with
 anything but a 404 is reported as `[failed]` naming the endpoint, and nothing
 is planned from the missing value — an unreadable surface is never mistaken
-for an unhardened one. Without a local checkout (no `.git` in `--work-dir`)
-the allow-list step is reported as `[skipped] … — no local checkout` and no
-allow-list is written; a checkout that exists but cannot be probed or read is
-`[failed]`, never skipped. The same module exports
+for an unhardened one. A workflow directory or file that cannot be read
+(anything but a 404) fails the allow-list step alone, and no allow-list is
+written in its place. The same module exports
 `findCodeownersOnDefaultBranch(repo, gh)`, which checks `.github/CODEOWNERS`,
 `CODEOWNERS` and `docs/CODEOWNERS` and answers `present` (with the path),
 `absent` (all three 404) or `error` (any other failure).

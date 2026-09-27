@@ -28,7 +28,6 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { runGhCommand } from "../lib/github.ts";
 import { isValidRepoSlug } from "../lib/repo_rulesets.ts";
 import {
-  collectUsesReferences,
   hardenRepo,
   type HardenResult,
   isValidActionCoordinate,
@@ -39,18 +38,6 @@ export interface RepoSettingsHardenReport {
   repo: string;
   applied: boolean;
   results: HardenResult[];
-}
-
-/** Coordinates (`owner/repo`) of every `uses:` in the checkout's workflows. */
-export async function collectUsesCoordinates(
-  workDir: string,
-): Promise<string[]> {
-  const out = new Set<string>();
-  for (const reference of await collectUsesReferences(workDir)) {
-    const at = reference.indexOf("@");
-    out.add(at >= 0 ? reference.slice(0, at) : reference);
-  }
-  return [...out].sort();
 }
 
 /**
@@ -103,9 +90,6 @@ export const repoSettingsHardenCommand: Command = {
     // approval is now always planned (Issue #2680), leaving code-owner review.
     const requireCodeOwnerReview = args["require-code-owner-review"] === true ||
       args["require-reviews"] === true;
-    const workDir = typeof args["work-dir"] === "string"
-      ? args["work-dir"]
-      : Deno.cwd();
     let extraCoordinates: string[];
     try {
       extraCoordinates = parseAllowActionArg(args["allow-action"]);
@@ -118,7 +102,6 @@ export const repoSettingsHardenCommand: Command = {
     const outcome = await hardenRepo(repo, {
       apply,
       ghCommandFn: runGhCommand,
-      workDir,
       requireCodeOwnerReview,
       extraCoordinates,
     });
@@ -129,7 +112,10 @@ export const repoSettingsHardenCommand: Command = {
       (r.detail ? ` — ${r.detail}` : "")
     );
     // The exempted step is stated in the output, never silently absent.
-    const skipNote = outcome.skipNote ? `\n${outcome.skipNote}` : "";
+    const skipNote = [outcome.skipNote, outcome.codeqlSkipNote]
+      .filter((note) => note !== undefined)
+      .map((note) => `\n${note}`)
+      .join("");
     const message =
       (results.length === 0
         ? `${repo}: nothing to harden — every checked setting already holds.`
@@ -137,7 +123,7 @@ export const repoSettingsHardenCommand: Command = {
           apply ? "applied" : "planned (dry run; add --apply)"
         } ${results.length} step(s):\n${lines.join("\n")}` +
           (coordinates.length > 0
-            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${referenceCount} workflow reference(s) in ${workDir}` +
+            ? `\nAllow-list source: ${coordinates.length} action coordinate(s) from ${referenceCount} workflow reference(s) on the default branch` +
               (extraCoordinates.length > 0
                 ? ` plus --allow-action ${extraCoordinates.join(", ")}`
                 : "")

@@ -264,6 +264,65 @@ export interface GhTokenScopes {
 }
 
 /**
+ * The OAuth scopes the fleet's token needs (Issue #2690): `repo` to clone,
+ * push and open PRs, `workflow` to push `.github/workflows/` changes, and
+ * `read:org` for team and organisation reads.
+ */
+export const FLEET_TOKEN_SCOPES = ["repo", "workflow", "read:org"] as const;
+
+/** Broader scopes that carry a required one (GitHub's scope hierarchy). */
+const SCOPE_CARRIED_BY: Readonly<Record<string, readonly string[]>> = {
+  "read:org": ["write:org", "admin:org"],
+};
+
+/** What {@link assessFleetTokenScopes} found. */
+export type FleetTokenScopeAssessment =
+  /** A classic or OAuth token, with the required scopes it lacks. */
+  | { kind: "scoped"; missing: string[] }
+  /** A fine-grained PAT or GitHub App token: permissions, not scopes. */
+  | { kind: "fine-grained" }
+  /** No scope line at all (an older gh): nothing can be said. */
+  | { kind: "unknown" };
+
+/**
+ * Which of {@link FLEET_TOKEN_SCOPES} the token `gh auth status` describes
+ * lacks (Issue #2690).
+ *
+ * A fine-grained PAT (`github_pat_`) or an app token (`ghs_`, `ghu_`) has
+ * no scope list — GitHub grants it per-repository permissions instead — so
+ * it is never reported as missing every scope. Only the masked prefix `gh`
+ * prints is read; the token itself never is.
+ */
+export function assessFleetTokenScopes(
+  output: string,
+): FleetTokenScopeAssessment {
+  if (/Token:\s*(github_pat_|ghs_|ghu_)/.test(output)) {
+    return { kind: "fine-grained" };
+  }
+  if (!/Token scopes:/i.test(output)) return { kind: "unknown" };
+  const scopes = new Set(
+    parseGhAuthScopes(output).filter((s) => s.toLowerCase() !== "none"),
+  );
+  const missing = FLEET_TOKEN_SCOPES.filter((scope) =>
+    !scopes.has(scope) &&
+    !(SCOPE_CARRIED_BY[scope] ?? []).some((broader) => scopes.has(broader))
+  );
+  return { kind: "scoped", missing };
+}
+
+/**
+ * The exact command that adds `missing` to the fleet's token (Issue #2690),
+ * pointed at its gh config directory when it has its own.
+ */
+export function fleetTokenScopeRefreshCommand(
+  missing: readonly string[],
+  ghConfigDir?: string,
+): string {
+  const command = `gh auth refresh -h github.com -s ${missing.join(",")}`;
+  return ghConfigDir ? `GH_CONFIG_DIR="${ghConfigDir}" ${command}` : command;
+}
+
+/**
  * Detect the OAuth scopes attached to the active gh CLI token.
  *
  * Called from `run_core.sh` at startup so the operator can see in the log

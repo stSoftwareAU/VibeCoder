@@ -383,6 +383,7 @@ explicitly overridden.
 | `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` offers `frozen` as its default answer to a host being configured, and `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
 | `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
+| `copilot_code_review` | `leave` | Whether setup's `repo-settings-harden` turns Copilot code review `on` or `off` on every monitored repository, or leaves each as it is (`leave`, the default — an absent key means the same, so an existing host changes nothing). Copilot code review is **billed per review, never free — even on a public repository**: GitHub charges each automatic review to the PR author's Copilot plan, or to the organisation. `off` removes the `copilot_code_review` rule from every repository ruleset, deleting a ruleset it leaves empty; an organisation ruleset is reported, never edited. `on` makes sure a review rule applies to the default branch, creating a `Vibe Coder Copilot review` ruleset when none does. `./setup.sh` and `setup.ps1` ask the question (Issue #2701). Any other value fails loudly at config load, naming the accepted values. |
 | `agent_provider` | `claude` | Coding-agent provider id — `claude`, `codex`, `gemini` or `deepseek` (the Claude Code CLI installed under its own command and pointed at DeepSeek's Anthropic-compatible endpoint, so it takes a DeepSeek key and its per-phase model comes from `deepseek_model` / `deepseek_phase_model_overrides`). The provider seam (`worker/deno/lib/agent_provider.ts`) resolves the agent binary, its credential sub-directory, its child environment and its invocation from this id, and the container installs it from `container/providers/<id>.sh`. `VIBE_AGENT_PROVIDER` selects the provider on a host whose file states none; since 1.4.0 it no longer overrides the file (Issue #1032 — see [Release notes](RELEASE-NOTES.md#140--the-config-file-wins-over-the-environment)). An unsupported id fails loudly at startup, naming the supported providers. A per-repo pin (`repo_config.<repo>.agent_provider`, Issue #2048) scopes the choice to one repository: it binds when an invocation carries no explicit provider of its own, and wins over this global key and over `auto` ranking for that repo — Claude's behaviour is unchanged wherever no repo pins a provider. |
 | `agent_provider_mode` | `pinned` | Provider-selection strategy. `pinned` preserves the historical `agent_provider` behaviour. `auto` opts a mixed host into quota-aware selection before each work item; `agent_provider` becomes the preference tie-break and only enabled credentials proved to use fixed-price subscriptions are candidates. Explicit per-invocation selection remains absolute. While auto is enabled, `VIBE_AGENT_PROVIDER` is an emergency per-process pin and must name an enabled provider. If all eligible subscriptions are exhausted or unavailable, the worker waits rather than selecting metered or unknown billing. Currently Claude OAuth subscriptions and Codex ChatGPT subscriptions have status adapters; other providers are excluded from auto mode. See [Provider parity](PROVIDER-PARITY.md#routing-and-fallback). |
 | `agent_providers` | `["claude"]` | Coding-agent providers enabled for a run. Each enabled provider gets its own credential file (`<credential dir>/<id>/provider.env`), its own preflight check, and its own read-only container mount; a provider outside the set is never mounted, so no vendor can read another's secret. Must include `agent_provider` — a set that excludes the active provider fails loudly at startup. `VIBE_AGENT_PROVIDERS` (comma-separated) applies when the file states no set; since 1.4.0 it no longer overrides the file (Issue #1032). The set is also what the launcher builds the image with — it is passed as `--build-arg AGENT_PROVIDERS=<ids>` and mixed into the image tag (Issue #729), so a Codex-only deployment builds a Codex image instead of reusing the default Claude one. |
@@ -1748,7 +1749,6 @@ unless explicitly overridden.
 | Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. PR-feedback and CI-fix runs post no run-stats comment, so their outcome is on the run's result and in the worker log. Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. The rewrite hook is a Claude-CLI feature, so a run routed to **Codex, Gemini or DeepSeek** records RTK as `unsupported` and proceeds without it. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
-| brief toolchain | `brief_toolchain.enabled` | `false` | Whether the implementation run's codebase map asks [brief](https://github.com/git-pkgs/brief) for a Rust repository's Cargo commands (Issue #2603, trial #2581). Off unless a host asks for it: an unset or empty block spawns no brief, and the map, the run-stats comment and the callback are exactly as before apart from the callback's `brief` block reading `{"enabled": false, "status": "off"}`. While on, a checkout with a root `Cargo.toml` gains a `## Cargo commands (from brief)` block after the map's Commands section (see [Codebase Map](MODEL-AND-CACHING.md)); the map is rendered by both implementation paths — the `execute-claude-phase` CLI and the main-loop issue phase (Issue #2621) — so the PR-feedback and CI-fix paths do not take the switch. The run-stats comment carries one `Brief:` line after the `RTK:` line — `- **Brief:** ok (1.5s)`, `- **Brief:** ok (cached)`, ``- **Brief:** failed — `<reason>` ``, `- **Brief:** off — no Cargo.toml` — and no line at all while the switch is off; it is a status line, never a cost line. The post-run callbacks carry the additive `brief` block and `VIBECODER_BRIEF_ENABLED` — see [Callbacks](CALLBACKS.md). brief never fails a run: a missing binary, a non-zero exit or a timeout logs a warning, records `failed`, and the run completes with the map it had before the trial. The block accepts only `enabled`; a non-object block, a non-boolean `enabled` or **any other key** fails the config load naming `brief_toolchain`. The protocol the switch is judged by is the [brief trial](BRIEF-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
@@ -3226,9 +3226,8 @@ The same facts are exported as scalars, one variable each:
 `VIBECODER_GRAFT_QUERIES`, `VIBECODER_CODEGRAPH_ENABLED`, `VIBECODER_CODEGRAPH_STATUS`,
 `VIBECODER_CODEGRAPH_INDEX_SECONDS`, `VIBECODER_CODEGRAPH_NODE_COUNT`,
 `VIBECODER_CODEGRAPH_RELATIONSHIP_COUNT`, `VIBECODER_CODEGRAPH_QUERIES`,
-`VIBECODER_RTK_ENABLED`, `VIBECODER_RTK_STATUS`, `VIBECODER_RTK_SAVED_TOKENS`,
-`VIBECODER_BRIEF_ENABLED`. A
-cycle hook also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
+`VIBECODER_RTK_ENABLED`, `VIBECODER_RTK_STATUS`, `VIBECODER_RTK_SAVED_TOKENS`.
+A cycle hook also receives `VIBECODER_ISSUES_SCANNED`, `VIBECODER_CLAIMS_ATTEMPTED`,
 `VIBECODER_CLAIMS_TAKEN` and `VIBECODER_CYCLE_END_REASON`.
 
 The `graft` block (Issue #2104) is on **every** run context: `graft.enabled`
@@ -4770,9 +4769,10 @@ with `./run.sh` (or via cron/launchd as in the
 [Deployment Guide](DEPLOYMENT.md)); no environment variables needed at runtime.
 
 > 🔄 **Already deployed and need to switch to a different account?** See
-> Switching the Worker GitHub Identity for the
-> fleet-wide migration procedure (the `switch-worker-identity.sh` walkthrough,
-> draining old assignments, decommissioning the old account).
+> [Switching the Worker GitHub Identity](#-switching-the-worker-github-identity)
+> for the fleet-wide migration procedure (allowing the new account on every
+> host, replacing the container credential, draining the old account's PRs and
+> claims, retiring it).
 
 Two paths are stored in `.config.json`:
 
@@ -4986,6 +4986,197 @@ flowchart TD
     G -->|"no (drifted mid-run)"| Y["Refuse write — fail loud, no PR/issue"]
     G -->|"yes / inactive"| H["Create tracking issue + summary PR"]
 ```
+
+### 🔄 Switching the Worker GitHub Identity
+
+Moving a deployed fleet from one GitHub account to another (say `stsvcbot` to
+`vibebot`) is a documented procedure, not a script. Every step below is an
+ordinary `gh`, `ssh-keygen` or `./setup.sh` action, checked against the code it
+names.
+
+Two things make the order matter:
+
+- The worker holds the identity in **two places**. `gh_config_dir` in
+  `.config.json` is the host-side `gh` login, and
+  `~/.vibe-coder/credentials/gh/hosts.yml` is the copy the container is
+  given (read-only, then staged writable by `container/entrypoint.sh` and
+  [`gh_credential_stage.ts`](../worker/deno/lib/gh_credential_stage.ts)).
+  Inside the container git runs over HTTPS with that token, so the SSH key
+  never crosses into it; `ssh_key_path` serves host-side git.
+- The [identity guard](#-service-account-identity-guard) exits at startup
+  on any login not in `service_accounts`, and every sibling host decides
+  whether a PR is fleet work from the same lists. So the new account is
+  allowed **everywhere first**, and the old one is removed **everywhere
+  last**.
+
+```mermaid
+flowchart TD
+    A["1. Every host: add the new login<br/>to service_accounts (old stays)"] --> B["2. New SSH key per host<br/>→ ssh_key_path"]
+    B --> C["3. gh auth login as the new account<br/>in a fresh dir → gh_config_dir"]
+    C --> D["4. Move credentials/gh aside"]
+    D --> E["5. Run setup: copy offer,<br/>scope preflight, collaborator precheck"]
+    E --> F{"hosts.yml user =<br/>new login?"}
+    F -->|"no"| D
+    F -->|"yes"| G["Next run's PRs and comments<br/>carry the new author"]
+    G --> H{"Old account's open PRs<br/>and claims drained?"}
+    H -->|"not yet"| H
+    H -->|"yes"| I["6. Every host: remove the old login"]
+```
+
+#### Step 1: Allow the new account on every host first
+
+On **every** host, before any host switches, add the new login to
+`service_accounts` and keep the old one:
+
+```json
+{
+  "service_accounts": ["stsvcbot", "vibebot"]
+}
+```
+
+Edit `.config.json`, or pass the list to setup:
+`VIBE_SERVICE_ACCOUNTS="stsvcbot,vibebot" ./setup.sh` (the variable replaces
+the list, so name both). A host that has not yet switched still runs as
+`stsvcbot` and must accept `vibebot`'s PRs as fleet work, and a switched host
+running as `vibebot` must not fail the guard.
+
+`fleet_pr_authors` needs no separate edit: `loadConfig` unions
+`service_accounts` into the effective fleet PR authors
+([`fleet_authors.ts`](../worker/deno/lib/fleet_authors.ts),
+[Service accounts are fleet PR authors too](#service-accounts-are-fleet-pr-authors-too)).
+Listing the new login there as well is harmless.
+
+Give the new account **write** access to every monitored repository (an
+organisation invitation or a collaborator invitation, accepted as the new
+account). Write is enough: setup holds fleet accounts at write, never admin
+(Issue #2690, [Repository settings hardening](SETUP.md#repository-settings-hardening)).
+
+#### Step 2: A new SSH key per host
+
+A GitHub SSH key belongs to one account, so the old account's key cannot be
+reused. On each host, generate a key, add its public half to the new account,
+and point `ssh_key_path` at it — exactly
+[Step 1](#step-1-generate-a-dedicated-ssh-key) and
+[Step 2](#step-2-add-the-public-key-to-the-service-account-on-github) of the
+one-time setup above:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/vibebot_ed25519 -C "vibebot@$(hostname -s)" -N ""
+ssh -i ~/.ssh/vibebot_ed25519 -o IdentitiesOnly=yes -T git@github.com
+```
+
+#### Step 3: Log `gh` in as the new account
+
+Use a **fresh** directory, so the old login is left intact for a rollback and
+`gh` never holds two accounts in one config:
+
+```bash
+mkdir -p ~/.config/gh-vibebot
+GH_CONFIG_DIR=~/.config/gh-vibebot gh auth login -h github.com -p ssh -s repo,workflow,read:org
+GH_CONFIG_DIR=~/.config/gh-vibebot gh auth status
+```
+
+Then set `gh_config_dir` to `~/.config/gh-vibebot` in `.config.json` **by
+hand, before running setup**. Setup's offer to copy the identity into the
+credential directory reads `gh_config_dir` from the config file as it stands
+when setup starts, ahead of the prompts (`prompt_interactive_credentials` in
+`setup.sh`), so answering the prompt in the same run is too late for the copy.
+
+The scopes are the ones the token-scope preflight checks
+(`FLEET_TOKEN_SCOPES` in [`gh_auth.ts`](../worker/deno/lib/gh_auth.ts)):
+`repo` to clone, push and open PRs, `workflow` to push
+`.github/workflows/` changes, and `read:org` for team and organisation reads.
+A **fine-grained** token has no scope list; it needs Contents, Pull requests,
+Issues and Workflows (read and write) on every monitored repository, and
+Members (read) on the organisation.
+
+#### Step 4: Replace the container credential
+
+Setup **never overwrites an existing `hosts.yml`**. With one present and no
+token variable set it reports the credential directory "left unchanged", and
+the copy offer only appears when `hosts.yml` is missing (`setup.sh`,
+`provision_vibe_credentials` and `interactive_credentials_flow`). Move the old
+one aside first:
+
+```bash
+mv ~/.vibe-coder/credentials/gh ~/.vibe-coder/credentials/gh.stsvcbot
+```
+
+> **⚠️ Ambient tokens win.** If `VIBE_LAUNCHAGENT_GH_TOKEN` or `GH_TOKEN` is
+> set when setup runs, setup **does** rewrite `hosts.yml` — with that token's
+> account, whoever it is. Unset both (or set `VIBE_LAUNCHAGENT_GH_TOKEN` to the
+> new account's token deliberately) before Step 5.
+
+#### Step 5: Run setup and verify
+
+```bash
+./setup.sh
+```
+
+Answer **Y** to "Copy the worker gh identity from ~/.config/gh-vibebot into
+~/.vibe-coder/credentials/gh?". Setup extracts the token with `gh auth token`
+(the host login usually keeps it in the keychain, which the container cannot
+reach) and writes a self-contained, owner-only `hosts.yml`. The same run then
+does the checks that matter for a new account:
+
+- **token-scope preflight** — names any missing scope with the exact
+  `gh auth refresh` command, or lists the fine-grained permissions to check;
+- **collaborator precheck** — files one issue naming every monitored
+  repository the new account cannot reach, with the commands that grant it.
+
+Verify the credential the container will be given:
+
+```bash
+sed -n 's/^ *user: //p' ~/.vibe-coder/credentials/gh/hosts.yml
+```
+
+It must print the new login. (A token-only `hosts.yml`, with no `user:` line,
+means setup could not resolve the login; its warning says why.) The container
+mounts the credential directory at every launch, so the **next** run picks it
+up; a run already in flight finishes as the old account. Confirm on that run's
+first PR or comment that the author is the new account.
+
+**Windows (`setup.ps1`).** The same steps apply, with PowerShell equivalents.
+The credential lives at `%USERPROFILE%\.vibe-coder\credentials\gh\hosts.yml`
+(`Get-VibeCredentialDir`; `VIBE_CREDENTIAL_DIR` overrides it on either
+platform), and `setup.ps1` has the same never-overwrite rule and copy offer:
+
+```powershell
+$env:GH_CONFIG_DIR = "$env:USERPROFILE\.config\gh-vibebot"
+gh auth login -h github.com -p ssh -s repo,workflow,read:org
+Remove-Item Env:GH_CONFIG_DIR
+Move-Item "$env:USERPROFILE\.vibe-coder\credentials\gh" "$env:USERPROFILE\.vibe-coder\credentials\gh.stsvcbot"
+.\setup.ps1
+Select-String -Path "$env:USERPROFILE\.vibe-coder\credentials\gh\hosts.yml" -Pattern '^\s*user:'
+```
+
+#### Step 6: Retire the old account
+
+Keep the old login in `service_accounts` until nothing of its own is open —
+its PRs are still fleet PRs to be maintained and merged, and its claims are
+still fleet claims:
+
+```bash
+gh search prs --author stsvcbot --state open
+gh search issues --assignee stsvcbot --state open
+```
+
+When both are empty, remove it from `service_accounts` (and
+`fleet_pr_authors`, if you listed it there) on **every** host, then revoke its
+SSH keys and tokens and delete the moved-aside `gh.stsvcbot` directory.
+
+#### Consequences to expect
+
+- **Milestone sync becomes sync PRs.** An admin account could push a
+  milestone-branch sync straight past a `milestone/**` ruleset; a write
+  account cannot. A push the ruleset refuses now lands through a
+  `sync/milestone-*` PR, merged as a merge commit. That is by design
+  (Issue #2690), not a fault — see
+  [the sync PR](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
+- **One login, one API budget.** GitHub rate-limits per account, so every host
+  running as the new login shares its one REST and GraphQL budget. A fleet
+  that used to spread over two accounts now draws on one; see
+  [GH-API-OPTIMISATION.md](GH-API-OPTIMISATION.md).
 
 ## 📡 Monitored Repositories
 

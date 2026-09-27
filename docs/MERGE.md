@@ -632,9 +632,16 @@ deduplicated per PR so a repeating scan does not spam the thread. A failed
 branch update escalates too — a PR that cannot be brought up to date is exactly
 the stall this is meant to eliminate.
 
-Review requests are **informational**: nothing in the worker's merge path
-consults `reviewDecision`, so a requested reviewer never blocks a fix PR. Only
-branch protection can require an approval, and that is a per-repo setting.
+Review requests are **informational**: a requested reviewer never blocks a fix
+PR. Only branch protection can require an approval, and that is a per-repo
+setting. The one place `reviewDecision` is consulted is branch upkeep
+(Issue #2702): a PR at `CHANGES_REQUESTED` is **never branch-updated** — not by
+the auto-merge sweep's armed-and-behind rule (Issue #2462), nor by the
+Priority 1.6 branch-update pass. It cannot merge until the review is answered,
+so the update unblocks nothing, and on GRQ#5032 it moved the head underneath
+the owner's review. Both read the decision from a call they already make — the
+sweep's live `gh pr view`, the branch-update pass's batched GraphQL state — and
+log the skip at info.
 
 The scan lists PRs authored by the worker only, so **human-authored PRs are
 never commented on or escalated** by this path.

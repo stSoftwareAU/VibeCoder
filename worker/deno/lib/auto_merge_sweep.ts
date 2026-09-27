@@ -252,6 +252,23 @@ export async function sweepAutoMerge(
         // in pr_branch_update.ts: that pass owns unarmed branch upkeep for
         // its own candidates, while this one only unblocks an already-armed
         // merge. A conflicting PR is never updated — GitHub would refuse it.
+        //
+        // Issue #2702: nor is one a reviewer has blocked. It cannot merge
+        // until the review is answered, so the update unblocks nothing — and
+        // on GRQ#5032 it moved the head underneath the owner's review. The
+        // merge attempt is skipped too: auto-merge is already armed.
+        if (
+          reading.armed === true && reading.behind === true &&
+          reading.changesRequested === true
+        ) {
+          logger.info(
+            "Auto-merge sweep: armed PR is behind its base, but a reviewer " +
+              "requested changes (CHANGES_REQUESTED) — no branch update " +
+              "until the review is answered (Issue #2702)",
+            { repo, prNumber: pr.number },
+          );
+          continue;
+        }
         if (
           reading.armed === true && reading.behind === true &&
           reading.mergeable !== "CONFLICTING"

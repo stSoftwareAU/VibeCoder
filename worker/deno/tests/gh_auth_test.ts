@@ -9,7 +9,9 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  assessFleetTokenScopes,
   checkGhAuth,
+  fleetTokenScopeRefreshCommand,
   getGhTokenScopes,
   ghAuthActionableMessage,
   isGhAuthError,
@@ -359,4 +361,73 @@ Deno.test("gh_auth - checkGhAuth falls back to gh auth status when App not confi
     assertEquals(result.value.valid, true);
     assertEquals(result.value.message, "gh auth is valid");
   }
+});
+
+// =============================================================================
+// Fleet token-scope preflight (Issue #2690)
+// =============================================================================
+
+const statusWith = (token: string, scopes?: string) =>
+  [
+    "github.com",
+    "  ✓ Logged in to github.com account fleet-bot (keyring)",
+    "  - Active account: true",
+    "  - Git operations protocol: ssh",
+    `  - Token: ${token}`,
+    ...(scopes === undefined ? [] : [`  - Token scopes: ${scopes}`]),
+  ].join("\n");
+
+Deno.test("assessFleetTokenScopes - a classic token names each missing scope the fleet needs (Issue #2690)", () => {
+  assertEquals(
+    assessFleetTokenScopes(statusWith("gho_************", "'repo', 'gist'")),
+    { kind: "scoped", missing: ["workflow", "read:org"] },
+  );
+  assertEquals(
+    assessFleetTokenScopes(
+      statusWith("gho_****", "'read:org', 'repo', 'user', 'workflow'"),
+    ),
+    { kind: "scoped", missing: [] },
+  );
+});
+
+Deno.test("assessFleetTokenScopes - write:org or admin:org carries read:org (Issue #2690)", () => {
+  assertEquals(
+    assessFleetTokenScopes(
+      statusWith("ghp_****", "'admin:org', 'repo', 'workflow'"),
+    ),
+    { kind: "scoped", missing: [] },
+  );
+});
+
+Deno.test("assessFleetTokenScopes - a classic token with no scopes misses all three (Issue #2690)", () => {
+  assertEquals(
+    assessFleetTokenScopes(statusWith("ghp_****", "none")),
+    { kind: "scoped", missing: ["repo", "workflow", "read:org"] },
+  );
+});
+
+Deno.test("assessFleetTokenScopes - a fine-grained or app token has no scope list and is never reported as missing all of them (Issue #2690)", () => {
+  assertEquals(
+    assessFleetTokenScopes(statusWith("github_pat_****", "none")).kind,
+    "fine-grained",
+  );
+  assertEquals(
+    assessFleetTokenScopes(statusWith("ghs_****")).kind,
+    "fine-grained",
+  );
+  assertEquals(assessFleetTokenScopes(statusWith("gho_****")).kind, "unknown");
+});
+
+Deno.test("fleetTokenScopeRefreshCommand - the exact command, pointed at the fleet's gh config dir (Issue #2690)", () => {
+  assertEquals(
+    fleetTokenScopeRefreshCommand(
+      ["workflow", "read:org"],
+      "/h/.config/gh-vibe",
+    ),
+    'GH_CONFIG_DIR="/h/.config/gh-vibe" gh auth refresh -h github.com -s workflow,read:org',
+  );
+  assertEquals(
+    fleetTokenScopeRefreshCommand(["workflow"]),
+    "gh auth refresh -h github.com -s workflow",
+  );
 });

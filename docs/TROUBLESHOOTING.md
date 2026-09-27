@@ -771,7 +771,7 @@ escalated automatically.
 the next iteration reports healthy again — no operator action, no restart.
 
 **First thing to check — the worker identity** (see
-Switching the Worker GitHub Identity,):
+[Switching the Worker GitHub Identity](CONFIGURATION.md#-switching-the-worker-github-identity)):
 
 ```bash
 # Use the host's configured gh config dir if .config.json sets one.
@@ -783,7 +783,12 @@ gh issue list --repo <named repo> --limit 1
    expected service account, or the named repo 404s for it. On hosts with no
    `gh_config_dir` the ambient `gh` config is used, so a stray `gh auth switch`
    from any tooling on the host silently re-points the worker.
-   Re-authenticate with `./switch-worker-identity.sh --user <service-account>`.
+   Log `gh` back in as the service account in the configured
+   `gh_config_dir`, and check the container's copy with
+   `sed -n 's/^ *user: //p' ~/.vibe-coder/credentials/gh/hosts.yml`; if that
+   names the wrong account, replace it as in Steps 3 to 5 of
+   [Switching the Worker GitHub Identity](CONFIGURATION.md#-switching-the-worker-github-identity)
+   (there is no script for this).
 2. **Access never granted** — the repo is private, or newly added, and the
    service account is not a collaborator. Grant access, or remove the repo from
    the `repos` list in `.config.json`.

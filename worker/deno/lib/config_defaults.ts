@@ -11,7 +11,11 @@
  *   compile time and call sites no longer need `as WorkerConfig` rescue casts.
  */
 
-import type { UpdateMode, WorkerConfig } from "../types.ts";
+import type {
+  CopilotCodeReviewMode,
+  UpdateMode,
+  WorkerConfig,
+} from "../types.ts";
 import { DEFAULT_AGENT_PROVIDER_ID } from "./agent_provider.ts";
 import { DEFAULT_MIN_CLAIM_RUNWAY_SECONDS } from "./claim_runway.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
@@ -438,11 +442,6 @@ export const OPERATIONAL_DEFAULTS = {
    */
   rtkOutput: { enabled: true },
   /**
-   * The brief toolchain switch (Issue #2603, part of #2581). Off by default:
-   * on, a Rust repository's codebase map spawns brief, so a host opts in.
-   */
-  briefToolchain: { enabled: false },
-  /**
    * TTL in seconds for the issue-timeline cache used by label-author
    * checks (Issue #1673). Defaults to 5 minutes — shorter than the
    * 10-minute issues TTL because timelines mutate when labels are
@@ -673,6 +672,23 @@ export const DEFAULT_UPDATE_MODE: UpdateMode = "dynamic";
  * the meaning of a missing key.
  */
 export const SETUP_DEFAULT_UPDATE_MODE: UpdateMode = "frozen";
+
+/**
+ * Every `copilot_code_review` value a host may set (Issue #2701), named here
+ * so the validator and the setup conversation list the same three.
+ */
+export const COPILOT_CODE_REVIEW_MODES: readonly CopilotCodeReviewMode[] = [
+  "on",
+  "off",
+  "leave",
+];
+
+/**
+ * What an absent `copilot_code_review` means (Issue #2701): read and write
+ * nothing, so a host that never answered the question changes nothing, and
+ * setup offers it as the answer on a fresh host.
+ */
+export const DEFAULT_COPILOT_CODE_REVIEW: CopilotCodeReviewMode = "leave";
 
 /**
  * Tools whose exact version a frozen host pins (Issue #622, part of #583).
@@ -1579,7 +1595,6 @@ export function buildDefaultWorkerConfig(
       enabled: OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     },
     rtkOutput: { enabled: OPERATIONAL_DEFAULTS.rtkOutput.enabled },
-    briefToolchain: { enabled: OPERATIONAL_DEFAULTS.briefToolchain.enabled },
     timelineCacheTtlSeconds: OPERATIONAL_DEFAULTS.timelineCacheTtlSeconds,
     enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
     verbosity: DEFAULT_VERBOSITY,

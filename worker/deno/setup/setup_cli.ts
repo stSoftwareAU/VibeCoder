@@ -12,6 +12,7 @@
  * Subcommands:
  *   prerequisites      Check all prerequisites
  *   config             Write config from VIBE_* env vars
+ *   token-scope-preflight  Check the fleet token has repo, workflow and read:org
  *   agent-providers    Print the configured coding-agent provider ids
  *   launchagent        Setup macOS LaunchAgent
  *   scheduled-task     Register the Windows Task Scheduler entry
@@ -27,6 +28,7 @@
  *   repo-settings-harden  Harden every monitored repo's GitHub settings (drift only)
  *   repos              List monitored repositories; --add / --remove one (Issue #672)
  *   update-mode        Ask for the update mode, pinned ref and tool versions (Issue #626)
+ *   copilot-review-mode  Ask whether Copilot code review is on, off or left as is (Issue #2701)
  *   hooks              Install pre-commit hook and git exclude patterns
  *   all                Run full setup (default)
  *
@@ -48,6 +50,7 @@ import {
 } from "./container_runtime_install.ts";
 import {
   installPreCommitHook,
+  readCopilotCodeReviewSetting,
   removePrePushHook,
   runConfigSetup,
   updateGitInfoExclude,
@@ -76,15 +79,23 @@ import { syncBestPracticesForAllRepos } from "./best_practices_sync.ts";
 import { relabelBestPracticesForAllRepos } from "./best_practices_relabel.ts";
 import { syncGitignoreForAllRepos } from "./gitignore_sync.ts";
 import {
+  COLLABORATOR_PRECHECK_REPO,
   statusExplanation,
   verifyMonitoredCollaborators,
 } from "./collaborator_precheck.ts";
 import {
+  createWriteRepoAllowlistContext,
+  seedWriteRepoAllowlist,
+  withWriteRepoAllowlistContext,
+} from "../lib/write_repo_allowlist.ts";
+import {
   applyMilestoneSyncOutcomes,
   assessDefaultBranchAutoMerge,
   checkMilestoneRuleset,
+  fetchMilestonePrCheckSample,
   type GhJson,
   type MilestoneSyncOutcome,
+  type MilestoneSyncResult,
   readRulesetDetails,
   repairMilestoneRulesetCreateBlock,
   type RulesetDetail,
@@ -109,9 +120,15 @@ import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { loadExistingConfig, resolveCodeownersOwners } from "./config_setup.ts";
 import { syncCodeowners } from "./codeowners_sync.ts";
 import { runUpdateModeSetup } from "./update_mode_setup.ts";
+import { runCopilotReviewSetup } from "./copilot_review_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { runGhOrThrow } from "../lib/gh_spawn.ts";
-import { expandHome } from "./setup_command_runner.ts";
+import { expandHome, runSetupCommand } from "./setup_command_runner.ts";
+import {
+  assessFleetTokenScopes,
+  FLEET_TOKEN_SCOPES,
+  fleetTokenScopeRefreshCommand,
+} from "../lib/gh_auth.ts";
 import { readConfiguredRunMode } from "../commands/run_mode.ts";
 
 // ── Colour helpers ──────────────────────────────────────────────────────
@@ -395,6 +412,27 @@ async function runConfig(configPath: string): Promise<boolean> {
     printWarning(warning);
   }
   return result.ok;
+}
+
+/**
+ * `copilot-review-mode`: ask whether `repo-settings-harden` turns Copilot
+ * code review on, off, or leaves it, and record the answer in `.config.json`
+ * (Issue #2701). `setup.sh` and `setup.ps1` run it before the hardening step
+ * that applies it.
+ */
+async function runCopilotReviewMode(configPath: string): Promise<boolean> {
+  const result = await runCopilotReviewSetup({ configPath });
+  if (!result.ok) {
+    printError(result.error.message);
+    return false;
+  }
+  const { mode, changed, prompted } = result.value;
+  if (!prompted) {
+    printInfo(`Copilot code review left at ${mode} (no terminal to ask at).`);
+  } else if (changed) {
+    printSuccess(`Recorded copilot_code_review: ${mode} in ${configPath}.`);
+  }
+  return true;
 }
 
 /**
@@ -1037,10 +1075,17 @@ function liveMilestoneSeams(ghConfigDir?: string): MilestoneReportSeams {
   };
 }
 
+/** What a sync learned about the checks, for the lines it prints. */
+type MilestoneCheckEvidence = Pick<
+  MilestoneSyncResult & { ok: true },
+  "mirrored" | "dropped" | "sampled" | "substituted"
+>;
+
 /** Print the one line each sync outcome earns (Issue #2623). */
 function printMilestoneSyncOutcome(
   repo: string,
   outcome: MilestoneSyncOutcome,
+  evidence: MilestoneCheckEvidence,
   print: MilestoneReportSeams["print"],
 ): void {
   switch (outcome.kind) {
@@ -1048,7 +1093,7 @@ function printMilestoneSyncOutcome(
       print(
         "success",
         `${repo}: created the '${outcome.ruleset}' ruleset on ` +
-          `\`milestone/**\` ${describeTemplateChecks(outcome.body)}`,
+          `\`milestone/**\` ${describeTemplateChecks(outcome.body, evidence)}`,
       );
       return;
     case "aligned":
@@ -1056,7 +1101,7 @@ function printMilestoneSyncOutcome(
         "success",
         `${repo}: aligned ruleset '${outcome.previousName}' to the ` +
           `'${outcome.ruleset}' template ` +
-          `${describeTemplateChecks(outcome.body)}`,
+          `${describeTemplateChecks(outcome.body, evidence)}`,
       );
       return;
     case "failed":
@@ -1076,14 +1121,42 @@ function printMilestoneSyncOutcome(
   }
 }
 
-/** "requiring N check(s)", or why it requires none. */
-function describeTemplateChecks(body: RulesetBody): string {
+/** The clause naming the default-branch checks `milestone/**` leaves off. */
+function droppedChecksClause(dropped: readonly string[]): string {
+  return `not requiring ${dropped.join(", ")} — no merged milestone PR ` +
+    `reports them, so requiring them would hold every milestone PR BLOCKED ` +
+    `(Issue #2684)`;
+}
+
+/** "requiring N check(s)", what was left off, or why it requires none. */
+function describeTemplateChecks(
+  body: RulesetBody,
+  evidence: MilestoneCheckEvidence,
+): string {
   const count = body.rules.find(isRequiredStatusChecksRule)?.parameters
     .required_status_checks.length ?? 0;
-  return count > 0
-    ? `requiring ${count} check(s) mirrored from the default branch`
-    : `with deletion and force-push protection only — the default branch ` +
-      `requires no checks to mirror`;
+  const dropped = evidence.dropped.length > 0
+    ? `; ${droppedChecksClause(evidence.dropped)}`
+    : "";
+  if (count > 0 && evidence.substituted.length > 0) {
+    return `requiring ${count} check(s) every merged milestone PR reports ` +
+      `(${evidence.substituted.join(", ")}) in place of the default ` +
+      `branch's, none of which a milestone PR runs${dropped}`;
+  }
+  if (count > 0) {
+    return `requiring ${count} check(s) mirrored from the default branch` +
+      dropped;
+  }
+  if (evidence.mirrored.length === 0) {
+    return `with deletion and force-push protection only — the default ` +
+      `branch requires no checks to mirror`;
+  }
+  if (!evidence.sampled) {
+    return `with deletion and force-push protection only — no merged ` +
+      `milestone PR has reported checks yet, so none of the default ` +
+      `branch's are required until one has (a later setup run adds them)`;
+  }
+  return `with deletion and force-push protection only${dropped}`;
 }
 
 /**
@@ -1112,11 +1185,19 @@ export async function reportMilestoneRuleset(
 ): Promise<number> {
   const { repo, branch } = result;
 
+  // One sample of what merged milestone PRs report, shared by the sync and
+  // the check, so the ruleset setup writes and the findings it prints are
+  // judged against the same evidence (Issue #2684).
+  const sample = await fetchMilestonePrCheckSample(
+    repo,
+    seams.ghFor("service-account"),
+  );
+
   let current: readonly RulesetDetail[] = rulesets;
   const sync = await syncMilestoneRuleset(
     repo,
     seams.ghFor("operator"),
-    branch ? { defaultBranch: branch } : {},
+    { ...(branch ? { defaultBranch: branch } : {}), sample },
   );
   if (!sync.ok) {
     seams.print(
@@ -1125,8 +1206,18 @@ export async function reportMilestoneRuleset(
         `${sync.error.message}`,
     );
   } else {
+    let named = false;
     for (const outcome of sync.outcomes) {
-      printMilestoneSyncOutcome(repo, outcome, seams.print);
+      printMilestoneSyncOutcome(repo, outcome, sync, seams.print);
+      named ||= outcome.kind === "created" || outcome.kind === "aligned";
+    }
+    // No write this run, but the checks left off are still worth one line:
+    // they are why `milestone/**` requires less than the default branch.
+    if (!named && sync.dropped.length > 0) {
+      seams.print(
+        "info",
+        `${repo}: \`milestone/**\` is ${droppedChecksClause(sync.dropped)}`,
+      );
     }
     current = applyMilestoneSyncOutcomes(rulesets, sync.outcomes);
   }
@@ -1135,7 +1226,7 @@ export async function reportMilestoneRuleset(
     repo,
     login,
     seams.ghFor("service-account"),
-    { rulesets: current },
+    { rulesets: current, reportedChecks: sample.union },
   );
 
   // Issue #2067: a `milestone/**` ruleset that enforces its required checks
@@ -1318,10 +1409,8 @@ async function runBranchProtectionSync(configPath: string): Promise<boolean> {
     );
     if (milestoneRulesetErrors > 0) {
       printWarning(
-        `${milestoneRulesetErrors} repo(s) gate \`milestone/**\` against the ` +
-          `service account, which is the intended policy — but the milestone ` +
-          `branch sync still pushes directly, so it fails there until the ` +
-          `sync raises a pull request instead (Issue #589).`,
+        `${milestoneRulesetErrors} error(s) in the \`milestone/**\` ` +
+          `configuration above — each names what to change.`,
       );
     }
     // Per-repo failures are non-fatal but signalled so setup.sh prints its
@@ -1374,13 +1463,114 @@ async function runBackfillIdleTaskLabels(configPath: string): Promise<boolean> {
   }
 }
 
+/** Seams for {@link reportFleetTokenScopes}. */
+export interface TokenScopeDeps {
+  /** Runs `gh` with `GH_CONFIG_DIR` set to `ghConfigDir` when given. */
+  runGh(
+    args: string[],
+    ghConfigDir?: string,
+  ): Promise<{ success: boolean; output: string }>;
+  log(line: string): void;
+  warn(line: string): void;
+}
+
+/**
+ * Check the fleet token on this host has the scopes the fleet needs
+ * (Issue #2690) and print the exact command that adds any it lacks. Read
+ * only: `gh auth status` prints a masked token, and only its prefix is read.
+ * `false` when a scope is missing or the token cannot be read.
+ */
+export async function reportFleetTokenScopes(
+  ghConfigDir: string | undefined,
+  deps: TokenScopeDeps,
+): Promise<boolean> {
+  const where = ghConfigDir ? `the token in ${ghConfigDir}` : "the gh token";
+  const status = await deps.runGh(
+    ["auth", "status", "-h", "github.com"],
+    ghConfigDir,
+  );
+  if (!status.success) {
+    deps.warn(
+      `Could not read ${where}: gh auth status failed. Log it in with ` +
+        `${
+          ghConfigDir ? `GH_CONFIG_DIR="${ghConfigDir}" ` : ""
+        }gh auth login -h github.com -s ${FLEET_TOKEN_SCOPES.join(",")}`,
+    );
+    return false;
+  }
+  const assessment = assessFleetTokenScopes(status.output);
+  if (assessment.kind === "fine-grained") {
+    deps.log(
+      `${where} is fine-grained or an app token, with no scope list: make ` +
+        "sure it grants Contents, Pull requests, Issues and Workflows " +
+        "(read and write) on every monitored repository, and Members (read) " +
+        "on the organisation.",
+    );
+    return true;
+  }
+  if (assessment.kind === "unknown") {
+    deps.log(`gh printed no scope list for ${where}; scopes not checked.`);
+    return true;
+  }
+  if (assessment.missing.length === 0) {
+    deps.log(`${where} has the ${FLEET_TOKEN_SCOPES.join(", ")} scopes.`);
+    return true;
+  }
+  deps.warn(
+    `${where} lacks the ${assessment.missing.join(", ")} scope(s)` +
+      (assessment.missing.includes("workflow")
+        ? ": pushes that create or update .github/workflows/ are rejected " +
+          "and the worker skips workflow issues"
+        : "") +
+      `. Fix: ${
+        fleetTokenScopeRefreshCommand(assessment.missing, ghConfigDir)
+      } (then re-run setup so gh/hosts.yml is re-provisioned).`,
+  );
+  return false;
+}
+
+/** The `token-scope-preflight` subcommand (Issue #2690). */
+async function runTokenScopePreflight(configPath: string): Promise<boolean> {
+  try {
+    const config = await loadExistingConfig(configPath);
+    return await reportFleetTokenScopes(expandHome(config.gh_config_dir), {
+      runGh: async (args, dir) => {
+        const r = await runSetupCommand(["gh", ...args], dir);
+        return { success: r.success, output: `${r.stdout}\n${r.stderr}` };
+      },
+      log: printSuccess,
+      warn: printWarning,
+    });
+  } catch (error) {
+    printWarning(
+      `Token-scope preflight failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return false;
+  }
+}
+
 /**
  * Harden every monitored repo's GitHub settings, writing only what drifted
- * (Issue #2628). Same admin `gh_config_dir` seam as the ruleset sync, same
- * `WORK_DIR` as the gitignore sync. Non-fatal: `false` when a repo failed.
+ * (Issue #2628). Non-fatal: `false` when a repo failed.
+ *
+ * Runs as the `operator` identity (Issue #2685): the operator's own `gh`
+ * login, which is the only one that can hold the admin these writes need.
+ * The fleet account in `gh_config_dir` holds `write` by design, so it was
+ * refused on every repository. `dryRun` is required, not defaulted, so a
+ * caller cannot drop it on the floor again: `--dry-run` once applied 34 real
+ * changes because this step never received it.
  */
-async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
-  printInfo("Hardening repository settings on monitored repositories...");
+async function runRepoSettingsHardenStep(
+  configPath: string,
+  dryRun: boolean,
+): Promise<boolean> {
+  printInfo(
+    `Hardening repository settings on monitored repositories${
+      dryRun ? " (dry run — nothing is written)" : ""
+    }...`,
+  );
 
   try {
     const config = await loadExistingConfig(configPath);
@@ -1389,13 +1579,22 @@ async function runRepoSettingsHardenStep(configPath: string): Promise<boolean> {
       printWarning("No repos configured — skipping repo-settings hardening");
       return true;
     }
-    const ghConfigDir = config.gh_config_dir
-      ? config.gh_config_dir.replace(/^~/, Deno.env.get("HOME") ?? "~")
-      : undefined;
     const workDir = setupWorkDir();
+    // Fail loud on a value that is not on/off/leave (Issue #2701): read as
+    // `leave`, a typo would keep billing a host that asked for `off`.
+    const copilot = await readCopilotCodeReviewSetting(configPath);
+    if (!copilot.ok) {
+      printWarning(`Repo-settings hardening skipped: ${copilot.error.message}`);
+      return false;
+    }
 
-    return await runRepoSettingsHarden(config, {
-      ghCommandFn: createSetupGhJson(ghConfigDir),
+    return await runRepoSettingsHarden({
+      ...config,
+      copilot_code_review: copilot.value,
+    }, {
+      // No `gh_config_dir`: the operator's own login (Issue #2685).
+      ghCommandFn: createSetupGhJson(),
+      dryRun,
       workDir,
       owners: resolveCodeownersOwners(config, configPath),
       syncCodeowners,
@@ -1436,10 +1635,78 @@ export const RUN_ALL_REPO_STEPS: ReadonlyArray<{
   { name: "branch-protection-sync", run: runBranchProtectionSync },
   // Repo-settings hardening (Issue #2628), once the ruleset it may add
   // code-owner review to exists. Setup-time only.
-  { name: "repo-settings-harden", run: runRepoSettingsHardenStep },
+  {
+    name: "repo-settings-harden",
+    run: (p) => runRepoSettingsHardenStep(p, false),
+  },
   // Back-fill the `idle-task` label on security-scan wrappers (Issue #2131).
   { name: "backfill-idle-task-labels", run: runBackfillIdleTaskLabels },
 ];
+
+/**
+ * The subcommands that write to the monitored repos, and so run inside
+ * {@link withSetupWriteScope} (Issue #2684). `setup.sh` and `setup.ps1` run
+ * each repo-side step as its own subcommand, so the scope is applied at
+ * dispatch rather than inside `runAll` alone.
+ */
+export const SETUP_WRITE_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  ...RUN_ALL_REPO_STEPS.map((step) => step.name),
+  "label-colour-reconcile",
+  "best-practices-relabel",
+]);
+
+/**
+ * Run `fn` with the write-repo allowlist seeded from the configured repos
+ * (Issue #2684).
+ *
+ * Setup is its own process, and nothing in it seeded the allowlist, so every
+ * write it made logged `[SECURITY] [WRITE_REPO_UNSEEDED]` (Issue #1425).
+ * Setup writes to the monitored repos by design, and to VibeCoder for its
+ * collaborator-precheck issue, so those are what it may write to; anything
+ * else is refused at the `spawnGh` chokepoint.
+ *
+ * The seed lives in a fresh context, so the process default — and the
+ * fail-open accounting every other caller relies on — is untouched. With no
+ * configured repos (or a config that cannot be read, which the step itself
+ * reports) there is nothing to seed and `fn` runs as before.
+ */
+export async function withSetupWriteScope<T>(
+  configPath: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let repos: string[] = [];
+  try {
+    repos = (await loadExistingConfig(configPath)).repos ?? [];
+  } catch {
+    // The step loads the same file and reports why it could not.
+  }
+  if (repos.length === 0) return await fn();
+  return await withWriteRepoAllowlistContext(
+    createWriteRepoAllowlistContext(),
+    () => {
+      seedWriteRepoAllowlist(COLLABORATOR_PRECHECK_REPO, ...repos);
+      return fn();
+    },
+  );
+}
+
+/**
+ * Run the repo-side steps in order, each inside {@link withSetupWriteScope}.
+ *
+ * Scoped per step because a step reads the config afresh, and `runAll` writes
+ * the config before the first of them.
+ */
+export async function runRepoSteps(
+  configPath: string,
+  steps: ReadonlyArray<{
+    name: string;
+    run(configPath: string): Promise<boolean>;
+  }> = RUN_ALL_REPO_STEPS,
+): Promise<void> {
+  for (const step of steps) {
+    await withSetupWriteScope(configPath, () => step.run(configPath));
+  }
+}
 
 async function runAll(
   scriptDir: string,
@@ -1453,8 +1720,9 @@ async function runAll(
   // 2. Config
   await runConfig(configPath);
 
-  // 3–7. Repository sync phases, each non-fatal, in RUN_ALL_REPO_STEPS order.
-  for (const step of RUN_ALL_REPO_STEPS) await step.run(configPath);
+  // 3–7. Repository sync phases, each non-fatal, in RUN_ALL_REPO_STEPS order,
+  // each with setup's writes scoped to the configured repos (Issue #2684).
+  await runRepoSteps(configPath);
 
   // 8. Hooks
   await runHooks(scriptDir);
@@ -1556,6 +1824,31 @@ async function runRepos(
   return true;
 }
 
+/**
+ * The subcommands that honour `--dry-run` (Issue #2685). Every other one
+ * would write for real, so it refuses the flag rather than ignore it.
+ */
+export const DRY_RUN_SUBCOMMANDS: readonly string[] = [
+  // Read only: it writes nothing, dry run or not (Issue #2690).
+  "token-scope-preflight",
+  "label-sync",
+  "label-colour-reconcile",
+  "best-practices-relabel",
+  "repo-settings-harden",
+];
+
+/**
+ * Why `subcommand` refuses `--dry-run`, or `undefined` when it honours it
+ * (Issue #2685). A dry run that writes is worse than no dry run: the
+ * operator believes nothing changed.
+ */
+export function dryRunRefusal(subcommand: string): string | undefined {
+  if (DRY_RUN_SUBCOMMANDS.includes(subcommand)) return undefined;
+  return `--dry-run is not supported by '${subcommand}' — it would write ` +
+    `for real, so nothing was run. Subcommands with a dry run: ` +
+    `${DRY_RUN_SUBCOMMANDS.join(", ")}.`;
+}
+
 function usage(): void {
   console.log(
     `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
@@ -1564,6 +1857,9 @@ Subcommands:
   prerequisites   Check all prerequisites (--auto-install consents in advance
                   to every offered install — Issue #33)
   config          Write config from VIBE_* env vars
+  token-scope-preflight  Check the fleet token (gh_config_dir) has the repo,
+                  workflow and read:org scopes, printing the gh auth refresh
+                  command for any it lacks (read only — Issue #2690)
   agent-providers Print the configured coding-agent provider ids, one per line
                   (Issue #730 — setup.sh runs each one's credential flow)
   launchagent     Setup macOS LaunchAgent (--status / --uninstall to query or remove it)
@@ -1579,13 +1875,20 @@ Subcommands:
   verify-monitored-collaborator  Precheck worker collaborator access on every repo
   branch-protection-sync  Apply the default-branch ruleset to every monitored repo
   repo-settings-harden  Harden every monitored repo's GitHub settings, writing only drift
+                  (runs as your own gh login, which needs repository admin;
+                  supports --dry-run)
   backfill-idle-task-labels  Apply idle-task label to existing security-scan wrappers
   repos           List monitored repositories (--add owner/repo, --remove owner/repo)
   update-mode     Ask for the update mode (dynamic/frozen) and, when frozen,
                   the pinned ref and the exact Claude CLI / gh / Deno versions
+  copilot-review-mode  Ask whether repo-settings-harden turns Copilot code
+                  review on, off, or leaves it (billed per review — Issue #2701)
   hooks           Install pre-commit hook and git exclude patterns
   scheduled-task  Register the Windows Task Scheduler entry (--status / --uninstall to query or remove it)
-  all             Run full setup (default)`,
+  all             Run full setup (default)
+
+--dry-run is refused by every subcommand that does not support it: it would
+write for real.`,
   );
 }
 
@@ -1646,83 +1949,105 @@ if (import.meta.main) {
 
   let ok = true;
 
-  switch (subcommand) {
-    case "prerequisites":
-      ok = await runPrerequisites(scriptDir, configPath, autoInstall);
-      break;
-    case "config":
-      ok = await runConfig(configPath);
-      break;
-    case "agent-providers":
-      ok = await runAgentProviders(configPath);
-      break;
-    case "launchagent":
-      ok = status
-        ? await runLaunchAgentStatus()
-        : uninstall
-        ? await runLaunchAgentRemoval()
-        : await runLaunchAgentSetup(scriptDir);
-      break;
-    case "scheduled-task":
-      ok = status
-        ? await runScheduledTaskStatus()
-        : uninstall
-        ? await runScheduledTaskRemoval()
-        : await runScheduledTaskSetup(scriptDir, powershell);
-      break;
-    case "screenshot":
-      ok = await runScreenshotSetup(scriptDir);
-      break;
-    case "label-sync":
-      ok = await runLabelSync(configPath, dryRun);
-      break;
-    case "label-colour-reconcile":
-      ok = await runLabelColourReconcile(configPath, dryRun);
-      break;
-    case "workflow-sync":
-      ok = await runWorkflowSync(configPath);
-      break;
-    case "best-practices-sync":
-      ok = await runBestPracticesSync(configPath);
-      break;
-    case "best-practices-relabel":
-      ok = await runBestPracticesRelabel(configPath, dryRun);
-      break;
-    case "gitignore-sync":
-      ok = await runGitignoreSync(configPath);
-      break;
-    case "verify-monitored-collaborator":
-      ok = await runVerifyCollaborator(configPath);
-      break;
-    case "branch-protection-sync":
-      ok = await runBranchProtectionSync(configPath);
-      break;
-    case "repo-settings-harden":
-      ok = await runRepoSettingsHardenStep(configPath);
-      break;
-    case "backfill-idle-task-labels":
-      ok = await runBackfillIdleTaskLabels(configPath);
-      break;
-    case "repos":
-      ok = await runRepos(configPath, addRepo, removeRepo);
-      break;
-    case "update-mode":
-      ok = await runUpdateMode(scriptDir, configPath);
-      break;
-    case "hooks":
-      ok = await runHooks(scriptDir);
-      break;
-    case "all":
-      ok = await runAll(scriptDir, configPath, autoInstall);
-      break;
-    case "--help":
-    case "-h":
-      usage();
-      break;
-    default:
-      printError(`Unknown subcommand: ${subcommand}`);
-      usage();
-      ok = false;
+  const refusal = dryRun ? dryRunRefusal(subcommand) : undefined;
+  if (refusal) {
+    printError(refusal);
+    Deno.exit(1);
+  }
+
+  const dispatch = async (): Promise<void> => {
+    switch (subcommand) {
+      case "prerequisites":
+        ok = await runPrerequisites(scriptDir, configPath, autoInstall);
+        break;
+      case "config":
+        ok = await runConfig(configPath);
+        break;
+      case "agent-providers":
+        ok = await runAgentProviders(configPath);
+        break;
+      case "token-scope-preflight":
+        ok = await runTokenScopePreflight(configPath);
+        break;
+      case "launchagent":
+        ok = status
+          ? await runLaunchAgentStatus()
+          : uninstall
+          ? await runLaunchAgentRemoval()
+          : await runLaunchAgentSetup(scriptDir);
+        break;
+      case "scheduled-task":
+        ok = status
+          ? await runScheduledTaskStatus()
+          : uninstall
+          ? await runScheduledTaskRemoval()
+          : await runScheduledTaskSetup(scriptDir, powershell);
+        break;
+      case "screenshot":
+        ok = await runScreenshotSetup(scriptDir);
+        break;
+      case "label-sync":
+        ok = await runLabelSync(configPath, dryRun);
+        break;
+      case "label-colour-reconcile":
+        ok = await runLabelColourReconcile(configPath, dryRun);
+        break;
+      case "workflow-sync":
+        ok = await runWorkflowSync(configPath);
+        break;
+      case "best-practices-sync":
+        ok = await runBestPracticesSync(configPath);
+        break;
+      case "best-practices-relabel":
+        ok = await runBestPracticesRelabel(configPath, dryRun);
+        break;
+      case "gitignore-sync":
+        ok = await runGitignoreSync(configPath);
+        break;
+      case "verify-monitored-collaborator":
+        ok = await runVerifyCollaborator(configPath);
+        break;
+      case "branch-protection-sync":
+        ok = await runBranchProtectionSync(configPath);
+        break;
+      case "repo-settings-harden":
+        ok = await runRepoSettingsHardenStep(configPath, dryRun);
+        break;
+      case "backfill-idle-task-labels":
+        ok = await runBackfillIdleTaskLabels(configPath);
+        break;
+      case "repos":
+        ok = await runRepos(configPath, addRepo, removeRepo);
+        break;
+      case "update-mode":
+        ok = await runUpdateMode(scriptDir, configPath);
+        break;
+      case "copilot-review-mode":
+        ok = await runCopilotReviewMode(configPath);
+        break;
+      case "hooks":
+        ok = await runHooks(scriptDir);
+        break;
+      case "all":
+        ok = await runAll(scriptDir, configPath, autoInstall);
+        break;
+      case "--help":
+      case "-h":
+        usage();
+        break;
+      default:
+        printError(`Unknown subcommand: ${subcommand}`);
+        usage();
+        ok = false;
+    }
+  };
+
+  // Issue #2684: a subcommand that writes to the monitored repos does so with
+  // the write-repo allowlist seeded from them.
+  if (SETUP_WRITE_SUBCOMMANDS.has(subcommand)) {
+    await withSetupWriteScope(configPath, dispatch);
+  } else {
+    await dispatch();
   }
 
   if (!ok) Deno.exit(1);

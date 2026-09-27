@@ -14,9 +14,11 @@
  * patterns below key on command shapes (argument arrays, shell command
  * positions), not on mentions.
  *
- * Setup-time code (`setup.sh`, `worker/deno/setup/`, `switch-worker-identity.sh`)
- * is out of scope by design: an operator running setup at a terminal may log in
- * interactively; the worker never may.
+ * Setup-time code (`setup.sh`, `setup.ps1`, `worker/deno/setup/`) is out of
+ * scope by design: an operator running setup at a terminal may log in
+ * interactively; the worker never may. Switching the worker's GitHub identity
+ * is the same kind of operator step, done by hand (docs/CONFIGURATION.md,
+ * "Switching the Worker GitHub Identity").
  *
  * Australian English spelling throughout (behaviour, authorised, organisation).
  */
