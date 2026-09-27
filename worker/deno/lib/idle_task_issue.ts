@@ -229,8 +229,9 @@ export function findOpenIdleTaskWrappers(
  * Cross-repo dedup query (Issue #2092). Returns the first open
  * `idle-task`-labelled issue found anywhere in `repos`, or `null` when the
  * entire set is confirmed clean. Throws when no wrapper was found but at least
- * one repo's lookup failed (Issue #2750) — an unknown repo is never clean. The first match in caller order wins — the result is
- * deterministic for a fixed input list, and the scan stops at it.
+ * one repo's lookup failed (Issue #2750) — an unknown repo is never clean. The
+ * first match in caller order wins — the result is deterministic for a fixed
+ * input list, and the scan stops at it.
  *
  * This answers "does the monitored set hold **any** wrapper?". It is no
  * longer what gates filing — see {@link findOpenIdleTaskWrappers} for why —

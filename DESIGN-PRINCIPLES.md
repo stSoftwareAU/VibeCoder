@@ -1471,7 +1471,10 @@ repos via the idle-task framework:
    Each exclusion is logged (`action=skipped reason=existing_wrapper_open
    scope=repo`) naming the repo and the issue that held it: a slot that
    declines to file must say so, because a silent refusal is how a fleet-wide
-   cap of one went unnoticed for a week.
+   cap of one went unnoticed for a week. The census fails closed (Issue
+   #2750): a repo whose lookup fails is unknown, never clean, so it is
+   subtracted too (`reason=lookup_failed`), and a census that throws files
+   nothing that tick.
 
    Filing is then gated on **capacity rather than existence**. The command
    counts the monitored repos holding startable
