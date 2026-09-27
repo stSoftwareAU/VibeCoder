@@ -1567,8 +1567,8 @@ flowchart TD
   an open wrapper. A forced sweep logs
   `[idle-task] repo=<repo> issue=<n> action=forced`, naming the open issue it
   bypassed. Only the three raise commands below expose it, as `--force`
-  (Issue #2753); `create-all-idle-task-wrappers`, `seed-idle-tasks` and
-  `add-repo` never force.
+  (Issue #2753); the `create-all-idle-task-wrappers`,
+  `process-seed-idle-tasks` and `process-add-repo` commands never force.
 
 Run it from the repository root so the template body builders can resolve their
 cwd-relative prompt paths (e.g. `prompts/best_practices/buckets/general.md`).
