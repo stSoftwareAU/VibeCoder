@@ -104,4 +104,4 @@ flowchart TD
 - [x] `deno task test:unit` on the touched test files (raise-all, Boy Scout, raise-single, lib and command tests)
 - [x] `deno fmt --check`, `deno lint`, `deno check` on the changed TS files
 - [x] `markdownlint-cli2` on the changed docs
-- [ ] `./quality.sh`
+- [x] `./quality.sh` — PASSED (config integration skipped)
