@@ -412,10 +412,7 @@ export interface InfrastructureDeps {
    * #2060). Spawns nothing while the host switch is off.
    */
   collectGraftContext: GraftContextCollector;
-  /**
-   * Generate (or reuse) the per-repo codebase map (Issue #4281), handing it
-   * the brief runner while the brief trial is on (Issue #2621).
-   */
+  /** Generate (or reuse) the per-repo codebase map (Issue #4281). */
   getCodebaseMap: typeof getOrGenerateCodebaseMap;
   loadPrompt: typeof loadPrompt;
   shuffleArray: typeof shuffleArray;
@@ -1305,7 +1302,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     collectGraftContext: mockFn<InfrastructureDeps["collectGraftContext"]>(() =>
       Promise.resolve({ status: "off", enabled: false })
     ),
-    // Issue #2621: a mocked run gets an empty map and never spawns git or brief.
+    // Issue #2621: a mocked run gets an empty map and never spawns git.
     getCodebaseMap: mockFn<InfrastructureDeps["getCodebaseMap"]>(() =>
       Promise.resolve({
         ok: true,
@@ -1313,7 +1310,6 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
           content: "",
           treeHash: "mock",
           cacheHit: true,
-          brief: { status: "off", reason: "no runner" },
         },
       })
     ),

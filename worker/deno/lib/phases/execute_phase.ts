@@ -29,11 +29,6 @@ import {
   graftQueryFor,
 } from "../graft_context.ts";
 import { isGraftContextEnabled } from "../graft_context_config.ts";
-import {
-  BRIEF_VERSION,
-  briefRunReport,
-  createBriefRunner,
-} from "../brief_toolchain.ts";
 import { isIssueExecutorSplitEnabled } from "../issue_executor_split.ts";
 import {
   buildIssueRunAgents,
@@ -456,25 +451,16 @@ async function executeClaudeBody(
   }
 
   // Codebase map (Issue #4281). Built here too, not only on the CLI path, so
-  // `include_codebase_map` and the brief trial reach the fleet's main-loop
-  // runs (Issue #2621). Brief gets a runner only while its host switch is on;
-  // a map fault is logged and the run proceeds unmapped.
+  // `include_codebase_map` reaches the fleet's main-loop runs (Issue #2621).
+  // A map fault is logged and the run proceeds unmapped.
   let codebaseMap: string | undefined;
   if (config.includeCodebaseMap) {
-    const briefEnabled = config.briefToolchain.enabled;
     const mapResult = await deps.infrastructure.getCodebaseMap({
       repo,
       repoDir: state.repoPath,
-      ...(briefEnabled
-        ? {
-          brief: { runner: createBriefRunner(), version: BRIEF_VERSION },
-          warn: (message: string) => logger.warn(message),
-        }
-        : {}),
     });
     if (mapResult.ok) {
       codebaseMap = mapResult.value.content;
-      state.brief = briefRunReport(briefEnabled, mapResult.value.brief);
       logger.info(
         `Codebase map: ${codebaseMap.length} chars, tree=${
           mapResult.value.treeHash.slice(0, 12)

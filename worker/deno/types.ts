@@ -503,14 +503,6 @@ export interface WorkerConfig {
    */
   rtkOutput: RtkOutputConfig;
   /**
-   * The brief toolchain switch, read from the `.config.json`
-   * `brief_toolchain` block (Issue #2603, part of #2581) and validated by
-   * `parseBriefToolchain()` in `lib/brief_toolchain_config.ts`. Off unless the
-   * host asks for it; on, the implementation run's codebase map carries a
-   * Rust repository's Cargo commands from brief.
-   */
-  briefToolchain: BriefToolchainConfig;
-  /**
    * Cache TTL in seconds for the issue-timeline cache (Issue #1673).
    * Used by label-authorship checks (`wasLabelAddedByAllowedAuthor`,
    * `getLabelLastAddInfo`). Defaults to 300 seconds (5 minutes).
@@ -698,18 +690,6 @@ export interface CodegraphContextConfig {
  */
 export interface RtkOutputConfig {
   /** Whether a run offers the agent RTK output shaping (default: true). */
-  enabled: boolean;
-}
-
-/**
- * The brief toolchain switch as the worker reads it (Issue #2603, part of
- * #2581).
- *
- * Parsed from the `.config.json` `brief_toolchain` block by
- * `parseBriefToolchain()` in `lib/brief_toolchain_config.ts`.
- */
-export interface BriefToolchainConfig {
-  /** Whether the codebase map asks brief for Cargo commands (default: false). */
   enabled: boolean;
 }
 
@@ -1446,13 +1426,6 @@ export interface ConfigFile {
    * the config load.
    */
   rtk_output?: unknown;
-  /**
-   * Raw `brief_toolchain` block (Issue #2603). Typed `unknown` because it is
-   * operator-written JSON: `parseBriefToolchain()` in
-   * `lib/brief_toolchain_config.ts` is the trust boundary that turns it into a
-   * {@link BriefToolchainConfig} or fails the config load.
-   */
-  brief_toolchain?: unknown;
   /** Cache TTL in seconds for the issue-timeline cache (Issue #1673) */
   timeline_cache_ttl_seconds?: number;
   /** Whether to enable CLI session resume across phases (Issue #1324) */

@@ -346,7 +346,6 @@ import {
   resumeStateSurvivesRelease,
 } from "./resume_state_store.ts";
 import {
-  briefNotRun,
   codegraphNotRun,
   invokeCycleCallback,
   invokeRunCallbacks,
@@ -4226,8 +4225,6 @@ export async function createProductionRunCoreDeps(
           // The RTK outcome for the same callbacks (Issue #2386); a skip
           // never reached the preparation, so it reports none.
           ...(result.rtk && !isExpectedSkip ? { rtk: result.rtk } : {}),
-          // brief's outcome for the same callbacks (Issue #2603).
-          ...(result.brief && !isExpectedSkip ? { brief: result.brief } : {}),
         },
       };
     },
@@ -4628,8 +4625,6 @@ export async function createProductionRunCoreDeps(
           // no outcome states the host's real switch, never a fabricated
           // `enabled: false`.
           rtk: run.rtk ?? rtkNotRun(config.rtkOutput.enabled),
-          // Issue #2603: and brief's, read the same way.
-          brief: run.brief ?? briefNotRun(config.briefToolchain.enabled),
         }, {
           runId: getRunId(),
           host: Deno.hostname(),

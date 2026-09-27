@@ -826,8 +826,6 @@ async function postWorkOnRunStats(
       : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
-    // …and brief's, when the run built a codebase map (Issue #2603).
-    ...(state.brief ? { brief: state.brief } : {}),
   });
 
   // Issue #2347: the same figures the comment above renders, recorded once per
