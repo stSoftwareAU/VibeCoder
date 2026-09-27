@@ -432,7 +432,7 @@ export async function findOldestIssue(
       repoClosedPRs,
     );
     allLowPriorityCandidates.push(...lowPriorityResult.candidates);
-    if (lowPriorityResult.hasOpenIssues) {
+    if (lowPriorityResult.hasSuppressingLowPriority) {
       reposWithOpenLowPriority.add(repo);
     }
 
