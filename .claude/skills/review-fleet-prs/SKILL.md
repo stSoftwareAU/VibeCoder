@@ -48,6 +48,28 @@ Optional argument: `owner/name` to review one repo only.
    the fleet pushes a fix to a PR that was sent back, the re-review checks
    the earlier findings were fixed, and approves once they are.
 
+## Which repos
+
+This host's `.config.json` lists only the repos this host's worker looks
+after; other fleet hosts look after others. The gate therefore reviews fleet
+PRs in any repo, and Dependabot PRs in this host's repos plus any repo where
+a fleet account has had a PR in the last 30 days.
+
+## Dependabot PRs
+
+Each gate pass also looks after open Dependabot PRs into a default branch,
+with no model involved (`dependabot.ts`):
+
+- **Behind or conflicting:** comments `@dependabot rebase` once per head
+  commit, so Dependabot brings its own branch up to date and resolves the
+  conflict. Never push to a Dependabot branch: Dependabot stops updating a PR
+  someone else has pushed to.
+- **Approved at its head and not yet armed:** arms auto-merge (squash where
+  the repo allows it), so it merges as soon as every required check passes.
+
+Dependabot PRs are still reviewed by Fable like any other; this upkeep only
+gets an approved one merged. The pass reports what it did in `upkeep`.
+
 ## The loop
 
 The gate script does the polling, not the model. With `--watch=300` it checks
