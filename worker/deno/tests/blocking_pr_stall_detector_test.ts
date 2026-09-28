@@ -21,12 +21,14 @@ import {
   findBlockingPrObservations,
   isMergeConflictLaneOwned,
   resolveBlockingPrStallThresholdSeconds,
+  resolveGreenBlockingPr,
   scanBlockingPrStalls,
   withdrawBlockingPrStallEscalation,
 } from "../lib/blocking_pr_stall_detector.ts";
 import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 import { MERGE_CONFLICT_LABEL } from "../lib/pr_merge_conflict_scan.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
+import type { MergeResult } from "../lib/direct_merge.ts";
 
 const REPO = "owner/repo";
 const NOW = Date.parse("2026-08-11T20:00:00Z") / 1000;
@@ -1201,4 +1203,175 @@ Deno.test("a withdrawal whose comment cannot be posted fails loud", async () => 
 
   assert(!result.ok, "a dropped retraction must not report success");
   assertStringIncludes(result.error.message, "comment refused");
+});
+
+// ---------------------------------------------------------------------------
+// Green PR resolution (Issue #2801) — a green PR is never a stall: it is
+// awaiting approval, merged, or retried next cycle; never escalated or
+// abandoned.
+// ---------------------------------------------------------------------------
+
+/** A blocking PR that has been green and idle for five days. */
+const GREEN_VIEW = {
+  comments: [],
+  commits: [{ oid: "ccc", committedDate: "2026-08-06T05:46:00Z" }],
+  createdAt: "2026-08-06T05:46:00Z",
+  autoMergeRequest: null,
+  isDraft: false,
+  mergeable: "MERGEABLE",
+  labels: [],
+  statusCheckRollup: [
+    {
+      name: "quality",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      completedAt: "2026-08-06T06:00:00Z",
+    },
+  ],
+};
+
+type DirectMergeCall = {
+  repo: string;
+  prNumber: number;
+  options: unknown;
+};
+
+/** Run one scan over a single green blocking PR with a stubbed merge path. */
+async function scanGreenPr(
+  mergeOutcome: () => Promise<Result<MergeResult>>,
+) {
+  const fixture: ScanFixture = {
+    issues: [{ number: 93, labels: ["work-on"] }],
+    prs: [{ number: 305, baseRefName: "main", headRefName: "issue-93" }],
+    views: { 305: GREEN_VIEW },
+  };
+  const comments: string[] = [];
+  const writes: string[][] = [];
+  const gh = buildScanGh(fixture, comments, writes);
+  const mergeCalls: DirectMergeCall[] = [];
+  const warnings: string[] = [];
+
+  const result = await scanBlockingPrStalls({
+    repos: [REPO],
+    workOnLabel: "work-on",
+    fleetAuthors: ["vibe-coder"],
+    authorisedCommenters: ["nigel"],
+    ghCommandFn: gh,
+    config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
+    needsHumanLabel: "needs-human",
+    ensureLabelExists: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+    dedupAuthors: FLEET_DEDUP,
+    logger: { ...logger, warn: (message: string) => warnings.push(message) },
+    nowSeconds: () => NOW,
+    directMergeFn: (repo, prNumber, _gh, _gate, options) => {
+      mergeCalls.push({ repo, prNumber, options });
+      return mergeOutcome();
+    },
+  });
+
+  return { result, comments, writes, mergeCalls, warnings };
+}
+
+/** True when a recorded `gh` call is one of the escalate/abandon writes. */
+function isForbiddenWrite(args: string[]): boolean {
+  const joined = args.join(" ");
+  return joined.startsWith("pr comment") ||
+    joined.startsWith("issue create") ||
+    (joined.startsWith("pr edit") && joined.includes("--add-label")) ||
+    joined.startsWith("pr close") ||
+    (joined.startsWith("issue edit") && joined.includes("--add-label")) ||
+    (args[0] === "api" && args[1] === "-X");
+}
+
+Deno.test("a green PR awaiting approval is not a stall — no comment, label or close (Issue #2801)", async () => {
+  const { result, comments, writes, mergeCalls, warnings } = await scanGreenPr(
+    () =>
+      Promise.resolve({
+        ok: true as const,
+        value: { merged: false, blocked: "default_branch_unapproved" as const },
+      }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, [], "awaiting approval produces no stall");
+  assertEquals(mergeCalls.length, 1, "the approval gate was consulted");
+  assertEquals(comments, [], "no comment posted");
+  assertEquals(writes.filter(isForbiddenWrite), [], "no gh write of any kind");
+  assertEquals(writes, []);
+  assertEquals(
+    warnings.filter((w) => w.includes("stalled")),
+    [],
+    "never reported as a stall",
+  );
+});
+
+Deno.test("a green PR needing no approval is passed to directMergePr exactly once per cycle (Issue #2801)", async () => {
+  const { result, comments, writes, mergeCalls } = await scanGreenPr(() =>
+    Promise.resolve({ ok: true as const, value: { merged: true } })
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, [], "a merged PR is not a stall");
+  assertEquals(mergeCalls, [{
+    repo: REPO,
+    prNumber: 305,
+    options: { approvedDefaultBranch: { fleetAuthors: ["vibe-coder"] } },
+  }]);
+  assertEquals(comments, []);
+  assertEquals(writes, []);
+});
+
+Deno.test("a green PR whose merge is refused is never closed or re-queued, and the refusal is loud (Issue #2801)", async () => {
+  const refusals = [
+    () =>
+      Promise.resolve({
+        ok: true as const,
+        value: { merged: false, blocked: "behind_target" as const },
+      }),
+    () =>
+      Promise.resolve({
+        ok: false as const,
+        error: new Error("Failed to merge PR #305: protected branch"),
+      }),
+    () => Promise.reject(new Error("gh exploded")),
+  ];
+
+  for (const [i, refusal] of refusals.entries()) {
+    const { result, comments, writes, mergeCalls, warnings } =
+      await scanGreenPr(refusal);
+
+    assert(result.ok, `case ${i}`);
+    assertEquals(result.value, [], `case ${i}: never escalated as a stall`);
+    assertEquals(mergeCalls.length, 1, `case ${i}: one merge attempt`);
+    assertEquals(comments, [], `case ${i}: no comment`);
+    assertEquals(writes.filter(isForbiddenWrite), [], `case ${i}: no close`);
+    assertEquals(writes, [], `case ${i}: no requeue or label`);
+    const warning = warnings.find((w) => w.includes(`${REPO}#305`));
+    assert(warning, `case ${i}: a warning names the PR`);
+    assertStringIncludes(warning, "retrying next cycle");
+  }
+});
+
+Deno.test("resolveGreenBlockingPr names the refusal reason and withholds the approval policy without a fleet", async () => {
+  const warnings: string[] = [];
+  const seen: unknown[] = [];
+  const outcome = await resolveGreenBlockingPr({ repo: REPO, prNumber: 7 }, {
+    directMergeFn: (_repo, _pr, _gh, _gate, options) => {
+      seen.push(options);
+      return Promise.resolve({
+        ok: true as const,
+        value: { merged: false, blocked: "head_too_recent" as const },
+      });
+    },
+    ghCommandFn: () => Promise.resolve(""),
+    fleetAuthors: [],
+    logger: { ...logger, warn: (message: string) => warnings.push(message) },
+  });
+
+  assertEquals(outcome, "merge-refused");
+  assertEquals(seen, [{}], "no approval policy when the fleet is unknown");
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "head_too_recent");
+  assertStringIncludes(warnings[0]!, `${REPO}#7`);
 });

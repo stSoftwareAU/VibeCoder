@@ -162,6 +162,7 @@ import {
   processCiNudgeCandidate,
 } from "./pr_ci_nudge_scan.ts";
 import { scanBlockingPrStalls as libScanBlockingPrStalls } from "./blocking_pr_stall_detector.ts";
+import { directMergePr } from "./direct_merge.ts";
 import {
   type ConflictPrDecision,
   findConflictingPr,
@@ -3091,6 +3092,9 @@ export async function createProductionRunCoreDeps(
           // `issues_all` / `prs_${author}` entries other priorities
           // already fetched.
           cache: issueCache,
+          // Issue #2801: a green blocking PR is merged through the worker's
+          // own gated merge path, never escalated.
+          directMergeFn: directMergePr,
           logger,
           log: (m) => logger.info(m),
         });
