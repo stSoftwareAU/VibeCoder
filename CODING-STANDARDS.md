@@ -92,15 +92,22 @@ reader must do on seeing it, and pick the level that says so.
 
 ## Test-Driven Development (TDD)
 
-Follow TDD for all changes:
+Use test-first TDD when introducing or fixing behaviour that needs a new test.
+Not every change needs a new test: a refactor, presentation change, or already
+covered behaviour may be verified by existing tests and appropriate manual or
+browser checks. A test earns its maintenance cost when failure is strong
+evidence that supported behaviour, an invariant, or a contract regressed.
 
-1. Write failing tests first that define the expected behaviour.
+1. When a new test is warranted, write a failing test first that defines the
+   expected behaviour.
 2. Implement the code to make the tests pass.
-3. **Do NOT comment out or remove existing tests.** If business logic changes
-   require test modifications, this must be explicitly documented.
+3. Do not remove, skip, or weaken tests just to pass a gate. If a supported
+   contract changes, or a test pins only incidental implementation, update or
+   remove the test deliberately and document the reason and remaining coverage.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
-   continue to pass when the implementation is refactored.
+   continue to pass when the implementation is refactored without changing its
+   supported behaviour.
 5. Do NOT write tests that grep source files for patterns, inspect function
    bodies, verify line counts, or assert that one function calls another. These
    are not real tests. If a function requires external services to test, skip it
@@ -252,10 +259,36 @@ instead of hanging the suite.
 
 ### Test coverage expectations
 
-Every new or modified public function MUST have tests covering the happy path,
-at least one error path, and the edge cases relevant to it (empty input, zero,
-maximum size, unicode, etc.). For bug fixes, add a regression test that fails against the
-unfixed code and passes after the fix, and state that linkage in the PR summary.
+Test supported public contracts at the useful boundary, including success,
+validation/error and relevant edge cases; existing direct or indirect coverage
+counts. Do not add a test per function or assertion merely to increase coverage.
+For a real defect, where practical first reproduce the externally meaningful
+failure in a test, then fix it and state the linkage in the PR summary.
+
+### Choosing assertions
+
+- **UI / PWA:** Prefer real/headless-browser user journeys and visible states
+  (loading, empty, error, offline/cache and retry) where practical. Select by
+  role, accessible name or label, or an explicit stable product identifier.
+  Avoid exact CSS values, pixel dimensions, class names, DOM hierarchy and
+  framework internals unless that appearance or structure is itself a stated
+  contract. Use visual snapshots deliberately when appearance is the contract
+  and the baseline can be reviewed. A restyle should not break a behaviour test.
+- **APIs:** Check successful responses and schema/semantics, invalid inputs,
+  authorisation, relevant boundaries, documented errors, and retry/idempotency
+  where applicable. Incompatible supported contract changes need a new version
+  and an explicit supported-version/migration policy; do not silently break
+  clients or preserve obsolete versions indefinitely.
+- **Units:** Assert meaningful invariants and outcomes at useful boundaries,
+  not private call sequences or line-by-line implementation. Refactoring private
+  code should not require widespread test changes. Existing higher-level tests
+  can cover behaviour without a direct unit test.
+
+Before adding an assertion, ask whether it would fail on a legitimate redesign
+or refactor with the supported behaviour intact. If so, justify it as an
+explicit contract or leave it out. See Playwright's
+[user-visible testing guidance](https://playwright.dev/docs/best-practices)
+and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
 
 ## Unit, Integration and Benchmark Tests
 
@@ -617,8 +650,9 @@ must be written in TypeScript, and all tests use `deno test` with `@std/assert`.
 - **Config defaults** live in `worker/deno/lib/config_defaults.ts` — the single
   source of truth.
 
-Each module has a corresponding test file (e.g. `lib/config.ts` →
-`tests/config_test.ts`). For the command pattern, the `Command` /
+Place warranted tests in a focused test file (e.g. `lib/config.ts` →
+`tests/config_test.ts`); a one-to-one module/test count is not required.
+For the command pattern, the `Command` /
 `CommandResult<T>` interfaces, registry error handling, and step-by-step
 instructions for adding a command, see [docs/EXTENDING.md](docs/EXTENDING.md).
 
