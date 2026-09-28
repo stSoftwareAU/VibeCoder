@@ -379,6 +379,8 @@ export async function checkMilestoneStreamBusy(
 export interface BlankStreamHold {
   /** The conversation's key — {@link streamKey} of the blank stream. */
   streamKey: string;
+  /** `owner/name` whose blank stream is held (Issue #2800). */
+  repo: string;
   /** Human label of the stream, as {@link streamLabel} renders it. */
   streamLabel: string;
   /** Slot holding it, for log attribution — `s0`, `s1`, … */
@@ -491,6 +493,7 @@ export class BlankStreamLockRegistry {
     if (holder !== undefined) return { acquired: false, holder };
     this.#held.set(key, {
       streamKey: key,
+      repo: stream.repo,
       streamLabel: streamLabel(stream),
       slotId: options.slotId,
       issueNumber: options.issueNumber,
@@ -515,6 +518,15 @@ export class BlankStreamLockRegistry {
   holder(ref: BlankStreamRef): BlankStreamHold | undefined {
     const stream = blankStreamOf(ref);
     return stream === undefined ? undefined : this.#held.get(streamKey(stream));
+  }
+
+  /**
+   * `owner/name` of every repository whose blank stream a slot holds, so the
+   * idle-decision census can count their non-milestone issues as
+   * stream-occupied rather than claimable (Issue #2800).
+   */
+  heldRepos(): string[] {
+    return [...this.#held.values()].map((hold) => hold.repo);
   }
 
   /** Number of blank streams held. */

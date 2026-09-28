@@ -74,6 +74,7 @@ function repoInput(
     runLocalHolds: partial.runLocalHolds,
     deferredHolds: partial.deferredHolds,
     openMilestones: partial.openMilestones,
+    blankStreamHeld: partial.blankStreamHeld,
   };
 }
 
@@ -1943,4 +1944,87 @@ Deno.test("census - an issue quoting the tracker marker is claimable to census a
     needsHumanLabel: "needs-human",
   });
   assertEquals(kept.map((i) => i.number), [450]);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2800: the host-local blank-stream lock refuses every tier
+// ---------------------------------------------------------------------------
+// While a sibling slot on this host runs a repository's blank-stream issue,
+// the slot pool's `BlankStreamLockRegistry` (Issue #2335) refuses every other
+// no-milestone issue in that repository — `work-on` and `top-priority`
+// included. The census exempted those tiers from occupancy (#2532), so an
+// idle sibling slot read them as claimable: vibe-coder-665:84 logged
+// `work_on=2 stream_occupied=0 inversion_signal=true` for GRQ-AutoTrader on
+// three cycles while every claim was refused with `stream busy ... (blank)`.
+
+Deno.test("census - blank-stream issues of every tier are stream_occupied while this host holds the blank stream (Issue #2800)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ-AutoTrader",
+        blankStreamHeld: true,
+        issues: [
+          // Slot s2 holds the blank stream on #1593.
+          issue(1593, ["work-on"], ["vibe-bot"]),
+          issue(1684, ["work-on"]),
+          issue(1659, ["work-on"]),
+          issue(1700, ["top-priority"]),
+          issue(1701, ["low-priority"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.topPriority, 0);
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.unblocked.lowPriority, 0);
+  assertEquals(entry.streamOccupied, 4);
+  assertEquals(entry.claimableIssues, []);
+  assert(!entry.inversionSignal);
+  assert(!census.inversionDetected);
+});
+
+Deno.test("census - a held blank stream leaves milestone streams claimable (Issue #2800)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ-AutoTrader",
+        blankStreamHeld: true,
+        issues: [
+          issue(1593, ["work-on"], ["vibe-bot"]),
+          issue(1684, ["work-on"]),
+          issue(1702, ["work-on"], [], "v2"),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.claimableIssues, [1702]);
+  assertEquals(entry.streamOccupied, 1);
+  assert(entry.inversionSignal);
+});
+
+Deno.test("census - blank-stream work-on is claimable when the blank stream is not held (Issue #2800)", () => {
+  for (const blankStreamHeld of [false, undefined]) {
+    const census = buildIdleDecisionCensus({
+      decisionPoint: "filing",
+      workerUser: "vibe-bot",
+      repos: [
+        repoInput({
+          repo: "stSoftwareAU/GRQ-AutoTrader",
+          blankStreamHeld,
+          issues: [issue(1684, ["work-on"])],
+        }),
+      ],
+    });
+    const entry = census.perRepo[0]!;
+    assertEquals(entry.unblocked.workOn, 1);
+    assertEquals(entry.streamOccupied, 0);
+    assert(entry.inversionSignal);
+  }
 });
