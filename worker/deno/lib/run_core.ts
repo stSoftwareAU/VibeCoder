@@ -678,6 +678,18 @@ export interface RunCoreDeps {
   drainDeferredPrs?: () => Promise<Result<void>>;
 
   /**
+   * Whether the PR that reserved `repo` for the maintenance lane is closed or
+   * merged — the positive signal that drops the reservation (Issue #2795).
+   *
+   * Resolves `undefined` when the state is unknown. Optional — when absent a
+   * reservation is spent only by its own PR's lease or the TTL.
+   */
+  isReservingPrClosed?: (
+    repo: string,
+    pr: number,
+  ) => Promise<boolean | undefined>;
+
+  /**
    * Priority 1.63: escalate PRs that block `work-on` issues while red or
    * carrying an unanswered authorised comment (Issue #4025).
    *
@@ -3297,21 +3309,15 @@ async function runMaintenanceLane(
   shouldShutdown: () => boolean,
 ): Promise<{ rateLimitError?: Error }> {
   const prefix = `[${MAINTENANCE_LANE_SLOT_ID}] `;
-  // Repositories a PR pass was refused (and so reserved) this sequence.
-  const renewed = new Set<string>();
   const broker: MaintenanceLaneBroker = {
     // `maintenance: true` so nothing downstream mistakes the lane's hold for
     // a claimed issue — `ref` is a PR number, not an issue number. Only a
     // pass servicing a PR opts in to `reserve` (Issue #2793).
-    tryAcquire: (repo, ref, options) => {
-      const reserve = options?.reserve === true;
-      const won = registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
+    tryAcquire: (repo, ref, options) =>
+      registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
         maintenance: true,
-        reserve,
-      });
-      if (!won && reserve) renewed.add(repo);
-      return won;
-    },
+        reserve: options?.reserve === true,
+      }),
     // A lane lease is repository-wide (Issue #1091), so it is given back
     // through the lease path rather than the per-stream one.
     release: (repo) => registry.releaseRepoLease(repo),
@@ -3379,20 +3385,63 @@ async function runMaintenanceLane(
         break;
       }
     }
-    // Every pass ran and none was refused on a reserved repository, so no
-    // PR still wants it (fixed elsewhere): let the slots have it back now
-    // rather than at the TTL (Issue #2793). A cut-short sequence proves
-    // nothing, so its reservations stand.
+    // A cut-short sequence (shutdown, deadline, rate limit) makes no further
+    // GitHub calls; its reservations wait for the next cycle or the TTL.
     if (fullSequence) {
-      for (const repo of registry.releaseReservationsExcept(renewed)) {
-        deps.log(
-          `${prefix}reservation released repo=${repo} — no maintenance ` +
-            `pass asked for it this cycle (Issue #2793).`,
-        );
-      }
+      const rateLimitError = await releaseClosedReservations(
+        deps,
+        registry,
+        prefix,
+      );
+      if (rateLimitError) return { rateLimitError };
     }
     return {};
   });
+}
+
+/**
+ * Drop each lane reservation whose reserving PR is closed or merged — the
+ * only positive signal that it no longer needs the repository (Issue #2795).
+ *
+ * A pass that skipped the PR this cycle (it picked a PR elsewhere, or failed
+ * before its lease) says nothing, so absence never drops a reservation. Green
+ * checks are no signal either: the PR-feedback and merge-conflict passes
+ * reserve PRs whose checks are often green. An open, unknown or unreadable
+ * PR keeps its reservation until its ref wins the lease or the TTL lapses;
+ * an unreadable one is a WARNING, since the TTL still bounds it.
+ *
+ * A primary rate limit stops the reads and is returned, so the lane hands it
+ * back like a pass's own (Issue #1921) rather than retrying `gh` per repo.
+ */
+async function releaseClosedReservations(
+  deps: RunCoreDeps,
+  registry: InFlightRepoRegistry,
+  prefix: string,
+): Promise<Error | undefined> {
+  if (!deps.isReservingPrClosed) return undefined;
+  for (const { repo, ref } of registry.reservations()) {
+    let closed: boolean | undefined;
+    try {
+      closed = await deps.isReservingPrClosed(repo, ref);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isPrimaryRateLimitMessage(message)) {
+        return error instanceof Error ? error : new Error(message);
+      }
+      warnOf(deps)(
+        `${prefix}reservation kept repo=${repo} — could not read the state ` +
+          `of ${repo}#${ref}: ${message} (Issue #2795).`,
+      );
+      continue;
+    }
+    if (closed === true && registry.releaseReservation(repo, ref)) {
+      deps.log(
+        `${prefix}reservation released repo=${repo} pr=${ref} — its PR is ` +
+          `closed or merged (Issue #2795).`,
+      );
+    }
+  }
+  return undefined;
 }
 
 /**

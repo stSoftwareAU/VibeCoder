@@ -285,11 +285,16 @@ registry:
 - when that hold is released, the reservation is spent only when the **ref
   that reserved it** wins the lease. A sync pass rotated ahead of PR Feedback
   may win the drained repository, but it does not hand it back to the slots;
-- a full lane pass sequence that is not refused on the repository drops the
-  reservation. Each pass services one PR per cycle, so the PR may simply not
-  have been picked; a still-broken PR re-reserves the next time it is refused.
-  A sequence cut short by shutdown, the deadline or a rate limit keeps every
-  reservation;
+- only a **positive signal** drops it early: after an uncut lane sequence the
+  lane reads each reserving PR (`isReservingPrClosed`), and a PR that is
+  closed or merged releases its reservation (Issue #2795). A pass that skipped
+  the PR — it picked a PR in another repository, or failed before its lease —
+  proves nothing, so the reservation stays. Green checks are not a signal: PR
+  feedback and merge conflict reserve PRs whose checks are often green. An
+  open, unknown or unreadable PR keeps it (an unreadable one is logged as a
+  WARNING; a primary rate limit stops the reads and is handed back like a
+  pass's own, Issue #1921), and a sequence cut short by shutdown, the deadline
+  or a rate limit reads nothing;
 - each refused pass refreshes the reservation, and `LANE_RESERVATION_TTL_MS`
   (two hours, or two default cycles) after the last refusal stays as the
   backstop;
@@ -309,6 +314,9 @@ sequenceDiagram
   L->>R: tryAcquire(repo, same PR ref) ✔ → reservation spent
   L->>R: releaseRepoLease(repo)
   S2->>R: tryAcquire(repo) ✔
+  Note over L,R: Otherwise, after an uncut sequence
+  L->>R: reserving PR closed or merged? ✔ → releaseReservation(repo, ref)
+  Note over L,R: open, unknown or skipped → kept until its ref wins or the TTL
 ```
 
 The lane logs under an `[m1]` prefix and appears in the status line as
