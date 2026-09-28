@@ -3297,13 +3297,21 @@ async function runMaintenanceLane(
   shouldShutdown: () => boolean,
 ): Promise<{ rateLimitError?: Error }> {
   const prefix = `[${MAINTENANCE_LANE_SLOT_ID}] `;
+  // Repositories a PR pass was refused (and so reserved) this sequence.
+  const renewed = new Set<string>();
   const broker: MaintenanceLaneBroker = {
     // `maintenance: true` so nothing downstream mistakes the lane's hold for
-    // a claimed issue — `ref` is a PR number, not an issue number.
-    tryAcquire: (repo, ref) =>
-      registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
+    // a claimed issue — `ref` is a PR number, not an issue number. Only a
+    // pass servicing a PR opts in to `reserve` (Issue #2793).
+    tryAcquire: (repo, ref, options) => {
+      const reserve = options?.reserve === true;
+      const won = registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
         maintenance: true,
-      }),
+        reserve,
+      });
+      if (!won && reserve) renewed.add(repo);
+      return won;
+    },
     // A lane lease is repository-wide (Issue #1091), so it is given back
     // through the lease path rather than the per-stream one.
     release: (repo) => registry.releaseRepoLease(repo),
@@ -3314,6 +3322,7 @@ async function runMaintenanceLane(
       `issue scan pool (Issue #213)`,
   );
   return await runInMaintenanceLane(broker, async () => {
+    let fullSequence = true;
     for (const handler of handlers) {
       // A shutdown stops the lane taking on more work, just as it stops a
       // slot claiming another issue.
@@ -3322,6 +3331,7 @@ async function runMaintenanceLane(
           `${prefix}stop reason=shutdown — ${handler.name} and any pass ` +
             `after it defer to the next run.`,
         );
+        fullSequence = false;
         break;
       }
       // The lane never starts a pass past the cycle deadline: an
@@ -3332,6 +3342,7 @@ async function runMaintenanceLane(
           `${prefix}stop reason=deadline — cycle deadline reached; ` +
             `${handler.name} and any pass after it defer to the next cycle.`,
         );
+        fullSequence = false;
         break;
       }
       const dispatch = executePriorityHandler(
@@ -3356,13 +3367,29 @@ async function runMaintenanceLane(
             { keepTerminating: true },
           ).catch(() => {});
         }
+        fullSequence = false;
         break;
       }
       const outcome = bounded.value;
       if (outcome.kind === "rate-limit-error") {
         return { rateLimitError: outcome.error };
       }
-      if (outcome.kind === "rate-limited") break;
+      if (outcome.kind === "rate-limited") {
+        fullSequence = false;
+        break;
+      }
+    }
+    // Every pass ran and none was refused on a reserved repository, so no
+    // PR still wants it (fixed elsewhere): let the slots have it back now
+    // rather than at the TTL (Issue #2793). A cut-short sequence proves
+    // nothing, so its reservations stand.
+    if (fullSequence) {
+      for (const repo of registry.releaseReservationsExcept(renewed)) {
+        deps.log(
+          `${prefix}reservation released repo=${repo} — no maintenance ` +
+            `pass asked for it this cycle (Issue #2793).`,
+        );
+      }
     }
     return {};
   });

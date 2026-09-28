@@ -271,16 +271,28 @@ A deferral alone was not enough. On a repository whose slots claim issue after
 issue, some slot held the repository at every lane pass, so its PR feedback and
 CI fixes waited forever. The only trace was an INFO log line.
 
-A refused lane now **reserves** the repository in the in-flight registry:
+A refused pass servicing a PR now **reserves** the repository in the in-flight
+registry:
 
+- only the PR-servicing passes opt in, through
+  `acquireMaintenanceRepoLease(repo, ref, { reserve: true })`: PR feedback,
+  spelling, CI fix, merge conflict and a custom PR check. Milestone Branch Sync
+  and self-heal lease every cloned repository each cycle, so they defer without
+  reserving (Issue #2793);
 - while it is reserved, no slot takes a **new** stream of that repository. The
   claim scan skips it (`claimExcludedRepos()` = leased ∪ reserved), and a
   slot's `tryAcquire` is refused. A slot already working there keeps its hold;
-- when that hold is released, the lane's next pass wins the lease and the
-  reservation is spent;
-- each refused pass refreshes the reservation, which lapses
-  `LANE_RESERVATION_TTL_MS` (two hours, or two default cycles) after the last
-  refusal. A PR fixed elsewhere therefore cannot keep its repository reserved;
+- when that hold is released, the reservation is spent only when the **ref
+  that reserved it** wins the lease. A sync pass rotated ahead of PR Feedback
+  may win the drained repository, but it does not hand it back to the slots;
+- a full lane pass sequence that is not refused on the repository drops the
+  reservation. Each pass services one PR per cycle, so the PR may simply not
+  have been picked; a still-broken PR re-reserves the next time it is refused.
+  A sequence cut short by shutdown, the deadline or a rate limit keeps every
+  reservation;
+- each refused pass refreshes the reservation, and `LANE_RESERVATION_TTL_MS`
+  (two hours, or two default cycles) after the last refusal stays as the
+  backstop;
 - the deferral is logged at WARN, ending `repository reserved for the
   maintenance lane`.
 
@@ -291,10 +303,10 @@ sequenceDiagram
   participant L as Lane m1
   participant S2 as Slot s2
   S1->>R: tryAcquire(repo) ✔
-  L->>R: tryAcquire(repo, maintenance) ✘ → reserve repo
+  L->>R: tryAcquire(repo, PR ref, reserve) ✘ → reserve repo for ref
   S1->>R: release(repo)
   S2->>R: tryAcquire(repo) ✘ reserved
-  L->>R: tryAcquire(repo, maintenance) ✔ → reservation spent
+  L->>R: tryAcquire(repo, same PR ref) ✔ → reservation spent
   L->>R: releaseRepoLease(repo)
   S2->>R: tryAcquire(repo) ✔
 ```

@@ -467,3 +467,63 @@ Deno.test("maintenance lane - a shutdown grace elapsing mid-pass abandons the la
     }`,
   );
 });
+
+/** Deps with the lane driven by `registry` and a clock the sleeps advance. */
+function reservationLaneDeps(
+  registry: InFlightRepoRegistry,
+  overrides: Partial<RunCoreDeps> = {},
+): RunCoreDeps {
+  let now = 0;
+  return createMockDeps({
+    now: () => now,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      return Promise.resolve();
+    },
+    inFlightRepos: registry,
+    ...overrides,
+  });
+}
+
+Deno.test("maintenance lane - a full pass sequence that never asks for a reserved repo again clears it (Issue #2793)", async () => {
+  const registry = new InFlightRepoRegistry(() => 0);
+  registry.tryAcquire("o/a", 1642, "s1");
+  registry.tryAcquire("o/a", 1631, "m1", { maintenance: true, reserve: true });
+  registry.release("o/a");
+  assertEquals([...registry.reservedRepos()], ["o/a"]);
+
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry),
+  );
+
+  assertEquals(
+    [...registry.reservedRepos()],
+    [],
+    "a PR fixed elsewhere must not hold the repository until the TTL",
+  );
+});
+
+Deno.test("maintenance lane - a pass refused again in the sequence keeps its reservation (Issue #2793)", async () => {
+  const registry = new InFlightRepoRegistry(() => 0);
+  // A slot holds o/a for the whole run, so every CI-fix pass is refused.
+  registry.tryAcquire("o/a", 1642, "s9");
+  let refusals = 0;
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry, {
+      findAndProcessCiFailure: () => {
+        const lease = acquireMaintenanceRepoLease("o/a", 1631, {
+          reserve: true,
+        });
+        if (lease === null) refusals++;
+        else lease.release();
+        return Promise.resolve({ ok: true, value: { processed: false } });
+      },
+    }),
+  );
+  assert(refusals > 0, "the CI-fix pass must have been refused");
+  assertEquals([...registry.reservedRepos()], ["o/a"]);
+});
