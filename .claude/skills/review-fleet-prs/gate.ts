@@ -251,9 +251,13 @@ export async function runWithTimeout(
 
 const gh = (args: string[]) => runWithTimeout("gh", args, GH_TIMEOUT_MS);
 
+// 30 PRs a page, not 100: each PR carries its last 20 review bodies, and
+// the reviews this skill posts are long, so a 100-PR page grew past what
+// GitHub will serve (HTTP 502s, then "Resource limits for this query
+// exceeded") and every gate pass failed. Paging keeps the total the same.
 const SEARCH_QUERY = `
 query($q: String!, $after: String) {
-  search(query: $q, type: ISSUE, first: 100, after: $after) {
+  search(query: $q, type: ISSUE, first: 30, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number title url isDraft mergeable mergeStateStatus headRefOid baseRefName
