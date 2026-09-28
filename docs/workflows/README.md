@@ -265,6 +265,40 @@ registry before it touches the clone:
 - a repository the lane holds is in the pool's exclusion set, so no slot claims
   an issue there while the pass runs.
 
+### Lane reservation — a busy repository cannot starve its PRs (Issue #2789)
+
+A deferral alone was not enough. On a repository whose slots claim issue after
+issue, some slot held the repository at every lane pass, so its PR feedback and
+CI fixes waited forever. The only trace was an INFO log line.
+
+A refused lane now **reserves** the repository in the in-flight registry:
+
+- while it is reserved, no slot takes a **new** stream of that repository. The
+  claim scan skips it (`claimExcludedRepos()` = leased ∪ reserved), and a
+  slot's `tryAcquire` is refused. A slot already working there keeps its hold;
+- when that hold is released, the lane's next pass wins the lease and the
+  reservation is spent;
+- each refused pass refreshes the reservation, which lapses
+  `LANE_RESERVATION_TTL_MS` (two hours, or two default cycles) after the last
+  refusal. A PR fixed elsewhere therefore cannot keep its repository reserved;
+- the deferral is logged at WARN, ending `repository reserved for the
+  maintenance lane`.
+
+```mermaid
+sequenceDiagram
+  participant S1 as Slot s1
+  participant R as In-flight registry
+  participant L as Lane m1
+  participant S2 as Slot s2
+  S1->>R: tryAcquire(repo) ✔
+  L->>R: tryAcquire(repo, maintenance) ✘ → reserve repo
+  S1->>R: release(repo)
+  S2->>R: tryAcquire(repo) ✘ reserved
+  L->>R: tryAcquire(repo, maintenance) ✔ → reservation spent
+  L->>R: releaseRepoLease(repo)
+  S2->>R: tryAcquire(repo) ✔
+```
+
 The lane logs under an `[m1]` prefix and appears in the status line as
 `m1 owner/repo#<pr>` — that number is a **PR**, not a claimed issue, so the
 finder's claim-shaped views and the shutdown drain both skip it. The

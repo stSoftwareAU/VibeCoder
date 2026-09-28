@@ -3946,8 +3946,9 @@ async function runSlot(
       // pass was not allowed to see. Issue #1091 narrowed it to the
       // maintenance lane's whole-repository leases — a slot's hold occupies
       // one stream, and the scan evaluates that stream and refuses it as
-      // `milestone-occupied` rather than never looking.
-      const excludedRepos = pool.registry.leasedRepos();
+      // `milestone-occupied` rather than never looking. Issue #2789 adds the
+      // lane's reservations, which a slot would only be refused.
+      const excludedRepos = pool.registry.claimExcludedRepos();
       const findResult = await deps.findNextIssue({
         excludeRepos: excludedRepos,
         // Issue #1091: what this host already holds, so the scan's own
@@ -4052,7 +4053,7 @@ async function runSlot(
           // only avoid one the scan never had a chance to disagree about.
           const hookExcludedRepos = new Set<string>([
             ...excludedRepos,
-            ...pool.registry.leasedRepos(),
+            ...pool.registry.claimExcludedRepos(),
           ]);
           await runIdleWorkHooks(deps, pool.idleHooks, {
             // `[sN] ` prefixed, so the `[idle-hooks]` line names the slot.

@@ -93,9 +93,31 @@ function repoLeaseKey(repo: string): string {
   return `lease:${repo}`;
 }
 
+/**
+ * How long a refused maintenance lane's reservation of a repository lasts
+ * after its most recent refusal (Issue #2789).
+ *
+ * Every refused lane pass refreshes it, so it holds for as long as the lane
+ * keeps wanting the repository; once the lane stops asking (its PR was fixed
+ * elsewhere) it lapses, so a reservation can never starve issue work for long.
+ * The lane asks once per cycle and a cycle runs up to `runDurationSeconds`
+ * (an hour by default), so the TTL spans two default cycles.
+ */
+export const LANE_RESERVATION_TTL_MS = 2 * 60 * 60_000;
+
 /** In-process registry of held work streams. */
 export class InFlightRepoRegistry {
   readonly #held = new Map<string, InFlightHold>();
+  /**
+   * Repositories the maintenance lane was refused, with the epoch-ms of the
+   * latest refusal (Issue #2789). A slot's hold only ever ends when its run
+   * does, and on a busy repository the next slot claimed the next issue
+   * before the lane looked again — so the lane's whole-repository lease was
+   * refused forever and the repo's PRs never got their CI fix or feedback
+   * pass. A reservation stops new slot streams of the repository, so it
+   * drains and the lane wins it on its next pass.
+   */
+  readonly #reservations = new Map<string, number>();
   readonly #now: () => number;
 
   constructor(now: () => number = Date.now) {
@@ -109,7 +131,9 @@ export class InFlightRepoRegistry {
    * A slot wins when no sibling holds the same `(repo, milestone)` stream and
    * the maintenance lane holds no lease on the repository. The lane wins only
    * when the repository is completely free, because its pass may touch any
-   * branch of the clone (Issue #213).
+   * branch of the clone (Issue #213). A refused lane reserves the
+   * repository, and a slot is refused a new stream of a reserved repository
+   * until the lane wins it or the reservation lapses (Issue #2789).
    *
    * Synchronous, so two racing slots cannot both win.
    *
@@ -130,10 +154,19 @@ export class InFlightRepoRegistry {
     // The lane leases the whole repository, so any hold on it refuses the
     // lease — and any lease refuses every stream of it.
     if (maintenance) {
+      // The lane's own live lease is not a slot to wait out, so only a slot
+      // hold earns a reservation.
+      if (this.#held.has(repoLeaseKey(repo))) return false;
       for (const hold of this.#held.values()) {
-        if (hold.repo === repo) return false;
+        if (hold.repo === repo) {
+          this.#reservations.set(repo, this.#now());
+          return false;
+        }
       }
-    } else if (this.#held.has(repoLeaseKey(repo))) {
+      this.#reservations.delete(repo);
+    } else if (
+      this.#held.has(repoLeaseKey(repo)) || this.#isReserved(repo)
+    ) {
       return false;
     }
     const key = maintenance
@@ -222,6 +255,33 @@ export class InFlightRepoRegistry {
         .filter((hold) => hold.maintenance === true)
         .map((hold) => hold.repo),
     );
+  }
+
+  /**
+   * Repositories the maintenance lane has reserved and not yet won (Issue
+   * #2789). Lapsed reservations are pruned on read.
+   */
+  reservedRepos(): ReadonlySet<string> {
+    return new Set(
+      [...this.#reservations.keys()].filter((repo) => this.#isReserved(repo)),
+    );
+  }
+
+  /**
+   * Repositories a claim scan must skip wholesale: the lane's live leases
+   * plus its reservations (Issue #2789) — a slot would only be refused them.
+   */
+  claimExcludedRepos(): ReadonlySet<string> {
+    return new Set([...this.leasedRepos(), ...this.reservedRepos()]);
+  }
+
+  /** Whether `repo` carries an unlapsed lane reservation; prunes a lapsed one. */
+  #isReserved(repo: string): boolean {
+    const sinceMs = this.#reservations.get(repo);
+    if (sinceMs === undefined) return false;
+    if (this.#now() - sinceMs < LANE_RESERVATION_TTL_MS) return true;
+    this.#reservations.delete(repo);
+    return false;
   }
 
   /** The claims currently held, each with the work stream it occupies — the
