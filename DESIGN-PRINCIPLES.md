@@ -837,7 +837,8 @@ late: the deploy/publish workflows have already fired. Enforcement is
   `worker/deno/lib/direct_merge.ts` re-fetches CI status and branch freshness at
   merge time inside `directMergePr()`; it refuses to merge unless CI is `passed`
   and `behindBy === 0`. Behind target → defer-and-retry: the PR is left open,
-  branch-update maintenance rebases, CI re-runs, the next cycle re-evaluates.
+  branch-update maintenance merges the target in (plain push, never forced),
+  CI re-runs, the next cycle re-evaluates.
 - **Only allowlisted verdicts are green.** `determineCiStatus`
   passes a check run only when its conclusion is `success`, `skipped` or
   `neutral`, and folds in GitHub's own `statusCheckRollup.state` (worse verdict

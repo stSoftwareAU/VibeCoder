@@ -563,7 +563,7 @@ match**:
 | 1        | PR feedback (thumbs-up or authorised comments)  | [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts) |
 | 1.5      | Spelling/quality check failures on open PRs     | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts) |
 | 1.55     | CI/integration test failures on open PRs        | [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts)             |
-| 1.6      | Update open PR branches (rebase onto base)      | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)           |
+| 1.6      | Update open PR branches (merge base in)         | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)           |
 | 1.65     | Auto-merge catch-up (retry transient failures)  | [pr_auto_merge.ts](../worker/deno/lib/pr_auto_merge.ts)                 |
 | 1.66     | Branch cleanup (delete branches for merged PRs) | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)               |
 | 1.67     | Issue closure (close issues for merged PRs)     | [issue_lifecycle.ts](../worker/deno/lib/issue_lifecycle.ts)             |
@@ -1988,8 +1988,9 @@ When a comment is found:
 
 1. **Set up** — update GitHub status, set terminal title, validate comment body
    size.
-2. **Sync branch** — `sync_feature_branch_with_default()` rebases the feature
-   branch onto the base branch to prevent merge conflicts.
+2. **Sync branch** — `sync_feature_branch_with_default()` merges the base
+   branch into the feature branch (never a rebase, Issue #2807) to prevent merge
+   conflicts; a conflicting merge is aborted and the branch left as it was.
 3. **Build prompt** — assemble a `pr_feedback` prompt template with the comment
    body, repo quality instructions, and custom instructions.
 4. **Run Claude** — `run_claude_with_retry()` with timeout and rate-limit
@@ -2041,7 +2042,7 @@ The same remote head governs the **branch-update pass**: `updatePrBranch`
 fast-forwards the PR branch onto its remote head before deciding whether it is
 behind or conflicted, and refuses loudly — with a distinct error, not a conflict
 verdict — when the local branch is ahead of that head, because those commits are
-unpushed work the pass would otherwise force-push over. Judging a reused clone's
+unpushed work the pass would otherwise push over. Judging a reused clone's
 stale local branch is what produced a conflict verdict for a PR GitHub reported
 as mergeable.
 
@@ -2180,11 +2181,16 @@ The Deno git modules ([git_branch.ts](../worker/deno/lib/git_branch.ts),
 
 | Function                             | Purpose                                         | Strategy                                                                |
 | ------------------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------- |
-| `sync_feature_branch_with_default()` | Sync feature branch with base before work       | Rebase; recreate fresh if conflicts                                     |
-| `update_pr_branch()`                 | Keep PR branch current with base                | Rebase + force-with-lease push; never recreate (preserves PR commits)   |
+| `sync_feature_branch_with_default()` | Sync feature branch with base before work       | Merge base in; abort and report a conflict, branch untouched            |
+| `update_pr_branch()`                 | Keep PR branch current with base                | Merge base in + plain push; never force, never recreate (Issue #2807)   |
 | `update_open_pr_branches()`          | Bulk update all open PRs                        | Per-PR `update_pr_branch()` with actual `baseRefName` from GitHub API   |
-| `ensure_pr_mergeable()`              | Proactive conflict resolution before auto-merge | Rebase + auto-resolve conflicts + force-with-lease push                 |
+| `ensure_pr_mergeable()`              | Proactive conflict resolution before auto-merge | Merge base in + plain push; a conflict is aborted and reported          |
 | `resolve_rebase_conflicts()`         | Automatic conflict resolution                   | Accept remote version for each conflicted file; iterate up to 10 rounds |
+
+**Merge, never force, at PR sync points** (Issue #2807) — the three PR-branch
+sync paths above merge the target in and push with a plain push, so a PR under
+review keeps its commits and its review comments. A rejected plain push is a
+failure carrying git's stderr; it is never retried with force.
 
 **Protected branch safety** — `is_protected_branch()` prevents force-push on
 `main`, `master`, `develop`, `release`, `production`, `staging`, and

@@ -41,7 +41,7 @@ flowchart TD
     F -- pending/failed --> G[Blocked: leave PR open]
     F -- "no checks at all" --> N[Blocked: unverified —<br/>escalate to a human]
     F -- passed --> H{behindBy > 0?}
-    H -- yes --> I[Defer: branch-update maintenance<br/>rebases → CI re-runs → retry next cycle]
+    H -- yes --> I[Defer: branch-update maintenance<br/>merges target in, plain push →<br/>CI re-runs → retry next cycle]
     H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync)<br/>--match-head-commit &lt;checked SHA&gt;"]
     J -- head moved --> L[Defer: re-read checks<br/>for the new head next cycle]
     D --> K[Default branch updated by verified merge only]
@@ -411,8 +411,10 @@ refusal, never an implied pass.
 
 When the gate blocks because the branch is behind its target, the PR is **left
 open** and a deferral is logged. The existing branch-update maintenance
-(Priority 1.27, `pr_branch_update.ts`) rebases the branch, CI re-runs on the new
-head, and the next cycle re-evaluates the gate — an automatic **auto-update →
+(Priority 1.27, `pr_branch_update.ts`) merges the target into the branch and
+pushes normally — never a rebase, never a force-push, so a PR under review
+keeps its commits and review comments (#2807) — CI re-runs on the new head,
+and the next cycle re-evaluates the gate — an automatic **auto-update →
 re-check → merge-if-green** loop with no bespoke retry machinery.
 
 ```mermaid
@@ -421,7 +423,7 @@ sequenceDiagram
     participant M as Branch-update maintenance
     participant CI as GitHub CI
     G->>G: behindBy > 0 → blocked, leave PR open
-    M->>M: rebase feature branch on target
+    M->>M: merge target into feature branch, plain push
     CI->>CI: re-run required checks on new head
     G->>G: next cycle: CI passed + behindBy == 0 → merge
 ```
@@ -981,7 +983,7 @@ default tip never refills the attempt count.
 | --------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Required CI check **pending**                       | Backstop returns blocked; PR left open                     | Next cycle re-checks once CI completes                                         |
 | Required CI check **failed**                        | Backstop returns blocked; PR left open                     | Fix lands on the feature branch; CI re-runs; re-evaluated next cycle           |
-| Feature branch **behind target**                    | Backstop defers; PR left open                              | Branch-update maintenance rebases → CI re-runs → merge-if-green                |
+| Feature branch **behind target**                    | Backstop defers; PR left open                              | Branch-update maintenance merges the target in → CI re-runs → merge-if-green   |
 | Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate                    |
 | Green PR **refused by the merge**                   | Explanatory PR comment + `needs-human`                     | Human unblocks the merge; the worker does not retry while the label is applied |
 | **Branch update fails** on a behind PR              | Escalated the same way — never left silently open          | Human resolves the conflict on the feature branch                              |
