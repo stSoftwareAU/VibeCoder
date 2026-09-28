@@ -21,6 +21,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { normaliseToolCall } from "./call_storm.ts";
+
 /** Default milliseconds between progress lines. */
 export const AGENT_PROGRESS_INTERVAL_MS = 60_000;
 
@@ -130,6 +132,11 @@ export class AgentProgressTracker {
   #lastChunkMs: number;
   /** Recent tool-call times, oldest first, for the call-storm guard. */
   #toolCallTimes: number[] = [];
+  /**
+   * The normalised key of each call in {@link #toolCallTimes}, index for
+   * index, so the guard can count the novel ones (Issue #2773).
+   */
+  #toolCallKeys: string[] = [];
   /** Codex item ids already counted, so started+completed is not two calls. */
   #seenCodexItems = new Set<string>();
 
@@ -184,14 +191,42 @@ export class AgentProgressTracker {
   }
 
   /**
-   * Record one tool call: total, per-tool tally (Issue #2157), last-call
-   * summary, and call-storm history (Issue #2230).
+   * Distinct normalised tool calls recorded at or after `sinceMs`
+   * (Issue #2773) — the novel share of {@link toolCallsSince}'s window.
+   *
+   * A poll loop repeats the same few calls, so this stays small however
+   * busy it is; an investigation reading one file after another keeps it
+   * close to the total. Keys come from `normaliseToolCall`.
+   *
+   * @param sinceMs - Epoch-ms the window opens at, inclusive.
+   * @returns How many distinct calls fall inside the window.
    */
-  #recordCall(name: string, summary: string, atMs: number): void {
+  novelToolCallsSince(sinceMs: number): number {
+    const distinct = new Set<string>();
+    for (let i = this.#toolCallTimes.length - 1; i >= 0; i--) {
+      const atMs = this.#toolCallTimes[i];
+      if (atMs === undefined || atMs < sinceMs) break;
+      distinct.add(this.#toolCallKeys[i] ?? "");
+    }
+    return distinct.size;
+  }
+
+  /**
+   * Record one tool call: total, per-tool tally (Issue #2157), last-call
+   * summary, and call-storm history with its novelty key (Issues #2230,
+   * #2773).
+   */
+  #recordCall(
+    name: string,
+    summary: string,
+    key: string,
+    atMs: number,
+  ): void {
     this.#toolCalls++;
     this.#toolCallCounts.set(name, (this.#toolCallCounts.get(name) ?? 0) + 1);
     this.#lastTool = { summary, atMs };
     this.#toolCallTimes.push(atMs);
+    this.#toolCallKeys.push(key);
     const cutoff = atMs - TOOL_CALL_HISTORY_MS;
     let drop = 0;
     while (
@@ -200,7 +235,10 @@ export class AgentProgressTracker {
     ) drop++;
     const overflow = this.#toolCallTimes.length - drop - TOOL_CALL_HISTORY_MAX;
     if (overflow > 0) drop += overflow;
-    if (drop > 0) this.#toolCallTimes.splice(0, drop);
+    if (drop > 0) {
+      this.#toolCallTimes.splice(0, drop);
+      this.#toolCallKeys.splice(0, drop);
+    }
   }
 
   /**
@@ -248,10 +286,14 @@ export class AgentProgressTracker {
         (block as { type?: unknown }).type === "tool_use"
       ) {
         const name = String((block as { name?: unknown }).name ?? "tool");
-        const detail = describeToolInput(
-          (block as { input?: unknown }).input,
+        const input = (block as { input?: unknown }).input;
+        const detail = describeToolInput(input);
+        this.#recordCall(
+          name,
+          detail ? `${name} ${detail}` : name,
+          normaliseToolCall(name, input),
+          atMs,
         );
-        this.#recordCall(name, detail ? `${name} ${detail}` : name, atMs);
       }
     }
   }
@@ -302,13 +344,19 @@ export class AgentProgressTracker {
       : itemType === "mcp_tool_call" || itemType === "mcp_tool"
       ? String(item.name ?? item.server ?? "mcp")
       : String(item.name ?? itemType);
-    const detail = describeToolInput({
+    const input = {
       command: item.command,
       path: item.path,
       file_path: item.file_path,
       url: item.url,
-    });
-    this.#recordCall(name, detail ? `${name} ${detail}` : name, atMs);
+    };
+    const detail = describeToolInput(input);
+    this.#recordCall(
+      name,
+      detail ? `${name} ${detail}` : name,
+      normaliseToolCall(name, input),
+      atMs,
+    );
   }
 
   #maybeEmit(): void {

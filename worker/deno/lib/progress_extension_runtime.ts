@@ -14,7 +14,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { CallStormPolicy } from "./call_storm.ts";
+import {
+  type CallStormPolicy,
+  DEFAULT_CALL_STORM_NOVEL_SHARE,
+} from "./call_storm.ts";
 import {
   compareDescendantCpu,
   type DescendantCpuSnapshot,
@@ -48,6 +51,8 @@ export interface ProgressExtensionConfig {
   callStormEnabled?: boolean;
   callStormCalls?: number;
   callStormWindowSeconds?: number;
+  /** Novel share below which a busy window is a storm (Issue #2773). */
+  callStormNovelShare?: number;
 }
 
 /**
@@ -69,8 +74,11 @@ export function buildCallStormPolicy(
   const windowSeconds = config.callStormWindowSeconds ?? 0;
   // Config validation rejects these, so reaching here means a caller built
   // the config by hand. Refuse to guard rather than stop every run.
+  const novelShare = config.callStormNovelShare ??
+    DEFAULT_CALL_STORM_NOVEL_SHARE;
   if (callThreshold <= 0 || windowSeconds <= 0) return undefined;
-  return { enabled: true, windowSeconds, callThreshold };
+  if (novelShare <= 0 || novelShare > 1) return undefined;
+  return { enabled: true, windowSeconds, callThreshold, novelShare };
 }
 
 /**
