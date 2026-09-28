@@ -179,7 +179,7 @@ Deno.test("twin pair - both surfaces reject tests added only for coverage (Issue
     ] as const
   ) {
     assert(
-      /not every change needs a new test/i.test(rule),
+      /not every\s+change needs a new test/i.test(rule),
       `${surface} must allow changes with no new test`,
     );
     assert(
