@@ -28,9 +28,11 @@ Optional argument: `owner/name` to review one repo only.
 2. **Nothing is reviewed until CI is green.** Pending checks wait; failing
    checks, merge conflicts and drafts belong to the fleet, so leave them
    alone and post nothing.
-3. **New functionality needs a test where appropriate.** Fable judges it: a
-   refactor, docs, config or workflow change may not need one; new behaviour
-   or a bug fix does.
+3. **Judge the safety net, not test count.** Read the target repository's
+   canonical testing standard. New behaviour or a real bug fix usually needs
+   a test that would fail on the regression, unless existing tests already
+   cover it. A refactor, docs, config, workflow or presentation change may not
+   need one. Do not reward assertions that pin incidental CSS, DOM or internals.
 4. **A test is never removed or loosened to make the quality gate pass.** A
    test removed, skipped, weakened or loosened without the linked issue
    requiring it is a blocking finding: the PR goes back to the fleet to
@@ -39,8 +41,9 @@ Optional argument: `owner/name` to review one repo only.
    old implementation) is the owner's call: the PR is held with a
    comment-only review, neither approved nor sent back. Trivial edits
    (formatting, renames, imports, added cases, fixture paths) are not, and
-   neither are edits that only **tighten** a test (it now asserts more or
-   allows less, as the issue asks): those are approved.
+   neither are edits that only **tighten** a meaningful behavioural or
+   contractual test (it now asserts more or allows less, as the issue asks):
+   those are approved. An added brittle assertion is a finding, not a benefit.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
@@ -130,10 +133,18 @@ single message so they run in parallel, each with `model: "fable"` and
 > 3. Look for correctness bugs, unhandled edge cases, security problems
 >    (injection, secrets, unsafe permissions in workflows), race conditions
 >    and regressions for existing callers.
-> 4. Check the tests. New behaviour and bug fixes need a test that would fail
->    without the change; a pure refactor, docs, config or workflow change may
->    not. {noTestAdded: "The PR changes code but adds no test: decide whether
->    one was needed."} A missing test that was needed is a finding.
+> 4. Check the tests against the repository's canonical testing guidance.
+>    New behaviour and real bug fixes usually need a test that would fail on
+>    the externally meaningful regression; existing coverage may suffice.
+>    Refactors and UI restyles may need no new test. {noTestAdded: "The PR
+>    changes code but adds no test: decide whether existing tests cover the
+>    supported behaviour or a new one is warranted."} A missing safety net
+>    that matters is a finding. Flag new assertions on incidental CSS values,
+>    DOM shape, component/private function names or version strings unless
+>    the linked issue makes these an explicit contract. Prefer user-visible
+>    browser behaviour and semantic locators for UI, positive and negative
+>    contracts for APIs; visual baselines are appropriate when appearance is
+>    an explicit requirement and the baseline is reviewable.
 > 5. Judge every change to an existing test: {testChanges}, plus any inline
 >    test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change is
 >    **meaningful** if it removes a test case, weakens or deletes an
@@ -141,7 +152,8 @@ single message so they run in parallel, each with `model: "fable"` and
 >    loosens a test. It is **trivial** if it only reformats, renames,
 >    updates imports or fixture paths, or adds cases or assertions. It is
 >    **tightened** if an expected value or behaviour changes only to make
->    the test stricter, as the issue asks: it now asserts more, allows less
+>    a supported contract test stricter, as the issue asks: it now asserts
+>    more, allows less
 >    (e.g. no longer tolerates a permission or a call it used to allow), or
 >    pins a stricter count, and nothing it used to check is dropped. A change
 >    that tightens one thing and loosens another is **meaningful**.

@@ -62,6 +62,14 @@ The audit exists to flag tests that get in the way of refactoring. The
 guiding distinction is an **informal project heuristic** — the WHAT/HOW
 heuristic — not an established industry taxonomy:
 
+A test earns its maintenance cost when failure strongly suggests a supported
+behaviour, invariant or contract regressed. A presentation change or private
+refactor alone is not a reason to demand a new test. For UI/PWA cases apply
+[Playwright's user-visible behaviour guidance](https://playwright.dev/docs/best-practices)
+and [Testing Library's guiding principles](https://testing-library.com/docs/guiding-principles/);
+for API cases respect documented success and error contracts. These external
+principles motivate the heuristic, but the WHAT/HOW labels are local shorthand.
+
 - A **behaviour-based test** — called a **WHAT-test** in this audit —
   asserts on externally observable behaviour or outcome: the function's
   return value, the side effect a caller can see, the exit code, the
@@ -330,6 +338,14 @@ flag:
   exporting a private function purely to assert on it; testing
   symbols the public API does not expose; asserting on the AST or
   source text of the function under test.
+- **Brittle UI assertions** — exact CSS values, pixel dimensions, class
+  names, DOM hierarchy, component names or framework internals when a restyle
+  could change them without affecting the user's task. Prefer a browser test
+  of the visible journey/state and locators based on role, accessible name,
+  label or a stable product-level identifier. A visual baseline is legitimate
+  when appearance itself is an explicit product contract and the baseline is
+  reviewable. Do not flag genuine accessibility semantics or intentional
+  visual/structural contracts merely because they inspect the UI.
 
 ### 2. Source-text greps used as assertions
 
@@ -455,6 +471,9 @@ Do **not** flag:
 - trivial getters / setters / re-exports with no logic;
 - a function already exercised indirectly through a public caller that
   *is* tested (the behaviour has a net) — note the covering test.
+- a public symbol whose absence from a direct test does not leave any
+  supported behaviour or contract without meaningful protection. A static
+  coverage count alone cannot justify a new test.
 
 Report each confirmed gap as a finding naming the file, line, and
 symbol. Prefer cautious, non-categorical wording such as

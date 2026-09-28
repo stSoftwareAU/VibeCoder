@@ -63,6 +63,14 @@ guiding distinction is **behaviour versus implementation — the WHAT/HOW
 heuristic** — an informal project heuristic, not established industry
 taxonomy:
 
+An assertion should fail when a supported behaviour, invariant or contract
+regresses, not when a safe restyle or private refactor changes its incidental
+shape. For UI/PWA tests, this follows Playwright's
+[user-visible behaviour guidance](https://playwright.dev/docs/best-practices)
+and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
+The audit checks whether a test's maintenance cost buys that confidence;
+static coverage gaps are candidates for review, never a test-count target.
+
 - **Behaviour-based test (good), called a WHAT-test in this audit.**
   Asserts on externally observable behaviour or outcome — the function's
   return value, the side effect a caller can see, the exit code, the
@@ -116,7 +124,7 @@ Claude can cite a specific file/line-range in the current source tree.
 
 | # | Audit check | What it flags |
 | - | ----------- | ------------- |
-| 1 | **Implementation-coupled assertions** | Call-order assertions, mocks of internal calls, assertions on private functions or the AST/source text of the function under test. Interaction / mock assertions are flagged **only** when the interaction is not part of the public contract — verifying a required payment-gateway call or audit event is legitimate observable behaviour. |
+| 1 | **Implementation-coupled assertions** | Call-order assertions, mocks of internal calls, assertions on private functions or the AST/source text of the function under test. Also flag exact CSS values, pixels, class names, DOM shape or component names that break on a safe UI redesign. Interaction and visual assertions are legitimate when the interaction or appearance is an explicit contract and the baseline is reviewable. |
 | 2 | **Source-text greps as assertions** | Tests that grep the source file for a pattern (`grep -qE '^foo\(\)' src/foo.sh`) instead of running the code. Any rename breaks the test without a real regression. |
 | 3 | **Performance / timing assertions in unit tests** | Wall-clock thresholds inside unit tests (`expect(elapsed).toBeLessThan(100)`). Flaky across machines; performance belongs in a dedicated benchmark. |
 | 4 | **Benchmarks in the unit-test runner** | A test that iterates `10_000` times or measures throughput and asserts only that the loop finished. Slows the suite, adds no correctness signal. |
