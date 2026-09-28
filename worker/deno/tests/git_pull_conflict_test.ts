@@ -14,6 +14,12 @@ import {
   updatePrBranch,
 } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  isForcedPush,
+  recordedPushes,
+  recordedRebase,
+  startGitTrace,
+} from "./support/git_trace.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers — create real git repos for integration testing
@@ -158,13 +164,17 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose changes collide with the ba
     await runGitCommand(["push", "origin", "main"], { cwd: localPath });
     await runGitCommand(["checkout", "feature-branch"], { cwd: localPath });
     const before = await heads(localPath, "feature-branch");
+    const trace = await startGitTrace();
 
     const result = await updatePrBranch(
       "feature-branch",
       "main",
-      { cwd: localPath },
+      { cwd: localPath, env: trace.env },
       "conflicting",
     );
+    // Issue #2807: the conflict is aborted, never pushed.
+    assertEquals(await recordedPushes(trace), [], "a conflict is not pushed");
+    await trace.dispose();
 
     // Before Issue #4373 this "succeeded" by taking main's version of the
     // whole file and force-pushing — the PR's change silently vanished.
@@ -194,7 +204,7 @@ Deno.test("updatePrBranch - a 'conflicting' PR whose changes collide with the ba
   }
 });
 
-Deno.test("updatePrBranch - a 'behind' PR whose rebase conflicts is aborted and LEFT UNTOUCHED, never side-picked (Issue #4373)", async () => {
+Deno.test("updatePrBranch - a 'behind' PR whose merge conflicts is aborted and LEFT UNTOUCHED, never side-picked (Issues #4373, #2807)", async () => {
   const tmpDir = await createTempDir();
   try {
     const { localPath } = await setupTestRepos(tmpDir);
@@ -228,14 +238,18 @@ Deno.test("updatePrBranch - a 'behind' PR whose rebase conflicts is aborted and 
     await runGitCommand(["push", "origin", "main"], { cwd: localPath });
     await runGitCommand(["checkout", "issue-42-update"], { cwd: localPath });
     const before = await heads(localPath, "issue-42-update");
+    const trace = await startGitTrace();
 
-    // reason "behind": the rebase path.
+    // reason "behind": merges the base in (Issue #2807 — no longer a rebase).
     const result = await updatePrBranch(
       "issue-42-update",
       "main",
-      { cwd: localPath },
+      { cwd: localPath, env: trace.env },
       "behind",
     );
+    assertEquals(await recordedRebase(trace), false, "no git rebase ran");
+    assertEquals(await recordedPushes(trace), [], "a conflict is not pushed");
+    await trace.dispose();
     assertEquals(result.ok, false);
     if (!result.ok) {
       assertEquals(
@@ -249,24 +263,23 @@ Deno.test("updatePrBranch - a 'behind' PR whose rebase conflicts is aborted and 
       await Deno.readTextFile(`${localPath}/config.json`),
       '{"version": 2, "feature": true}\n',
     );
-    const rebasing = await runGitCommand([
-      "rev-parse",
-      "--git-path",
-      "rebase-merge",
-    ], { cwd: localPath });
-    const rebaseDir = rebasing.ok ? rebasing.value.stdout.trim() : "";
-    let inProgress = false;
-    try {
-      await Deno.stat(`${localPath}/${rebaseDir}`);
-      inProgress = true;
-    } catch { /* aborted */ }
-    assertEquals(inProgress, false, "rebase aborted");
+    // Issue #2807: the merge that replaced the rebase is aborted — no
+    // MERGE_HEAD and a clean tree.
+    const merging = await runGitCommand(
+      ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+      { cwd: localPath },
+    );
+    assertEquals(merging.ok && merging.value.code !== 0, true, "merge aborted");
+    const status = await runGitCommand(["status", "--porcelain"], {
+      cwd: localPath,
+    });
+    assertEquals(status.ok && status.value.stdout.trim(), "");
   } finally {
     await cleanup(tmpDir);
   }
 });
 
-Deno.test("updatePrBranch - a 'behind' PR with NO conflict is still rebased and pushed (Issue #4373 keeps the clean path)", async () => {
+Deno.test("updatePrBranch - a 'behind' PR with NO conflict merges the base in and pushes without force, keeping its commits (Issues #4373, #2807)", async () => {
   const tmpDir = await createTempDir();
   try {
     const { localPath } = await setupTestRepos(tmpDir);
@@ -281,16 +294,82 @@ Deno.test("updatePrBranch - a 'behind' PR with NO conflict is still rebased and 
     await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
     await runGitCommand(["push", "origin", "main"], { cwd: localPath });
     await runGitCommand(["checkout", "issue-7-docs"], { cwd: localPath });
+    const before = await heads(localPath, "issue-7-docs");
+    const trace = await startGitTrace();
 
     const result = await updatePrBranch("issue-7-docs", "main", {
       cwd: localPath,
+      env: trace.env,
     }, "behind");
     assertEquals(result.ok, true, JSON.stringify(result));
     const after = await heads(localPath, "issue-7-docs");
-    assertEquals(after.local, after.remote, "rebased head force-pushed");
-    // Both files present after the rebase.
+    assertEquals(after.local, after.remote, "merged head pushed");
+    // The old PR head is an ancestor of the new one: no history rewritten.
+    const ancestor = await runGitCommand(
+      ["merge-base", "--is-ancestor", before.remote, after.remote],
+      { cwd: localPath },
+    );
+    assertEquals(ancestor.ok && ancestor.value.code, 0, "old head preserved");
+    const pushes = await recordedPushes(trace);
+    assertEquals(pushes.length, 1, JSON.stringify(pushes));
+    for (const push of pushes) {
+      assertEquals(isForcedPush(push), false, push.join(" "));
+    }
+    assertEquals(await recordedRebase(trace), false, "no git rebase ran");
+    await trace.dispose();
+    // Both files present after the merge.
     await Deno.stat(`${localPath}/other.md`);
     await Deno.stat(`${localPath}/docs.md`);
+  } finally {
+    await cleanup(tmpDir);
+  }
+});
+
+Deno.test("updatePrBranch - a rejected plain push fails loud with git's stderr and is never retried with force (Issue #2807)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    const { remotePath, localPath } = await setupTestRepos(tmpDir);
+    await runGitCommand(["checkout", "-b", "issue-8-docs"], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/docs.md`, "feature docs\n");
+    await runGitCommand(["add", "docs.md"], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "Feature docs"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "issue-8-docs"], { cwd: localPath });
+    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/other.md`, "main change\n");
+    await runGitCommand(["add", "other.md"], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runGitCommand(["checkout", "issue-8-docs"], { cwd: localPath });
+    const before = await heads(localPath, "issue-8-docs");
+
+    // The remote now refuses every push, as a branch rule would.
+    const hook = `${remotePath}/hooks/pre-receive`;
+    await Deno.writeTextFile(
+      hook,
+      "#!/bin/sh\necho 'refused by the test rule' >&2\nexit 1\n",
+    );
+    await Deno.chmod(hook, 0o755);
+    const trace = await startGitTrace();
+
+    const result = await updatePrBranch("issue-8-docs", "main", {
+      cwd: localPath,
+      env: trace.env,
+    }, "behind");
+
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "refused by the test rule");
+      assertEquals(isPrBranchConflictError(result.error), false);
+    }
+    const pushes = await recordedPushes(trace);
+    assertEquals(pushes.length, 1, "one plain push, no forced retry");
+    assertEquals(isForcedPush(pushes[0]!), false, pushes[0]!.join(" "));
+    await trace.dispose();
+    const remote = await runGitCommand(
+      ["rev-parse", "issue-8-docs"],
+      { cwd: remotePath },
+    );
+    assertEquals(remote.ok && remote.value.stdout.trim(), before.remote);
   } finally {
     await cleanup(tmpDir);
   }
