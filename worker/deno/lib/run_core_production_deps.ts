@@ -1097,6 +1097,32 @@ export async function createProductionRunCoreDeps(
     return undefined;
   }
 
+  /**
+   * Whether the PR that reserved a repository for the maintenance lane is
+   * closed or merged (Issue #2795). `undefined` for any other state, which
+   * keeps the reservation; a failed read throws and the lane logs it.
+   */
+  async function isReservingPrClosed(
+    repo: string,
+    pr: number,
+  ): Promise<boolean | undefined> {
+    const raw = await runGhCommand([
+      "pr",
+      "view",
+      String(pr),
+      "--repo",
+      repo,
+      "--json",
+      "state",
+      "--jq",
+      ".state",
+    ]);
+    const prState = raw.trim().toUpperCase();
+    if (prState === "CLOSED" || prState === "MERGED") return true;
+    if (prState === "OPEN") return false;
+    return undefined;
+  }
+
   // Issue #580: the CI-check state lives on the work volume, not on a relative
   // path under the read-only checkout. The volume root rather than a repo
   // clone, so the counters survive a re-clone.
@@ -2883,6 +2909,9 @@ export async function createProductionRunCoreDeps(
 
       return { ok: true, value: { processed: drain.processed } };
     },
+
+    // Maintenance lane: drop a reservation once its PR closes (#2795).
+    isReservingPrClosed,
 
     // -- Priority 1.05: raise PRs a secondary rate limit refused (#1951) --
     async drainDeferredPrs() {
