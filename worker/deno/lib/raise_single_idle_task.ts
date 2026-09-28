@@ -76,10 +76,15 @@ export interface RaiseSingleIdleTaskOptions {
   /** Forwarded to {@link createAllIdleTaskWrappers} per repo. */
   ghCommandFn?: CreateAllIdleTaskWrappersDeps["ghCommandFn"];
   ensureLabelFn?: CreateAllIdleTaskWrappersDeps["ensureLabelFn"];
-  findExistingWrapperTitlesFn?:
-    CreateAllIdleTaskWrappersDeps["findExistingWrapperTitlesFn"];
+  findOpenIdleTaskIssuesFn?:
+    CreateAllIdleTaskWrappersDeps["findOpenIdleTaskIssuesFn"];
   nowFn?: CreateAllIdleTaskWrappersDeps["nowFn"];
   runId?: string;
+  /**
+   * Bypass the any-open idle-task gate (Issue #2753). Forwarded to
+   * {@link createAllIdleTaskWrappers}; exact-title dedup still applies.
+   */
+  force?: CreateAllIdleTaskWrappersDeps["force"];
   /**
    * Checkout root the wrapper bodies' prompt files are read from
    * (Issue #1024). Forwarded to {@link createAllIdleTaskWrappers}.
@@ -140,9 +145,10 @@ export async function raiseSingleIdleTask(
       templateNames,
       ghCommandFn: opts.ghCommandFn,
       ensureLabelFn: opts.ensureLabelFn,
-      findExistingWrapperTitlesFn: opts.findExistingWrapperTitlesFn,
+      findOpenIdleTaskIssuesFn: opts.findOpenIdleTaskIssuesFn,
       nowFn: opts.nowFn,
       runId: opts.runId,
+      force: opts.force,
       rootDir: opts.rootDir,
       log,
     });

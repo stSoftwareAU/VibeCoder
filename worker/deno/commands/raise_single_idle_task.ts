@@ -21,10 +21,18 @@
  * re-running never produces duplicates. A per-repo failure is recorded and the
  * sweep continues.
  *
+ * A repo that already holds any open `idle-task` issue is skipped whole
+ * (Issue #2752). `--force` files past that gate, logging the bypassed issue
+ * as `action=forced`; exact-title dedup still applies (Issue #2753):
+ *
+ *   deno run ... raise-single-idle-task \
+ *     --template documentation-audit --repo org/a --force
+ *
  * Structured progress lines (parseable by operator log scrapers) are emitted
  * by the helpers via the injected `log` sink:
  *
  *   [create-all-idle-task] repo=<r> template=<t> action=filed label=idle-task
+ *   [idle-task] repo=<r> issue=<n> action=forced
  *   [raise-idle-task] repo=<r> template=<t> action=done created=N skipped=N
  *   [raise-idle-task] repo=<r> template=<t> action=error reason=<msg>
  *
@@ -32,6 +40,7 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import { coerceBooleanFlag, findUnknownOptions } from "../lib/command_args.ts";
 import {
   raiseSingleIdleTask,
   type RaiseSingleIdleTaskOptions,
@@ -42,8 +51,8 @@ interface TestDeps {
   log?: (line: string) => void;
   ghCommandFn?: RaiseSingleIdleTaskOptions["ghCommandFn"];
   ensureLabelFn?: RaiseSingleIdleTaskOptions["ensureLabelFn"];
-  findExistingWrapperTitlesFn?:
-    RaiseSingleIdleTaskOptions["findExistingWrapperTitlesFn"];
+  findOpenIdleTaskIssuesFn?:
+    RaiseSingleIdleTaskOptions["findOpenIdleTaskIssuesFn"];
   nowFn?: RaiseSingleIdleTaskOptions["nowFn"];
   /**
    * Checkout root the wrapper bodies' prompt files are read from
@@ -52,6 +61,15 @@ interface TestDeps {
    */
   rootDir?: RaiseSingleIdleTaskOptions["rootDir"];
 }
+
+/** Options this command accepts; `__testDeps` is the injected test seam. */
+const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
+  "template",
+  "repo",
+  "monitored-repos",
+  "force",
+  "__testDeps",
+]);
 
 function splitCsv(value: unknown): string[] {
   if (typeof value !== "string" || value.length === 0) return [];
@@ -66,7 +84,8 @@ export const raiseSingleIdleTaskCommand: Command = {
   description:
     "Seed one named idle-task template's wrapper (e.g. documentation-audit) " +
     "into one or more named repos, skipping any whose canonical title is " +
-    "already open (Issue #3320).",
+    "already open (Issue #3320). A repo with any open idle-task issue is " +
+    "skipped unless --force is passed (Issue #2753).",
 
   async execute(
     args: Record<string, unknown>,
@@ -81,6 +100,23 @@ export const raiseSingleIdleTaskCommand: Command = {
       return {
         success: false,
         message: "Missing required argument: --template <name>",
+      };
+    }
+
+    // A bare `--force` bypasses the any-open idle-task gate (Issue #2753);
+    // an unreadable value is refused rather than read as "not forced".
+    const forceResult = coerceBooleanFlag(args["force"], "force", false);
+    if (!forceResult.ok) {
+      return { success: false, message: forceResult.error.message };
+    }
+    // A misspelt flag (e.g. `--forse`) is refused, not silently dropped.
+    const unknown = findUnknownOptions(args, KNOWN_OPTIONS);
+    if (unknown.length > 0) {
+      return {
+        success: false,
+        message: `raise-single-idle-task: unknown option(s) ` +
+          `${unknown.map((k) => `--${k}`).join(", ")} — accepts only ` +
+          `--template, --repo, --monitored-repos, --force`,
       };
     }
 
@@ -105,9 +141,10 @@ export const raiseSingleIdleTaskCommand: Command = {
       repos,
       ghCommandFn: deps.ghCommandFn,
       ensureLabelFn: deps.ensureLabelFn,
-      findExistingWrapperTitlesFn: deps.findExistingWrapperTitlesFn,
+      findOpenIdleTaskIssuesFn: deps.findOpenIdleTaskIssuesFn,
       nowFn: deps.nowFn,
       rootDir: deps.rootDir,
+      force: forceResult.value,
       log,
     });
 

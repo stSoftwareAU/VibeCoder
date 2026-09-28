@@ -139,10 +139,13 @@ The command then runs seven steps:
 6. **Seed all nineteen idle-task wrappers** — file one wrapper issue per
    registered idle-task template in the **target** repo; the authoritative list
    is the [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry).
-   This bypasses the normal one-wrapper-per-tick random pick and the cross-repo
-   "any open idle-task blocks filing" gate so a single call seeds every
-   template at once. It stays idempotent — a wrapper whose canonical title is
-   already open is skipped.
+   This bypasses the normal one-wrapper-per-tick random pick so a single call
+   seeds every template at once, but it honours the per-repo any-open gate
+   (Issue #2752): when the target already holds **any** open `idle-task`
+   issue, nothing is filed and the log reads
+   `[idle-task] repo=<repo> issue=<n> action=skipped reason=existing_wrapper_open`.
+   A lookup that fails is never read as clean — nothing is filed and the log
+   reads `reason=lookup_failed`.
 7. **Comment and close** — post a summary comment (repo added or already
    present, detected visibility, label-sync summary, branch-protection summary,
    wrappers created/skipped) and close the add-repo issue as completed.
@@ -165,7 +168,7 @@ flowchart TD
     G --> H["Append slug to<br/>.config.json repos[]<br/>(idempotent)"]
     H --> S["Sync canonical labels<br/>(idempotent, non-fatal)"]
     S --> P["Configure default-branch<br/>protection (visibility-aware,<br/>idempotent, non-fatal)"]
-    P --> I["Seed all nineteen<br/>idle-task wrappers<br/>(idempotent)"]
+    P --> I["Seed all nineteen<br/>idle-task wrappers<br/>(skipped if any idle-task open)"]
     I --> J["Success comment<br/>+ close issue"]
     J --> K["Next config reload /<br/>worker restart:<br/>repo becomes active"]
 ```

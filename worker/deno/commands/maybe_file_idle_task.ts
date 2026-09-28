@@ -85,10 +85,10 @@ import { guardedLabelArgs } from "../lib/guarded_issue_labels.ts";
 import type { Result } from "../types.ts";
 import {
   type ExistingIdleTaskIssue,
-  type ExistingIdleTaskWrapper,
   findExistingIdleTaskIssue as defaultFindExistingIdleTaskIssue,
   findOpenIdleTaskWrappers as defaultFindOpenIdleTaskWrappers,
   IDLE_TASK_LABEL,
+  type IdleTaskWrapperCensus,
 } from "../lib/idle_task_issue.ts";
 import {
   getTemplate,
@@ -192,6 +192,7 @@ export interface MaybeFileIdleTaskData {
     | "no_template"
     | "duplicate"
     | "existing_wrapper_open"
+    | "lookup_failed"
     | "no_idle_capacity"
     | "pending_results"
     | "approved_work_in_flight"
@@ -276,14 +277,15 @@ interface TestDeps {
   /**
    * Per-repo wrapper census (Issues #2092, #1083). Scans every monitored
    * repo and returns one entry per repo already holding an open `idle-task`
-   * wrapper; an empty array means the whole set is clean. Those repos are
+   * wrapper, plus every repo whose lookup failed (Issue #2750). Both are
    * subtracted from the candidate list — the gate is one wrapper per
-   * repository, not one across the fleet. Defaults to
+   * repository, not one across the fleet, and an unknown repo is never
+   * clean. A throw skips filing for the tick. Defaults to
    * {@link defaultFindOpenIdleTaskWrappers}.
    */
   findOpenWrappersFn?: (
     repos: readonly string[],
-  ) => Promise<ExistingIdleTaskWrapper[]>;
+  ) => Promise<IdleTaskWrapperCensus>;
   /** Ensure-label helper for the `idle-task` label. */
   ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /** gh CLI runner. */
@@ -1002,16 +1004,30 @@ export const maybeFileIdleTaskCommand: Command = {
     //     dedup inside `checkRepoGates`), and this command files at most one
     //     wrapper per invocation, so the next tick re-decides from fresh
     //     state instead of scattering wrappers in one pass.
-    let heldWrappers: ExistingIdleTaskWrapper[];
+    //
+    //     Issue #2750 — fail closed. A repo whose lookup failed is unknown,
+    //     never clean, so it is dropped from the candidate set; a census
+    //     that throws outright files nothing this tick.
+    let census: IdleTaskWrapperCensus;
     try {
-      heldWrappers = await findOpenWrappersFn(monitoredRepos);
+      census = await findOpenWrappersFn(monitoredRepos);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log(
-        `[idle-task] template=${template.name} action=warn reason=cross_repo_check_failed message=${message}`,
+        `[idle-task] template=${template.name} action=skipped reason=lookup_failed scope=monitored_set message=${message}`,
       );
-      heldWrappers = [];
+      return {
+        success: true,
+        message: "[idle-task] skipped: the open idle-task wrapper census " +
+          "failed, so no repo can be confirmed clean",
+        data: {
+          action: "skipped",
+          reason: "lookup_failed",
+          template: template.name,
+        },
+      };
     }
+    const heldWrappers = census.wrappers;
     // Log every refusal, naming the repo and the issue that held it. The
     // absence of this line is why a fleet-wide cap of one went unnoticed for
     // a week (#1083): a slot that declines to file must say so.
@@ -1020,20 +1036,33 @@ export const maybeFileIdleTaskCommand: Command = {
         `[idle-task] template=${template.name} repo=${held.repo} issue=${held.number} action=skipped reason=existing_wrapper_open scope=repo`,
       );
     }
-    const heldRepos = new Set(heldWrappers.map((w) => w.repo));
-    const candidateRepos = monitoredRepos.filter((r) => !heldRepos.has(r));
+    for (const repo of census.failedRepos) {
+      log(
+        `[idle-task] repo=${repo} action=skipped reason=lookup_failed template=${template.name} scope=repo`,
+      );
+    }
+    const excludedRepos = new Set([
+      ...heldWrappers.map((w) => w.repo),
+      ...census.failedRepos,
+    ]);
+    const candidateRepos = monitoredRepos.filter((r) => !excludedRepos.has(r));
     if (candidateRepos.length === 0) {
+      const failed = census.failedRepos.length;
+      // Any unknown repo makes the whole-set refusal a lookup failure, not
+      // proof that every repo holds a wrapper.
+      const reason = failed > 0 ? "lookup_failed" : "existing_wrapper_open";
       const first = heldWrappers[0];
       log(
-        `[idle-task] template=${template.name} action=skipped reason=existing_wrapper_open scope=monitored_set held=${heldWrappers.length}`,
+        `[idle-task] template=${template.name} action=skipped reason=${reason} scope=monitored_set held=${heldWrappers.length} failed=${failed}`,
       );
       return {
         success: true,
-        message:
-          `[idle-task] skipped: every monitored repo already holds an open idle-task wrapper (${heldWrappers.length})`,
+        message: failed > 0
+          ? `[idle-task] skipped: no monitored repo is confirmed clean (held=${heldWrappers.length}, lookup_failed=${failed})`
+          : `[idle-task] skipped: every monitored repo already holds an open idle-task wrapper (${heldWrappers.length})`,
         data: {
           action: "skipped",
-          reason: "existing_wrapper_open",
+          reason,
           template: template.name,
           ...(first === undefined ? {} : { repo: first.repo }),
         },
