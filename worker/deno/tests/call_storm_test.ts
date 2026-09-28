@@ -21,6 +21,7 @@ const POLICY: CallStormPolicy = {
   enabled: true,
   windowSeconds: 300,
   callThreshold: 60,
+  novelShare: 0.25,
 };
 
 const WINDOW_MS = 300_000;
@@ -28,6 +29,7 @@ const WINDOW_MS = 300_000;
 Deno.test("decideCallStorm - 60 calls in five minutes with an unchanged tree is a stall naming the loop", () => {
   const verdict = decideCallStorm({
     toolCalls: 60,
+    novelToolCalls: 1,
     treeState: "unchanged",
     treeUnchangedForMs: WINDOW_MS,
     lastToolSummary: "Bash echo w252",
@@ -57,6 +59,7 @@ Deno.test("decideCallStorm - 60 calls with a working-tree change is not a stall"
   assertEquals(
     decideCallStorm({
       toolCalls: 60,
+      novelToolCalls: 1,
       treeState: "advanced",
       // The tree advanced at the last check, so it has not stood still for a
       // window — a busy agent that is actually changing files.
@@ -73,6 +76,7 @@ Deno.test("decideCallStorm - a tree that advanced inside the window is not a sta
   assertEquals(
     decideCallStorm({
       toolCalls: 200,
+      novelToolCalls: 1,
       treeState: "unchanged",
       treeUnchangedForMs: 120_000,
     }, POLICY),
@@ -84,6 +88,7 @@ Deno.test("decideCallStorm - 10 calls in five minutes is not a stall", () => {
   assertEquals(
     decideCallStorm({
       toolCalls: 10,
+      novelToolCalls: 1,
       treeState: "unchanged",
       treeUnchangedForMs: WINDOW_MS,
       lastToolSummary: "Read lib/x.ts",
@@ -99,6 +104,7 @@ Deno.test("decideCallStorm - an unverifiable tree never stops a run early", () =
   assertEquals(
     decideCallStorm({
       toolCalls: 600,
+      novelToolCalls: 1,
       treeState: "unknown",
       treeUnchangedForMs: WINDOW_MS * 4,
     }, POLICY),
@@ -109,6 +115,7 @@ Deno.test("decideCallStorm - an unverifiable tree never stops a run early", () =
 Deno.test("decideCallStorm - the guard is silent when disabled or unconfigured", () => {
   const storming = {
     toolCalls: 600,
+    novelToolCalls: 1,
     treeState: "unchanged" as const,
     treeUnchangedForMs: WINDOW_MS * 4,
   };
@@ -133,6 +140,7 @@ Deno.test("decideCallStorm - the threshold is inclusive and one call below it is
   assert(
     decideCallStorm({
       toolCalls: 60,
+      novelToolCalls: 1,
       treeState: "unchanged",
       treeUnchangedForMs: WINDOW_MS,
     }, POLICY).stalled,
@@ -140,6 +148,7 @@ Deno.test("decideCallStorm - the threshold is inclusive and one call below it is
   assertEquals(
     decideCallStorm({
       toolCalls: 59,
+      novelToolCalls: 1,
       treeState: "unchanged",
       treeUnchangedForMs: WINDOW_MS,
     }, POLICY),
@@ -156,9 +165,10 @@ Deno.test("callStormWindowMs - reports the window, and zero when the guard is of
 Deno.test("decideCallStorm - a sub-minute window reads in seconds", () => {
   const verdict = decideCallStorm({
     toolCalls: 5,
+    novelToolCalls: 1,
     treeState: "unchanged",
     treeUnchangedForMs: 45_000,
-  }, { enabled: true, windowSeconds: 45, callThreshold: 5 });
+  }, { enabled: true, windowSeconds: 45, callThreshold: 5, novelShare: 0.25 });
   assert(verdict.stalled);
   if (!verdict.stalled) return;
   assert(
@@ -170,9 +180,15 @@ Deno.test("decideCallStorm - a sub-minute window reads in seconds", () => {
 Deno.test("decideCallStorm - a mixed window reads as minutes and seconds", () => {
   const verdict = decideCallStorm({
     toolCalls: 70,
+    novelToolCalls: 1,
     treeState: "unchanged",
     treeUnchangedForMs: 330_000,
-  }, { enabled: true, windowSeconds: 330, callThreshold: 60 });
+  }, {
+    enabled: true,
+    windowSeconds: 330,
+    callThreshold: 60,
+    novelShare: 0.25,
+  });
   assert(verdict.stalled);
   if (!verdict.stalled) return;
   assert(
@@ -182,18 +198,19 @@ Deno.test("decideCallStorm - a mixed window reads as minutes and seconds", () =>
 });
 
 Deno.test("decideCallStorm - one window is a warning, so a storm needs more than one check", () => {
-  // The read-heavy shape the shipped defaults could otherwise stop: sixty
-  // Read/Grep calls in the first five minutes of a run, before the first
-  // edit. The window verdict is a storm — that is what this function
-  // answers — but the runner requires CALL_STORM_CONSECUTIVE_CHECKS of them
-  // in a row, so ten minutes of it, not five, is what stops a run.
-  const exploration = decideCallStorm({
+  // A repetitive window — sixty calls re-reading a handful of files in the
+  // first five minutes of a run, before the first edit. The window verdict
+  // is a storm — that is what this function answers — but the runner
+  // requires CALL_STORM_CONSECUTIVE_CHECKS of them in a row, so ten minutes
+  // of it, not five, is what stops a run.
+  const rereading = decideCallStorm({
     toolCalls: 60,
+    novelToolCalls: 5,
     treeState: "unchanged",
     treeUnchangedForMs: WINDOW_MS,
     lastToolSummary: "Read worker/deno/lib/claude_runner.ts",
   }, POLICY);
-  assert(exploration.stalled, "the window itself reads as a storm");
+  assert(rereading.stalled, "the window itself reads as a storm");
   assert(
     CALL_STORM_CONSECUTIVE_CHECKS >= 2,
     "one window must never be enough to stop a run",

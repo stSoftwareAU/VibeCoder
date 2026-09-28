@@ -138,6 +138,10 @@ async function main() {
     Deno.exit(2);
   }
 
+  // Unrelated issues are pre-existing on the base branch, so they stand
+  // whether or not the PR has since moved or merged: file them before the
+  // head check, or a PR that merges mid-review loses the bug Fable found.
+  const filedIssues = await fileUnrelatedIssues(pr, review);
   const now = await run("gh", [
     "pr",
     "view",
@@ -150,13 +154,18 @@ async function main() {
     '"\\(.headRefOid) \\(.state)"',
   ]);
   if (now !== `${pr.headSha} OPEN`) {
-    console.log(JSON.stringify({ posted: false, reason: `now ${now}` }));
+    console.log(
+      JSON.stringify({
+        posted: false,
+        reason: `now ${now}`,
+        filedIssues: filedIssues.map((i) => i.url),
+      }),
+    );
     return;
   }
 
   const removed = pr.testChanges.removed;
   const outcome = decideOutcome(review, removed);
-  const filedIssues = await fileUnrelatedIssues(pr, review);
   const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
   await Deno.writeTextFile(
     bodyFile,
