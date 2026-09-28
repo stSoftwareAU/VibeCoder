@@ -52,8 +52,9 @@ and passed after it:
 
 ## Test Plan
 
-- [x] `deno task test:unit` on the touched and census-faking suites
-      (147 passed)
-- [x] `deno check lib/run_core.ts lib/run_core_production_deps.ts`
-- [x] `./quality.sh < /dev/null`
+- [x] `deno task test:unit` on the touched suites — `idle_decision_census_test.ts`,
+      `run_core_idle_census_test.ts`, `stream_lock_blank_test.ts` (112 passed)
+- [x] `deno check` on the touched lib files — clean
+- [x] `./quality.sh < /dev/null` — **PASSED** (full gate: deno tests, lint,
+      type check, fmt, markdownlint, mermaid, semgrep, chokepoint scans)
 - [x] Docs updated: `docs/IDLE-TASK-FRAMEWORK.md`, `docs/INTERNALS.md`
