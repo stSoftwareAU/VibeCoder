@@ -3387,7 +3387,14 @@ async function runMaintenanceLane(
     }
     // A cut-short sequence (shutdown, deadline, rate limit) makes no further
     // GitHub calls; its reservations wait for the next cycle or the TTL.
-    if (fullSequence) await releaseClosedReservations(deps, registry, prefix);
+    if (fullSequence) {
+      const rateLimitError = await releaseClosedReservations(
+        deps,
+        registry,
+        prefix,
+      );
+      if (rateLimitError) return { rateLimitError };
+    }
     return {};
   });
 }
@@ -3400,24 +3407,30 @@ async function runMaintenanceLane(
  * before its lease) says nothing, so absence never drops a reservation. Green
  * checks are no signal either: the PR-feedback and merge-conflict passes
  * reserve PRs whose checks are often green. An open, unknown or unreadable
- * PR keeps its reservation until its ref wins the lease or the TTL lapses.
+ * PR keeps its reservation until its ref wins the lease or the TTL lapses;
+ * an unreadable one is a WARNING, since the TTL still bounds it.
+ *
+ * A primary rate limit stops the reads and is returned, so the lane hands it
+ * back like a pass's own (Issue #1921) rather than retrying `gh` per repo.
  */
 async function releaseClosedReservations(
   deps: RunCoreDeps,
   registry: InFlightRepoRegistry,
   prefix: string,
-): Promise<void> {
-  if (!deps.isReservingPrClosed) return;
+): Promise<Error | undefined> {
+  if (!deps.isReservingPrClosed) return undefined;
   for (const { repo, ref } of registry.reservations()) {
     let closed: boolean | undefined;
     try {
       closed = await deps.isReservingPrClosed(repo, ref);
     } catch (error) {
-      deps.logError(
+      const message = error instanceof Error ? error.message : String(error);
+      if (isPrimaryRateLimitMessage(message)) {
+        return error instanceof Error ? error : new Error(message);
+      }
+      warnOf(deps)(
         `${prefix}reservation kept repo=${repo} — could not read the state ` +
-          `of ${repo}#${ref}: ${
-            error instanceof Error ? error.message : String(error)
-          } (Issue #2795).`,
+          `of ${repo}#${ref}: ${message} (Issue #2795).`,
       );
       continue;
     }
@@ -3428,6 +3441,7 @@ async function releaseClosedReservations(
       );
     }
   }
+  return undefined;
 }
 
 /**

@@ -549,21 +549,73 @@ Deno.test("maintenance lane - a closed or merged reserving PR releases its reser
   );
 });
 
-Deno.test("maintenance lane - an unreadable reserving PR keeps its reservation and says so (error path, Issue #2795)", async () => {
+Deno.test("maintenance lane - an unreadable reserving PR keeps its reservation and warns (error path, Issue #2795)", async () => {
   const registry = reservedRegistry();
+  const warnings: string[] = [];
   const errors: string[] = [];
   const config = createDefaultRunCoreConfig();
   await runCoreLoop(
     { ...config, maxConcurrentIssues: 2 },
     reservationLaneDeps(registry, {
+      logWarn: (m: string) => warnings.push(m),
       logError: (m: string) => errors.push(m),
       isReservingPrClosed: () => Promise.reject(new Error("gh: 401")),
     }),
   );
   assertEquals([...registry.reservedRepos()], ["o/a"]);
   assert(
-    errors.some((m) => m.includes("o/a#1631") && m.includes("gh: 401")),
-    `the unreadable state must be reported; errors were ${errors.join(" | ")}`,
+    warnings.some((m) => m.includes("o/a#1631") && m.includes("gh: 401")),
+    `the unreadable state must be warned; warnings were ${
+      warnings.join(" | ")
+    }`,
+  );
+  assert(
+    !errors.some((m) => m.includes("o/a#1631")),
+    `a TTL-bounded read failure is not an ERROR; errors were ${
+      errors.join(" | ")
+    }`,
+  );
+});
+
+Deno.test("maintenance lane - a primary rate limit reading reserving PRs stops the reads and is handed back (error path, Issue #2795)", async () => {
+  const registry = reservedRegistry();
+  registry.tryAcquire("o/b", 1650, "s2");
+  registry.tryAcquire("o/b", 1700, "m1", { maintenance: true, reserve: true });
+  registry.release("o/b");
+  const asked: string[] = [];
+  const endReasons: string[] = [];
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry, {
+      logWarn: (m: string) => warnings.push(m),
+      logError: (m: string) => errors.push(m),
+      runCycleCallback: (cycle) => {
+        endReasons.push(cycle.endReason);
+        return Promise.resolve();
+      },
+      isReservingPrClosed: (repo, pr) => {
+        asked.push(`${repo}#${pr}`);
+        return Promise.reject(new Error("GraphQL: API rate limit exceeded"));
+      },
+    }),
+  );
+  assertEquals(
+    endReasons[0],
+    "rate_limited",
+    `the lane must hand the rate limit back; cycle ends were ${endReasons}`,
+  );
+  assertEquals(
+    asked.length,
+    1,
+    "no further gh call against an exhausted quota",
+  );
+  assertEquals([...registry.reservedRepos()].sort(), ["o/a", "o/b"]);
+  assert(
+    ![...errors, ...warnings].some((m) => m.includes("reservation kept")),
+    "a rate limit is handed back, not logged per reservation",
   );
 });
 

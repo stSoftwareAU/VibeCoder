@@ -291,9 +291,10 @@ registry:
   the PR — it picked a PR in another repository, or failed before its lease —
   proves nothing, so the reservation stays. Green checks are not a signal: PR
   feedback and merge conflict reserve PRs whose checks are often green. An
-  open, unknown or unreadable PR keeps it (an unreadable one is logged at
-  ERROR), and a sequence cut short by shutdown, the deadline or a rate limit
-  reads nothing;
+  open, unknown or unreadable PR keeps it (an unreadable one is logged as a
+  WARNING; a primary rate limit stops the reads and is handed back like a
+  pass's own, Issue #1921), and a sequence cut short by shutdown, the deadline
+  or a rate limit reads nothing;
 - each refused pass refreshes the reservation, and `LANE_RESERVATION_TTL_MS`
   (two hours, or two default cycles) after the last refusal stays as the
   backstop;

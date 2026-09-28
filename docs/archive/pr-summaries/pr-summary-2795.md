@@ -27,7 +27,9 @@ A reservation now ends in one of three ways:
   the reservation only on `true`, meaning the PR is closed or merged, and logs
   `reservation released repo=… pr=…`. An open PR, an unknown state or a skipped
   pass keeps the reservation. An unreadable PR also keeps it, and that case is
-  logged at ERROR. A sequence cut short by shutdown, the deadline, an abandoned
+  logged as a WARNING, since the TTL still bounds it. A primary rate limit
+  stops the reads and is handed back as the lane's `rateLimitError`, as a
+  pass's own is (Issue #1921). A sequence cut short by shutdown, the deadline, an abandoned
   pass or a rate limit reads nothing.
 - **The two-hour TTL**, which is the backstop.
 
@@ -85,7 +87,9 @@ sequenceDiagram
     reverses the #2793 test);
   - a pass that fails before the lease keeps it;
   - a closed or merged PR releases it and logs the release;
-  - an unreadable PR keeps it and is logged at ERROR;
+  - an unreadable PR keeps it and is logged as a WARNING;
+  - a primary rate limit stops after the first read and ends the cycle
+    `rate_limited`;
   - an unknown state keeps it;
   - a rate-limited sequence makes no query.
 - Mutation check: removing the `fullSequence` guard makes the rate-limited test
