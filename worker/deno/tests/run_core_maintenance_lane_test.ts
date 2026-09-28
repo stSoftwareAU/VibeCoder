@@ -485,24 +485,120 @@ function reservationLaneDeps(
   });
 }
 
-Deno.test("maintenance lane - a full pass sequence that never asks for a reserved repo again clears it (Issue #2793)", async () => {
+/** A registry with `o/a` reserved by PR 1631 and no slot holding it. */
+function reservedRegistry(): InFlightRepoRegistry {
   const registry = new InFlightRepoRegistry(() => 0);
   registry.tryAcquire("o/a", 1642, "s1");
   registry.tryAcquire("o/a", 1631, "m1", { maintenance: true, reserve: true });
   registry.release("o/a");
   assertEquals([...registry.reservedRepos()], ["o/a"]);
+  return registry;
+}
 
+// Issue #2795 reverses #2793's full-sequence drop: a single-candidate pass
+// that picked a PR elsewhere this cycle says nothing about PR 1631.
+Deno.test("maintenance lane - a full sequence that skipped the reserving PR keeps its reservation (Issue #2795)", async () => {
+  const registry = reservedRegistry();
   const config = createDefaultRunCoreConfig();
   await runCoreLoop(
     { ...config, maxConcurrentIssues: 2 },
-    reservationLaneDeps(registry),
+    reservationLaneDeps(registry, {
+      isReservingPrClosed: () => Promise.resolve(false),
+    }),
   );
-
   assertEquals(
     [...registry.reservedRepos()],
-    [],
-    "a PR fixed elsewhere must not hold the repository until the TTL",
+    ["o/a"],
+    "an open PR the lane did not reach this cycle must keep its reservation",
   );
+});
+
+Deno.test("maintenance lane - a pass that fails before the lease keeps the reservation (Issue #2795)", async () => {
+  const registry = reservedRegistry();
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry, {
+      findAndProcessCiFailure: () =>
+        Promise.resolve({ ok: false, error: new Error("gh: 502") }),
+    }),
+  );
+  assertEquals([...registry.reservedRepos()], ["o/a"]);
+});
+
+Deno.test("maintenance lane - a closed or merged reserving PR releases its reservation (Issue #2795)", async () => {
+  const registry = reservedRegistry();
+  const asked: string[] = [];
+  const logs: string[] = [];
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry, {
+      log: (m: string) => logs.push(m),
+      isReservingPrClosed: (repo, pr) => {
+        asked.push(`${repo}#${pr}`);
+        return Promise.resolve(true);
+      },
+    }),
+  );
+  assertEquals(asked, ["o/a#1631"]);
+  assertEquals([...registry.reservedRepos()], []);
+  assert(
+    logs.some((m) => m.includes("reservation released repo=o/a pr=1631")),
+    `the release must be logged; logs were ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("maintenance lane - an unreadable reserving PR keeps its reservation and says so (error path, Issue #2795)", async () => {
+  const registry = reservedRegistry();
+  const errors: string[] = [];
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry, {
+      logError: (m: string) => errors.push(m),
+      isReservingPrClosed: () => Promise.reject(new Error("gh: 401")),
+    }),
+  );
+  assertEquals([...registry.reservedRepos()], ["o/a"]);
+  assert(
+    errors.some((m) => m.includes("o/a#1631") && m.includes("gh: 401")),
+    `the unreadable state must be reported; errors were ${errors.join(" | ")}`,
+  );
+});
+
+Deno.test("maintenance lane - a rate-limited sequence does not read reserving PRs (edge, Issue #2795)", async () => {
+  const registry = reservedRegistry();
+  let asked = 0;
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry, {
+      findAndProcessCiFailure: () =>
+        Promise.resolve({
+          ok: true,
+          value: { processed: false, rateLimited: true },
+        }),
+      isReservingPrClosed: () => {
+        asked++;
+        return Promise.resolve(true);
+      },
+    }),
+  );
+  assertEquals(asked, 0, "a cut-short sequence makes no further GitHub calls");
+  assertEquals([...registry.reservedRepos()], ["o/a"]);
+});
+
+Deno.test("maintenance lane - an unknown reserving PR state keeps the reservation (edge, Issue #2795)", async () => {
+  const registry = reservedRegistry();
+  const config = createDefaultRunCoreConfig();
+  await runCoreLoop(
+    { ...config, maxConcurrentIssues: 2 },
+    reservationLaneDeps(registry, {
+      isReservingPrClosed: () => Promise.resolve(undefined),
+    }),
+  );
+  assertEquals([...registry.reservedRepos()], ["o/a"]);
 });
 
 Deno.test("maintenance lane - a pass refused again in the sequence keeps its reservation (Issue #2793)", async () => {

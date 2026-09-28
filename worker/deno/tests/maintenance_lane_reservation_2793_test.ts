@@ -9,8 +9,8 @@
  *   opts in with `reserve: true`.
  * - Any lane win spent the reservation, so a sync pass (ref 0) rotated ahead
  *   of PR Feedback won the drained repository and handed it straight back to
- *   the slots. Only the ref that reserved it — or a full lane sequence that
- *   never asked for it again — clears it now.
+ *   the slots. Only the ref that reserved it spends it now (and, since
+ *   Issue #2795, its PR closing or merging, or the TTL).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -91,23 +91,6 @@ Deno.test("reservation owner - a different PR winning keeps the reservation (edg
   assertEquals(lane(registry, 1700, true), true);
   registry.releaseRepoLease(REPO);
   assertEquals([...registry.reservedRepos()], [REPO]);
-});
-
-Deno.test("releaseReservationsExcept - drops only reservations the lane did not renew", () => {
-  const registry = new InFlightRepoRegistry(() => 1_000);
-  registry.tryAcquire(REPO, 1642, "s1");
-  registry.tryAcquire("o/other", 7, "s2");
-  lane(registry, 1631, true);
-  registry.tryAcquire("o/other", 9, MAINTENANCE_LANE_SLOT_ID, {
-    maintenance: true,
-    reserve: true,
-  });
-  assertEquals(registry.releaseReservationsExcept(new Set([REPO])), [
-    "o/other",
-  ]);
-  assertEquals([...registry.reservedRepos()], [REPO]);
-  assertEquals(registry.releaseReservationsExcept(new Set()), [REPO]);
-  assertEquals([...registry.reservedRepos()], []);
 });
 
 Deno.test("acquireMaintenanceRepoLease - threads the reserve opt-in to the broker", async () => {

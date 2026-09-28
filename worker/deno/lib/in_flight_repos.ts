@@ -98,9 +98,9 @@ function repoLeaseKey(repo: string): string {
  * after its most recent refusal (Issue #2789).
  *
  * Every refused PR pass refreshes it, so it holds for as long as the lane
- * keeps wanting the repository. The lane drops it once a full pass sequence
- * stops asking (its PR was fixed elsewhere, Issue #2793); this TTL is the
- * backstop, so a reservation can never starve issue work for long.
+ * keeps wanting the repository. The lane drops it once its PR closes or
+ * merges (Issue #2795); this TTL is the backstop, so a reservation can never
+ * starve issue work for long.
  * The lane asks once per cycle and a cycle runs up to `runDurationSeconds`
  * (an hour by default), so the TTL spans two default cycles.
  */
@@ -136,8 +136,8 @@ export class InFlightRepoRegistry {
    * branch of the clone (Issue #213). A refused lane lease that opts in with
    * `reserve` — a pass servicing a PR — reserves the repository, and a slot
    * is refused a new stream of a reserved repository until the reserving ref
-   * wins it, the lane stops asking, or the reservation lapses (Issues #2789,
-   * #2793). Milestone sync and self-heal lease without `reserve`: they touch
+   * wins it, its PR closes or merges, or the reservation lapses (Issues
+   * #2789, #2793, #2795). Milestone sync and self-heal lease without `reserve`: they touch
    * every cloned repository each cycle, so they only defer.
    *
    * Synchronous, so two racing slots cannot both win.
@@ -290,21 +290,24 @@ export class InFlightRepoRegistry {
     return new Set([...this.leasedRepos(), ...this.reservedRepos()]);
   }
 
+  /** Unlapsed reservations and the ref (PR) that made each (Issue #2795). */
+  reservations(): Array<{ repo: string; ref: number }> {
+    return [...this.#reservations.entries()]
+      .filter(([repo]) => this.#isReserved(repo))
+      .map(([repo, { ref }]) => ({ repo, ref }));
+  }
+
   /**
-   * Drop every reservation whose repository is not in `renewed` — called once
-   * the lane completes a full pass sequence, so a repo no pass asked for
-   * again (its PR was fixed elsewhere) is not held until the TTL (Issue
-   * #2793).
+   * Drop `repo`'s reservation when `ref` still owns it — called once the
+   * reserving PR is seen closed or merged (Issue #2795). A stale ref cannot
+   * drop a reservation a later PR re-made.
    *
-   * @param renewed - Repositories a pass was refused and reserved this sequence
-   * @returns The repositories whose reservation was dropped
+   * @returns Whether a reservation was dropped
    */
-  releaseReservationsExcept(renewed: ReadonlySet<string>): string[] {
-    const dropped = [...this.#reservations.keys()].filter((repo) =>
-      !renewed.has(repo)
-    );
-    for (const repo of dropped) this.#reservations.delete(repo);
-    return dropped;
+  releaseReservation(repo: string, ref: number): boolean {
+    if (this.#reservations.get(repo)?.ref !== ref) return false;
+    this.#reservations.delete(repo);
+    return true;
   }
 
   /** Whether `repo` carries an unlapsed lane reservation; prunes a lapsed one. */
