@@ -4,8 +4,8 @@
 
 Closes #2795
 
-> **Stacked on #2796.** This PR targets the #2793 branch. Rebase it onto the
-> default branch once #2796 lands.
+> **Builds on #2796**, which has merged. This branch was stacked on the #2793
+> branch; `main` is merged in and the PR targets `main`.
 
 This PR deliberately reverses #2793's full-sequence drop. Under that rule, a
 lane pass sequence that did not renew a reservation cleared it. The
