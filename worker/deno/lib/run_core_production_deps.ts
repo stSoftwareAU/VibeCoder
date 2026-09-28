@@ -508,6 +508,15 @@ const RESUME_LISTING_LIMIT = 200;
 const STALL_OPEN_PR_LIMIT = 50;
 
 /**
+ * Appended to a maintenance pass's lease-deferral warning (Issue #2789). The
+ * refused lease reserved the repository, so the operator can see the PR is
+ * queued behind the current issue run rather than silently starved.
+ */
+const RESERVED_SUFFIX =
+  " — repository reserved for the maintenance lane; no new issue slot " +
+  "takes it until this PR is serviced (Issue #2789)";
+
+/**
  * Home directory, in the order `agent_transcript.ts` resolves it.
  *
  * @param env - Reads `HOME` then `USERPROFILE` (Issue #967).
@@ -2057,8 +2066,9 @@ export async function createProductionRunCoreDeps(
       // for the working tree. Outside the lane the lease is uncontended.
       const lease = acquireMaintenanceRepoLease(comment.repo, comment.prNumber);
       if (lease === null) {
-        logger.info(
-          "Deferring PR feedback: an issue slot holds the repository",
+        logger.warn(
+          "Deferring PR feedback: an issue slot holds the repository" +
+            RESERVED_SUFFIX,
           { repo: comment.repo, prNumber: comment.prNumber },
         );
         return { ok: true, value: { processed: false } };
@@ -2196,8 +2206,9 @@ export async function createProductionRunCoreDeps(
       // checkout, so this pass and an issue slot never write one tree.
       const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
       if (lease === null) {
-        logger.info(
-          "Deferring spelling fix: an issue slot holds the repository",
+        logger.warn(
+          "Deferring spelling fix: an issue slot holds the repository" +
+            RESERVED_SUFFIX,
           { repo: check.repo, prNumber: check.prNumber },
         );
         return { ok: true, value: { processed: false } };
@@ -2301,10 +2312,14 @@ export async function createProductionRunCoreDeps(
       // checkout, so this pass and an issue slot never write one tree.
       const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
       if (lease === null) {
-        logger.info("Deferring CI fix: an issue slot holds the repository", {
-          repo: check.repo,
-          prNumber: check.prNumber,
-        });
+        logger.warn(
+          "Deferring CI fix: an issue slot holds the repository" +
+            RESERVED_SUFFIX,
+          {
+            repo: check.repo,
+            prNumber: check.prNumber,
+          },
+        );
         return { ok: true, value: { processed: false } };
       }
       try {
