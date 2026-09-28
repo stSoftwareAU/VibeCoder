@@ -1,19 +1,14 @@
 /**
  * Issue #793: `CODING-STANDARDS.md` and the injected
- * `prompts/coding_guidelines/` template are declared twins, and had drifted
- * in two ways.
+ * `prompts/coding_guidelines/` template are declared twins. Issue #2810
+ * replaces the blanket coverage rule with conditional behavioural testing.
  *
- * 1. **TDD.** The standards claimed both surfaces carry test-first TDD "in
- *    every run in every repository", but the guidelines template has zero
- *    occurrences of TDD. Test-first actually rides the `issue` and
- *    `pr_feedback` phase prompts, so phases that receive only the injected
- *    block (`spelling_fix`, `ci_fix`, `merge_conflict`, `workflow_setup`)
- *    never saw the rule the standards promised them.
- * 2. **Coverage strength.** The identical rule over the identical scope was
- *    "should" in the standards and "MUST" in the guidelines — advisory to a
- *    human reader, blocking to the agent.
+ * 1. **TDD.** Test-first ordering applies when a new behavioural test is
+ *    warranted; it is not a mandate to generate a test for every change.
+ * 2. **Coverage strength.** Both surfaces reject test-count targets and
+ *    allow existing behavioural coverage to count.
  *
- * The fix corrected the standards on both counts. This test pins the pair so
+ * The tests pin the standards and injected guidance so
  * the next drift fails here. It reads whatever guidelines version resolves,
  * so a new version that changes either rule is caught.
  *
@@ -171,62 +166,44 @@ async function latestPromptText(name: string): Promise<string> {
   return result.value;
 }
 
-Deno.test("twin pair - the coverage rule carries the same strength on both surfaces (Issue #793)", async () => {
+Deno.test("twin pair - both surfaces reject tests added only for coverage (Issue #2810)", async () => {
   const [standards, guidelines] = await Promise.all([
     readStandards(),
     latestPromptText("coding_guidelines"),
   ]);
 
-  // Both state the public-function coverage rule. Neither may soften it:
-  // "should" here is advisory to a contributor but blocking to the agent.
-  const standardsRule = standards.match(
-    /Every new or modified public function[^.]*\./s,
-  );
-  const guidelinesRule = guidelines.match(
-    /Every new or modified public function[^.:]*[.:]/s,
-  );
-  assert(standardsRule, "CODING-STANDARDS.md lost its public-function rule");
-  assert(guidelinesRule, "coding_guidelines lost its public-function rule");
-
   for (
     const [surface, rule] of [
-      ["CODING-STANDARDS.md", standardsRule[0]],
-      ["coding_guidelines", guidelinesRule[0]],
+      ["CODING-STANDARDS.md", standards],
+      ["coding_guidelines", guidelines],
     ] as const
   ) {
     assert(
-      rule.includes("MUST"),
-      `${surface} must state the coverage rule as MUST, got: ${rule}`,
+      /not every change needs a new test/i.test(rule),
+      `${surface} must allow changes with no new test`,
     );
     assert(
-      !/\bshould\b/.test(rule),
-      `${surface} softens the coverage rule to "should": ${rule}`,
+      /not (?:add a test per function|add tests merely for coverage|merely increase coverage)/i
+        .test(rule),
+      `${surface} must reject test-count targets`,
     );
   }
 });
 
-Deno.test("twin pair - the injected guidelines block carries no test-first rule (Issue #793)", async () => {
+Deno.test("twin pair - injected test-first guidance is conditional (Issue #2810)", async () => {
   const guidelines = await latestPromptText("coding_guidelines");
-  assertEquals(
-    TDD_PATTERN.test(guidelines),
-    false,
-    "coding_guidelines/prompt.md now states a test-first rule. That is " +
-      "fine, but CODING-STANDARDS.md says it does not — update the claim in " +
-      "the 'Language-Agnostic Standards vs Per-Language Buckets' section.",
-  );
+  assert(TDD_PATTERN.test(guidelines));
+  assert(/where practical first add a regression test/.test(guidelines));
+  assert(/not every\s+change needs a new test/i.test(guidelines));
 });
 
-Deno.test("twin pair - the standards attribute TDD to the phases that actually carry it (Issue #793)", async () => {
+Deno.test("twin pair - standards describe conditional TDD on each surface (Issue #2810)", async () => {
   const standards = await readStandards();
-
-  // The corrected claim names issue and pr_feedback as the carriers.
   assert(
-    /Test-first TDD is \*\*not\*\* in that injected block/.test(standards),
-    "CODING-STANDARDS.md must state that the injected guidelines block " +
-      "carries no test-first rule",
+    /injected block asks for test-first work when a new behavioural regression\s+test is warranted/
+      .test(standards),
+    "CODING-STANDARDS.md must describe the conditional injected rule",
   );
-
-  // …and that claim must be true of those prompts.
   for (const name of ["issue", "pr_feedback"]) {
     const text = await latestPromptText(name);
     assert(
