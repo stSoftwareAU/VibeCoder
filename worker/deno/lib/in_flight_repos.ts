@@ -97,9 +97,10 @@ function repoLeaseKey(repo: string): string {
  * How long a refused maintenance lane's reservation of a repository lasts
  * after its most recent refusal (Issue #2789).
  *
- * Every refused lane pass refreshes it, so it holds for as long as the lane
- * keeps wanting the repository; once the lane stops asking (its PR was fixed
- * elsewhere) it lapses, so a reservation can never starve issue work for long.
+ * Every refused PR pass refreshes it, so it holds for as long as the lane
+ * keeps wanting the repository. The lane drops it once a full pass sequence
+ * stops asking (its PR was fixed elsewhere, Issue #2793); this TTL is the
+ * backstop, so a reservation can never starve issue work for long.
  * The lane asks once per cycle and a cycle runs up to `runDurationSeconds`
  * (an hour by default), so the TTL spans two default cycles.
  */
@@ -115,9 +116,10 @@ export class InFlightRepoRegistry {
    * before the lane looked again — so the lane's whole-repository lease was
    * refused forever and the repo's PRs never got their CI fix or feedback
    * pass. A reservation stops new slot streams of the repository, so it
-   * drains and the lane wins it on its next pass.
+   * drains and the lane wins it on its next pass. `ref` is the PR whose
+   * refused pass made it: only that ref's win spends it (Issue #2793).
    */
-  readonly #reservations = new Map<string, number>();
+  readonly #reservations = new Map<string, { sinceMs: number; ref: number }>();
   readonly #now: () => number;
 
   constructor(now: () => number = Date.now) {
@@ -131,23 +133,27 @@ export class InFlightRepoRegistry {
    * A slot wins when no sibling holds the same `(repo, milestone)` stream and
    * the maintenance lane holds no lease on the repository. The lane wins only
    * when the repository is completely free, because its pass may touch any
-   * branch of the clone (Issue #213). A refused lane reserves the
-   * repository, and a slot is refused a new stream of a reserved repository
-   * until the lane wins it or the reservation lapses (Issue #2789).
+   * branch of the clone (Issue #213). A refused lane lease that opts in with
+   * `reserve` — a pass servicing a PR — reserves the repository, and a slot
+   * is refused a new stream of a reserved repository until the reserving ref
+   * wins it, the lane stops asking, or the reservation lapses (Issues #2789,
+   * #2793). Milestone sync and self-heal lease without `reserve`: they touch
+   * every cloned repository each cycle, so they only defer.
    *
    * Synchronous, so two racing slots cannot both win.
    *
    * @param repo - `owner/name`
    * @param issueNumber - The claimed issue, or the serviced PR for the lane
    * @param slotId - Stable slot id, for log attribution
-   * @param options - The stream to take, and whether this is a lane lease
+   * @param options - The stream to take, whether this is a lane lease, and
+   *   whether a refused lane lease reserves the repository
    * @returns True when this call won
    */
   tryAcquire(
     repo: string,
     issueNumber: number,
     slotId: string,
-    options?: { maintenance?: boolean; milestone?: string },
+    options?: { maintenance?: boolean; milestone?: string; reserve?: boolean },
   ): boolean {
     const maintenance = options?.maintenance === true;
     const milestone = options?.milestone ?? DEFAULT_BRANCH_STREAM;
@@ -155,15 +161,24 @@ export class InFlightRepoRegistry {
     // lease — and any lease refuses every stream of it.
     if (maintenance) {
       // The lane's own live lease is not a slot to wait out, so only a slot
-      // hold earns a reservation.
+      // hold earns a reservation — and only for a pass that opted in.
       if (this.#held.has(repoLeaseKey(repo))) return false;
       for (const hold of this.#held.values()) {
         if (hold.repo === repo) {
-          this.#reservations.set(repo, this.#now());
+          if (options?.reserve === true) {
+            this.#reservations.set(repo, {
+              sinceMs: this.#now(),
+              ref: issueNumber,
+            });
+          }
           return false;
         }
       }
-      this.#reservations.delete(repo);
+      // Only the ref that reserved the repository spends the reservation: a
+      // sync pass rotated ahead of it must not hand the drained repo back.
+      if (this.#reservations.get(repo)?.ref === issueNumber) {
+        this.#reservations.delete(repo);
+      }
     } else if (
       this.#held.has(repoLeaseKey(repo)) || this.#isReserved(repo)
     ) {
@@ -275,9 +290,26 @@ export class InFlightRepoRegistry {
     return new Set([...this.leasedRepos(), ...this.reservedRepos()]);
   }
 
+  /**
+   * Drop every reservation whose repository is not in `renewed` — called once
+   * the lane completes a full pass sequence, so a repo no pass asked for
+   * again (its PR was fixed elsewhere) is not held until the TTL (Issue
+   * #2793).
+   *
+   * @param renewed - Repositories a pass was refused and reserved this sequence
+   * @returns The repositories whose reservation was dropped
+   */
+  releaseReservationsExcept(renewed: ReadonlySet<string>): string[] {
+    const dropped = [...this.#reservations.keys()].filter((repo) =>
+      !renewed.has(repo)
+    );
+    for (const repo of dropped) this.#reservations.delete(repo);
+    return dropped;
+  }
+
   /** Whether `repo` carries an unlapsed lane reservation; prunes a lapsed one. */
   #isReserved(repo: string): boolean {
-    const sinceMs = this.#reservations.get(repo);
+    const sinceMs = this.#reservations.get(repo)?.sinceMs;
     if (sinceMs === undefined) return false;
     if (this.#now() - sinceMs < LANE_RESERVATION_TTL_MS) return true;
     this.#reservations.delete(repo);

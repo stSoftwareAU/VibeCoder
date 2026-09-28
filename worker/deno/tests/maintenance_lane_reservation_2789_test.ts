@@ -22,6 +22,7 @@ const REPO = "stSoftwareAU/GRQ-AutoTrader";
 function laneAcquire(registry: InFlightRepoRegistry, pr = 1631): boolean {
   return registry.tryAcquire(REPO, pr, MAINTENANCE_LANE_SLOT_ID, {
     maintenance: true,
+    reserve: true,
   });
 }
 

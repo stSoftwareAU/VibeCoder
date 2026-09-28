@@ -2064,7 +2064,13 @@ export async function createProductionRunCoreDeps(
       // Lease the repository before touching it — a slot already working
       // there means this PR waits for the next cycle rather than fighting it
       // for the working tree. Outside the lane the lease is uncontended.
-      const lease = acquireMaintenanceRepoLease(comment.repo, comment.prNumber);
+      const lease = acquireMaintenanceRepoLease(
+        comment.repo,
+        comment.prNumber,
+        {
+          reserve: true,
+        },
+      );
       if (lease === null) {
         logger.warn(
           "Deferring PR feedback: an issue slot holds the repository" +
@@ -2204,7 +2210,9 @@ export async function createProductionRunCoreDeps(
 
       // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
       // checkout, so this pass and an issue slot never write one tree.
-      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
+      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber, {
+        reserve: true,
+      });
       if (lease === null) {
         logger.warn(
           "Deferring spelling fix: an issue slot holds the repository" +
@@ -2310,7 +2318,9 @@ export async function createProductionRunCoreDeps(
 
       // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
       // checkout, so this pass and an issue slot never write one tree.
-      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
+      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber, {
+        reserve: true,
+      });
       if (lease === null) {
         logger.warn(
           "Deferring CI fix: an issue slot holds the repository" +
@@ -2762,7 +2772,9 @@ export async function createProductionRunCoreDeps(
         // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
         // merge, so this pass and an issue slot never write one tree.
         acquireLease: (conflict) =>
-          acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber),
+          acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber, {
+            reserve: true,
+          }),
         // Issue #1774: the queue comes from a listing up to ten minutes old,
         // so the live state is re-read before the clone, the agent and the
         // merge push.
@@ -3549,6 +3561,7 @@ export async function createProductionRunCoreDeps(
               const lease = acquireMaintenanceRepoLease(
                 candidate.repo,
                 candidate.prNumber,
+                { reserve: true },
               );
               if (lease === null) {
                 return {
