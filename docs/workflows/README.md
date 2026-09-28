@@ -285,9 +285,11 @@ registry:
 - when that hold is released, the reservation is spent only when the **ref
   that reserved it** wins the lease. A sync pass rotated ahead of PR Feedback
   may win the drained repository, but it does not hand it back to the slots;
-- a full lane pass sequence that never asks for the repository again drops the
-  reservation, because the PR was fixed or closed elsewhere. A sequence cut
-  short by shutdown, the deadline or a rate limit keeps every reservation;
+- a full lane pass sequence that is not refused on the repository drops the
+  reservation. Each pass services one PR per cycle, so the PR may simply not
+  have been picked; a still-broken PR re-reserves the next time it is refused.
+  A sequence cut short by shutdown, the deadline or a rate limit keeps every
+  reservation;
 - each refused pass refreshes the reservation, and `LANE_RESERVATION_TTL_MS`
   (two hours, or two default cycles) after the last refusal stays as the
   backstop;

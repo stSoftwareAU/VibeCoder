@@ -486,7 +486,7 @@ function reservationLaneDeps(
 }
 
 Deno.test("maintenance lane - a full pass sequence that never asks for a reserved repo again clears it (Issue #2793)", async () => {
-  const registry = new InFlightRepoRegistry();
+  const registry = new InFlightRepoRegistry(() => 0);
   registry.tryAcquire("o/a", 1642, "s1");
   registry.tryAcquire("o/a", 1631, "m1", { maintenance: true, reserve: true });
   registry.release("o/a");
@@ -506,7 +506,7 @@ Deno.test("maintenance lane - a full pass sequence that never asks for a reserve
 });
 
 Deno.test("maintenance lane - a pass refused again in the sequence keeps its reservation (Issue #2793)", async () => {
-  const registry = new InFlightRepoRegistry();
+  const registry = new InFlightRepoRegistry(() => 0);
   // A slot holds o/a for the whole run, so every CI-fix pass is refused.
   registry.tryAcquire("o/a", 1642, "s9");
   let refusals = 0;

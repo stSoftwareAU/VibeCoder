@@ -2067,9 +2067,7 @@ export async function createProductionRunCoreDeps(
       const lease = acquireMaintenanceRepoLease(
         comment.repo,
         comment.prNumber,
-        {
-          reserve: true,
-        },
+        { reserve: true },
       );
       if (lease === null) {
         logger.warn(

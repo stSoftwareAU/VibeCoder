@@ -226,8 +226,8 @@ ladder — the binding constraint on fleet occupancy today.
   therefore **reserves** the repository (Issue #2789): no slot takes a new
   stream there and the lane wins it when the current holder releases. Only
   PR-servicing passes opt in — sync and self-heal defer without reserving — and
-  only the PR that reserved it spends it; a full lane sequence that no longer
-  asks for it drops it (Issue #2793). The two-hour lapse is the backstop, so a
+  only the PR that reserved it spends it; a full lane sequence not refused
+  there drops it (Issue #2793). The two-hour lapse is the backstop, so a
   reservation cannot starve issue work.
   See
   [Maintenance lane](docs/workflows/README.md#lane-reservation--a-busy-repository-cannot-starve-its-prs-issue-2789).
