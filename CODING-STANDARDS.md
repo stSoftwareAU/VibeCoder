@@ -589,10 +589,10 @@ This document and the injected `prompts/coding_guidelines/` template carry the
 **language-agnostic** rules — fail-loud, security, commit safety, quality
 gates. They apply to every run in every repository.
 
-Test-first TDD is **not** in that injected block. It rides the `issue` and
-`pr_feedback` phase prompts, so the phases that receive only the injected
-guidelines — `spelling_fix`, `ci_fix`, `merge_conflict`, `workflow_setup` —
-carry the coverage expectations above but no test-first ordering requirement.
+The injected block asks for test-first work when a new behavioural regression
+test is warranted, without requiring a new test for every change. The `issue`
+and `pr_feedback` phase prompts also state the conditional TDD sequence. Other
+phases receive the same testing principles without a blanket test-first mandate.
 
 **Language-specific** rules live in per-language best-practice buckets under
 [`prompts/best_practices/buckets/`](prompts/best_practices/buckets/) and are
