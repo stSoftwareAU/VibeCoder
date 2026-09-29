@@ -61,6 +61,14 @@ Optional argument: `owner/name` to review one repo only.
 8. **Review each head commit once.** A new push gets a fresh review. When
    the fleet pushes a fix to a PR that was sent back, the re-review checks
    the earlier findings were fixed, and approves once they are.
+9. **Repeated findings improve the VibeCoder.** Review findings are also
+   feedback about the worker itself. After each round, compare blocking
+   findings with recent review history. When the same underlying mistake has
+   recurred across independent PRs and clearer VibeCoder prompt, skill,
+   coding-standard or other guidance could reasonably prevent it, file a
+   deduplicated improvement issue in `stSoftwareAU/VibeCoder`. Do not turn a
+   one-off bug into guidance, and do not weaken the review rule just because
+   a finding is common.
 
 ## Which repos
 
@@ -233,7 +241,40 @@ It prints `{ posted, outcome?, filedIssues?, reason? }`. Exit code 2 means
 Fable's reply was malformed: nothing was posted, and the PR comes back on the
 next gate pass.
 
-### 3. Report
+### 3. Learn from recurring findings
+
+After posting the round, treat repeated blocking findings as training data for
+VibeCoder's own guidance:
+
+1. For each blocking finding, identify the **root mistake**, not merely its
+   wording or file. Compare it with `~/.review-fleet-prs/log.jsonl` and the
+   recent review history it records. A recurrence means the same preventable
+   mistake has appeared in at least **two independent PRs**; repeated comments
+   on one PR or one head commit count once.
+2. Ask whether a concrete change to VibeCoder's prompt, a skill,
+   `CODING-STANDARDS.md`, templates, or similar worker guidance would likely
+   prevent or materially reduce that mistake. If the answer is no, do
+   nothing. Product bugs, repository-specific design decisions and random
+   implementation mistakes are not automatically prompt problems.
+3. Before filing, search open issues in `stSoftwareAU/VibeCoder` for the root
+   mistake and the proposed guidance area. If an issue already covers it,
+   do not create another one.
+4. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
+   - the recurring failure pattern and why it is preventable;
+   - links to at least two independent PR/review examples;
+   - the VibeCoder prompt/skill/guidance that should change, when identifiable;
+   - the proposed guidance or guardrail and how future reviews can verify it
+     worked.
+   Apply `work-on` when that label exists and the improvement can be handled
+   autonomously; otherwise leave assignment/triage unchanged.
+5. Keep the threshold evidence-based. Similar symptoms with different causes
+   are not a recurrence. Never create an issue solely to make a review pass,
+   and never relax safety, testing or correctness guidance as the cure.
+
+Include any self-improvement issue created in the round report. Failure to
+search or file an improvement issue must not change the PR review outcome.
+
+### 4. Report
 
 One short line per round: approved, sent back, and held for the owner, each
 with PR links, plus any issues filed. Then go back to the loop.
