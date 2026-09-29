@@ -25,7 +25,12 @@ const recordText = Deno.readTextFileSync(`${REPO_ROOT}${RECORD}`);
 function sweptRows(text: string): Map<string, string> {
   const rows = new Map<string, string>();
   const row = /^\| (12[a-z]+|top-up-\d+) +\|.*\| *([^|]+?) *\|$/gm;
-  for (const match of text.matchAll(row)) rows.set(match[1], match[2]);
+  for (const [line, chunk, triage] of text.matchAll(row)) {
+    if (chunk === undefined || triage === undefined) {
+      throw new Error(`unparsed swept-slices row: ${line}`);
+    }
+    rows.set(chunk, triage);
+  }
   return rows;
 }
 
