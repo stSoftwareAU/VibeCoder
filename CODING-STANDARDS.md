@@ -704,6 +704,29 @@ to `redactSecrets()` is part of adding it, not a follow-up.
 The full standard, the list of sinks already wired, and the rationale live in
 [SECURITY.md → Secret Redaction — Every Outbound Sink](SECURITY.md#-secret-redaction--every-outbound-sink).
 
+## Path Confinement — Resolve Before You Check
+
+Guards that confine a path to, or keep it out of, a directory keep missing
+`..` traversal because they check a partly resolved path.
+
+- **Resolve fully, then check.** Before comparing a path against an allowed or
+  forbidden directory, join it to the working directory, canonicalise the part
+  that exists (following symlinks), and normalise or reject every `..` and `.`
+  segment — including in any tail that does not exist yet. Never check a
+  partly resolved path.
+- **Allow-list identifiers that become path segments.** Refs, names and IDs
+  joined into a path need their own allow-list validator that rejects `..`,
+  `/` and absolute paths. Do not reuse a validator written for another purpose
+  (e.g. `assertSafeGitRef`, which accepts `..`).
+- **Negative tests are part of the guard.** Every such guard ships with tests
+  for `..` traversal — including `..` after a not-yet-existing component —
+  and, on Unix, a symlink into the protected directory.
+- **Do not claim a traversal case is impossible** in a PR summary unless a
+  test proves it.
+
+Seen in VibeCoder#2881 (`assertSafeGitRef` accepting `..`) and GRQ-GTC#448 (a
+non-existent tail containing `..` appended after canonicalisation).
+
 ## A Code Change Owes a Docs Change
 
 When you rename a symbol, change a signature or a default, add or remove a flag,

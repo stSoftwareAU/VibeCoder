@@ -278,6 +278,27 @@ is non-trivial):
       to user-facing responses.
 - [ ] **Dependencies**: Any new third-party dependency is pinned, came from a
       trusted source, and has been recently maintained.
+- [ ] **Path confinement**: Every new path guard resolves the path fully
+      before checking and has negative `..` and symlink tests.
+
+### Path Confinement
+
+Guards that confine a path to, or keep it out of, a directory keep missing
+`..` traversal because they check a partly resolved path.
+
+- **Resolve fully, then check.** Join the path to the working directory,
+  canonicalise the part that exists (following symlinks), and normalise or
+  reject every `..` and `.` segment — including in any tail that does not
+  exist yet — before comparing it against an allowed or forbidden directory.
+- **Allow-list identifiers that become path segments.** Refs, names and IDs
+  joined into a path need their own allow-list validator that rejects `..`,
+  `/` and absolute paths, rather than reusing an existing validator written
+  for another purpose (e.g. a git-ref check).
+- **Negative tests are part of the guard.** Ship tests for `..` traversal —
+  including `..` after a not-yet-existing component — and, on Unix, a
+  symlink into the protected directory.
+- **Do not claim a traversal case is impossible** in a PR summary unless a
+  test proves it.
 
 <!-- /guidelines-layer -->
 
