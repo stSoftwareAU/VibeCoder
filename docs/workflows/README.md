@@ -56,7 +56,7 @@ each workflow page.
 loop that checks work in **priority order**: PR (Pull Request) feedback (1),
 spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
 merge-conflict resolution (1.61), CI nudges
-and the blocking-PR watchdog (1.62, 1.63), auto-merge (1.65), issue closure
+and the blocking-PR stall repair (1.62, 1.63), auto-merge (1.65), issue closure
 (1.67), closed-PR recovery (1.68), milestone completion (1.7),
 closed-milestone housekeeping (1.71) and branch sync (1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
 the Failure-Detection repair resume (1.81), questions (1.85), configured
@@ -152,7 +152,7 @@ flowchart TD
   P155 --> P16["1.6: Branch updates"]
   P16 --> P161["1.61: Resolve merge conflicts"]
   P161 --> P162["1.62: Nudge stalled CI"]
-  P162 --> P163["1.63: Blocking-PR watchdog"]
+  P162 --> P163["1.63: Blocking-PR stall repair"]
   P163 --> P165["1.65: Auto-merge"]
   P165 --> P167["1.67: Issue closure"]
   P167 --> P168["1.68: Closed-PR recovery"]

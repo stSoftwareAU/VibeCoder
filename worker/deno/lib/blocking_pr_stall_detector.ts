@@ -77,6 +77,13 @@ export const DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS = 7200;
 export const AUTO_FIX_CAP_MARKER_PREFIX =
   "<!-- needs-human-escalation: auto-fix-cap:";
 
+/**
+ * Prefix of the hidden trip marker the stall-repair pass posts on a PR
+ * (Issue #2802). Defined here, not in `stall_repair.ts`, because the detector
+ * must not read that marker as a fleet reply.
+ */
+export const STALL_REPAIR_MARKER_PREFIX = "<!-- vibe-stall-repair";
+
 /** Check conclusions that count as a red build. */
 const FAILING_CONCLUSIONS = new Set([
   "FAILURE",
@@ -124,8 +131,13 @@ export interface BlockingPrObservation {
   lastFleetPushAt?: string;
   /** ISO timestamp of the newest comment from an authorised commenter. */
   lastAuthorisedCommentAt?: string;
-  /** ISO timestamp of the newest comment from a fleet account. */
+  /**
+   * ISO timestamp of the newest comment from a fleet account — excluding the
+   * stall-repair trip marker, which is not a reply (Issue #2802).
+   */
   lastFleetReplyAt?: string;
+  /** ISO timestamp of the newest fleet stall-repair trip marker (Issue #2802). */
+  lastStallRepairAt?: string;
   /** ISO timestamp the PR was opened (Issue #1082). */
   createdAt?: string;
   /** True when GitHub's native auto-merge is armed on the PR (Issue #1082). */
@@ -309,7 +321,12 @@ export function detectBlockingPrStall(
   const commentAt = epochSeconds(observation.lastAuthorisedCommentAt);
   if (commentAt !== undefined) {
     const replyAt = epochSeconds(observation.lastFleetReplyAt);
-    const answeredAt = maxDefined(replyAt, pushAt);
+    // Issue #2802: once stall repair has tripped on this comment, its own
+    // sync push is not an answer — only a real fleet reply is. Otherwise the
+    // repair would clear the stall it is meant to settle.
+    const tripAt = epochSeconds(observation.lastStallRepairAt);
+    const repairedSince = tripAt !== undefined && tripAt >= commentAt;
+    const answeredAt = repairedSince ? replyAt : maxDefined(replyAt, pushAt);
     const answered = answeredAt !== undefined && answeredAt >= commentAt;
     const stalledSeconds = nowSeconds - commentAt;
     if (!answered && stalledSeconds >= thresholdSeconds) {
@@ -810,6 +827,14 @@ async function observeBlockingPr(params: {
     if (!author || !createdAt) continue;
 
     if (isFleetAuthor(author, authors)) {
+      const body = typeof obj.body === "string" ? obj.body : "";
+      if (body.includes(STALL_REPAIR_MARKER_PREFIX)) {
+        observation.lastStallRepairAt = newerOf(
+          observation.lastStallRepairAt,
+          createdAt,
+        );
+        continue;
+      }
       observation.lastFleetReplyAt = newerOf(
         observation.lastFleetReplyAt,
         createdAt,

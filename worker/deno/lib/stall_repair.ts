@@ -34,6 +34,7 @@ import {
   resolveBlockingPrStallThresholdSeconds,
   scanBlockingPrStalls,
   type ScanBlockingPrStallsOptions,
+  STALL_REPAIR_MARKER_PREFIX,
 } from "./blocking_pr_stall_detector.ts";
 import {
   abandonAndRestart,
@@ -48,8 +49,7 @@ import {
   type RepoLease,
 } from "./maintenance_lane.ts";
 
-/** Prefix of the hidden trip marker recorded on the PR. */
-export const STALL_REPAIR_MARKER_PREFIX = "<!-- vibe-stall-repair";
+export { STALL_REPAIR_MARKER_PREFIX };
 
 /** The lane that owns a stall signal and is rerun on the first trip. */
 export type StallLane = "ci-fix" | "pr-feedback";

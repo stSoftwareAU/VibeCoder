@@ -340,3 +340,36 @@ Deno.test("a stalled PR with no originating issue is closed and no issue is file
   assertStringIncludes(state.prComments.at(-1)!.body, "no originating issue");
   assertEquals(forbiddenCalls(state.calls), []);
 });
+
+Deno.test("an unanswered comment still trips after the first trip's own marker and sync push, so the second trip fires", async () => {
+  const { state, deps } = harness();
+  const commentAt = iso(NOW - 3 * 3600);
+  const detect = (fleetPushAt: string, stallRepairAt?: string) =>
+    detectBlockingPrStall({
+      repo: REPO,
+      prNumber: PR,
+      blockedIssues: [ISSUE],
+      failingChecks: [],
+      lastFleetPushAt: fleetPushAt,
+      lastAuthorisedCommentAt: commentAt,
+      ...(stallRepairAt !== undefined
+        ? { lastStallRepairAt: stallRepairAt }
+        : {}),
+      author: FLEET,
+      headRefName: "issue-93-fix",
+      baseRefName: "main",
+    }, { thresholdSeconds: THRESHOLD, nowSeconds: state.now });
+
+  const first = detect(iso(NOW - 4 * 3600));
+  assert(first);
+  assertEquals(await repairStalledPr(first, deps), "first-trip");
+  const markerAt = state.prComments[0]!.created_at;
+
+  // The next check: the sync pushed, the lane posted no reply.
+  state.now += THRESHOLD;
+  const again = detect(markerAt, markerAt);
+  assert(again, "the repair's own marker and push are not an answer");
+  assertEquals(again.signals.map((s) => s.reason), ["unanswered-comment"]);
+  assertEquals(await repairStalledPr(again, deps), "abandoned");
+  assertEquals(state.prClosed, true);
+});

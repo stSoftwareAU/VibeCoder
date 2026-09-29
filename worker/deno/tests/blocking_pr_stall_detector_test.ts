@@ -19,6 +19,7 @@ import {
   resolveBlockingPrStallThresholdSeconds,
   resolveGreenBlockingPr,
   scanBlockingPrStalls,
+  STALL_REPAIR_MARKER_PREFIX,
   withdrawBlockingPrStallEscalation,
 } from "../lib/blocking_pr_stall_detector.ts";
 import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
@@ -697,6 +698,42 @@ Deno.test("a red CONFLICTING PR still trips, and is marked lane-owned", () => {
   assert(stall, "a red PR is still a fact worth reporting");
   assertEquals(stall.signals.map((s) => s.reason), ["red-ci"]);
   assertEquals(stall.mergeConflictLaneOwned, true);
+});
+
+Deno.test("observation gathering reads the stall-repair marker apart from fleet replies (Issue #2802)", async () => {
+  const view = {
+    ...STALLED_VIEW,
+    comments: [
+      ...STALLED_VIEW.comments,
+      {
+        author: { login: "vibe-coder" },
+        createdAt: "2026-08-11T17:00:00Z",
+        body: `${STALL_REPAIR_MARKER_PREFIX} pr="103" -->\nSyncing.`,
+      },
+    ],
+  };
+  const gh = buildScanGh(
+    {
+      issues: [{ number: 93, labels: ["work-on"] }],
+      prs: [{ number: 103, baseRefName: "Develop", headRefName: "issue-93" }],
+      views: { 103: view },
+    },
+    [],
+    [],
+  );
+
+  const [obs] = await findBlockingPrObservations({
+    fleetPrSlotsFor: () => 1,
+    repos: [REPO],
+    workOnLabel: "work-on",
+    fleetAuthors: ["vibe-coder"],
+    authorisedCommenters: ["nigel"],
+    ghCommandFn: gh,
+  });
+
+  assert(obs);
+  assertEquals(obs.lastStallRepairAt, "2026-08-11T17:00:00Z");
+  assertEquals(obs.lastFleetReplyAt, "2026-08-11T11:00:00Z");
 });
 
 Deno.test("observation gathering reads the PR's mergeability and labels", async () => {
