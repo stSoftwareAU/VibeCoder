@@ -34,7 +34,9 @@ async function fixture(
   await stub(
     "deno",
     `case "$*" in
-  *app_token.ts*) printf '%s' '${tokenOutput}'; exit ${tokenExit} ;;
+  *app_token.ts*) printf '%s' '${tokenOutput}'
+    [ ${tokenExit} = 0 ] || echo "reviewer App token: Bad credentials" >&2
+    exit ${tokenExit} ;;
 esac
 echo "GH_TOKEN=\${GH_TOKEN:-} $*" > "$HOME/gate-args"
 echo '${gateOutput}'; exit ${gateExit}`,
@@ -143,8 +145,10 @@ Deno.test("run.sh reviews as the gh user when no reviewer App is configured", as
 
 Deno.test("run.sh never falls back to the gh user when the App token fails", async () => {
   const home = await fixture(READY, 0, "", 1);
-  const { code } = await run(home, "--once");
+  const { code, output } = await run(home, "--once");
   assertEquals(code, 1);
+  // The reason reaches the terminal, not only the log.
+  assertStringIncludes(output, "reviewer App token: Bad credentials");
   assertEquals(await recorded(home, "gate-args"), null);
   assertEquals(await claudeArgs(home), null);
 });

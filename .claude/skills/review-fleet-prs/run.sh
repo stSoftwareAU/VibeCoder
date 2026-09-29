@@ -29,6 +29,8 @@ ROUND_TIMEOUT=3000 # a hung round must not wedge the loop, nor outlive its token
 LABEL="au.com.stsoftware.review-fleet-prs"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
+# A step's stderr goes to the log and the terminal, so its reason is seen.
+errors() { tee -a "$LOG" >&2; }
 
 # Running for ever means the log and round files must not grow for ever.
 housekeep() {
@@ -107,8 +109,8 @@ pass() {
   # the pass rather than post as the gh user instead.
   unset GH_TOKEN
   if ! minted=$(cd "$SKILL_DIR" && deno run --allow-read \
-    --allow-net=api.github.com --allow-env app_token.ts 2>>"$LOG"); then
-    log "reviewer App token failed (see above)"
+    --allow-net=api.github.com --allow-env app_token.ts 2> >(errors)); then
+    log "reviewer App token failed; skipping this pass"
     return 1
   fi
   if [[ -n "$minted" ]]; then
@@ -120,8 +122,8 @@ pass() {
   if ! ready=$(cd "$SKILL_DIR" && deno run --allow-run=gh --allow-read \
     --allow-write --allow-env=HOME gate.ts \
     ${reviewer[@]+"${reviewer[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
-    2>>"$LOG"); then
-    log "gate failed (see above)"
+    2> >(errors)); then
+    log "gate failed; skipping this pass"
     return 1
   fi
   if [[ $(jq '.ready | length' <<<"$ready" 2>/dev/null) == 0 ]]; then
