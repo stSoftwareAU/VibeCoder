@@ -507,7 +507,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
             };
           }
 
-          // Update the PR branch (rebase + force-push). It checks the branch
+          // Update the PR branch (merge base in + plain push, Issue #2807). It checks the branch
           // out at its remote head itself (Issue #211), so this pass never
           // judges the PR by whatever the shared clone's local branch holds.
           const updateResult = await updatePrBranch(
