@@ -35,6 +35,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // are hardwired discovery labels.
   "allowed_authors",
   "pr_reviewers",
+  // The GitHub App the review-fleet-prs skill reviews as; read by that
+  // skill's app_token.ts, not by the worker.
+  "pr_reviewer_app",
   "repos",
   "authorized_commenters",
   "author_source",
