@@ -8,6 +8,8 @@
 import { assert, assertEquals } from "@std/assert";
 import { brokenRefsIn, removeBrokenRef } from "../lib/broken_ref_repair.ts";
 import { createFeatureBranchFromBase } from "../lib/git_branch.ts";
+import type { GitCommandOutput } from "../lib/git_timeout.ts";
+import type { Result } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // brokenRefsIn
@@ -61,10 +63,20 @@ Deno.test("brokenRefsIn - rejects refs outside heads/ and remotes/", () => {
   assertEquals(brokenRefsIn("fatal: bad ref refs/notes/commits"), []);
 });
 
-Deno.test("brokenRefsIn - rejects unsafe ref names", () => {
-  // A dash-leading "ref" would be parsed by git as an option, not a ref —
-  // assertSafeGitRef must reject it before it ever reaches update-ref.
-  assertEquals(brokenRefsIn("fatal: bad object refs/heads/-x"), []);
+Deno.test("brokenRefsIn - drops a ref that climbs out with '..'", () => {
+  // git's stderr can carry server-relayed `remote:` lines, so a "ref" naming
+  // `..` segments must never become a repair candidate: `rev-parse
+  // --git-path` would resolve it to a file outside the clone.
+  assertEquals(
+    brokenRefsIn("remote: fatal: bad object refs/heads/a/../../../../victim"),
+    [],
+  );
+  assertEquals(brokenRefsIn("fatal: bad ref refs/remotes/origin/..x"), []);
+});
+
+Deno.test("brokenRefsIn - drops a ref carrying characters git refuses", () => {
+  assertEquals(brokenRefsIn("fatal: bad object refs/heads/a~1"), []);
+  assertEquals(brokenRefsIn("fatal: bad object refs/heads/a:b"), []);
 });
 
 Deno.test("brokenRefsIn - empty input gives an empty array", () => {
@@ -89,9 +101,121 @@ Deno.test("removeBrokenRef - refuses a non-allowlisted ref", async () => {
   assert(!result.ok, "expected refusal for a ref outside heads/remotes");
 });
 
-Deno.test("removeBrokenRef - refuses an unsafe ref name", async () => {
-  const result = await removeBrokenRef("refs/heads/-x", {});
-  assert(!result.ok, "expected refusal for a dash-leading ref component");
+/**
+ * A fake git for removeBrokenRef: `update-ref -d` always fails (forcing the
+ * filesystem fallback), `rev-parse --git-path` answers `gitPath`, and
+ * `rev-parse --git-common-dir` answers `commonDir`. Records every argv.
+ */
+function fallbackGit(gitPath: string, commonDir: string) {
+  const calls: string[][] = [];
+  const fn = (
+    args: string[],
+  ): Promise<Result<GitCommandOutput>> => {
+    calls.push([...args]);
+    const out = (code: number, stdout = "", stderr = "") =>
+      Promise.resolve({ ok: true as const, value: { code, stdout, stderr } });
+    if (args[0] === "update-ref") return out(1, "", "error: cannot lock ref");
+    if (args[0] === "rev-parse" && args[1] === "--git-path") {
+      return out(0, `${gitPath}\n`);
+    }
+    if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+      return out(0, `${commonDir}\n`);
+    }
+    return out(128, "", `unexpected git ${args.join(" ")}`);
+  };
+  return { calls, fn };
+}
+
+Deno.test("removeBrokenRef - refuses a '..' ref before running git", async () => {
+  const workDir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "vibe-broken-ref-dotdot-" }),
+  );
+  try {
+    const victim = `${workDir}/victim`;
+    await Deno.writeTextFile(victim, "keep me");
+    await Deno.mkdir(`${workDir}/clone/.git`, { recursive: true });
+    // What an unvalidating `rev-parse --git-path` really returns for such a
+    // ref: a path that climbs out of .git.
+    const git = fallbackGit(".git/refs/heads/a/../../../../victim", ".git");
+    const result = await removeBrokenRef(
+      "refs/heads/a/../../../../victim",
+      { cwd: `${workDir}/clone` },
+      git.fn,
+    );
+    assert(!result.ok, "expected refusal for a '..'-bearing ref");
+    assertEquals(git.calls, [], "no git command may run for a '..' ref");
+    assertEquals(await Deno.readTextFile(victim), "keep me");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("removeBrokenRef - never deletes a resolved path outside the git common dir", async () => {
+  const workDir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "vibe-broken-ref-escape-" }),
+  );
+  try {
+    const victim = `${workDir}/victim`;
+    await Deno.writeTextFile(victim, "keep me");
+    await Deno.mkdir(`${workDir}/clone/.git/refs/heads`, { recursive: true });
+    // A valid ref name, but git resolves it somewhere outside the common dir.
+    const git = fallbackGit(victim, ".git");
+    const result = await removeBrokenRef(
+      "refs/heads/x",
+      { cwd: `${workDir}/clone` },
+      git.fn,
+    );
+    assert(!result.ok, "expected refusal for a path outside the clone");
+    assert(
+      result.error.message.includes("outside"),
+      `error should say the path is outside the git dir: ${result.error.message}`,
+    );
+    assertEquals(await Deno.readTextFile(victim), "keep me");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("removeBrokenRef - deletes the loose ref file inside the git common dir", async () => {
+  const workDir = await Deno.realPath(
+    await Deno.makeTempDir({ prefix: "vibe-broken-ref-inside-" }),
+  );
+  try {
+    const refDir = `${workDir}/clone/.git/refs/heads`;
+    await Deno.mkdir(refDir, { recursive: true });
+    await Deno.writeTextFile(`${refDir}/x`, "0".repeat(40) + "\n");
+    let updateRefCalls = 0;
+    const fn = (args: string[]): Promise<Result<GitCommandOutput>> => {
+      const out = (code: number, stdout = "") =>
+        Promise.resolve({
+          ok: true as const,
+          value: { code, stdout, stderr: code === 0 ? "" : "error" },
+        });
+      if (args[0] === "update-ref") return out(++updateRefCalls === 1 ? 1 : 0);
+      if (args[1] === "--git-path") return out(0, ".git/refs/heads/x\n");
+      if (args[1] === "--git-common-dir") return out(0, ".git\n");
+      return out(128);
+    };
+    const result = await removeBrokenRef(
+      "refs/heads/x",
+      { cwd: `${workDir}/clone` },
+      fn,
+    );
+    assert(
+      result.ok,
+      `expected success: ${!result.ok && result.error.message}`,
+    );
+    let exists = true;
+    try {
+      await Deno.stat(`${refDir}/x`);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) exists = false;
+      else throw error;
+    }
+    assert(!exists, "the loose ref file inside .git should be removed");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 // ---------------------------------------------------------------------------

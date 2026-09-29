@@ -45,13 +45,10 @@ export function assertSafeGitRef(ref: string, context: string): void {
   if (ref === "") {
     throw new Error(`Refusing to run git: ${context} must not be empty`);
   }
-  // Check every slash-separated component, not just the leading one — a ref
-  // like "refs/heads/-x" does not itself start with '-', but git still
-  // parses "-x" as the branch name and would read it as an option.
-  if (ref.split("/").some((component) => component.startsWith("-"))) {
+  if (ref.startsWith("-")) {
     throw new Error(
-      `Refusing to run git: ${context} must not begin with '-' in any ` +
-        `component (got '${ref}') — git would parse it as an option, not a ref`,
+      `Refusing to run git: ${context} must not begin with '-' (got '${ref}') — ` +
+        `git would parse it as an option, not a ref`,
     );
   }
 }

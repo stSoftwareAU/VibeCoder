@@ -19,7 +19,7 @@
  */
 
 import type { Result } from "../types.ts";
-import { assertSafeGitRef } from "./git_ref_args.ts";
+import { assertSafeRefComponent } from "./git_ref_args.ts";
 import {
   type GitCommandOptions,
   type GitCommandOutput,
@@ -48,8 +48,11 @@ function isRepairableNamespace(ref: string): boolean {
  *
  * Deliberately narrow to `refs/heads/` and `refs/remotes/` — the only
  * namespaces {@link removeBrokenRef} will ever touch — and to names that
- * pass {@link assertSafeGitRef}, so a hostile or malformed string embedded
- * in git's own output can never reach `git update-ref -d` as a positional.
+ * pass {@link assertSafeRefComponent}, so a hostile or malformed string
+ * embedded in git's output (which, for a fetch, includes server-relayed
+ * `remote:` lines) can never reach git as a positional. That check rejects
+ * `..`, whitespace and every character git refuses in a ref, so a candidate
+ * can never name a path that climbs out of the git directory.
  *
  * @param text - git stderr (or any text) to scan
  * @returns Ref names in first-seen order, de-duplicated
@@ -67,7 +70,7 @@ export function brokenRefsIn(text: string): string[] {
       const ref = raw.replace(TRAILING_PUNCTUATION, "");
       if (!isRepairableNamespace(ref)) continue;
       try {
-        assertSafeGitRef(ref, "broken ref repair");
+        assertSafeRefComponent(ref, "broken ref repair");
       } catch {
         continue;
       }
@@ -89,7 +92,9 @@ export function brokenRefsIn(text: string): string[] {
  * even parse), fall back to resolving the ref's on-disk path with
  * `git rev-parse --git-path` and removing the loose file directly, then
  * retrying `update-ref -d` so any in-memory ref cache git holds is also
- * cleared.
+ * cleared. `rev-parse --git-path` does not validate a ref name, so the
+ * resolved path is only deleted once its real location is confirmed to be
+ * inside `git rev-parse --git-common-dir` — never a file outside the clone.
  *
  * @param ref - The broken ref, validated against the same allowlist as
  *   {@link brokenRefsIn} before it ever reaches git.
@@ -114,7 +119,7 @@ export async function removeBrokenRef(
     };
   }
   try {
-    assertSafeGitRef(ref, "broken ref repair");
+    assertSafeRefComponent(ref, "broken ref repair");
   } catch (error) {
     return {
       ok: false,
@@ -139,13 +144,18 @@ export async function removeBrokenRef(
       ),
     };
   }
-  const relativePath = pathResult.value.stdout.trim();
   const cwd = options.cwd ?? Deno.cwd();
-  const looseRefPath = relativePath.startsWith("/")
-    ? relativePath
-    : `${cwd}/${relativePath}`;
+  const looseRefPath = absoluteUnder(cwd, pathResult.value.stdout.trim());
+  const contained = await confirmInsideGitCommonDir(
+    ref,
+    looseRefPath,
+    cwd,
+    options,
+    runGit,
+  );
+  if (!contained.ok) return contained;
   try {
-    await Deno.remove(looseRefPath);
+    await Deno.remove(contained.value);
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) {
       return {
@@ -172,6 +182,78 @@ export async function removeBrokenRef(
         `ref file: ${describe(deleteArgs, retry)}`,
     ),
   };
+}
+
+/** Resolve a path git printed relative to `cwd` (no `@std/path` here). */
+function absoluteUnder(cwd: string, path: string): string {
+  return path.startsWith("/") ? path : `${cwd.replace(/\/+$/, "")}/${path}`;
+}
+
+/** Split a path into its directory and final component. */
+function splitLast(path: string): { dir: string; name: string } {
+  const cut = path.lastIndexOf("/");
+  return cut > 0
+    ? { dir: path.slice(0, cut), name: path.slice(cut + 1) }
+    : { dir: "/", name: path.slice(cut + 1) };
+}
+
+/**
+ * Confirm `looseRefPath` really lives inside the repository's git common
+ * directory, resolving symlinks on both sides, and return the real path to
+ * delete. A path whose parent directory is already gone is reported as-is:
+ * there is nothing left to delete, and `Deno.remove` will say NotFound.
+ */
+async function confirmInsideGitCommonDir(
+  ref: string,
+  looseRefPath: string,
+  cwd: string,
+  options: GitCommandOptions,
+  runGit: typeof runGitCommand,
+): Promise<Result<string>> {
+  const commonArgs = ["rev-parse", "--git-common-dir"];
+  const common = await runGit(commonArgs, options);
+  if (!common.ok || common.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Could not remove broken ref '${ref}': cannot locate the git ` +
+          `directory to confirm the loose ref path: ${
+            describe(commonArgs, common)
+          }`,
+      ),
+    };
+  }
+  let commonDir: string;
+  let realParent: string;
+  try {
+    commonDir = await Deno.realPath(
+      absoluteUnder(cwd, common.value.stdout.trim()),
+    );
+    realParent = await Deno.realPath(splitLast(looseRefPath).dir);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return { ok: true, value: looseRefPath };
+    }
+    return {
+      ok: false,
+      error: new Error(
+        `Could not remove broken ref '${ref}': cannot resolve ${looseRefPath}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
+    };
+  }
+  const realPath = `${realParent}/${splitLast(looseRefPath).name}`;
+  if (!realPath.startsWith(`${commonDir}/`)) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to delete ${realPath} for broken ref '${ref}': it resolves ` +
+          `outside the git directory ${commonDir} (Issue #2880)`,
+      ),
+    };
+  }
+  return { ok: true, value: realPath };
 }
 
 /** Describe a git command outcome for an error message. */
