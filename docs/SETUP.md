@@ -375,12 +375,14 @@ For each monitored repository, in order:
      because it would refuse every push; its line reports
      `skipped: default-branch-approval: direct-push branch (…)` for the
      owner to decide. Milestone branches never get one;
-   - code-owner review is required **only when a CODEOWNERS file is
-     already on the default branch**, in the ruleset the default branch's
-     `pull_request` rule comes from — found by the rule's `ruleset_id`,
-     never by the ruleset's name (Issue #2685). A CODEOWNERS file
-     written in step 1 reaches the default branch with the next worker PR,
-     and the setup run after that turns the review on;
+   - code-owner review is turned **off** in every repository ruleset
+     that requires it, found by each `pull_request` rule's `ruleset_id`,
+     never by name (Issue #2685), and never turned back on. The fleet
+     reviewer is a GitHub App, which cannot be a code owner, so its
+     approval is the gate; CODEOWNERS only routes review requests (see
+     residual risk R14 in [THREAT-MODEL.md](THREAT-MODEL.md)). An
+     organisation ruleset that requires it is reported for an owner to
+     change;
    - **merge commits are allowed** on the repository, so a milestone sync
      PR lands as a real merge commit and the milestone branch reads level
      afterwards without an admin bypass (Issue #2690). A squashed sync

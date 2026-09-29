@@ -364,15 +364,13 @@ export interface GitHubActionsAuditTemplateDeps {
   ) => Promise<ActionAdvisoryFinding[]>;
   /**
    * Repository-settings drift (Issues #4397, #4398, #4401). Defaults to
-   * `scanRepoSettings`; tests inject a stub. `hasCodeowners` is resolved
-   * from the checkout by the template.
+   * `scanRepoSettings`; tests inject a stub.
    */
   scanRepoSettingsFn?: (
     repo: string,
     ghCommandFn: GhCommandFn,
     options: {
       defaultBranch: string;
-      hasCodeowners: boolean;
       knownOpenFindingIds: Iterable<string>;
       onLookupFailure: (what: string, reason: string) => void;
       onCheckSkipped: (what: string, reason: string) => void;
@@ -1456,13 +1454,6 @@ export function createGitHubActionsAuditTemplate(
       try {
         const defaultBranchForRules = await getDefaultBranchFn(opts.repo);
         if (defaultBranchForRules.ok) {
-          let hasCodeowners = false;
-          try {
-            await Deno.stat(`${repoPath}/.github/CODEOWNERS`);
-            hasCodeowners = true;
-          } catch {
-            hasCodeowners = false;
-          }
           // The allow-list check needs the full action set the workflows
           // run, composite steps included (Issue #4424); a resolver failure
           // simply withholds that one check.
@@ -1483,7 +1474,6 @@ export function createGitHubActionsAuditTemplate(
           const settingsFindings: RepoSettingsFinding[] =
             await scanRepoSettingsFn(opts.repo, ghCommandFn, {
               defaultBranch: defaultBranchForRules.value,
-              hasCodeowners,
               knownOpenFindingIds: seenIds,
               requiredActionPatterns,
               // Issue #2225: a check the scanner deliberately did not make

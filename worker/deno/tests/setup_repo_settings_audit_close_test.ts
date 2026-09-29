@@ -453,44 +453,6 @@ Deno.test("a private repo whose secret scanning stays off (exempted) closes noth
   assertEquals(stub.closes, []);
 });
 
-Deno.test("CODEOWNERS-NOT-ENFORCED closes only when CODEOWNERS exists and the rule is enforced", async () => {
-  const issues = [
-    {
-      number: 80,
-      body: marker("BP-REPO-CODEOWNERS-NOT-ENFORCED"),
-      author: "stservice",
-    },
-  ];
-  // No CODEOWNERS file: the scanner does not make the check, so its absence
-  // proves nothing.
-  const noFile = { ...HARDENED };
-  delete noFile[`repos/${REPO}/contents/.github/CODEOWNERS`];
-  const blind = stubGh(noFile, issues);
-  assertEquals((await run(blind, outcome([]))).result.closed, []);
-
-  const seen = stubGh(HARDENED, issues);
-  assertEquals((await run(seen, outcome([]))).result.closed, [80]);
-});
-
-Deno.test("an unreadable CODEOWNERS lookup is a failed re-scan: closes nothing, warns", async () => {
-  const stub = stubGh(
-    {
-      ...HARDENED,
-      [`repos/${REPO}/contents/.github/CODEOWNERS`]: new Error("HTTP 502"),
-    },
-    [
-      {
-        number: 41,
-        body: marker("BP-REPO-DEFAULT-TOKEN-WRITE"),
-        author: "stservice",
-      },
-    ],
-  );
-  const { result } = await run(stub, TOKEN_APPLIED);
-  assertEquals(result.closed, []);
-  assertEquals(result.warnings.length, 1);
-});
-
 Deno.test("a failed comment warns naming the issue and leaves it open", async () => {
   const stub = stubGh(
     HARDENED,
@@ -586,7 +548,6 @@ Deno.test("eligibleFindingIds - applied or absent kinds are eligible; failed, pl
     [...ids].sort(),
     [
       "BP-REPO-ACTIONS-MAY-APPROVE-PRS",
-      "BP-REPO-CODEOWNERS-NOT-ENFORCED",
       "BP-REPO-DEFAULT-TOKEN-WRITE",
       "BP-REPO-RULESET-NO-REVIEW",
     ],
