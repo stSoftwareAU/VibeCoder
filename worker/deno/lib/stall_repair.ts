@@ -389,7 +389,11 @@ async function abandonStalledPr(
       branchName: target.headRefName,
       baseBranch: target.baseRefName,
       prComments: comments,
-      reason: { kind: "stalled", detail: `has stalled: ${detail}` },
+      reason: {
+        kind: "stalled",
+        detail: `has stalled: ${detail}`,
+        tried: "sync-and-lane-rerun",
+      },
     },
     {
       gh: deps.ghCommandFn,

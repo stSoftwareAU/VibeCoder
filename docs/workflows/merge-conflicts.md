@@ -807,8 +807,10 @@ Five details carry the weight:
   ladder's `rung="abandon"` wait marker for the head, so the ordinary pass
   reruns the ladder — its own merge-then-resolve attempt — once. If the PR is
   still stalled 8 hours after the trip, the second trip closes it and redoes
-  its work through `abandonAndRestart` with a `stalled` reason; the re-queue
-  label is the issue's own pickup label, else `idle-task`, never `work-on`.
+  its work through `abandonAndRestart` with a `stalled` reason whose comments
+  say the ladder was rerun once — never that the branch was synced or a lane
+  rerun, which is the blocking-PR route's repair; the re-queue label is the
+  issue's own pickup label, else `idle-task`, never `work-on`.
   It files no issue and adds no label; both trips run under the maintenance
   lease. When the issue has already been redone twice, the rung hands the
   issue to a human instead of a third redo (Issue #2804,

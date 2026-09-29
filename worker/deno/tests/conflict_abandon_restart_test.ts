@@ -1044,7 +1044,13 @@ Deno.test("abandonAndRestart - a stalled PR's spent budget names the stall", asy
   const fake = makeFake({ issueComments: spentIssueComments() });
 
   await abandonAndRestart(
-    makeRequest({ reason: { kind: "stalled", detail: "has stalled: red CI" } }),
+    makeRequest({
+      reason: {
+        kind: "stalled",
+        detail: "has stalled: red CI",
+        tried: "sync-and-lane-rerun",
+      },
+    }),
     { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
   );
 
@@ -1052,6 +1058,27 @@ Deno.test("abandonAndRestart - a stalled PR's spent budget names the stall", asy
     issueCommentPosts(fake)[0]?.find((arg) => arg.startsWith("body=")) ?? "";
   assertStringIncludes(body, "has stalled: red CI");
   assertEquals(needsHumanLabelCalls(fake).length, 1);
+});
+
+Deno.test("abandonAndRestart - a conflict-queue stall's spent budget names the ladder rerun, never a lane rerun or a sync", async () => {
+  const fake = makeFake({ issueComments: spentIssueComments() });
+
+  await abandonAndRestart(
+    makeRequest({
+      reason: {
+        kind: "stalled",
+        detail: "has carried `merge-conflict` for 9 hours",
+        tried: "ladder-rerun",
+      },
+    }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  const body =
+    issueCommentPosts(fake)[0]?.find((arg) => arg.startsWith("body=")) ?? "";
+  assertStringIncludes(body, "one rerun of the merge-conflict ladder");
+  assert(!body.includes("owning lane"), body);
+  assert(!body.includes("sync with"), body);
 });
 
 Deno.test("abandonAndRestart - a failed needs-human label is a failure, not a decline", async () => {

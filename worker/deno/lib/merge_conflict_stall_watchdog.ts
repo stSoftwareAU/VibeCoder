@@ -409,6 +409,20 @@ function describeSkipReason(reason: ConflictSkipReason): string {
     : `\`${reason.kind}\``;
 }
 
+/**
+ * The stall as one clause completing "This PR …" — what the second trip's
+ * permanent comments quote. The first trip's full report is already on the PR.
+ */
+export function buildConflictStallDetail(stall: ConflictQueueStall): string {
+  const since = stall.lastConclusionAtMs === undefined
+    ? "with no resolution attempt concluding"
+    : `with nothing since its last attempt concluded ${
+      formatHours(stall.stalledMs)
+    } ago`;
+  return `has carried \`${MERGE_CONFLICT_LABEL}\` for ` +
+    `${formatHours(stall.labelAgeMs)} ${since}`;
+}
+
 /** Why this PR's queue is being reported as stalled. */
 export function buildConflictStallReason(stall: ConflictQueueStall): string {
   const lines = [
@@ -656,7 +670,11 @@ export async function repairConflictQueueStall(
         branchName: view.headRefName,
         baseBranch: view.baseRefName,
         prComments: comments,
-        reason: { kind: "stalled", detail: buildConflictStallReason(stall) },
+        reason: {
+          kind: "stalled",
+          detail: buildConflictStallDetail(stall),
+          tried: "ladder-rerun",
+        },
       },
       {
         gh: ghCommandFn,

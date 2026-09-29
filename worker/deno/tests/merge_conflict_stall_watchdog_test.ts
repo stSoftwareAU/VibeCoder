@@ -658,6 +658,94 @@ Deno.test("repairConflictQueueStall - a second trip on an issue already redone t
   assertEquals(issue.comments.length, 3);
 });
 
+Deno.test("repairConflictQueueStall - the real second-trip comments say the ladder was rerun, in one sentence, never a lane rerun or a sync", async () => {
+  const ISSUE = 7;
+  const github = fakeGitHub([tripComment(8.5)]);
+  const issueComments: string[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    if (args[0] === "issue" && args[1] === "view") {
+      github.calls.push(args);
+      return Promise.resolve(JSON.stringify({
+        state: "OPEN",
+        labels: [{ name: "work-on" }],
+      }));
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      github.calls.push(args);
+      issueComments.push(args[args.indexOf("--body") + 1] ?? "");
+      return Promise.resolve("");
+    }
+    return github.gh(args);
+  };
+  const context: ConflictIssueContext = {
+    repo: REPO,
+    prNumber: PR,
+    prSide: {
+      resolved: true,
+      signal: "branch",
+      issue: {
+        number: ISSUE,
+        title: "Fix it",
+        state: "OPEN",
+        body: "",
+        bodyTruncated: false,
+      },
+    },
+    baseSide: [],
+    truncation: {
+      commitCapPaths: [],
+      issueCapHit: false,
+      textTruncatedIssues: [],
+      ghCallCapHit: false,
+    },
+    ghCallsUsed: 0,
+    warnings: [],
+  };
+  const stall = detect(observation(9, [tripComment(8.5)]));
+  assert(stall !== null);
+
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    trustedAuthors: [FLEET],
+    acquireLease: () => ({ release: noop }),
+    abandonDeps: {
+      resolveContext: () => Promise.resolve(context),
+      findOtherPrs: () => Promise.resolve([]),
+    },
+  });
+
+  assertEquals(action, "abandoned");
+  const prComment = postedComments(github.calls).at(-1) ?? "";
+  assertEquals(issueComments.length, 1);
+  const issueComment = issueComments[0]!;
+  const bodies: [string, string][] = [
+    ["PR", prComment],
+    ["issue", issueComment],
+  ];
+  for (const [where, body] of bodies) {
+    assertStringIncludes(body, "merge-conflict ladder", where);
+    for (const untrue of ["owning lane", "synced", "Skip reason"]) {
+      assert(
+        !body.includes(untrue),
+        `the ${where} comment must not say "${untrue}": ${body}`,
+      );
+    }
+    // The stall detail reads as one sentence: its line carries the whole
+    // claim, not a multi-paragraph report spliced mid-sentence.
+    const line = body.split("\n").find((l) => l.includes("has carried"));
+    assert(line, `the ${where} comment names the stall: ${body}`);
+    assertStringIncludes(line, "for 9 hours", where);
+  }
+  assertStringIncludes(prComment, "This PR has carried `merge-conflict`");
+  assertStringIncludes(
+    issueComment,
+    `${REPO}#${PR} has carried \`merge-conflict\``,
+  );
+});
+
 Deno.test("repairConflictQueueStall - an untrusted or pre-label trip marker is not a trip", async () => {
   // A forged marker must not skip straight to closing the PR, and a trip from
   // an earlier stall — before the label last went on — belongs to that stall.

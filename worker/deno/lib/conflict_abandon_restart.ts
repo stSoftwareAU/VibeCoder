@@ -661,18 +661,38 @@ export function exhaustedEscalationDedupKey(
 // ---------------------------------------------------------------------------
 
 /**
+ * What a stall-repair first trip tried before the second trip abandoned
+ * (Issues #2802, #2803). The comments state it as fact, so each route names
+ * its own: the blocking-PR route synced the branch and reran its owning lane;
+ * the conflict-queue route only cleared the ladder's wait so it ran again.
+ */
+export type StallRepairTried = "sync-and-lane-rerun" | "ladder-rerun";
+
+/**
  * Why a PR is being abandoned (Issue #2802). Omitted means a merge conflict,
- * the reason this rung was written for; `stalled` is the blocking-PR stall
- * repair's second trip, and changes only what the comments say — and that a
- * PR naming no originating issue is closed without filing a flag issue.
+ * the reason this rung was written for; `stalled` is a stall repair's second
+ * trip, and changes only what the comments say — and that a PR naming no
+ * originating issue is closed without filing a flag issue.
  */
 export type AbandonReason =
   | { kind: "merge-conflict" }
   | {
     kind: "stalled";
-    /** What the stall watchdog saw, quoted in the comments. */
+    /**
+     * What the stall watchdog saw, as one clause completing "This PR …"
+     * (e.g. "has stalled: …"). Quoted in the comments.
+     */
     detail: string;
+    /** What the first trip tried — stated as fact in the comments. */
+    tried: StallRepairTried;
   };
+
+/** The repair a first trip made, as a clause after "The stall-repair pass". */
+function describeStallRepair(tried: StallRepairTried, base: string): string {
+  return tried === "ladder-rerun"
+    ? "reran the merge-conflict ladder once"
+    : `synced it with \`${base}\` and reran its owning lane once`;
+}
 
 /** The exhausted PR to abandon. */
 export interface AbandonRestartRequest {
@@ -1138,6 +1158,7 @@ function describeRequeueLabel(label: RequeueLabel): string {
 export function buildStalledAbandonPrComment(args: {
   request: AbandonRestartRequest;
   detail: string;
+  tried: StallRepairTried;
   issueNumber: number;
   label: RequeueLabel;
 }): string {
@@ -1146,11 +1167,9 @@ export function buildStalledAbandonPrComment(args: {
   return [
     "♻️ **Abandoning this stalled PR and restarting the work**",
     "",
-    `This PR ${
-      sanitiseIssueText(args.detail)
-    }. The stall-repair pass already ` +
-    `synced it with \`${base}\` and reran its owning lane once, and it is ` +
-    "still stalled, so the work is redone rather than nursed further.",
+    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
+    `already ${describeStallRepair(args.tried, base)}, and it is still ` +
+    "stalled, so the work is redone rather than nursed further.",
     "",
     `This PR is being **closed** — not merged — and issue ` +
     `#${args.issueNumber} is being re-queued ` +
@@ -1170,6 +1189,7 @@ export function buildStalledAbandonPrComment(args: {
 export function buildStalledRestartIssueComment(args: {
   request: AbandonRestartRequest;
   detail: string;
+  tried: StallRepairTried;
   label: RequeueLabel;
   restartNumber: number;
 }): string {
@@ -1179,8 +1199,9 @@ export function buildStalledRestartIssueComment(args: {
     "♻️ **Re-queued: the PR for this issue stalled**",
     "",
     `${request.repo}#${request.prNumber} ${sanitiseIssueText(args.detail)}. ` +
-    "It was synced with its base and its owning lane rerun once, and it is " +
-    "still stalled.",
+    `The stall-repair pass ${
+      describeStallRepair(args.tried, sanitiseIssueText(request.baseBranch))
+    }, and it is still stalled.`,
     "",
     `That PR is being closed and this issue re-queued ` +
     `(${describeRequeueLabel(args.label)}) so the work is redone. The ` +
@@ -1199,16 +1220,20 @@ export function buildStalledRestartIssueComment(args: {
 export function buildStalledNoIssueClosePrComment(args: {
   request: AbandonRestartRequest;
   detail: string;
+  tried: StallRepairTried;
   reason: PrUnresolvedReason;
 }): string {
   const branch = sanitiseIssueText(args.request.branchName);
   return [
     "♻️ **Closing this stalled PR**",
     "",
-    `This PR ${
-      sanitiseIssueText(args.detail)
-    }. The stall-repair pass already ` +
-    "synced it and reran its owning lane once, and it is still stalled.",
+    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
+    `already ${
+      describeStallRepair(
+        args.tried,
+        sanitiseIssueText(args.request.baseBranch),
+      )
+    }, and it is still stalled.`,
     "",
     `It names **no originating issue** (${args.reason}), so there is nothing ` +
     "to re-queue, and the stall watchdog files no issue of its own. It is " +
@@ -1245,8 +1270,11 @@ export function buildRestartsSpentHandOff(args: {
   const branch = sanitiseIssueText(request.branchName);
   const base = sanitiseIssueText(request.baseBranch);
   const failure = request.reason?.kind === "stalled"
-    ? `${sanitiseIssueText(request.reason.detail)}, and a sync with ` +
-      `\`${base}\` plus one rerun of its owning lane did not clear it`
+    ? `${sanitiseIssueText(request.reason.detail)}, and ${
+      request.reason.tried === "ladder-rerun"
+        ? "one rerun of the merge-conflict ladder"
+        : `a sync with \`${base}\` plus one rerun of its owning lane`
+    } did not clear it`
     : `spent its merge-conflict budget: GitHub still will not merge ` +
       `\`${branch}\` into \`${base}\``;
   return {
@@ -1448,6 +1476,7 @@ async function abandonWithoutOriginatingIssue(
         buildStalledNoIssueClosePrComment({
           request,
           detail: request.reason.detail,
+          tried: request.reason.tried,
           reason,
         }),
       ]);
@@ -1804,6 +1833,7 @@ export async function abandonAndRestart(
         ? buildStalledRestartIssueComment({
           request,
           detail: request.reason.detail,
+          tried: request.reason.tried,
           label: requeueLabel,
           restartNumber: claimed.length + 1,
         })
@@ -1833,6 +1863,7 @@ export async function abandonAndRestart(
         ? buildStalledAbandonPrComment({
           request,
           detail: request.reason.detail,
+          tried: request.reason.tried,
           issueNumber,
           label: requeueLabel,
         })
