@@ -87,14 +87,19 @@ import {
 import {
   buildCiFixAttemptMarker,
   buildCiFixDeferralMarker,
+  buildCiHumanGateMarker,
   type CiFixAttemptOutcome,
   type CiFixAttemptRecord,
   countAttempts,
   findDeferral,
+  findHumanGate,
   findNoChangeComment,
   type FleetCiFixMarkers,
+  restampHumanGateMarker,
 } from "./ci_fix_attempt_markers.ts";
 import { isCheckRedOnBranch } from "./ci_base_branch_check.ts";
+import { buildHumanGateComment } from "./ci_human_gate_comment.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import {
   type BlockedDependency,
   detectBlockedOutcome,
@@ -1245,6 +1250,33 @@ async function _processCiWithHeartbeat(
     };
   }
 
+  // Issue #2727: a check that declared a human step is parked with one
+  // comment — no attempt, no agent, no `needs-human` — before the cap reads
+  // the tally, so a gate can never exhaust it.
+  if (failureClassification.category === "human-gate") {
+    const gate = await _parkHumanGate({
+      repo,
+      prNumber,
+      checkName,
+      safeCheckName,
+      humanStep: failureClassification.humanStep,
+      head: beforeSha,
+      markerState,
+      deps,
+      logger,
+    });
+    return {
+      ok: true,
+      value: {
+        processed: gate.processed,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary: `PR #${prNumber} (${checkName}) — ${gate.summary}`,
+      },
+    };
+  }
+
   const priorAttempts = markerState.markers.attempts.get(signature) ?? [];
   const attemptCount = countAttempts(markerState.markers, signature);
   logger.info("Auto-fix failure signature", {
@@ -1567,7 +1599,7 @@ async function _processCiWithHeartbeat(
         { cwd: processorDeps.workDir },
       );
       // Issue #211: keep the reason the recovery failed — it names the step
-      // (rebase conflict, failed auto-resolution, refused --force-with-lease)
+      // (fetch, merge conflict, rejected retry push, unconfirmed push)
       // and carries git's stderr. Without it the log said only "push failed".
       let failureDetail = recoveryResult.ok
         ? undefined
@@ -1575,7 +1607,7 @@ async function _processCiWithHeartbeat(
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
-          `Fix CI failure: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
+          `Fix CI failure: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
           { cwd: processorDeps.workDir },
           false,
           preFlight,
@@ -1586,7 +1618,7 @@ async function _processCiWithHeartbeat(
           finalUnpushedAfterPush = 0;
         } else {
           failureDetail = retryFinalise.ok
-            ? `retry after rebase recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
+            ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
             : retryFinalise.error.message;
         }
       }
@@ -2710,6 +2742,193 @@ async function replyToComment(
     // the outcome is returned rather than swallowed.
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Human gate (Issue #2727)
+// ---------------------------------------------------------------------------
+
+/** Inputs for {@link _parkHumanGate}. */
+interface HumanGateOptions {
+  repo: string;
+  prNumber: number;
+  /** Raw check name — the marker builder sanitises it itself. */
+  checkName: string;
+  /** Inert check name for the comment prose (Issue #2260). */
+  safeCheckName: string;
+  /** The step the classifier extracted, already neutralised and bounded. */
+  humanStep: string | undefined;
+  /** The head the gate was confirmed on; `undefined` when unreadable. */
+  head: string | undefined;
+  /** The pull request's markers, read successfully by the caller. */
+  markerState: PrCiFixMarkerState;
+  deps: WorkerDeps;
+  logger: Logger;
+}
+
+/**
+ * Park a human-gate check: post its one comment, or — when the fleet already
+ * has — re-stamp that comment's marker with this head (PR #2762), so the
+ * scanner parks the check on this head and no other.
+ *
+ * `processed` is true only when the gate is positively recorded on the pull
+ * request — a marker already there, or the comment just posted. Every other
+ * outcome is logged as an error and returns `processed: false`, so the next
+ * scan retries rather than recording a silent success.
+ */
+async function _parkHumanGate(
+  options: HumanGateOptions,
+): Promise<{ processed: boolean; summary: string }> {
+  const { repo, prNumber, checkName, head, markerState, logger } = options;
+
+  const announced = findHumanGate(markerState.markers, checkName);
+  if (announced !== undefined && announced.head === head) {
+    logger.info(
+      "CI check is a human gate the fleet has already announced on this " +
+        "head — posting nothing (Issue #2727)",
+      { repo, prNumber, checkName },
+    );
+    return { processed: true, summary: "human gate already announced" };
+  }
+  if (announced !== undefined) {
+    return await _restampHumanGate(options, announced.commentId);
+  }
+
+  if (!markerState.markers.fleetResolved) {
+    // Without attribution no gate marker can be read back, so posting would
+    // repeat the comment on every pass. The readPrCiFixMarkers error already
+    // names the configuration that restores it.
+    logger.error(
+      "Human-gate check not announced: the fleet login set is empty, so the " +
+        "one-comment rule cannot be held (Issue #2727)",
+      { repo, prNumber, checkName },
+    );
+    return {
+      processed: false,
+      summary: "human gate not announced — fleet identity unresolved",
+    };
+  }
+
+  let marker: string;
+  try {
+    marker = buildCiHumanGateMarker({ checkName, head });
+  } catch (error: unknown) {
+    logger.error(
+      "Could not build the human-gate marker, so the gate comment was not " +
+        "posted (Issue #2727)",
+      {
+        repo,
+        prNumber,
+        checkName,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return {
+      processed: false,
+      summary: "human gate not announced — marker could not be built",
+    };
+  }
+
+  const body = buildHumanGateComment({
+    safeCheckName: options.safeCheckName,
+    // The classifier always sets a non-empty step for this category.
+    humanStep: options.humanStep ?? "(the check named no step)",
+    marker,
+  });
+  // A new outbound sink redacts its own text (SECURITY.md).
+  if (
+    !await replyToComment(repo, prNumber, redactSecrets(body), options.deps)
+  ) {
+    // The comment IS the record: without it the next pass must try again.
+    logger.error(
+      "The human-gate comment could not be posted, so the gate was not " +
+        "recorded — reporting the run as unprocessed so the next scan " +
+        "retries (Issue #2727)",
+      { repo, prNumber, checkName },
+    );
+    return {
+      processed: false,
+      summary: "human-gate comment could not be posted; nothing was recorded",
+    };
+  }
+
+  logger.info("Human-gate check announced once (Issue #2727)", {
+    repo,
+    prNumber,
+    checkName,
+  });
+  return { processed: true, summary: "human gate announced" };
+}
+
+/**
+ * Move an existing gate comment's marker to this head, editing it in place so
+ * the pull request still carries one gate comment (PR #2762).
+ *
+ * Every failure returns `processed: false` and is logged as an error: the
+ * scanner then re-selects the check next cycle rather than trusting a marker
+ * from a head the gate was never confirmed on.
+ */
+async function _restampHumanGate(
+  options: HumanGateOptions,
+  commentId: number,
+): Promise<{ processed: boolean; summary: string }> {
+  const { repo, prNumber, checkName, head, markerState, deps, logger } =
+    options;
+  const fail = (message: string, error?: unknown) => {
+    logger.error(message, {
+      repo,
+      prNumber,
+      checkName,
+      commentId,
+      ...(error === undefined ? {} : {
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    });
+    return {
+      processed: false,
+      summary: "human gate still shut; its marker could not move to this head",
+    };
+  };
+
+  if (head === undefined) {
+    return fail(
+      "Human gate already announced, but the PR head SHA could not be read, " +
+        "so its marker was not moved to this head (PR #2762)",
+    );
+  }
+  const original = markerState.comments.find((c) => c.id === commentId);
+  if (original === undefined) {
+    return fail(
+      "Human gate already announced, but its comment could not be re-read, " +
+        "so its marker was not moved to this head (PR #2762)",
+    );
+  }
+  const client = deps.github.createClient(logger);
+  if (typeof client.updateComment !== "function") {
+    return fail(
+      "This GitHub client cannot edit comments, so the human-gate marker " +
+        "was not moved to this head (PR #2762)",
+    );
+  }
+  try {
+    const marker = buildCiHumanGateMarker({ checkName, head });
+    await client.updateComment(
+      repo,
+      commentId,
+      restampHumanGateMarker(original.body, marker),
+    );
+  } catch (error: unknown) {
+    return fail(
+      "Could not move the human-gate marker to this head (PR #2762)",
+      error,
+    );
+  }
+  logger.info(
+    "Human gate still shut on a new head — marker re-stamped in place, no " +
+      "new comment (PR #2762)",
+    { repo, prNumber, checkName, commentId },
+  );
+  return { processed: true, summary: "human gate re-confirmed on this head" };
 }
 
 // ---------------------------------------------------------------------------

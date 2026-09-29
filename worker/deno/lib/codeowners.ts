@@ -3,7 +3,8 @@
  *
  * Lets a test pin that the committed `.github/CODEOWNERS` gives every
  * privileged path (workflows, actions, CI scripts, rulesets) a human owner,
- * so the ruleset's `require_code_owner_review` enforces something real.
+ * so those humans are requested as reviewers. Code-owner review itself is
+ * not required: the fleet reviewer App approves (THREAT-MODEL R14).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

@@ -1633,8 +1633,8 @@ export const RUN_ALL_REPO_STEPS: ReadonlyArray<{
   // Default-branch ruleset sync (Issue #2588), after the precheck that
   // validates access. Setup-time only.
   { name: "branch-protection-sync", run: runBranchProtectionSync },
-  // Repo-settings hardening (Issue #2628), once the ruleset it may add
-  // code-owner review to exists. Setup-time only.
+  // Repo-settings hardening (Issue #2628), once the ruleset sync above has
+  // run, so the rulesets it reads are current. Setup-time only.
   {
     name: "repo-settings-harden",
     run: (p) => runRepoSettingsHardenStep(p, false),

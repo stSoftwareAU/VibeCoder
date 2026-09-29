@@ -563,7 +563,7 @@ match**:
 | 1        | PR feedback (thumbs-up or authorised comments)  | [pr_feedback_processor.ts](../worker/deno/lib/pr_feedback_processor.ts) |
 | 1.5      | Spelling/quality check failures on open PRs     | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts) |
 | 1.55     | CI/integration test failures on open PRs        | [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts)             |
-| 1.6      | Update open PR branches (rebase onto base)      | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)           |
+| 1.6      | Update open PR branches (merge base in)         | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)           |
 | 1.65     | Auto-merge catch-up (retry transient failures)  | [pr_auto_merge.ts](../worker/deno/lib/pr_auto_merge.ts)                 |
 | 1.66     | Branch cleanup (delete branches for merged PRs) | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)               |
 | 1.67     | Issue closure (close issues for merged PRs)     | [issue_lifecycle.ts](../worker/deno/lib/issue_lifecycle.ts)             |
@@ -1749,7 +1749,9 @@ serialise one issue per stream. This host's own slots are kept apart
 regardless — `BlankStreamLockRegistry` (`stream_lock.ts`) refuses a second
 no-milestone issue of the same repository, and `InFlightRepoRegistry`
 (`in_flight_repos.ts`) holds one `(repo, milestone)` stream per slot. The
-fleet-wide stream lock (Issue #2334) is not that guard for these two tiers —
+census counts what that blank-stream lock refuses as `stream_occupied` for
+every tier (Issue #2800). The fleet-wide stream lock (Issue #2334) is not
+that guard for these two tiers —
 `claimIssue` is told the claim is shareable and proceeds — so an issue the
 slot registry refuses is held out of that slot's next scan by
 `scanExcludedIssues` until the sibling run releases it.
@@ -1921,7 +1923,7 @@ feedback:
 | ---------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Inline review comments**         | `repos/{repo}/pulls/{pr}/comments`  | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (a bare `+1` count is not trusted, since any user can self-react). |
 | **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments.                                                                                                                                                        |
-| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt.                                |
+| **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt. Only each reviewer's latest review counts, whatever commit it was left on (Issue #2697). |
 
 **Processed-comment tracking** — comments are marked as processed by adding an
 "eyes" (👀) reaction. The discovery query returns every comment with its `eyes`
@@ -1929,6 +1931,15 @@ count, and the scan resolves the *reactor* before skipping one: only a 👀 from
 the fleet means "already processed" (Issue #1249, finding 5). A count alone
 would let any account, with no repository permission, retire a comment from the
 scan for good. PR reviews use dismissal instead of reactions.
+
+**Latest review wins** (Issue #2697) — the scan reads every page of reviews
+(`gh api --paginate`) and keeps each reviewer's latest submitted review, so a
+`CHANGES_REQUESTED` review is retired by its dismissal or by the same
+reviewer's later `APPROVED` or `CHANGES_REQUESTED` review, never by the head
+moving. `PENDING` drafts and every `COMMENTED` review do not count — GitHub
+keeps `reviewDecision` at `CHANGES_REQUESTED` after a Comment review. Each change request it skips is logged at info with the
+reason; see `selectOutstandingReviews` in
+[pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts).
 
 **Staleness check** (Issue #2702) — a `CHANGES_REQUESTED` review is skipped
 only when a **fleet fix commit** landed after its `submitted_at`: a commit
@@ -1977,8 +1988,9 @@ When a comment is found:
 
 1. **Set up** — update GitHub status, set terminal title, validate comment body
    size.
-2. **Sync branch** — `sync_feature_branch_with_default()` rebases the feature
-   branch onto the base branch to prevent merge conflicts.
+2. **Sync branch** — `sync_feature_branch_with_default()` merges the base
+   branch into the feature branch (never a rebase, Issue #2807) to prevent merge
+   conflicts; a conflicting merge is aborted and the branch left as it was.
 3. **Build prompt** — assemble a `pr_feedback` prompt template with the comment
    body, repo quality instructions, and custom instructions.
 4. **Run Claude** — `run_claude_with_retry()` with timeout and rate-limit
@@ -2009,7 +2021,7 @@ label on a mergeable PR.
 ```mermaid
 flowchart TD
     A[commit pending work] --> B[push unpushed commits]
-    B -->|rejected non-fast-forward| C[recover: fetch, rebase,<br/>auto-resolve, retry push]
+    B -->|rejected non-fast-forward| C[recover: fetch, merge,<br/>plain push, confirm]
     C -->|failed| E[log recoveryStep + git stderr]
     B --> D{count vs the branch's<br/>own remote head}
     C -->|recovered| D
@@ -2030,7 +2042,7 @@ The same remote head governs the **branch-update pass**: `updatePrBranch`
 fast-forwards the PR branch onto its remote head before deciding whether it is
 behind or conflicted, and refuses loudly — with a distinct error, not a conflict
 verdict — when the local branch is ahead of that head, because those commits are
-unpushed work the pass would otherwise force-push over. Judging a reused clone's
+unpushed work the pass would otherwise push over. Judging a reused clone's
 stale local branch is what produced a conflict verdict for a PR GitHub reported
 as mergeable.
 
@@ -2100,16 +2112,30 @@ route is never taken on a guess.
    and the `depends-on` issue it records is still open, that check is not
    returned — nothing on the branch can fix a failure the base branch
    already has (see [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)
-   `findOpenDeferrals`). Other failing checks on the same PR are still
+   `findParkedChecks`). Other failing checks on the same PR are still
    returned, and one `skipReason` line per PR names what was deferred and
    on which issue. Once the issue closes the check is returned as usual.
    A comment thread or issue state that cannot be read, a marker from
    outside the fleet, or a malformed reference all leave the check
    undeferred and are logged — an error never suppresses a real failure.
-6. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
+6. Skips checks **parked for a human** (Issue #2744): when a fleet-authored
+   `vibe-ci-human-gate` marker on the PR names the check **and the PR's
+   current head** — the CI-fix lane posts it once for a gate only a person
+   can approve (Issue #2727) and re-stamps its `head` in place each time it
+   re-confirms the gate on a new head (PR #2762) — the check is not
+   returned. A marker from an earlier head, or one with no `head`, parks
+   nothing: the processor re-reads the new head's log once, so a gate that
+   cleared and a later ordinary failure of the same check is fixed rather
+   than parked for ever. A parked check is not returned, so it never reaches the retry cap below. The
+   same comment read as step 5 serves it, and one `skipReason` line
+   (`ci-human-gate`, info not warn) per PR names the gated checks. Other
+   failing checks on the same PR are still returned; a gate marker from
+   outside the fleet, or a thread that cannot be read, leaves the check
+   scanned (the read error is logged).
+7. Checks retry count against `CI_CHECK_MAX_RETRIES` (default 3) — skips
    over-retried failures.
-6. Prioritises PRs targeting the default branch (where integration tests run).
-7. Fetches check annotations and returns the highest-priority failure.
+8. Prioritises PRs targeting the default branch (where integration tests run).
+9. Fetches check annotations and returns the highest-priority failure.
 
 **Retry tracking** — uses local state files in `$CI_CHECK_STATE_DIR` (default
 `$WORK_DIR/.ci_check_state`, resolved to an **always absolute** path by
@@ -2155,29 +2181,57 @@ The Deno git modules ([git_branch.ts](../worker/deno/lib/git_branch.ts),
 
 | Function                             | Purpose                                         | Strategy                                                                |
 | ------------------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------- |
-| `sync_feature_branch_with_default()` | Sync feature branch with base before work       | Rebase; recreate fresh if conflicts                                     |
-| `update_pr_branch()`                 | Keep PR branch current with base                | Rebase + force-with-lease push; never recreate (preserves PR commits)   |
+| `sync_feature_branch_with_default()` | Sync feature branch with base before work       | Merge base in; abort and report a conflict, branch untouched            |
+| `update_pr_branch()`                 | Keep PR branch current with base                | Merge base in + plain push; never force, never recreate (Issue #2807)   |
 | `update_open_pr_branches()`          | Bulk update all open PRs                        | Per-PR `update_pr_branch()` with actual `baseRefName` from GitHub API   |
-| `ensure_pr_mergeable()`              | Proactive conflict resolution before auto-merge | Rebase + auto-resolve conflicts + force-with-lease push                 |
+| `ensure_pr_mergeable()`              | Proactive conflict resolution before auto-merge | Merge base in + plain push; a conflict is aborted and reported          |
 | `resolve_rebase_conflicts()`         | Automatic conflict resolution                   | Accept remote version for each conflicted file; iterate up to 10 rounds |
+
+**Merge, never force, at PR sync points** (Issue #2807) — the three PR-branch
+sync paths above merge the target in and push with a plain push, so a PR under
+review keeps its commits and its review comments. A rejected plain push is a
+failure carrying git's stderr; it is never retried with force.
 
 **Protected branch safety** — `is_protected_branch()` prevents force-push on
 `main`, `master`, `develop`, `release`, `production`, `staging`, and
 `milestone/*` branches.
 
-**Lease baselines** — a recovery path that fetches or pulls before its
-last-resort force push must capture `refs/remotes/origin/<branch>` _before_ that
-refresh and push `--force-with-lease=<branch>:<sha>`. A bare
+**Lease baselines** — a recovery path that fetches before a force push (the
+stale-branch lineage heal below) must capture `refs/remotes/origin/<branch>`
+_before_ that refresh and push `--force-with-lease=<branch>:<sha>`. A bare
 `--force-with-lease` leases against the ref the fetch just updated, so it can
 never fail and silently behaves as a plain `--force`.
-`recover_from_push_rejection()` falls back to the bare lease only when no
-remote-tracking ref exists yet.
 
-**Recovery diagnostics** — every failure from `recoverFromPushRejection()` names
-the step that failed (`pull --rebase`, `conflict-resolution`,
-`force-with-lease`, `retry-push`) and carries git's own stderr. The CI,
-feedback, spelling and merge-conflict paths log that message rather than a bare
-"Push failed after recovery attempt".
+**Recovery diagnostics** (Issues #211, #2808) — `recoverFromPushRejection()`
+never forces and never rebases: a force push, even a leased one, can rewrite a
+PR under review. It fetches the branch into its remote-tracking ref, merges
+`origin/<branch>` in, and retries a plain push, reporting success only once a
+re-fetch confirms HEAD is on the remote branch. Every failure names the step
+that failed (`fetch`, `merge`, `merge --abort`, `retry-push`, `confirm-push`) and carries git's own stderr; a
+conflicting merge is aborted, leaving the branch as it was, and lists the
+conflicted paths. The CI, feedback, spelling and merge-conflict paths log that
+message rather than a bare "Push failed after recovery attempt".
+
+```mermaid
+flowchart TD
+    R["push rejected"] --> F["fetch origin/branch"]
+    F -- fails --> XF["fail: step 'fetch'"]
+    F --> M["merge origin/branch"]
+    M -- conflict --> A["merge --abort"]
+    A --> XM["fail: step 'merge'<br/>+ conflicted paths"]
+    A -- abort fails --> XA["fail: step 'merge --abort'"]
+    M --> P["plain push (no --force)"]
+    P -- rejected --> XP["fail: step 'retry-push'"]
+    P --> C["re-fetch: HEAD on origin/branch?"]
+    C -- no --> XC["fail: step 'confirm-push'"]
+    C --> OK["success"]
+    style XF fill:#9d0208,stroke:#6a040f,color:#fff
+    style XM fill:#9d0208,stroke:#6a040f,color:#fff
+    style XA fill:#9d0208,stroke:#6a040f,color:#fff
+    style XP fill:#9d0208,stroke:#6a040f,color:#fff
+    style XC fill:#9d0208,stroke:#6a040f,color:#fff
+    style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
 
 #### 🧮 "Is it pushed?" is a question for the remote
 
@@ -2435,7 +2489,7 @@ flowchart TD
     style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-### 🔁 One-pass rebase for a declined branch (`branch_conflict_pass.ts`)
+### 🔁 One-pass merge for a declined branch (`branch_conflict_pass.ts`)
 
 `ensureBranchCurrent` in `branch_currency.ts` is deliberately not a
 merge-conflict resolver: when content has genuinely diverged it declines and
@@ -2443,8 +2497,10 @@ leaves the branch alone. The PR was then raised on the stale head, armed, and
 sat unmergeable until the merge-conflict ladder found it hours later — the run
 had an agent right there and spent it on nothing (Issue #2459).
 
-`runDeclinedRebasePass` spends exactly one agent pass closing that gap. The
-resolving lives here, not in `branch_currency.ts`, which stays a non-resolver.
+`runDeclinedRebasePass` spends exactly one agent pass closing that gap: the
+agent merges `origin/<base>` in and resolves the conflicts — never a rebase
+(Issue #2809). The resolving lives here, not in `branch_currency.ts`, which
+stays a non-resolver.
 
 - **One invocation, never a loop.** One call through the injected `runAgentFn`
   seam — no retry, no `sleep`, no polling.
@@ -2470,7 +2526,7 @@ flowchart TD
     T -- no --> H["restore nothing,<br/>hand off"]
     T -- yes --> B{"runway ≥ 180s<br/>before deadline?"}
     B -- no --> H
-    B -- yes --> A["one agent pass:<br/>rebase onto origin/base"]
+    B -- yes --> A["one agent pass:<br/>merge origin/base in"]
     A --> M{"re-measured<br/>behind === 0?"}
     M -- no --> R["reset --hard to<br/>the pre-attempt tip"]
     R --> H
@@ -4850,7 +4906,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [stale_workflow_detector.ts](../worker/deno/lib/stale_workflow_detector.ts)                                       | Stale workflow label detection and cleanup                                                                                                                                           |
 |                             | [pr_branch_lock.ts](../worker/deno/lib/pr_branch_lock.ts)                                                         | Distributed lock for PR branch updates and CI fixes — acquire, renew, release                                                                                                        |
 |                             | [stale_branch_lineage.ts](../worker/deno/lib/stale_branch_lineage.ts)                                             | Detect a branch whose work the base already carries as a squash, and rebase it past that merge before the push                                                                        |
-|                             | [branch_conflict_pass.ts](../worker/deno/lib/branch_conflict_pass.ts)                                             | One agent rebase-and-fix pass when the pre-PR rebase declines — re-measured, restored on failure, handed to the conflict ladder with one comment                                      |
+|                             | [branch_conflict_pass.ts](../worker/deno/lib/branch_conflict_pass.ts)                                             | One agent merge-and-fix pass when the pre-PR merge declines — re-measured, restored on failure, handed to the conflict ladder with one comment                                        |
 | **Security scan**           |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [security_scanner.ts](../worker/deno/lib/security_scanner.ts)                                                     | Four-phase scan executor — loads + substitutes the prompt, runs Claude with Write/Edit disallowed and Bash allowed so Claude can call `gh issue create` (outcome-only contract,)     |
 |                             | [idle_task_templates/security_scan_template.ts](../worker/deno/lib/idle_task_templates/security_scan_template.ts) | Idle-task template wrapper — snapshots open `security`-labelled issues before and after the scan, diffs to compute newly-filed issues, renders the close-comment summary             |
@@ -4916,6 +4972,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts)                                       | Reads `git rev-parse origin/<default>` for the sync's cadence gate, so a cycle in which the default tip did not move syncs nothing                                                          |
 |                             | [milestone_presync.ts](../worker/deno/lib/milestone_presync.ts)                                                   | Brings a milestone branch level with the default branch before a child issue branch is cut from it, charged to the same conflict ledger, and reports the pacing the claim scan skips on      |
 |                             | [milestone_conflict_agent_binding.ts](../worker/deno/lib/milestone_conflict_agent_binding.ts)                      | The one binding of the ladder's agent rung — same instructions, same branch target and same grant-sized timeout for the periodic sweep and a child run's pre-cut sync alike                  |
+|                             | [pr_raise_sync.ts](../worker/deno/lib/pr_raise_sync.ts)                                                           | PR-raise sync point: merges the milestone up to the default branch, then merges the base into the feature branch — plain pushes, never a rebase (Issue #2809) |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |

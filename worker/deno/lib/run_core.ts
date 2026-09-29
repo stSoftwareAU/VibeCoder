@@ -678,6 +678,18 @@ export interface RunCoreDeps {
   drainDeferredPrs?: () => Promise<Result<void>>;
 
   /**
+   * Whether the PR that reserved `repo` for the maintenance lane is closed or
+   * merged — the positive signal that drops the reservation (Issue #2795).
+   *
+   * Resolves `undefined` when the state is unknown. Optional — when absent a
+   * reservation is spent only by its own PR's lease or the TTL.
+   */
+  isReservingPrClosed?: (
+    repo: string,
+    pr: number,
+  ) => Promise<boolean | undefined>;
+
+  /**
    * Priority 1.63: escalate PRs that block `work-on` issues while red or
    * carrying an unanswered authorised comment (Issue #4025).
    *
@@ -1500,6 +1512,11 @@ export interface RunCoreDeps {
    * (Issue #213) held them. The scan skips those before any collector runs,
    * so `claimScanCompleted` says nothing about them and they must not
    * escalate as work the scan refused.
+   *
+   * Issue #2800: `blankStreamHeldRepos` names the repos whose blank stream a
+   * slot on this host holds (Issue #2335). The pool refuses a sibling every
+   * non-milestone issue of those repos, whatever its tier, so the census
+   * counts them as stream-occupied rather than claimable. Omitted → none.
    */
   runIdleDecisionCensus?: (
     info: {
@@ -1507,6 +1524,7 @@ export interface RunCoreDeps {
       claimScanCompleted: boolean;
       claimedRepos: readonly string[];
       scanExcludedRepos: readonly string[];
+      blankStreamHeldRepos?: readonly string[];
     },
   ) => Promise<
     {
@@ -3299,10 +3317,12 @@ async function runMaintenanceLane(
   const prefix = `[${MAINTENANCE_LANE_SLOT_ID}] `;
   const broker: MaintenanceLaneBroker = {
     // `maintenance: true` so nothing downstream mistakes the lane's hold for
-    // a claimed issue — `ref` is a PR number, not an issue number.
-    tryAcquire: (repo, ref) =>
+    // a claimed issue — `ref` is a PR number, not an issue number. Only a
+    // pass servicing a PR opts in to `reserve` (Issue #2793).
+    tryAcquire: (repo, ref, options) =>
       registry.tryAcquire(repo, ref, MAINTENANCE_LANE_SLOT_ID, {
         maintenance: true,
+        reserve: options?.reserve === true,
       }),
     // A lane lease is repository-wide (Issue #1091), so it is given back
     // through the lease path rather than the per-stream one.
@@ -3314,6 +3334,7 @@ async function runMaintenanceLane(
       `issue scan pool (Issue #213)`,
   );
   return await runInMaintenanceLane(broker, async () => {
+    let fullSequence = true;
     for (const handler of handlers) {
       // A shutdown stops the lane taking on more work, just as it stops a
       // slot claiming another issue.
@@ -3322,6 +3343,7 @@ async function runMaintenanceLane(
           `${prefix}stop reason=shutdown — ${handler.name} and any pass ` +
             `after it defer to the next run.`,
         );
+        fullSequence = false;
         break;
       }
       // The lane never starts a pass past the cycle deadline: an
@@ -3332,6 +3354,7 @@ async function runMaintenanceLane(
           `${prefix}stop reason=deadline — cycle deadline reached; ` +
             `${handler.name} and any pass after it defer to the next cycle.`,
         );
+        fullSequence = false;
         break;
       }
       const dispatch = executePriorityHandler(
@@ -3356,16 +3379,75 @@ async function runMaintenanceLane(
             { keepTerminating: true },
           ).catch(() => {});
         }
+        fullSequence = false;
         break;
       }
       const outcome = bounded.value;
       if (outcome.kind === "rate-limit-error") {
         return { rateLimitError: outcome.error };
       }
-      if (outcome.kind === "rate-limited") break;
+      if (outcome.kind === "rate-limited") {
+        fullSequence = false;
+        break;
+      }
+    }
+    // A cut-short sequence (shutdown, deadline, rate limit) makes no further
+    // GitHub calls; its reservations wait for the next cycle or the TTL.
+    if (fullSequence) {
+      const rateLimitError = await releaseClosedReservations(
+        deps,
+        registry,
+        prefix,
+      );
+      if (rateLimitError) return { rateLimitError };
     }
     return {};
   });
+}
+
+/**
+ * Drop each lane reservation whose reserving PR is closed or merged — the
+ * only positive signal that it no longer needs the repository (Issue #2795).
+ *
+ * A pass that skipped the PR this cycle (it picked a PR elsewhere, or failed
+ * before its lease) says nothing, so absence never drops a reservation. Green
+ * checks are no signal either: the PR-feedback and merge-conflict passes
+ * reserve PRs whose checks are often green. An open, unknown or unreadable
+ * PR keeps its reservation until its ref wins the lease or the TTL lapses;
+ * an unreadable one is a WARNING, since the TTL still bounds it.
+ *
+ * A primary rate limit stops the reads and is returned, so the lane hands it
+ * back like a pass's own (Issue #1921) rather than retrying `gh` per repo.
+ */
+async function releaseClosedReservations(
+  deps: RunCoreDeps,
+  registry: InFlightRepoRegistry,
+  prefix: string,
+): Promise<Error | undefined> {
+  if (!deps.isReservingPrClosed) return undefined;
+  for (const { repo, ref } of registry.reservations()) {
+    let closed: boolean | undefined;
+    try {
+      closed = await deps.isReservingPrClosed(repo, ref);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isPrimaryRateLimitMessage(message)) {
+        return error instanceof Error ? error : new Error(message);
+      }
+      warnOf(deps)(
+        `${prefix}reservation kept repo=${repo} — could not read the state ` +
+          `of ${repo}#${ref}: ${message} (Issue #2795).`,
+      );
+      continue;
+    }
+    if (closed === true && registry.releaseReservation(repo, ref)) {
+      deps.log(
+        `${prefix}reservation released repo=${repo} pr=${ref} — its PR is ` +
+          `closed or merged (Issue #2795).`,
+      );
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -3946,8 +4028,9 @@ async function runSlot(
       // pass was not allowed to see. Issue #1091 narrowed it to the
       // maintenance lane's whole-repository leases — a slot's hold occupies
       // one stream, and the scan evaluates that stream and refuses it as
-      // `milestone-occupied` rather than never looking.
-      const excludedRepos = pool.registry.leasedRepos();
+      // `milestone-occupied` rather than never looking. Issue #2789 adds the
+      // lane's reservations, which a slot would only be refused.
+      const excludedRepos = pool.registry.claimExcludedRepos();
       const findResult = await deps.findNextIssue({
         excludeRepos: excludedRepos,
         // Issue #1091: what this host already holds, so the scan's own
@@ -4052,7 +4135,7 @@ async function runSlot(
           // only avoid one the scan never had a chance to disagree about.
           const hookExcludedRepos = new Set<string>([
             ...excludedRepos,
-            ...pool.registry.leasedRepos(),
+            ...pool.registry.claimExcludedRepos(),
           ]);
           await runIdleWorkHooks(deps, pool.idleHooks, {
             // `[sN] ` prefixed, so the `[idle-hooks]` line names the slot.
@@ -4072,6 +4155,10 @@ async function runSlot(
             // Without them the audit would call a sibling's in-flight
             // repository a mis-classification on every observation.
             scanExcludedRepos: [...hookExcludedRepos],
+            // Issue #2800: a sibling's blank-stream hold refuses this slot
+            // every non-milestone issue of that repo, whatever its tier, so
+            // the census must not count them as claimable.
+            blankStreamHeldRepos: pool.blankStreamLocks.heldRepos(),
           });
         }
         await deps.sleep(rescanMs);
@@ -4891,6 +4978,11 @@ interface IdleHookRequest {
    * observation.
    */
   scanExcludedRepos: readonly string[];
+  /**
+   * Repos whose blank stream a slot on this host holds (Issue #2800). See
+   * `runIdleDecisionCensus`'s `blankStreamHeldRepos`.
+   */
+  blankStreamHeldRepos: readonly string[];
 }
 
 /** What the hooks decided. */
@@ -5094,6 +5186,9 @@ function runIdleWorkHooks(
           // the scan, which then records no reason for any of its
           // issues — the empty section in every escalation filed.
           scanExcludedRepos: req.scanExcludedRepos,
+          // Issue #2800: the pool refuses a sibling every non-milestone
+          // issue of a repo whose blank stream a slot holds.
+          blankStreamHeldRepos: req.blankStreamHeldRepos,
         });
         if (
           censusResult !== undefined &&
@@ -6707,6 +6802,9 @@ export async function runCoreLoop(
                   scanResult.eligibilityScanCompleted === true,
                 claimedRepos: [...tracker.claimedRepos],
                 scanExcludedRepos: scanResult.scanExcludedRepos ?? [],
+                // Every slot has drained, so no blank stream is held
+                // (Issue #2800).
+                blankStreamHeldRepos: [],
               });
               // Issue #855: the census already knows why every repo was
               // passed over, so it names the reason the fleet's idle

@@ -4,8 +4,8 @@
  *
  * `ensurePrMergeable` is load-bearing PR-merge-readiness logic: it fetches the
  * base branch, moves the local base ref, checks out the feature branch, deepens
- * shallow history, computes how far behind the base the branch is, and rebases
- * + force-pushes when behind. None of that observable behaviour had a test, so
+ * shallow history, computes how far behind the base the branch is, and merges
+ * the base in + pushes (never force-pushes, Issue #2807) when behind. None of that observable behaviour had a test, so
  * a refactor could silently regress it with CI staying green.
  *
  * These tests exercise the function against real local fixture repos and assert
@@ -19,6 +19,13 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensurePrMergeable } from "../lib/git_pull.ts";
 import { gitOperationsCommand } from "../commands/git_operations.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  isForcedPush,
+  recordedPushes,
+  recordedRebase,
+  startGitTrace,
+} from "./support/git_trace.ts";
+import { isPrBranchConflictError } from "../lib/git_pull.ts";
 
 const config = buildDefaultWorkerConfig();
 
@@ -153,10 +160,11 @@ Deno.test("ensure-pr-mergeable command - reports up to date when not behind base
 });
 
 // ---------------------------------------------------------------------------
-// Behind path — branch behind base rebases cleanly and force-pushes.
+// Behind path — branch behind base merges it in and pushes without force
+// (Issue #2807; this was a rebase + force-push).
 // ---------------------------------------------------------------------------
 
-Deno.test("ensurePrMergeable - rebases and pushes when behind the base branch", async () => {
+Deno.test("ensurePrMergeable - merges the base in and pushes without force when behind the base branch", async () => {
   const tmp = await Deno.makeTempDir({ prefix: "epm-behind-" });
   const upstream = `${tmp}/upstream`;
   const downstream = `${tmp}/downstream`;
@@ -184,12 +192,15 @@ Deno.test("ensurePrMergeable - rebases and pushes when behind the base branch", 
       0,
     );
 
+    const oldHead = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    const trace = await startGitTrace();
     const result = await ensurePrMergeable(
       "o/r",
       2,
       "issue-2-feature",
       "main",
-      { cwd: downstream },
+      { cwd: downstream, env: trace.env },
     );
 
     assert(result.ok, result.ok ? "" : result.error.message);
@@ -197,19 +208,87 @@ Deno.test("ensurePrMergeable - rebases and pushes when behind the base branch", 
       assertStringIncludes(result.value, "Successfully pushed");
     }
     // Still on the feature branch, and the upstream commit is now an ancestor
-    // (the rebase replayed the feature commit on top of the new base).
+    // (the base was merged in on top of the feature commit).
     assertEquals(await currentBranch(downstream), "issue-2-feature");
     const merged = await runGit(
       ["merge-base", "--is-ancestor", "main", "HEAD"],
       downstream,
     );
-    assertEquals(merged.code, 0, "base branch is not an ancestor after rebase");
+    assertEquals(merged.code, 0, "base branch is not an ancestor after merge");
+    // Issue #2807: the old head survives, and the push was a plain one.
+    const kept = await runGit(
+      ["merge-base", "--is-ancestor", oldHead, "HEAD"],
+      downstream,
+    );
+    assertEquals(kept.code, 0, "the old PR head is not an ancestor");
+    const pushes = await recordedPushes(trace);
+    assertEquals(pushes.length, 1, JSON.stringify(pushes));
+    assertEquals(isForcedPush(pushes[0]!), false, pushes[0]!.join(" "));
+    assertEquals(await recordedRebase(trace), false, "no git rebase ran");
+    await trace.dispose();
     // The pushed feature branch now exists on the upstream remote.
     const upstreamRefs = await runGit(
       ["branch", "--list", "issue-2-feature"],
       upstream,
     );
     assertStringIncludes(upstreamRefs.stdout, "issue-2-feature");
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Conflict path — a conflicting merge is aborted and reported, never pushed
+// (Issue #2807).
+// ---------------------------------------------------------------------------
+
+Deno.test("ensurePrMergeable - a conflicting merge is aborted and reported as a conflict, not pushed", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "epm-conflict-" });
+  const upstream = `${tmp}/upstream`;
+  const downstream = `${tmp}/downstream`;
+  try {
+    await initUpstream(upstream);
+    await cloneDown(tmp, upstream, downstream);
+
+    // The feature branch and upstream main change the same line.
+    await runGit(["checkout", "-b", "issue-3-feature"], downstream);
+    await Deno.writeTextFile(`${downstream}/base.txt`, "feature edit\n");
+    await runGit(["add", "base.txt"], downstream);
+    assertEquals(
+      (await runGit(["commit", "-m", "feature edit"], downstream)).code,
+      0,
+    );
+    await Deno.writeTextFile(`${upstream}/base.txt`, "base 2\n");
+    await runGit(["add", "base.txt"], upstream);
+    await runGit(["commit", "-m", "base commit 2"], upstream);
+    const oldHead = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+
+    const trace = await startGitTrace();
+    const result = await ensurePrMergeable(
+      "o/r",
+      3,
+      "issue-3-feature",
+      "main",
+      { cwd: downstream, env: trace.env },
+    );
+
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assert(isPrBranchConflictError(result.error), result.error.message);
+    }
+    assertEquals(
+      (await runGit(["rev-parse", "HEAD"], downstream)).stdout.trim(),
+      oldHead,
+    );
+    assertEquals(
+      (await runGit(["status", "--porcelain"], downstream)).stdout.trim(),
+      "",
+      "merge aborted, tree clean",
+    );
+    assertEquals(await recordedPushes(trace), [], "a conflict is not pushed");
+    assertEquals(await recordedRebase(trace), false, "no git rebase ran");
+    await trace.dispose();
   } finally {
     await Deno.remove(tmp, { recursive: true }).catch(() => {});
   }

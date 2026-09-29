@@ -110,9 +110,19 @@ function makeMockGh(opts: {
         opts.createReturns ?? "https://github.com/org/monitored/issues/4242\n",
       );
     }
+    // The open-wrapper census fails closed on anything but a JSON array
+    // (Issue #2750), so answer it the way real `gh` prints an empty list.
+    if (isOpenIdleTaskCensusCall(args)) return Promise.resolve("[]");
     return Promise.resolve("");
   };
   return { fn, calls };
+}
+
+/** True for the `gh issue list` behind the open-wrapper census. */
+function isOpenIdleTaskCensusCall(args: string[]): boolean {
+  return args[0] === "issue" && args[1] === "list" &&
+    args.includes("--label") && args.includes("idle-task") &&
+    args.includes("number,url");
 }
 
 function findCreateCall(calls: GhCall[]): GhCall | null {
@@ -1897,11 +1907,14 @@ Deno.test(
         __testDeps: {
           // The census reports one holder; the other repo stays eligible.
           findOpenWrappersFn: (_repos: readonly string[]) =>
-            Promise.resolve([{
-              repo: "org/idle-b",
-              number: 2724,
-              url: "https://github.com/org/idle-b/issues/2724",
-            }]),
+            Promise.resolve({
+              wrappers: [{
+                repo: "org/idle-b",
+                number: 2724,
+                url: "https://github.com/org/idle-b/issues/2724",
+              }],
+              failedRepos: [],
+            }),
           findExistingFn: () => Promise.resolve(null),
           ensureLabelFn: (_repo: string) =>
             Promise.resolve({ ok: true, value: undefined } as Result<void>),
@@ -1957,18 +1970,21 @@ Deno.test(
         "github-user": "VibeBot",
         __testDeps: {
           findOpenWrappersFn: (_repos: readonly string[]) =>
-            Promise.resolve([
-              {
-                repo: "org/idle-a",
-                number: 2723,
-                url: "https://github.com/org/idle-a/issues/2723",
-              },
-              {
-                repo: "org/idle-b",
-                number: 2724,
-                url: "https://github.com/org/idle-b/issues/2724",
-              },
-            ]),
+            Promise.resolve({
+              wrappers: [
+                {
+                  repo: "org/idle-a",
+                  number: 2723,
+                  url: "https://github.com/org/idle-a/issues/2723",
+                },
+                {
+                  repo: "org/idle-b",
+                  number: 2724,
+                  url: "https://github.com/org/idle-b/issues/2724",
+                },
+              ],
+              failedRepos: [],
+            }),
           // Per-repo dedup must NOT be consulted — no candidate survives.
           findExistingFn: (o: { repo: string }) => {
             perRepoDedupCalls.push(o.repo);
@@ -2007,6 +2023,166 @@ Deno.test(
   },
 );
 
+// Issue #2750 — the census fails closed. A repo whose open-wrapper lookup
+// failed is unknown, never clean, so the filer must not file into it.
+
+Deno.test(
+  "maybe-file-idle-task - a repo whose wrapper lookup fails is skipped with reason=lookup_failed and a clean repo is filed (Issue #2750)",
+  async () => {
+    const config = buildDefaultWorkerConfig();
+    const base = makeMockGh();
+    // org/idle-bad's census lookup rejects; every other call is the stock mock.
+    const gh = {
+      calls: base.calls,
+      fn: (args: string[]): Promise<string> =>
+        isOpenIdleTaskCensusCall(args) && args.includes("org/idle-bad")
+          ? Promise.reject(new Error("gh: HTTP 502"))
+          : base.fn(args),
+    };
+    const log: string[] = [];
+
+    const result = await maybeFileIdleTaskCommand.execute(
+      {
+        // The failed repo comes first, so a fail-open census would file there.
+        "monitored-repos": "org/idle-bad,org/idle-good",
+        "github-user": "VibeBot",
+        __testDeps: {
+          findExistingFn: () => Promise.resolve(null),
+          ensureLabelFn: (_repo: string) =>
+            Promise.resolve({ ok: true, value: undefined } as Result<void>),
+          ghCommandFn: gh.fn,
+          isRepoBusyFn: () => Promise.resolve(false),
+          pickTemplateFn: () => testTemplate,
+          nowFn: () => new Date("2026-05-18T00:00:00.000Z"),
+          log: (line: string) => log.push(line),
+          randomFn: () => 0.99,
+          ensureMilestoneFn: makeMilestoneStub().fn,
+        },
+      },
+      config,
+    );
+
+    assertEquals(result.success, true);
+    const data = result.data as { action: string; repo?: string } | undefined;
+    assertEquals(data?.action, "filed");
+    assertEquals(data?.repo, "org/idle-good");
+    const creates = gh.calls.filter((c) =>
+      c.args[0] === "issue" && c.args[1] === "create"
+    );
+    assertEquals(creates.length, 1);
+    assert(!creates[0]!.args.includes("org/idle-bad"));
+    assert(
+      log.some((l) =>
+        l.includes(
+          "[idle-task] repo=org/idle-bad action=skipped reason=lookup_failed",
+        )
+      ),
+      `expected a lookup_failed skip line for org/idle-bad; saw ${
+        JSON.stringify(log)
+      }`,
+    );
+  },
+);
+
+Deno.test(
+  "maybe-file-idle-task - a census that throws files nothing that tick (Issue #2750)",
+  async () => {
+    const config = buildDefaultWorkerConfig();
+    const gh = makeMockGh();
+    const log: string[] = [];
+    const perRepoDedupCalls: string[] = [];
+
+    const result = await maybeFileIdleTaskCommand.execute(
+      {
+        "monitored-repos": "org/idle-a,org/idle-b",
+        "github-user": "VibeBot",
+        __testDeps: {
+          findOpenWrappersFn: () => Promise.reject(new Error("census blew up")),
+          findExistingFn: (o: { repo: string }) => {
+            perRepoDedupCalls.push(o.repo);
+            return Promise.resolve(null);
+          },
+          ensureLabelFn: (_repo: string) =>
+            Promise.resolve({ ok: true, value: undefined } as Result<void>),
+          ghCommandFn: gh.fn,
+          isRepoBusyFn: () => Promise.resolve(false),
+          pickTemplateFn: () => testTemplate,
+          nowFn: () => new Date("2026-05-18T00:00:00.000Z"),
+          log: (line: string) => log.push(line),
+          ensureMilestoneFn: makeMilestoneStub().fn,
+        },
+      },
+      config,
+    );
+
+    assertEquals(result.success, true);
+    const data = result.data as
+      | { action: string; reason?: string; template?: string }
+      | undefined;
+    assertEquals(data?.action, "skipped");
+    assertEquals(data?.reason, "lookup_failed");
+    assertEquals(data?.template, TEST_TEMPLATE_NAME);
+    assertEquals(findCreateCall(gh.calls), null);
+    assertEquals(perRepoDedupCalls, []);
+    const line = log.find((l) =>
+      l.includes("action=skipped reason=lookup_failed")
+    );
+    assert(
+      line !== undefined,
+      "expected an action=skipped reason=lookup_failed line",
+    );
+    assertStringIncludes(line!, "census blew up");
+  },
+);
+
+Deno.test(
+  "maybe-file-idle-task - every repo either held or lookup-failed reports reason=lookup_failed (Issue #2750)",
+  async () => {
+    const config = buildDefaultWorkerConfig();
+    const gh = makeMockGh();
+    const log: string[] = [];
+
+    const result = await maybeFileIdleTaskCommand.execute(
+      {
+        "monitored-repos": "org/idle-a,org/idle-b",
+        "github-user": "VibeBot",
+        __testDeps: {
+          findOpenWrappersFn: () =>
+            Promise.resolve({
+              wrappers: [{
+                repo: "org/idle-a",
+                number: 1,
+                url: "https://github.com/org/idle-a/issues/1",
+              }],
+              failedRepos: ["org/idle-b"],
+            }),
+          findExistingFn: () => Promise.resolve(null),
+          ensureLabelFn: (_repo: string) =>
+            Promise.resolve({ ok: true, value: undefined } as Result<void>),
+          ghCommandFn: gh.fn,
+          isRepoBusyFn: () => Promise.resolve(false),
+          pickTemplateFn: () => testTemplate,
+          nowFn: () => new Date("2026-05-18T00:00:00.000Z"),
+          log: (line: string) => log.push(line),
+          ensureMilestoneFn: makeMilestoneStub().fn,
+        },
+      },
+      config,
+    );
+
+    const data = result.data as { action: string; reason?: string } | undefined;
+    assertEquals(data?.action, "skipped");
+    assertEquals(data?.reason, "lookup_failed");
+    assertEquals(findCreateCall(gh.calls), null);
+    const summary = log.find((l) =>
+      l.includes("reason=lookup_failed") && l.includes("scope=monitored_set")
+    );
+    assert(summary !== undefined, "expected a monitored_set summary line");
+    assertStringIncludes(summary!, "held=1");
+    assertStringIncludes(summary!, "failed=1");
+  },
+);
+
 Deno.test(
   "maybe-file-idle-task - cross-repo gate clean: existing shuffle + file path runs unchanged (Issue #2092)",
   async () => {
@@ -2022,7 +2198,8 @@ Deno.test(
         "github-user": "VibeBot",
         __testDeps: {
           // The wrapper census reports the entire set clean.
-          findOpenWrappersFn: () => Promise.resolve([]),
+          findOpenWrappersFn: () =>
+            Promise.resolve({ wrappers: [], failedRepos: [] }),
           findExistingFn: (o: { repo: string }) => {
             perRepoDedupCalls.push(o.repo);
             return Promise.resolve(null);

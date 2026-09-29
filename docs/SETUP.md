@@ -375,12 +375,14 @@ For each monitored repository, in order:
      because it would refuse every push; its line reports
      `skipped: default-branch-approval: direct-push branch (…)` for the
      owner to decide. Milestone branches never get one;
-   - code-owner review is required **only when a CODEOWNERS file is
-     already on the default branch**, in the ruleset the default branch's
-     `pull_request` rule comes from — found by the rule's `ruleset_id`,
-     never by the ruleset's name (Issue #2685). A CODEOWNERS file
-     written in step 1 reaches the default branch with the next worker PR,
-     and the setup run after that turns the review on;
+   - code-owner review is turned **off** in every repository ruleset
+     that requires it, found by each `pull_request` rule's `ruleset_id`,
+     never by name (Issue #2685), and never turned back on. The fleet
+     reviewer is a GitHub App, which cannot be a code owner, so its
+     approval is the gate; CODEOWNERS only routes review requests (see
+     residual risk R14 in [THREAT-MODEL.md](THREAT-MODEL.md)). An
+     organisation ruleset that requires it is reported for an owner to
+     change;
    - **merge commits are allowed** on the repository, so a milestone sync
      PR lands as a real merge commit and the milestone branch reads level
      afterwards without an admin bypass (Issue #2690). A squashed sync
@@ -1530,7 +1532,7 @@ Neither check is allowed to pass by silence (Issue #1952):
 - with no verdict recorded, a branch that touches `.github/workflows/` is
   logged at WARN rather than failed — GitHub decides at the push;
 - a push that still reaches GitHub's refusal fails the run, with the fix in
-  the message and the run recorded as `token-scope` — no rebase recovery and
+  the message and the run recorded as `token-scope` — no merge recovery and
   no in-process retry, because neither can supply a missing scope.
 
 ```mermaid
@@ -1549,7 +1551,7 @@ flowchart TD
     F2 --> REL
     REL --> MEM["This install remembers it,<br/>never re-claims"]
     REL -->|3rd token_scope release in a row| PARK["One comment; hosts without<br/>the scope leave it"]
-    P -->|other rejection| RC["Rebase recovery, retry"]
+    P -->|other rejection| RC["Merge recovery, plain retry"]
     style F fill:#9d0208,stroke:#6a040f,color:#fff
     style F2 fill:#9d0208,stroke:#6a040f,color:#fff
 ```

@@ -309,6 +309,11 @@ export interface WorkerConfig {
   /** Sliding window the call-storm guard counts over (Issue #2230). */
   callStormWindowSeconds?: number;
   /**
+   * Novel (distinct normalised) calls over total calls below which a busy
+   * window is a storm (`call_storm_novel_share`, Issue #2773; default 0.25).
+   */
+  callStormNovelShare?: number;
+  /**
    * Tee every agent invocation's raw stream-json to a redacted transcript
    * under the worker log directory (`.config.json` `agent_transcript_enabled`,
    * Issue #1141; default: false).
@@ -1285,6 +1290,8 @@ export interface ConfigFile {
   call_storm_calls?: number;
   /** Sliding window the call-storm guard counts over (Issue #2230) */
   call_storm_window_seconds?: number;
+  /** Novel share below which a busy window is a storm (Issue #2773) */
+  call_storm_novel_share?: number;
   /**
    * Tee the raw agent stream to a redacted transcript (Issue #1141; default
    * false). Off unless asked for — the transcript carries repository content.

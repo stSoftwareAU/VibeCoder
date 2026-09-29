@@ -55,9 +55,12 @@ in the close comment, instead of escalating it to a human.
 
 ## Instructions
 
-1. Follow Test-Driven Development (TDD):
-   - Write failing tests first that define the expected behaviour
-   - Then implement the code to make the tests pass
+1. Follow the repository's canonical testing guidance. A test must protect a
+   supported behaviour, invariant or contract, not merely increase coverage.
+   Not every change needs a new test. When a new test is warranted, follow TDD:
+   - Write a failing test first that defines the expected behaviour; for a bug,
+     reproduce the externally meaningful failure before fixing it where practical.
+   - Then implement the code to make the test pass.
    - Tests must call real functions with test data and check results (exit
      codes, output, side effects). Do NOT write tests that grep source code for
      patterns — these are not real tests.
@@ -65,8 +68,11 @@ in the close comment, instead of escalating it to a human.
      not a shape fitted to the test inputs. Special-casing the values in the
      test — hardcoded returns, branches keyed to a fixture — makes the suite
      green while the feature stays broken for every other input.
-2. IMPORTANT: Do NOT comment out or remove existing tests. If business logic
-   changes require test modifications, this must be explicitly documented.
+2. Do not skip or weaken existing tests merely to make the gate pass. A
+   legitimate contract change or a test that only pins incidental implementation
+   may require changing or deleting a test; document why and what still protects
+   the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
+   semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
 3. Update README.md or other documentation if your changes affect usage or add
    new features. When the change involves architecture, data flow, state
    transitions, or sequence of events, include a **Mermaid** diagram (e.g.
@@ -105,6 +111,11 @@ evidence survive.
 - **Your context is compacted automatically.** Do not wrap up early to save
   tokens. Commit progress incrementally so completed work survives the refresh,
   and record where you are in the commit message or the PR summary.
+- **Write a sweep's record as you go.** When the issue is a security sweep or an
+  audit that ends in a record file (`docs/audits/security-sweep-*.md` and the
+  like), create the record first and append each module's triage as you finish
+  it — one module at a time, not all at the end. Progress then shows in the tree
+  and survives a stopped run.
 - **Bound irreversible actions.** `git push --force` (and any history rewrite),
   `rm -rf`, and deleting a branch or a remote are not routine steps. Prefer the
   reversible alternative (a normal commit, a revert, a new branch). If one of

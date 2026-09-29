@@ -14,15 +14,21 @@ import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   buildCiFixAttemptMarker,
   buildCiFixDeferralMarker,
+  buildCiHumanGateMarker,
   CI_FIX_ATTEMPT_MARKER_NAME,
   CI_FIX_DEFERRAL_MARKER_NAME,
+  CI_HUMAN_GATE_MARKER_NAME,
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
   countAttempts,
   findDeferral,
+  findHumanGate,
   findNoChangeComment,
+  isHumanGateParkedAt,
   parseCiFixAttemptMarkers,
   parseCiFixDeferralMarkers,
+  parseCiHumanGateMarkers,
+  restampHumanGateMarker,
 } from "../lib/ci_fix_attempt_markers.ts";
 
 const SIGNATURE = "0123456789abcdef";
@@ -94,6 +100,7 @@ Deno.test("ci_fix_attempt_markers - both emitted markers are canonical", () => {
       checkName: "build",
       dependsOn: "owner/repo#7",
     }),
+    buildCiHumanGateMarker({ checkName: "build" }),
   ];
 
   for (const marker of emitted) {
@@ -576,4 +583,142 @@ Deno.test("ci_fix_attempt_markers - a comment with no body or author is skipped"
 
   assertEquals(collected.attempts.size, 0);
   assertEquals(collected.deferrals.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Human-gate marker (Issue #2727)
+// ---------------------------------------------------------------------------
+
+Deno.test("ci_fix_attempt_markers - a human-gate marker round-trips", () => {
+  const marker = buildCiHumanGateMarker({ checkName: "bootstrap-applied" });
+
+  assertEquals(
+    marker,
+    `<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="bootstrap-applied" -->`,
+  );
+  assertEquals(parseCiHumanGateMarkers(marker), [{
+    checkName: "bootstrap-applied",
+  }]);
+});
+
+Deno.test("ci_fix_attempt_markers - a human-gate marker sanitises a hostile check name", () => {
+  const marker = buildCiHumanGateMarker({
+    checkName: 'gate" --> <b>x</b>\n@owner',
+  });
+
+  assertEquals(marker.split("-->").length, 2, "only the marker's own close");
+  assertEquals(parseCiHumanGateMarkers(marker), [{
+    checkName: "gate -- bx/b @owner",
+  }]);
+});
+
+Deno.test("ci_fix_attempt_markers - a human-gate marker naming no check fails loud and parses to nothing", () => {
+  assertThrows(
+    () => buildCiHumanGateMarker({ checkName: '"<>"' }),
+    Error,
+    "check is not valid",
+  );
+  assertEquals(
+    parseCiHumanGateMarkers(`<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="" -->`),
+    [],
+  );
+  assertEquals(
+    parseCiHumanGateMarkers(`<!-- ${CI_HUMAN_GATE_MARKER_NAME} -->`),
+    [],
+  );
+  assertEquals(
+    parseCiHumanGateMarkers(
+      `<!-- ${CI_HUMAN_GATE_MARKER_NAME}-v2 check="build" -->`,
+    ),
+    [],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - human gates are collected by check name from the fleet only", () => {
+  const gateA = buildCiHumanGateMarker({ checkName: "bootstrap-applied" });
+  const gateB = buildCiHumanGateMarker({ checkName: "release-approved" });
+  const warnings: string[] = [];
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({ id: 3, author: "drive-by-contributor", body: gateB }),
+      comment({ id: 4, author: "stservice", body: `Waiting.\n\n${gateA}` }),
+      comment({ id: 5, author: "VibeCoderST", body: gateA }),
+    ],
+    FLEET,
+    (message) => warnings.push(message),
+  );
+
+  assertEquals(findHumanGate(collected, "bootstrap-applied")?.commentId, 4);
+  assertEquals(
+    findHumanGate(collected, "bootstrap-applied")?.diagnosed,
+    "Waiting.",
+  );
+  assertEquals(findHumanGate(collected, "release-approved"), undefined);
+  assertEquals(collected.ignoredOutsideFleet, 1);
+  assertEquals(warnings.length, 1);
+  // A gate marker is not an attempt and not a deferral.
+  assertEquals(collected.attempts.size, 0);
+  assertEquals(collected.deferrals.size, 0);
+});
+
+Deno.test("ci_fix_attempt_markers - findHumanGate matches the raw check name the marker sanitised", () => {
+  const raw = 'gate\twith  "quotes"';
+  const collected = collectFleetCiFixMarkers(
+    [comment({ body: buildCiHumanGateMarker({ checkName: raw }) })],
+    FLEET,
+  );
+
+  assert(findHumanGate(collected, raw) !== undefined);
+  assertEquals(findHumanGate(collected, "other"), undefined);
+});
+
+Deno.test("ci_fix_attempt_markers - an unresolved fleet collects no human gate", () => {
+  const collected = collectFleetCiFixMarkers(
+    [comment({ body: buildCiHumanGateMarker({ checkName: "build" }) })],
+    [],
+    () => {},
+  );
+
+  assertEquals(collected.fleetResolved, false);
+  assertEquals(collected.humanGates.size, 0);
+});
+
+Deno.test("ci_fix_attempt_markers - a gate marker round-trips its head; a bad head is refused and skipped (PR #2762)", () => {
+  const head = "e".repeat(40);
+  const marker = buildCiHumanGateMarker({ checkName: "build", head });
+  assertEquals(parseCiHumanGateMarkers(marker), [{ checkName: "build", head }]);
+  assertThrows(() => buildCiHumanGateMarker({ checkName: "build", head: "x" }));
+  assertEquals(
+    parseCiHumanGateMarkers(
+      `<!-- ${CI_HUMAN_GATE_MARKER_NAME} check="build" head="nope" -->`,
+    ),
+    [],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - isHumanGateParkedAt holds only for the marker's head (PR #2762)", () => {
+  const head = "e".repeat(40);
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({ body: buildCiHumanGateMarker({ checkName: "build", head }) }),
+      comment({ id: 2, body: buildCiHumanGateMarker({ checkName: "legacy" }) }),
+    ],
+    ["stservice"],
+  );
+  assert(isHumanGateParkedAt(collected, "build", head));
+  assertEquals(isHumanGateParkedAt(collected, "build", "f".repeat(40)), false);
+  assertEquals(isHumanGateParkedAt(collected, "build", undefined), false);
+  assertEquals(isHumanGateParkedAt(collected, "legacy", head), false);
+  assertEquals(isHumanGateParkedAt(collected, "other", head), false);
+});
+
+Deno.test("ci_fix_attempt_markers - restampHumanGateMarker replaces only the marker", () => {
+  const before = `Prose stays.\n\n${
+    buildCiHumanGateMarker({ checkName: "build" })
+  }`;
+  const next = buildCiHumanGateMarker({
+    checkName: "build",
+    head: "e".repeat(40),
+  });
+  assertEquals(restampHumanGateMarker(before, next), `Prose stays.\n\n${next}`);
 });

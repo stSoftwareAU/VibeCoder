@@ -837,7 +837,7 @@ async function _processFeedbackWithHeartbeat(
         { cwd: processorDeps.workDir },
       );
       // Issue #211: keep the reason the recovery failed — it names the step
-      // (rebase conflict, failed auto-resolution, refused --force-with-lease)
+      // (fetch, merge conflict, rejected retry push, unconfirmed push)
       // and carries git's stderr. Without it the log said only "push failed"
       // and the human got "please check the branch status" with no cause.
       let failureDetail = recoveryResult.ok
@@ -846,7 +846,7 @@ async function _processFeedbackWithHeartbeat(
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
-          `Address PR #${prNumber} feedback\n\nRetry after rebase recovery (Issue #1643).`,
+          `Address PR #${prNumber} feedback\n\nRetry after push recovery (Issue #1643).`,
           { cwd: processorDeps.workDir },
           false,
           preFlight,
@@ -857,7 +857,7 @@ async function _processFeedbackWithHeartbeat(
             hasChanges = true;
           } else {
             failureDetail =
-              `retry after rebase recovery left ${finalUnpushedCount} commit(s) unpushed`;
+              `retry after push recovery left ${finalUnpushedCount} commit(s) unpushed`;
           }
         } else {
           failureDetail = retryFinalise.error.message;

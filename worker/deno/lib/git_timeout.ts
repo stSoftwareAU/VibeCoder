@@ -154,6 +154,68 @@ async function repairGitAuthEnvironment(): Promise<boolean> {
 }
 
 /**
+ * `safe.directory` repairs this process will attempt (Issue #2825), bounded
+ * like the Issue #564 auth repair.
+ */
+export const MAX_SAFE_DIRECTORY_REPAIRS = 3;
+
+let safeDirectoryRepairs = 0;
+
+/** Reset the `safe.directory` repair budget. Tests only. */
+export function resetSafeDirectoryRepairs(): void {
+  safeDirectoryRepairs = 0;
+}
+
+/** True when a finished git call was refused for dubious ownership. */
+export function isDubiousOwnershipFailure(
+  result: { code: number; stderr: string },
+): boolean {
+  return result.code !== 0 &&
+    result.stderr.toLowerCase().includes("detected dubious ownership");
+}
+
+/**
+ * Restore the `safe.directory = *` line the container entrypoint stages
+ * (Issue #2825). Without it git refuses the clone, and `git config` refuses
+ * quietly — `--add` says only "not in a git directory" — so setup died in the
+ * first minute. Runs with the failed call's `env`, so it writes wherever that
+ * call's `GIT_CONFIG_GLOBAL` points.
+ *
+ * @returns True when the line was written and a retry is worth making.
+ */
+async function repairSafeDirectory(
+  env?: Record<string, string>,
+): Promise<boolean> {
+  if (safeDirectoryRepairs >= MAX_SAFE_DIRECTORY_REPAIRS) return false;
+  safeDirectoryRepairs++;
+  const config = (args: string[]) =>
+    new Deno.Command("git", {
+      args: ["config", "--global", ...args],
+      env,
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+  try {
+    const existing = new TextDecoder().decode(
+      (await config(["--get-all", "safe.directory"])).stdout,
+    );
+    // Already present: the repair cannot help, so the caller's failure stands.
+    if (existing.split("\n").some((line) => line.trim() === "*")) return false;
+    if ((await config(["--add", "safe.directory", "*"])).code !== 0) {
+      return false;
+    }
+  } catch {
+    // Best-effort: the caller's own dubious-ownership failure stays loud.
+    return false;
+  }
+  console.error(
+    "[SECURITY] git refused a clone as dubious ownership — restored the " +
+      "staged safe.directory line (Issue #2825)",
+  );
+  return true;
+}
+
+/**
  * Reader the message redaction uses for `-F <path>` bodies (Issue #1284).
  *
  * Throws when the file cannot be read, which the caller turns into a loud
@@ -262,6 +324,16 @@ export async function runGitCommand(
           return retry;
         }
       }
+    }
+
+    // Issue #2825: git refused the clone as dubious ownership because the
+    // staged `safe.directory` line went missing. A refused call did nothing,
+    // so restoring the line and retrying once is safe.
+    if (
+      isDubiousOwnershipFailure({ code: process.code, stderr }) &&
+      await repairSafeDirectory(options.env)
+    ) {
+      return await runGitCommand(args, options);
     }
 
     // Issue #2380: journal `git push` mutations to the audit log.

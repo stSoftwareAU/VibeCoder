@@ -50,6 +50,10 @@ import {
   type HeadCommitInfo,
   isReviewSupersededByFleetFix,
   isSupersededByFleetPush,
+  parsePrReviewPages,
+  PR_REVIEWS_JQ,
+  type PrReview,
+  selectOutstandingReviews,
 } from "./pr_feedback_supersede.ts";
 // Re-exported so callers and tests can reason about the scan's supersession
 // decision without reaching past the module that makes it (Issue #211).
@@ -60,7 +64,8 @@ export {
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
-import { findOpenDeferrals } from "./ci_fix_pr_markers.ts";
+import { isHumanGateParkedAt } from "./ci_fix_attempt_markers.ts";
+import { findParkedChecks } from "./ci_fix_pr_markers.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import {
@@ -120,6 +125,12 @@ export interface PrEntry {
    * posted before it (Issue #1770).
    */
   mergedAt?: string | null;
+  /**
+   * Labels, when the listing asked for them — the maintenance superset does,
+   * so the conflict scan can clear a stale `merge-conflict` label without a
+   * read per mergeable PR (Issue #2728).
+   */
+  labels?: Array<{ name?: string }>;
 }
 
 /** Comment entry from the GitHub API. */
@@ -136,16 +147,6 @@ export interface CommentEntry {
   eyes?: number;
   /** ISO 8601 creation time — used for fleet-push supersession (Issue #211). */
   created_at?: string;
-}
-
-/** Review entry from the GitHub API. */
-export interface ReviewEntry {
-  login: string;
-  id: number;
-  body: string;
-  commit_id: string;
-  /** ISO 8601 time the review was submitted (Issue #2702). */
-  submitted_at?: string;
 }
 
 /** Check run entry from the GitHub API. */
@@ -387,7 +388,7 @@ export interface CiCheckScanOptions extends PrScanOptions {
  * harmless to callers, which read only what they use.
  */
 export const PR_MAINTENANCE_LIST_FIELDS =
-  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable";
+  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels";
 
 /**
  * Explicit page size for the cached superset listing (Issue #4303). The
@@ -644,30 +645,54 @@ export async function fetchCommentThumbsUpReactors(
   }
 }
 
+/** Say at INFO why a CHANGES_REQUESTED review is not actioned (Issue #2697). */
+function logReviewSkip(
+  logger: Logger,
+  repo: string,
+  prNumber: number,
+  reviewId: number,
+  reason: string,
+): void {
+  logger.info(
+    `Skipping CHANGES_REQUESTED review ${reviewId} on ${repo}#${prNumber} — ${reason}`,
+  );
+}
+
 /**
- * Fetch PR reviews with CHANGES_REQUESTED state.
+ * Fetch every submitted review on a PR, whatever its state (Issue #2697).
+ *
+ * All states are read so a reviewer's later review can supersede an earlier
+ * change request; every page is read so a long-lived PR's newest reviews are
+ * not cut off. An unreadable list is warned about loudly and treated as
+ * "nothing to action" for this scan only.
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - PR number
  * @param ghCommandFn - Function to run gh commands
- * @returns Array of review entries
+ * @param logger - Where a failed read is reported
+ * @returns Every review, in GitHub's list order
  */
 async function fetchPrReviews(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<ReviewEntry[]> {
+  logger: Logger,
+): Promise<PrReview[]> {
   try {
     const output = await ghCommandFn([
       "api",
-      `repos/${repo}/pulls/${prNumber}/reviews`,
+      "--paginate",
+      `repos/${repo}/pulls/${prNumber}/reviews?per_page=100`,
       "--jq",
-      '[.[] | select(.state == "CHANGES_REQUESTED" and .body != "") | {login: .user.login, id: .id, body: .body, commit_id: .commit_id, submitted_at: .submitted_at}]',
+      PR_REVIEWS_JQ,
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as ReviewEntry[];
-  } catch {
+    return parsePrReviewPages(output);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn(
+      `Could not read reviews on ${repo}#${prNumber} — skipping its ` +
+        `CHANGES_REQUESTED reviews this scan: ${message}`,
+    );
     return [];
   }
 }
@@ -902,11 +927,13 @@ export async function findPrCommentsToFix(
         }
       }
 
-      // Check PR reviews (CHANGES_REQUESTED). The PR's commit history is read
-      // at most once, and only for a review that is not on the head.
+      // Check PR reviews (CHANGES_REQUESTED). A reviewer's latest review
+      // decides; a moved head does not retire it (Issue #2697). The PR's
+      // commit history is read at most once, and only for a review that is
+      // not on the head.
       let prCommits: CommitProvenance[] | null | undefined;
       const reviewSupersededByFleetFix = async (
-        reviewSubmittedAt: string | undefined,
+        reviewSubmittedAt: string | null | undefined,
       ): Promise<boolean> => {
         if (prCommits === undefined) {
           prCommits = await fetchPrCommitProvenance(
@@ -921,10 +948,27 @@ export async function findPrCommentsToFix(
           fleetAuthors: scanAuthors,
         });
       };
-      const reviews = await fetchPrReviews(repo, prNumber, ghCommandFn);
-      for (const review of reviews) {
-        if (!review.body) continue;
-        if (review.login === githubUser) continue;
+      const reviews = await fetchPrReviews(
+        repo,
+        prNumber,
+        ghCommandFn,
+        logger,
+      );
+      const { outstanding, skipped } = selectOutstandingReviews(reviews);
+      for (const { review, reason } of skipped) {
+        logReviewSkip(logger, repo, prNumber, review.id, reason);
+      }
+      for (const review of outstanding) {
+        if (review.login === githubUser) {
+          logReviewSkip(
+            logger,
+            repo,
+            prNumber,
+            review.id,
+            "the host's own review",
+          );
+          continue;
+        }
 
         // Issue #185 (SEC-8f21c4a0e7b3): a CHANGES_REQUESTED body goes
         // straight into the feedback prompt, so it must pass the same
@@ -940,6 +984,17 @@ export async function findPrCommentsToFix(
             "UNAUTHORISED_REVIEW_SKIPPED",
             `Skipping CHANGES_REQUESTED review on ${repo}#${prNumber} from ` +
               `'${review.login}' — not an authorised commenter`,
+          );
+          continue;
+        }
+
+        if (!review.body.trim()) {
+          logReviewSkip(
+            logger,
+            repo,
+            prNumber,
+            review.id,
+            "it has no body to act on",
           );
           continue;
         }
@@ -1359,7 +1414,8 @@ export async function findFailedCiChecks(
     const prs = await listActionablePrs(
       repo,
       scanAuthors,
-      "number,headRefName,baseRefName",
+      // headRefOid pins a human-gate park to the head it was confirmed on.
+      "number,headRefName,headRefOid,baseRefName",
       options,
     );
 
@@ -1407,21 +1463,22 @@ export async function findFailedCiChecks(
       }
 
       // Issue #1881: the checks a fleet-authored deferral marker has parked
-      // on an issue that is still open. Read only when a non-aggregator
-      // failure is left to decide, so a green or aggregator-only PR costs
-      // no comment fetch. Every degraded read is logged inside and leaves
-      // the check undeferred — the scan never goes quiet on an error.
-      const deferrals = failedChecks.some((check) =>
-          !aggregators.has(check.name)
-        )
-        ? await findOpenDeferrals({
+      // on an issue that is still open. Issue #2744: the same read carries
+      // the human gates the CI-fix lane parked (#2727). Read only when a
+      // non-aggregator failure is left to decide, so a green or
+      // aggregator-only PR costs no comment fetch. Every degraded read is
+      // logged inside and leaves the check unparked — the scan never goes
+      // quiet on an error.
+      const parked = failedChecks.some((check) => !aggregators.has(check.name))
+        ? await findParkedChecks({
           repo,
           prNumber,
           ghCommandFn,
           fleetLogins: scanAuthors,
           logger,
         })
-        : [];
+        : undefined;
+      const deferrals = parked?.deferrals ?? [];
       const deferredNames = new Set(deferrals.map((d) => d.checkName));
       if (deferrals.length > 0) {
         logger.skipReason(
@@ -1432,10 +1489,32 @@ export async function findFailedCiChecks(
           } deferred until the named issue closes (Issue #1881)`,
         );
       }
+      // A gate only a human can approve is not a fix target: skipped at
+      // info, before the retry cap, so it never reads as a stuck fix. Only
+      // a marker naming this head parks it (PR #2762): a new head gets one
+      // processor pass that re-reads the log, so a gate that cleared and a
+      // later ordinary failure of the same check is fixed, not parked.
+      const gatedNames = new Set(
+        parked === undefined ? [] : failedChecks
+          .filter((check) =>
+            !aggregators.has(check.name) && !deferredNames.has(check.name) &&
+            isHumanGateParkedAt(parked.markers, check.name, pr.headRefOid)
+          )
+          .map((check) => check.name),
+      );
+      if (gatedNames.size > 0) {
+        logger.skipReason(
+          "ci-human-gate",
+          `${repo}#${prNumber}: ${
+            [...gatedNames].join(", ")
+          } parked for a human to approve (Issue #2744)`,
+        );
+      }
 
       for (const check of failedChecks) {
         if (aggregators.has(check.name)) continue;
         if (deferredNames.has(check.name)) continue;
+        if (gatedNames.has(check.name)) continue;
 
         // Skip genuine spelling failures — handled by findFailedPrChecks.
         // The decision reads the failed *step*, so a non-spelling step

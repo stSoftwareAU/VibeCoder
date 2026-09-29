@@ -187,6 +187,7 @@ function makeScanOptions(
         login: OWNER,
         id: REVIEW_ID,
         body: "Please drop the unrelated churn.",
+        state: "CHANGES_REQUESTED",
         commit_id: reviewCommitId,
         submitted_at: REVIEW_SUBMITTED_AT,
       }]));

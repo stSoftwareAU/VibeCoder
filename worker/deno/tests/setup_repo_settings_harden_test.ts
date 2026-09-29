@@ -456,7 +456,6 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
       `PUT repos/${repo}/actions/permissions/selected-actions`,
       `PUT repos/${repo}/actions/permissions/workflow`,
       `PUT repos/${repo}/rulesets/7`,
-      `PUT repos/${repo}/rulesets/7`,
     ],
   );
   // The allow-list is the existing list unioned with the workflow's action.
@@ -471,7 +470,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(state[repo]!.actions["sha_pinning_required"], true);
   assertStringIncludes(
     first.lines.join("\n"),
-    `${repo}: 7 applied, 0 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 6 applied, 1 unchanged, 0 skipped, 0 failed`,
   );
 
   writes.length = 0;
@@ -508,7 +507,7 @@ Deno.test("runRepoSettingsHarden - a converged repo reads only, and the totals l
 // One required approval on the default branch (Issue #2680)
 // ---------------------------------------------------------------------------
 
-Deno.test("runRepoSettingsHarden - the default branch ends requiring one approval, with code-owner review and the other pull_request parameters kept (Issue #2680)", async () => {
+Deno.test("runRepoSettingsHarden - the default branch ends requiring one approval, code-owner review off, other pull_request parameters kept (Issue #2680)", async () => {
   const repo = uniqueRepo();
   const state = { [repo]: driftedRepo() };
   const { gh } = makeFakeGitHub(state);
@@ -520,7 +519,7 @@ Deno.test("runRepoSettingsHarden - the default branch ends requiring one approva
     { type: string; parameters?: Record<string, unknown> }
   >;
   assertEquals(rules.find((r) => r.type === "pull_request")?.parameters, {
-    require_code_owner_review: true,
+    require_code_owner_review: false,
     required_approving_review_count: 1,
     dismiss_stale_reviews_on_push: true,
   });
@@ -580,7 +579,7 @@ Deno.test("runRepoSettingsHarden - a repo whose hardenRepo throws never stops th
   assertStringIncludes(out, "boom: rulesets unreachable");
   assertStringIncludes(
     out,
-    `${healthy}: 7 applied, 0 unchanged, 0 skipped, 0 failed`,
+    `${healthy}: 6 applied, 1 unchanged, 0 skipped, 0 failed`,
   );
   assertStringIncludes(out, "1 repo(s) failed");
 });
@@ -602,7 +601,7 @@ Deno.test("runRepoSettingsHarden - a failed step inside hardenRepo is never swal
   const out = [...h.lines, ...h.warnings].join("\n");
   assertStringIncludes(
     out,
-    `${repo}: 6 applied, 0 unchanged, 0 skipped, 1 failed`,
+    `${repo}: 5 applied, 1 unchanged, 0 skipped, 1 failed`,
   );
   assertStringIncludes(out, "workflow-token");
   assertStringIncludes(out, "HTTP 403: Resource not accessible");
@@ -646,7 +645,7 @@ Deno.test("runRepoSettingsHarden - a private repo gets no secret-scanning write 
     [],
   );
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "5 applied, 0 unchanged, 2 skipped, 0 failed");
+  assertStringIncludes(line, "4 applied, 1 unchanged, 2 skipped, 0 failed");
   assertStringIncludes(line, SECRET_PROTECTION_SKIP_NOTE);
   assertStringIncludes(line, CODE_SECURITY_SKIP_NOTE);
 });
@@ -671,68 +670,45 @@ Deno.test("runRepoSettingsHarden - a public repo's secret-scanning write is made
 });
 
 // ---------------------------------------------------------------------------
-// Code-owner review follows the default branch's CODEOWNERS
+// Code-owner review is turned off, never on: the fleet reviewer App cannot be
+// a code owner, so its approval is the gate
 // ---------------------------------------------------------------------------
 
-Deno.test("runRepoSettingsHarden - requireCodeOwnerReview is true only when the default branch has CODEOWNERS (Issue #2628)", async () => {
+Deno.test("runRepoSettingsHarden - code-owner review is turned off, with or without CODEOWNERS on the default branch", async () => {
   const present = uniqueRepo();
-  const docs = uniqueRepo();
   const absent = uniqueRepo();
-  const unreadable = uniqueRepo();
-  const { gh, reads } = makeFakeGitHub({
-    [present]: driftedRepo({ codeowners: ".github/CODEOWNERS" }),
-    [docs]: driftedRepo({ codeowners: "docs/CODEOWNERS" }),
-    [absent]: driftedRepo({ codeowners: undefined }),
-    [unreadable]: driftedRepo({
-      codeowners: new Error("HTTP 502: Bad Gateway"),
-    }),
-  });
-  const repos = [present, docs, absent, unreadable];
-  const workDir = await makeWorkDir(repos);
-  const seen: Record<string, boolean | undefined> = {};
-  const h = harness(gh, workDir, {
-    hardenRepo: (repo, options) => {
-      seen[repo] = options.requireCodeOwnerReview;
-      return hardenRepo(repo, options);
-    },
-  });
+  const requiring = (codeowners: FakeRepo["codeowners"]) => {
+    const repo = driftedRepo({ codeowners });
+    const rule = (repo.rulesets[0]!["rules"] as Array<
+      { type: string; parameters?: Record<string, unknown> }
+    >).find((r) => r.type === "pull_request")!;
+    rule.parameters!.require_code_owner_review = true;
+    return repo;
+  };
+  const state = {
+    [present]: requiring(".github/CODEOWNERS"),
+    [absent]: requiring(undefined),
+  };
+  const { gh } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([present, absent]);
 
-  await runRepoSettingsHarden({ repos }, h.deps);
-
-  assertEquals(seen, {
-    [present]: true,
-    [docs]: true,
-    [absent]: false,
-    [unreadable]: false,
-  });
-  // The writer's lookup and the step's share one read per location.
-  assertEquals(
-    reads.filter((r) => r === `repos/${present}/contents/.github/CODEOWNERS`)
-      .length,
-    1,
+  await runRepoSettingsHarden(
+    { repos: [present, absent] },
+    harness(gh, workDir).deps,
   );
-  const absentLine = h.lines.find((l) => l.startsWith(`${absent}:`)) ?? "";
-  assertStringIncludes(absentLine, "1 skipped");
-  assertStringIncludes(absentLine, "code-owner review: no CODEOWNERS");
+
+  for (const repo of [present, absent]) {
+    const rules = state[repo]!.rulesets[0]!["rules"] as Array<
+      { type: string; parameters?: Record<string, unknown> }
+    >;
+    assertEquals(
+      rules.find((r) => r.type === "pull_request")?.parameters
+        ?.require_code_owner_review,
+      false,
+      repo,
+    );
+  }
 });
-
-Deno.test("runRepoSettingsHarden - a CODEOWNERS lookup that errors is reported, not taken as absent (Issue #2628)", async () => {
-  const repo = uniqueRepo();
-  const { gh } = makeFakeGitHub({
-    [repo]: driftedRepo({ codeowners: new Error("HTTP 502: Bad Gateway") }),
-  });
-  const workDir = await makeWorkDir([repo]);
-  const h = harness(gh, workDir);
-
-  await runRepoSettingsHarden({ repos: [repo] }, h.deps);
-
-  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "HTTP 502: Bad Gateway");
-});
-
-// ---------------------------------------------------------------------------
-// Order and outcomes of the sibling steps
-// ---------------------------------------------------------------------------
 
 Deno.test("runRepoSettingsHarden - per repo: CODEOWNERS writer, then hardenRepo, then the audit closer (Issue #2628)", async () => {
   const a = uniqueRepo();
@@ -886,7 +862,7 @@ Deno.test("runRepoSettingsHarden - a dry run performs no write, runs no CODEOWNE
   assertEquals(h.codeownersCalls, [], "the CODEOWNERS writer writes a file");
   assertEquals(h.closerCalls, [], "the closer comments on and closes issues");
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "7 planned, 0 unchanged, 0 skipped, 0 failed");
+  assertStringIncludes(line, "6 planned, 1 unchanged, 0 skipped, 0 failed");
   assertStringIncludes(line, "workflow-token");
   assertStringIncludes(line, "codeowners: skipped (dry run)");
   assertStringIncludes(h.lines.join("\n"), "dry run");
@@ -1330,7 +1306,7 @@ Deno.test("runRepoSettingsHarden - a repo with its own CodeQL workflow is report
   assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
   assertEquals(codeqlWrites(writes), []);
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "6 applied, 0 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed");
   assertStringIncludes(line, "codeql-default-setup");
   assertStringIncludes(line, ".github/workflows/codeql.yml");
 });
@@ -1348,6 +1324,6 @@ Deno.test("runRepoSettingsHarden - a refused CodeQL read is reported on the repo
 
   assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "6 applied, 0 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed");
   assertStringIncludes(line, "HTTP 403");
 });

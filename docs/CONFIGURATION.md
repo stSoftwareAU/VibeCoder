@@ -362,6 +362,34 @@ singular key with an array value:
 }
 ```
 
+## 🔍 Reviewer App for fleet PR reviews
+
+`pr_reviewer_app` makes the unattended `review-fleet-prs` runner
+(`.claude/skills/review-fleet-prs/run.sh`) review as a GitHub App instead of
+the host's signed-in `gh` user. It is read by that skill only, never by the
+worker.
+
+```json
+{
+  "pr_reviewer_app": {
+    "app_id": 5119297,
+    "private_key_path": "~/.vibe-coder/stsoftware-pr-reviewer.private-key.pem"
+  }
+}
+```
+
+The installation is looked up from the App on the owner of `repos`. Keep the
+key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
+mounted into the container. Use a different App from the worker's own
+`github_app_*` identity, since GitHub refuses an approval from a PR's author.
+
+Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
+the worker acts on its change requests. Keep `github-copilot[bot]` and
+`github-actions[bot]` in the list: setting the key replaces those defaults.
+Do **not** add the bot to `pr_reviewers`. That list is requested as reviewers
+on every new worker PR, and GitHub cannot request a review from an App, so PR
+creation would fail.
+
 ## 📊 Configuration Defaults
 
 The following settings have built-in defaults. Only values you override via
@@ -398,8 +426,8 @@ explicitly overridden.
 | `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
-| `issue_executor_split` | `false` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of a Sonnet executor (`medium` effort; `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) while the advisor — the main session — keeps the phase's own model and effort. Off (the default), no `--agents` argument is passed at all and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag: under `codex` or `gemini` the definitions are never built into an argument, and under `deepseek` — which runs the same Claude binary against its own endpoint — they are stripped and the drop is warned about, so those runs keep single-model routing. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and the run's executor (Sonnet) tokens are costed separately from the advisor's (Opus) rather than all charged at the advisor's rate. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `false`. Before turning it on beyond a pilot host, read the [pilot method](MODEL-AND-CACHING.md#pilot-method) and the [default-on decision criteria](MODEL-AND-CACHING.md#default-on-decision-criteria) — the pilot and control groups, the 30-run-or-4-week window, where each reported number comes from, and the four conjunctive conditions that must all hold before this default changes. |
-| `issue_reviewer_agents` | `false` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off (the default), no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override, because the pilot compares hosts. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Before turning it on beyond a pilot host, run the [reviewer sub-agent pilot](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase). |
+| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of a Sonnet executor (`medium` effort; `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) while the advisor — the main session — keeps the phase's own model and effort. Off, no `--agents` argument is passed at all and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag: under `codex` or `gemini` the definitions are never built into an argument, and under `deepseek` — which runs the same Claude binary against its own endpoint — they are stripped and the drop is warned about, so those runs keep single-model routing. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and the run's executor (Sonnet) tokens are costed separately from the advisor's (Opus) rather than all charged at the advisor's rate. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
+| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
 | `software_min_versions`      | `{ "claude": "2.1.280" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
@@ -1444,9 +1472,9 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 | `question` | `opus` | Answering codebase questions — planning-shaped, effort `high` |
 | `clarification` | `opus` | Assessing whether an issue has sufficient detail — planning-shaped, effort `high` |
 | `implementation` | `opus` (base) | Core work — uses the base `claude_model` setting (`issue` phase, effort `high`) |
-| `ci_fix`         | `opus`        | Fixing CI failures from structured error messages (effort `medium`) |
-| `quality_fix`    | `opus`        | Fixing quality check failures (lint, test errors) (effort `medium`) |
-| `pr_feedback`    | `opus`        | Applying targeted fixes from reviewer comments (effort `medium`) |
+| `ci_fix`         | `sonnet`      | Fixing CI failures from structured error messages (effort `high`, Issue #2812) |
+| `quality_fix`    | `sonnet`      | Fixing quality check failures (lint, test errors) (effort `high`, Issue #2812) |
+| `pr_feedback`    | `sonnet`      | Applying targeted fixes from reviewer comments (effort `high`, Issue #2812) |
 | `spelling_fix`   | `haiku`       | Finding and fixing typos — simplest corrections      |
 | `summarise`      | `haiku`       | Summarising long issue bodies                        |
 | `health`         | `haiku`       | Health check ("Respond with exactly: OK")            |
@@ -1592,7 +1620,7 @@ optimisation by matching reasoning depth to task complexity.
 | Level    | Description                                                  |
 | -------- | ------------------------------------------------------------ |
 | `low`    | Minimal reasoning — simple, mechanical tasks                 |
-| `medium` | Moderate reasoning — reactive tasks with structured input    |
+| `medium` | Moderate reasoning — well-scoped tasks with structured input |
 | `high`   | Thorough reasoning — general implementation (global default) |
 | `xhigh` | Extra-high reasoning — between `high` and `max`; Anthropic's recommended setting for most coding/agentic use on Opus 4.7+ / Fable 5 |
 | `max`    | Deepest reasoning — architectural decisions                  |
@@ -1605,9 +1633,9 @@ optimisation by matching reasoning depth to task complexity.
 | `grill_me` | `max` | Requirements interrogation shapes everything downstream |
 | `issue`         | `high`         | General implementation benefits from thorough reasoning |
 | `question`      | `high`         | Answering questions needs careful thought               |
-| `ci_fix`        | `medium`       | Reactive, well-scoped task                              |
-| `pr_feedback`   | `medium`       | Targeted fixes from reviews                             |
-| `quality_fix`   | `medium`       | Reactive test/lint fixes                                |
+| `ci_fix`        | `high`         | Reactive; Sonnet at `high` since Issue #2812            |
+| `pr_feedback`   | `high`         | Targeted fixes from reviews; Sonnet since Issue #2812   |
+| `quality_fix`   | `high`         | Reactive test/lint fixes; Sonnet since Issue #2812      |
 | `refinement`    | `medium`       | Rewording titles/descriptions                           |
 | `revision`      | `medium`       | Review-based rewriting                                  |
 | `clarification` | `medium`       | Structured analysis                                     |
@@ -1668,6 +1696,7 @@ unless explicitly overridden.
 | Call-storm guard | `call_storm_enabled` | `true` | Stop an issue-work run that is polling instead of working — dozens of tool calls a minute with no working-tree change (Issue #2230). Evaluated at each progress check; the stopped run keeps its preserved WIP. `false` gives a polling loop its whole budget back. See [Call storm — polling is not progress](#call-storm--polling-is-not-progress-issue-2230). |
 | Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped. |
 | Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
+| Call-storm novel share | `call_storm_novel_share` | `0.25` | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -2534,7 +2563,8 @@ write anything. Set a key only to change it:
   "progress_extension_check_seconds": 300,
   "call_storm_enabled": true,
   "call_storm_calls": 60,
-  "call_storm_window_seconds": 300
+  "call_storm_window_seconds": 300,
+  "call_storm_novel_share": 0.25
 }
 ```
 
@@ -2566,19 +2596,20 @@ extension only refused to extend a deadline still an hour away.
 
 The call-storm guard closes that gap at the **interim check**. A check that
 finds `call_storm_calls` or more tool calls inside the last
-`call_storm_window_seconds` **and** a working tree that has not advanced for a
-whole window reads as a storm window. One storm window is a warning:
+`call_storm_window_seconds`, fewer than `call_storm_novel_share` of them
+novel, **and** a working tree that has not advanced for a whole window reads as
+a storm window. One storm window is a warning:
 
 ```text
-[call-storm] call storm: 372 calls in 5m, tree unchanged; last: Bash echo w252
-— check 1 of 2; the run is stopped if the next check agrees
+[call-storm] call storm: 372 calls in 5m, 4 novel (1%), tree unchanged; last:
+Bash echo w252 — check 1 of 2; the run is stopped if the next check agrees
 ```
 
 **Two consecutive** storm windows stop the run, with a reason naming the loop:
 
 ```text
 [call-storm] stopping the agent after 1483s: call storm: 372 calls in 5m,
-tree unchanged; last: Bash echo w252
+4 novel (1%), tree unchanged; last: Bash echo w252
 ```
 
 The result carries `timeoutReason: "call-storm"` and the reason, so the worker
@@ -2587,8 +2618,17 @@ comment reads *"Claude was stopped as stalled before its timeout — call storm:
 …"* rather than claiming a timeout the run never reached. The ordinary
 WIP-preservation path keeps whatever the agent had committed.
 
-Four deliberate limits keep it from stopping healthy runs:
+Five deliberate limits keep it from stopping healthy runs:
 
+- **Repetition, not volume, is the loop (Issue #2773).** A security sweep reads
+  and greps dozens of modules before it writes its record, every call
+  different, and was stopped by volume alone. Each call in the window is
+  normalised to its tool name plus primary target — the file path for
+  `Read`/`Edit`/`Write`, the pattern plus path for `Grep`/`Glob`, the command
+  for `Bash` with digit and whitespace runs collapsed, so `echo w9` and
+  `echo w252` are one call — and a window is a storm only when the distinct
+  share is below `call_storm_novel_share`. The #2230 poll loop repeats three or
+  four commands; a sweep is nearly all novel.
 - **One window is never enough.** A read-heavy investigation can genuinely make
   twelve calls a minute before its first edit, so a single storm window only
   warns; ten minutes of that rate with nothing changed is the poll loop, not
@@ -4284,7 +4324,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `gemini_phase_model_overrides` | object | Per-repo per-phase Gemini model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `deepseek_model`        | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `deepseek_phase_model_overrides` | object | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
-| `issue_executor_split` | boolean | Per-repo issue-executor split, overriding the host-wide `issue_executor_split` for this repository. Set `false` here to opt one repository out of a host that enables it, or `true` to opt one repository in on a host that does not. Omitted, the host-wide value stands. Only the `issue` phase is affected. A pilot host sets this key host-wide rather than per repository, so its counters stay readable — see the [pilot method](MODEL-AND-CACHING.md#pilot-method). |
+| `issue_executor_split` | boolean | Per-repo issue-executor split, overriding the host-wide `issue_executor_split` for this repository. Set `false` here to opt one repository out of a host that enables it (the default since Issue #2812), or `true` to opt one repository in on a host that does not. Omitted, the host-wide value stands. Only the `issue` phase is affected. The per-host counters behind the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) do not separate repositories, so a per-repo opt-out blurs them. |
 
 **Use cases:**
 
@@ -4463,7 +4503,9 @@ sequence in the worker log.
 as `infrastructure` by `ci_failure_classifier.ts` (ETIMEDOUT, ENOTFOUND,
 5xx, runner lost connection, …) says nothing about the worker's ability to
 fix the code, so charging it against the human-escalation budget would
-escalate perfectly healthy repos. Every other category
+escalate perfectly healthy repos. Nor does a `human-gate` failure — a check
+whose log or annotation carries a `vibe-human-gate: <step>` line, declaring
+that a human action clears it (Issue #2726). Every other category
 (`code-fix-required`, `history-rewrite-required`, `timing`, `unknown`)
 consumes an attempt.
 

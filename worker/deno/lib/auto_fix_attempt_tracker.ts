@@ -173,12 +173,15 @@ export function hasReachedAutoFixCap(
  * `infrastructure` failures do not: a transient runner error, DNS failure
  * or upstream 5xx says nothing about the worker's ability to fix the code,
  * so charging it against the human-escalation budget would escalate
- * perfectly healthy repos. Every other category consumes an attempt.
+ * perfectly healthy repos. `human-gate` failures do not either — defence in
+ * depth, since the check declared a human step. Every other category
+ * consumes an attempt.
  */
 export function consumesAutoFixAttempt(
   category: CiFailureCategory | undefined,
 ): boolean {
-  return category !== "infrastructure";
+  // Issue #2726: a human gate waits on a person, not on a code fix.
+  return category !== "infrastructure" && category !== "human-gate";
 }
 
 /**

@@ -37,6 +37,8 @@ import {
 } from "../lib/conflict_abandon_restart.ts";
 import { conflictParkedMarker } from "../lib/merge_conflict_markers.ts";
 import type { MergeFallbackFiling } from "../lib/merge_fallback_issue.ts";
+import { buildCiFixAttemptMarker } from "../lib/ci_fix_attempt_markers.ts";
+import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -115,6 +117,8 @@ interface FakeRepoState {
     author?: { login: string };
     /** The base branch's tip, as the listing carries it (Issue #2312). */
     baseRefOid?: string;
+    /** Labels as the listing carries them (Issue #2728). */
+    labels?: Array<{ name: string }>;
   }>;
   /** Mergeable state per PR number. */
   mergeable: Record<number, string>;
@@ -136,6 +140,8 @@ interface FakeRepoState {
   failLabels?: number[];
   /** PR numbers whose comment lookup fails (Issue #1109). */
   failComments?: number[];
+  /** PR numbers whose label DELETE fails (Issue #2728). */
+  failDelete?: number[];
   /**
    * Originating issues the abandon-and-restart rung can resolve (Issue #1115).
    * Absent means `gh issue view` answers nothing, which is the "no originating
@@ -158,6 +164,8 @@ interface FakeRepoState {
 interface FakeGh {
   ghCommandFn: (args: string[]) => Promise<string>;
   labelsAdded: Array<{ prNumber: number; label: string }>;
+  /** Labels removed through the REST DELETE (Issue #2728). */
+  labelsRemoved: Array<{ prNumber: number; label: string }>;
   commentsPosted: Array<{ prNumber: number; body: string }>;
   /** Issues `gh issue create` was asked to file (Issue #2310). */
   issuesCreated: Array<{ title: string; body: string; labels: string[] }>;
@@ -167,6 +175,7 @@ interface FakeGh {
 /** A `gh` stub that answers exactly the calls this scan issues. */
 function makeFakeGh(state: FakeRepoState): FakeGh {
   const labelsAdded: Array<{ prNumber: number; label: string }> = [];
+  const labelsRemoved: Array<{ prNumber: number; label: string }> = [];
   const commentsPosted: Array<{ prNumber: number; body: string }> = [];
   const issuesCreated: Array<
     { title: string; body: string; labels: string[] }
@@ -316,6 +325,21 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
       ));
     }
 
+    // A label removal (Issue #2728).
+    if (args[0] === "api" && args.includes("DELETE")) {
+      const endpoint = String(args.find((a) => a.includes("/labels/")) ?? "");
+      const match = /issues\/(\d+)\/labels\/(.+)$/.exec(endpoint);
+      const prNumber = Number(match?.[1] ?? 0);
+      if (state.failDelete?.includes(prNumber)) {
+        return Promise.reject(new Error("label delete exploded"));
+      }
+      labelsRemoved.push({
+        prNumber,
+        label: decodeURIComponent(match?.[2] ?? ""),
+      });
+      return Promise.resolve("");
+    }
+
     // Label creation, the guarded label add, and escalation comments.
     if (args[0] === "api" && args.includes("POST")) {
       const endpoint = String(args[args.indexOf("-X") + 2] ?? "");
@@ -343,7 +367,14 @@ function makeFakeGh(state: FakeRepoState): FakeGh {
     return Promise.resolve("");
   };
 
-  return { ghCommandFn, labelsAdded, commentsPosted, issuesCreated, calls };
+  return {
+    ghCommandFn,
+    labelsAdded,
+    labelsRemoved,
+    commentsPosted,
+    issuesCreated,
+    calls,
+  };
 }
 
 function makeOptions(
@@ -2043,4 +2074,176 @@ Deno.test("findConflictingPr - an unresolved fleet identity spends no budget", a
   assertEquals(escalatedToHuman(fake, 48), false);
   assertEquals(reasonFor(log, 48), "attempted");
   assertEquals(result.value.selected?.attemptCount, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Needs-human under a CI-fix escalation, and stale labels (Issue #2728)
+// ---------------------------------------------------------------------------
+
+/** A trusted CI-fix attempt marker, as the CI-fix lane posts it. */
+function ciFixAttemptComment(
+  login = FLEET,
+): { body: string; created_at: string; user: { login: string } } {
+  const marker = buildCiFixAttemptMarker({
+    signature: "abcdef0123456789",
+    checkName: "quality",
+    head: "b".repeat(40),
+    attempt: 3,
+    outcome: "pushed",
+  });
+  return {
+    body: `${marker}\nCI fix attempt 3 of 3`,
+    created_at: "2026-08-19T10:00:00Z",
+    user: { login },
+  };
+}
+
+Deno.test("findConflictingPr - resolves a needs-human PR the CI-fix lane escalated (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    labels: { 48: ["needs-human"] },
+    comments: { 48: [ciFixAttemptComment()] },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(reasonFor(log, 48), "attempted");
+});
+
+Deno.test("findConflictingPr - a needs-human PR with no CI-fix marker is still skipped (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    labels: { 48: ["needs-human"] },
+    comments: {
+      48: [{ body: "please look", created_at: "2026-08-19T10:00:00Z" }],
+    },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "needs-human");
+});
+
+Deno.test("findConflictingPr - a CI-fix marker from an outsider does not lift the skip (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    labels: { 48: ["needs-human"] },
+    comments: { 48: [ciFixAttemptComment(OUTSIDER)] },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "needs-human");
+});
+
+Deno.test("findConflictingPr - the conflict lane's own escalation keeps the skip (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    labels: { 48: ["needs-human"] },
+    comments: {
+      48: [
+        ciFixAttemptComment(),
+        {
+          body: `${buildDedupMarker("merge-conflict-disrupted-48")}\nstuck`,
+          created_at: "2026-08-19T11:00:00Z",
+        },
+      ],
+    },
+  }));
+
+  const { result, log } = await scanWith(fake);
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "needs-human");
+});
+
+Deno.test("findConflictingPr - clears a stale merge-conflict label from a mergeable PR (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    mergeable: { 48: "MERGEABLE" },
+    labels: { 48: [MERGE_CONFLICT_LABEL, "needs-human"] },
+  }));
+
+  const { log } = await scanWith(fake);
+
+  assertEquals(fake.labelsRemoved, [{
+    prNumber: 48,
+    label: MERGE_CONFLICT_LABEL,
+  }]);
+  assertEquals(reasonFor(log, 48), "not-conflicting");
+});
+
+Deno.test("findConflictingPr - reads the stale label from the listing when it carries labels (Issue #2728)", async () => {
+  const state = makeState({ mergeable: { 48: "MERGEABLE" } });
+  state.prs[0]!.labels = [{ name: MERGE_CONFLICT_LABEL }];
+  const fake = makeFakeGh(state);
+
+  await scanWith(fake);
+
+  assertEquals(fake.labelsRemoved.length, 1);
+  assertEquals(
+    fake.calls.some((c) =>
+      c[0] === "pr" && c[1] === "view" && c.includes("labels")
+    ),
+    false,
+  );
+});
+
+Deno.test("findConflictingPr - a mergeable PR without the label issues no DELETE (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    mergeable: { 48: "MERGEABLE" },
+    labels: { 48: ["needs-human"] },
+  }));
+
+  await scanWith(fake);
+
+  assertEquals(fake.labelsRemoved.length, 0);
+  assertEquals(fake.calls.some((c) => c.includes("DELETE")), false);
+});
+
+Deno.test("findConflictingPr - an UNKNOWN PR keeps its merge-conflict label (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    mergeable: { 48: "UNKNOWN" },
+    labels: { 48: [MERGE_CONFLICT_LABEL] },
+  }));
+
+  await scanWith(fake);
+
+  assertEquals(fake.calls.some((c) => c.includes("DELETE")), false);
+});
+
+Deno.test("findConflictingPr - a failed label DELETE is logged and the pass continues (Issue #2728)", async () => {
+  const fake = makeFakeGh(makeState({
+    prs: [
+      {
+        number: 48,
+        headRefName: "a",
+        baseRefName: "main",
+        baseRefOid: BASE_TIP,
+      },
+      {
+        number: 49,
+        headRefName: "b",
+        baseRefName: "main",
+        baseRefOid: BASE_TIP,
+      },
+    ],
+    mergeable: { 48: "MERGEABLE", 49: "MERGEABLE" },
+    labels: { 48: [MERGE_CONFLICT_LABEL], 49: [MERGE_CONFLICT_LABEL] },
+    comments: {},
+    failDelete: [48],
+  }));
+
+  const { log } = await scanWith(fake);
+
+  assertEquals(fake.labelsRemoved, [{
+    prNumber: 49,
+    label: MERGE_CONFLICT_LABEL,
+  }]);
+  assertEquals(reasonFor(log, 48), "not-conflicting");
+  assert(
+    log.entries.some((e) =>
+      e.level === "warn" && e.context?.prNumber === 48 &&
+      e.message.includes(MERGE_CONFLICT_LABEL)
+    ),
+    "the failed DELETE was not logged",
+  );
 });

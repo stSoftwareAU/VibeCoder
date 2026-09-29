@@ -543,3 +543,27 @@ Deno.test("blank stream lock - enable_session_resume off takes no host-local loc
     }`,
   );
 });
+
+Deno.test("blank stream lock - heldRepos names the repositories whose blank stream this host holds (Issue #2800)", () => {
+  // The idle-decision census reads this so it counts a held repository's
+  // non-milestone issues as stream-occupied rather than claimable.
+  const locks = new BlankStreamLockRegistry();
+  assertEquals(locks.heldRepos(), []);
+
+  locks.tryAcquire({ repo: REPO, issueNumber: 1593, slotId: "s2" });
+  locks.tryAcquire({
+    repo: OTHER,
+    issueNumber: 7,
+    slotId: "s0",
+    milestoneTitle: MILESTONE,
+  });
+  assertEquals(
+    locks.heldRepos(),
+    [REPO],
+    "a milestone claim holds no blank stream, so it names no repository",
+  );
+  assertEquals(locks.holder({ repo: REPO })?.repo, REPO);
+
+  locks.release({ repo: REPO });
+  assertEquals(locks.heldRepos(), [], "a released hold names nothing");
+});

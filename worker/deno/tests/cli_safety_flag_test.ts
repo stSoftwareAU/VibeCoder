@@ -367,7 +367,7 @@ function idleSeams() {
       __testDeps: {
         ghCommandFn: fn,
         ensureLabelFn: labelOk,
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
         nowFn: () => new Date("2026-07-03T00:00:00.000Z"),
         rootDir: REPO_ROOT,
         log: () => {},

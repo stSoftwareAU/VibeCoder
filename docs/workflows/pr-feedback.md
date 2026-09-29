@@ -116,7 +116,10 @@ monitor the PR — author is sufficient.
   PR title) in the same pass. The merged-PR close-out sweep remains the
   backstop for merges the worker did not perform.
 - Feedback is processed once: after handling, comments are marked (e.g. eyes
-  reaction) and reviews are dismissed so they are not picked up again.
+  reaction) and reviews are dismissed so they are not picked up again. For a
+  review the dismissal is the **only** retirement marker — a moved PR head no
+  longer is (Issue #2697) — so a dismissal that fails at claim time is logged
+  rather than swallowed.
 
 ## ✅ Happy path
 
@@ -137,9 +140,30 @@ match wins and the loop restarts.
    and that push is less than 15 minutes old, the comment is left for the next
    scan to re-evaluate (Issue #211). The window is a de-duplication guard, not
    a veto — an older fleet push never suppresses feedback permanently.
-   A `CHANGES_REQUESTED` review is skipped only when a **fleet fix commit**
-   landed after it — never because a base merge or a bot's formatting or
+   A `CHANGES_REQUESTED` review stays **outstanding after the PR head moves**
+   (Issue #2697): Priorities 1.6 and 1.65 update the branch *before* PR
+   feedback runs, and a rebase or merge-from-base does not address anything.
+   The scan reads every page of reviews, takes each reviewer's **latest**
+   submitted review (drafts and `COMMENTED` reviews do not count — GitHub
+   never lets a Comment review clear a change request),
+   and acts only where that latest review still requests changes — one entry
+   per reviewer. A request is retired by its dismissal (the processed marker)
+   or by the same reviewer's later `APPROVED` or `CHANGES_REQUESTED` review;
+   every change request it skips is logged at INFO with the reason.
+   Of those still outstanding, a review is skipped only when a **fleet fix
+   commit** landed after it — never because a base merge or a bot's formatting or
    version bump moved the head (Issue #2702). That skip is logged at info.
+
+   ```mermaid
+   flowchart TD
+       R["Read every page of reviews<br/>(gh api --paginate)"] --> L["Latest submitted review<br/>per reviewer (COMMENTED ignored)"]
+       L --> Q{"Latest is<br/>CHANGES_REQUESTED?"}
+       Q -- "no: DISMISSED,<br/>later APPROVED" --> S["Skip — INFO log<br/>with the reason"]
+       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Fleet fix commit after it?"}
+       O -- yes --> S
+       O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>then dismiss the review"]
+       C --> F["Feedback run"]
+   ```
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; commit and push.
@@ -232,8 +256,10 @@ checks pass. The worker does the following:
    `milestone/oidc`). If `baseRefName` is unavailable, the repo default branch
    is used as a fallback.
 2. **Update the branch** — If the branch is behind the base: fetch the latest
-   base branch, rebase the feature branch onto it, and push. The comparison and
-   rebase always use the PR's actual base branch, so PRs targeting milestone
+   base branch, merge it into the feature branch, and push normally — never a
+   rebase and never a force-push, so a PR under review keeps its commits and
+   its review comments (Issue #2807). The comparison and merge always use the
+   PR's actual base branch, so PRs targeting milestone
    branches are updated against that milestone branch, not the repo default
   . This keeps the PR up to date and avoids merge conflicts at
    merge time.
@@ -243,14 +269,16 @@ checks pass. The worker does the following:
    workdir can no longer produce a conflict that does not exist on the PR
    (Issue #211). A local branch holding genuinely unpushed commits is reported
    as exactly that and left untouched — never relabelled a base-branch
-   conflict. If rebase or merge hits real conflicts, the worker
-   attempts automatic resolution (e.g. resolve strategy). If resolution
-   succeeds, push the updated branch. If it fails, the branch is left as-is and
-   the failure is logged; the PR remains in a non-mergeable state until the user
-   or a later run resolves it.
+   conflict. If the merge hits real conflicts, it is aborted and the branch is
+   left exactly as it was — never side-picked (Issue #4373) — and the conflict
+   is handed to the merge-conflict pass; the PR remains in a non-mergeable
+   state until that pass, the user or a later run resolves it. A plain push the
+   remote rejects is a logged failure carrying git's stderr, never retried with
+   force.
 4. **After PR creation or recovery** — When a PR is created or an existing PR is
    recovered, the worker runs a mergeability check and, if the branch is behind
-   base, rebases and resolves conflicts **before** enabling auto-merge.
+   base, merges the base in and pushes normally **before** enabling
+   auto-merge.
    **Auto-merge is only enabled once the PR is mergeable.**
 
 5. **Leave a blocked PR alone** (Issue #2702) — A PR whose review decision is
@@ -313,8 +341,9 @@ When the gate blocks because the PR branch is **behind its target**, the worker
 does not force the merge and does not give up — it **defers and retries**:
 
 1. The PR is **left open** and the deferral is logged.
-2. The branch-update maintenance (Priority 1.6 above) rebases the feature branch
-   onto the latest target.
+2. The branch-update maintenance (Priority 1.6 above) merges the latest target
+   into the feature branch and pushes normally — a green PR that is only
+   waiting for approval is kept current this way every cycle.
 3. CI re-runs on the new head.
 4. The next cycle re-evaluates the gate and merges once CI is green and the
    branch is up to date.
@@ -329,7 +358,7 @@ sequenceDiagram
     participant M as Branch-update maintenance
     participant CI as GitHub CI
     G->>G: behind target → blocked, leave PR open
-    M->>M: rebase feature branch on target
+    M->>M: merge target into feature branch, plain push
     CI->>CI: re-run required checks on new head
     G->>G: next cycle: CI passed + up to date → merge
 ```
@@ -361,8 +390,8 @@ flowchart TD
 ## 📊 Diagram: branch update flow (gitGraph)
 
 The following `gitGraph` diagram shows how the worker keeps PR branches up to
-date — when the base branch receives new commits, the feature branch is rebased
-to stay current before auto-merge:
+date — when the base branch receives new commits, the base is merged into the
+feature branch to keep it current before auto-merge:
 
 ```mermaid
 gitGraph
@@ -374,14 +403,15 @@ gitGraph
     checkout main
     commit id: "Other PR merged"
     checkout issue-50-feature
-    merge main id: "Rebase onto Develop"
+    merge main id: "Merge Develop in"
     commit id: "Fix feedback"
     checkout main
     merge issue-50-feature id: "Auto-merge (squash)"
 ```
 
 _The `main` line represents `Develop`. When new commits land on `Develop` (from
-other merged PRs), the worker rebases the feature branch to keep it current.
+other merged PRs), the worker merges them into the feature branch and pushes
+normally to keep it current — the PR's own commits are never rewritten.
 After feedback fixes and quality checks, the PR is auto-merged._
 
 ## 🔁 A branch that can never be updated (Issue #335)
@@ -428,10 +458,11 @@ stateDiagram-v2
 
 The pass scans, then executes: PR #381 was read as two commits behind at
 21:48:37Z and pushed at 21:49:37Z, and it merged at 21:49:12Z — inside the
-window. `--force-with-lease` then refused the push with `(stale info)`, which is
-the lease doing exactly its job, but the run counted `failedCount=1` and logged
-a WARNING. That buries the signal that matters: a protected branch, a
-permissions problem, or a real lease violation over someone else's commits read
+window. The push was refused — then as a `--force-with-lease` `(stale info)`;
+since Issue #2807 the update is a plain push, which a moved branch refuses as
+non-fast-forward — and that refusal is the push doing exactly its job, but the
+run counted `failedCount=1` and logged a WARNING. That buries the signal that matters: a protected branch, a
+permissions problem, or a real rejection over someone else's commits read
 identically to "the PR merged while we were working", and on a busy milestone
 the second one is the common case.
 
@@ -461,7 +492,7 @@ no extra API call.
 flowchart TD
     Scan["Scan: PR #381 is 2 commits behind"] --> Pre{"Still open?"}
     Pre -->|"MERGED / CLOSED"| NoOp["ℹ️ mergedCount — nothing to do"]
-    Pre -->|"OPEN or UNKNOWN"| Push["Clone, rebase, force-with-lease push"]
+    Pre -->|"OPEN or UNKNOWN"| Push["Clone, merge base in, plain push"]
     Push -->|ok| Done["✅ updatedCount"]
     Push -->|"rejected / conflict"| Post{"Still open?"}
     Post -->|"MERGED / CLOSED"| NoOp
@@ -482,7 +513,8 @@ flowchart TD
 - **Spelling fix failure:** Treated like other failures; may trigger failure
   tracking and eventual exit for restart.
 - **PR branch behind target at merge time:** The pre-merge gate **defers** —
-  the PR is left open, branch-update maintenance rebases, CI re-runs, and the
+  the PR is left open, branch-update maintenance merges the target in, CI
+  re-runs, and the
   next cycle re-evaluates (see the dual-layer pre-merge gate above). The merge is
   never forced against a stale branch.
 - **Out-of-scope PR feedback:** The worker takes the **escape hatch** — files a

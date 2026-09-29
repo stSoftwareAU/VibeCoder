@@ -205,9 +205,9 @@ availability.
 | quorum | Opus | high | Opus @ max, recorded degraded |
 | quorum_judge | Opus | high | Opus @ max, recorded degraded |
 | issue (implementation) | Opus | high | unchanged |
-| ci_fix | Opus | medium | unchanged |
-| pr_feedback | Opus | medium | unchanged |
-| quality_fix | Opus | medium | unchanged |
+| ci_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
+| pr_feedback | Sonnet | high | unchanged — Sonnet since Issue #2812 |
+| quality_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | spelling_fix | Haiku | low | unchanged |
 | summarise | Haiku | low | unchanged (large-input escalation still applies) |
 | health | Haiku | low | unchanged — runs the Fable probe only while a phase routes to Fable |
@@ -239,18 +239,26 @@ made that model worth revisiting:
   `max`/`xhigh`/`high`/`medium`/`low`, so one tier can express the whole
   complexity spectrum via effort alone.
 - **The Opus↔Sonnet price gap shrank to ~1.7×** ($5 vs $3 per Mtok input, the
-  rates when this decision was taken; Sonnet 5 has since reopened the gap to
-  ~2.5× at $2 — see [Model Pricing](#model-pricing)).
+  rates when this decision was taken; the gap is now **2×** — Opus 5.5 at $4/$20
+  against Sonnet 5.5 at $2/$10 — see [Model Pricing](#model-pricing)).
   At that gap, routing reactive phases to Sonnet saves little, while
   maintaining two model families with different behaviours costs clarity.
 
 **Decision: adopt effort-first, with tier as a secondary lever at both
 extremes.**
 
-- The substantive and the reactive-fix phases are differentiated by **effort**
+- The substantive and the reactive-fix phases were differentiated by **effort**
   (`high` → implementation, `medium` → the reactive fixes `ci_fix`,
-  `pr_feedback`, `quality_fix`) on **Opus**. This gives one quality bar with a
-  tunable depth dial and sidesteps the Opus alias→pricing mismatch fixed in.
+  `pr_feedback`, `quality_fix`) on **Opus**. This gave one quality bar with a
+  tunable depth dial and sidestepped the Opus alias→pricing mismatch fixed in.
+  **Since Issue #2812 the three reactive fixes run on Sonnet at `high`**: with
+  the gap back at 2×, Sonnet 5.5 at `high` costs about half of Opus while
+  keeping reasoning depth on the hard CI and review cases. Implementation
+  (`issue`) stays on Opus at `high`, now as an advisor over Sonnet executors
+  (see [Advisor and executor split](#advisor-and-executor-split-issue-phase)).
+  The change is measured with the
+  [before/after check](#default-on-decision-criteria) and reverted per phase
+  if it regresses.
 - The planning-shaped phases ran on the **Fable 5** tier above Opus (
   extended from two phases at `max` effort to six phases at `high` effort by
   ). A better result compounds across every downstream sub-issue or run, so
@@ -286,9 +294,9 @@ defaults.
 
 | Candidate phase | Before (pre-) | Proposal in | Decision (post-) | Why |
 |---|---|---|---|---|
-| `ci_fix` | sonnet + medium | opus + low | **opus + medium** | Reactive but not trivial — CI failures cover the full diagnostic spectrum (flaky tests, build breaks, lint regressions). Raising tier without dropping effort keeps quality on the harder cases; an effort downgrade to `low` would have lost reasoning depth right when it matters most. |
-| `pr_feedback` | sonnet + medium | opus + low | **opus + medium** | Reviewer feedback often demands non-trivial rework (re-architecting a function, tightening a contract). Same logic as `ci_fix` — preserve effort, raise tier. |
-| `quality_fix` | sonnet + medium | opus + low | **opus + medium** | Quality-gate fixes are structured but range from one-line typos to multi-file lint refactors. Effort at `medium` is the right floor; `low` regresses on the hard end. |
+| `ci_fix` | sonnet + medium | opus + low | **opus + medium** (superseded by Issue #2812: sonnet + high) | Reactive but not trivial — CI failures cover the full diagnostic spectrum (flaky tests, build breaks, lint regressions). Raising tier without dropping effort keeps quality on the harder cases; an effort downgrade to `low` would have lost reasoning depth right when it matters most. |
+| `pr_feedback` | sonnet + medium | opus + low | **opus + medium** (superseded by Issue #2812: sonnet + high) | Reviewer feedback often demands non-trivial rework (re-architecting a function, tightening a contract). Same logic as `ci_fix` — preserve effort, raise tier. |
+| `quality_fix` | sonnet + medium | opus + low | **opus + medium** (superseded by Issue #2812: sonnet + high) | Quality-gate fixes are structured but range from one-line typos to multi-file lint refactors. Effort at `medium` is the right floor; `low` regresses on the hard end. |
 | `refinement` | sonnet + medium | haiku (evaluate) | **opus + medium** | Demoting to Haiku was tempting on price, but refinement rewords titles/descriptions that drive every downstream decision — quality dominates. Effort-first routing lets `refinement` share the reactive-phase dial and the operator can override to Haiku per-repo if they want. |
 | `clarification` | sonnet + medium | haiku (evaluate) | **opus + medium** | Same reasoning as `refinement`. Clarification feeds straight into the planning/issue phases; a poor clarification is paid for many times over. |
 | `question` | sonnet + medium | haiku (evaluate) | **opus + medium** | Codebase questions are open-ended and often span multiple files. Keeping a reasoning-heavy tier is cheap insurance against a wrong answer that wastes the asker's time. |
@@ -299,6 +307,21 @@ model families that drift apart in behaviour. Any operator who wants to push
 a specific phase down — e.g. `clarification` to Haiku on a low-stakes repo —
 can do so with a one-line override in `phase_model_overrides` without
 touching code.
+
+**Superseded for the reactive fixes (Issue #2812).** Sonnet 5.5 (`$2/$10`)
+reopened the gap with Opus 5.5 (`$4/$20`) to 2×, so the three reactive rows
+above now resolve to **sonnet + high**: the tier comes down and effort goes up
+to keep reasoning depth on the hard end the table was worried about. Revert a
+phase with `CLAUDE_MODEL_CI_FIX=opus` and `CLAUDE_EFFORT_CI_FIX=medium` (or the
+`phase_model_overrides` / `phase_effort_overrides` entries; likewise
+`PR_FEEDBACK` and `QUALITY_FIX`) if the
+[before/after check](#default-on-decision-criteria) shows it regressed.
+
+**`issue` phase (Issue #2812).** The planner stays **opus + high**, but
+`issue_executor_split` and `issue_reviewer_agents` now default to `true`: Opus
+plans while Sonnet executors implement at `medium` and Sonnet reviewers check
+the diff, because the 2× price gap makes those tokens the cheapest to move. Set
+either key `false` to revert it on the same before/after evidence.
 
 #### Fable 5 for top-tier phases
 
@@ -449,8 +472,9 @@ override is visible in the cost logs. The resolution logic lives in
 The `issue_executor_split` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md)) changes **who** does the work on an
 `issue`-phase run without changing what the phase itself is routed to. It is
-**off by default**; the [pilot method](#pilot-method) below is how that default
-gets revisited.
+**on by default** since Issue #2812 — set it `false` for a single-session run.
+The [before/after check](#default-on-decision-criteria) below decides whether
+that default stays.
 
 - **Advisor** — the main session. It keeps the phase's own model and effort,
   which for `issue` is Opus at `high`
@@ -516,9 +540,13 @@ delegation encouragement must not be re-added.
 
 #### Pilot method
 
-The key is off by default and is being measured before that changes. The pilot
-compares split runs against ordinary ones over a fixed window and reports five
-numbers.
+Until Issue #2812 the key was off by default and measured with this pilot. It
+is now on by default and judged by the
+[before/after check](#default-on-decision-criteria) instead; the pilot method
+stays as the way to measure an arm on a subset of hosts (the effort arm below
+is one), and its table is where every number in the before/after check comes
+from. The pilot compares split runs against ordinary ones over a fixed window
+and reports five numbers.
 
 **Groups**
 
@@ -527,7 +555,8 @@ numbers.
   a subset of a host's repos would mix both arms into the same per-host
   counters and make the host's numbers unreadable.
 - **Control** — every non-pilot host's `issue`-phase runs on Claude in the same
-  window.
+  window. Since Issue #2812 the key is on by default, so a control host must
+  set `issue_executor_split: false` explicitly.
 - **Excluded from both sides** — runs on any other provider. The key does
   nothing under `codex` or `gemini` and is stripped under `deepseek`, so those
   runs would dilute both arms without testing anything.
@@ -568,35 +597,60 @@ favour either.
 
 #### Default-on decision criteria
 
-Enable the split by default **only if all four of these hold**. They are
-conjunctive — three out of four is not a pass.
+Issue #2812 turned the executor split and the reviewer sub-agents on by default
+and moved the three reactive fixes to Sonnet at `high`, all at once, on the evidence that
+Sonnet 5.5 costs half of Opus 5.5 on every rate, rather than after a pilot.
+Each change is now judged by a **before/after check**, per phase: the **first
+30 runs after the change merged** against the **last 30 runs before it
+merged**, on the same fleet. There is no control arm to wait for and no saving
+threshold to clear — the check only has to show that nothing got worse.
 
-| # | Condition | Threshold |
+**Revert a change if any one of these holds** for its phase:
+
+| # | Signal (after vs before) | Revert when |
 | --- | --- | --- |
-| 1 | Pilot success rate vs control | **≥** control |
-| 2 | Pilot first-attempt quality-gate pass rate vs control | **≥** control |
-| 3 | Average Standards-reviewer `violation` lines per pilot PR vs control | **≤** control |
-| 4 | Estimated USD per implementation run vs control | at least **15%** lower |
+| 1 | Success rate | falls |
+| 2 | First-attempt quality-gate pass rate | falls |
+| 3 | Standards-reviewer `violation` lines per PR | rise |
+| 4 | Estimated USD per run | rises |
 
-**Quality is a gate, not a tie-break. A cheaper run that produces worse code is
-a false saving and does not qualify.** Any regression in conditions 1, 2 or 3
-vetoes default-on however large the saving in condition 4 — there is no cost
-figure that buys its way past a quality regression.
+**Quality is still a gate, not a tie-break.** A cheaper run that produces worse
+code is a false saving: a fall in 1 or 2, or a rise in 3, reverts the change
+however much it saved. Condition 4 is there because the change was made for
+cost, so a run that costs more has lost its reason to exist.
 
-**Duration is reported, not gated.** It is published beside the cost so the
-trade-off is visible, and a slower pilot does not by itself block default-on.
+The numbers come from the same sources as the
+[pilot method](#pilot-method) table. For the `issue` phase read the per-host
+`issuePhase*` counters as the difference between snapshots taken at the
+before-merge window's start, at the merge and at the end of the after-merge
+window. For the reactive phases, split the daily
+[credit logs](#credit-logging) by `phase` and by the `model`/`effort` each
+invocation ran with, which separates the two windows run by run. **Duration is
+reported, not gated.**
+
+| Change | Phase measured | Revert with |
+| --- | --- | --- |
+| Advisor and executor split | `issue` | `issue_executor_split: false` |
+| Reviewer sub-agents | `issue` | `issue_reviewer_agents: false` |
+| `ci_fix` → Sonnet at `high` | `ci_fix` | `CLAUDE_MODEL_CI_FIX=opus` and `CLAUDE_EFFORT_CI_FIX=medium`, or `phase_model_overrides.ci_fix` and `phase_effort_overrides.ci_fix` |
+| `pr_feedback` → Sonnet at `high` | `pr_feedback` | `CLAUDE_MODEL_PR_FEEDBACK=opus` and `CLAUDE_EFFORT_PR_FEEDBACK=medium`, or the matching `phase_*_overrides` entries |
+| `quality_fix` → Sonnet at `high` | `quality_fix` | `CLAUDE_MODEL_QUALITY_FIX=opus` and `CLAUDE_EFFORT_QUALITY_FIX=medium`, or the matching `phase_*_overrides` entries |
+
+The split and the reviewer sub-agents both land on the `issue` phase in the
+same window, so a regression there cannot be pinned on one of them by the
+check alone. Revert the split first — it changes who writes the code — and
+re-measure before reverting the reviewers.
 
 ```mermaid
 flowchart TD
-    Q{"Quality: success rate ≥ control<br/>AND first-attempt gate ≥ control<br/>AND violations/PR ≤ control"}
-    Q -->|no| V["❌ Veto — stays off<br/>(no saving overrides this)"]
-    Q -->|yes| C{"Cost: ≥ 15% cheaper<br/>per implementation run?"}
-    C -->|no| S["❌ Stays off — saving too small"]
-    C -->|yes| E["✅ Enable by default"]
-    D["⏱️ Duration — reported only"] -.-> E
-    style E fill:#2d6a4f,stroke:#1b4332,color:#fff
-    style V fill:#9d0208,stroke:#6a040f,color:#fff
-    style S fill:#9d0208,stroke:#6a040f,color:#fff
+    B["📊 Last 30 runs before merge<br/>(per phase)"] --> X
+    A["📊 First 30 runs after merge<br/>(per phase)"] --> X
+    X{"Success rate fell? OR first-attempt gate fell?<br/>OR violations/PR rose? OR USD/run rose?"}
+    X -->|any yes| R["↩️ Revert that phase's change<br/>(config key, no code change)"]
+    X -->|all no| K["✅ Keep the default"]
+    D["⏱️ Duration — reported only"] -.-> K
+    style K fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style R fill:#9d0208,stroke:#6a040f,color:#fff
     style D fill:#adb5bd,stroke:#6c757d,color:#000
 ```
 
@@ -629,19 +683,17 @@ security or the stated requirements, and anything else is listed as
 `optional` and not chased.
 
 **Expected effect.** Two review contexts move from Opus 5.5 at `high` ($4/$20
-per MTok) to Sonnet ($2/$10) at `medium` and `low`. No fleet figure is
-claimed; the pilot produces it.
+per MTok) to Sonnet 5.5 ($2/$10) at `medium` and `low`. No fleet figure is
+claimed; the before/after check produces it.
 
-**Pilot.** The key is **off by default**. It is measured with the
-[pilot method](#pilot-method) and the
-[default-on decision criteria](#default-on-decision-criteria) above, with
-`issue_reviewer_agents` in place of `issue_executor_split`: pilot hosts turn it
-on host-wide, and control hosts leave it off. Read condition 3 (Standards
-`violation` lines per PR) with the narrower brief in mind: fewer violations on
-the pilot arm is partly the scoping itself, so it cannot on its own show that
-quality held. The owner also asked for the share of PRs later reopened or given
-`needs-revision` for a missed acceptance criterion to be no worse than control.
-Record the figures on Issue #2575 before the default changes.
+**Default.** The key is **on by default** since Issue #2812; set it `false` to
+let the reviewers inherit the advisor's model again. It is judged by the
+[before/after check](#default-on-decision-criteria) above. Read condition 3
+(Standards `violation` lines per PR) with the narrower brief in mind: fewer
+violations after the change is partly the scoping itself, so it cannot on its
+own show that quality held. The owner also asked for the share of PRs later
+reopened or given `needs-revision` for a missed acceptance criterion to be no
+worse than before; record that beside the four signals.
 
 #### Sub-agent spawn caps
 
@@ -2446,6 +2498,7 @@ Approximate list prices (USD per million tokens, as of September 2026):
 | Claude Opus 5.0–5.4 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.5–4.8 | $5.00 | $25.00 | $6.25 | $0.50 |
 | Claude Opus 4.0/4.1 | $15.00 | $75.00 | $18.75 | $1.50 |
+| Claude Sonnet 5.5 | $2.00 | $10.00 | $2.50 | $0.20 |
 | Claude Sonnet 5 | $2.00 | $10.00 | $2.50 | $0.20 |
 | Claude Sonnet 4.6 | $3.00 | $15.00 | $3.75 | $0.30 |
 | Claude Haiku 4.5 | $1.00 | $5.00 | $1.25 | $0.10 |
@@ -2524,9 +2577,15 @@ otherwise, in a note beside the table:
 > the standard price. The previously scheduled increase to $3/$15 per million
 > input/output tokens on September 1, 2026 will not occur.
 
-Sonnet is not a phase default; it is the third rung of the
-`fable → opus → sonnet → haiku` rate-limit ladder, so the row matters for
-costing a downgraded run.
+**Sonnet 5.5** (model id `claude-sonnet-5-5`, and what the alias `sonnet` now
+resolves to) keeps the same $2 / $10 rate, cache $2.50 / $0.20 — exactly half
+of Opus 5.5 on every rate (Issue #2812). Its row precedes the broader
+`claude-sonnet-5` key so first-match lookup names it explicitly.
+
+Sonnet is the default for the reactive phases (`ci_fix`, `pr_feedback`,
+`quality_fix`) since Issue #2812, for the `issue`-phase executors and reviewer
+sub-agents, and the third rung of the `fable → opus → sonnet → haiku`
+rate-limit ladder.
 
 #### Fable 5.1 — the current top tier (Issue #747)
 

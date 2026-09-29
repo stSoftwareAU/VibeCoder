@@ -383,19 +383,24 @@ Deno.test(
   "findOpenIdleTaskWrappers - reports every repo holding a wrapper, not just the first",
   async () => {
     const gh = makeGhFake({ wrappers: { "org/a": 1, "org/c": 3 } });
-    const found = await findOpenIdleTaskWrappers(["org/a", "org/b", "org/c"], {
-      ghCommandFn: gh.fn,
-    });
+    const { wrappers: found, failedRepos } = await findOpenIdleTaskWrappers(
+      ["org/a", "org/b", "org/c"],
+      { ghCommandFn: gh.fn },
+    );
     assertEquals(found.map((w) => w.repo), ["org/a", "org/c"]);
     assertEquals(found.map((w) => w.number), [1, 3]);
+    assertEquals(failedRepos, []);
   },
 );
 
 Deno.test(
-  "findOpenIdleTaskWrappers - a per-repo gh failure is warned and the scan continues",
+  "findOpenIdleTaskWrappers - a per-repo gh failure is warned, reported as failed, and the scan continues",
   async () => {
     const warnings: string[] = [];
-    const found = await findOpenIdleTaskWrappers(["org/bad", "org/good"], {
+    const { wrappers: found, failedRepos } = await findOpenIdleTaskWrappers([
+      "org/bad",
+      "org/good",
+    ], {
       ghCommandFn: (args: string[]) =>
         args.includes("org/bad")
           ? Promise.reject(new Error("boom"))
@@ -403,6 +408,8 @@ Deno.test(
       warn: (m: string) => warnings.push(m),
     });
     assertEquals(found.map((w) => w.repo), ["org/good"]);
+    // Issue #2750: the failed repo is unknown, never clean.
+    assertEquals(failedRepos, ["org/bad"]);
     assertEquals(warnings.length, 1);
     assertStringIncludes(warnings[0]!, "org/bad");
   },
