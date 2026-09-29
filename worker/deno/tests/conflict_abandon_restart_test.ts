@@ -909,8 +909,9 @@ Deno.test("abandonAndRestart - a restarted issue is restarted a second time", as
 });
 
 Deno.test("abandonAndRestart - the third exhaustion is declined, not restarted", async () => {
-  // The bound itself (Issue #2312). Two restarts, then the caller parks the
-  // PR: a third close-and-re-raise of the same work is not a new experiment.
+  // The bound itself (Issue #2312). Two restarts, then a human decides
+  // (Issue #2804): a third close-and-re-raise of the same work is not a new
+  // experiment.
   const fake = makeFake();
   await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
@@ -939,6 +940,171 @@ Deno.test("abandonAndRestart - the third exhaustion is declined, not restarted",
   assertEquals(callsMatching(fake, "pr", "close").length, 2);
 });
 
+// ---------------------------------------------------------------------------
+// A spent restart budget goes to a human (Issue #2804)
+// ---------------------------------------------------------------------------
+
+/** An issue that has already been restarted twice, by the fleet. */
+function spentIssueComments(): Array<
+  { body: string; user: { login: string } }
+> {
+  return [
+    comment(conflictRestartMarker(REPO, 31)),
+    comment(
+      conflictRestartMarker(REPO, 32),
+    ),
+  ];
+}
+
+/** POSTs of `needs-human` onto the originating issue. */
+function needsHumanLabelCalls(fake: FakeGh): string[][] {
+  return labelAddCalls(fake, ISSUE_NUMBER).filter((args) =>
+    args.includes("labels[]=needs-human")
+  );
+}
+
+/** Escalation comment POSTs onto the originating issue. */
+function issueCommentPosts(fake: FakeGh): string[][] {
+  return fake.calls.filter((args) =>
+    args[0] === "api" && args.includes("POST") &&
+    args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/comments`))
+  );
+}
+
+/** The fake, with applied labels reflected back into the issue view. */
+function withLabelEcho(fake: FakeGh): FakeGh {
+  const gh = async (args: string[]): Promise<string> => {
+    const out = await fake.gh(args);
+    const label = args.find((arg) => arg.startsWith("labels[]="));
+    if (args[0] === "api" && args.includes("POST") && label !== undefined) {
+      fake.state.issueLabels.push(label.slice("labels[]=".length));
+    }
+    return out;
+  };
+  return { ...fake, gh };
+}
+
+Deno.test("abandonAndRestart - a spent restart budget adds needs-human and one comment to the issue", async () => {
+  const fake = makeFake({ issueComments: spentIssueComments() });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome, {
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: ISSUE_NUMBER,
+      samePr: false,
+      restartCount: MAX_RESTARTS_PER_ISSUE,
+    },
+  });
+  assertEquals(needsHumanLabelCalls(fake).length, 1);
+  const posts = issueCommentPosts(fake);
+  assertEquals(posts.length, 1);
+  const body = posts[0]?.find((arg) => arg.startsWith("body=")) ?? "";
+  assertStringIncludes(body, `${REPO}#${PR_NUMBER}`);
+  assertStringIncludes(body, `redone ${MAX_RESTARTS_PER_ISSUE} times`);
+  assertStringIncludes(body, "fix");
+  assertStringIncludes(body, "rescope this issue");
+  assertStringIncludes(body, "close this issue");
+  // No third redo: the PR is not closed and the issue is not re-queued.
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+  assertEquals(callsMatching(fake, "issue", "reopen").length, 0);
+  assertEquals(callsMatching(fake, "pr", "comment").length, 0);
+  assertEquals(
+    fake.calls.filter((args) => args.includes("labels[]=idle-task")).length,
+    0,
+  );
+  assertEquals(restartMarkerPrNumbers(fake.state.issueComments), [31, 32]);
+});
+
+Deno.test("abandonAndRestart - a second pass over a spent budget posts no second comment", async () => {
+  const fake = withLabelEcho(makeFake({ issueComments: spentIssueComments() }));
+  const deps = { gh: fake.gh, trustedAuthors: FLEET_AUTHORS };
+
+  await abandonAndRestart(makeRequest(), deps);
+  const second = await abandonAndRestart(makeRequest(), deps);
+
+  assertEquals(second.outcome, "declined");
+  assertEquals(issueCommentPosts(fake).length, 1);
+  assertEquals(needsHumanLabelCalls(fake).length, 1);
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - a stalled PR's spent budget names the stall", async () => {
+  const fake = makeFake({ issueComments: spentIssueComments() });
+
+  await abandonAndRestart(
+    makeRequest({ reason: { kind: "stalled", detail: "has stalled: red CI" } }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  const body =
+    issueCommentPosts(fake)[0]?.find((arg) => arg.startsWith("body=")) ?? "";
+  assertStringIncludes(body, "has stalled: red CI");
+  assertEquals(needsHumanLabelCalls(fake).length, 1);
+});
+
+Deno.test("abandonAndRestart - a failed needs-human label is a failure, not a decline", async () => {
+  const fake = makeFake({ issueComments: spentIssueComments() });
+  const gh = (args: string[]): Promise<string> =>
+    args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/labels`)) ||
+      args.includes("--add-label")
+      ? Promise.reject(new Error("label refused"))
+      : fake.gh(args);
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome.outcome, "failed");
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "issue-label");
+  assertEquals(outcome.issueNumber, ISSUE_NUMBER);
+  assertEquals(exhaustedEscalationRoute(outcome).kind, "abandon-failed");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - a failed hand-off comment is a failure, not a decline", async () => {
+  const fake = makeFake({ issueComments: spentIssueComments() });
+  const gh = (args: string[]): Promise<string> =>
+    (args.includes("POST") &&
+        args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/comments`))) ||
+      (args[0] === "issue" && args[1] === "comment")
+      ? Promise.reject(new Error("comment refused"))
+      : fake.gh(args);
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome.outcome, "failed");
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "issue-comment");
+  assertEquals(exhaustedEscalationRoute(outcome).kind, "abandon-failed");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - an unfinished abandon of this PR is not a spent budget", async () => {
+  // One claim, naming this PR: the budget is not spent, so nobody is asked.
+  const fake = makeFake({
+    issueComments: [comment(conflictRestartMarker(REPO, PR_NUMBER))],
+  });
+
+  const outcome = await abandonAndRestart(makeRequest(), {
+    gh: fake.gh,
+    trustedAuthors: FLEET_AUTHORS,
+  });
+
+  assertEquals(outcome.outcome, "declined");
+  assertNoNeedsHuman(fake);
+});
+
 Deno.test("buildRestartIssueComment - the last restart says what follows it", () => {
   // The comment is permanent, so "this is your last restart" has to be true
   // when it says so, and the first one must not promise a park (Issue #2312).
@@ -961,7 +1127,8 @@ Deno.test("buildRestartIssueComment - the last restart says what follows it", ()
     last,
     `restart **${MAX_RESTARTS_PER_ISSUE} of ${MAX_RESTARTS_PER_ISSUE}**`,
   );
-  assertStringIncludes(last, "re-attempted only when its base branch moves");
+  assertStringIncludes(last, "no third redo");
+  assertStringIncludes(last, "handed to a human");
 });
 
 // ---------------------------------------------------------------------------
@@ -1302,9 +1469,9 @@ Deno.test("exhaustedEscalationRoute - each non-abandoning outcome maps to its ro
     }).kind,
     "abandon-declined",
   );
-  // Issue #2312: `restart-exhausted` is gone — no caller escalates a spent
-  // restart budget any more, so it maps to the ordinary declined route and the
-  // scan parks the PR off the decline reason itself.
+  // Issue #2312: `restart-exhausted` is gone — the rung itself hands a spent
+  // restart budget to a human (Issue #2804), so it maps to the ordinary
+  // declined route.
   const spent = exhaustedEscalationRoute({
     outcome: "declined",
     reason: {
@@ -1359,7 +1526,7 @@ Deno.test("exhaustedEscalationRoute - a burnt claim on this PR is not a failed r
   });
   assertStringIncludes(
     replaced.kind === "abandon-declined" ? replaced.detail : "",
-    "left open on `merge-conflict`",
+    "no third redo",
   );
 });
 
