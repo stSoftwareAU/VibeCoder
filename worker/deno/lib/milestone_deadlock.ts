@@ -33,7 +33,8 @@ export interface DeadlockClosedDependency {
   milestone: string | null;
 }
 
-/** The issue data the detector reads. */
+/** The issue data the detector reads. All numbers are same-repo: the hold
+ * applies only to same-repo dependencies, so callers drop cross-repo refs. */
 export interface MilestoneDependencyGraph {
   openIssues: readonly DeadlockOpenIssue[];
   closedDependencies: readonly DeadlockClosedDependency[];
