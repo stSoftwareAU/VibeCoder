@@ -1297,7 +1297,7 @@ async function completionBody(
   });
   if (!pushResult.ok) {
     // Issue #1952: GitHub refusing a workflow file for want of the scope is
-    // not a stale branch. Fetch, rebase and retry cannot supply a missing
+    // not a stale branch. Fetch, merge and retry cannot supply a missing
     // scope, so stop on the first refusal with the fix named — and with the
     // phrase that classifies the run as `token_scope`, not `push_failure`.
     if (isWorkflowScopePushRefusal(pushResult.error.message)) {

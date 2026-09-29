@@ -2021,7 +2021,7 @@ label on a mergeable PR.
 ```mermaid
 flowchart TD
     A[commit pending work] --> B[push unpushed commits]
-    B -->|rejected non-fast-forward| C[recover: fetch, rebase,<br/>auto-resolve, retry push]
+    B -->|rejected non-fast-forward| C[recover: fetch, merge,<br/>plain push, confirm]
     C -->|failed| E[log recoveryStep + git stderr]
     B --> D{count vs the branch's<br/>own remote head}
     C -->|recovered| D

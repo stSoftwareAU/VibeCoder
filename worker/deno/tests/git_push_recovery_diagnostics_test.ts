@@ -4,8 +4,9 @@
  * A rejected push used to end with a bare "Push failed after recovery
  * attempt" line: which recovery step gave up and what git actually said were
  * both discarded, so an operator reading the log had nothing to act on.
- * Recovery failures must name the step — `fetch`, `merge` or `retry-push` —
- * and carry git's own stderr. No failure path may force or rebase.
+ * Recovery failures must name the step — `fetch`, `merge`, `retry-push` or
+ * `confirm-push` — and carry git's own stderr. No failure path may force or
+ * rebase.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -111,6 +112,42 @@ Deno.test("recoverFromPushRejection - a rejected retry names the retry-push step
       await git(["rev-parse", `refs/heads/${repos.branch}`], repos.remotePath),
       repos.otherSha,
     );
+    assertEquals((await recordedPushes(trace)).length, 1, "one plain retry");
+    await assertNeverForcedOrRebased(trace);
+  } finally {
+    await trace.dispose();
+    await Deno.remove(repos.tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("recoverFromPushRejection - a push the remote does not keep fails the confirm-push step (Issue #2808)", async () => {
+  const repos = await setupDivergedRepos("other.txt", "other work\n");
+  const trace = await startGitTrace();
+  try {
+    await commitFile(repos.workerPath, "worker.txt", "worker work\n");
+    // The push is accepted, then the branch is moved straight back: git
+    // reports success, but the work is not on the remote.
+    const hook = `${repos.remotePath}/hooks/post-receive`;
+    await Deno.writeTextFile(
+      hook,
+      `#!/bin/sh\ngit update-ref refs/heads/${repos.branch} ${repos.otherSha}\n`,
+    );
+    await Deno.chmod(hook, 0o755);
+
+    const result = await recoverFromPushRejection(repos.branch, {
+      cwd: repos.workerPath,
+      env: trace.env,
+    });
+
+    assertEquals(result.ok, false, "an unconfirmed push is not a success");
+    if (!result.ok) {
+      assert(
+        result.error.message.includes(
+          "Push recovery step 'confirm-push' failed",
+        ),
+        `error must name the recovery step that failed, got: ${result.error.message}`,
+      );
+    }
     assertEquals((await recordedPushes(trace)).length, 1, "one plain retry");
     await assertNeverForcedOrRebased(trace);
   } finally {
