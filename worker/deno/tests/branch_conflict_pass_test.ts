@@ -307,5 +307,8 @@ Deno.test("buildRebasePassPrompt - omits the budget when no deadline is set", ()
     detail: "conflict",
   });
   assertEquals(prompt.includes("seconds"), false);
-  assertStringIncludes(prompt, "git rebase --abort");
+  // Issue #2809: merge, never rebase, so the later push is never forced.
+  assertStringIncludes(prompt, "git merge --no-edit origin/main");
+  assertStringIncludes(prompt, "git merge --abort");
+  assertEquals(prompt.includes("git rebase"), false);
 });

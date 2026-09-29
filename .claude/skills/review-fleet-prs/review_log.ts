@@ -75,6 +75,11 @@ export function stateDir(): string {
   return `${Deno.env.get("HOME")}/.review-fleet-prs`;
 }
 
+// GitHub spells a bot's login `slug[bot]` over REST but `slug` in GraphQL
+// review authors, so a reviewer App must match either spelling.
+export const sameLogin = (a: string | undefined, b: string) =>
+  a !== undefined && a.replace(/\[bot\]$/, "") === b.replace(/\[bot\]$/, "");
+
 export const prKey = (repo: string, number: number) => `${repo}#${number}`;
 
 // Throws on anything that is not the JSON the review prompt asks for, so a
