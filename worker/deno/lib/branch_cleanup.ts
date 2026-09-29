@@ -15,7 +15,7 @@
  * Uses Australian English throughout (colour, behaviour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { buildBranchDeleteArgs } from "./git_branch_args.ts";
@@ -23,9 +23,15 @@ import { assessRemoteBranchDeletion } from "./remote_branch_delete.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchMergedPRsByUser, fetchPRsByBranch } from "./issue_query.ts";
 import {
-  loadSweepWatermarks,
-  saveSweepWatermarks,
+  isProcessed,
+  loadProcessedSweepState,
+  markProcessed,
+  type ProcessedSweepState,
+  pruneToWindow,
+  saveProcessedSweepState,
 } from "./merged_sweep_watermark.ts";
+import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
+import { defaultLogger } from "./logger.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 
@@ -65,12 +71,14 @@ export interface CleanupOptions {
    */
   cache?: IssueCache;
   /**
-   * Path of the per-repo sweep watermark file (Issue #4255). When set,
-   * merged PRs at or below the persisted watermark are skipped entirely
-   * and the watermark advances after each sweep. Unset (tests, ad hoc
-   * callers): every PR in the window is considered, as before.
+   * Path of the per-repo processed-set file (Issue #4255, #2832). When set,
+   * merged PRs already in the persisted processed set are skipped entirely,
+   * whatever order they merged in. Unset (tests, ad hoc callers): every PR
+   * in the window is considered, as before.
    */
   watermarkPath?: string;
+  /** Where sweep faults are reported (Issue #2832). Defaults to the worker logger. */
+  logger?: Pick<Logger, "warn">;
   /**
    * Work-volume root the self-heal events of this sweep are written under
    * (Issue #966): `${workDir}/logs/self-heal.jsonl`.
@@ -173,24 +181,25 @@ export async function cleanupMergedPrBranches(
     };
   }
 
-  // Sweep watermarks (Issue #4255): PRs at or below a repo's watermark
-  // were handled on an earlier cycle and are skipped without any network
-  // traffic. The watermark only advances past PRs whose branch was
-  // deleted or already gone — an unsafe skip or failed delete holds it
-  // back so that branch is reconsidered next cycle.
+  // Processed set (Issue #4255, #2832): a merged PR whose branch was
+  // deleted, or was already gone, is recorded by number and skipped on later
+  // cycles without any network traffic. Membership, not a high-water mark,
+  // so a PR merged out of number order is still swept. An unsafe skip, an
+  // inconclusive probe or a failed delete is left unrecorded and retried.
+  const logger = cleanupOptions.logger ?? defaultLogger;
   const watermarkPath = cleanupOptions.watermarkPath;
-  const watermarks = watermarkPath
-    ? await loadSweepWatermarks(watermarkPath)
-    : {};
-  let watermarksDirty = false;
+  let state: ProcessedSweepState | undefined = watermarkPath
+    ? await loadProcessedSweepState(watermarkPath, logger)
+    : undefined;
+  let stateDirty = false;
 
   for (const repo of repos) {
     // List merged PRs authored by this user, extracting head branch names.
     // Issue #1787: route through `fetchMergedPRsByUser` so this scan
     // shares the iteration-scoped `prs_merged_${user}` cache.
-    // Highest merged-PR number carrying each candidate branch.
-    const candidates = new Map<string, number>();
-    let windowMax = 0;
+    // Unprocessed merged-PR numbers carrying each candidate branch.
+    const candidates = new Map<string, number[]>();
+    const windowNumbers: number[] = [];
     try {
       const merged = await fetchMergedPRsByUser(
         repo,
@@ -199,30 +208,44 @@ export async function cleanupMergedPrBranches(
         30,
         ghFn,
       );
-      const mark = watermarks[repo] ?? 0;
       for (const pr of merged) {
-        if (pr.number > windowMax) windowMax = pr.number;
-        if (pr.number <= mark || !pr.headRefName) continue;
-        const prev = candidates.get(pr.headRefName) ?? 0;
-        if (pr.number > prev) candidates.set(pr.headRefName, pr.number);
+        windowNumbers.push(pr.number);
+        if (!pr.headRefName) continue;
+        if (state && isProcessed(state, repo, pr.number)) continue;
+        const prs = candidates.get(pr.headRefName) ?? [];
+        prs.push(pr.number);
+        candidates.set(pr.headRefName, prs);
       }
-    } catch {
+    } catch (error) {
+      // No window to prune against — leave this repo's state untouched.
+      logger.warn(
+        `[branch-cleanup] ${repo}: merged-PR fetch failed; state unchanged: ` +
+          errorMessage(error),
+      );
       continue;
     }
 
-    // Lowest PR number whose branch still needs attention next cycle.
-    let holdBack = Infinity;
+    // PRs whose branch is now deleted or already gone.
+    const handled: number[] = [];
     const mergedDeletedNames: string[] = [];
 
-    for (const [branchName, prNumber] of candidates) {
+    for (const [branchName, prNumbers] of candidates) {
       // Cheap check first (Issue #4255): almost every branch in the
       // window was deleted the first time it was seen, so probe the ref
       // (one REST call, 404 = already gone) before spending the
       // two-GraphQL-call open-PR assessment on it.
       try {
         await ghFn(["api", `repos/${repo}/git/ref/heads/${branchName}`]);
-      } catch {
-        skippedMissingCount++;
+      } catch (error) {
+        if (isRefGone(error)) {
+          skippedMissingCount++;
+          handled.push(...prNumbers);
+        } else {
+          logger.warn(
+            `[branch-cleanup] ${repo}: could not probe branch ${branchName}; ` +
+              `retrying next sweep: ${errorMessage(error)}`,
+          );
+        }
         continue;
       }
 
@@ -238,7 +261,6 @@ export async function cleanupMergedPrBranches(
       );
       if (!assessment.safe) {
         skippedCount++;
-        holdBack = Math.min(holdBack, prNumber);
         await emitSelfHealEventAuto({
           module: "branch_cleanup",
           action: "merged_branch_delete",
@@ -260,9 +282,18 @@ export async function cleanupMergedPrBranches(
         ]);
         deletedCount++;
         apiDeleted = true;
-      } catch {
-        // Log failure but continue
-        holdBack = Math.min(holdBack, prNumber);
+        handled.push(...prNumbers);
+      } catch (error) {
+        if (isRefGone(error)) {
+          // Gone between the probe and the delete — the goal is met.
+          skippedMissingCount++;
+          handled.push(...prNumbers);
+          continue;
+        }
+        logger.warn(
+          `[branch-cleanup] ${repo}: failed to delete branch ${branchName}; ` +
+            `retrying next sweep: ${errorMessage(error)}`,
+        );
       }
 
       // Delete local branch (safe delete — won't delete unmerged). Best
@@ -296,23 +327,27 @@ export async function cleanupMergedPrBranches(
       }, cleanupOptions.workDir);
     }
 
-    if (watermarkPath && windowMax > 0) {
-      const advanced = Math.max(
-        watermarks[repo] ?? 0,
-        Math.min(windowMax, holdBack - 1),
-      );
-      if (advanced !== (watermarks[repo] ?? 0)) {
-        watermarks[repo] = advanced;
-        watermarksDirty = true;
+    if (state) {
+      const before = state.repos[repo]?.processed ?? [];
+      let next = pruneToWindow(state, repo, windowNumbers);
+      for (const n of handled) next = markProcessed(next, repo, n);
+      const after = next.repos[repo]?.processed ?? [];
+      if (!sameNumbers(before, after)) {
+        state = next;
+        stateDirty = true;
       }
     }
   }
 
-  if (watermarkPath && watermarksDirty) {
+  if (watermarkPath && state && stateDirty) {
     try {
-      await saveSweepWatermarks(watermarkPath, watermarks);
-    } catch {
-      // Persistence is an optimisation — never fail the cleanup over it.
+      await saveProcessedSweepState(watermarkPath, state);
+    } catch (error) {
+      // Never fail the cleanup over it — the next sweep re-probes the window.
+      logger.warn(
+        `[branch-cleanup] could not save processed set to ${watermarkPath}: ` +
+          errorMessage(error),
+      );
     }
   }
 
@@ -332,6 +367,25 @@ export async function cleanupMergedPrBranches(
  * @param options - Git command options
  * @returns Result with count of deleted branches
  */
+/** A 404, or GitHub's 422 "Reference does not exist": the ref is already gone. */
+function isRefGone(error: unknown): boolean {
+  const message = errorMessage(error);
+  return classifyGitHubError(message).category ===
+      GitHubErrorCategory.NotFound ||
+    /reference does not exist/i.test(message);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Order-insensitive equality of two processed-number lists. */
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((n) => set.has(n));
+}
+
 /** Compress a branch list for a one-line summary event (Issue #4306). */
 function summariseBranches(names: string[]): string {
   const MAX_NAMED = 5;
