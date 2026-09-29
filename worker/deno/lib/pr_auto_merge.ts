@@ -216,6 +216,11 @@ export interface EnableAutoMergeOptions {
   }) => Promise<{
     status: "level" | "synced" | "deferred";
     detail: string;
+    /**
+     * Set when how far the branch is behind could not be measured; git's
+     * reason (the first line of its error) (Issue #2824).
+     */
+    unmeasured?: string;
   }>;
 }
 
@@ -242,6 +247,7 @@ async function postBehindSyncReason(
   willArm: boolean,
   commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
   log: (message: string) => void,
+  unmeasured?: string,
 ): Promise<void> {
   const key = `${repo}#${prNumber}`;
   if (postedBehindSyncReason.has(key)) return;
@@ -255,10 +261,20 @@ async function postBehindSyncReason(
     : "Auto-merge is not armed: the base enforces no required status checks, " +
       "so nothing would hold the merge back until the branch is level " +
       "(Issue #2460).";
+  // Issue #2824: a count that git could not run at all is not a "still
+  // behind" — the reason is quoted verbatim, collapsed to one line and with
+  // backticks stripped so it cannot break out of the code span.
+  const secondLine = unmeasured
+    ? `How far the milestone branch \`${milestoneBranch}\` is behind the ` +
+      `default branch could not be measured during an in-cycle sync: git ` +
+      `reported \`${
+        unmeasured.replace(/\s+/g, " ").trim().replace(/`/g, "'")
+      }\``
+    : `The milestone branch \`${milestoneBranch}\` is still behind the ` +
+      `default branch after an in-cycle sync: ${detail}`;
   const body = [
     MILESTONE_BEHIND_SYNC_MARKER,
-    `The milestone branch \`${milestoneBranch}\` is still behind the ` +
-    `default branch after an in-cycle sync: ${detail}`,
+    secondLine,
     "",
     `${outcome} The periodic milestone sync will retry; a conflicting sync ` +
     `is never side-picked (Issue #2005).`,
@@ -756,7 +772,11 @@ export async function enableAutoMerge(
     routeGate.reason === "milestone-behind" &&
     options.syncBehindMilestone
   ) {
-    let sync: { status: "level" | "synced" | "deferred"; detail: string };
+    let sync: {
+      status: "level" | "synced" | "deferred";
+      detail: string;
+      unmeasured?: string;
+    };
     try {
       sync = await options.syncBehindMilestone({
         milestoneBranch: routeGate.milestoneBranch,
@@ -804,6 +824,7 @@ export async function enableAutoMerge(
         protectedBase === true,
         commentFn,
         log,
+        sync.unmeasured,
       );
     }
   }

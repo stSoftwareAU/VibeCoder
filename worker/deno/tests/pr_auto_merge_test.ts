@@ -1218,6 +1218,80 @@ Deno.test("pr_auto_merge - a conflicting in-cycle sync arms the child anyway and
   );
 });
 
+Deno.test("pr_auto_merge - an unmeasurable behind-count posts 'could not be measured', not 'still behind' (Issue #2824)", async () => {
+  resetBehindSyncComments();
+  _resetBaseProtectionMemo();
+  const comments: string[] = [];
+  let autoCalls = 0;
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 45,
+    headRefName: "issue-45-child",
+    baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => true,
+    decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "deferred" as const,
+        detail: "the behind-count could not be read",
+        unmeasured: "git rev-list --count origin/milestone/x..origin/Develop " +
+          "exited 128: warning: ignoring broken ref " +
+          "refs/remotes/origin/Develop",
+      }),
+    commentFn: async (_r, _n, body) => {
+      comments.push(body);
+    },
+    ghCommandFn: async (args) => {
+      if (args.includes("--auto")) autoCalls++;
+      return "";
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(autoCalls, 1, "an unmeasured behind-count still arms the child");
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!, MILESTONE_BEHIND_SYNC_MARKER);
+  assertStringIncludes(comments[0]!, "could not be measured");
+  assertStringIncludes(
+    comments[0]!,
+    "ignoring broken ref refs/remotes/origin/Develop",
+  );
+  assert(
+    !comments[0]!.includes("still behind"),
+    "an unmeasured behind-count must not claim the branch is still behind",
+  );
+});
+
+Deno.test("pr_auto_merge - a backtick in the unmeasured reason cannot break out of the code span (Issue #2824)", async () => {
+  resetBehindSyncComments();
+  _resetBaseProtectionMemo();
+  const comments: string[] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 46,
+    headRefName: "issue-46-child",
+    baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => true,
+    decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "deferred" as const,
+        detail: "the behind-count could not be read",
+        unmeasured: "git said `oops` and\nquit",
+      }),
+    commentFn: async (_r, _n, body) => {
+      comments.push(body);
+    },
+    ghCommandFn: async () => "",
+  });
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(comments.length, 1);
+  assert(
+    !comments[0]!.includes("`oops`"),
+    "a backtick in the reason must not survive into the comment raw",
+  );
+  assertStringIncludes(comments[0]!, "git said 'oops' and quit");
+});
+
 Deno.test("pr_auto_merge - a behind base with no required checks is held, not armed or side-picked (Issue #2460)", async () => {
   resetBehindSyncComments();
   _resetBaseProtectionMemo();

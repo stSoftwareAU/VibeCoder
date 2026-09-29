@@ -2620,6 +2620,18 @@ milestone branch pushable on unattended hosts:
   resets to `origin/<branch>` when the two have diverged. A plain pull
   manufactures a local merge commit on divergence, which the same rules then
   reject on push.
+- `create_feature_branch_from_base()` (`createFeatureBranchFromBase` in
+  [git_branch.ts](../worker/deno/lib/git_branch.ts), with the helpers in
+  [broken_ref_repair.ts](../worker/deno/lib/broken_ref_repair.ts)) repairs a
+  **broken ref**: a loose ref under `refs/heads/` or `refs/remotes/` that
+  points at an object which no longer exists. Git then refuses the fetch or
+  checkout (`fatal: bad object refs/heads/…`, `warning: ignoring broken ref
+  refs/remotes/origin/<base>`). The worker deletes each ref git names, logs
+  one warning per ref, and retries the fetch and checkout. It stops after 10
+  refs per call, and a failure that persists still fails setup with git's
+  words. Every ref is recoverable from the remote. This is distinct from
+  object-store corruption, which re-clones (Issue #1093). Introduced by
+  Issue #2880 (GRQ-AutoTrader#1811).
 
 ```mermaid
 flowchart TD
@@ -4250,7 +4262,19 @@ consequences are worth naming:
   still merges — what is lost is the pacing, not the branch. The default tip is
   read **before** the count, because reading it is what fetches it: counting
   against a stale `origin/<default>` would answer "level" for a branch that is
-  behind, which is the very defect this gate exists to stop.
+  behind, which is the very defect this gate exists to stop. A count that
+  fails on git's `ignoring broken ref refs/remotes/origin/<branch>` warning is
+  repaired once — the named ref is deleted and re-fetched, one log line names
+  it, and the count is retried once — and still failing falls into the same
+  deferral. The PR comment then says how far behind the branch is "could not
+  be measured" and quotes git's reason, rather than claiming the branch is
+  still behind (Issue #2824). The longest-behind-first sweep
+  ([milestone_behind_count.ts](../worker/deno/lib/milestone_behind_count.ts))
+  fetches the milestone's own tracking ref before it counts, and a broken
+  `origin/<default>` fails that fetch first (`fatal: bad object
+  refs/remotes/origin/<default>`). A failed fetch therefore still runs the
+  repairing count; when it repairs a ref, the fetch is run again before the
+  branch is counted, and when it repairs nothing the fetch failure stands.
 - **Only a charged failure spends the budget.** A conflict every granted rung
   left undecided is charged; a ruleset-refused push, a merge-gate refusal or
   any other `not-charged` verdict is not — charging the branch for a fault that
