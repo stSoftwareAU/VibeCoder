@@ -369,8 +369,7 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["claude-opus-4-5", OPUS_PRICING_MODERN],
   // Claude Opus 4.0/4.1 — legacy pricing
   ["claude-opus-4", OPUS_PRICING_LEGACY],
-  // Claude Sonnet 5 is the current Sonnet and is cheaper than the 4.x line
-  // (Issue #747); the broader claude-sonnet-4 prefix catches dated 4.0/4.1/4.2
+  // Claude Sonnet 5 is cheaper than the 4.x line (Issue #747); the broader claude-sonnet-4 prefix catches dated 4.0/4.1/4.2
   // ids that share the 4.x rate (Issue #2407).
   // Claude Sonnet 5.5 — same $2/$10 rate, half of Opus 5.5 (Issue #2812).
   // Listed before claude-sonnet-5 so first-match lookup names it explicitly.

@@ -1472,9 +1472,9 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 | `question` | `opus` | Answering codebase questions — planning-shaped, effort `high` |
 | `clarification` | `opus` | Assessing whether an issue has sufficient detail — planning-shaped, effort `high` |
 | `implementation` | `opus` (base) | Core work — uses the base `claude_model` setting (`issue` phase, effort `high`) |
-| `ci_fix`         | `opus`        | Fixing CI failures from structured error messages (effort `medium`) |
-| `quality_fix`    | `opus`        | Fixing quality check failures (lint, test errors) (effort `medium`) |
-| `pr_feedback`    | `opus`        | Applying targeted fixes from reviewer comments (effort `medium`) |
+| `ci_fix`         | `sonnet`      | Fixing CI failures from structured error messages (effort `high`, Issue #2812) |
+| `quality_fix`    | `sonnet`      | Fixing quality check failures (lint, test errors) (effort `high`, Issue #2812) |
+| `pr_feedback`    | `sonnet`      | Applying targeted fixes from reviewer comments (effort `high`, Issue #2812) |
 | `spelling_fix`   | `haiku`       | Finding and fixing typos — simplest corrections      |
 | `summarise`      | `haiku`       | Summarising long issue bodies                        |
 | `health`         | `haiku`       | Health check ("Respond with exactly: OK")            |
@@ -1620,7 +1620,7 @@ optimisation by matching reasoning depth to task complexity.
 | Level    | Description                                                  |
 | -------- | ------------------------------------------------------------ |
 | `low`    | Minimal reasoning — simple, mechanical tasks                 |
-| `medium` | Moderate reasoning — reactive tasks with structured input    |
+| `medium` | Moderate reasoning — well-scoped tasks with structured input |
 | `high`   | Thorough reasoning — general implementation (global default) |
 | `xhigh` | Extra-high reasoning — between `high` and `max`; Anthropic's recommended setting for most coding/agentic use on Opus 4.7+ / Fable 5 |
 | `max`    | Deepest reasoning — architectural decisions                  |
@@ -1633,9 +1633,9 @@ optimisation by matching reasoning depth to task complexity.
 | `grill_me` | `max` | Requirements interrogation shapes everything downstream |
 | `issue`         | `high`         | General implementation benefits from thorough reasoning |
 | `question`      | `high`         | Answering questions needs careful thought               |
-| `ci_fix`        | `medium`       | Reactive, well-scoped task                              |
-| `pr_feedback`   | `medium`       | Targeted fixes from reviews                             |
-| `quality_fix`   | `medium`       | Reactive test/lint fixes                                |
+| `ci_fix`        | `high`         | Reactive; Sonnet at `high` since Issue #2812            |
+| `pr_feedback`   | `high`         | Targeted fixes from reviews; Sonnet since Issue #2812   |
+| `quality_fix`   | `high`         | Reactive test/lint fixes; Sonnet since Issue #2812      |
 | `refinement`    | `medium`       | Rewording titles/descriptions                           |
 | `revision`      | `medium`       | Review-based rewriting                                  |
 | `clarification` | `medium`       | Structured analysis                                     |

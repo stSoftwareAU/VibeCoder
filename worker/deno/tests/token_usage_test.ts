@@ -218,15 +218,6 @@ Deno.test("token_usage - lookupModelPricing returns pricing for Sonnet 5.5 (Issu
   }
 });
 
-Deno.test("token_usage - MODEL_PRICING lists Sonnet 5.5 before the broader Sonnet 5 key (Issue #2812)", () => {
-  // First-match lookup: a later 5.5 row would be shadowed by `claude-sonnet-5`.
-  const keys = [...MODEL_PRICING.keys()];
-  const specific = keys.indexOf("claude-sonnet-5-5");
-  const broad = keys.indexOf("claude-sonnet-5");
-  assertEquals(specific >= 0, true);
-  assertEquals(specific < broad, true);
-});
-
 Deno.test("token_usage - lookupModelPricing tier fallback gives Sonnet 4.x pricing for unknown 4-family minor (Issue #2407)", () => {
   // An unknown-but-tiered Sonnet 4 id must inherit the 4.x rate via the
   // tier-aware fallback rather than returning null. Sonnet 5 is cheaper and

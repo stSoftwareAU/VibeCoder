@@ -294,9 +294,9 @@ defaults.
 
 | Candidate phase | Before (pre-) | Proposal in | Decision (post-) | Why |
 |---|---|---|---|---|
-| `ci_fix` | sonnet + medium | opus + low | **opus + medium** | Reactive but not trivial — CI failures cover the full diagnostic spectrum (flaky tests, build breaks, lint regressions). Raising tier without dropping effort keeps quality on the harder cases; an effort downgrade to `low` would have lost reasoning depth right when it matters most. |
-| `pr_feedback` | sonnet + medium | opus + low | **opus + medium** | Reviewer feedback often demands non-trivial rework (re-architecting a function, tightening a contract). Same logic as `ci_fix` — preserve effort, raise tier. |
-| `quality_fix` | sonnet + medium | opus + low | **opus + medium** | Quality-gate fixes are structured but range from one-line typos to multi-file lint refactors. Effort at `medium` is the right floor; `low` regresses on the hard end. |
+| `ci_fix` | sonnet + medium | opus + low | **opus + medium** (superseded by Issue #2812: sonnet + high) | Reactive but not trivial — CI failures cover the full diagnostic spectrum (flaky tests, build breaks, lint regressions). Raising tier without dropping effort keeps quality on the harder cases; an effort downgrade to `low` would have lost reasoning depth right when it matters most. |
+| `pr_feedback` | sonnet + medium | opus + low | **opus + medium** (superseded by Issue #2812: sonnet + high) | Reviewer feedback often demands non-trivial rework (re-architecting a function, tightening a contract). Same logic as `ci_fix` — preserve effort, raise tier. |
+| `quality_fix` | sonnet + medium | opus + low | **opus + medium** (superseded by Issue #2812: sonnet + high) | Quality-gate fixes are structured but range from one-line typos to multi-file lint refactors. Effort at `medium` is the right floor; `low` regresses on the hard end. |
 | `refinement` | sonnet + medium | haiku (evaluate) | **opus + medium** | Demoting to Haiku was tempting on price, but refinement rewords titles/descriptions that drive every downstream decision — quality dominates. Effort-first routing lets `refinement` share the reactive-phase dial and the operator can override to Haiku per-repo if they want. |
 | `clarification` | sonnet + medium | haiku (evaluate) | **opus + medium** | Same reasoning as `refinement`. Clarification feeds straight into the planning/issue phases; a poor clarification is paid for many times over. |
 | `question` | sonnet + medium | haiku (evaluate) | **opus + medium** | Codebase questions are open-ended and often span multiple files. Keeping a reasoning-heavy tier is cheap insurance against a wrong answer that wastes the asker's time. |
@@ -316,6 +316,12 @@ phase with `CLAUDE_MODEL_CI_FIX=opus` and `CLAUDE_EFFORT_CI_FIX=medium` (or the
 `phase_model_overrides` / `phase_effort_overrides` entries; likewise
 `PR_FEEDBACK` and `QUALITY_FIX`) if the
 [before/after check](#default-on-decision-criteria) shows it regressed.
+
+**`issue` phase (Issue #2812).** The planner stays **opus + high**, but
+`issue_executor_split` and `issue_reviewer_agents` now default to `true`: Opus
+plans while Sonnet executors implement at `medium` and Sonnet reviewers check
+the diff, because the 2× price gap makes those tokens the cheapest to move. Set
+either key `false` to revert it on the same before/after evidence.
 
 #### Fable 5 for top-tier phases
 
@@ -549,7 +555,8 @@ and reports five numbers.
   a subset of a host's repos would mix both arms into the same per-host
   counters and make the host's numbers unreadable.
 - **Control** — every non-pilot host's `issue`-phase runs on Claude in the same
-  window.
+  window. Since Issue #2812 the key is on by default, so a control host must
+  set `issue_executor_split: false` explicitly.
 - **Excluded from both sides** — runs on any other provider. The key does
   nothing under `codex` or `gemini` and is stripped under `deepseek`, so those
   runs would dilute both arms without testing anything.
@@ -590,7 +597,8 @@ favour either.
 
 #### Default-on decision criteria
 
-Issue #2812 turned four changes on by default at once, on the evidence that
+Issue #2812 turned the executor split and the reviewer sub-agents on by default
+and moved the three reactive fixes to Sonnet at `high`, all at once, on the evidence that
 Sonnet 5.5 costs half of Opus 5.5 on every rate, rather than after a pilot.
 Each change is now judged by a **before/after check**, per phase: the **first
 30 runs after the change merged** against the **last 30 runs before it
