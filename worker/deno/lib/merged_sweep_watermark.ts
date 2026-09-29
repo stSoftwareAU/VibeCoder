@@ -121,7 +121,7 @@ function parseV2(
   logger: Pick<Logger, "warn">,
 ): ProcessedSweepState | undefined {
   if (!isPlainObject(parsed.repos)) return undefined;
-  const repos: ProcessedSweepState["repos"] = {};
+  const entries: [string, { processed: number[] }][] = [];
   for (const [repo, entry] of Object.entries(parsed.repos)) {
     if (!isPlainObject(entry) || !Array.isArray(entry.processed)) {
       return undefined;
@@ -132,9 +132,10 @@ function parseV2(
         `Merged-PR sweep state ${path}: dropped ${invalid.length} invalid PR number(s) for ${repo}`,
       );
     }
-    repos[repo] = { processed: normalise(entry.processed) };
+    entries.push([repo, { processed: normalise(entry.processed) }]);
   }
-  return { version: 2, repos };
+  // fromEntries defines own properties, so a "__proto__" key cannot re-parent.
+  return { version: 2, repos: Object.fromEntries(entries) };
 }
 
 /**
@@ -239,6 +240,7 @@ export function markProcessed(
 /**
  * Return a new state keeping only `repo`'s numbers still present in the
  * fetched merged-PR window, so the stored set stays bounded by the window.
+ * Call it only after a successful fetch — a partial window forgets PRs.
  */
 export function pruneToWindow(
   state: ProcessedSweepState,
