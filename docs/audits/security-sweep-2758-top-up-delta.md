@@ -217,7 +217,7 @@ accounts at write time.
   is display text only, and the setup login is then omitted.
 - `orgOwnerLookup` filters logins with `isGitHubLogin` before they reach
   `orgs/${org}/memberships/${login}`, and checks `org` with
-  `isValidRepoSlug(`${org}/x`)`. A 404 is skipped and any other error warns.
+  ``isValidRepoSlug(`${org}/x`)``. A 404 is skipped and any other error warns.
 - `holdsAdmin(repo)` calls `repos/${repo}` only after `isValidRepoSlug` passes.
   It fails closed into the `needsAdmin` warning list and renders the slug with
   `renderInertRepoSlug`.
@@ -228,11 +228,12 @@ The issue covers the 34 slices that #2754 repointed. At the generation head,
 `sweep-drift` also reports drift in slices this issue does not cover. Those
 slices resolve and were never repointed, so they are not in the table above:
 
-- the chunk-12 and chunk-13 slices 12a, 12b, 12c, 12e, 13, 12q, 12s, 12t, 12v
-  and 12x;
-- 30 top-up slices: 12k, 12z, 12ac, 12ae, 1822, 1859, 1885, 1927, 1965, 2023,
-  2030, 2070, 2107, 2189, 2276, 2279, 2314, 2319, 2341, 2390, 2438, 2493, 2562,
-  2578, 2579, 2606, 2629, 2682, 2688 and 2701.
+- the chunk-12 and chunk-13 slices 12a, 12b, 12c, 12e, 12q, 12s, 12t, 12v, 12x
+  and 13;
+- 30 top-up slices (12k, 12z, 12ac and 12ae keep chunk-12 names, but their
+  ledger titles mark them as top-ups): 12k, 12z, 12ac, 12ae, 1822, 1859, 1885,
+  1927, 1965, 2023, 2030, 2070, 2107, 2189, 2276, 2279, 2314, 2319, 2341, 2390,
+  2438, 2493, 2562, 2578, 2579, 2606, 2629, 2682, 2688 and 2701.
 
 Their delta sweep is tracked in
 [#2839](https://github.com/stSoftwareAU/VibeCoder/issues/2839).
