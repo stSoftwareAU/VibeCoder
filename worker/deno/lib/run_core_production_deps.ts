@@ -551,6 +551,11 @@ export interface ProductionDepsOptions {
    */
   resolveTrustedAuthors?: typeof resolveDerivedAuthors;
   /**
+   * Test seam: the PR-feedback scan, so a test can see which review and
+   * comment authors the production wiring hands it as authorised.
+   */
+  findPrCommentsToFix?: typeof findPrCommentsToFix;
+  /**
    * Environment lookup for this factory's own reads (Issue #964) —
    * `CONFIG_PATH`, `HOME`, `DEBUG`, `TMPDIR` and the spend-ceiling pair.
    * Defaults to the process environment, so production wiring passes
@@ -1197,12 +1202,13 @@ export async function createProductionRunCoreDeps(
   // the blocking-PR line's `in-maintenance-set=` flag claim a human's PR is
   // maintained when no scan touches it.
   let maintenanceAuthors = trustHolder.read().maintenanceAuthors;
-  // Site 927 historically classified PR-feedback authors against
-  // `allowedAuthors` (the const was named `authorisedCommenters`). Keep
-  // that binding so this refactor is behaviour-neutral; the snapshot's
-  // `authorisedCommenters` is what the comment-trust path (site 1616)
-  // already read from `config.authorisedCommenters`.
-  let authorisedCommenters = trustHolder.read().allowedAuthors;
+  // PR-feedback authors are INPUT, so they are checked against the resolved
+  // commenter set: collaborators plus the operator's `authorized_commenters`
+  // (Copilot, Actions, the fleet reviewer App). It used to be bound to
+  // `allowedAuthors`, the directing set, which excludes every bot — so a
+  // named bot's CHANGES_REQUESTED review was skipped on every host
+  // (VibeCoder#2866, GRQ-AutoTrader#1824).
+  let authorisedCommenters = trustHolder.read().authorisedCommenters;
   // The same union gates heartbeat marker adoption (Issue #3751) so a run
   // reuses the fleet's existing marker comment and never adopts a forged one.
   const defaultMarkerOptions: HeartbeatMarkerOptions = {
@@ -1247,7 +1253,7 @@ export async function createProductionRunCoreDeps(
     config.allowedAuthorsByRepo = allowedAuthorsByRepoFrom(byRepo);
     config.authorisedCommenters = [...snap.authorisedCommenters];
     fleetAuthors = snap.fleetAuthors;
-    authorisedCommenters = snap.allowedAuthors;
+    authorisedCommenters = snap.authorisedCommenters;
     fleetPrAuthorInput.allowedAuthors = snap.allowedAuthors;
     maintenanceAuthors = snap.maintenanceAuthors;
     defaultMarkerOptions.allowedAuthors = snap.fleetAuthors;
@@ -2073,7 +2079,8 @@ export async function createProductionRunCoreDeps(
 
     // -- Priority 1: PR feedback (Issue #1297 — repo setup + cwd fix) --
     async findAndProcessPrFeedback() {
-      const result = await findPrCommentsToFix({
+      const scanPrComments = options.findPrCommentsToFix ?? findPrCommentsToFix;
+      const result = await scanPrComments({
         githubUser,
         repos,
         ...stallLaneScope(),
