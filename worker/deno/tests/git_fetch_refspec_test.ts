@@ -5,7 +5,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { resetSafeDirectoryRepairs } from "../lib/git_timeout.ts";
 import {
   ALL_BRANCHES_FETCH_REFSPEC,
   ensureAllBranchesFetchRefspec,
@@ -124,6 +125,79 @@ Deno.test("ensureAllBranchesFetchRefspec - reports a git failure rather than cla
     const result = await ensureAllBranchesFetchRefspec({ cwd: tmp });
     assert(!result.ok, "a non-repository must fail loudly, not report ok");
   } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// Issue #2825: setup died every cycle with "Failed to add the all-branches
+// fetch refspec: fatal: not in a git directory". Outside a usable repository
+// `git config --get-all` exits 1 exactly like "no such key", so the read
+// passed and the `--add` reported a reason that named neither cause.
+Deno.test("ensureAllBranchesFetchRefspec - names git's own reason when the directory is not a repository (Issue #2825)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "refspec_plain_dir_" });
+  try {
+    const result = await ensureAllBranchesFetchRefspec({ cwd: tmp });
+    assert(!result.ok, "a non-repository must fail loudly");
+    assertStringIncludes(result.error.message, "not a git repository");
+    assert(
+      !result.error.message.includes("Failed to add"),
+      `the misleading --add failure must not be the reported reason: ${result.error.message}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+/** Env that makes git see the clone as owned by someone else (Issue #2825). */
+function dubiousOwnershipEnv(globalConfig: string): Record<string, string> {
+  return {
+    GIT_CONFIG_GLOBAL: globalConfig,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TEST_ASSUME_DIFFERENT_OWNER: "1",
+  };
+}
+
+Deno.test("ensureAllBranchesFetchRefspec - restores safe.directory when git refuses the clone as dubious ownership (Issue #2825)", async () => {
+  resetSafeDirectoryRepairs();
+  const { tmp, downstream } = await makeSingleBranchClone("refspec_dubious_");
+  try {
+    // The staged global config has lost its `safe.directory` line.
+    const globalConfig = `${tmp}/gitconfig`;
+    await Deno.writeTextFile(globalConfig, "");
+    const env = dubiousOwnershipEnv(globalConfig);
+
+    const result = await ensureAllBranchesFetchRefspec({
+      cwd: downstream,
+      env,
+    });
+    assert(result.ok, `setup must self-heal: ${!result.ok && result.error}`);
+    assertEquals(result.value.repaired, true);
+    assertStringIncludes(
+      await Deno.readTextFile(globalConfig),
+      "directory = *",
+    );
+  } finally {
+    resetSafeDirectoryRepairs();
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("ensureAllBranchesFetchRefspec - reports dubious ownership when safe.directory cannot be restored (Issue #2825)", async () => {
+  resetSafeDirectoryRepairs();
+  const { tmp, downstream } = await makeSingleBranchClone("refspec_dubious_");
+  try {
+    // The global config lives in a directory that no longer exists, so the
+    // repair cannot write and git's own refusal must be the reported reason.
+    const env = dubiousOwnershipEnv(`${tmp}/gone/gitconfig`);
+
+    const result = await ensureAllBranchesFetchRefspec({
+      cwd: downstream,
+      env,
+    });
+    assert(!result.ok, "a clone git still refuses must fail loudly");
+    assertStringIncludes(result.error.message, "dubious ownership");
+  } finally {
+    resetSafeDirectoryRepairs();
     await Deno.remove(tmp, { recursive: true });
   }
 });

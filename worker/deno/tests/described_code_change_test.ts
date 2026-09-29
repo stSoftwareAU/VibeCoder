@@ -8,6 +8,7 @@ import {
   detectDescribedCodeChange,
   MAX_DESCRIBED_FILES,
 } from "../lib/described_code_change.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 import { GRQ_4871_OUTPUT } from "./support/grq_4871_output.ts";
 
 Deno.test("detectDescribedCodeChange - GRQ#4871 output describes a code change", () => {
@@ -91,4 +92,32 @@ Deno.test("detectDescribedCodeChange - dedupes and caps the file list", () => {
   assertEquals(result.files.length, MAX_DESCRIBED_FILES);
   assertEquals(new Set(result.files).size, MAX_DESCRIBED_FILES);
   assertEquals(result.files[0], "lib/mod_0.ts");
+});
+
+Deno.test("detectDescribedCodeChange - an absolute path is still found", () => {
+  const out = "Fix the guard in /home/vibe/worker/lib/run.ts and //lib/b.ts.";
+  assertEquals(detectDescribedCodeChange(out).files, [
+    "home/vibe/worker/lib/run.ts",
+    "lib/b.ts",
+  ]);
+});
+
+Deno.test("detectDescribedCodeChange - one long word scales linearly (Issue #2826)", () => {
+  const result = assertLinearGrowth(
+    "described-code-change detector, one long word",
+    (chars) => `fix ${"a".repeat(chars)}`,
+    detectDescribedCodeChange,
+    { baseChars: 10_000 },
+  );
+  assertEquals(result, { described: false, files: [] });
+});
+
+Deno.test("detectDescribedCodeChange - one long slash run scales linearly (Issue #2826)", () => {
+  const result = assertLinearGrowth(
+    "described-code-change detector, one long directory chain",
+    (chars) => `fix ${"a/".repeat(chars / 2)}`,
+    detectDescribedCodeChange,
+    { baseChars: 10_000 },
+  );
+  assertEquals(result, { described: false, files: [] });
 });
