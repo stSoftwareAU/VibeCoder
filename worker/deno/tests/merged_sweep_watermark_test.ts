@@ -91,15 +91,17 @@ for (
   });
 }
 
-Deno.test("loadProcessedSweepState - drops invalid PR numbers from a v2 list", async () => {
+Deno.test("loadProcessedSweepState - drops invalid PR numbers from a v2 list and warns", async () => {
   await withTempFile(
     JSON.stringify({
       version: 2,
       repos: { [REPO]: { processed: [150, -1, 0, 1.5, "7", 200, 150] } },
     }),
     async (path) => {
-      const state = await loadProcessedSweepState(path, recordingLogger());
+      const log = recordingLogger();
+      const state = await loadProcessedSweepState(path, log);
       assertEquals(state.repos[REPO]?.processed, [150, 200]);
+      assertEquals(log.warnings.length, 1);
     },
   );
 });

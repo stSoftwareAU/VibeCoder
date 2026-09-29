@@ -117,12 +117,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /** Parse a v2 document; `undefined` when its shape is not a valid v2. */
 function parseV2(
   parsed: Record<string, unknown>,
+  path: string,
+  logger: Pick<Logger, "warn">,
 ): ProcessedSweepState | undefined {
   if (!isPlainObject(parsed.repos)) return undefined;
   const repos: ProcessedSweepState["repos"] = {};
   for (const [repo, entry] of Object.entries(parsed.repos)) {
     if (!isPlainObject(entry) || !Array.isArray(entry.processed)) {
       return undefined;
+    }
+    const invalid = entry.processed.filter((n) => !isPrNumber(n));
+    if (invalid.length > 0) {
+      logger.warn(
+        `Merged-PR sweep state ${path}: dropped ${invalid.length} invalid PR number(s) for ${repo}`,
+      );
     }
     repos[repo] = { processed: normalise(entry.processed) };
   }
@@ -169,7 +177,7 @@ export async function loadProcessedSweepState(
     // Legacy v1 `Record<string, number>` — no `version` key. Empty on purpose.
     if (!("version" in parsed)) return emptyProcessedSweepState();
     if (parsed.version === 2) {
-      const state = parseV2(parsed);
+      const state = parseV2(parsed, path, logger);
       if (state) return state;
     }
   }
