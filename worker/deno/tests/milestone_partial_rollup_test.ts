@@ -40,7 +40,11 @@ interface FakePr {
   headRefOid: string;
   body: string;
   state: "OPEN" | "MERGED";
+  author: { login: string };
 }
+
+/** Issue #1246: the fleet these fixtures state, so markers are verifiable. */
+const LOOKUP = { authorOptions: { fleetAuthors: ["bot"] }, log: () => {} };
 
 class FakeGitHub {
   prs: FakePr[] = [];
@@ -89,6 +93,7 @@ class FakeGitHub {
         headRefOid: this.refs.get(head) ?? "",
         body: flag("--body"),
         state: "OPEN",
+        author: { login: "bot" },
       });
       return Promise.resolve(`https://github.com/${REPO}/pull/${number}\n`);
     }
@@ -137,6 +142,7 @@ class FakeGitHub {
       milestoneBranch: BRANCH,
       defaultBranch: DEFAULT,
       ghFn: this.gh,
+      ...LOOKUP,
     });
   }
 }
@@ -192,8 +198,29 @@ Deno.test("createPartialRollup - an open partial rollup of another milestone doe
     headRefOid: TIP,
     body: partialRollupMarker("Other"),
     state: "OPEN",
+    author: { login: "bot" },
   });
   assertEquals((await gh.run()).outcome, "created");
+});
+
+Deno.test("createPartialRollup - a marker planted outside the fleet neither suppresses the rollup nor counts as merged", async () => {
+  const gh = new FakeGitHub();
+  for (const state of ["OPEN", "MERGED"] as const) {
+    gh.prs.push({
+      number: state === "OPEN" ? 8 : 9,
+      headRefName: "partial-rollup/deadlock-breaker-1234567",
+      baseRefName: DEFAULT,
+      headRefOid: "1234567000000000000000000000000000000000",
+      body: partialRollupMarker(TITLE),
+      state,
+      author: { login: "mallory" },
+    });
+  }
+  assertEquals((await gh.run()).outcome, "created");
+  assertEquals(
+    await listMergedPartialRollupHeads(REPO, TITLE, gh.gh, LOOKUP),
+    [],
+  );
 });
 
 Deno.test("createPartialRollup - existing snapshot ref at the tip is reused, never updated", async () => {
@@ -256,6 +283,7 @@ Deno.test("createPartialRollup - a closing keyword in the milestone title is ref
     milestoneBranch: "milestone/fixes-12",
     defaultBranch: DEFAULT,
     ghFn: gh.gh,
+    ...LOOKUP,
   });
   assertEquals(result.outcome, "failed");
   if (result.outcome === "failed") {
@@ -273,6 +301,7 @@ Deno.test("createPartialRollup - a closing keyword with an issue URL in the titl
     milestoneBranch: "milestone/fixes-https-github-com-o-r-issues-12",
     defaultBranch: DEFAULT,
     ghFn: gh.gh,
+    ...LOOKUP,
   });
   assertEquals(result.outcome, "failed");
   if (result.outcome === "failed") {
@@ -291,10 +320,11 @@ Deno.test("listMergedPartialRollupHeads - a full page throws rather than reporti
       headRefOid: TIP,
       body: partialRollupMarker("Other"),
       state: "MERGED",
+      author: { login: "bot" },
     });
   }
   await assertRejects(
-    () => listMergedPartialRollupHeads(REPO, TITLE, gh.gh),
+    () => listMergedPartialRollupHeads(REPO, TITLE, gh.gh, LOOKUP),
     Error,
     "truncated",
   );
@@ -317,7 +347,10 @@ Deno.test("createPartialRollup - a failed PR lookup fails loud", async () => {
 Deno.test("listMergedPartialRollupHeads - returns head SHAs of this milestone's merged partial rollups", async () => {
   const gh = new FakeGitHub();
   await gh.run();
-  assertEquals(await listMergedPartialRollupHeads(REPO, TITLE, gh.gh), []);
+  assertEquals(
+    await listMergedPartialRollupHeads(REPO, TITLE, gh.gh, LOOKUP),
+    [],
+  );
 
   gh.first().state = "MERGED";
   gh.prs.push({
@@ -327,8 +360,11 @@ Deno.test("listMergedPartialRollupHeads - returns head SHAs of this milestone's 
     headRefOid: "1234567000000000000000000000000000000000",
     body: partialRollupMarker("Other"),
     state: "MERGED",
+    author: { login: "bot" },
   });
-  assertEquals(await listMergedPartialRollupHeads(REPO, TITLE, gh.gh), [TIP]);
+  assertEquals(await listMergedPartialRollupHeads(REPO, TITLE, gh.gh, LOOKUP), [
+    TIP,
+  ]);
 });
 
 Deno.test("listMergedPartialRollupHeads - a failed lookup throws rather than reporting none", async () => {

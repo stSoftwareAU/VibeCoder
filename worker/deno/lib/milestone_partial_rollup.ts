@@ -31,6 +31,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import { isMilestoneBranch } from "./milestone_children_gate.ts";
 import { isValidBranchName } from "./repo_rulesets.ts";
 import { isValidRepoSlug } from "./repo_slug.ts";
@@ -100,13 +104,24 @@ export interface PartialRollupOptions {
   defaultBranch: string;
   /** Function to execute gh CLI commands. */
   ghFn: GhCommandFn;
+  /** Fleet identity for the marker author check; omitted reads the config. */
+  authorOptions?: AlertDedupAuthorOptions;
+  /** Sink for the author-check warnings. */
+  log?: (message: string) => void;
+}
+
+/** Author-verification inputs for {@link listMergedPartialRollupHeads}. */
+export interface PartialRollupLookupOptions {
+  authorOptions?: AlertDedupAuthorOptions;
+  log?: (message: string) => void;
 }
 
 interface RawPartialRollupPr {
-  number?: unknown;
-  headRefName?: unknown;
+  number: number;
+  headRefName: string;
   headRefOid?: unknown;
-  body?: unknown;
+  body: string;
+  author?: { login?: string | null } | null;
 }
 
 function errorText(err: unknown): string {
@@ -114,15 +129,17 @@ function errorText(err: unknown): string {
 }
 
 /**
- * Partial-rollup PRs in `state` carrying this milestone's marker; throws on
- * lookup failure or a full page. The marker search only narrows server-side —
- * the head prefix and the exact marker are re-checked locally.
+ * Fleet-authored partial-rollup PRs in `state` carrying this milestone's
+ * marker; throws on lookup failure or a full page. The marker search only
+ * narrows server-side — the head prefix and the exact marker are re-checked
+ * locally, and a marker planted by anyone outside the fleet is discarded.
  */
 async function listPartialRollupPrs(
   repo: string,
   milestone: string,
   state: "open" | "merged",
   ghFn: GhCommandFn,
+  lookup: PartialRollupLookupOptions,
 ): Promise<RawPartialRollupPr[]> {
   // SIMPLE-ON-PURPOSE: one page of 100 partial rollups per state, full page throws — upgrade when a repo accumulates 100
   const raw = await ghFn([
@@ -135,7 +152,7 @@ async function listPartialRollupPrs(
     "--search",
     `"${MARKER_NAME}" in:body`,
     "--json",
-    "number,headRefName,headRefOid,body",
+    "number,headRefName,headRefOid,body,author",
     "--limit",
     String(LIST_LIMIT),
   ]);
@@ -149,11 +166,22 @@ async function listPartialRollupPrs(
     );
   }
   const marker = partialRollupMarker(milestone);
-  return (parsed as RawPartialRollupPr[]).filter((pr) =>
+  const matches = (parsed as Partial<RawPartialRollupPr>[]).filter((
+    pr,
+  ): pr is RawPartialRollupPr =>
     typeof pr.number === "number" &&
     typeof pr.headRefName === "string" &&
     pr.headRefName.startsWith(PARTIAL_ROLLUP_BRANCH_PREFIX) &&
     typeof pr.body === "string" && pr.body.includes(marker)
+  );
+  return await selectFleetAuthoredMatches(
+    matches,
+    `partial rollup (${state}) for "${milestone}" in ${repo}`,
+    lookup.authorOptions ?? {},
+    lookup.log ?? console.warn,
+    state === "open"
+      ? "none is treated as an existing partial rollup"
+      : "none is treated as a merged partial rollup and the hold stays",
   );
 }
 
@@ -282,6 +310,7 @@ export async function createPartialRollup(
   options: PartialRollupOptions,
 ): Promise<PartialRollupOutcome> {
   const { repo, milestone, milestoneBranch, defaultBranch, ghFn } = options;
+  const lookup = { authorOptions: options.authorOptions, log: options.log };
 
   if (
     !isValidRepoSlug(repo) ||
@@ -303,13 +332,19 @@ export async function createPartialRollup(
 
   // Idempotency: at most one open partial rollup per milestone.
   try {
-    const open = await listPartialRollupPrs(repo, milestone, "open", ghFn);
+    const open = await listPartialRollupPrs(
+      repo,
+      milestone,
+      "open",
+      ghFn,
+      lookup,
+    );
     const first = open[0];
     if (first !== undefined) {
       return {
         outcome: "exists",
-        prNumber: first.number as number,
-        snapshotBranch: first.headRefName as string,
+        prNumber: first.number,
+        snapshotBranch: first.headRefName,
       };
     }
   } catch (err) {
@@ -412,6 +447,7 @@ export async function listMergedPartialRollupHeads(
   repo: string,
   milestone: string,
   ghFn: GhCommandFn,
+  lookup: PartialRollupLookupOptions = {},
 ): Promise<string[]> {
   if (!isValidRepoSlug(repo)) {
     throw new Error("repo name failed the argument allowlist");
@@ -419,7 +455,13 @@ export async function listMergedPartialRollupHeads(
   if (!TITLE_PATTERN.test(milestone)) {
     throw new Error("milestone title cannot be matched against the marker");
   }
-  const merged = await listPartialRollupPrs(repo, milestone, "merged", ghFn);
+  const merged = await listPartialRollupPrs(
+    repo,
+    milestone,
+    "merged",
+    ghFn,
+    lookup,
+  );
   return merged
     .map((pr) => pr.headRefOid)
     .filter((sha): sha is string =>
