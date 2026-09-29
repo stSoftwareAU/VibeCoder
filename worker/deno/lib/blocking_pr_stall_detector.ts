@@ -176,6 +176,14 @@ export interface BlockingPrStallSignal {
   reason: BlockingPrStallReason;
   /** How long the PR has been stalled on this signal, in seconds. */
   stalledSeconds: number;
+  /**
+   * Epoch seconds this stall began: the newest failing run for `red-ci`, the
+   * authorised comment for `unanswered-comment`, the newest push (or the PR's
+   * opening) for `unmerged-green`. Stall repair uses it to tell a trip marker
+   * taken on this stall from one left by an earlier, resolved one (Issue
+   * #2802).
+   */
+  onsetAt: number;
   /** Human-readable explanation quoted in the stall-repair comments. */
   detail: string;
 }
@@ -310,6 +318,7 @@ export function detectBlockingPrStall(
       signals.push({
         reason: "red-ci",
         stalledSeconds,
+        onsetAt: newestFailure,
         detail: `checks failing for ${
           formatDuration(stalledSeconds)
         } with no new push${names.length > 0 ? ` (${names.join(", ")})` : ""}`,
@@ -333,6 +342,7 @@ export function detectBlockingPrStall(
       signals.push({
         reason: "unanswered-comment",
         stalledSeconds,
+        onsetAt: commentAt,
         detail: `an authorised comment has gone unanswered for ${
           formatDuration(stalledSeconds)
         } — no fleet reply and no push since`,
@@ -356,10 +366,14 @@ export function detectBlockingPrStall(
   ) {
     const since = maxDefined(pushAt, epochSeconds(observation.createdAt));
     const stalledSeconds = since === undefined ? undefined : nowSeconds - since;
-    if (stalledSeconds !== undefined && stalledSeconds >= thresholdSeconds) {
+    if (
+      since !== undefined && stalledSeconds !== undefined &&
+      stalledSeconds >= thresholdSeconds
+    ) {
       signals.push({
         reason: "unmerged-green",
         stalledSeconds,
+        onsetAt: since,
         detail: `been open and green for ${
           formatDuration(stalledSeconds)
         } with no auto-merge armed and no merge`,

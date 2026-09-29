@@ -17,6 +17,10 @@
  *   applies `idle-task` (never `work-on`). A PR carrying the auto-fix cap
  *   marker goes straight here: its lane has already given up.
  *
+ * A marker counts only for the stall it was taken on
+ * ({@link markerBelongsToStall}). One left by an earlier stall the PR has
+ * since recovered from is ignored, and the new stall gets its own first trip.
+ *
  * Only a worker-authored PR is touched; a human-authored one is logged and
  * left alone. A PR the merge-conflict ladder owns is left to the ladder. Every
  * repair runs under the maintenance-lane lease on the PR's repository and is
@@ -106,6 +110,45 @@ export interface StallRepairDeps {
   ) => Promise<AbandonRestartOutcome>;
   /** Extra seams passed through to the abandon (tests). */
   abandonDeps?: Partial<AbandonRestartDeps>;
+}
+
+/**
+ * How many stall thresholds a red-CI trip marker stays current for. The first
+ * trip's sync reruns CI, so the failure the second check sees is newer than
+ * the marker by design; the marker's age, not the failure's, decides. Three
+ * thresholds covers the rerun and one full threshold of waiting, while a
+ * marker days or weeks old belongs to an earlier stall.
+ */
+export const RED_CI_TRIP_WINDOW_THRESHOLDS = 3;
+
+/**
+ * Whether a trip marker posted at `tripAt` was taken on this stall rather than
+ * on an earlier one the PR has since recovered from (PR #2866 review).
+ *
+ * - `unanswered-comment` — only when the marker is no older than the comment
+ *   that tripped: a newer authorised comment is a new request.
+ * - `red-ci` — only while the marker is within
+ *   {@link RED_CI_TRIP_WINDOW_THRESHOLDS} thresholds.
+ *
+ * Any one current signal is enough: that signal outlived its repair.
+ */
+export function markerBelongsToStall(
+  stall: BlockingPrStall,
+  tripAt: number,
+  nowSeconds: number,
+  thresholdSeconds: number,
+): boolean {
+  return stall.signals.some((signal) => {
+    switch (signal.reason) {
+      case "unanswered-comment":
+        return tripAt >= signal.onsetAt;
+      case "red-ci":
+        return nowSeconds - tripAt <
+          RED_CI_TRIP_WINDOW_THRESHOLDS * thresholdSeconds;
+      case "unmerged-green":
+        return false;
+    }
+  });
 }
 
 /** The lane that owns one stall reason. */
@@ -255,13 +298,26 @@ export async function repairStalledPr(
     }
     const history = readRepairHistory(comments, deps.workerAuthors);
     const now = deps.nowSeconds();
+    const threshold = deps.thresholdSeconds(repo);
+    // A marker from an earlier, since-resolved stall is not this stall's
+    // first trip: ignore it, and this stall takes a first trip of its own.
+    const tripAt = history.tripAt !== undefined &&
+        markerBelongsToStall(stall, history.tripAt, now, threshold)
+      ? history.tripAt
+      : undefined;
+    if (history.tripAt !== undefined && tripAt === undefined) {
+      logger.info(
+        "Stall repair: the newest trip marker belongs to an earlier stall — " +
+          "taking a fresh first trip",
+        { ...where, markerAgeSeconds: now - history.tripAt },
+      );
+    }
     const secondTrip = history.capped ||
-      (history.tripAt !== undefined &&
-        now - history.tripAt >= deps.thresholdSeconds(repo));
+      (tripAt !== undefined && now - tripAt >= threshold);
 
     if (secondTrip) {
       action = await abandonStalledPr(stall, target, comments, deps);
-    } else if (history.tripAt !== undefined) {
+    } else if (tripAt !== undefined) {
       logger.info(
         "Stall repair: first trip already taken — waiting for the next check",
         where,

@@ -4668,6 +4668,13 @@ the next cycle — and climbs a two-trip ladder:
   filed. The issue shares its two restarts with the merge-conflict ladder; once
   both are spent, a further stall adds `needs-human` and one comment to the
   issue instead of a third redo (Issue #2804).
+- **A marker counts for one stall only** — a trip marker left by an earlier
+  stall the PR has since recovered from is ignored, and the new stall takes its
+  own first trip. For an unanswered comment, the marker counts only if it is
+  no older than the comment: a newer authorised comment is a new request. For
+  red CI, it counts for three thresholds (6 hours by default), which covers the
+  CI rerun the first trip's sync starts; a red-CI marker days old belongs to an
+  earlier stall.
 - **Auto-fix cap** — a PR carrying the
   [auto-fix attempt cap](#-auto-fix-attempt-cap) marker skips the rerun (its
   lane has already given up) and goes straight to the second trip.
@@ -4700,7 +4707,7 @@ flowchart TD
     F -->|yes| W
     G -->|yes| W{"worker-authored,<br/>lane lease won?"}
     W -->|no| X["Logged, left alone<br/>(or retried next cycle)"]
-    W -->|yes| K{"auto-fix cap marker, or<br/>trip marker past threshold?"}
+    W -->|yes| K{"auto-fix cap marker, or<br/>this stall's trip marker<br/>past threshold?"}
     K -->|no trip yet| H["First trip: marker,<br/>sync branch, rerun<br/>owning lane once"]
     K -->|yes| J["Second trip:<br/>abandonAndRestart —<br/>close PR, re-queue issue"]
     style D fill:#14532d,stroke:#052e16,color:#fff

@@ -435,3 +435,68 @@ Deno.test("second trip on an issue already redone twice adds needs-human and one
   assertEquals(state.issueComments.length, 3);
   assertEquals(state.prClosed, false);
 });
+
+// ---------------------------------------------------------------------------
+// A trip marker belongs to one stall (PR #2866 review): a marker left by an
+// earlier, since-resolved stall must not turn a new stall's first check into
+// a second trip.
+// ---------------------------------------------------------------------------
+
+/** A fleet trip marker posted `ageSeconds` before NOW. */
+function oldMarker(ageSeconds: number): Comment {
+  return {
+    body: `${STALL_REPAIR_MARKER_PREFIX} pr="${PR}" reasons="red-ci" -->`,
+    user: { login: FLEET },
+    created_at: iso(NOW - ageSeconds),
+  };
+}
+
+Deno.test("an unanswered comment newer than an earlier stall's marker takes a fresh first trip, not an abandon", async () => {
+  // Red CI days ago was repaired by its first trip; the PR then sat green.
+  // The authorised comment (3 h ago) is a new stall the old marker predates.
+  const { state, deps } = harness({ prComments: [oldMarker(3 * 86400)] });
+
+  assertEquals(
+    await repairStalledPr(stallFor("unanswered-comment"), deps),
+    "first-trip",
+  );
+  assertEquals(state.prClosed, false, "the reviewed PR is not closed");
+  assertEquals(state.syncs, 1, "the branch is synced");
+  assertEquals(state.lanes, ["pr-feedback"], "the lane is rerun once");
+  assertEquals(state.prComments.length, 2, "a new marker claims this stall");
+  assertEquals(forbiddenCalls(state.calls), []);
+});
+
+Deno.test("a red-CI stall long after an earlier repaired one takes a fresh first trip, not an abandon", async () => {
+  // A marker from a red-CI stall two weeks ago, far outside any second check.
+  const { state, deps } = harness({ prComments: [oldMarker(14 * 86400)] });
+
+  assertEquals(await repairStalledPr(stallFor("red-ci"), deps), "first-trip");
+  assertEquals(state.prClosed, false);
+  assertEquals(state.syncs, 1);
+  assertEquals(state.lanes, ["ci-fix"]);
+});
+
+Deno.test("a marker taken on this unanswered comment still leads to the second trip", async () => {
+  // The marker (2.5 h ago) postdates the comment (3 h ago): same stall.
+  const { state, deps } = harness({
+    prComments: [oldMarker(THRESHOLD + 1800)],
+  });
+
+  assertEquals(
+    await repairStalledPr(stallFor("unanswered-comment"), deps),
+    "abandoned",
+  );
+  assertEquals(state.prClosed, true);
+  assertEquals(state.lanes, [], "the second trip reruns nothing");
+});
+
+Deno.test("a red-CI marker within the second-check window still leads to the second trip", async () => {
+  // The first trip's sync reran CI, which failed again after the marker —
+  // the failure being newer than the marker is the repair not working.
+  const { state, deps } = harness({ prComments: [oldMarker(2 * THRESHOLD)] });
+
+  assertEquals(await repairStalledPr(stallFor("red-ci"), deps), "abandoned");
+  assertEquals(state.prClosed, true);
+  assertEquals(state.lanes, []);
+});
