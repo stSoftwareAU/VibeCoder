@@ -498,6 +498,74 @@ Deno.test("presyncMilestoneBranch - a behind count that cannot be read defers ra
   }
 });
 
+Deno.test("presyncMilestoneBranch - an unreadable count defers fail-closed and records git's reason (Issue #2824)", async () => {
+  const fx = await ledger();
+  try {
+    let synced = 0;
+    const reason =
+      "git rev-list --count exited 128: warning: ignoring broken ref " +
+      "refs/remotes/origin/main\nfatal: ambiguous argument";
+    const result = await presyncMilestoneBranch(
+      {
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs: NOW,
+      },
+      deps({
+        countBehind: () =>
+          Promise.resolve({ ok: false as const, error: new Error(reason) }),
+        syncBranch: () => {
+          synced++;
+          return Promise.resolve({
+            ok: true as const,
+            value: { message: "x" },
+          });
+        },
+      }),
+    );
+
+    assertEquals(result.status, "deferred");
+    assert(result.detail.startsWith(MILESTONE_BEHIND_DEFER_REASON));
+    assertEquals(
+      result.unmeasured,
+      "git rev-list --count exited 128: warning: ignoring broken ref " +
+        "refs/remotes/origin/main",
+    );
+    assertEquals(
+      synced,
+      0,
+      "no merge or sync is attempted for an unmeasured base",
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("presyncMilestoneBranch - a measured result leaves unmeasured undefined", async () => {
+  const fx = await ledger();
+  try {
+    const result = await presyncMilestoneBranch(
+      {
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs: NOW,
+      },
+      deps({ behindBy: 0 }),
+    );
+
+    assertEquals(result.status, "level");
+    assertEquals(result.unmeasured, undefined);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 Deno.test("presyncMilestoneBranch - the default tip is read (and so fetched) before the branch is measured", async () => {
   // Order is load-bearing: reading the tip is what fetches `origin/<default>`,
   // and counting against a stale one would answer "level" for a branch that is

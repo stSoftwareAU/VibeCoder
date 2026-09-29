@@ -137,6 +137,7 @@ Deno.test("measureMilestoneBehindCount - a count git refused is passed through u
 Deno.test("measureMilestoneBehindCount - a broken remote-tracking ref is repaired and the retried count is returned (Issue #2824)", async () => {
   const gitCalls: string[][] = [];
   const logged: string[] = [];
+  const removed: string[] = [];
   let countCalls = 0;
 
   const result = await measureMilestoneBehindCount({
@@ -144,8 +145,22 @@ Deno.test("measureMilestoneBehindCount - a broken remote-tracking ref is repaire
     defaultBranch: "main",
     cwd: "/clones/VibeCoder",
     log: (message) => logged.push(message),
+    removeFileFn: (path) => {
+      removed.push(path);
+      return Promise.resolve();
+    },
     gitFn: (args) => {
       gitCalls.push([...args]);
+      if (args[0] === "rev-parse") {
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: ".git/refs/remotes/origin/main\n",
+            stderr: "",
+          },
+        });
+      }
       return Promise.resolve(OK_OUTPUT);
     },
     countFn: () => {
@@ -165,11 +180,12 @@ Deno.test("measureMilestoneBehindCount - a broken remote-tracking ref is repaire
 
   assertEquals(result, { ok: true, value: 2 });
   assertEquals(countCalls, 2);
-  // One fetch to create the tracking ref, then update-ref and fetch to repair it.
+  // One fetch to create the tracking ref, then rev-parse and fetch to repair it.
   assertEquals(gitCalls.length, 3);
-  assertStringIncludes(gitCalls[1]!.join(" "), "update-ref");
+  assertStringIncludes(gitCalls[1]!.join(" "), "rev-parse");
   assertStringIncludes(gitCalls[1]!.join(" "), "refs/remotes/origin/main");
   assertStringIncludes(gitCalls[2]!.join(" "), "fetch");
+  assertEquals(removed, ["/clones/VibeCoder/.git/refs/remotes/origin/main"]);
   assertEquals(logged.length, 1);
   assertStringIncludes(logged[0]!, "refs/remotes/origin/main");
 });

@@ -146,6 +146,42 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "#2824 - a linked worktree repairs the ref in the common dir, not the worktree",
+  async () => {
+    const { root, clone } = await fixture();
+    const worktree = `${root}/wt1`;
+    try {
+      await git(
+        ["worktree", "add", "-b", "wt1-branch", worktree, "main"],
+        clone,
+      );
+
+      // The remote-tracking ref lives in the common dir (the clone's own
+      // `.git`), not under the worktree — corrupt it there.
+      await corruptOriginMainRef(clone);
+
+      const logged: string[] = [];
+      const result = await countCommitsAheadRepairingBrokenRef(
+        `origin/${MILESTONE_BRANCH}`,
+        "origin/main",
+        { cwd: worktree },
+        { log: (message) => logged.push(message) },
+      );
+
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(result.value, 1);
+
+      const loggedRefLines = logged.filter((line) =>
+        line.includes("refs/remotes/origin/main")
+      );
+      assertEquals(loggedRefLines.length, 1);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Injected-fake tests: the repair logic itself, independent of real git.
 // ---------------------------------------------------------------------------
@@ -268,8 +304,15 @@ Deno.test(
     const gitFn = async (
       args: string[],
     ): Promise<Result<GitCommandOutput>> => {
-      // Both update-ref and fetch succeed; only the retried count fails.
+      // rev-parse and fetch both succeed; only the retried count fails.
+      if (args[0] === "rev-parse") {
+        return fakeGitOutput(0, ".git/refs/remotes/origin/main\n");
+      }
       return fakeGitOutput(0);
+    };
+    const removed: string[] = [];
+    const removeFileFn = async (path: string) => {
+      removed.push(path);
     };
     const logged: string[] = [];
 
@@ -277,18 +320,19 @@ Deno.test(
       "origin/milestone-x",
       "origin/main",
       {},
-      { log: (m) => logged.push(m), countFn, gitFn },
+      { log: (m) => logged.push(m), countFn, gitFn, removeFileFn },
     );
 
     assert(!result.ok);
     assertStringIncludes(result.error.message, "still broken");
     assertEquals(countCalls, 2);
     assertEquals(logged.length, 1);
+    assertEquals(removed.length, 1);
   },
 );
 
 Deno.test(
-  "#2824 - a failed update-ref returns an error naming it and does not retry",
+  "#2824 - a failed rev-parse --git-path returns an error naming it and does not retry",
   async () => {
     let countCalls = 0;
     const countFn = async (): Promise<Result<number>> => {
@@ -301,10 +345,13 @@ Deno.test(
     const gitFn = async (
       args: string[],
     ): Promise<Result<GitCommandOutput>> => {
-      if (args[0] === "update-ref") {
-        return fakeGitOutput(1, "", "error: cannot lock ref");
+      if (args[0] === "rev-parse") {
+        return fakeGitOutput(128, "", "fatal: not a git repository");
       }
       return fakeGitOutput(0);
+    };
+    const removeFileFn = async (): Promise<void> => {
+      throw new Error("removeFileFn should not be called");
     };
     const logged: string[] = [];
 
@@ -312,11 +359,49 @@ Deno.test(
       "origin/milestone-x",
       "origin/main",
       {},
-      { log: (m) => logged.push(m), countFn, gitFn },
+      { log: (m) => logged.push(m), countFn, gitFn, removeFileFn },
     );
 
     assert(!result.ok);
-    assertStringIncludes(result.error.message, "update-ref");
+    assertStringIncludes(result.error.message, "rev-parse --git-path");
+    assertEquals(countCalls, 1);
+    assertEquals(logged, []);
+  },
+);
+
+Deno.test(
+  "#2824 - a failed removeFileFn returns an error naming it and does not retry",
+  async () => {
+    let countCalls = 0;
+    const countFn = async (): Promise<Result<number>> => {
+      countCalls++;
+      return fail(
+        "git rev-list --count exited 128: warning: ignoring broken ref " +
+          "refs/remotes/origin/main\nfatal: ambiguous argument",
+      );
+    };
+    const gitFn = async (
+      args: string[],
+    ): Promise<Result<GitCommandOutput>> => {
+      if (args[0] === "rev-parse") {
+        return fakeGitOutput(0, ".git/refs/remotes/origin/main\n");
+      }
+      return fakeGitOutput(0);
+    };
+    const removeFileFn = async (): Promise<void> => {
+      throw new Deno.errors.NotFound("no such file or directory");
+    };
+    const logged: string[] = [];
+
+    const result = await countCommitsAheadRepairingBrokenRef(
+      "origin/milestone-x",
+      "origin/main",
+      {},
+      { log: (m) => logged.push(m), countFn, gitFn, removeFileFn },
+    );
+
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "remove the broken loose");
     assertEquals(countCalls, 1);
     assertEquals(logged, []);
   },

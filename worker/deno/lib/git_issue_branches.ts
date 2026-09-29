@@ -205,6 +205,8 @@ export interface BrokenRefRepairDeps {
   countFn?: typeof countCommitsAhead;
   /** Runs the repair's git commands; defaults to runGitCommand. */
   gitFn?: typeof runGitCommand;
+  /** Deletes the loose ref file; defaults to `Deno.remove`. */
+  removeFileFn?: (path: string) => Promise<void>;
 }
 
 /** Matches the warning git prints for a loose ref whose content will not parse. */
@@ -214,28 +216,17 @@ const BROKEN_REF_WARNING_PATTERN = /ignoring broken ref (\S+)/;
 const REPAIRABLE_REMOTE_REF_PREFIX = "refs/remotes/origin/";
 
 /**
- * Delete a ref with `git update-ref -d`, using `--end-of-options` when this
- * git accepts it for the subcommand and falling back when it does not
- * (support was added to `update-ref` after other ref-taking verbs).
+ * Resolve a `git rev-parse --git-path` result against the directory git ran
+ * in. The output is already absolute for a linked worktree's refs, which
+ * live in the common dir rather than under the worktree itself; otherwise it
+ * is relative to `cwd` and must be joined with it manually — `@std/path` is
+ * not in this codebase's import map (see `lib/broken_clone.ts`).
  */
-async function deleteRefSafely(
-  gitFn: typeof runGitCommand,
-  fullRef: string,
-  options: GitCommandOptions,
-) {
-  assertSafeGitRef(fullRef, "update-ref delete target");
-  const withSeparator = await gitFn(
-    ["update-ref", "-d", "--end-of-options", fullRef],
-    options,
-  );
-  if (
-    withSeparator.ok &&
-    withSeparator.value.code !== 0 &&
-    /unknown option `end-of-options'/i.test(withSeparator.value.stderr)
-  ) {
-    return await gitFn(["update-ref", "-d", fullRef], options);
-  }
-  return withSeparator;
+function resolveGitPath(gitPathOutput: string, cwd: string | undefined) {
+  const trimmed = gitPathOutput.trim();
+  if (trimmed.startsWith("/")) return trimmed;
+  const base = cwd ?? Deno.cwd();
+  return `${base.replace(/\/+$/, "")}/${trimmed}`;
 }
 
 /**
@@ -288,23 +279,46 @@ export async function countCommitsAheadRepairingBrokenRef(
   }
   const branch = brokenRef.slice(REPAIRABLE_REMOTE_REF_PREFIX.length);
 
-  const deleteResult = await deleteRefSafely(gitFn, brokenRef, options);
-  if (!deleteResult.ok) {
+  assertSafeGitRef(brokenRef, "rev-parse --git-path target");
+  // Note: --end-of-options cannot be combined with --git-path — either git
+  // rejects --git-path for coming after a non-option, or --git-path swallows
+  // --end-of-options as its own path argument. assertSafeGitRef above already
+  // rejects dash-leading/malicious ref arguments, so it is safe to omit here.
+  const revParseResult = await gitFn(
+    ["rev-parse", "--git-path", brokenRef],
+    options,
+  );
+  if (!revParseResult.ok) {
     return {
       ok: false,
       error: new Error(
         `${first.error.message} — repair failed: could not run ` +
-          `git update-ref -d ${brokenRef}: ${deleteResult.error.message}`,
+          `git rev-parse --git-path ${brokenRef}: ${revParseResult.error.message}`,
       ),
     };
   }
-  if (deleteResult.value.code !== 0) {
+  if (revParseResult.value.code !== 0) {
     return {
       ok: false,
       error: new Error(
-        `${first.error.message} — repair failed: git update-ref -d ` +
-          `${brokenRef} exited ${deleteResult.value.code}: ` +
-          (deleteResult.value.stderr.trim() || "(no output)"),
+        `${first.error.message} — repair failed: git rev-parse --git-path ` +
+          `${brokenRef} exited ${revParseResult.value.code}: ` +
+          (revParseResult.value.stderr.trim() || "(no output)"),
+      ),
+    };
+  }
+
+  const refPath = resolveGitPath(revParseResult.value.stdout, options.cwd);
+  const removeFileFn = deps.removeFileFn ?? Deno.remove;
+  try {
+    await removeFileFn(refPath);
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `${first.error.message} — repair failed: could not remove the ` +
+          `broken loose ref file ${refPath}: ` +
+          (error instanceof Error ? error.message : String(error)),
       ),
     };
   }
@@ -334,8 +348,9 @@ export async function countCommitsAheadRepairingBrokenRef(
   }
 
   deps.log(
-    `Repaired broken remote-tracking ref '${brokenRef}' (deleted and ` +
-      `re-fetched from origin) before counting ${baseRef}..${ref} (Issue #2824)`,
+    `Repaired broken remote-tracking ref '${brokenRef}': deleted the ` +
+      `broken loose ref file and re-fetched from origin before counting ` +
+      `${baseRef}..${ref} (Issue #2824)`,
   );
 
   return await countFn(baseRef, ref, options);

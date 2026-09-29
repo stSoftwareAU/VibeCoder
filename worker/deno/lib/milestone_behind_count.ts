@@ -50,6 +50,8 @@ export interface MilestoneBehindCountRequest {
   countFn?: typeof countCommitsAhead;
   /** Logs a repaired broken ref (Issue #2824); defaults to `console.warn` so it is never dropped. */
   log?: (message: string) => void;
+  /** Deletes a broken loose ref file (Issue #2824); defaults to `Deno.remove`. */
+  removeFileFn?: (path: string) => Promise<void>;
 }
 
 /**
@@ -94,6 +96,6 @@ export async function measureMilestoneBehindCount(
     `origin/${milestoneBranch}`,
     `origin/${defaultBranch}`,
     { cwd },
-    { log, countFn, gitFn },
+    { log, countFn, gitFn, removeFileFn: request.removeFileFn },
   );
 }
