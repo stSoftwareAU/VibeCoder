@@ -45,6 +45,12 @@ flowchart TD
     D -->|no| N[No write]
 ```
 
+## Reproduction
+
+- **symptom** — with the repo's watermark at 200, merged PR #150 (merged after #200) was skipped as below the watermark, so the issue it fixes (#148) was never closed
+- **status** — `verified` — the out-of-order scenario was run against the unfixed milestone-base code (legacy v1 watermark `{"org/repo": 200}`) and failed with `closed` 0 instead of 1; the same scenario passes on this branch
+- **regression test** — `worker/deno/tests/merged_pr_issue_sweep_test.ts::sweepMergedPrIssues - a PR merged out of number order is still swept (Issue #2833)`
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
@@ -54,7 +60,7 @@ flowchart TD
 - **met** — Failed fetch leaves the state file unchanged — evidence: `worker/deno/tests/merged_pr_issue_sweep_test.ts::sweepMergedPrIssues - a failed fetch leaves the state file unchanged (Issue #2833)` (byte comparison, with an out-of-window entry a prune would drop) — reviewer: met
 - **met** — v1 file reads as empty (catch-up); re-sweeping a PR is idempotent — evidence: `worker/deno/tests/merged_pr_issue_sweep_test.ts::sweepMergedPrIssues - a legacy v1 watermark file reads as empty and the window is caught up (Issue #2833)` and `::sweepMergedPrIssues - a processed PR is skipped without a call, and a re-sweep is idempotent (Issue #1477, #2833)` — reviewer: met
 - **met** — `grep -r "loadSweepWatermarks\|saveSweepWatermarks\|SweepWatermarks\b" worker/deno` returns nothing — evidence: grep on the final HEAD exits 1 with no output; `worker/deno/lib/run_core_production_deps.ts` imports only the path helpers, and was already clean on the milestone base — reviewer: met
-- **partial** — `deno task` quality gate passes — evidence: the two touched test files (44 passed, 0 failed), `deno task check` on `**/*.ts`, and `deno lint` / `deno fmt --check` on the touched `.ts` files, all clean — reviewer: partial — reason: the reviewer's full `./quality.sh` run hit its timeout at 470s, and every stage that had reported by then passed; the worker's own quality gate on this branch passed
+- **met** — `deno task` quality gate passes — evidence: full `./quality.sh < /dev/null` run on the final HEAD exited 0 ("Result: PASSED", only `config integration` skipped as environment-dependent); the two touched test files report 44 passed, 0 failed — reviewer: partial — reason: the reviewer's own `./quality.sh` run hit its timeout at 470s; the gate was since run to completion here and passed
 - **unrequested** — a failed state save is now logged at warn instead of being swallowed — reviewer: unrequested — reason: the fail-loud standard; it matches what #2832 did in `branch_cleanup.ts`
 - **unrequested** — result field `belowWatermark` renamed `alreadyProcessed`, and the log note reads "N already processed" — reviewer: unrequested — reason: once the number watermark is gone, "below watermark" no longer describes the skip; the only caller does not read the field
 
