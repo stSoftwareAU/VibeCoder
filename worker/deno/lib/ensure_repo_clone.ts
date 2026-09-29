@@ -11,7 +11,8 @@
  * setup phase uses, but only when the clone is genuinely missing. An existing
  * clone is left completely untouched — no fetch, no `reset --hard` — so
  * calling this before a read-only scan never disturbs another consumer's
- * working tree.
+ * working tree. A directory holding no git repository is not a clone: it is
+ * discarded and cloned afresh rather than reused (Issue #2848).
  *
  * Fails loud: a clone that could not be created returns `ok: false` with the
  * underlying message. Callers must surface it rather than continuing against
@@ -22,6 +23,7 @@
 
 import { setupRepo as defaultSetupRepo } from "../commands/git_operations.ts";
 import type { CommandResult } from "../types.ts";
+import { discardBrokenClone } from "./broken_clone.ts";
 
 /** Outcome of {@link ensureRepoClone}. */
 export interface EnsureRepoCloneResult {
@@ -77,7 +79,16 @@ export async function ensureRepoClone(
     repoName === ".." || repoName.includes("/") || repoName.includes("\\");
 
   if (!unsafeSegment && await isDirectory(repoPath)) {
-    return { ok: true, repoPath, cloned: false };
+    const discarded = await discardBrokenClone(repoPath);
+    if (!discarded.ok) {
+      return {
+        ok: false,
+        repoPath,
+        cloned: false,
+        message: discarded.error.message,
+      };
+    }
+    if (!discarded.value) return { ok: true, repoPath, cloned: false };
   }
 
   const result = await setupRepoFn(repo, workDir);

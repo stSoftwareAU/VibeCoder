@@ -4,6 +4,10 @@
  * The delta-sweep issues (#1610, #1611, #1612) regenerate their file lists
  * from this report rather than from stale counts in the issue body.
  *
+ * With `--default-branch <ref>` (e.g. `origin/main`) it first fails unless
+ * every slice's `sweptAt` is on that branch (Issue #2754) — the full-history
+ * CI guard against a top-up recording a squash-doomed feature-branch commit.
+ *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
@@ -15,6 +19,8 @@ import {
   type SliceDrift,
   type SweepCoverageLedger,
   type SweepGitRunner,
+  SweepLedgerError,
+  verifySweptAtsOnDefaultBranch,
 } from "../lib/lib_sweep_coverage.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
@@ -115,6 +121,17 @@ export const sweepDriftCommand: Command = {
     const runGit = typeof args.runGit === "function"
       ? args.runGit as SweepGitRunner
       : sweepGitRunnerFor(repoRoot);
+    const defaultRef = typeof args["default-branch"] === "string"
+      ? args["default-branch"].trim()
+      : "";
+    if (defaultRef.length > 0) {
+      try {
+        await verifySweptAtsOnDefaultBranch(ledger, defaultRef, runGit);
+      } catch (error) {
+        if (!(error instanceof SweepLedgerError)) throw error;
+        return { success: false, message: error.message };
+      }
+    }
     const blocks = await collectSweepDrift(ledger, onDisk, runGit);
     const message = formatSweepDriftReport(blocks);
     return { success: true, message, data: { blocks } };

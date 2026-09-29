@@ -1599,7 +1599,7 @@ async function _processCiWithHeartbeat(
         { cwd: processorDeps.workDir },
       );
       // Issue #211: keep the reason the recovery failed — it names the step
-      // (rebase conflict, failed auto-resolution, refused --force-with-lease)
+      // (fetch, merge conflict, rejected retry push, unconfirmed push)
       // and carries git's stderr. Without it the log said only "push failed".
       let failureDetail = recoveryResult.ok
         ? undefined
@@ -1607,7 +1607,7 @@ async function _processCiWithHeartbeat(
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
-          `Fix CI failure: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
+          `Fix CI failure: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
           { cwd: processorDeps.workDir },
           false,
           preFlight,
@@ -1618,7 +1618,7 @@ async function _processCiWithHeartbeat(
           finalUnpushedAfterPush = 0;
         } else {
           failureDetail = retryFinalise.ok
-            ? `retry after rebase recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
+            ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
             : retryFinalise.error.message;
         }
       }

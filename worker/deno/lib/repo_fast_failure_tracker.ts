@@ -242,6 +242,8 @@ const UNINFORMATIVE_LINE_PATTERNS: readonly RegExp[] = [
   /^To\s+\S+$/, // git's destination line, printed above the rejection
   /^remote:\s*$/i, // GitHub's blank padding inside a `remote:` block
   /^hint:/i,
+  // git's discovery trailer under `fatal: not a git repository` (Issue #2848).
+  /^Stopping at filesystem boundary\b/i,
   // The worker's failure message fences the agent's last output in a
   // collapsible block (Issue #2590): its closing lines are scaffolding.
   /^<\/?details>$/i,

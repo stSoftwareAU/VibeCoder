@@ -123,7 +123,7 @@ login happens to start with a bot's name keeps their PR.
 
 The same narrow predicate gates the branch-update scan's `isHostPushedBotPr`
 (below), so a human PR that happens to carry a commit by this host — they
-cherry-picked one — is not rebased and pushed either.
+cherry-picked one — is not updated and pushed either.
 
 The boundaries, all of which fail **closed**:
 
@@ -178,7 +178,8 @@ an unreadable answer is never read as "no host commits".
 
 The worker never posts `@dependabot rebase` or any equivalent bot command: that
 recreates the branch from scratch and **discards the worker's commits**, undoing
-the fix it just pushed. The worker rebases and pushes the branch itself.
+the fix it just pushed. The worker merges the base into the branch itself and
+pushes normally — never a rebase, never a force-push (#2807).
 
 ## ✉️ Inviting the worker onto your PR
 

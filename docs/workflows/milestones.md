@@ -110,7 +110,45 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 1. **Select** — Issue is in a milestone; no other open PR by the configured GitHub user for **this milestone branch**; issue is otherwise eligible (labels, author, not blocked by dependencies or open children).
 2. **Branch** — Ensure `milestone/<name>` exists (from default); sync it with default (merge); **create feature branch from the milestone branch** (not from default).
 3. **Implement** — Same as non-milestone: clarify if needed, Claude, quality, commit, push. One deliberate difference: the **dependency-bump phase is skipped** (Issue #1775). The default branch's own PRs bump dependencies and the [periodic sync](#-periodic-milestone-branch-sync) carries those bumps down into the milestone branch, so a child PR that bumped as well would rewrite the same lockfile lines and conflict with the sync for no new versions. The child PR body carries `Dependency bump: skipped — milestone child; the default branch's own PRs bump and the sync carries them down`, and the milestone summary PR therefore inherits the current versions rather than bumping separately.
-4. **PR** — Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). Enable auto-merge at create, like any other PR (Issue #1136). If the milestone is cleanly behind the default branch, sync it inline and arm in the same cycle (Issue #2005); when that sync conflicts the reason is posted and the child is armed anyway, because the milestone ruleset holds the merge until its required checks pass (Issue #2460). The catch-up scan, post-scan sweep and 1.72 sync are the backstop — and the one base with no such ruleset to hold it is held instead of armed, see [MERGE.md](../MERGE.md).
+4. **PR** — Sync the milestone branch with default, then merge it into the feature branch (see [the three branch sync points](#-the-three-branch-sync-points)). Create PR targeting **milestone branch** (not default). Use "Closes #N" in the PR body (not "Addresses #N" — see [Issue closure for milestone issues](#issue-closure-for-milestone-issues)). Enable auto-merge at create, like any other PR (Issue #1136). If the milestone is cleanly behind the default branch, sync it inline and arm in the same cycle (Issue #2005); when that sync conflicts the reason is posted and the child is armed anyway, because the milestone ruleset holds the merge until its required checks pass (Issue #2460). The catch-up scan, post-scan sweep and 1.72 sync are the backstop — and the one base with no such ruleset to hold it is held instead of armed, see [MERGE.md](../MERGE.md).
+
+### 🔁 The three branch sync points
+
+A feature branch is brought up to its target at three points, each by **merge
+and a plain push — never a rebase, never a force-push** (Issues #2807, #2809).
+`worker/deno/tests/sync_points_test.ts` covers each point, over real repositories.
+
+1. **Work start** — the issue-run presync merges the milestone branch up to the
+   default branch, then `createFeatureBranchFromBase` fetches the target and
+   starts the feature branch at `origin/<target>`'s current tip.
+2. **PR raise** — `syncBranchesForPrRaise` (`lib/pr_raise_sync.ts`) first merges
+   the milestone branch up to the default branch
+   (`presyncMilestoneBranchForIssueRun`), **then** merges `origin/<milestone>`
+   into the feature branch (`mergeOntoBase`), so the feature branch never
+   catches up with a stale milestone. A declined merge gets one agent
+   merge-and-fix pass, then the conflict ladder.
+3. **Pre-merge** — `ensurePrMergeable` merges the target into a PR that is
+   behind and plain-pushes; `enforcePreMergeRequirements` refuses the merge
+   until CI is green on that synced head, and `directMergePr` pins it with
+   `--match-head-commit`. See [MERGE.md](../MERGE.md#the-pre-merge-sync-point).
+
+```mermaid
+sequenceDiagram
+    participant D as default branch
+    participant M as milestone branch
+    participant F as feature branch
+    participant CI as GitHub CI
+    Note over D,F: 1. Work start
+    D->>M: merge default into milestone, plain push
+    M->>F: create feature branch at origin/milestone
+    Note over D,F: 2. PR raise
+    D->>M: merge default into milestone, plain push
+    M->>F: merge origin/milestone into feature, plain push
+    Note over F,CI: 3. Pre-merge
+    M->>F: behind? merge target in, plain push
+    CI->>F: required checks re-run on the synced head
+    F->>M: merge only when green on that head (--match-head-commit)
+```
 
 ### ✅ Milestone completion
 

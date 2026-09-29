@@ -374,7 +374,89 @@ function describeDriftGitFailure(
     `could not be diffed from sweptAt ${slice.sweptAt}: ${detail}\n` +
     `  sweptAt must be a commit reachable from the default branch — a ` +
     `feature-branch commit is deleted by squash-merge. Repoint it with: ` +
-    `git log --diff-filter=A -1 --format=%H origin/main -- ${slice.ledger}`;
+    repointCommand(slice, "origin/main");
+}
+
+/**
+ * The documented repoint rule for one slice: the commit its record landed at
+ * on the default branch — the commit that *added* it (Issue #2178).
+ */
+function repointCommand(slice: SweepSlice, defaultRef: string): string {
+  return `git log --diff-filter=A -1 --format=%H ${defaultRef} -- ${slice.ledger}`;
+}
+
+/**
+ * Fail unless every slice's `sweptAt` is a commit on the default branch
+ * (Issue #2754).
+ *
+ * A top-up that records its feature branch's `HEAD` resolves while its PR is
+ * open, so nothing noticed until squash-merge deleted the commit and
+ * `sweep-drift` died with `fatal: bad object` — 34 slices reached `main` that
+ * way. Checking ancestry against the default branch rejects the branch commit
+ * on the PR that writes it, while `git merge-base origin/main HEAD` (the
+ * documented value for a new record) passes.
+ *
+ * Needs full history: in a shallow clone a real ancestor can read as missing.
+ *
+ * @param ledger - Parsed ledger.
+ * @param defaultRef - The default branch as git names it, e.g. `origin/main`.
+ * @param runGit - Git runner, injected so unit tests never spawn.
+ * @throws {SweepLedgerError} Naming every offending slice, its commit and the
+ *   repoint command; or naming `defaultRef` when git cannot resolve it.
+ */
+export async function verifySweptAtsOnDefaultBranch(
+  ledger: SweepCoverageLedger,
+  defaultRef: string,
+  runGit: SweepGitRunner,
+): Promise<void> {
+  const ref = await runGit(["rev-parse", "--verify", `${defaultRef}^{commit}`]);
+  if (ref.code !== 0) {
+    // Without the ref every slice would fail; blame the ref, not the slices.
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: default branch ${defaultRef} does not ` +
+        `resolve (${ref.stderr.trim() || `exit ${ref.code}`}) — ` +
+        `git fetch origin <default-branch> before checking sweptAt ancestry`,
+    );
+  }
+  const failures: string[] = [];
+  for (const slice of ledger.slices) {
+    const exists = await runGit([
+      "cat-file",
+      "-e",
+      `${slice.sweptAt}^{commit}`,
+    ]);
+    let problem: string | null = null;
+    if (exists.code !== 0) {
+      problem = `${slice.sweptAt} does not resolve to a commit`;
+    } else {
+      const ancestry = await runGit([
+        "merge-base",
+        "--is-ancestor",
+        slice.sweptAt,
+        defaultRef,
+      ]);
+      if (ancestry.code === 1) {
+        problem = `${slice.sweptAt} is not an ancestor of ${defaultRef}`;
+      } else if (ancestry.code !== 0) {
+        problem = `${slice.sweptAt} could not be checked against ` +
+          `${defaultRef}: ${ancestry.stderr.trim() || `exit ${ancestry.code}`}`;
+      }
+    }
+    if (problem !== null) {
+      failures.push(
+        `  - slice ${slice.chunk} (#${slice.issue}): sweptAt ${problem}\n` +
+          `    repoint with: ${repointCommand(slice, defaultRef)}`,
+      );
+    }
+  }
+  if (failures.length > 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: ${failures.length} slice(s) record a ` +
+        `sweptAt that is not on ${defaultRef}. A top-up records ` +
+        `\`git merge-base ${defaultRef} HEAD\`, never a branch commit — ` +
+        `squash-merge deletes it:\n${failures.join("\n")}`,
+    );
+  }
 }
 
 /**

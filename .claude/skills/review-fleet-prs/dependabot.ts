@@ -15,6 +15,7 @@
 // The Fable review still decides whether a Dependabot PR is approved.
 
 import type { SearchPr } from "./gate.ts";
+import { sameLogin } from "./review_log.ts";
 
 export type DependabotAction =
   | { kind: "rebase" }
@@ -37,7 +38,7 @@ export function dependabotAction(
   }
   if (pr.autoMergeRequest) return { kind: "none", reason: "auto-merge armed" };
   const approvedByReviewer = pr.reviews.nodes.some((r) =>
-    r.author?.login === reviewer && r.state === "APPROVED" &&
+    sameLogin(r.author?.login, reviewer) && r.state === "APPROVED" &&
     r.commit?.oid === pr.headRefOid
   );
   if (!approvedByReviewer) return { kind: "none", reason: "not approved" };
