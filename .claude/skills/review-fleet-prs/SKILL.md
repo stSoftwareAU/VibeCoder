@@ -20,6 +20,38 @@ leave the session running:
 
 Optional argument: `owner/name` to review one repo only.
 
+## Running unattended
+
+On an always-on host, `run.sh` in this directory does the same without an
+open session. Every 5 minutes it runs one gate pass, and it starts a headless
+`claude -p` round only when a PR is ready. It loops for ever, retries after
+a failed pass, kills a round that runs over 50 minutes, and keeps one runner
+per machine.
+
+```bash
+.claude/skills/review-fleet-prs/run.sh --install   # start at login, restart on exit
+.claude/skills/review-fleet-prs/run.sh --once      # one pass, in the foreground
+```
+
+`--install` registers a launchd agent on macOS or a systemd user service on
+Linux. The host needs `deno`, `jq`, `gh` signed in, and `claude` signed in.
+The log is `~/.review-fleet-prs/runner.log`. A headless round cannot send the
+PushNotification in step 4; `summary.md` still shows what is waiting.
+
+### As a GitHub App
+
+With `pr_reviewer_app` in `.config.json` (see
+[CONFIGURATION.md](../../../docs/CONFIGURATION.md#-reviewer-app-for-fleet-pr-reviews)),
+`run.sh` reviews as that App's bot instead of the `gh` user. `app_token.ts`
+mints a fresh installation token for every pass, since one lasts an hour.
+When minting fails, the pass is skipped; it never falls back to posting as the
+`gh` user. The App needs **Pull requests** and **Issues** read and write,
+**Contents**, **Checks** and **Commit statuses** read, and installation on
+every monitored repo and on `stSoftwareAU/VibeCoder` (for improvement issues).
+Add `<app-slug>[bot]` to `authorized_commenters` (not `pr_reviewers`,
+which would make PR creation fail). An interactive `/review-fleet-prs`
+session still reviews as the `gh` user.
+
 ## Rules
 
 1. **Only PRs into the default branch are reviewed.** A PR into a milestone

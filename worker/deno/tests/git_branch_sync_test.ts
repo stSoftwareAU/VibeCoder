@@ -12,13 +12,23 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   isLocalAheadOfRemoteError,
   syncBranchToRemoteHead,
 } from "../lib/git_branch_sync.ts";
-import { isPrBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
+import {
+  isPrBranchConflictError,
+  syncFeatureBranchWithDefault,
+  updatePrBranch,
+} from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  isForcedPush,
+  recordedPushes,
+  recordedRebase,
+  startGitTrace,
+} from "./support/git_trace.ts";
 
 const DEFAULT_BRANCH = "Develop";
 const FEATURE_BRANCH = "issue-556-sync";
@@ -240,6 +250,89 @@ Deno.test("updatePrBranch - judges the branch after aligning with the remote hea
     assertStringIncludes(result.value, "up to date");
     assertEquals(await git(["rev-parse", "HEAD"], workerPath), remoteHead);
   } finally {
+    await cleanup(tmpDir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// syncFeatureBranchWithDefault — merge the target in, never rebase (#2807)
+// ---------------------------------------------------------------------------
+
+/** Advance the published base from the sibling with a commit to `file`. */
+async function advanceBase(
+  siblingPath: string,
+  file: string,
+  content: string,
+): Promise<void> {
+  await git(["checkout", DEFAULT_BRANCH], siblingPath);
+  await Deno.writeTextFile(`${siblingPath}/${file}`, content);
+  await git(["add", file], siblingPath);
+  await git(["commit", "-m", `Base changes ${file}`], siblingPath);
+  await git(["push", "origin", DEFAULT_BRANCH], siblingPath);
+}
+
+Deno.test("syncFeatureBranchWithDefault - merges the base in and keeps the PR's commits, no rebase, no forced push (Issue #2807)", async () => {
+  const { tmpDir, workerPath, siblingPath } = await setupRepos();
+  const trace = await startGitTrace();
+  try {
+    await advanceBase(siblingPath, "base.txt", "base\n");
+    const oldHead = await git(["rev-parse", "HEAD"], workerPath);
+
+    const result = await syncFeatureBranchWithDefault(
+      FEATURE_BRANCH,
+      DEFAULT_BRANCH,
+      { cwd: workerPath, env: trace.env },
+    );
+
+    if (!result.ok) throw result.error;
+    // The old PR head is an ancestor of the new head: nothing was rewritten.
+    await git(["merge-base", "--is-ancestor", oldHead, "HEAD"], workerPath);
+    // The published base is merged in.
+    await git(
+      ["merge-base", "--is-ancestor", `origin/${DEFAULT_BRANCH}`, "HEAD"],
+      workerPath,
+    );
+    assertEquals(await recordedRebase(trace), false, "no git rebase ran");
+    for (const push of await recordedPushes(trace)) {
+      assertEquals(isForcedPush(push), false, push.join(" "));
+    }
+  } finally {
+    await trace.dispose();
+    await cleanup(tmpDir);
+  }
+});
+
+Deno.test("syncFeatureBranchWithDefault - a conflicting merge is aborted and reported as a conflict, the branch untouched (Issue #2807)", async () => {
+  const { tmpDir, workerPath, siblingPath } = await setupRepos();
+  const trace = await startGitTrace();
+  try {
+    await advanceBase(siblingPath, "feature.txt", "base version\n");
+    const oldHead = await git(["rev-parse", "HEAD"], workerPath);
+
+    const result = await syncFeatureBranchWithDefault(
+      FEATURE_BRANCH,
+      DEFAULT_BRANCH,
+      { cwd: workerPath, env: trace.env },
+    );
+
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assert(isPrBranchConflictError(result.error), result.error.message);
+    }
+    assertEquals(await git(["rev-parse", "HEAD"], workerPath), oldHead);
+    assertEquals(
+      await git(["rev-parse", "--abbrev-ref", "HEAD"], workerPath),
+      FEATURE_BRANCH,
+    );
+    assertEquals(
+      await Deno.readTextFile(`${workerPath}/feature.txt`),
+      "feature\n",
+    );
+    assertEquals(await git(["status", "--porcelain"], workerPath), "");
+    assertEquals(await recordedRebase(trace), false, "no git rebase ran");
+    assertEquals(await recordedPushes(trace), [], "a conflict is not pushed");
+  } finally {
+    await trace.dispose();
     await cleanup(tmpDir);
   }
 });

@@ -634,3 +634,15 @@ Deno.test("composition - a genuine setup fault in the same message shape still c
   );
   assertEquals(diagnosticErrorLine(message), "bash: deno: command not found");
 });
+
+Deno.test("diagnosticErrorLine - git's discovery-boundary trailer does not displace the cause (Issue #2848)", () => {
+  // What git prints when a run's cwd holds no repository on a mounted volume:
+  // the last line names an environment variable, never the directory.
+  const detail = diagnosticErrorLine([
+    "Failed to set up repo stSoftwareAU/VibeCoder: Could not repair the fetch refspec:",
+    "fatal: not a git repository (or any parent up to mount point /home/vibe/auto-issue-work)",
+    "Stopping at filesystem boundary (GIT_DISCOVERY_ACROSS_FILESYSTEM not set).",
+  ].join("\n"));
+  assertStringIncludes(detail, "fatal: not a git repository");
+  assertEquals(detail.includes("GIT_DISCOVERY_ACROSS_FILESYSTEM"), false);
+});
