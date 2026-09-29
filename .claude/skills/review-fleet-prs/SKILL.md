@@ -20,7 +20,7 @@ leave the session running:
 
 Optional argument: `owner/name` to review one repo only.
 
-### Running unattended
+## Running unattended
 
 On an always-on host, `run.sh` in this directory does the same without an
 open session: it runs the gate, and starts a headless `claude -p` round only
