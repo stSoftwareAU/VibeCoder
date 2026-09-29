@@ -43,6 +43,7 @@ import {
   type AbandonRestartRequest,
 } from "./conflict_abandon_restart.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
+import { sweepEscalatedLeftovers } from "./escalated_cleanup.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import {
@@ -373,14 +374,29 @@ export interface StallRepairPassOptions extends ScanBlockingPrStallsOptions {
 }
 
 /**
- * One pass: scan blocking PRs for stalls, then repair each one. Green PRs are
- * handled by the scan itself (Issue #2801).
+ * One pass: sweep the retired escalation's leftovers from each repository
+ * (Issue #2805), scan blocking PRs for stalls, then repair each one. Green PRs
+ * are handled by the scan itself (Issue #2801).
  */
 export async function runStallRepairPass(
   opts: StallRepairPassOptions,
 ): Promise<
   Result<Array<{ stall: BlockingPrStall; action: StallRepairAction }>>
 > {
+  // First, so a PR freed of `escalated` is scanned in this same cycle.
+  for (const repo of opts.repos) {
+    const swept = await sweepEscalatedLeftovers(repo, {
+      ghCommandFn: opts.ghCommandFn,
+      logger: opts.logger,
+      fleetAuthors: opts.fleetAuthors,
+    });
+    if (swept.failures > 0) {
+      opts.logger.warn("Escalated cleanup finished with failures", {
+        repo,
+        failures: swept.failures,
+      });
+    }
+  }
   const scan = await scanBlockingPrStalls(opts);
   if (!scan.ok) return scan;
   const results: Array<{ stall: BlockingPrStall; action: StallRepairAction }> =

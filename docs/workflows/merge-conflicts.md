@@ -1146,11 +1146,14 @@ label now means — a human must decide — but it made the label a
 this lane's queue, for a reason this lane had no part in. VibeCoder #549 was
 stranded exactly that way (Issue #569).
 
-A PR that is behind, conflicting, red or unmergeable is **work**. Those
-blockages are now filed as issues the fleet can claim
-(`worker/deno/lib/escalate_as_work.ts`), and the PR carries the non-vetoing
-`escalated` marker instead. `needs-human` is reserved for what genuinely needs
-a person: a policy call, a credential, confirming intent.
+A PR that is behind, conflicting, red or unmergeable is **work**. Stall
+self-repair now handles those blockages directly — sync and rerun the owning
+lane once, then abandon and redo (Issues #2802, #2803) — rather than filing an
+issue or adding the `escalated` label. The stall-repair pass sweeps away the
+leftovers of the old escalation each cycle
+(`worker/deno/lib/escalated_cleanup.ts`, Issue #2805). `needs-human` is
+reserved for what genuinely needs a person: a policy call, a credential,
+confirming intent.
 
 **The merge-conflict scan applies it for no conflict outcome** (Issue #2310). A
 spent budget used to end here — `needs-human` plus a summary naming the route —

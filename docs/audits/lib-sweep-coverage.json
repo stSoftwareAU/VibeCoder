@@ -213,7 +213,6 @@
         "worker/deno/lib/diagnose.ts",
         "worker/deno/lib/diagnose_issue.ts",
         "worker/deno/lib/direct_merge.ts",
-        "worker/deno/lib/escalate_as_work.ts",
         "worker/deno/lib/escalation_cleanup.ts",
         "worker/deno/lib/execute_claude_phase.ts",
         "worker/deno/lib/failure_detection_gate.ts",
@@ -2240,6 +2239,18 @@
       "sweptAt": "7f63a30c92df718559c3eb1a4543de95081308d1",
       "paths": [
         "worker/deno/lib/stall_repair.ts"
+      ]
+    },
+    {
+      "issue": 2805,
+      "chunk": "top-up-2805",
+      "title": "top-up: the escalated clean-up sweep",
+      "ledger": "docs/audits/security-sweep-2805-escalated-cleanup.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: escalated_cleanup.ts (#2805)",
+      "status": "swept",
+      "sweptAt": "e210e1e003745dd5fb4714f889b92e463563405c",
+      "paths": [
+        "worker/deno/lib/escalated_cleanup.ts"
       ]
     }
   ],
