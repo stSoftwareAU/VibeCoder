@@ -2184,7 +2184,10 @@ async function runPrMergeRung(
     };
   }
 
-  logger.warn(`The merge rung on PR #${prNumber} did not complete`, {
+  // `nothing-to-merge` is the rung's expected ending on this path (the base is
+  // already an ancestor), so it is information, not a warning (Issue #2806).
+  const log = outcome.kind === "nothing-to-merge" ? logger.info : logger.warn;
+  log.call(logger, `The merge rung on PR #${prNumber} did not complete`, {
     repo,
     prNumber,
     branchName,

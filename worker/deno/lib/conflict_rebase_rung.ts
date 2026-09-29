@@ -1,5 +1,7 @@
 /**
  * The stale-verdict ladder's merge rung (Issues #2279, #2806, parent #2272).
+ * The file name and the ladder's `rebase` rung id are historical: markers
+ * already on PR threads carry that id.
  *
  * Rung 1 (the nudge) moves the head with an empty commit so GitHub recomputes
  * mergeability. When that does not shift a `CONFLICTING` verdict, rung 2 merges

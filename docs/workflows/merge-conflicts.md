@@ -448,11 +448,16 @@ destroys nothing, but a person's branch is theirs to add commits to.
   are read while the merge is still stopped, then `git merge --abort` puts the
   branch back at `OLD` and the rung reports `merge-conflicted`. No agent runs on
   this path.
-- **A merge with nothing to merge is reported, not dressed up as a push.** The
-  ladder only runs once `origin/BASE` is already an ancestor of `OLD`, so unless
-  the base moved since, the merge moves nothing. The rung then reports
-  `nothing-to-merge` rather than pushing `OLD` back — a rung that never rewrites
-  history has nothing else it may try, so the ladder climbs to abandon.
+- **On the stale-verdict path the merge has nothing to merge — today, always.**
+  The ladder runs only once `git merge-base --is-ancestor origin/BASE HEAD`
+  exits 0, and nothing fetches `origin/BASE` again before the rung, so
+  `git merge` finds the base already merged. The rung reports
+  `nothing-to-merge` rather than pushing `OLD` back or synthesising a commit,
+  records itself as failed, and the next scan climbs to abandon. In practice
+  the stale-verdict ladder is therefore nudge → abandon, with one extra scan in
+  between: a rung that never rewrites history has nothing it may do to a head
+  that already contains its base. The push path below is reached only if
+  `origin/BASE` in the clone has moved past `OLD`.
 - **A rejected push fails loud and is never forced.** The merge commit is a
   descendant of `OLD`, so the remote accepts it only as a fast-forward. When
   somebody pushed since, the push is refused: the rung resets the clone to

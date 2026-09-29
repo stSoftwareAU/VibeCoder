@@ -163,7 +163,11 @@ interface GitScript {
   rungMergeCode?: number;
   /** Paths reported unmerged while that merge is stopped (Issue #2806). */
   rungMergeUnmerged?: string[];
-  /** `git rev-parse HEAD` once the merge rung's merge has run (Issue #2806). */
+  /**
+   * `git rev-parse HEAD` once the merge rung's merge has run (Issue #2806).
+   * Unset — the realistic default — the merge moves nothing: the ladder only
+   * runs once the base is already an ancestor of the head.
+   */
   headAfterRungMerge?: string;
 }
 
@@ -182,7 +186,6 @@ function makeGitScript(overrides?: Partial<GitScript>): GitScript {
     headAfterMerge: "2222222222222222222222222222222222222222",
     headAfterNudge: "3333333333333333333333333333333333333333",
     baseSha: "4444444444444444444444444444444444444444",
-    headAfterRungMerge: "5555555555555555555555555555555555555555",
     ...overrides,
   };
 }
@@ -2516,7 +2519,11 @@ function forcedPushArgs(pushes: string[][]): string[] {
 }
 
 Deno.test("processMergeConflict - the merge rung pushes a merge commit once, plainly (Issue #2806)", async () => {
-  const script = staleVerdictScript();
+  // Models a clone whose `origin/BASE` moved past the head — the only state
+  // in which the rung's merge makes a commit to push.
+  const script = staleVerdictScript({
+    headAfterRungMerge: "5555555555555555555555555555555555555555",
+  });
   const { captured, result } = await runProcessor(
     makeInput(),
     script,
@@ -2592,9 +2599,9 @@ Deno.test("processMergeConflict - a conflicting rung merge is aborted and record
 });
 
 Deno.test("processMergeConflict - a rung merge with nothing to merge pushes nothing and records the rung failed (Issue #2806)", async () => {
-  // The base is already in the head, so the merge moves nothing.
+  // The realistic default: the base is already in the head, so the merge
+  // moves nothing.
   const script = staleVerdictScript();
-  script.headAfterRungMerge = script.headSha;
   const { captured, result } = await runProcessor(
     makeInput(),
     script,
@@ -2638,7 +2645,12 @@ Deno.test("processMergeConflict - a clone that is not at the judged head pushes 
 });
 
 Deno.test("processMergeConflict - a refused plain push restores OLD and records git's stderr (Issue #2806)", async () => {
-  const script = staleVerdictScript({ pushCode: 1 });
+  // Models a clone whose `origin/BASE` moved past the head — the only state
+  // in which the rung's merge makes a commit to push.
+  const script = staleVerdictScript({
+    headAfterRungMerge: "5555555555555555555555555555555555555555",
+    pushCode: 1,
+  });
   const { captured, result } = await runProcessor(
     makeInput(),
     script,
