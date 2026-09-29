@@ -13,14 +13,18 @@ partly resolved path. Two examples:
 
 This PR adds a short **Path Confinement** rule with four parts:
 
-1. Resolve the path fully before checking it: join it to the cwd, canonicalise
-   the existing part, and normalise or reject every `..`/`.`, including in a
-   not-yet-existing tail.
+1. Resolve the path fully before checking it, in a fixed order: join it to the
+   cwd, normalise or reject every `..`/`.` (including in a not-yet-existing
+   tail), then canonicalise the longest existing prefix of the normalised
+   path, then compare, and act on the checked path. Canonicalising first
+   would let `<dir>/missing/../link/file` collapse onto a symlink after the
+   symlink check had run.
 2. Validate identifiers that become path segments with an allow-list that
    rejects `..`, `/` and absolute paths. Never reuse a validator written for
    another purpose.
 3. Ship negative `..` tests with every guard (including `..` after a missing
-   component), plus a symlink test on Unix.
+   component), a symlink test on Unix, and the combined case of `..` after a
+   missing component landing on a symlink that points out.
 4. Never claim in a PR summary that a traversal case is impossible unless a
    test proves it.
 
@@ -46,12 +50,12 @@ flowchart TD
   V -- "yes" --> A["Allow-list: reject .., /, absolute"]
   V -- "no" --> J
   A --> J["Join to cwd"]
-  J --> C["Canonicalise existing prefix (symlinks)"]
-  C --> N["Normalise or reject every .. and . incl. missing tail"]
-  N --> K{"Inside allowed dir?"}
+  J --> N["Normalise or reject every .. and . incl. missing tail"]
+  N --> C["Canonicalise longest existing prefix of the normalised path (symlinks)"]
+  C --> K{"Inside allowed dir?"}
   K -- "yes" --> OK["Proceed"]
   K -- "no" --> F["Fail loud"]
-  T["Negative tests: .. after missing component, symlink into protected dir"] -.guards.-> K
+  T["Negative tests: .. after missing component, symlink into protected dir, missing/../symlink"] -.guards.-> K
 ```
 
 ## Test Plan
