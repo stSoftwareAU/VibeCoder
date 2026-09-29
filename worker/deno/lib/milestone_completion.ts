@@ -8,6 +8,11 @@
  * Replaces the deleted worker/shared/milestone_completion.sh (Issue #970).
  * Issue #1106: Regression — this Deno replacement was never created.
  *
+ * Issue #2835: after the normal per-milestone scan, a cross-milestone
+ * dependency deadlock (`milestone_deadlock.ts`) is detected and broken with a
+ * partial rollup (`milestone_deadlock_rollup.ts`), so work already merged
+ * into a deadlocked milestone still reaches the default branch.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -33,6 +38,7 @@ import {
   finalisePr,
 } from "./pr_auto_merge.ts";
 import { retireMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
+import { raiseDeadlockPartialRollups } from "./milestone_deadlock_rollup.ts";
 import {
   isMilestoneTrackingTitle,
   MILESTONE_TRACKING_MARKER,
@@ -795,6 +801,7 @@ async function armSummaryPrAutoMerge(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   arming: SummaryPrArmingInputs,
+  prKind = "milestone summary PR",
 ): Promise<SummaryPrArming> {
   const commentFn = async (
     r: string,
@@ -837,7 +844,7 @@ async function armSummaryPrAutoMerge(
   // must never be read as an armed PR (fail loud, never silently green).
   if (!armed.ok) {
     log(
-      `WARNING: auto-merge was not armed on the milestone summary PR ` +
+      `WARNING: auto-merge was not armed on the ${prKind} ` +
         `${repo}#${prNumber}: ${armed.error.message}`,
     );
     return "failed";
@@ -849,7 +856,7 @@ async function armSummaryPrAutoMerge(
     outcome.result === AutoMergeResult.MergedDirectly
   ) {
     log(
-      `Auto-merge ${outcome.result} on the milestone summary PR ` +
+      `Auto-merge ${outcome.result} on the ${prKind} ` +
         `${repo}#${prNumber}: ${outcome.message}`,
     );
     return "armed";
@@ -857,14 +864,14 @@ async function armSummaryPrAutoMerge(
 
   if (!autoMergeOutcomeNeedsComment(outcome)) {
     log(
-      `Auto-merge withheld on the milestone summary PR ${repo}#${prNumber} ` +
+      `Auto-merge withheld on the ${prKind} ${repo}#${prNumber} ` +
         `(${outcome.result}): ${outcome.message}`,
     );
     return "withheld";
   }
 
   log(
-    `WARNING: auto-merge was not armed on the milestone summary PR ` +
+    `WARNING: auto-merge was not armed on the ${prKind} ` +
       `${repo}#${prNumber}: ${outcome.message}`,
   );
   try {
@@ -1616,5 +1623,57 @@ async function processRepoMilestones(
         await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
       }
     }
+  }
+
+  // Issue #2835 (part of #2794): break any cross-milestone dependency
+  // deadlock left standing after the pass above. A deadlocked milestone
+  // always has open children, so its full rollup can never be raised — the
+  // partial rollup lands the work already merged into the milestone branch
+  // without waiting for the deadlock to clear. A failure here never aborts
+  // the repo scan; it is reported and the next iteration retries.
+  try {
+    await raiseDeadlockPartialRollups({
+      repo,
+      defaultBranch,
+      openMilestones: milestones.map((m) => m.title),
+      ghCommandFn,
+      log,
+      cache,
+      ...(authorOptions !== undefined ? { authorOptions } : {}),
+      armCreatedPr: async (prUrl, snapshotBranch) => {
+        const prNumber = summaryPrNumberFromUrl(prUrl);
+        if (prNumber === null) {
+          log(
+            `WARNING: could not read a PR number from '${prUrl.trim()}' — ` +
+              `the partial rollup PR was not armed for auto-merge; the ` +
+              `Auto-Merge sweep retries`,
+          );
+          return;
+        }
+        // Issue #2835: the head passed here is the snapshot branch
+        // (`partial-rollup/...`), NOT the milestone branch — the #3909
+        // open-children gate refuses a `milestone/` head with open
+        // children, and a deadlocked milestone always has open children.
+        // The #4375 base-protection gate still applies as normal.
+        await armSummaryPrAutoMerge(
+          repo,
+          prNumber,
+          snapshotBranch,
+          defaultBranch,
+          ghCommandFn,
+          log,
+          {
+            ...arming,
+            ...(authorOptions !== undefined ? { authorOptions } : {}),
+          },
+          "partial rollup PR",
+        );
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(
+      `WARNING: milestone deadlock scan failed for ${repo}: ${message} (Issue #2835)`,
+    );
   }
 }
