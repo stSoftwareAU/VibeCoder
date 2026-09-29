@@ -198,7 +198,7 @@ flowchart TD
 | 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
 | 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick, unless both sides' originating issues are known and one explicitly supersedes the other; labels the PR `merge-conflict`, bounded to two **concluded** attempts, after which the PR is closed and its originating issue re-queued for a fresh PR (once per issue) before `needs-human`. An attempt disrupted before it concluded is re-attempted rather than counted, bounded at 3 |
 | 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |
-| 1.63 | Blocking-PR stall watchdog | Detect and escalate PRs that block `work-on` issues; the fixes stay with 1.55 and 1 |
+| 1.63 | Blocking-PR stall repair | Repair PRs that block `work-on` issues: sync and rerun the owning lane (1.55 or 1) once, then abandon and redo — never escalate (Issue #2802) |
 | 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
 | 1.66     | Branch cleanup                                        | Delete branches for merged PRs — runs once at start-up, not every cycle                                                                 |
 | 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                   |

@@ -772,7 +772,7 @@ flowchart TD
     P16["🟡 Priority 1.6 — PR Branch Updates (rebase/merge)"]
     P161["🟡 Priority 1.61 — Resolve PR Merge Conflicts"]
     P162["🟡 Priority 1.62 — Nudge Stalled CI"]
-    P163["🟡 Priority 1.63 — Blocking-PR Stall Watchdog"]
+    P163["🟡 Priority 1.63 — Blocking-PR Stall Repair"]
     P165["🟡 Priority 1.65 — Auto-merge Catch-up"]
     P166["🟡 Priority 1.66 — Branch Cleanup (merged PRs, once at start-up)"]
     P167["🟡 Priority 1.67 — Issue Closure (merged PRs)"]
