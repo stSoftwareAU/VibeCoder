@@ -48,8 +48,9 @@ When minting fails, the pass is skipped; it never falls back to posting as the
 `gh` user. The App needs **Pull requests** and **Issues** read and write,
 **Contents**, **Checks** and **Commit statuses** read, and installation on
 every monitored repo and on `stSoftwareAU/VibeCoder` (for improvement issues).
-Add `<app-slug>[bot]` to `pr_reviewers` and `authorized_commenters`. An
-interactive `/review-fleet-prs` session still reviews as the `gh` user.
+Add `<app-slug>[bot]` to `authorized_commenters` (not `pr_reviewers`,
+which would make PR creation fail). An interactive `/review-fleet-prs`
+session still reviews as the `gh` user.
 
 ## Rules
 
