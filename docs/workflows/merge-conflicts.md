@@ -715,7 +715,7 @@ actually used.
   host cleaned the lock as stale and started a competing attempt on the same
   branch — racing the first one's push and leaving it looking disrupted.
 
-### ⏰ A label with nothing behind it escalates itself
+### ⏰ A label with nothing behind it repairs itself
 
 "Nothing stalls unowned" above covers a stall at the **end** of the ladder — a
 PR out of budget whose final escalation never landed. Nothing covered a stall
@@ -736,16 +736,16 @@ flowchart TD
     S -->|"No — stale label"| Q[Nothing to say]
     S -->|Yes| B{"Label older than 8 h?"}
     B -->|No| Q
-    B -->|Yes| C{"needs-human, closed,<br/>or already escalated?"}
+    B -->|Yes| C{"needs-human or closed?"}
     C -->|Yes| Q
     C -->|No| D{"Anything at all since<br/>the label or the last<br/>conclusion, within 8 h?"}
     D -->|"Yes — a conclusion moved it"| Q
-    D -->|"No — including an attempt<br/>that opened and went silent"| E["One comment on the PR:<br/>label age, the silence,<br/>the skip reasons"]
-    E --> F["escalateAsWork — an issue<br/>the fleet can claim"]
-    F --> G["Label the PR escalated<br/>(never needs-human)"]
+    D -->|"No — including an attempt<br/>that opened and went silent"| T{"Trip marker since<br/>the label and the<br/>last conclusion?"}
+    T -->|"No — first trip"| E["Clear the ladder's wait<br/>marker for this head;<br/>post the trip-1 comment"]
+    T -->|"Yes, under 8 h old"| Q
+    T -->|"Yes, 8 h or older —<br/>second trip"| G["abandonAndRestart<br/>(stalled reason)"]
     style A fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style E fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style F fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style Q fill:#707070,stroke:,color:#fff
 ```
@@ -768,15 +768,22 @@ Five details carry the weight:
   starts a fresh clock from itself — so one failed attempt in hour two does not
   buy permanent silence for a PR that then never gets its second, which nothing
   else watches either, because its budget is not spent.
-- **Dedupe lives on the PR.** One escalation per PR per stall, keyed on the
-  `<!-- vibe-work-escalation:owner/repo#N -->` marker comment. Every host runs
-  this scan every cycle, and the failure being detected is precisely the kind
-  that recurs every cycle, so host-local dedupe would turn a stalled PR into a
-  comment flood. Suppressing signals are trusted only from a fleet author: a
-  forged marker must never buy silence.
-- **It escalates, it never retries.** Forcing an attempt from a watchdog would
-  race the ordinary pass and manufacture the disrupted state the workflow works
-  hard to avoid.
+- **The trip lives on the PR.** The first trip posts one
+  `<!-- vibe-conflict-stall-repair trip="1" -->` comment, and every host reads
+  it back, so a stall trips once however many hosts see it. A conclusion after
+  the trip ends it: the next stall starts again at its own first trip. Trip
+  markers count only from a fleet author, so a forged one can never skip
+  straight to closing the PR.
+- **It repairs, it never starts an attempt** (Issue #2803). Forcing an attempt
+  from a watchdog would race the ordinary pass and manufacture the disrupted
+  state the workflow works hard to avoid. The first trip instead deletes the
+  ladder's `rung="abandon"` wait marker for the head, so the ordinary pass
+  reruns the ladder — its own merge-then-resolve attempt — once. If the PR is
+  still stalled 8 hours after the trip, the second trip closes it and redoes
+  its work through `abandonAndRestart` with a `stalled` reason; the re-queue
+  label is the issue's own pickup label, else `idle-task`, never `work-on`.
+  It files no issue and adds no label; both trips run under the maintenance
+  lease.
 
 ### 🤫 Why #116 went silent
 
@@ -878,14 +885,16 @@ that gap, and reading the queue means reading both:
   summary means no pass ran, which is a different problem from a pass that ran
   and waited.
 - **The stall watchdog**
-  ([above](#-a-label-with-nothing-behind-it-escalates-itself)). A PR that is
+  ([above](#-a-label-with-nothing-behind-it-repairs-itself)). A PR that is
   still `CONFLICTING`, has carried the label for **8 hours**, and has had no
   attempt *conclude* in that window is a stalled queue whatever caused it
-  (Issue #1112). It posts one comment on the PR — label age, the silence, the
-  skip reasons — and files the stall as work through `escalateAsWork`.
-- **The watchdog applies `escalated`, never `needs-human`.** A mechanical stall
-  is work the fleet can claim, and `needs-human` is a cross-subsystem veto that
-  would remove the PR from the very lane that clears it (Issue #569).
+  (Issue #1112). Its first trip posts one comment on the PR — label age, the
+  silence, the skip reasons — and reruns the ladder once; its second trip
+  abandons and redoes the PR through `abandonAndRestart` (Issue #2803).
+- **The watchdog files no issue and applies no label — never `escalated`,
+  never `needs-human`.** A mechanical stall is repaired, not reported, and
+  `needs-human` is a cross-subsystem veto that would remove the PR from the
+  very lane that clears it (Issue #569).
 - **The blocking-PR stall watchdog defers to this lane.** A `CONFLICTING` PR —
   or one carrying `merge-conflict` — is never reported as "green but unmerged",
   is never synced or abandoned by stall repair, and a live escalation from
@@ -1222,8 +1231,9 @@ branch at the same time. A host that loses the race returns immediately.
   exhausted stale-verdict ladder, which records the rung as failed and asks
   nobody (Issue #2280).
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
-  a label with no concluded attempt behind it. It files work and applies
-  `escalated`; it never applies `needs-human` and never retries.
+  a label with no concluded attempt behind it. It reruns the ladder once, then
+  abandons and redoes the PR; it files no issue and applies no label, never
+  `escalated` or `needs-human`.
 - `worker/deno/lib/merge_conflict_markers.ts` — the marker literals the scan,
   the processor, the deferral tracker and the abandon rung all read, in one
   place so they cannot drift apart.
