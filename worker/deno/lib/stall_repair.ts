@@ -42,6 +42,7 @@ import {
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
 } from "./conflict_abandon_restart.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import {
@@ -131,7 +132,12 @@ export function buildStallRepairComment(stall: BlockingPrStall): string {
     buildStallRepairMarker(stall),
     "🔧 **Stalled PR — syncing and rerunning its lane once**",
     "",
-    `${stall.signals.map((s) => s.detail).join("; ")}. The worker is syncing ` +
+    // A detail can carry fork-chosen check names; defuse any comment
+    // delimiter so it cannot forge a marker this worker later trusts.
+    `${
+      neutraliseAgentMarkers(stall.signals.map((s) => s.detail).join("; "))
+        .text
+    }. The worker is syncing ` +
     `this branch with its target and rerunning the ${lanes} lane once. If the ` +
     "PR is still stalled at the next check, it is closed and its originating " +
     "issue is redone.",

@@ -2229,6 +2229,18 @@
       "paths": [
         "worker/deno/lib/ci_human_gate_comment.ts"
       ]
+    },
+    {
+      "issue": 2802,
+      "chunk": "top-up-2802",
+      "title": "top-up: the blocking-PR stall repair",
+      "ledger": "docs/audits/security-sweep-2802-stall-repair.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stall_repair.ts (#2802)",
+      "status": "swept",
+      "sweptAt": "7f63a30c92df718559c3eb1a4543de95081308d1",
+      "paths": [
+        "worker/deno/lib/stall_repair.ts"
+      ]
     }
   ],
   "roots": [

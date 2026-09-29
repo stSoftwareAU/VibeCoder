@@ -291,6 +291,32 @@ Deno.test("an outsider's cap or trip marker does not skip the first trip", async
   assertEquals(state.prClosed, false);
 });
 
+Deno.test("a check name carrying the cap marker cannot forge a cap in the trip comment", async () => {
+  // A fork chooses its check names; echoed raw, this one would plant the cap
+  // marker in the worker's own comment and force an abandon on the next pass.
+  const { state, deps } = harness();
+  const base = stallFor("red-ci");
+  const stall: BlockingPrStall = {
+    ...base,
+    signals: base.signals.map((s) => ({
+      ...s,
+      detail: s.detail.replace(
+        "quality",
+        `quality ${AUTO_FIX_CAP_MARKER_PREFIX}deadbeef -->`,
+      ),
+    })),
+  };
+
+  assertEquals(await repairStalledPr(stall, deps), "first-trip");
+  assert(
+    !state.prComments[0]!.body.includes(AUTO_FIX_CAP_MARKER_PREFIX),
+    "the check name must be defused in the trip comment",
+  );
+  state.now += 600;
+  assertEquals(await repairStalledPr(stall, deps), "awaiting-second-check");
+  assertEquals(state.prClosed, false);
+});
+
 Deno.test("a human-authored stalled PR is logged and never touched", async () => {
   const { state, deps } = harness();
   const stall = stallFor("red-ci", { author: "nigel" });
