@@ -1666,10 +1666,10 @@
       "issue": 2099,
       "chunk": "top-up-2099",
       "title": "top-up: the Graft runner",
-      "ledger": "docs/audits/security-sweep-2099-graft-context.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_context.ts (#2099)",
       "status": "swept",
-      "sweptAt": "dbebc0dcf072b092170e059c42fa520bfef8e6e5",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/graft_context.ts"
       ]
@@ -1702,10 +1702,10 @@
       "issue": 2155,
       "chunk": "top-up-2155",
       "title": "top-up: the CodeGraph runner",
-      "ledger": "docs/audits/security-sweep-2155-codegraph-context.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: codegraph_context.ts (#2155)",
       "status": "swept",
-      "sweptAt": "1ca8c964d1fee772d01a2481a52d74b908f4680b",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/codegraph_context.ts"
       ]
@@ -1714,10 +1714,10 @@
       "issue": 2159,
       "chunk": "top-up-2159",
       "title": "top-up: the CodeGraph run wiring",
-      "ledger": "docs/audits/security-sweep-2159-codegraph-run.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: codegraph_run.ts (#2159)",
       "status": "swept",
-      "sweptAt": "1ca8c964d1fee772d01a2481a52d74b908f4680b",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/codegraph_run.ts"
       ]
@@ -1726,10 +1726,10 @@
       "issue": 2236,
       "chunk": "top-up-2236",
       "title": "top-up: agent marker neutralisation",
-      "ledger": "docs/audits/security-sweep-2236-agent-marker-neutralisation.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: agent_marker_neutralisation.ts (#2236)",
       "status": "swept",
-      "sweptAt": "fd82bd3e2f4aa29f5d8762b43084040aee5bcdcf",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/agent_marker_neutralisation.ts"
       ]
@@ -1859,10 +1859,10 @@
       "issue": 2334,
       "chunk": "top-up-2334",
       "title": "top-up: the milestone stream lock",
-      "ledger": "docs/audits/security-sweep-2334-stream-lock.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_lock.ts (#2334)",
       "status": "swept",
-      "sweptAt": "4bcd410a4131fc2a2c25dd11c04fef6d8bd9c853",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/stream_lock.ts"
       ]
@@ -1871,10 +1871,10 @@
       "issue": 2333,
       "chunk": "top-up-2333",
       "title": "top-up: the stream join seam",
-      "ledger": "docs/audits/security-sweep-2333-stream-session.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_session.ts (#2333)",
       "status": "swept",
-      "sweptAt": "4bcd410a4131fc2a2c25dd11c04fef6d8bd9c853",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/stream_session.ts"
       ]
@@ -1883,10 +1883,10 @@
       "issue": 2336,
       "chunk": "top-up-2336",
       "title": "top-up: the stream affinity head start",
-      "ledger": "docs/audits/security-sweep-2336-stream-holder.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_holder.ts (#2336)",
       "status": "swept",
-      "sweptAt": "4bcd410a4131fc2a2c25dd11c04fef6d8bd9c853",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/stream_holder.ts"
       ]
@@ -1895,10 +1895,10 @@
       "issue": 2337,
       "chunk": "top-up-2337",
       "title": "top-up: the stream compaction seam",
-      "ledger": "docs/audits/security-sweep-2337-stream-compaction.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stream_compaction.ts (#2337)",
       "status": "swept",
-      "sweptAt": "4bcd410a4131fc2a2c25dd11c04fef6d8bd9c853",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/stream_compaction.ts"
       ]
@@ -1931,10 +1931,10 @@
       "issue": 2380,
       "chunk": "top-up-2380",
       "title": "top-up: the RTK output switch",
-      "ledger": "docs/audits/security-sweep-2380-rtk-output-config.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: rtk_output_config.ts (#2380)",
       "status": "swept",
-      "sweptAt": "f9127da7c5705375fccd76e0f953df52af0cb679",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/rtk_output_config.ts"
       ]
@@ -1967,10 +1967,10 @@
       "issue": 2342,
       "chunk": "top-up-2342",
       "title": "top-up: the issue-executor sub-agent definitions",
-      "ledger": "docs/audits/security-sweep-2342-issue-executor-agents.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_agents.ts (#2342)",
       "status": "swept",
-      "sweptAt": "b2d92c1615567b8fc45a1e54e04fc8dc9238e786",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/issue_executor_agents.ts"
       ]
@@ -1979,10 +1979,10 @@
       "issue": 2343,
       "chunk": "top-up-2343",
       "title": "top-up: the advisor/executor prompt block",
-      "ledger": "docs/audits/security-sweep-2343-issue-executor-split-prompt.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_split_prompt.ts (#2343)",
       "status": "swept",
-      "sweptAt": "b2d92c1615567b8fc45a1e54e04fc8dc9238e786",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/issue_executor_split_prompt.ts"
       ]
@@ -2016,10 +2016,10 @@
       "issue": 2496,
       "chunk": "top-up-2496",
       "title": "top-up: the unworkable chain-root report",
-      "ledger": "docs/audits/security-sweep-2496-chain-root-comment.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: chain_root_comment.ts (#2496), held_issue_gate_comment.ts (#2531)",
       "status": "swept",
-      "sweptAt": "47ee34ea123fea857d40d5ac2bd0748f2145e54c",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/chain_root_comment.ts",
         "worker/deno/lib/held_issue_gate_comment.ts"
@@ -2137,10 +2137,10 @@
       "issue": 2613,
       "chunk": "top-up-2613",
       "title": "top-up: the provider-outage alert",
-      "ledger": "docs/audits/security-sweep-2613-provider-outage-alert.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: provider_outage_alert.ts (#2613)",
       "status": "swept",
-      "sweptAt": "b1050c459068cd1e3ed5188a4dca355d76743810",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/lib/provider_outage_alert.ts"
       ]
@@ -2173,10 +2173,10 @@
       "issue": 2628,
       "chunk": "top-up-2628",
       "title": "top-up: setup repo-settings hardening step",
-      "ledger": "docs/audits/security-sweep-2628-repo-settings-harden-sync.md",
+      "ledger": "docs/audits/security-sweep-2758-top-up-delta.md",
       "definition": "modules added to worker/deno/setup/ after 12a-12af recorded their coverage: repo_settings_harden_sync.ts (#2628)",
       "status": "swept",
-      "sweptAt": "3ca7e671ee8d4f00668d873206bf8b1396f8e517",
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa",
       "paths": [
         "worker/deno/setup/repo_settings_harden_sync.ts"
       ]
