@@ -50,6 +50,27 @@ export interface FetchRefspecRepair {
 export async function ensureAllBranchesFetchRefspec(
   options: GitCommandOptions = {},
 ): Promise<Result<FetchRefspecRepair>> {
+  // Issue #2825: outside a usable repository `config --get-all` exits 1 just
+  // like "no such key" and `--add` says only "not in a git directory". Ask
+  // `rev-parse` first — it names the real reason (not a repository, dubious
+  // ownership) and trips the safe.directory self-repair in `runGitCommand`.
+  const probe = await runGitCommand(["rev-parse", "--git-dir"], options);
+  if (!probe.ok) {
+    return { ok: false, error: probe.error };
+  }
+  if (probe.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `${options.cwd ?? "the working directory"} is not a usable git ` +
+          `repository: ${
+            probe.value.stderr.trim() ||
+            `git rev-parse exit ${probe.value.code}`
+          }`,
+      ),
+    };
+  }
+
   const existing = await runGitCommand(
     ["config", "--get-all", "remote.origin.fetch"],
     options,

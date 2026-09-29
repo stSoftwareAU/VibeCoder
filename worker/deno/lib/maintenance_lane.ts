@@ -19,7 +19,8 @@
  * that clone:
  *
  * - a repository a slot holds is refused, so the pass defers to the next
- *   cycle rather than colliding;
+ *   cycle rather than colliding — and a pass servicing a PR reserves it so
+ *   it drains (Issues #2789, #2793);
  * - a repository the lane holds is in the pool's exclusion set, so no slot
  *   claims an issue there while the pass runs.
  *
@@ -46,10 +47,23 @@ export interface RepoLease {
 
 /** The registry operations the lane needs; the pool's registry satisfies it. */
 export interface MaintenanceLaneBroker {
-  /** True when this call won `repo`; false when a slot already holds it. */
-  tryAcquire(repo: string, ref: number): boolean;
+  /**
+   * True when this call won `repo`; false when a slot already holds it. A
+   * refused call with `reserve` reserves the repository (Issue #2793).
+   */
+  tryAcquire(repo: string, ref: number, options?: LeaseOptions): boolean;
   /** Give `repo` back. */
   release(repo: string): void;
+}
+
+/** How a refused lease treats the repository (Issue #2793). */
+export interface LeaseOptions {
+  /**
+   * Reserve the repository when a slot holds it, so it drains for this ref.
+   * Set only by passes servicing a PR; milestone sync and self-heal lease
+   * every cloned repository each cycle, so they defer without reserving.
+   */
+  reserve?: boolean;
 }
 
 const storage = new AsyncLocalStorage<MaintenanceLaneBroker>();
@@ -76,16 +90,18 @@ const UNCONTENDED_LEASE: RepoLease = { release() {} };
  * @param repo - `owner/name` of the repository about to be checked out.
  * @param ref - The PR or issue number the pass is servicing, for the hold's
  *   log attribution. Defaults to 0 when the pass has no such number.
+ * @param options - `reserve: true` for a pass servicing a PR (Issue #2793).
  * @returns The lease, or `null` when a slot holds the repository and the
  *   pass must defer.
  */
 export function acquireMaintenanceRepoLease(
   repo: string,
   ref = 0,
+  options?: LeaseOptions,
 ): RepoLease | null {
   const broker = storage.getStore();
   if (broker === undefined) return UNCONTENDED_LEASE;
-  if (!broker.tryAcquire(repo, ref)) return null;
+  if (!broker.tryAcquire(repo, ref, options)) return null;
   let released = false;
   return {
     release() {

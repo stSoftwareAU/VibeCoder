@@ -27,7 +27,10 @@ claimable issues exist. The framework defines:
   are machine-recoverable
   ([`worker/deno/lib/idle_task_issue.ts`](../worker/deno/lib/idle_task_issue.ts)).
 - A label-only dedup query (`findExistingIdleTaskIssue`) that keeps the worker
-  from filing two idle-task issues against the same repo at once.
+  from filing two idle-task issues against the same repo at once. It fails
+  closed: a repo whose lookup fails (a `gh` error or malformed output) is never
+  treated as clean, so filing into it is blocked for that tick and logged as
+  `[idle-task] repo=<repo> action=skipped reason=lookup_failed`.
 - A claim handler
   ([`worker/deno/lib/idle_task_claim_handler.ts`](../worker/deno/lib/idle_task_claim_handler.ts))
   that the main loop calls when it picks up an `idle-task` issue. When the issue
@@ -91,6 +94,11 @@ Key points:
 
 - The worker **files a real issue** for every idle task. Nothing runs without
   first being recorded as a claimable work item.
+- **Every filing path is gated on any open `idle-task` issue in the repo.** The
+  idle trigger's `findExistingIdleTaskIssue` and the on-demand sweeps'
+  any-open gate (Issue #2752 — see
+  [Seeding all wrappers on demand](#seeding-all-wrappers-on-demand)) both match
+  by label alone and fail closed on a lookup error.
 - The `idle-task` label is the **lowest priority** in the work queue (selected
   only when every higher tier is globally empty). See the prioritisation table
   in [README.md](../README.md#-work-prioritisation).
@@ -345,6 +353,11 @@ trawling the worker logs.
 Dedup is **two lines, both repo-wide**. Neither is scoped to the scan's own
 label: a finding already open under a *different* template's label, or under a
 workflow label alone, is still a duplicate.
+
+Wrappers are deduped more bluntly still: the on-demand sweeps file nothing into
+a repo holding **any** open `idle-task` issue, whatever its title or other
+labels (Issue #2752 — see
+[Seeding all wrappers on demand](#seeding-all-wrappers-on-demand)).
 
 `{{KNOWN_OPEN_FINDING_IDS}}` is the **deterministic first line**: a scan skips
 any finding whose `<!-- finding-id: … -->` marker is already open in the repo.
@@ -671,6 +684,13 @@ reason=existing_wrapper_open scope=repo` — and only when *every* monitored rep
 holds one does the tick skip altogether
 (`reason=existing_wrapper_open scope=monitored_set held=<n>`).
 
+The census fails closed (Issue #2750). A repo whose lookup fails — a `gh` error
+or output that is not a JSON array — is unknown, never clean, so it is
+subtracted too and logged as
+`[idle-task] repo=<owner/repo> action=skipped reason=lookup_failed`. When no repo is left and any lookup
+failed, the whole-tick skip reports `reason=lookup_failed scope=monitored_set
+held=<n> failed=<n>`; a census that throws outright files nothing that tick.
+
 The gate used to be one open wrapper across the **entire** monitored set
 (#2092). That does prevent the #2089 fan-out, and it also prevents the fleet
 ever using more than one slot on idle work: Issue #1083 measured four Vibe
@@ -754,7 +774,7 @@ before filing a fresh wrapper. The full per-repo evaluation order (logged with
 
 | Order | Gate                          | Skips when                                                                                                                                                                                                                          |
 | ----- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 | Per-repo wrapper census | The target repo already holds an open `idle-task` issue, or every monitored repo does. Reason: `existing_wrapper_open` (`scope=repo` per refusal, `scope=monitored_set` for the whole-tick skip). |
+| 1 | Per-repo wrapper census | The target repo already holds an open `idle-task` issue, or every monitored repo does. Reason: `existing_wrapper_open` (`scope=repo` per refusal, `scope=monitored_set` for the whole-tick skip). A repo whose lookup failed is skipped too — reason `lookup_failed` (Issue #2750). |
 | 2     | Per-repo label dedup          | The target repo already has an open `idle-task` issue (defence-in-depth against the cross-repo TOCTOU). Reason: `duplicate`.                                                                                                        |
 | 3 | Output-backlog gate | The target repo has `BACKLOG_THRESHOLD` (currently 6) or more open issues carrying `template.outputLabel`. The previous batch is still being remediated. Reason: `output_backlog`. |
 | 4 | `shouldFile` veto | The template's own `shouldFile` returns `false`. `security-scan` uses this to refuse a new run while open `security` findings or an existing `Run a security scan` wrapper still exists. Reason: `pending_results`. |
@@ -839,6 +859,15 @@ would put the census back in disagreement with the scan — and
 `[idle-detect] … ALERT mis_classification` line still fires if the two ever
 part company.
 
+One exception covers every tier (Issue #2800). While one of **this host's**
+slots holds a repository's blank stream, `BlankStreamLockRegistry` refuses the
+sibling slots every other no-milestone issue of that repository, `work-on` and
+`top-priority` included. The slot's census is told which repositories those are
+(`blankStreamHeldRepos`, from `heldRepos()`), and it counts every no-milestone
+issue there as `stream_occupied`. Before this, `stSoftwareAU/GRQ-AutoTrader`
+logged `work_on=2 inversion_signal=true` on three cycles while its blank stream
+was `held by slot s2 on #1593`.
+
 Since Issue #1071 it is not merely "the same gate" but the same **function**:
 `occupiedStreamsFor` calls `isMilestoneOccupied`, over the fleet-identity set
 `run_core_production_deps.ts` resolves for the selector. The census used to
@@ -855,7 +884,7 @@ flowchart LR
     L -- no --> X[not counted]
     L -- yes --> B{Blocking label<br/>or assignee?}
     B -- yes --> X
-    B -- no --> S{"Stream occupied,<br/>and tier is low-priority<br/>or idle-task?"}
+    B -- no --> S{"Stream occupied and tier is<br/>low-priority or idle-task,<br/>or blank stream held here?"}
     S -- yes --> SO["stream_occupied+1"]
     S -- no --> P{Open PR blocks<br/>its stream?}
     P -- yes --> PB["pr_blocked+1"]
@@ -1473,7 +1502,9 @@ applies two layered checks before filing.
    set, each with a logged refusal naming the repo and the issue
    (`action=skipped reason=existing_wrapper_open scope=repo`); only when every
    monitored repo holds one is the whole tick skipped
-   (`scope=monitored_set`). This guarantees at most one open `idle-task`
+   (`scope=monitored_set`). A repo whose lookup failed is also removed
+   (`reason=lookup_failed`, Issue #2750) and a census that throws skips the
+   tick, so an unknown repo is never filed into. This guarantees at most one open `idle-task`
    wrapper **per repository** (Issue #1083) — never one across the fleet, which
    capped eight slots at a single idle task — while keeping the protection
    #2089 was really built for: a tick files at most one wrapper, so successive
@@ -1508,12 +1539,48 @@ exposes the same `createAllIdleTaskWrappers` seam that the
 deno run -A worker/deno/mod.ts create-all-idle-task-wrappers --repo owner/repo
 ```
 
-It bypasses both the random single-pick and the cross-repo gate so one call
-seeds every registered wrapper at once. It is **idempotent** — any wrapper whose
-canonical title is already open is reported as skipped rather than duplicated —
-and reports `N created, M already open`. Run it from the repository root so the
-template body builders can resolve their cwd-relative prompt paths (e.g.
-`prompts/best_practices/buckets/general.md`).
+It bypasses the random single-pick so one call seeds every registered wrapper
+at once, and reports `N created, M already open`.
+
+**Any open `idle-task` issue blocks the whole sweep** (Issue #2752). Before a
+single body is built, the sweep asks once for every open `idle-task` issue in
+the target repo (`gh issue list --label idle-task --state open --json
+number,title,url`, parsed by the fail-closed `parseOpenIdleTaskIssues`). Title
+and labels do not matter: a hand-renamed wrapper, one triaged into
+`needs-human` or `failed`, and a `Finish #N:` continuation all count. The
+exact-canonical-title dedup this replaced let an open wrapper with any other
+title through, so a repo already holding idle work was seeded a second batch.
+
+```mermaid
+flowchart TD
+    S([Sweep starts]) --> Q["One lookup: open idle-task issues<br/>number, title, url"]
+    Q -- "gh error / non-JSON / non-array" --> E["reason=lookup_failed<br/>IdleTaskSweepError — nothing filed"]
+    Q -- "none open" --> F[File every wrapper]
+    Q -- "#N open" --> G{force?}
+    G -- no --> B["reason=existing_wrapper_open<br/>skip result, blockedBy = #N"]
+    G -- yes --> T["File, skipping exact<br/>canonical titles already open"]
+    style E fill:#c1121f,stroke:#780000,color:#fff
+    style B fill:#adb5bd,stroke:#6c757d,color:#000
+    style F fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+- **Blocked.** The sweep files nothing, logs
+  `[idle-task] repo=<repo> issue=<n> action=skipped reason=existing_wrapper_open`,
+  and returns a success result whose `blockedBy` names the open issue; every
+  selected template is reported as skipped.
+- **Fails closed.** A lookup that throws, or prints non-JSON or a non-array,
+  logs `[idle-task] repo=<repo> action=skipped reason=lookup_failed` and returns
+  an `IdleTaskSweepError` — an unknown repo is never read as clean.
+- **`force`.** The optional `force` dependency bypasses the any-open gate; the
+  exact-canonical-title dedup still applies, so a forced sweep never duplicates
+  an open wrapper. A forced sweep logs
+  `[idle-task] repo=<repo> issue=<n> action=forced`, naming the open issue it
+  bypassed. Only the three raise commands below expose it, as `--force`
+  (Issue #2753); the `create-all-idle-task-wrappers`,
+  `process-seed-idle-tasks` and `process-add-repo` commands never force.
+
+Run it from the repository root so the template body builders can resolve their
+cwd-relative prompt paths (e.g. `prompts/best_practices/buckets/general.md`).
 
 #### When a sweep fails part-way
 
@@ -1585,11 +1652,21 @@ deno run -A worker/deno/mod.ts raise-boy-scout-idle-tasks
 
 It reuses the same `createAllIdleTaskWrappers` seam with a template-name filter
 ([`BOY_SCOUT_TEMPLATE_NAMES`](../worker/deno/lib/boy_scout_idle_tasks.ts)), so
-it inherits the same **idempotent** per-repo title dedup — an already-open Boy
-Scout wrapper is reported as skipped, never duplicated. A per-repo failure is
-recorded in the summary and the sweep continues to the next repo; the command
-reports `N filed, M already open, K failed`. Run it from the repository root for
-the same prompt-path reason as above.
+it inherits the same per-repo **any-open gate** — a repo already holding an
+open `idle-task` issue is skipped whole, never seeded a second batch. A per-repo
+failure is recorded in the summary and the sweep continues to the next repo; the
+command reports `N filed, M already open, K failed`. Run it from the repository
+root for the same prompt-path reason as above.
+
+Pass `--force` to file past the gate (Issue #2753) — each bypassed repo logs
+`[idle-task] repo=<repo> issue=<n> action=forced`, and a wrapper whose exact
+canonical title is already open is still skipped. An unknown flag (e.g. a
+misspelt `--forse`) is refused before anything is filed:
+
+```bash
+deno run -A worker/deno/mod.ts raise-boy-scout-idle-tasks \
+  --monitored-repos owner/repo-a --force
+```
 
 ### Raising all wrappers across several repos
 
@@ -1611,11 +1688,20 @@ deno run -A worker/deno/mod.ts raise-all-idle-tasks
 ```
 
 It reuses the same `createAllIdleTaskWrappers` seam per repo with **no**
-template-name filter, so it inherits the same **idempotent** per-repo title
-dedup — an already-open wrapper is reported as skipped, never duplicated. A
+template-name filter, so it inherits the same per-repo **any-open gate** — a
+repo already holding an open `idle-task` issue is skipped whole. A
 per-repo failure is recorded in the summary and the sweep continues to the next
 repo; the command reports `N filed, M already open, K failed`. Run it from the
 repository root for the same prompt-path reason as above.
+
+`--force` files past the gate exactly as for `raise-boy-scout-idle-tasks`
+(Issue #2753): `action=forced` is logged per bypassed repo, exact-title dedup
+still applies, and an unknown flag is refused:
+
+```bash
+deno run -A worker/deno/mod.ts raise-all-idle-tasks \
+  --monitored-repos owner/repo-a --force
+```
 
 ### Raising one named template against a pinned repo
 
@@ -1645,11 +1731,20 @@ template-name set
 nothing. It reuses the same `createAllIdleTaskWrappers` seam with a single-entry
 template-name filter
 ([`raiseSingleIdleTask`](../worker/deno/lib/raise_single_idle_task.ts)), so it
-inherits the same **idempotent** per-repo title dedup — an already-open wrapper
-is reported as skipped, never duplicated. A per-repo failure is recorded in the
+inherits the same per-repo **any-open gate** — a repo already holding an open
+`idle-task` issue is skipped whole. A per-repo failure is recorded in the
 summary and the sweep continues; the command reports
 `N filed, M already open, K failed`. Run it from the repository root for the
 same prompt-path reason as above.
+
+`--force` files past the gate (Issue #2753), logging `action=forced` for each
+bypassed repo; the named wrapper is still never duplicated when its exact
+canonical title is already open. An unknown flag is refused:
+
+```bash
+deno run -A worker/deno/mod.ts raise-single-idle-task \
+  --template documentation-audit --repo owner/repo-a --force
+```
 
 ### Requesting a sweep by issue, without a human `deno run`
 
@@ -1705,8 +1800,12 @@ Three properties make this safe to expose:
   allowlist still carries only the claimed issue's own repo, so the
    exfiltration boundary is unchanged.
 
-Seeding reuses the same idempotent `createAllIdleTaskWrappers` seam, so a
-re-filed request skips wrappers that are already open. A seeding failure is
+Seeding reuses the same `createAllIdleTaskWrappers` seam, so it inherits the
+any-open gate (Issue #2752): a target that already holds an open `idle-task`
+issue is not seeded, and the run logs
+`[idle-task] repo=<repo> issue=<n> action=skipped reason=existing_wrapper_open`.
+A failed lookup (`reason=lookup_failed`) seeds nothing and is reported as a
+failure. The `add-repo:` onboarding route applies the same gate. A seeding failure is
 reported on the issue and the issue is left **open** for a safe retry.
 
 ### Deciding *which* repo needs a sweep — the freshness report
@@ -1758,11 +1857,11 @@ Three distinctions carry the report's meaning:
   a different problem from a scan that has simply aged out.
 - **`unknown` is not a clean result.** A repo whose history cannot be read
   degrades every one of its pairs to `unknown` plus a
-  `reason=history_read_failed` warning, in the same fail-open shape as
-  `cross_repo_check_failed` — one flaky repo never fails the whole report, and
-  the degradation is never reconciled as "never scanned". A malformed `gh`
-  payload throws for the same reason. Likewise a wrapper whose closing comment
-  cannot be read keeps its date and reports an `unknown` **outcome**.
+  `reason=history_read_failed` warning — one flaky repo never fails the whole
+  report, and the degradation is never reconciled as "never scanned". A
+  malformed `gh` payload throws for the same reason. Likewise a wrapper whose
+  closing comment cannot be read keeps its date and reports an `unknown`
+  **outcome**.
 - **Outcome is read from the template's own close comment.** Every template
   renders `"no findings"` or `"… Filed N issues: #A, #B, …"`, so the report can
   say whether the last run was a no-op or filed work. A third string —
@@ -1924,6 +2023,7 @@ weighted-template + shuffled-repo path.
 flowchart TD
     T["idle tick"] --> X{"every repo already<br/>holds a wrapper?"}
     X -- yes --> S1["skip — existing_wrapper_open"]
+    X -- "census failed" --> S0["skip — lookup_failed"]
     X -- no --> F{"startable repos ≥<br/>idle slots?"}
     F -- yes --> S2["skip — approved_work_in_flight"]
     F -- no --> D["due list (cached 6 h)"]

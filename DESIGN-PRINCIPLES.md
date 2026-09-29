@@ -220,6 +220,18 @@ ladder — the binding constraint on fleet occupancy today.
   visit from anyone. A pull request sitting clean and approved with auto-merge
   unset is a fault of the same class as an idle slot, and the fleet has
   already lost hours to exactly that.
+- **F10a — a busy repository's pull requests are never starved.** The
+  maintenance lane needs a repository to itself, and a repository whose issue
+  slots claim back-to-back is never idle. A refused pass servicing a PR
+  therefore **reserves** the repository (Issue #2789): no slot takes a new
+  stream there and the lane wins it when the current holder releases. Only
+  PR-servicing passes opt in — sync and self-heal defer without reserving — and
+  only the PR that reserved it spends it (Issue #2793). Early release needs a
+  positive signal — the reserving PR closed or merged — never a pass that
+  merely skipped it (Issue #2795). The two-hour lapse is the backstop, so a
+  reservation cannot starve issue work.
+  See
+  [Maintenance lane](docs/workflows/README.md#lane-reservation--a-busy-repository-cannot-starve-its-prs-issue-2789).
 
 #### Extension
 
@@ -1471,7 +1483,10 @@ repos via the idle-task framework:
    Each exclusion is logged (`action=skipped reason=existing_wrapper_open
    scope=repo`) naming the repo and the issue that held it: a slot that
    declines to file must say so, because a silent refusal is how a fleet-wide
-   cap of one went unnoticed for a week.
+   cap of one went unnoticed for a week. The census fails closed (Issue
+   #2750): a repo whose lookup fails is unknown, never clean, so it is
+   subtracted too (`reason=lookup_failed`), and a census that throws files
+   nothing that tick.
 
    Filing is then gated on **capacity rather than existence**. The command
    counts the monitored repos holding startable

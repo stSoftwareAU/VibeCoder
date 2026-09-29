@@ -11,11 +11,18 @@
  * Australian English spelling used throughout.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   findAnyOpenIdleTaskWrapper,
   findExistingIdleTaskIssue,
+  findOpenIdleTaskWrappers,
   IDLE_TASK_LABEL,
+  parseOpenIdleTaskIssues,
 } from "../lib/idle_task_issue.ts";
 
 // ---------------------------------------------------------------------------
@@ -117,18 +124,58 @@ Deno.test(
   },
 );
 
+// Issue #2750: malformed output fails closed — it must never read as
+// "no open idle-task issue", or the filer files a second wrapper.
 Deno.test(
-  "findExistingIdleTaskIssue - returns null when gh output is not valid JSON",
+  "findExistingIdleTaskIssue - throws, naming the repo, when gh output is not valid JSON",
   async () => {
     const fn = (_args: string[]): Promise<string> =>
       Promise.resolve("not json");
-    const result = await findExistingIdleTaskIssue({
-      repo: "org/repo",
-      ghCommandFn: fn,
-    });
-    assertEquals(result, null);
+    const err = await assertRejects(() =>
+      findExistingIdleTaskIssue({ repo: "org/repo", ghCommandFn: fn })
+    );
+    assertStringIncludes((err as Error).message, "org/repo");
   },
 );
+
+Deno.test(
+  "findExistingIdleTaskIssue - throws, naming the repo, when gh output is a non-array JSON value",
+  async () => {
+    const fn = (_args: string[]): Promise<string> => Promise.resolve("{}");
+    const err = await assertRejects(() =>
+      findExistingIdleTaskIssue({ repo: "org/repo", ghCommandFn: fn })
+    );
+    assertStringIncludes((err as Error).message, "org/repo");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// parseOpenIdleTaskIssues — shared payload parser (Issue #2750)
+// ---------------------------------------------------------------------------
+
+Deno.test("parseOpenIdleTaskIssues - returns every well-formed entry in order", () => {
+  const raw = JSON.stringify([
+    { number: 1, url: "https://github.com/o/r/issues/1" },
+    { number: "2", url: "bad" },
+    null,
+    { number: 3, url: "https://github.com/o/r/issues/3" },
+  ]);
+  assertEquals(parseOpenIdleTaskIssues(raw, "o/r"), [
+    { number: 1, url: "https://github.com/o/r/issues/1" },
+    { number: 3, url: "https://github.com/o/r/issues/3" },
+  ]);
+});
+
+Deno.test("parseOpenIdleTaskIssues - a well-formed empty list is empty", () => {
+  assertEquals(parseOpenIdleTaskIssues("[]", "o/r"), []);
+});
+
+Deno.test("parseOpenIdleTaskIssues - throws on empty, non-JSON and non-array output", () => {
+  for (const raw of ["", "not json", "{}", "null", "42", '"[]"']) {
+    const err = assertThrows(() => parseOpenIdleTaskIssues(raw, "o/r"));
+    assertStringIncludes((err as Error).message, "o/r");
+  }
+});
 
 // ---------------------------------------------------------------------------
 // findAnyOpenIdleTaskWrapper — cross-repo scan (Issue #2092)
@@ -248,19 +295,79 @@ Deno.test(
   },
 );
 
+// Issue #2750: a failed lookup is unknown, never clean — so the scan must not
+// answer `null` ("no wrapper anywhere") while any repo's state is unknown.
 Deno.test(
-  "findAnyOpenIdleTaskWrapper - all repos erroring returns null (treated as clean)",
+  "findAnyOpenIdleTaskWrapper - all repos erroring throws, naming them (fail closed)",
   async () => {
     const { fn } = makeMockGhPerRepo({
       errorRepos: new Set(["a/b", "c/d"]),
     });
     const warnings: string[] = [];
-    const result = await findAnyOpenIdleTaskWrapper(["a/b", "c/d"], {
-      ghCommandFn: fn,
-      warn: (m: string) => warnings.push(m),
-    });
-    assertEquals(result, null);
+    const err = await assertRejects(() =>
+      findAnyOpenIdleTaskWrapper(["a/b", "c/d"], {
+        ghCommandFn: fn,
+        warn: (m: string) => warnings.push(m),
+      })
+    );
+    assertStringIncludes((err as Error).message, "a/b");
+    assertStringIncludes((err as Error).message, "c/d");
     assertEquals(warnings.length, 2);
+  },
+);
+
+Deno.test(
+  "findAnyOpenIdleTaskWrapper - one failed repo and the rest clean throws rather than returning null",
+  async () => {
+    const fn = (args: string[]): Promise<string> =>
+      Promise.resolve(args.includes("a/b") ? "{}" : "[]");
+    const err = await assertRejects(() =>
+      findAnyOpenIdleTaskWrapper(["a/b", "c/d"], {
+        ghCommandFn: fn,
+        warn: () => {},
+      })
+    );
+    assertStringIncludes((err as Error).message, "a/b");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// findOpenIdleTaskWrappers — census reports failed repos (Issue #2750)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "findOpenIdleTaskWrappers - reports failed repos separately from wrappers and clean repos",
+  async () => {
+    const { fn } = makeMockGhPerRepo({
+      entriesByRepo: {
+        "a/b": [{ number: 5, url: "https://github.com/a/b/issues/5" }],
+      },
+      errorRepos: new Set(["c/d"]),
+    });
+    // e/f prints malformed output — a failure, not a clean repo.
+    const gh = (args: string[]): Promise<string> =>
+      args.includes("e/f") ? Promise.resolve("not json") : fn(args);
+    const warnings: string[] = [];
+    const census = await findOpenIdleTaskWrappers(
+      ["a/b", "c/d", "e/f", "g/h"],
+      { ghCommandFn: gh, warn: (m: string) => warnings.push(m) },
+    );
+    assertEquals(census.wrappers, [
+      { repo: "a/b", number: 5, url: "https://github.com/a/b/issues/5" },
+    ]);
+    assertEquals(census.failedRepos, ["c/d", "e/f"]);
+    assertEquals(warnings.length, 2);
+  },
+);
+
+Deno.test(
+  "findOpenIdleTaskWrappers - an empty repo list is a clean, failure-free census",
+  async () => {
+    const { fn } = makeMockGhPerRepo({});
+    assertEquals(await findOpenIdleTaskWrappers([], { ghCommandFn: fn }), {
+      wrappers: [],
+      failedRepos: [],
+    });
   },
 );
 

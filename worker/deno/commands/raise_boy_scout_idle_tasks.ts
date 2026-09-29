@@ -13,10 +13,17 @@
  * never produces duplicates. A per-repo failure is recorded and the sweep
  * continues.
  *
+ * A repo that already holds any open `idle-task` issue is skipped whole
+ * (Issue #2752). `--force` files past that gate, logging the bypassed issue
+ * as `action=forced`; exact-title dedup still applies (Issue #2753):
+ *
+ *   deno run ... raise-boy-scout-idle-tasks --monitored-repos org/a --force
+ *
  * Structured progress lines (parseable by operator log scrapers) are emitted
  * by the helper via the injected `log` sink:
  *
  *   [create-all-idle-task] repo=<r> template=<t> action=filed label=idle-task
+ *   [idle-task] repo=<r> issue=<n> action=forced
  *   [boy-scout] repo=<r> action=done created=N skipped=N
  *   [boy-scout] repo=<r> action=error reason=<msg>
  *
@@ -24,7 +31,11 @@
  */
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
-import { coerceStringListFlag } from "../lib/command_args.ts";
+import {
+  coerceBooleanFlag,
+  coerceStringListFlag,
+  findUnknownOptions,
+} from "../lib/command_args.ts";
 import {
   raiseBoyScoutIdleTasks,
   type RaiseBoyScoutIdleTasksOptions,
@@ -35,8 +46,8 @@ interface TestDeps {
   log?: (line: string) => void;
   ghCommandFn?: RaiseBoyScoutIdleTasksOptions["ghCommandFn"];
   ensureLabelFn?: RaiseBoyScoutIdleTasksOptions["ensureLabelFn"];
-  findExistingWrapperTitlesFn?:
-    RaiseBoyScoutIdleTasksOptions["findExistingWrapperTitlesFn"];
+  findOpenIdleTaskIssuesFn?:
+    RaiseBoyScoutIdleTasksOptions["findOpenIdleTaskIssuesFn"];
   nowFn?: RaiseBoyScoutIdleTasksOptions["nowFn"];
   /**
    * Checkout root the wrapper bodies' prompt files are read from
@@ -46,12 +57,20 @@ interface TestDeps {
   rootDir?: RaiseBoyScoutIdleTasksOptions["rootDir"];
 }
 
+/** Options this command accepts; `__testDeps` is the injected test seam. */
+const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
+  "monitored-repos",
+  "force",
+  "__testDeps",
+]);
+
 export const raiseBoyScoutIdleTasksCommand: Command = {
   name: "raise-boy-scout-idle-tasks",
   description:
     "Seed the four Boy Scout idle-task wrappers (dead-code, doc-coverage, " +
     "format-drift, deprecated-api) in every monitored repo, skipping any " +
-    "whose canonical title is already open (Issue #2933).",
+    "whose canonical title is already open (Issue #2933). A repo with any " +
+    "open idle-task issue is skipped unless --force is passed (Issue #2753).",
 
   async execute(
     args: Record<string, unknown>,
@@ -71,6 +90,22 @@ export const raiseBoyScoutIdleTasksCommand: Command = {
     if (!reposResult.ok) {
       return { success: false, message: reposResult.error.message };
     }
+    // A bare `--force` bypasses the any-open idle-task gate (Issue #2753);
+    // an unreadable value is refused rather than read as "not forced".
+    const forceResult = coerceBooleanFlag(args["force"], "force", false);
+    if (!forceResult.ok) {
+      return { success: false, message: forceResult.error.message };
+    }
+    // A misspelt flag (e.g. `--forse`) is refused, not silently dropped.
+    const unknown = findUnknownOptions(args, KNOWN_OPTIONS);
+    if (unknown.length > 0) {
+      return {
+        success: false,
+        message: `raise-boy-scout-idle-tasks: unknown option(s) ` +
+          `${unknown.map((k) => `--${k}`).join(", ")} — accepts only ` +
+          `--monitored-repos, --force`,
+      };
+    }
     let repos = reposResult.value;
     if (repos.length === 0 && Array.isArray(config?.repos)) {
       repos = config.repos.filter((r): r is string => typeof r === "string");
@@ -88,9 +123,10 @@ export const raiseBoyScoutIdleTasksCommand: Command = {
       repos,
       ghCommandFn: deps.ghCommandFn,
       ensureLabelFn: deps.ensureLabelFn,
-      findExistingWrapperTitlesFn: deps.findExistingWrapperTitlesFn,
+      findOpenIdleTaskIssuesFn: deps.findOpenIdleTaskIssuesFn,
       nowFn: deps.nowFn,
       rootDir: deps.rootDir,
+      force: forceResult.value,
       log,
     });
 

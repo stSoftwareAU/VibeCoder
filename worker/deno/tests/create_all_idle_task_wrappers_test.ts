@@ -4,9 +4,13 @@
  * Covers:
  *   - all-on-clean — a clean repo gets exactly one wrapper per canonical
  *     template, each carrying the `idle-task` label and no milestone;
- *   - partial-skip — a repo that already has some wrappers open skips those and
- *     files the rest, reporting the skipped templates;
+ *   - partial-skip — under `force` (Issue #2752), a repo that already has some
+ *     wrappers open skips those and files the rest;
  *   - full-skip — a repo with every wrapper already open files nothing;
+ *   - any-open gate (Issue #2752) — any open `idle-task` issue (non-canonical,
+ *     `needs-human`, `failed`, `Finish #N:`) blocks the whole sweep; the lookup
+ *     asks for open issues only; a failed lookup files nothing and returns an
+ *     error; `force` files past the gate but still skips exact titles;
  *   - canonical titles — every filed `--title` is a member of the
  *     `IDLE_TASK_WRAPPER_TITLES` allowlist;
  *   - partial progress (Issue #3862) — a mid-sweep `gh` failure never discards
@@ -43,6 +47,7 @@ import {
   type MutationInfo,
 } from "../lib/audit_mutation_classifier.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
+import { openIdleTaskIssues } from "./support/open_idle_task_issues.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -146,7 +151,7 @@ Deno.test(
         ensureCalls.push(r);
         return labelOk();
       },
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-aaaaaa",
@@ -200,7 +205,7 @@ Deno.test(
     const result = await createAllIdleTaskWrappers("org/single-footer", {
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-eeeeee",
@@ -247,7 +252,7 @@ Deno.test(
     const result = await createAllIdleTaskWrappers("org/body-limit", {
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-ffffff",
@@ -297,7 +302,11 @@ Deno.test(
     const result = await createAllIdleTaskWrappers("org/partial", {
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
-      findExistingWrapperTitlesFn: () => Promise.resolve(alreadyOpen),
+      findOpenIdleTaskIssuesFn: () =>
+        Promise.resolve(openIdleTaskIssues([...alreadyOpen])),
+      // Issue #2752: without force any open issue blocks the whole sweep;
+      // force exercises the per-title dedup this test covers.
+      force: true,
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-bbbbbb",
@@ -332,7 +341,8 @@ Deno.test(
     const result = await createAllIdleTaskWrappers("org/full", {
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
-      findExistingWrapperTitlesFn: () => Promise.resolve(allOpen),
+      findOpenIdleTaskIssuesFn: () =>
+        Promise.resolve(openIdleTaskIssues([...allOpen])),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-cccccc",
@@ -359,7 +369,7 @@ Deno.test(
       ghCommandFn: gh.fn,
       ensureLabelFn: () =>
         Promise.resolve({ ok: false, error: new Error("no perms") }),
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     });
     assert(!result.ok);
     assertEquals(createCalls(gh.calls).length, 0);
@@ -416,7 +426,11 @@ Deno.test(
     const result = await createAllIdleTaskWrappers("org/partial-progress", {
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
-      findExistingWrapperTitlesFn: () => Promise.resolve(alreadyOpen),
+      findOpenIdleTaskIssuesFn: () =>
+        Promise.resolve(openIdleTaskIssues([...alreadyOpen])),
+      // Issue #2752: force keeps the sweep past the any-open gate so it
+      // both skips and creates before the failure lands.
+      force: true,
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-partial",
@@ -453,7 +467,7 @@ Deno.test(
           ensureCalls.push(r);
           return labelOk();
         },
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
         nowFn: stableNow,
         rootDir: REPO_ROOT,
         runId: "vibe-test-blocked",
@@ -490,7 +504,7 @@ Deno.test(
     const result = await createAllIdleTaskWrappers("org/blocked-mid", {
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-blocked-mid",
@@ -533,13 +547,32 @@ Deno.test(
 );
 
 Deno.test(
+  "formatIdleTaskOutcomeTable - a blocked sweep names the blocking issue (Issue #2752)",
+  () => {
+    const text = formatIdleTaskOutcomeTable("org/table", {
+      created: [],
+      skipped: ["test-audit"],
+      blockedBy: {
+        number: 638,
+        url: "https://github.com/org/table/issues/638",
+      },
+    }).join("\n");
+    assertStringIncludes(text, "existing_wrapper_open #638");
+    assert(
+      !text.includes("already_open"),
+      "blocked rows must not read as title dedup",
+    );
+  },
+);
+
+Deno.test(
   "createAllIdleTaskWrappers - surfaces gh issue create failure",
   async () => {
     const gh = makeMockGh({ createThrows: true });
     const result = await createAllIdleTaskWrappers("org/boom", {
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
       runId: "vibe-test-dddddd",
@@ -572,7 +605,7 @@ Deno.test("createAllIdleTaskWrappers - every write classifies against the target
   const result = await createAllIdleTaskWrappers(target, {
     ghCommandFn: gh,
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: () => new Date("2026-01-01T00:00:00Z"),
     rootDir: REPO_ROOT,
   });
@@ -597,3 +630,227 @@ Deno.test("createAllIdleTaskWrappers - every write classifies against the target
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// Any-open idle-task gate (Issue #2752)
+//
+// On-demand raises must not stack a second batch on a repo that already has
+// any open `idle-task` issue — whatever its title (a hand-edited wrapper, a
+// `Finish #N:` continuation) and whatever else it is labelled with.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mock gh whose `issue list` returns `listOutput` (or throws `listThrows`) and
+ * whose `issue create` succeeds; every call is recorded.
+ */
+function makeListGh(opts: { listOutput?: string; listThrows?: Error }) {
+  const calls: GhCall[] = [];
+  const fn = (args: string[]): Promise<string> => {
+    calls.push({ args: [...args] });
+    if (args[0] === "issue" && args[1] === "list") {
+      if (opts.listThrows) return Promise.reject(opts.listThrows);
+      return Promise.resolve(opts.listOutput ?? "[]");
+    }
+    if (args[0] === "issue" && args[1] === "create") {
+      return Promise.resolve("https://github.com/org/monitored/issues/4242\n");
+    }
+    return Promise.resolve("");
+  };
+  return { fn, calls };
+}
+
+/** Run a sweep against the real default lookup, capturing log lines. */
+async function sweepWithDefaultLookup(
+  repo: string,
+  gh: (args: string[]) => Promise<string>,
+  extra: { force?: boolean } = {},
+) {
+  const lines: string[] = [];
+  const result = await createAllIdleTaskWrappers(repo, {
+    ghCommandFn: gh,
+    ensureLabelFn: () => labelOk(),
+    nowFn: stableNow,
+    rootDir: REPO_ROOT,
+    runId: "vibe-test-gate",
+    log: (line) => lines.push(line),
+    ...extra,
+  });
+  return { result, lines };
+}
+
+Deno.test(
+  "createAllIdleTaskWrappers - an open Finish #N: idle-task issue labelled needs-human blocks the whole sweep",
+  async () => {
+    // Failure-detection case from the issue: labels are irrelevant — any open
+    // idle-task issue blocks.
+    const gh = makeListGh({
+      listOutput: JSON.stringify([{
+        number: 638,
+        title: "Finish #638: tidy docs",
+        url: "https://github.com/org/blocked/issues/638",
+        labels: [{ name: "idle-task" }, { name: "needs-human" }],
+      }]),
+    });
+
+    const { result, lines } = await sweepWithDefaultLookup(
+      "org/blocked",
+      gh.fn,
+    );
+
+    assert(result.ok, "a blocked repo is a clean skip, not an error");
+    if (!result.ok) return;
+    assertEquals(createCalls(gh.calls).length, 0);
+    assertEquals(result.value.created.length, 0);
+    assertEquals(result.value.blockedBy?.number, 638);
+    assertEquals(result.value.skipped.length, TEMPLATE_COUNT);
+    assert(
+      lines.some((l) =>
+        l.includes(
+          "[idle-task] repo=org/blocked issue=638 action=skipped reason=existing_wrapper_open",
+        )
+      ),
+      `expected the existing_wrapper_open skip log, got: ${lines.join("\n")}`,
+    );
+  },
+);
+
+Deno.test(
+  "createAllIdleTaskWrappers - a non-canonical open idle-task title blocks the whole sweep",
+  async () => {
+    const gh = makeListGh({
+      listOutput: JSON.stringify([{
+        number: 77,
+        title: "Hand-edited: audit the docs",
+        url: "https://github.com/org/blocked/issues/77",
+      }]),
+    });
+
+    const { result } = await sweepWithDefaultLookup("org/blocked", gh.fn);
+
+    assert(result.ok);
+    if (!result.ok) return;
+    assertEquals(createCalls(gh.calls).length, 0);
+    assertEquals(result.value.blockedBy?.number, 77);
+  },
+);
+
+Deno.test(
+  "createAllIdleTaskWrappers - an open idle-task issue also labelled failed blocks the sweep",
+  async () => {
+    const gh = makeListGh({
+      listOutput: JSON.stringify([{
+        number: 12,
+        title: IDLE_TASK_WRAPPER_TITLES[0],
+        url: "https://github.com/org/blocked/issues/12",
+        labels: [{ name: "idle-task" }, { name: "failed" }],
+      }]),
+    });
+
+    const { result } = await sweepWithDefaultLookup("org/blocked", gh.fn);
+
+    assert(result.ok);
+    if (!result.ok) return;
+    assertEquals(createCalls(gh.calls).length, 0);
+    assertEquals(result.value.blockedBy?.number, 12);
+  },
+);
+
+Deno.test(
+  "createAllIdleTaskWrappers - the default lookup asks for open idle-task issues only",
+  async () => {
+    const gh = makeListGh({ listOutput: "[]" });
+
+    const { result } = await sweepWithDefaultLookup("org/clean", gh.fn);
+
+    assert(result.ok);
+    const lists = gh.calls.filter((c) =>
+      c.args[0] === "issue" && c.args[1] === "list"
+    );
+    assertEquals(lists.length, 1, "the gate is checked once per sweep");
+    const args = lists[0]!.args;
+    assertEquals(args[args.indexOf("--state") + 1], "open");
+    assertEquals(args[args.indexOf("--label") + 1], "idle-task");
+    assertEquals(args[args.indexOf("--repo") + 1], "org/clean");
+    assertStringIncludes(args[args.indexOf("--json") + 1]!, "number");
+  },
+);
+
+Deno.test(
+  "createAllIdleTaskWrappers - a clean repo still gets the full template set",
+  async () => {
+    const gh = makeListGh({ listOutput: "[]" });
+
+    const { result } = await sweepWithDefaultLookup("org/clean", gh.fn);
+
+    assert(result.ok);
+    if (!result.ok) return;
+    assertEquals(result.value.blockedBy, undefined);
+    assertEquals(result.value.created.length, TEMPLATE_COUNT);
+    assertEquals(createCalls(gh.calls).length, TEMPLATE_COUNT);
+  },
+);
+
+for (
+  const [label, opts] of [
+    ["non-JSON output", { listOutput: "not json" }],
+    ["a non-array JSON value", { listOutput: '{"number":1}' }],
+    ["a thrown lookup", { listThrows: new Error("gh: HTTP 502") }],
+  ] as const
+) {
+  Deno.test(
+    `createAllIdleTaskWrappers - ${label} from the lookup fails closed and files nothing`,
+    async () => {
+      const gh = makeListGh(opts);
+
+      const { result, lines } = await sweepWithDefaultLookup(
+        "org/flaky",
+        gh.fn,
+      );
+
+      assert(!result.ok, "a failed lookup must never be treated as clean");
+      if (result.ok) return;
+      assertEquals(createCalls(gh.calls).length, 0);
+      assertEquals(partialFromSweepError(result.error).created.length, 0);
+      assert(
+        lines.some((l) =>
+          l.includes(
+            "[idle-task] repo=org/flaky action=skipped reason=lookup_failed",
+          )
+        ),
+        `expected the lookup_failed skip log, got: ${lines.join("\n")}`,
+      );
+    },
+  );
+}
+
+Deno.test(
+  "createAllIdleTaskWrappers - force bypasses the gate but keeps exact-title dedup",
+  async () => {
+    const gh = makeListGh({
+      listOutput: JSON.stringify([
+        {
+          number: 1,
+          title: IDLE_TASK_WRAPPER_TITLES[0],
+          url: "https://github.com/org/forced/issues/1",
+        },
+        {
+          number: 638,
+          title: "Finish #638: tidy docs",
+          url: "https://github.com/org/forced/issues/638",
+        },
+      ]),
+    });
+
+    const { result } = await sweepWithDefaultLookup("org/forced", gh.fn, {
+      force: true,
+    });
+
+    assert(result.ok);
+    if (!result.ok) return;
+    assertEquals(result.value.blockedBy, undefined);
+    assertEquals(result.value.created.length, TEMPLATE_COUNT - 1);
+    assertEquals(result.value.skipped.length, 1);
+    const titles = createCalls(gh.calls).map(titleOf);
+    assert(!titles.includes(IDLE_TASK_WRAPPER_TITLES[0]!));
+  },
+);

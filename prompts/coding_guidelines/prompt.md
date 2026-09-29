@@ -947,6 +947,13 @@ This project uses `set -euo pipefail` and must run on **macOS (bash 3.2)**,
 
 ## Testing Best Practices
 
+Follow the repository's canonical testing standard in `CODING-STANDARDS.md`:
+tests should protect supported behaviour, invariants and contracts. Not every
+change needs a new test. A new assertion must justify its maintenance cost;
+do not add tests merely for coverage or to satisfy a vague TDD expectation.
+Prefer semantic browser checks for UI/PWA behaviour and direct and negative
+contract checks for APIs. Avoid pinning incidental CSS, DOM or private code.
+
 Every test must exercise real code: source a module, call a function with test
 data, and assert on results, exit codes, or side effects.
 
@@ -974,7 +981,8 @@ rather than faking a test with grep.
 
 ## Test Coverage Expectations
 
-Every new or modified public function MUST have tests covering:
+For supported public behaviour lacking a useful safety net, add tests as
+appropriate for:
 
 - **Happy path** — the primary success case with realistic inputs.
 - **Error path** — at least one failure mode (invalid input, missing resource,
@@ -982,9 +990,11 @@ Every new or modified public function MUST have tests covering:
 - **Edge cases** — boundary conditions relevant to the function (empty input,
   zero, maximum size, unicode, etc.).
 
-For bug fixes, add a regression test that fails against the unfixed code and
-passes after the fix. State this linkage in the PR summary (e.g., "Added
-`tests/foo_test.ts::handles_empty_input` which reproduces ").
+For real bug fixes, where practical first add a regression test that reproduces
+the externally meaningful failure against the unfixed code and passes after
+the fix. State this linkage in the PR summary. Existing direct or indirect
+behavioural coverage may already be sufficient for a refactor or presentation
+change; explain the verification rather than manufacturing a brittle test.
 
 **Do not hardcode to the tests.** Write the implementation to solve the general
 problem, not the specific inputs the tests happen to use. Special-casing a
