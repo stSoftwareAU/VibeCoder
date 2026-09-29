@@ -20,6 +20,24 @@ leave the session running:
 
 Optional argument: `owner/name` to review one repo only.
 
+### Running unattended
+
+On an always-on host, `run.sh` in this directory does the same without an
+open session: it runs the gate, and starts a headless `claude -p` round only
+when a PR is ready. It loops for ever, retries when GitHub is unreachable,
+kills a round that runs over an hour, and keeps one runner per machine.
+
+```bash
+.claude/skills/review-fleet-prs/run.sh --install   # start at login, restart on exit
+.claude/skills/review-fleet-prs/run.sh --once      # one pass, in the foreground
+```
+
+`--install` registers a launchd agent on macOS or a systemd user service on
+Linux. The host needs `deno`, `jq`, `gh` signed in as a reviewer in
+`pr_reviewers`, and `claude` signed in. The log is
+`~/.review-fleet-prs/runner.log`. A headless round cannot send the
+PushNotification in step 4; `summary.md` still shows what is waiting.
+
 ## Rules
 
 1. **Only PRs into the default branch are reviewed.** A PR into a milestone
