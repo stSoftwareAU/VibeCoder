@@ -1191,7 +1191,7 @@ async function completionBody(
   const prRaiseSync = await syncBranchesForPrRaise({
     branch: state.branchName,
     baseBranch,
-    ...(state.milestoneBranch && config.workDir
+    ...(state.milestoneBranch && state.defaultBranch && config.workDir
       ? { milestoneBranch: state.milestoneBranch }
       : {}),
     runGit: deps.git.runGitCommand,

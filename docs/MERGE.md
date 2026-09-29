@@ -428,6 +428,19 @@ sequenceDiagram
     G->>G: next cycle: CI passed + behindBy == 0 → merge
 ```
 
+#### The pre-merge sync point
+
+Pre-merge is the last of the three branch sync points (the others are work
+start and PR raise — see
+[milestones.md](workflows/milestones.md#-the-three-branch-sync-points)).
+`ensurePrMergeable` (`git_pull.ts`) merges the target into a branch that is
+behind and pushes plainly. `enforcePreMergeRequirements` (`direct_merge.ts`)
+then refuses the merge while CI is pending or failing, while the branch is
+still behind (`behind_target`), or while the head moved since the CI read
+(`head_moved`) — so it merges only once the required checks are green on that
+synced head — and `directMergePr` passes `--match-head-commit` so GitHub
+rejects the merge if the head moved after the gate read it (Issue #2809).
+
 #### The milestone base is behind the default branch
 
 The same defer-and-retry shape covers the *base* as well as the head
