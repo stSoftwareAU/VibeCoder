@@ -971,13 +971,19 @@ function issueCommentPosts(fake: FakeGh): string[][] {
   );
 }
 
-/** The fake, with applied labels reflected back into the issue view. */
+/** The fake, with applied labels and REST comments reflected back. */
 function withLabelEcho(fake: FakeGh): FakeGh {
   const gh = async (args: string[]): Promise<string> => {
     const out = await fake.gh(args);
+    if (args[0] !== "api" || !args.includes("POST")) return out;
     const label = args.find((arg) => arg.startsWith("labels[]="));
-    if (args[0] === "api" && args.includes("POST") && label !== undefined) {
+    const body = args.find((arg) => arg.startsWith("body="));
+    if (label !== undefined) {
       fake.state.issueLabels.push(label.slice("labels[]=".length));
+    } else if (body !== undefined) {
+      fake.state.issueComments.push(
+        comment(body.slice("body=".length), FLEET),
+      );
     }
     return out;
   };
@@ -1088,6 +1094,41 @@ Deno.test("abandonAndRestart - a failed hand-off comment is a failure, not a dec
   assertEquals(outcome.step, "issue-comment");
   assertEquals(exhaustedEscalationRoute(outcome).kind, "abandon-failed");
   assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - a comment that failed after the label is retried, not read as done", async () => {
+  // The label lands first, so a failed comment leaves `needs-human` alone on
+  // the issue. The next pass must post the comment, not call that finished.
+  const fake = withLabelEcho(makeFake({ issueComments: spentIssueComments() }));
+  let refuseComment = true;
+  const gh = (args: string[]): Promise<string> =>
+    refuseComment &&
+      ((args.includes("POST") &&
+        args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/comments`))) ||
+        (args[0] === "issue" && args[1] === "comment"))
+      ? Promise.reject(new Error("comment refused"))
+      : fake.gh(args);
+  const deps = { gh, trustedAuthors: FLEET_AUTHORS };
+
+  const first = await abandonAndRestart(makeRequest(), deps);
+  assert(first.outcome === "failed");
+  assertEquals(first.step, "issue-comment");
+  assertEquals(fake.state.issueLabels.includes("needs-human"), true);
+
+  refuseComment = false;
+  const second = await abandonAndRestart(makeRequest(), deps);
+  assertEquals(second.outcome, "declined");
+  assertEquals(
+    fake.state.issueComments.filter((c) => c.body.includes("redone")).length,
+    1,
+  );
+
+  // …and a third pass, with both in place, says nothing more.
+  await abandonAndRestart(makeRequest(), deps);
+  assertEquals(
+    fake.state.issueComments.filter((c) => c.body.includes("redone")).length,
+    1,
+  );
 });
 
 Deno.test("abandonAndRestart - an unfinished abandon of this PR is not a spent budget", async () => {

@@ -100,7 +100,7 @@ import { sanitiseIssueText } from "./conflict_intent_context.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
+import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { createLogger } from "./logger.ts";
 
@@ -1267,15 +1267,17 @@ export function buildRestartsSpentHandOff(args: {
  * `escalateToHuman` chokepoint. Returns a `failed` outcome when either side
  * effect did not land, and `undefined` when the hand-off is in place.
  *
- * Idempotent: an issue already carrying `needs-human` is left alone. The
- * dedup key covers a retry after a failed label, so the comment is not posted
- * twice either.
+ * Idempotent: an issue already carrying `needs-human` **and** the fleet's own
+ * hand-off comment for this PR is left alone. Both are checked, so a pass
+ * whose comment failed after the label landed is retried rather than read as
+ * done; the dedup key stops a label-only retry from commenting twice.
  */
 async function handOffSpentRestarts(
   request: AbandonRestartRequest,
   deps: AbandonRestartDeps,
   issueNumber: number,
   restartCount: number,
+  issueComments: readonly unknown[],
   failed: FailedReporter,
 ): Promise<AbandonRestartOutcome | undefined> {
   const { repo, prNumber } = request;
@@ -1288,7 +1290,15 @@ async function handOffSpentRestarts(
   } catch (error) {
     return failed("issue-state", error, issueNumber);
   }
-  if (snapshot.labels.includes(RESTARTS_SPENT_LABEL)) {
+  const marker = buildDedupMarker(restartsSpentDedupKey(prNumber));
+  const commented = partitionConflictComments(
+    issueComments.filter((raw) => {
+      const body = (raw as { body?: unknown } | null)?.body;
+      return typeof body === "string" && body.includes(marker);
+    }),
+    deps.trustedAuthors,
+  ).trusted.length > 0;
+  if (commented && snapshot.labels.includes(RESTARTS_SPENT_LABEL)) {
     logger.info(
       `Issue #${issueNumber} has spent its restarts and already carries ` +
         `\`${RESTARTS_SPENT_LABEL}\` — nothing more to say`,
@@ -1712,6 +1722,7 @@ export async function abandonAndRestart(
         deps,
         issueNumber,
         claimed.length,
+        issueComments,
         failed,
       );
       if (handOffFailed !== undefined) return handOffFailed;
