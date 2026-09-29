@@ -31,7 +31,13 @@
  *    the worker's own {@link VIBE_RULESET_NAME} ruleset (created if absent),
  *    but never on a branch that takes direct pushes, where a pull_request
  *    rule would refuse every push — that is reported for the owner instead.
- *  - code-owner review (`requireCodeOwnerReview`) — opt-in, separately.
+ *  - code-owner review **off** in every repository ruleset that requires it.
+ *    The fleet's reviewer is a GitHub App (`pr_reviewer_app`), and an App can
+ *    never be a code owner, so while code-owner review is required its
+ *    approval cannot merge anything a CODEOWNERS line covers. The reviewer's
+ *    approval is the gate; it holds a PR for the owner (a comment-only
+ *    review, never an approval) when tests are removed or loosened.
+ *    CODEOWNERS still routes review requests. Never turned back on.
  *  - merge commits allowed (Issue #2690), so a milestone sync PR lands as a
  *    real merge commit and the milestone branch reads level afterwards,
  *    with the default branch kept squash-only by its own ruleset's
@@ -221,12 +227,6 @@ export interface HardenStep {
 export interface PlanOptions {
   /** `<owner>/<repo>@*` patterns for the third-party actions in use. */
   thirdPartyPatterns: readonly string[];
-  /**
-   * Plan code-owner review (Issue #4397): PRs that touch a path named in
-   * `.github/CODEOWNERS` (workflows, actions, scripts) need an owner's
-   * approval. Independent of the one-approval rule (Issue #2680).
-   */
-  requireCodeOwnerReview?: boolean;
   defaultBranch: string;
   /**
    * Fleet logins that own the repository's organisation (Issue #2690): an
@@ -671,26 +671,25 @@ export function planRepoSettingsHardening(
   steps.push(...pullRequestSteps);
   const mergeCommit = planMergeCommitAllowed(snapshot, pullRequestSteps);
   if (mergeCommit) steps.push(mergeCommit);
-  const pr = snapshot.rules?.find((r) => r.type === "pull_request")
-    ?.parameters;
+  // Code-owner review is turned off, never on: the fleet reviewer App cannot
+  // be a code owner, so while it is required the App's approval cannot merge
+  // any path CODEOWNERS covers. Any pull_request rule on the branch may carry
+  // it (VibeCoder's own main had two rulesets that both did).
   if (
-    options.requireCodeOwnerReview &&
-    snapshot.rules && (!pr || pr.require_code_owner_review !== true)
+    snapshot.rules?.some((r) =>
+      r.type === "pull_request" &&
+      r.parameters?.require_code_owner_review === true
+    )
   ) {
     steps.push({
       kind: "ruleset-reviews",
       title:
-        `Require code-owner review on ${options.defaultBranch} (owned paths only; approval count unchanged)`,
+        `Stop requiring code-owner review on ${options.defaultBranch} (the fleet reviewer's approval is the gate; approval count unchanged)`,
       method: "PUT",
       endpoint: `rulesets/${options.defaultBranch}`,
-      body: JSON.stringify({ require_code_owner_review: true }),
+      body: JSON.stringify({ require_code_owner_review: false }),
       warning:
-        "PRs that touch a path named in .github/CODEOWNERS (workflows, actions, scripts) now wait for an owner's approval; every other PR — including the fleet's — merges as before (Issue #4397).",
-      // With no pull_request rule yet, the approval step above adds one only
-      // where the push policy allows it; a direct-push branch gets none, so
-      // this step is held for the same reason rather than failing for want
-      // of the rule.
-      ...(pr ? {} : { held: holdForPushPolicy(snapshot.pushPolicy) }),
+        "A PR touching a path in .github/CODEOWNERS no longer waits for a human code owner: the fleet reviewer's approval merges it, and a PR that removes or loosens tests is held for the owner instead.",
     });
   }
   // A milestone ruleset that enforces its status checks on branch CREATION
@@ -773,8 +772,8 @@ function rulesetPutBody(
 
 /**
  * The pull_request rule the approval step adds (Issue #2680): one approval
- * and nothing else. Code-owner review is its own opt-in step; the other
- * flags are GitHub's required fields, set to their permissive values.
+ * and nothing else. Code-owner review stays off (see the file header); the
+ * other flags are GitHub's required fields, set to their permissive values.
  */
 const APPROVAL_PULL_REQUEST_RULE: RulesetRule = {
   type: "pull_request",
@@ -1434,10 +1433,8 @@ async function applyRulesetReviews(
 ): Promise<HardenResult> {
   try {
     const branch = step.endpoint.replace(/^rulesets\//, "");
-    // The ruleset is the one the branch's pull_request rule comes from
-    // (Issue #2685), read live so a rule the approval step just added is
-    // found. A name never decides it: GRQ's is called neither after the
-    // branch nor "Vibe Coder default branch".
+    // Every ruleset that puts a pull_request rule on the branch, read live:
+    // a name never decides it (Issue #2685), and more than one may carry it.
     const rules = JSON.parse(
       await gh([
         "api",
@@ -1451,44 +1448,57 @@ async function applyRulesetReviews(
           .filter((id): id is number => typeof id === "number"),
       ),
     ];
-    const candidates: RulesetSnapshot[] = [];
+    const desired = JSON.parse(step.body ?? "{}") as Record<string, unknown>;
+    const needing: RulesetSnapshot[] = [];
     for (const id of carriers) {
-      candidates.push(
-        JSON.parse(
-          await gh(["api", `repos/${repo}/rulesets/${id}`]),
-        ) as RulesetSnapshot,
+      const ruleset = JSON.parse(
+        await gh(["api", `repos/${repo}/rulesets/${id}`]),
+      ) as RulesetSnapshot;
+      const pr = (ruleset.rules ?? []).find((r) => r.type === "pull_request");
+      if (
+        pr &&
+        Object.entries(desired).some(([k, v]) => pr.parameters?.[k] !== v)
+      ) {
+        needing.push(ruleset);
+      }
+    }
+    if (needing.length === 0) {
+      return {
+        step,
+        status: "skipped",
+        detail: `no ruleset on ${branch} needs this change any more`,
+      };
+    }
+    const blocked: number[] = [];
+    for (const ruleset of needing) {
+      if (
+        ruleset.source_type !== undefined &&
+        ruleset.source_type !== "Repository"
+      ) {
+        blocked.push(ruleset.id);
+        continue;
+      }
+      const updated = (ruleset.rules ?? []).map((r) =>
+        r.type === "pull_request"
+          ? { ...r, parameters: { ...(r.parameters ?? {}), ...desired } }
+          : r
+      );
+      await ghWrite(
+        gh,
+        "PUT",
+        `repos/${repo}/rulesets/${ruleset.id}`,
+        JSON.stringify({ rules: updated }),
       );
     }
-    const editable = candidates.filter((r) =>
-      (r.source_type === undefined || r.source_type === "Repository") &&
-      (r.rules ?? []).some((rule) => rule.type === "pull_request")
-    );
-    // The fleet's own ruleset wins when several carry one (Issue #2626).
-    const target = editable.find((r) => r.name === VIBE_RULESET_NAME) ??
-      editable[0];
-    if (!target) {
+    if (blocked.length > 0) {
       return {
         step,
         status: "failed",
-        detail: carriers.length === 0
-          ? `no pull_request rule on ${branch} to add code-owner review to`
-          : `the pull_request rule on ${branch} comes from a ruleset this ` +
-            `repository cannot edit (ruleset ${carriers.join(", ")})`,
+        detail: `ruleset ${blocked.join(", ")} on ${branch} is not this ` +
+          "repository's to edit (an organisation ruleset); an owner must " +
+          "change it there",
       };
     }
-    const full = target;
-    const desired = JSON.parse(step.body ?? "{}") as Record<string, unknown>;
-    const updated = (full.rules ?? []).map((r) =>
-      r.type === "pull_request"
-        ? { ...r, parameters: { ...(r.parameters ?? {}), ...desired } }
-        : r
-    );
-    await ghWrite(
-      gh,
-      "PUT",
-      `repos/${repo}/rulesets/${target.id}`,
-      JSON.stringify({ rules: updated }),
-    );
     return { step, status: "applied" };
   } catch (err) {
     return {
@@ -1718,7 +1728,6 @@ async function readCodeScanning(
 export interface HardenRepoOptions {
   apply: boolean;
   ghCommandFn: GhCommandFn;
-  requireCodeOwnerReview?: boolean;
   /** Operator-vouched `owner/repo` coordinates (`--allow-action`). */
   extraCoordinates?: readonly string[];
   /** Test seam: the default-branch disk cache (defaults to the worker's). */
@@ -1953,7 +1962,6 @@ async function hardenRepoInto(
   }
   const plan = planRepoSettingsHardening(snapshot, {
     thirdPartyPatterns: buildAllowedActionPatterns(outcome.coordinates),
-    requireCodeOwnerReview: options.requireCodeOwnerReview === true,
     defaultBranch: branch,
     ...(options.orgOwners ? { orgOwners: options.orgOwners } : {}),
     ...(options.setupLogin ? { setupLogin: options.setupLogin } : {}),

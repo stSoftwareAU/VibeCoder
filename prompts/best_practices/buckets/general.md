@@ -185,6 +185,17 @@ Canonical guides — link, do not restate:
     phrase the finding as a **recommendation**, not an assertion
     that the setting is off.
 
+    **Fleet policy — code-owner review stays off.** On every fleet
+    repository the one required approval comes from the fleet reviewer,
+    a GitHub App, which can never be a code owner. Setup therefore turns
+    "Require review from Code Owners" **off** in every ruleset, on
+    purpose, and a PR that removes or loosens tests is held for the owner
+    instead. **Never** recommend enabling code-owner review, never treat
+    it being off as a gap, and never describe CODEOWNERS as the control
+    that blocks a malicious workflow edit: CODEOWNERS only routes review
+    requests. Recommending it would undo the setting on the next setup
+    run and the two would oscillate.
+
     Inspect, for a repo with a meaningful surface (any repo with
     `.github/workflows/` or `.github/actions/`):
 
@@ -193,13 +204,10 @@ Canonical guides — link, do not restate:
       `.github/CODEOWNERS`, and `docs/CODEOWNERS`. Flag the
       absence of any pattern covering `.github/workflows/` (and,
       where present, `.github/actions/`). Without a CODEOWNERS
-      rule on workflows, a malicious PR can quietly edit a
-      workflow that runs with secrets — promote to `severity:high`
-      when the repo has **privileged workflows** (any workflow
-      referencing `secrets.*` other than `GITHUB_TOKEN`,
-      `id-token: write` on the job or workflow, a
-      `pull_request_target` trigger, or a self-hosted
-      `runs-on:`); otherwise `severity:medium`.
+      rule on workflows, a workflow edit that runs with secrets
+      requests no reviewer who owns CI — `severity:medium`. It is
+      review routing, not a merge gate (see the fleet policy
+      above), so it never rises to `severity:high` on its own.
     - **Recent unsigned commits on the default branch.** A
       signal, not proof — `git log --show-signature -20
       origin/<default>` should show `gpg:` / `Good signature`
@@ -223,10 +231,8 @@ Canonical guides — link, do not restate:
     dominant gap (e.g. *"Add CODEOWNERS coverage for
     `.github/workflows/` and enable required-review branch
     protection"*) and list every missing control in the body, each
-    with its recommended remediation. Severity is `severity:high`
-    when the dominant gap is missing CODEOWNERS coverage of
-    `.github/workflows/` on a repo with privileged workflows;
-    otherwise `severity:medium`. Use the standard `BP-<12 hex>`
+    with its recommended remediation. Severity is
+    `severity:medium`. Use the standard `BP-<12 hex>`
     id recipe so re-runs deduplicate against the known-open and
     suppressed lists. The finding counts against the six-issue cap
     like any other.

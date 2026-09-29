@@ -4,7 +4,6 @@
  *
  *   mod.ts repo-settings-harden --repo owner/name            # dry run: show the plan
  *   mod.ts repo-settings-harden --repo owner/name --apply    # write the safe subset
- *   mod.ts repo-settings-harden --repo owner/name --apply --require-code-owner-review
  *
  * The default plan: read-only default token, no approve-PRs, SHA-pin
  * enforcement, an allow-list of the actions the workflows use, one approving
@@ -12,11 +11,11 @@
  * branch that takes direct pushes), and — on a public repository only —
  * secret scanning + push protection; a private or internal repository needs
  * the paid GitHub Secret Protection add-on, so that step is skipped and the
- * skip printed (Issue #2225).
- * `--require-code-owner-review` (Issue #4397) makes PRs that touch a path in
- * `.github/CODEOWNERS` — the workflows, actions and scripts — also wait for
- * an owner's approval. `--require-reviews` is its retired spelling: it used
- * to add the one-approval rule too, which is now always planned.
+ * skip printed (Issue #2225). Code-owner review is turned **off** wherever a
+ * ruleset requires it: the fleet reviewer App cannot be a code owner, and its
+ * approval is the gate. `--require-code-owner-review` and its older spelling
+ * `--require-reviews` are retired and refused, so a script still passing
+ * them learns why rather than having the flag silently ignored.
  *
  * Needs an admin token; the worker's own token cannot write settings, so
  * this is an operator command, not a fleet task.
@@ -73,7 +72,7 @@ export function parseAllowActionArg(value: unknown): string[] {
 export const repoSettingsHardenCommand: Command = {
   name: "repo-settings-harden",
   description:
-    "Plan (default) or apply (--apply) the repository-settings hardening the Actions audit reports: read-only token, no approve-PRs, SHA-pin enforcement, action allow-list, secret scanning, one approving review on the default branch (never on a direct-push branch); --require-code-owner-review (or its retired spelling --require-reviews) makes owned paths (workflows) also wait for an owner's approval; the allow-list follows composite actions' own uses: and --allow-action adds more (Issues #4397 #4398 #4401 #4424 #2680)",
+    "Plan (default) or apply (--apply) the repository-settings hardening the Actions audit reports: read-only token, no approve-PRs, SHA-pin enforcement, action allow-list, secret scanning, one approving review on the default branch (never on a direct-push branch), and code-owner review turned off (the fleet reviewer App cannot be a code owner); the allow-list follows composite actions' own uses: and --allow-action adds more (Issues #4397 #4398 #4401 #4424 #2680)",
   async execute(
     args: Record<string, unknown>,
     _config: WorkerConfig,
@@ -86,10 +85,18 @@ export const repoSettingsHardenCommand: Command = {
       };
     }
     const apply = args["apply"] === true;
-    // `--require-reviews` meant "one approval plus code-owner review"; the
-    // approval is now always planned (Issue #2680), leaving code-owner review.
-    const requireCodeOwnerReview = args["require-code-owner-review"] === true ||
-      args["require-reviews"] === true;
+    if (
+      args["require-code-owner-review"] !== undefined ||
+      args["require-reviews"] !== undefined
+    ) {
+      return {
+        success: false,
+        message: "--require-code-owner-review / --require-reviews are " +
+          "retired: code-owner review is now turned off, never on, because " +
+          "the fleet reviewer App cannot be a code owner and its approval " +
+          "is the gate",
+      };
+    }
     let extraCoordinates: string[];
     try {
       extraCoordinates = parseAllowActionArg(args["allow-action"]);
@@ -102,7 +109,6 @@ export const repoSettingsHardenCommand: Command = {
     const outcome = await hardenRepo(repo, {
       apply,
       ghCommandFn: runGhCommand,
-      requireCodeOwnerReview,
       extraCoordinates,
     });
     const { results, coordinates, referenceCount, unreadable } = outcome;
