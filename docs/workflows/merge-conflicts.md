@@ -409,18 +409,17 @@ flowchart TD
     V --> L{"decideLadderRung<br/>(thread markers, current head)"}
     L -- MERGEABLE --> C[Clear the label only]
     L -- "no marker at this head" --> N["Rung 1 — nudge:<br/>one empty commit, plain push"]
-    L -- "nudged at this head" --> R["Rung 2 — rebase:<br/>replay, tree guard, leased push"]
-    L -- "rebased at this head,<br/>or the rebase failed here" --> B["Rung 3 — abandon and restart:<br/>close the PR, re-queue its issue"]
+    L -- "nudged at this head" --> R["Rung 2 — merge:<br/>git merge --no-ff origin/BASE"]
+    L -- "merged at this head,<br/>or the merge rung failed here" --> B["Rung 3 — abandon and restart:<br/>close the PR, re-queue its issue"]
     L -- "nudged at this head,<br/>human author" --> B
     L -- "verdict unknown / exhausted" --> W[Wait — run nothing]
-    R -- "replay conflicts<br/>or the tree differs" --> S["Fallback: one commit<br/>carrying OLD's tree on the base"]
-    R -- "tree identical to OLD" --> P["Push --force-with-lease=BRANCH:OLD"]
-    S --> P
+    R -- "a merge commit on top of OLD" --> P["Plain git push —<br/>no force, no lease"]
+    R -- "conflicts (aborted),<br/>or nothing to merge" --> F
+    P -- "rejected: git's stderr,<br/>clone reset to OLD" --> F
     B -- "declined or failed" --> F["Record the rung as failed<br/>at this head — no label, no human"]
     F --> W
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
-    style S fill:#2d6a4f,stroke:#1b4332,color:#fff
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
     style B fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
@@ -428,8 +427,8 @@ flowchart TD
 **All three rungs are wired** (Issues #2278, #2279, #2280). Each runs **at most
 once per head sha**: the rung's own marker names the head it left behind, so the
 next scan reads that marker back and climbs rather than repeating it. A
-**human-authored** PR skips rung 2 and goes straight to rung 3 — the leased push
-destroys nothing, but a person's commit graph is theirs to reshape.
+**human-authored** PR skips rung 2 and goes straight to rung 3 — the plain push
+destroys nothing, but a person's branch is theirs to add commits to.
 
 - **Rung 1 — nudge.** One `git commit --allow-empty` whose message names the
   base sha the ancestry check found, pushed **without** `--force` or a lease, so
@@ -437,47 +436,45 @@ destroys nothing, but a person's commit graph is theirs to reshape.
   recompute. One comment records it, carrying
   `<!-- vibe-merge-conflict-nudge head="<new sha>" -->` — the **new** head, so
   the next scan reads the marker back and climbs rather than nudging twice.
-- **Rung 2 — rebase** (`conflict_rebase_rung.ts`, Issue #2279). The PR's
-  non-merge commits are replayed onto `origin/BASE`
-  (`git rebase --no-rebase-merges`) so the branch has a linear history off the
-  current base rather than a head that merged the base in — the shape GitHub is
-  stuck on. The rung runs only at the head GitHub judged: a clone that has moved
-  reports `head-moved` and touches nothing.
-- **The tree-identity guard is what makes the force-push admissible.** The
-  resolver's contract forbids a destructive force-push (Issues #1076, #4373)
-  because a rebase once destroyed a PR's own changes. Nothing is pushed until
-  `git diff --quiet OLD NEW` exits 0 — the new head's tree is **byte-identical**
-  to the head GitHub judged — so the push replaces a commit graph and no file
-  content at all. The lease is pinned (`--force-with-lease=BRANCH:OLD`), never a
-  bare `--force`, so a branch that moved on the remote refuses the push instead
-  of being overwritten. Both halves have to hold: the guard makes the push
-  non-destructive, the lease makes it non-racing.
-- **A replay that conflicts, or lands on a different tree, falls back to one
-  squash commit of the old tree** — `git commit-tree OLD^{tree} -p origin/BASE`.
-  It cannot conflict and cannot lose the base's changes: the ladder runs only
-  once `origin/BASE` is already an ancestor of `OLD`, so `OLD`'s tree already
-  contains everything the base carries. The identity therefore holds by
-  construction, and is asserted anyway before the push — "by construction" is a
-  claim about code, and the push is irreversible. There is no agent run on this
-  path: under the guard the only admissible resolution is a tree equal to `OLD`,
-  which the fallback produces outright.
-- **A replay that moves nothing takes the fallback too.** A branch already
-  linear off the base rebases to the same head; pushing it back would give
-  GitHub nothing new to judge while the comment claimed a linearisation that
-  never happened. The fallback always produces a new commit carrying the same
-  tree, so it is what moves the head in that case.
-- **Every rebase-rung outcome leaves the branch at `OLD` or at a head whose tree
-  equals `OLD`'s**, error paths included. A failure restores `OLD` and then
-  fails loud rather than leaving a half-replayed branch behind — including when
-  `git rebase --abort` itself fails, where the fallback is *not* built, because
-  a clone that may still be mid-rebase is not one to commit on. Every ending
-  short of a push posts the rung-failed marker, a worker fault included, so the
-  next scan climbs to the abandon rung instead of re-deciding `rebase` at the
-  same head for ever. Post-release the audit is
-  `git diff --stat <old> <new>` on the shas the rebase comment names — any
-  output is a regression.
+- **Rung 2 — merge** (`conflict_rebase_rung.ts`, Issues #2279, #2806).
+  `git merge --no-ff origin/BASE` puts a merge commit on top of the PR's
+  existing commits, and a **plain** `git push` publishes it — no `--force`, no
+  `--force-with-lease`, no `+` refspec. The rung used to rebase and force-push
+  with a pinned lease; that rewrote the history reviewers had anchored comments
+  to, so it now never rewrites a commit (Issue #2806). The rung runs only at the
+  head GitHub judged: a clone that has moved reports `head-moved` and touches
+  nothing.
+- **A conflicting merge is aborted, and the ladder climbs.** The unmerged paths
+  are read while the merge is still stopped, then `git merge --abort` puts the
+  branch back at `OLD` and the rung reports `merge-conflicted`. No agent runs on
+  this path.
+- **On the stale-verdict path the merge has nothing to merge — today, always.**
+  The ladder runs only once `git merge-base --is-ancestor origin/BASE HEAD`
+  exits 0, and nothing fetches `origin/BASE` again before the rung, so
+  `git merge` finds the base already merged. The rung reports
+  `nothing-to-merge` rather than pushing `OLD` back or synthesising a commit,
+  records itself as failed, and the next scan climbs to abandon. In practice
+  the stale-verdict ladder is therefore nudge → abandon, with one extra scan in
+  between: a rung that never rewrites history has nothing it may do to a head
+  that already contains its base. The push path below is reached only if
+  `origin/BASE` in the clone has moved past `OLD`.
+- **A rejected push fails loud and is never forced.** The merge commit is a
+  descendant of `OLD`, so the remote accepts it only as a fast-forward. When
+  somebody pushed since, the push is refused: the rung resets the clone to
+  `OLD` and reports `push-refused` carrying git's own stderr, which the
+  rung-failed comment quotes. There is no forced retry.
+- **Every merge-rung outcome but a push leaves the branch at `OLD`**, error
+  paths included. A merge that fails with no unmerged paths (a broken clone, not
+  a conflict) and an abort that fails both restore `OLD` and fail loud. Every
+  ending short of a push posts the rung-failed marker, a worker fault included,
+  so the next scan climbs to the abandon rung instead of re-deciding the rung at
+  the same head for ever. Post-release the audit is
+  `git merge-base --is-ancestor <old> <new>` on the shas the merge comment names
+  — a non-zero exit is a regression. The markers keep their original
+  `rebase` names (`vibe-merge-conflict-rebase`, `rung="rebase"`) so markers
+  already on PR threads still read back.
 - **Rung 3 — abandon and restart** (Issue #2280). Reached when GitHub still
-  says `CONFLICTING` at the head the rebase produced, when the rebase rung
+  says `CONFLICTING` at the head the merge produced, when the merge rung
   failed at this head, or when a human-authored PR sits at the nudged head. It
   is the same rung a spent attempt budget uses
   ([below](#-abandon-and-restart-before-a-human-is-asked)), called with this PR
@@ -514,14 +511,14 @@ destroys nothing, but a person's commit graph is theirs to reshape.
   that cannot read its own memory would nudge each new head for ever instead of
   climbing.
 - **A rung that cannot be recorded is a failure, not a rung.** The marker is the
-  bound, so if the comment cannot be posted after the nudge's or the rebase's
-  push — or after a declined or failed abandon — the pass fails loud rather than
+  bound, so if the comment cannot be posted after the nudge's or the merge
+  rung's push — or after a declined or failed abandon — the pass fails loud rather than
   reporting a rung the next scan cannot see.
 - **Nothing on this route spends or claims anything.** No resolved, attempt or
   failed marker is posted, no label is added, and the `merge-conflict` label
   stays on until GitHub itself reports the PR mergeable again. The rung markers
   share no literal with the attempt vocabulary, so the "attempt N of M" number
-  on the next real merge is unchanged by any number of nudges or rebases.
+  on the next real merge is unchanged by any number of nudges or rung merges.
 - **The no-op merge is now an invariant violation.** Past the ancestry check
   the base is known *not* to be an ancestor, so a `git merge` that exits 0
   without moving `HEAD` is impossible. If it happens the pass fails loud naming
@@ -1221,10 +1218,10 @@ branch at the same time. A host that loses the race returns immediately.
   "Issues consulted" block on the attempt, the override block on the
   resolution, and `findUncorroboratedOverrides`, which is what makes an
   unevidenced claim decidable without trusting the model.
-- `worker/deno/lib/conflict_rebase_rung.ts` — the stale-verdict ladder's rebase
-  rung: the replay onto the base, the tree-identity guard that licenses the
-  leased force-push, and the squash-of-the-old-tree fallback. Every outcome
-  leaves the branch at `OLD` or at a head whose tree equals `OLD`'s.
+- `worker/deno/lib/conflict_rebase_rung.ts` — the stale-verdict ladder's merge
+  rung (`runMergeRung`): `git merge --no-ff origin/BASE` and a plain push, never
+  a rebase or a force of any kind (Issue #2806). Every outcome but a push leaves
+  the branch at `OLD`.
 - `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
   its four preconditions, the restart marker and the `MAX_RESTARTS_PER_ISSUE`
   bound it enforces, the comments it posts on the PR and the issue, and
