@@ -156,7 +156,7 @@ Deno.test("commitAndPushPending - still reports unpushed commits honestly when t
     await runGit(["push", "-u", "origin", branch], clone);
 
     // A sibling moves the remote head, then we commit locally: our push is
-    // rejected non-fast-forward and recovery must rebase before it can land.
+    // rejected non-fast-forward and recovery must merge before it can land.
     const sibling = `${tmp}/sibling`;
     await runGit(
       [
@@ -181,12 +181,12 @@ Deno.test("commitAndPushPending - still reports unpushed commits honestly when t
       { cwd: clone },
     );
 
-    // The head moved during the run, so recovery rebases onto it and pushes:
+    // The head moved during the run, so recovery merges it in and pushes:
     // the work lands, nothing is reported unpushed, and no caller has cause to
     // ask a human to check the branch.
     assert(
       result.ok,
-      `expected the rebase-and-push recovery to land the work, got: ${
+      `expected the merge-and-push recovery to land the work, got: ${
         !result.ok ? result.error.message : ""
       }`,
     );

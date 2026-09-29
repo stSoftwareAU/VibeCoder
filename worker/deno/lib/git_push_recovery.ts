@@ -7,6 +7,7 @@
  *   1. Fetching the branch straight into its remote-tracking ref
  *   2. Merging `origin/<branch>` into the local branch
  *   3. Retrying a plain push
+ *   4. Confirming it landed: re-fetching and checking HEAD is on the remote
  *
  * It never rebases and never forces (Issue #2808): a force push — even a
  * leased one — can rewrite a PR under review. A conflicting merge is aborted
@@ -192,6 +193,37 @@ export async function recoverFromPushRejection(
     return {
       ok: false,
       error: recoveryError("retry-push", gitFailureDetail(retryResult)),
+    };
+  }
+
+  // Confirm the push landed by re-reading the remote head. This also moves the
+  // tracking ref the first fetch created — a single-branch clone's push never
+  // updates it — so the unpushed count is not measured against a stale ref.
+  const confirmFetch = await runGitCommand(fetchArgs, options);
+  if (!confirmFetch.ok || confirmFetch.value.code !== 0) {
+    return {
+      ok: false,
+      error: recoveryError("confirm-push", gitFailureDetail(confirmFetch)),
+    };
+  }
+  const landed = await runGitCommand(
+    [
+      "merge-base",
+      "--is-ancestor",
+      "HEAD",
+      `refs/remotes/origin/${branchName}`,
+    ],
+    options,
+  );
+  if (!landed.ok || landed.value.code !== 0) {
+    return {
+      ok: false,
+      error: recoveryError(
+        "confirm-push",
+        `HEAD is not on origin/${branchName} after the push: ${
+          gitFailureDetail(landed) || "not an ancestor"
+        }`,
+      ),
     };
   }
 
