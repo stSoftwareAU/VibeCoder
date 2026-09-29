@@ -5,8 +5,8 @@
  * of this block, and every copy threw away the reason: `recoverFromPushRejection`
  * returns an error naming the step that failed and git's stderr, and all three
  * logged a bare "Push failed after recovery attempt". The one incident this
- * fixes (NEAT-AI-core #557) left an operator with no way to tell a rebase
- * conflict from a refused lease.
+ * fixes (NEAT-AI-core #557) left an operator with no way to tell which
+ * recovery step failed.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -68,11 +68,11 @@ export interface PushRecoveryOutcome {
 }
 
 /**
- * Rebase onto the current remote head and push again (Issue #211).
+ * Merge the current remote head in and push again (Issue #211, #2808).
  *
- * `recoverFromPushRejection` fetches, rebases our commits onto whatever the
- * remote head is now — including a head a sibling fleet host moved while the
- * agent was running — and pushes. When that lands, the retry commit-and-push
+ * `recoverFromPushRejection` fetches, merges whatever the remote head is now
+ * — including a head a sibling fleet host moved while the agent was running —
+ * into our branch, and pushes plainly, never forcing. When that lands, the retry commit-and-push
  * confirms the branch is clean. Every failure path returns the step that
  * failed plus git's stderr instead of discarding it.
  *
@@ -114,7 +114,7 @@ export async function recoverAndRetryPush(
     return { pushed: false, unpushedCount, failureDetail };
   }
 
-  logger.info("Push recovery rebased onto the current remote head", {
+  logger.info("Push recovery merged the current remote head", {
     ...logContext,
     branchName,
     outcome: recovery.value,

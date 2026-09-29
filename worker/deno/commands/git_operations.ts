@@ -20,7 +20,7 @@
  *   - detect-existing-pr: Extract PR URL from gh error output
  *   - find-open-pr: Find an open PR for a branch
  *   - recover-existing-pr: Recover gracefully when a PR already exists
- *   - recover-push-rejection: Fetch, rebase, and retry push
+ *   - recover-push-rejection: Fetch, merge, and retry a plain push
  *   - resolve-rebase-conflicts: Resolve merge conflicts during rebase
  *   - validate-repo-state: Pre-Claude repository state validation
  *   - update-pr-branch: Update a PR branch to be current with its base

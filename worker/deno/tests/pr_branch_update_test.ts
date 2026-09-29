@@ -7,8 +7,14 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { prBranchConflictError } from "../lib/git_pull.ts";
+import { prBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
 import { assertEquals } from "@std/assert";
+import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
+import {
+  isForcedPush,
+  recordedPushes,
+  startGitTrace,
+} from "./support/git_trace.ts";
 import {
   decidePrUpdateAction,
   executePrBranchUpdates,
@@ -1282,4 +1288,72 @@ Deno.test("scanPrBranchUpdates - never updates a PR whose review decision is CHA
     infos.filter((message) => message.includes("CHANGES_REQUESTED")).length,
     2,
   );
+});
+
+Deno.test("scanPrBranchUpdates + executePrBranchUpdates - a green PR awaiting approval that is behind is kept current, pushed without force (Issue #2807)", async () => {
+  const fixture = await setupGitRepoFixture("issue-2807-");
+  const trace = await startGitTrace();
+  try {
+    const { clone } = fixture;
+    const branch = "issue-77-green";
+    await gitOk(["checkout", "-b", branch], clone);
+    await Deno.writeTextFile(`${clone}/feature.txt`, "feature\n");
+    await gitOk(["add", "feature.txt"], clone);
+    await gitOk(["commit", "-m", "Feature"], clone);
+    await gitOk(["push", "-u", "origin", branch], clone);
+    const oldHead = (await gitOk(["rev-parse", "HEAD"], clone)).trim();
+    await gitOk(["checkout", "main"], clone);
+    await Deno.writeTextFile(`${clone}/base.txt`, "base\n");
+    await gitOk(["add", "base.txt"], clone);
+    await gitOk(["commit", "-m", "Base moves"], clone);
+    await gitOk(["push", "origin", "main"], clone);
+
+    // CI green, mergeable, only the approval outstanding — not a stall.
+    const scan = await scanPrBranchUpdates(makeBaseDeps({
+      listPrs: async () => [makePr({ number: 77, headRefName: branch })],
+      fetchBranchStateBatch: async () =>
+        new Map([[77, {
+          behindBy: 1,
+          mergeable: "MERGEABLE",
+          reviewDecision: "REVIEW_REQUIRED",
+        }]]),
+    }));
+    assertEquals(scan.ok, true);
+    if (!scan.ok) return;
+    assertEquals(scan.value.actions.map((a) => a.prNumber), [77]);
+
+    const executed = await executePrBranchUpdates(
+      scan.value.actions,
+      makeExecDeps({
+        setupRepo: async () => ({ ok: true, value: clone }),
+        performBranchUpdate: (params) =>
+          updatePrBranch(
+            params.branchName,
+            params.baseBranch,
+            { cwd: params.repoPath, env: trace.env },
+            params.reason,
+          ),
+      }),
+    );
+    assertEquals(executed.ok, true);
+    if (!executed.ok) return;
+    assertEquals(executed.value.updatedCount, 1);
+
+    const pushes = await recordedPushes(trace);
+    assertEquals(pushes.length, 1, JSON.stringify(pushes));
+    assertEquals(isForcedPush(pushes[0]!), false, pushes[0]!.join(" "));
+    await gitOk(["fetch", "origin"], clone);
+    // The update kept the PR's commit and brought the base in.
+    await gitOk(
+      ["merge-base", "--is-ancestor", oldHead, `origin/${branch}`],
+      clone,
+    );
+    await gitOk(
+      ["merge-base", "--is-ancestor", "origin/main", `origin/${branch}`],
+      clone,
+    );
+  } finally {
+    await trace.dispose();
+    await fixture.cleanup();
+  }
 });

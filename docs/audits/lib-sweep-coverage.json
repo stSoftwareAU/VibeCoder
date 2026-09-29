@@ -2051,6 +2051,18 @@
       ]
     },
     {
+      "issue": 2809,
+      "chunk": "top-up-2809",
+      "title": "top-up: the PR-raise branch sync",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2809",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_raise_sync.ts (#2809)",
+      "status": "claimed",
+      "sweptAt": "be130ecd42949a0d9f190b68bbca08924eb5ffd9",
+      "paths": [
+        "worker/deno/lib/pr_raise_sync.ts"
+      ]
+    },
+    {
       "issue": 2459,
       "chunk": "top-up-2459",
       "title": "top-up: the one-pass rebase for a declined branch",
