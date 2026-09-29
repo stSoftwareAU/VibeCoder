@@ -6,8 +6,8 @@
  * anywhere, writes a three-rule `.github/CODEOWNERS` that makes the configured
  * humans own the workflow, action and CODEOWNERS paths. The file rides along
  * in the next normal worker PR for the repo, the same way gitignore sync's
- * `.gitignore` does; code-owner review is enforced by a later setup run once
- * the file is on the default branch.
+ * `.gitignore` does. It routes review requests only: code-owner review is
+ * not required, because the fleet reviewer App approves (THREAT-MODEL R14).
  *
  * It never edits an existing CODEOWNERS file. "No CODEOWNERS anywhere" means
  * both of these say absent:
