@@ -6,7 +6,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { resetSafeDirectoryRepairs } from "../lib/git_safe_directory.ts";
+import { resetSafeDirectoryRepairs } from "../lib/git_timeout.ts";
 import {
   ALL_BRANCHES_FETCH_REFSPEC,
   ensureAllBranchesFetchRefspec,
