@@ -4637,7 +4637,9 @@ the next cycle — and climbs a two-trip ladder:
   reason: the PR is closed (its branch kept) and its originating issue is
   re-queued, keeping its own pickup label or gaining `idle-task` — never
   `work-on`. A PR naming no originating issue is closed and **no** issue is
-  filed. The issue shares its two restarts with the merge-conflict ladder.
+  filed. The issue shares its two restarts with the merge-conflict ladder; once
+  both are spent, a further stall adds `needs-human` and one comment to the
+  issue instead of a third redo (Issue #2804).
 - **Auto-fix cap** — a PR carrying the
   [auto-fix attempt cap](#-auto-fix-attempt-cap) marker skips the rerun (its
   lane has already given up) and goes straight to the second trip.

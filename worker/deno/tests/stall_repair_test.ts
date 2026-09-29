@@ -82,13 +82,14 @@ function harness(opts: {
   prComments?: Comment[];
   leaseAvailable?: boolean;
   originatingIssue?: boolean;
+  issueComments?: Comment[];
 } = {}) {
   const state = {
     now: NOW,
     leaseHeld: false,
     prClosed: false,
     prComments: [...(opts.prComments ?? [])],
-    issueComments: [] as Comment[],
+    issueComments: [...(opts.issueComments ?? [])],
     issueLabels: [...(opts.issueLabels ?? [])],
     calls: [] as string[][],
     writesOutsideLease: [] as string[][],
@@ -131,8 +132,13 @@ function harness(opts: {
         labels: state.issueLabels.map((name) => ({ name })),
       }));
     } else if (args[0] === "api" && args[1] === "-X") {
-      const label = (args[5] ?? "").replace(/^labels\[\]=/, "");
-      if (label) state.issueLabels.push(label);
+      const field = args[5] ?? "";
+      if ((args[3] ?? "").endsWith("/comments")) {
+        state.issueComments.push(comment(field.replace(/^body=/, "")));
+      } else if ((args[3] ?? "").endsWith(`/issues/${ISSUE}/labels`)) {
+        const label = field.replace(/^labels\[\]=/, "");
+        if (label) state.issueLabels.push(label);
+      }
     }
     return Promise.resolve("{}");
   };
@@ -398,4 +404,34 @@ Deno.test("an unanswered comment still trips after the first trip's own marker a
   assertEquals(again.signals.map((s) => s.reason), ["unanswered-comment"]);
   assertEquals(await repairStalledPr(again, deps), "abandoned");
   assertEquals(state.prClosed, true);
+});
+
+Deno.test("second trip on an issue already redone twice adds needs-human and one comment, no third redo (Issue #2804)", async () => {
+  const claim = (pr: number): Comment => ({
+    body: `${CONFLICT_RESTART_MARKER} pr="${REPO}#${pr}" -->`,
+    user: { login: FLEET },
+    created_at: iso(NOW - 86400),
+  });
+  const { state, deps } = harness({
+    issueLabels: ["work-on"],
+    issueComments: [claim(61), claim(62)],
+  });
+  const stall = stallFor("red-ci");
+
+  assertEquals(await repairStalledPr(stall, deps), "first-trip");
+  state.now += THRESHOLD;
+  assertEquals(await repairStalledPr(stall, deps), "abandon-declined");
+
+  assertEquals(state.prClosed, false, "no third redo closes the PR");
+  assertEquals(state.issueLabels, ["work-on", "needs-human"]);
+  assertEquals(state.issueComments.length, 3);
+  assertStringIncludes(state.issueComments[2]!.body, `${REPO}#${PR}`);
+  assertStringIncludes(state.issueComments[2]!.body, "has stalled");
+  assertEquals(state.writesOutsideLease, [], "every write holds the lease");
+
+  // A later check finds needs-human already there and says nothing more.
+  state.now += THRESHOLD;
+  assertEquals(await repairStalledPr(stall, deps), "abandon-declined");
+  assertEquals(state.issueComments.length, 3);
+  assertEquals(state.prClosed, false);
 });
