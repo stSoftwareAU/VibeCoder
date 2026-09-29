@@ -13,7 +13,9 @@
  *   B -- no --> C[read milestone tip]
  *   C --> D{tip behind default?}
  *   D -- yes --> Y[deferred — sync first]
- *   D -- no --> E["create or reuse ref partial-rollup/slug-sha"]
+ *   D -- no --> G{any file changes vs default?}
+ *   G -- no --> W[deferred — nothing to roll up]
+ *   G -- yes --> E["create or reuse ref partial-rollup/slug-sha"]
  *   E --> F[gh pr create --head snapshot --base default]
  *   F --> Z[created]
  * ```
@@ -203,25 +205,40 @@ async function readBranchSha(
   return sha;
 }
 
-/** Behind/ahead counts of `sha` against the default branch; throws when unreadable. */
+/**
+ * Behind/ahead commit counts and the changed-file count of `sha` against the
+ * default branch; throws when unreadable.
+ *
+ * Commits alone cannot say whether there is anything to land: a squash-merged
+ * partial rollup synced back into the milestone leaves it commits ahead with
+ * a tree identical to default. `filesChanged` is what decides.
+ */
 async function compareWithDefault(
   repo: string,
   defaultBranch: string,
   sha: string,
   ghFn: GhCommandFn,
-): Promise<{ behindBy: number; aheadBy: number }> {
+): Promise<{ behindBy: number; aheadBy: number; filesChanged: number }> {
   const raw = await ghFn([
     "api",
     `repos/${repo}/compare/${defaultBranch}...${sha}`,
     "--jq",
-    "{behind_by, ahead_by}",
+    '{behind_by, ahead_by, files: (.files | if type == "array" then length else null end)}',
   ]);
-  const parsed = JSON.parse(raw) as { behind_by?: unknown; ahead_by?: unknown };
-  const { behind_by: behindBy, ahead_by: aheadBy } = parsed;
-  if (typeof behindBy !== "number" || typeof aheadBy !== "number") {
+  const parsed = JSON.parse(raw) as {
+    behind_by?: unknown;
+    ahead_by?: unknown;
+    files?: unknown;
+  };
+  const { behind_by: behindBy, ahead_by: aheadBy, files: filesChanged } =
+    parsed;
+  if (
+    typeof behindBy !== "number" || typeof aheadBy !== "number" ||
+    typeof filesChanged !== "number"
+  ) {
     throw new Error(`compare ${defaultBranch}...${sha} returned no counts`);
   }
-  return { behindBy, aheadBy };
+  return { behindBy, aheadBy, filesChanged };
 }
 
 /**
@@ -359,7 +376,7 @@ export async function createPartialRollup(
   // Compare the exact tip that will be snapshotted, so the sync check and
   // the snapshot cannot disagree.
   let headSha: string;
-  let counts: { behindBy: number; aheadBy: number };
+  let counts: { behindBy: number; aheadBy: number; filesChanged: number };
   try {
     headSha = await readBranchSha(repo, milestoneBranch, ghFn);
     counts = await compareWithDefault(repo, defaultBranch, headSha, ghFn);
@@ -379,11 +396,14 @@ export async function createPartialRollup(
         `${defaultBranch} — the milestone sync must land first`,
     };
   }
-  if (counts.aheadBy === 0) {
+  if (counts.aheadBy === 0 || counts.filesChanged === 0) {
     return {
       outcome: "deferred",
       reason: "nothing-to-roll-up",
-      detail: `${milestoneBranch} has no commits ahead of ${defaultBranch}`,
+      detail: counts.aheadBy === 0
+        ? `${milestoneBranch} has no commits ahead of ${defaultBranch}`
+        : `${milestoneBranch} is ${counts.aheadBy} commit(s) ahead of ` +
+          `${defaultBranch} but changes no files — already landed`,
     };
   }
 

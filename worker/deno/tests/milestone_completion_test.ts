@@ -2660,6 +2660,9 @@ interface DeadlockScenarioOptions {
   openPartialRollupPrs?: unknown[];
   behindBy?: number;
   aheadBy?: number;
+  /** Files the milestone tip changes against default (compare `.files`). */
+  filesChanged?: number;
+  mergedPartialRollupPrs?: unknown[];
   gitRefThrows?: boolean;
 }
 
@@ -2674,6 +2677,8 @@ function scriptDeadlockGh(
   const calls: string[][] = [];
   const behindBy = options.behindBy ?? 0;
   const aheadBy = options.aheadBy ?? 3;
+  const filesChanged = options.filesChanged ?? 5;
+  const mergedPartialRollupPrs = options.mergedPartialRollupPrs ?? [];
   const openPartialRollupPrs = options.openPartialRollupPrs ?? [];
 
   const gh = (args: string[]): Promise<string> => {
@@ -2705,6 +2710,12 @@ function scriptDeadlockGh(
       return Promise.resolve(JSON.stringify(openPartialRollupPrs));
     }
     if (
+      key.includes("pr list") && key.includes("--state merged") &&
+      key.includes("vibe-partial-rollup")
+    ) {
+      return Promise.resolve(JSON.stringify(mergedPartialRollupPrs));
+    }
+    if (
       key.includes("api") && key.includes("/git/ref/heads/milestone/web-src")
     ) {
       if (options.gitRefThrows) {
@@ -2714,7 +2725,11 @@ function scriptDeadlockGh(
     }
     if (key.includes("api") && key.includes("/compare/main...")) {
       return Promise.resolve(
-        JSON.stringify({ behind_by: behindBy, ahead_by: aheadBy }),
+        JSON.stringify({
+          behind_by: behindBy,
+          ahead_by: aheadBy,
+          files: filesChanged,
+        }),
       );
     }
     if (
@@ -2818,6 +2833,34 @@ Deno.test("milestone deadlock rollup - a milestone behind default is deferred, n
   assertEquals(prCreateCalls(calls).length, 0);
   assertEquals(refPostCalls(calls).length, 0);
   assertStringIncludes(logs.join("\n"), "behind");
+});
+
+Deno.test("milestone deadlock rollup - a deadlock still present after its partial rollup merged and synced raises no empty rollup", async () => {
+  _resetBaseProtectionMemo();
+  // The earlier partial rollup squash-merged and the sync landed it back into
+  // the milestone: level with main, 4 commits ahead, no file changes.
+  const { gh, calls } = scriptDeadlockGh({
+    behindBy: 0,
+    aheadBy: 4,
+    filesChanged: 0,
+    mergedPartialRollupPrs: [
+      {
+        number: 601,
+        headRefName: "partial-rollup/web-src-1234567",
+        headRefOid: "1234567000000000000000000000000000000000",
+        body: partialRollupMarker("Web src"),
+        author: { login: "bot" },
+      },
+    ],
+  });
+  const deps = createMockDeps({ ghCommandFn: gh });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(refPostCalls(calls).length, 0);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(mergeAutoCalls(calls).length, 0);
 });
 
 Deno.test("milestone deadlock rollup - a failed partial rollup for one milestone does not abort the scan", async () => {

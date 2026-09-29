@@ -51,6 +51,8 @@ class FakeGitHub {
   refs = new Map<string, string>([[BRANCH, TIP]]);
   behindBy = 0;
   aheadBy = 3;
+  /** Files the milestone tip changes against default (compare `.files`). */
+  filesChanged: number | undefined = 5;
   calls: string[][] = [];
   nextPr = 500;
 
@@ -118,7 +120,11 @@ class FakeGitHub {
     }
     if (args[0] === "api" && path.includes("/compare/")) {
       return Promise.resolve(
-        JSON.stringify({ behind_by: this.behindBy, ahead_by: this.aheadBy }),
+        JSON.stringify({
+          behind_by: this.behindBy,
+          ahead_by: this.aheadBy,
+          files: this.filesChanged,
+        }),
       );
     }
     if (args[0] === "api" && args.some((a) => a.includes("/milestones"))) {
@@ -250,6 +256,40 @@ Deno.test("createPartialRollup - nothing ahead of default is deferred", async ()
   if (result.outcome === "deferred") {
     assertEquals(result.reason, "nothing-to-roll-up");
   }
+  assertEquals(gh.creates, []);
+});
+
+Deno.test("createPartialRollup - commits ahead but no file changes (previous partial rollup squash-merged, then synced) is deferred", async () => {
+  // Rollup #1 squash-merged as one commit on default; the sync merged it back
+  // into the milestone. The milestone is level and N+1 commits ahead, yet its
+  // tree is identical to default — a new rollup would be an empty PR.
+  const gh = new FakeGitHub();
+  gh.prs.push({
+    number: 400,
+    headRefName: "partial-rollup/deadlock-breaker-1234567",
+    baseRefName: DEFAULT,
+    headRefOid: "1234567000000000000000000000000000000000",
+    body: partialRollupMarker(TITLE),
+    state: "MERGED",
+    author: { login: "bot" },
+  });
+  gh.behindBy = 0;
+  gh.aheadBy = 4;
+  gh.filesChanged = 0;
+  const result = await gh.run();
+  assertEquals(result.outcome, "deferred");
+  if (result.outcome === "deferred") {
+    assertEquals(result.reason, "nothing-to-roll-up");
+  }
+  assertEquals(gh.creates, []);
+  assertFalse(gh.refs.has(SNAPSHOT));
+});
+
+Deno.test("createPartialRollup - a compare with no file count fails loud and creates nothing", async () => {
+  const gh = new FakeGitHub();
+  gh.filesChanged = undefined;
+  const result = await gh.run();
+  assertEquals(result.outcome, "failed");
   assertEquals(gh.creates, []);
 });
 
