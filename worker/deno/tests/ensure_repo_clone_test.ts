@@ -109,11 +109,18 @@ Deno.test(
 );
 
 Deno.test(
-  "ensureRepoClone - default directory probe reports a real directory",
+  "ensureRepoClone - default directory probe reuses a real clone untouched",
   async () => {
     const workDir = await Deno.makeTempDir();
     try {
       await Deno.mkdir(`${workDir}/widget`);
+      // A real repository — a bare directory is re-cloned (Issue #2848).
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q"],
+        cwd: `${workDir}/widget`,
+        stdin: "null",
+      }).output();
+      assertEquals(init.code, 0);
       let setupCalled = false;
       const result = await ensureRepoClone("acme/widget", workDir, {
         setupRepoFn: () => {
@@ -124,6 +131,33 @@ Deno.test(
       assertEquals(result.ok, true);
       assertEquals(result.cloned, false);
       assertEquals(setupCalled, false);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a directory holding no repository is re-cloned, not reused (Issue #2848)",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/widget`);
+      const setupCalls: Array<[string, string]> = [];
+
+      const result = await ensureRepoClone("acme/widget", workDir, {
+        setupRepoFn: (repo, dir) => {
+          setupCalls.push([repo, dir]);
+          return Promise.resolve({ success: true, message: `${dir}/widget` });
+        },
+      });
+
+      assertEquals(result, {
+        ok: true,
+        repoPath: `${workDir}/widget`,
+        cloned: true,
+      });
+      assertEquals(setupCalls, [["acme/widget", workDir]]);
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }
