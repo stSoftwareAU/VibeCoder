@@ -10,6 +10,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { brokenRefsIn, removeBrokenRef } from "./broken_ref_repair.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import {
   detachLaneWorktreeHead,
@@ -116,7 +117,99 @@ function heldByLaneWorktree(
 }
 
 /**
- * Create a feature branch from a specified base branch (Issue #476, #1501).
+ * One fetch-then-checkout attempt for {@link createFeatureBranchFromBase},
+ * including the Issue #1564 lane-worktree `heldBy` handling.
+ *
+ * Failure text and detail is appended to `failures` (for the eventual error
+ * message) and `stderrTexts` (scanned for broken refs by the caller) rather
+ * than returned, so the caller can retry this whole attempt after a repair
+ * without losing the diagnostics from earlier attempts.
+ *
+ * @returns The success message, or `undefined` if every start point failed.
+ */
+async function attemptCreateFeatureBranch(
+  branchName: string,
+  baseBranch: string,
+  options: GitCommandOptions,
+  failures: string[],
+  stderrTexts: string[],
+): Promise<string | undefined> {
+  // Fetch the latest upstream base branch before creating the feature branch
+  // (Issue #1501). Non-fatal — if this fails we fall back to local refs.
+  const fetchResult = await runGitCommand(
+    buildFetchArgs("origin", baseBranch),
+    options,
+  );
+  const fetchOk = fetchResult.ok && fetchResult.value.code === 0;
+
+  if (!fetchOk) {
+    const detail = fetchResult.ok
+      ? fetchResult.value.stderr.trim() || `exit ${fetchResult.value.code}`
+      : fetchResult.error.message;
+    if (fetchResult.ok) stderrTexts.push(fetchResult.value.stderr);
+    console.warn(
+      `[git_branch] Warning: failed to fetch origin/${baseBranch} (${detail}); ` +
+        `falling back to local ref`,
+    );
+  }
+
+  // Start points in order of preference: the freshly fetched remote tip, the
+  // local base ref (Issue #476), then the remote-tracking ref for a clone
+  // that could not be fetched. Each is attempted with `checkout -B` so an
+  // existing local branch — including the one HEAD is on — is reset rather
+  // than collided with (Issue #356).
+  const startPoints = fetchOk
+    ? [`origin/${baseBranch}`, baseBranch]
+    : [baseBranch, `origin/${baseBranch}`];
+
+  let heldBy: string | undefined;
+  for (const startPoint of startPoints) {
+    const args = buildCheckoutResetBranchArgs(branchName, startPoint);
+    const checkout = await runGitCommand(args, options);
+    if (checkout.ok && checkout.value.code === 0) {
+      return `Created feature branch '${branchName}' from '${startPoint}'`;
+    }
+    failures.push(describeGitFailure(args, checkout));
+    if (checkout.ok) stderrTexts.push(checkout.value.stderr);
+    heldBy ??= heldByLaneWorktree(checkout);
+  }
+
+  // Issue #1564: branches are shared between the worktrees of one clone, so
+  // git refuses to move a branch another worktree has checked out. Slot s2
+  // checks an issue's feature branch out in its lane worktree and then loses
+  // the acquire race; s1 wins the claim and cannot have the branch. Both
+  // start points fail the same way, the issue dies in phase `setup` within
+  // seconds, and — because nothing releases s2's hold — every later attempt
+  // fails identically. VibeCoder#1548 had two before this was found.
+  //
+  // Detaching the holder is exactly what `detachLaneWorktreeHead` exists for;
+  // it was only ever called on the happy path, after a lane finished with a
+  // PR. Calling it here closes the loop for the lane that *didn't* finish.
+  if (heldBy !== undefined) {
+    if (await detachLaneWorktreeHead(heldBy)) {
+      for (const startPoint of startPoints) {
+        const args = buildCheckoutResetBranchArgs(branchName, startPoint);
+        const retry = await runGitCommand(args, options);
+        if (retry.ok && retry.value.code === 0) {
+          return `Created feature branch '${branchName}' from ` +
+            `'${startPoint}' after releasing it from the lane worktree at ` +
+            `${heldBy}`;
+        }
+        failures.push(describeGitFailure(args, retry));
+        if (retry.ok) stderrTexts.push(retry.value.stderr);
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/** Most broken refs repaired within one {@link createFeatureBranchFromBase} call. */
+const MAX_REPAIRED_REFS_PER_CALL = 10;
+
+/**
+ * Create a feature branch from a specified base branch (Issue #476, #1501,
+ * #2880).
  *
  * Explicitly creates a feature branch from the given base branch. This ensures
  * milestone issues create feature branches off the milestone branch rather than
@@ -140,6 +233,16 @@ function heldByLaneWorktree(
  * was doing. `-B` is no more destructive than the delete it replaces — both
  * discard whatever the local branch pointed at — and it cannot wedge.
  *
+ * A shared clone can also carry a **broken loose ref** — a ref file naming an
+ * object the object store no longer has — which fails the fetch (`fatal: bad
+ * object refs/<x>`) or the checkout of `origin/<baseBranch>` (`warning:
+ * ignoring broken ref …`) outright (Issue #2880). Every such ref is
+ * recoverable from the remote, so on failure this scans git's own stderr for
+ * ref names it names as broken, removes each with `removeBrokenRef`, and
+ * retries the whole attempt — bounded at
+ * {@link MAX_REPAIRED_REFS_PER_CALL} repaired refs, and stopping as soon as a
+ * retry names no new ref.
+ *
  * @param branchName - The feature branch name to create
  * @param baseBranch - The branch to create from (e.g., "main" or "milestone/oidc")
  * @param options - Git command options (cwd, etc.)
@@ -150,75 +253,47 @@ export async function createFeatureBranchFromBase(
   baseBranch: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
-  // Fetch the latest upstream base branch before creating the feature branch
-  // (Issue #1501). Non-fatal — if this fails we fall back to local refs.
-  const fetchResult = await runGitCommand(
-    buildFetchArgs("origin", baseBranch),
-    options,
-  );
-  const fetchOk = fetchResult.ok && fetchResult.value.code === 0;
-
-  if (!fetchOk) {
-    const detail = fetchResult.ok
-      ? fetchResult.value.stderr.trim() || `exit ${fetchResult.value.code}`
-      : fetchResult.error.message;
-    console.warn(
-      `[git_branch] Warning: failed to fetch origin/${baseBranch} (${detail}); ` +
-        `falling back to local ref`,
-    );
-  }
-
-  // Start points in order of preference: the freshly fetched remote tip, the
-  // local base ref (Issue #476), then the remote-tracking ref for a clone
-  // that could not be fetched. Each is attempted with `checkout -B` so an
-  // existing local branch — including the one HEAD is on — is reset rather
-  // than collided with (Issue #356).
-  const startPoints = fetchOk
-    ? [`origin/${baseBranch}`, baseBranch]
-    : [baseBranch, `origin/${baseBranch}`];
-
   const failures: string[] = [];
-  let heldBy: string | undefined;
-  for (const startPoint of startPoints) {
-    const args = buildCheckoutResetBranchArgs(branchName, startPoint);
-    const checkout = await runGitCommand(args, options);
-    if (checkout.ok && checkout.value.code === 0) {
-      return {
-        ok: true,
-        value: `Created feature branch '${branchName}' from '${startPoint}'`,
-      };
-    }
-    failures.push(describeGitFailure(args, checkout));
-    heldBy ??= heldByLaneWorktree(checkout);
-  }
+  const repairedRefs = new Set<string>();
 
-  // Issue #1564: branches are shared between the worktrees of one clone, so
-  // git refuses to move a branch another worktree has checked out. Slot s2
-  // checks an issue's feature branch out in its lane worktree and then loses
-  // the acquire race; s1 wins the claim and cannot have the branch. Both
-  // start points fail the same way, the issue dies in phase `setup` within
-  // seconds, and — because nothing releases s2's hold — every later attempt
-  // fails identically. VibeCoder#1548 had two before this was found.
-  //
-  // Detaching the holder is exactly what `detachLaneWorktreeHead` exists for;
-  // it was only ever called on the happy path, after a lane finished with a
-  // PR. Calling it here closes the loop for the lane that *didn't* finish.
-  if (heldBy !== undefined) {
-    if (await detachLaneWorktreeHead(heldBy)) {
-      for (const startPoint of startPoints) {
-        const args = buildCheckoutResetBranchArgs(branchName, startPoint);
-        const retry = await runGitCommand(args, options);
-        if (retry.ok && retry.value.code === 0) {
-          return {
-            ok: true,
-            value: `Created feature branch '${branchName}' from ` +
-              `'${startPoint}' after releasing it from the lane worktree at ` +
-              `${heldBy}`,
-          };
-        }
-        failures.push(describeGitFailure(args, retry));
-      }
+  for (;;) {
+    const stderrTexts: string[] = [];
+    const success = await attemptCreateFeatureBranch(
+      branchName,
+      baseBranch,
+      options,
+      failures,
+      stderrTexts,
+    );
+    if (success !== undefined) {
+      return { ok: true, value: success };
     }
+
+    if (repairedRefs.size >= MAX_REPAIRED_REFS_PER_CALL) break;
+
+    const candidates = brokenRefsIn(stderrTexts.join("\n")).filter(
+      (ref) => !repairedRefs.has(ref),
+    );
+    if (candidates.length === 0) break;
+
+    let repairedAny = false;
+    for (const ref of candidates) {
+      if (repairedRefs.size >= MAX_REPAIRED_REFS_PER_CALL) break;
+      repairedRefs.add(ref);
+      const removal = await removeBrokenRef(ref, options);
+      if (!removal.ok) {
+        failures.push(
+          `removing broken ref '${ref}': ${removal.error.message}`,
+        );
+        continue;
+      }
+      console.warn(
+        `[git_branch] Warning: removed broken ref ${ref} (points at a ` +
+          `missing object); retrying branch creation (Issue #2880)`,
+      );
+      repairedAny = true;
+    }
+    if (!repairedAny) break;
   }
 
   // Fail loud with git's own words: the release comment for Issue #356 read
