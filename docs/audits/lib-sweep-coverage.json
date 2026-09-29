@@ -210,6 +210,7 @@
         "worker/deno/lib/default_branch_approval.ts",
         "worker/deno/lib/dependency_conflict_decisions.ts",
         "worker/deno/lib/dependency_conflict_json.ts",
+        "worker/deno/lib/dependency_landed.ts",
         "worker/deno/lib/diagnose.ts",
         "worker/deno/lib/diagnose_issue.ts",
         "worker/deno/lib/direct_merge.ts",
