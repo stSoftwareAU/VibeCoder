@@ -67,7 +67,6 @@ import {
 } from "../issue_lifecycle.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
 import { createPullRequestViaRest } from "../pr_create_rest.ts";
-import { ensureBranchCurrent } from "../branch_currency.ts";
 import {
   buildRebasePassPrompt,
   postBranchConflictComment,

@@ -68,7 +68,9 @@ export async function mergeOntoBase(
     };
   }
 
-  if (!await gitSucceeds(runGit, ["checkout", "--end-of-options", branch], cwd)) {
+  if (
+    !await gitSucceeds(runGit, ["checkout", "--end-of-options", branch], cwd)
+  ) {
     return {
       ok: false,
       error: new Error(`could not check out '${branch}' to merge into it`),
@@ -79,7 +81,9 @@ export async function mergeOntoBase(
     ["merge", "--no-edit", "--end-of-options", baseRef],
     gitOptions,
   );
-  if (merged.ok && merged.value.code === 0) return { ok: true, value: undefined };
+  if (merged.ok && merged.value.code === 0) {
+    return { ok: true, value: undefined };
+  }
 
   // Abort only a merge git actually started, and fail loud when the abort
   // itself fails: a half-merged tree is not "left exactly as it was".
@@ -190,7 +194,11 @@ export async function syncBranchesForPrRaise(
       }
       if (
         shared &&
-        !await gitSucceeds(runGit, ["checkout", "--end-of-options", branch], cwd)
+        !await gitSucceeds(
+          runGit,
+          ["checkout", "--end-of-options", branch],
+          cwd,
+        )
       ) {
         return {
           kind: "refused",
