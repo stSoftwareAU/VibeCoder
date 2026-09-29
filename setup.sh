@@ -1586,8 +1586,9 @@ main() {
     # default setup on public repos (Issue #2704 - only when not configured;
     # a repo with its own CodeQL workflow is reported, never written), one
     # approving review on the default branch (Issue #2680 — a direct-push
-    # branch is skipped and reported), and code-owner review once CODEOWNERS
-    # is on the default branch; merge commits allowed with the default branch
+    # branch is skipped and reported), and code-owner review turned OFF
+    # wherever a ruleset requires it (the fleet reviewer App cannot be a code
+    # owner, so its approval is the gate); merge commits allowed with the default branch
     # kept squash-only, so milestone sync PRs land as merge commits, and the
     # fleet accounts held at write (Issue #2690 - an organisation owner is
     # reported once); and Copilot code review on, off or left as

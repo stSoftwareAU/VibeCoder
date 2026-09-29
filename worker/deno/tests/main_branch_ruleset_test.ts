@@ -237,7 +237,13 @@ function pullRequestRule(payload: LiveRules): Record<string, unknown> {
 }
 
 Deno.test("diffLiveRuleset - a live pull_request rule weaker than the committed one is drift, not agreement (Issue #2169)", async () => {
-  const committed = await loadMainBranchRuleset();
+  // A committed rule stronger than the live one (the parameter itself does
+  // not matter: every pull_request parameter is diffed).
+  const committed = JSON.parse(
+    JSON.stringify(await loadMainBranchRuleset()),
+  ) as Awaited<ReturnType<typeof loadMainBranchRuleset>>;
+  pullRequestRule(committed as unknown as LiveRules).require_code_owner_review =
+    true;
   const live = asLive(committed) as LiveRules;
   pullRequestRule(live).require_code_owner_review = false;
   const drift = diffLiveRuleset(live, committed);
@@ -286,12 +292,13 @@ Deno.test("diffLiveRuleset - allowed_merge_methods is compared as a set, so orde
   ]);
 });
 
-Deno.test("diffLiveRuleset - the committed main.json requires code-owner review and secret-scanning alert resolution, as the live ruleset does (Issue #2169)", async () => {
+Deno.test("diffLiveRuleset - the committed main.json leaves code-owner review off and requires secret-scanning alert resolution (Issue #2169)", async () => {
   const committed = await loadMainBranchRuleset();
+  // Off: the fleet reviewer App cannot be a code owner (THREAT-MODEL R14).
   assertEquals(
     pullRequestRule(committed as unknown as LiveRules)
       .require_code_owner_review,
-    true,
+    false,
   );
   assert(
     committed.rules.some((r) =>

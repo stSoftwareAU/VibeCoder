@@ -2246,6 +2246,18 @@
       "paths": [
         "worker/deno/lib/ci_human_gate_comment.ts"
       ]
+    },
+    {
+      "issue": 2880,
+      "chunk": "top-up-2880",
+      "title": "top-up: the broken loose ref repair",
+      "ledger": "docs/audits/security-sweep-2880-broken-ref-repair.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: broken_ref_repair.ts (#2880)",
+      "status": "swept",
+      "sweptAt": "427a8fc58af548ac3137794b15db622c90db2a4e",
+      "paths": [
+        "worker/deno/lib/broken_ref_repair.ts"
+      ]
     }
   ],
   "roots": [
