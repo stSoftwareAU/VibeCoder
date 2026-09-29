@@ -383,7 +383,7 @@ export async function runStallRepairPass(
 ): Promise<
   Result<Array<{ stall: BlockingPrStall; action: StallRepairAction }>>
 > {
-  // First, so a PR freed of `escalated` is scanned in this same cycle.
+  // First, so the sweep still runs when the stall scan fails.
   for (const repo of opts.repos) {
     const swept = await sweepEscalatedLeftovers(repo, {
       ghCommandFn: opts.ghCommandFn,

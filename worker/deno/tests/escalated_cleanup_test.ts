@@ -65,12 +65,12 @@ function fakeGitHub(
 }
 
 function recordingLogger() {
-  const errors: { message: string; context?: Record<string, unknown> }[] = [];
+  const warnings: { message: string; context?: Record<string, unknown> }[] = [];
   const noop = () => {};
   const logger: Logger = {
     info: noop,
-    warn: noop,
-    error: (message, context) => errors.push({ message, context }),
+    warn: (message, context) => warnings.push({ message, context }),
+    error: noop,
     debug: noop,
     security: noop,
     skipReason: noop,
@@ -78,7 +78,7 @@ function recordingLogger() {
     scanSummary: noop,
     workerSummary: noop,
   };
-  return { logger, errors };
+  return { logger, warnings };
 }
 
 function sweep(gh: (args: string[]) => Promise<string>, logger: Logger) {
@@ -174,16 +174,16 @@ Deno.test("escalated cleanup - every gh failure is logged with repo and number a
     },
     (args) => args[1] === "edit" || args[1] === "close",
   );
-  const { logger, errors } = recordingLogger();
+  const { logger, warnings } = recordingLogger();
 
   const outcome = await sweep(github.gh, logger);
 
   assertEquals(outcome.failures, 2);
   assertEquals(outcome.labelsRemoved, []);
   assertEquals(outcome.issuesClosed, []);
-  assertEquals(errors.map((e) => e.context?.repo), [REPO, REPO]);
-  assertEquals(errors[0]?.context?.pr, 41);
-  assertEquals(errors[1]?.context?.issue, 90);
+  assertEquals(warnings.map((e) => e.context?.repo), [REPO, REPO]);
+  assertEquals(warnings[0]?.context?.pr, 41);
+  assertEquals(warnings[1]?.context?.issue, 90);
 });
 
 Deno.test("escalated cleanup - a failed listing is counted, not read as a clean repo", async () => {
@@ -191,12 +191,12 @@ Deno.test("escalated cleanup - a failed listing is counted, not read as a clean 
     { escalatedPrs: [], issues: [] },
     (args) => args[1] === "list",
   );
-  const { logger, errors } = recordingLogger();
+  const { logger, warnings } = recordingLogger();
 
   const outcome = await sweep(github.gh, logger);
 
   assertEquals(outcome.failures, 2);
-  assertEquals(errors.length, 2);
+  assertEquals(warnings.length, 2);
 });
 
 Deno.test("escalated cleanup - defers without a gh call when the repo is leased elsewhere", async () => {

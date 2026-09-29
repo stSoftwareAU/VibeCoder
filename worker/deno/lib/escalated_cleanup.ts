@@ -189,8 +189,8 @@ async function closeCannotLandIssues(
   for (const row of fleetFiled) {
     const prNumber = Number(CANNOT_LAND_TITLE.exec(row.title ?? "")?.[1]);
     try {
-      // One call comments and closes, so a retry never stacks comments on an
-      // issue that closed.
+      // One call comments and closes. If the close half fails, the next
+      // cycle may comment again — noise, never a lost close.
       await deps.ghCommandFn([
         "issue",
         "close",
@@ -263,7 +263,8 @@ function fail(
   context: Record<string, unknown>,
 ): void {
   outcome.failures += 1;
-  deps.logger.error(`Escalated cleanup: ${message}`, context);
+  // WARN, not ERROR: the next cycle retries it (Log Levels Are a Promise).
+  deps.logger.warn(`Escalated cleanup: ${message}`, context);
 }
 
 function errorMessage(err: unknown): string {

@@ -26,6 +26,6 @@ an argument vector — no shell, no string-built command.
 | payload shape    | `gh` JSON output                         | parsed as `unknown`; an unparseable or non-array listing is logged and counted as a failure, and a row without an integer `number` is dropped                                                       |
 | repository lease | `acquireMaintenanceRepoLease`            | every write runs under the lease, released in `finally`; a held lease defers the sweep with a warning                                                                                               |
 
-Every `gh` failure is logged at error level with the repository and the PR or
+Every `gh` failure is logged at warning level with the repository and the PR or
 issue number, and counted in the returned `failures`, so a failed listing is
 never read as a clean repository.
