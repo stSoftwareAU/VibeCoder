@@ -357,16 +357,6 @@ export async function cleanupMergedPrBranches(
   };
 }
 
-/**
- * Remove local branches whose remote tracking branch is gone (Issue #468).
- *
- * After git fetch --prune, scans local branches for those whose upstream remote
- * branch no longer exists.
- *
- * @param defaultBranch - The default branch name — never deleted
- * @param options - Git command options
- * @returns Result with count of deleted branches
- */
 /** A 404, or GitHub's 422 "Reference does not exist": the ref is already gone. */
 function isRefGone(error: unknown): boolean {
   const message = errorMessage(error);
@@ -386,6 +376,16 @@ function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
   return b.every((n) => set.has(n));
 }
 
+/**
+ * Remove local branches whose remote tracking branch is gone (Issue #468).
+ *
+ * After git fetch --prune, scans local branches for those whose upstream remote
+ * branch no longer exists.
+ *
+ * @param defaultBranch - The default branch name — never deleted
+ * @param options - Git command options
+ * @returns Result with count of deleted branches
+ */
 /** Compress a branch list for a one-line summary event (Issue #4306). */
 function summariseBranches(names: string[]): string {
   const MAX_NAMED = 5;
