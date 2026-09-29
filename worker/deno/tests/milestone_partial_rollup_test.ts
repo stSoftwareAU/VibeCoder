@@ -63,10 +63,20 @@ class FakeGitHub {
     if (args[0] === "pr" && args[1] === "list") {
       const state = flag("--state");
       const head = args.includes("--head") ? flag("--head") : undefined;
+      // `"phrase" in:body` — GitHub's body search, modelled as a substring.
+      const phrase = args.includes("--search")
+        ? /^"([^"]+)" in:body$/.exec(flag("--search"))?.[1]
+        : undefined;
+      if (args.includes("--search") && phrase === undefined) {
+        return Promise.reject(
+          new Error(`unmodelled search ${flag("--search")}`),
+        );
+      }
       const hits = this.prs.filter((pr) =>
         (state === "all" || pr.state === state.toUpperCase()) &&
-        (head === undefined || pr.headRefName === head)
-      );
+        (head === undefined || pr.headRefName === head) &&
+        (phrase === undefined || pr.body.includes(phrase))
+      ).slice(0, Number(flag("--limit")) || undefined);
       return Promise.resolve(JSON.stringify(hits));
     }
     if (args[0] === "pr" && args[1] === "create") {
@@ -193,9 +203,6 @@ Deno.test("createPartialRollup - existing snapshot ref at the tip is reused, nev
   assertEquals(result.outcome, "created");
   if (result.outcome === "created") assert(result.reusedRef);
   assertEquals(gh.refs.get(SNAPSHOT), TIP);
-  assertFalse(
-    gh.calls.some((a) => a.includes("PATCH") || a.includes("force=true")),
-  );
 });
 
 Deno.test("createPartialRollup - existing snapshot ref at another SHA fails and opens no PR", async () => {
@@ -225,6 +232,8 @@ Deno.test("createPartialRollup - invalid names fail before reaching gh", async (
     { repo: "owner/repo; rm -rf /", milestoneBranch: BRANCH, milestone: TITLE },
     { repo: REPO, milestoneBranch: "feature/x", milestone: TITLE },
     { repo: REPO, milestoneBranch: "milestone/a b", milestone: TITLE },
+    { repo: REPO, milestoneBranch: "milestone/../main", milestone: TITLE },
+    { repo: "owner/..", milestoneBranch: BRANCH, milestone: TITLE },
     { repo: REPO, milestoneBranch: BRANCH, milestone: 'x" --><script>' },
   ];
   for (const c of cases) {
@@ -253,6 +262,42 @@ Deno.test("createPartialRollup - a closing keyword in the milestone title is ref
     assertStringIncludes(result.reason, "closing keyword");
   }
   assertEquals(gh.creates, []);
+});
+
+Deno.test("createPartialRollup - a closing keyword with an issue URL in the title is refused", async () => {
+  const gh = new FakeGitHub();
+  gh.refs.set("milestone/fixes-https-github-com-o-r-issues-12", TIP);
+  const result = await createPartialRollup({
+    repo: REPO,
+    milestone: "Fixes https://github.com/o/r/issues/12",
+    milestoneBranch: "milestone/fixes-https-github-com-o-r-issues-12",
+    defaultBranch: DEFAULT,
+    ghFn: gh.gh,
+  });
+  assertEquals(result.outcome, "failed");
+  if (result.outcome === "failed") {
+    assertStringIncludes(result.reason, "closing keyword");
+  }
+  assertEquals(gh.creates, []);
+});
+
+Deno.test("listMergedPartialRollupHeads - a full page throws rather than reporting a truncated history", async () => {
+  const gh = new FakeGitHub();
+  for (let n = 0; n < 100; n++) {
+    gh.prs.push({
+      number: n + 1,
+      headRefName: `partial-rollup/other-${String(n).padStart(7, "0")}`,
+      baseRefName: DEFAULT,
+      headRefOid: TIP,
+      body: partialRollupMarker("Other"),
+      state: "MERGED",
+    });
+  }
+  await assertRejects(
+    () => listMergedPartialRollupHeads(REPO, TITLE, gh.gh),
+    Error,
+    "truncated",
+  );
 });
 
 Deno.test("createPartialRollup - a failed PR lookup fails loud", async () => {

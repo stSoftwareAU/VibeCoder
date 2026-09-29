@@ -32,6 +32,8 @@
  */
 
 import { isMilestoneBranch } from "./milestone_children_gate.ts";
+import { isValidBranchName } from "./repo_rulesets.ts";
+import { isValidRepoSlug } from "./repo_slug.ts";
 
 /** Function signature for running gh CLI commands. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -39,19 +41,20 @@ export type GhCommandFn = (args: string[]) => Promise<string>;
 /** Branch prefix of every partial-rollup snapshot. */
 export const PARTIAL_ROLLUP_BRANCH_PREFIX = "partial-rollup/";
 
-/** Argument allowlists — the same shapes the milestone gate accepts. */
-const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
+/** Marker name shared by every partial rollup body; searched for in:body. */
+const MARKER_NAME = "vibe-partial-rollup";
+/** Page size of a partial-rollup listing; a full page fails loud. */
+const LIST_LIMIT = 100;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 /** A title embedded in the HTML-comment marker must not break out of it. */
 const TITLE_PATTERN = /^[^"<>\r\n]{1,255}$/;
-/** GitHub closing keywords followed by an issue reference. */
+/** GitHub closing keywords followed by an issue reference or issue URL. */
 const CLOSING_KEYWORD_PATTERN =
-  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*[\w.-]*\/?[\w.-]*#\d+/i;
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:[\w.-]*\/?[\w.-]*#\d+|https?:\/\/\S+\/issues\/\d+)/i;
 
 /** The body marker identifying the partial rollup of `milestoneTitle`. */
 export function partialRollupMarker(milestoneTitle: string): string {
-  return `<!-- vibe-partial-rollup milestone="${milestoneTitle}" -->`;
+  return `<!-- ${MARKER_NAME} milestone="${milestoneTitle}" -->`;
 }
 
 /** The snapshot branch name for a milestone branch at `sha`. */
@@ -112,8 +115,8 @@ function errorText(err: unknown): string {
 
 /**
  * Partial-rollup PRs in `state` carrying this milestone's marker; throws on
- * lookup failure. The `head:` search only narrows server-side — the head
- * prefix and the exact marker are re-checked locally.
+ * lookup failure or a full page. The marker search only narrows server-side —
+ * the head prefix and the exact marker are re-checked locally.
  */
 async function listPartialRollupPrs(
   repo: string,
@@ -121,7 +124,7 @@ async function listPartialRollupPrs(
   state: "open" | "merged",
   ghFn: GhCommandFn,
 ): Promise<RawPartialRollupPr[]> {
-  // SIMPLE-ON-PURPOSE: reads up to 100 partial rollups per state — upgrade when a repo accumulates more than 100
+  // SIMPLE-ON-PURPOSE: one page of 100 partial rollups per state, full page throws — upgrade when a repo accumulates 100
   const raw = await ghFn([
     "pr",
     "list",
@@ -130,15 +133,20 @@ async function listPartialRollupPrs(
     "--state",
     state,
     "--search",
-    "head:partial-rollup",
+    `"${MARKER_NAME}" in:body`,
     "--json",
     "number,headRefName,headRefOid,body",
     "--limit",
-    "100",
+    String(LIST_LIMIT),
   ]);
   const parsed = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
     throw new Error(`gh pr list returned ${typeof parsed}, not an array`);
+  }
+  if (parsed.length >= LIST_LIMIT) {
+    throw new Error(
+      `${LIST_LIMIT}+ ${state} partial rollups — the listing may be truncated`,
+    );
   }
   const marker = partialRollupMarker(milestone);
   return (parsed as RawPartialRollupPr[]).filter((pr) =>
@@ -276,10 +284,10 @@ export async function createPartialRollup(
   const { repo, milestone, milestoneBranch, defaultBranch, ghFn } = options;
 
   if (
-    !REPO_PATTERN.test(repo) ||
+    !isValidRepoSlug(repo) ||
     !isMilestoneBranch(milestoneBranch) ||
-    !BRANCH_PATTERN.test(milestoneBranch) ||
-    !BRANCH_PATTERN.test(defaultBranch)
+    !isValidBranchName(milestoneBranch) ||
+    !isValidBranchName(defaultBranch)
   ) {
     return {
       outcome: "failed",
@@ -405,7 +413,7 @@ export async function listMergedPartialRollupHeads(
   milestone: string,
   ghFn: GhCommandFn,
 ): Promise<string[]> {
-  if (!REPO_PATTERN.test(repo)) {
+  if (!isValidRepoSlug(repo)) {
     throw new Error("repo name failed the argument allowlist");
   }
   if (!TITLE_PATTERN.test(milestone)) {
