@@ -15,7 +15,7 @@ test, and drops the file's allowlist entry. Closes #2805.
 - [x] Delete `escalate_as_work.ts` and its test, and drop the allowlist entry
 - [x] Fix comments and docs (`merge_fallback_issue.ts`, `idle_task_snapshot.ts`,
       `untrusted_marker_action_verification_test.ts`, SECURITY.md,
-      `merge-conflicts.md`, CONFIGURATION.md)
+      `merge-conflicts.md`)
 - [x] Update the sweep-coverage ledger (`top-up-2805`) and remove the retired
       marker from the grammar registry
 - [ ] Post-roll-out check across the monitored repos (see below)
@@ -61,7 +61,7 @@ matching `cannot land` issue search:
 - **partial** — After roll-out, no open `escalated` PR and no fleet-filed `PR #N cannot land:` issue in any monitored repo, recorded in the summary — evidence: the Roll-out check above — reviewer: missing — reason: the pre-roll-out state is recorded here (0 PRs, 2 issues); the post-roll-out confirmation can only be run once this is deployed
 - **unrequested** — the two `escalateAsWork` tests in `untrusted_marker_action_verification_test.ts` are replaced with two `escalated_cleanup` fail-direction tests — reviewer: unrequested — reason: the import of the deleted module had to go, and the new site belongs in that fail-direction table
 - **unrequested** — the `vibe-work-escalation:` entry is removed from `marker_grammar_test.ts` — reviewer: unrequested — reason: that test fails on a declared marker that is no longer emitted
-- **unrequested** — SECURITY.md, `docs/workflows/merge-conflicts.md` and `docs/CONFIGURATION.md` are updated — reviewer: unrequested — reason: they referenced the deleted file or document the stall-repair pass, and a code change owes a docs change
+- **unrequested** — SECURITY.md and `docs/workflows/merge-conflicts.md` are updated — reviewer: unrequested — reason: they referenced the deleted file or document the stall-repair pass, and a code change owes a docs change
 - **unrequested** — the `lib-sweep-coverage.json` slice `top-up-2805` and `docs/audits/security-sweep-2805-escalated-cleanup.md` — reviewer: unrequested — reason: `lib_sweep_coverage_test.ts` fails on a lib module the ledger lists as missing or stale
 - **unrequested** — the `acquireLease` seam, the `deferred` outcome and the lease-deferral test — reviewer: unrequested — reason: they make the required maintenance-lane lease testable
 - **unrequested** — the single-page `LIST_LIMIT` of 100, marked `SIMPLE-ON-PURPOSE` — reviewer: unrequested — reason: any leftovers beyond 100 drain over later cycles
@@ -73,7 +73,7 @@ matching `cannot land` issue search:
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — Log Levels Are a Promise: retryable `gh` failures were logged at ERROR — evidence: `worker/deno/lib/escalated_cleanup.ts` (`fail()`) — reason: fixed in this diff; they now log at WARN, and the test reads from the warning sink
-- **clean** — fail loud (a failed listing is never read as a clean repo); security (fleet-author check before the close, strict title regex, argv-only `gh`, fixed comment text); KISS/DRY (reuses the shared author helper and the lease); tests call real code with a stateful fake; no leftover references; ledger registration; docs; Australian English. Optional notes: the "a retry never stacks comments" comment overclaimed and was reworded; CONFIGURATION.md now documents the sweep.
+- **clean** — fail loud (a failed listing is never read as a clean repo); security (fleet-author check before the close, strict title regex, argv-only `gh`, fixed comment text); KISS/DRY (reuses the shared author helper and the lease); tests call real code with a stateful fake; no leftover references; ledger registration; docs; Australian English. Optional notes: the "a retry never stacks comments" comment overclaimed and was reworded; the CONFIGURATION.md note was left out because touching that file surfaces 11 older MD018 lint errors outside this change.
 
 ## Test Plan
 
