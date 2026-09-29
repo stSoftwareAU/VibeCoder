@@ -21,10 +21,10 @@
  * measured nothing worth saying" — which is exactly the silence this issue
  * exists to remove.
  *
- * **The dedup match is author-verified**, for the same reason
- * `escalate_as_work.ts` verifies its own: the match is keyed on a title,
- * anyone who can open an issue chooses a title, and an unverified match does
- * two harmful things at once — it suppresses the flag, and it redirects the
+ * **The dedup match is author-verified**, for the same reason every
+ * title-keyed dedup in the worker verifies its own: the match is keyed on a
+ * title, anyone who can open an issue chooses a title, and an unverified match
+ * does two harmful things at once — it suppresses the flag, and it redirects the
  * flag's contents onto an issue somebody else opened. The match must also be
  * **open**: a closed flag means a human has finished with that PR or branch,
  * and a fresh fallback deserves its own issue rather than reopening a

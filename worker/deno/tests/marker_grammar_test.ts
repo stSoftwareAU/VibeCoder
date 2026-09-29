@@ -66,7 +66,6 @@ const ACCEPTED_DEVIATIONS: ReadonlyMap<string, string> = new Map([
   ["vibe-blocked-deferral:", "repeat-deferral guard"],
   ["vibe-analysis-only-handoff:", "repeat-handoff guard"],
   ["vibe-references-refresh-id:", "per-refresh dedup"],
-  ["vibe-work-escalation:", "repeat-escalation guard"],
   ["vibe-worker-issue-", "per-issue marker prefix"],
 ]);
 
