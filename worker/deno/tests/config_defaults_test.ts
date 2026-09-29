@@ -519,18 +519,18 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_REVISION is the top tier (plan
   assertEquals(DEFAULT_CLAUDE_MODEL_REVISION, DEFAULT_CLAUDE_MODEL_TOP_TIER);
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_CI_FIX is top tier (effort-first, Issue #2391)", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_CI_FIX, DEFAULT_CLAUDE_MODEL);
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_CI_FIX is sonnet (Sonnet 5.5 at half Opus price, Issue #2812)", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_CI_FIX, "sonnet");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PR_FEEDBACK is top tier (effort-first, Issue #2391)", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_PR_FEEDBACK, DEFAULT_CLAUDE_MODEL);
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PR_FEEDBACK is sonnet (Sonnet 5.5 at half Opus price, Issue #2812)", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_PR_FEEDBACK, "sonnet");
 });
 
-Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases to opus, reactive to opus, trivial to haiku (Issues #2391, #2621, #3229, #2560)", () => {
-  // Issue #2560: Opus 5.5 is the top tier, so model tier is the secondary
-  // lever at one extreme only — trivial phases on Haiku (cheap), every
-  // substantive phase on Opus, differentiated by effort.
+Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases to opus, reactive to sonnet, trivial to haiku (Issues #2391, #2621, #3229, #2560, #2812)", () => {
+  // Issue #2560: Opus 5.5 is the top tier for planning-shaped work; trivial
+  // phases stay on Haiku. Issue #2812: Sonnet 5.5 costs half of Opus 5.5, so
+  // the reactive phases move to Sonnet at high effort.
   const topTierPhases = new Set([
     "planning",
     "grill_me",
@@ -544,12 +544,19 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases 
     "clarification",
   ]);
   const haikuPhases = new Set(["spelling_fix", "summarise", "health"]);
+  const sonnetPhases = new Set(["ci_fix", "pr_feedback", "quality_fix"]);
   for (const [phase, model] of Object.entries(PHASE_MODEL_DEFAULTS)) {
     if (topTierPhases.has(phase)) {
       assertEquals(
         model,
         "opus",
         `Planning-shaped phase "${phase}" should run on the Opus top tier`,
+      );
+    } else if (sonnetPhases.has(phase)) {
+      assertEquals(
+        model,
+        "sonnet",
+        `Reactive phase "${phase}" should run on Sonnet (Issue #2812)`,
       );
     } else if (haikuPhases.has(phase)) {
       assertEquals(
@@ -561,7 +568,7 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases 
       assertEquals(
         model,
         DEFAULT_CLAUDE_MODEL,
-        `Reactive/substantive phase "${phase}" should resolve to the Opus tier`,
+        `Substantive phase "${phase}" should resolve to the Opus tier`,
       );
     }
   }
@@ -601,8 +608,8 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS consistent with individual con
   );
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_QUALITY_FIX is top tier (effort-first, Issue #2391)", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_QUALITY_FIX, DEFAULT_CLAUDE_MODEL);
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_QUALITY_FIX is sonnet (Sonnet 5.5 at half Opus price, Issue #2812)", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_QUALITY_FIX, "sonnet");
 });
 
 // =============================================================================
@@ -667,23 +674,10 @@ Deno.test("config_defaults - loadConfig defaults phaseModelOverrides to empty ob
 // Issue-executor split (Issue #2341)
 // =============================================================================
 
-Deno.test("config_defaults - loadConfig defaults issueExecutorSplit to false (Issue #2341)", async () => {
+Deno.test("config_defaults - loadConfig defaults issueExecutorSplit to true (Issues #2341, #2812)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo1"],
-  };
-
-  await withTempConfig(testConfig, async (configPath) => {
-    const config = await loadConfig(configPath);
-    assertEquals(config.issueExecutorSplit, false);
-  });
-});
-
-Deno.test("config_defaults - loadConfig loads issue_executor_split from config (Issue #2341)", async () => {
-  const testConfig: ConfigFile = {
-    allowed_authors: ["testuser"],
-    repos: ["org/repo1"],
-    issue_executor_split: true,
   };
 
   await withTempConfig(testConfig, async (configPath) => {
@@ -692,32 +686,45 @@ Deno.test("config_defaults - loadConfig loads issue_executor_split from config (
   });
 });
 
-// =============================================================================
-// Reviewer sub-agents (Issue #2575)
-// =============================================================================
-
-Deno.test("config_defaults - loadConfig defaults issueReviewerAgents to false (Issue #2575)", async () => {
+Deno.test("config_defaults - loadConfig honours issue_executor_split: false opt-out (Issues #2341, #2812)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo1"],
+    issue_executor_split: false,
   };
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.issueReviewerAgents, false);
+    assertEquals(config.issueExecutorSplit, false);
   });
 });
 
-Deno.test("config_defaults - loadConfig loads issue_reviewer_agents from config (Issue #2575)", async () => {
+// =============================================================================
+// Reviewer sub-agents (Issue #2575)
+// =============================================================================
+
+Deno.test("config_defaults - loadConfig defaults issueReviewerAgents to true (Issues #2575, #2812)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo1"],
-    issue_reviewer_agents: true,
   };
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
     assertEquals(config.issueReviewerAgents, true);
+  });
+});
+
+Deno.test("config_defaults - loadConfig honours issue_reviewer_agents: false opt-out (Issues #2575, #2812)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    issue_reviewer_agents: false,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.issueReviewerAgents, false);
   });
 });
 
@@ -777,16 +784,16 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_QUESTION is high (planning-sh
   assertEquals(DEFAULT_CLAUDE_EFFORT_QUESTION, "high");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_CI_FIX is medium (Issue #1402)", () => {
-  assertEquals(DEFAULT_CLAUDE_EFFORT_CI_FIX, "medium");
+Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_CI_FIX is high (Sonnet reactive phase, Issue #2812)", () => {
+  assertEquals(DEFAULT_CLAUDE_EFFORT_CI_FIX, "high");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK is medium (Issue #1402)", () => {
-  assertEquals(DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK, "medium");
+Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK is high (Sonnet reactive phase, Issue #2812)", () => {
+  assertEquals(DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK, "high");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_QUALITY_FIX is medium (Issue #1402)", () => {
-  assertEquals(DEFAULT_CLAUDE_EFFORT_QUALITY_FIX, "medium");
+Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_QUALITY_FIX is high (Sonnet reactive phase, Issue #2812)", () => {
+  assertEquals(DEFAULT_CLAUDE_EFFORT_QUALITY_FIX, "high");
 });
 
 Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_REFINEMENT is high (planning-shaped, Issue #3229)", () => {
@@ -823,9 +830,9 @@ Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS maps all phases (Issue #1402)
   assertEquals(PHASE_EFFORT_DEFAULTS["grill_me"], "high");
   assertEquals(PHASE_EFFORT_DEFAULTS["issue"], "high");
   assertEquals(PHASE_EFFORT_DEFAULTS["question"], "high");
-  assertEquals(PHASE_EFFORT_DEFAULTS["ci_fix"], "medium");
-  assertEquals(PHASE_EFFORT_DEFAULTS["pr_feedback"], "medium");
-  assertEquals(PHASE_EFFORT_DEFAULTS["quality_fix"], "medium");
+  assertEquals(PHASE_EFFORT_DEFAULTS["ci_fix"], "high");
+  assertEquals(PHASE_EFFORT_DEFAULTS["pr_feedback"], "high");
+  assertEquals(PHASE_EFFORT_DEFAULTS["quality_fix"], "high");
   assertEquals(PHASE_EFFORT_DEFAULTS["refinement"], "high");
   assertEquals(PHASE_EFFORT_DEFAULTS["revision"], "high");
   assertEquals(PHASE_EFFORT_DEFAULTS["clarification"], "high");
@@ -901,14 +908,18 @@ Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS has exactly 15 phases (Issues
 // Effort-first routing invariant (Issue #2391)
 // =============================================================================
 
-Deno.test("config_defaults - routing: trivial phases on haiku, every substantive phase on opus (Issues #2391, #2621, #3229, #2560)", () => {
-  // Effort is the primary lever; model tier is the secondary lever at the
-  // cheap extreme only (Issue #2560). Trivial phases run on Haiku, every
-  // substantive phase — planning-shaped and reactive alike — on the Opus tier.
+Deno.test("config_defaults - routing: trivial phases on haiku, reactive on sonnet, planning-shaped on opus (Issues #2391, #2621, #3229, #2560, #2812)", () => {
+  // Trivial phases run on Haiku; the reactive phases on Sonnet 5.5, half the
+  // Opus 5.5 price (Issue #2812); planning-shaped phases on the Opus tier.
   const haikuPhases = new Set(["spelling_fix", "summarise", "health"]);
+  const sonnetPhases = new Set(["ci_fix", "pr_feedback", "quality_fix"]);
   for (const phase of Object.keys(PHASE_EFFORT_DEFAULTS)) {
     if (phase === "issue") continue; // issue has no model-default entry (base tier)
-    const expected = haikuPhases.has(phase) ? "haiku" : DEFAULT_CLAUDE_MODEL;
+    const expected = haikuPhases.has(phase)
+      ? "haiku"
+      : sonnetPhases.has(phase)
+      ? "sonnet"
+      : DEFAULT_CLAUDE_MODEL;
     assertEquals(
       PHASE_MODEL_DEFAULTS[phase],
       expected,
@@ -917,9 +928,10 @@ Deno.test("config_defaults - routing: trivial phases on haiku, every substantive
   }
 });
 
-Deno.test("config_defaults - effort-first: effort tiers rank by phase complexity (Issues #2391, #2621, #3229)", () => {
+Deno.test("config_defaults - effort-first: effort tiers rank by phase complexity (Issues #2391, #2621, #3229, #2812)", () => {
   // Issue #3229: the six planning-shaped phases and issue all sit at high;
-  // the three genuinely reactive phases sit at medium; trivial phases at low.
+  // Issue #2812: the three reactive phases, now on Sonnet, sit at high too;
+  // trivial phases at low.
   const rank: Record<string, number> = { low: 0, medium: 1, high: 2, max: 3 };
   // Planning-shaped phases + issue at high.
   for (
@@ -939,12 +951,12 @@ Deno.test("config_defaults - effort-first: effort tiers rank by phase complexity
       `Phase "${phase}" should default to high effort`,
     );
   }
-  // Genuinely reactive phases sit at medium.
+  // Reactive phases (Sonnet) sit at high (Issue #2812).
   for (const phase of ["ci_fix", "pr_feedback", "quality_fix"]) {
     assertEquals(
       rank[PHASE_EFFORT_DEFAULTS[phase]!],
-      1,
-      `Reactive phase "${phase}" should default to medium effort`,
+      2,
+      `Reactive phase "${phase}" should default to high effort`,
     );
   }
   // Trivial phases sit at low.
@@ -961,12 +973,12 @@ Deno.test("config_defaults - effort-first: effort tiers rank by phase complexity
 // Full fifteen-phase model + effort table (Issues #3229, #4112)
 //
 // A single exhaustive table so any future drift in either map is caught at
-// once. The eight planning-shaped phases run on opus + high; the three
-// trivial phases on haiku + low; the remaining four (issue, ci_fix,
-// pr_feedback, quality_fix) on opus too, differentiated by effort.
+// once. The eight planning-shaped phases and issue run on opus + high; the
+// three reactive phases (ci_fix, pr_feedback, quality_fix) on sonnet + high
+// (Issue #2812); the three trivial phases on haiku + low.
 // =============================================================================
 
-Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues #3229, #4112, #2560)", () => {
+Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues #3229, #4112, #2560, #2812)", () => {
   const table: Record<string, { model: string; effort: string }> = {
     // Eight planning-shaped phases → Opus top tier at high (Issue #2560).
     planning: { model: "opus", effort: "high" },
@@ -980,10 +992,10 @@ Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues
     clarification: { model: "opus", effort: "high" },
     // Implementation phase → Opus base tier at high.
     issue: { model: "opus", effort: "high" },
-    // Genuinely reactive phases → Opus base tier at medium.
-    ci_fix: { model: "opus", effort: "medium" },
-    pr_feedback: { model: "opus", effort: "medium" },
-    quality_fix: { model: "opus", effort: "medium" },
+    // Reactive phases → Sonnet 5.5 at high (Issue #2812).
+    ci_fix: { model: "sonnet", effort: "high" },
+    pr_feedback: { model: "sonnet", effort: "high" },
+    quality_fix: { model: "sonnet", effort: "high" },
     // Trivial phases → Haiku secondary tier at low.
     spelling_fix: { model: "haiku", effort: "low" },
     summarise: { model: "haiku", effort: "low" },

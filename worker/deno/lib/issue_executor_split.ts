@@ -3,9 +3,9 @@
  *
  * The key is host-wide, with a same-named per-repository override under
  * `repo_config`. Both `issue`-phase call sites read it (Issue #2342) to decide
- * whether the invocation carries `--agents` executor definitions; with the key
- * off — the default — the worker invokes the coding agent exactly as it does
- * today.
+ * whether the invocation carries `--agents` executor definitions. The key is
+ * on by default (Issue #2812); set it `false` and the worker invokes the
+ * coding agent as a single session.
  */
 
 import type { RepoConfig, WorkerConfig } from "../types.ts";
@@ -21,8 +21,9 @@ type IssueExecutorSplitConfig = Pick<WorkerConfig, "issueExecutorSplit">;
  *
  * Resolution order (most specific wins):
  *   1. The repository's own `repo_config.<repo>.issue_executor_split`
- *   2. The host-wide `issue_executor_split`
- *   3. `false` — an unconfigured host behaves exactly as it does today
+ *   2. The host-wide `issue_executor_split` (`loadConfig` defaults it to
+ *      `true`, Issue #2812)
+ *   3. `false` — a config object that carries no value at all
  *
  * The key applies to **every** `issue`-phase run on the host, including
  * `failed-once` retries and milestone child issues; there is no per-issue

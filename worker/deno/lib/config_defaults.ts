@@ -469,17 +469,17 @@ export const OPERATIONAL_DEFAULTS = {
    */
   enableSessionResume: true,
   /**
-   * Whether `issue`-phase runs use the split executor (Issue #2341).
-   * Off until an operator turns it on, so an unconfigured host invokes the
-   * coding agent exactly as it does today.
+   * Whether `issue`-phase runs use the split executor (Issue #2341): an Opus
+   * advisor plans and Sonnet executors edit. On by default since Sonnet 5.5
+   * costs half of Opus 5.5 (Issue #2812); `issue_executor_split: false` opts out.
    */
-  issueExecutorSplit: false,
+  issueExecutorSplit: true,
   /**
    * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
-   * defined cheaper sub-agents (Issue #2575). Off until the pilot in
-   * docs/MODEL-AND-CACHING.md clears it; off, they inherit the phase model.
+   * defined cheaper sub-agents (Issue #2575). On by default (Issue #2812);
+   * `issue_reviewer_agents: false` opts out, and they inherit the phase model.
    */
-  issueReviewerAgents: false,
+  issueReviewerAgents: true,
   /** Maximum session store size in bytes before compaction (50 MB) (Issue #1328). */
   maxSessionSizeBytes: 50 * 1024 * 1024,
   /** Maximum session age in days before cleanup (Issue #1328). */
@@ -818,22 +818,22 @@ export const DEFAULT_CLAUDE_EFFORT_ISSUE = "high" as const;
 export const DEFAULT_CLAUDE_EFFORT_QUESTION = "high" as const;
 
 /**
- * Default effort level for the CI fix phase (Issue #1402).
- * CI failures come with structured error messages — reactive, well-scoped.
+ * Default effort level for the CI fix phase (Issues #1402, #2812).
+ * Reactive and well-scoped; high because it now runs on Sonnet, not Opus.
  */
-export const DEFAULT_CLAUDE_EFFORT_CI_FIX = "medium" as const;
+export const DEFAULT_CLAUDE_EFFORT_CI_FIX = "high" as const;
 
 /**
- * Default effort level for the PR feedback phase (Issue #1402).
- * Targeted fixes from reviewer comments — reactive, constrained.
+ * Default effort level for the PR feedback phase (Issues #1402, #2812).
+ * Targeted reviewer fixes; high because it now runs on Sonnet, not Opus.
  */
-export const DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK = "medium" as const;
+export const DEFAULT_CLAUDE_EFFORT_PR_FEEDBACK = "high" as const;
 
 /**
- * Default effort level for the quality fix phase (Issue #1402).
- * Reactive test/lint fixes with structured error output.
+ * Default effort level for the quality fix phase (Issues #1402, #2812).
+ * Reactive test/lint fixes; high because it now runs on Sonnet, not Opus.
  */
-export const DEFAULT_CLAUDE_EFFORT_QUALITY_FIX = "medium" as const;
+export const DEFAULT_CLAUDE_EFFORT_QUALITY_FIX = "high" as const;
 
 /**
  * Default effort level for the refinement phase (Issue #1402, #3229, #2560).
@@ -894,8 +894,8 @@ export const DEFAULT_CLAUDE_EFFORT_HEALTH = "low" as const;
  *   `max` bump is reserved for the #3217 pre-flight reroute, which fires only
  *   when a phase has been pinned back to Fable and Fable is unavailable)
  * - issue → high (thorough reasoning for implementation)
- * - ci_fix / pr_feedback / quality_fix → medium (reactive tasks with
- *   structured input)
+ * - ci_fix / pr_feedback / quality_fix → high (reactive tasks, run on Sonnet
+ *   since Issue #2812 so they take the deeper effort at half the Opus rate)
  * - spelling_fix / summarise / health → low (trivial, mechanical tasks)
  */
 export const PHASE_EFFORT_DEFAULTS: Readonly<Record<string, string>> = {
@@ -963,8 +963,9 @@ export const DEFAULT_CLAUDE_MODEL = "opus" as const;
 // Issue #3229 later re-tiered refinement / revision / question / clarification
 // *up* (not down to Haiku): they are planning-shaped phases where the Vibe
 // Coder interprets the user's words, so they join planning and grill_me at
-// high effort. The three genuinely reactive phases (ci_fix, pr_feedback,
-// quality_fix) keep opus + medium.
+// high effort. Issue #2812 then moved the three genuinely reactive phases
+// (ci_fix, pr_feedback, quality_fix) to sonnet + high: Sonnet 5.5 costs half
+// of Opus 5.5, so the medium-effort floor rises to high at lower cost.
 //
 // The named per-phase constants are retained so the override chain
 // (CLAUDE_MODEL_<PHASE> env vars, phase_model_overrides config) and the
@@ -1063,8 +1064,8 @@ export const DEFAULT_CLAUDE_MODEL_ISSUE = DEFAULT_CLAUDE_MODEL;
  */
 export const DEFAULT_CLAUDE_MODEL_REFINEMENT = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
-/** CI fix phase model — Opus base tier (effort: medium). */
-export const DEFAULT_CLAUDE_MODEL_CI_FIX = DEFAULT_CLAUDE_MODEL;
+/** CI fix phase model — Sonnet (effort: high, Issue #2812). */
+export const DEFAULT_CLAUDE_MODEL_CI_FIX = "sonnet" as const;
 
 /**
  * Revision phase model — Opus top tier (effort: high, Issues #3229, #2560).
@@ -1073,11 +1074,11 @@ export const DEFAULT_CLAUDE_MODEL_CI_FIX = DEFAULT_CLAUDE_MODEL;
  */
 export const DEFAULT_CLAUDE_MODEL_REVISION = DEFAULT_CLAUDE_MODEL_TOP_TIER;
 
-/** PR feedback phase model — Opus base tier (effort: medium). */
-export const DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = DEFAULT_CLAUDE_MODEL;
+/** PR feedback phase model — Sonnet (effort: high, Issue #2812). */
+export const DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet" as const;
 
-/** Quality fix phase model — Opus base tier (effort: medium). */
-export const DEFAULT_CLAUDE_MODEL_QUALITY_FIX = DEFAULT_CLAUDE_MODEL;
+/** Quality fix phase model — Sonnet (effort: high, Issue #2812). */
+export const DEFAULT_CLAUDE_MODEL_QUALITY_FIX = "sonnet" as const;
 
 /**
  * Question phase model — Opus top tier (effort: high, Issues #3229, #2560).
@@ -1162,13 +1163,13 @@ export function getCheaperModel(currentModel: string): string | null {
  *
  * Routing (Issues #2391, #2621, #3229, #2560): effort (PHASE_EFFORT_DEFAULTS)
  * is the *primary* cost lever; model tier is the *secondary* lever, and since
- * #2560 it is applied at one extreme only. Every substantive phase runs on
- * Opus — the eight planning-shaped phases (planning, grill_me, refinement,
- * revision, question, clarification, quorum, quorum_judge) at "high" effort,
- * because wherever the Vibe Coder interprets the user's words into an
- * implementable state a better interpretation compounds across every
- * downstream sub-issue and PR (#2621, #3229); the reactive phases (ci_fix,
- * pr_feedback, quality_fix) at "medium". The three trivial phases
+ * #2560 it is applied at the cheap end only. The eight planning-shaped
+ * phases (planning, grill_me, refinement, revision, question, clarification,
+ * quorum, quorum_judge) run on Opus at "high" effort, because wherever the
+ * Vibe Coder interprets the user's words into an implementable state a better
+ * interpretation compounds across every downstream sub-issue and PR (#2621,
+ * #3229); `issue` runs on Opus too. The reactive phases (ci_fix, pr_feedback,
+ * quality_fix) run on Sonnet at "high" (#2812). The three trivial phases
  * (spelling_fix, summarise, health) stay on the cheaper Haiku tier. The map
  * stays populated (rather than empty) so each phase is explicitly pinned
  * regardless of the CLI's own default, while the override chain keeps tier
