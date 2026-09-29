@@ -375,7 +375,7 @@
       "issue": 1217,
       "chunk": "12d",
       "title": "environment, configuration and secret sinks",
-      "ledger": "docs/audits/security-sweep-2183-lib-delta-12d-12f.md",
+      "ledger": "docs/audits/security-sweep-2757-lib-delta-12d-12f.md",
       "definition": "grep -rl \"Deno.env\" lib/ --include='*.ts' minus 12a, 12b and 12c; plus container_stamp.ts, the stamp reader this slice's SEC-1217-11 fix (#1262) extracted from agent_provider.ts, service_account_env.ts and stuck_issue_detector.ts",
       "status": "swept",
       "paths": [
@@ -430,13 +430,13 @@
         "worker/deno/lib/unit_test_time_budget.ts",
         "worker/deno/lib/workflow_scope.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa"
     },
     {
       "issue": 1219,
       "chunk": "12e",
       "title": "closing pass over the remainder",
-      "ledger": "docs/audits/security-sweep-2183-lib-delta-12d-12f.md",
+      "ledger": "docs/audits/security-sweep-2757-lib-delta-12d-12f.md",
       "definition": "every lib/ module not claimed by 12a, 12b, 12c or 12d",
       "status": "swept",
       "paths": [
@@ -883,20 +883,20 @@
         "worker/deno/lib/worktree_progress.ts",
         "worker/deno/lib/xml_escape.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa"
     },
     {
       "issue": 1325,
       "chunk": "12f",
       "title": "top-up: gh chokepoint modules added after the chunk-12 slices",
-      "ledger": "docs/audits/security-sweep-2183-lib-delta-12d-12f.md",
+      "ledger": "docs/audits/security-sweep-2757-lib-delta-12d-12f.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12e recorded their coverage: gh_body_file_io.ts (#1254, PR #1304) and gh_timeout.ts (#1229, PR #1319)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/gh_body_file_io.ts",
         "worker/deno/lib/gh_timeout.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "3a38b85a9de2531456c3e56784535903bf045ffa"
     },
     {
       "issue": 1443,
