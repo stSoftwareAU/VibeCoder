@@ -39,7 +39,10 @@ flowchart LR
 - **Fail before, pass after:** run against the un-repointed ledger (`HEAD~`'s
   `lib-sweep-coverage.json`), the first two tests **fail** (1 passed, 2 failed).
   The 35 slices still pointed at their old records and `sweptAt` values. With
-  the repoint, all 3 pass.
+  the repoint, all 3 pass. So the regression test
+  `worker/deno/tests/security_sweep_2839_ledger_test.ts::security sweep #2839 - every swept slice points at the record and its merge-base`
+  reproduces the stale-ledger flaw. It fails against the unfixed ledger and
+  passes after the fix.
 - **Trigger closed:** the trigger was drift on slices whose `sweptAt` predates
   their modules' current content. Every slice named in the record now carries
   `sweptAt` 42c876e1, and the record names each of their modules with a nil
