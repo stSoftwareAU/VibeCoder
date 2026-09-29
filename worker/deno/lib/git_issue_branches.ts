@@ -19,7 +19,11 @@
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
-import { assertSafeGitRef, buildFetchArgs } from "./git_ref_args.ts";
+import {
+  assertSafeGitRef,
+  buildFetchArgs,
+  buildFetchTrackingRefArgs,
+} from "./git_ref_args.ts";
 
 /** One branch on the remote that may carry the issue's prior work. */
 export interface RemoteIssueBranch {
@@ -191,4 +195,148 @@ export async function countCommitsAhead(
     };
   }
   return { ok: true, value: count };
+}
+
+/** What {@link countCommitsAheadRepairingBrokenRef} needs beyond the count's own arguments. */
+export interface BrokenRefRepairDeps {
+  /** One line naming the repaired ref. */
+  log: (message: string) => void;
+  /** Counts commits; defaults to {@link countCommitsAhead}. */
+  countFn?: typeof countCommitsAhead;
+  /** Runs the repair's git commands; defaults to runGitCommand. */
+  gitFn?: typeof runGitCommand;
+}
+
+/** Matches the warning git prints for a loose ref whose content will not parse. */
+const BROKEN_REF_WARNING_PATTERN = /ignoring broken ref (\S+)/;
+
+/** Only remote-tracking refs under this remote are ever repaired (Issue #2824). */
+const REPAIRABLE_REMOTE_REF_PREFIX = "refs/remotes/origin/";
+
+/**
+ * Delete a ref with `git update-ref -d`, using `--end-of-options` when this
+ * git accepts it for the subcommand and falling back when it does not
+ * (support was added to `update-ref` after other ref-taking verbs).
+ */
+async function deleteRefSafely(
+  gitFn: typeof runGitCommand,
+  fullRef: string,
+  options: GitCommandOptions,
+) {
+  assertSafeGitRef(fullRef, "update-ref delete target");
+  const withSeparator = await gitFn(
+    ["update-ref", "-d", "--end-of-options", fullRef],
+    options,
+  );
+  if (
+    withSeparator.ok &&
+    withSeparator.value.code !== 0 &&
+    /unknown option `end-of-options'/i.test(withSeparator.value.stderr)
+  ) {
+    return await gitFn(["update-ref", "-d", fullRef], options);
+  }
+  return withSeparator;
+}
+
+/**
+ * Count commits ahead, repairing a broken remote-tracking ref that blocks the
+ * count (Issue #2824).
+ *
+ * A remote-tracking ref left with unparsable content — a crash mid-write, or
+ * a fetch racing another process — makes git refuse every read that touches
+ * it: `rev-list --count` exits 128 with `warning: ignoring broken ref ...`
+ * rather than a count, and every future count against that branch fails the
+ * same way until something rebuilds the ref. The ref only mirrors what
+ * `origin` already has, so it is safe to delete and re-fetch — but only when
+ * the warning names exactly the ref this count itself asked git to read
+ * (`refs/remotes/${baseRef}` or `refs/remotes/${ref}`); a warning naming any
+ * other ref, or a failure that is not this warning at all, is returned
+ * unchanged so nothing outside the two refs this call owns is ever touched.
+ *
+ * @param baseRef - The lower bound of the range, e.g. `origin/milestone-x`.
+ * @param ref - The upper bound of the range, e.g. `origin/main`.
+ * @param options - Git command options (cwd, timeout, env).
+ * @param deps - The logger and, in tests, fakes for the count and git calls.
+ * @returns The count, repaired if the ref was broken; the original failure
+ *   otherwise — never a zero standing in for an unread ref.
+ */
+export async function countCommitsAheadRepairingBrokenRef(
+  baseRef: string,
+  ref: string,
+  options: GitCommandOptions,
+  deps: BrokenRefRepairDeps,
+): Promise<Result<number>> {
+  const countFn = deps.countFn ?? countCommitsAhead;
+  const gitFn = deps.gitFn ?? runGitCommand;
+
+  const first = await countFn(baseRef, ref, options);
+  if (first.ok) return first;
+
+  const match = first.error.message.match(BROKEN_REF_WARNING_PATTERN);
+  const brokenRef = match?.[1];
+  if (!brokenRef) return first;
+
+  const allowed = new Set([
+    `refs/remotes/${baseRef}`,
+    `refs/remotes/${ref}`,
+  ]);
+  if (
+    !allowed.has(brokenRef) ||
+    !brokenRef.startsWith(REPAIRABLE_REMOTE_REF_PREFIX)
+  ) {
+    return first;
+  }
+  const branch = brokenRef.slice(REPAIRABLE_REMOTE_REF_PREFIX.length);
+
+  const deleteResult = await deleteRefSafely(gitFn, brokenRef, options);
+  if (!deleteResult.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `${first.error.message} — repair failed: could not run ` +
+          `git update-ref -d ${brokenRef}: ${deleteResult.error.message}`,
+      ),
+    };
+  }
+  if (deleteResult.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `${first.error.message} — repair failed: git update-ref -d ` +
+          `${brokenRef} exited ${deleteResult.value.code}: ` +
+          (deleteResult.value.stderr.trim() || "(no output)"),
+      ),
+    };
+  }
+
+  const fetchResult = await gitFn(
+    buildFetchTrackingRefArgs("origin", branch),
+    options,
+  );
+  if (!fetchResult.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `${first.error.message} — repair failed: could not run ` +
+          `git fetch origin ${branch}: ${fetchResult.error.message}`,
+      ),
+    };
+  }
+  if (fetchResult.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `${first.error.message} — repair failed: git fetch origin ` +
+          `${branch} exited ${fetchResult.value.code}: ` +
+          (fetchResult.value.stderr.trim() || "(no output)"),
+      ),
+    };
+  }
+
+  deps.log(
+    `Repaired broken remote-tracking ref '${brokenRef}' (deleted and ` +
+      `re-fetched from origin) before counting ${baseRef}..${ref} (Issue #2824)`,
+  );
+
+  return await countFn(baseRef, ref, options);
 }

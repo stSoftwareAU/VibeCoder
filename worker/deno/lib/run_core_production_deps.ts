@@ -5924,6 +5924,7 @@ async function syncMilestoneBranchesFn(
         milestoneBranch,
         defaultBranch,
         cwd: `${workDir}/${repo.split("/")[1]}`,
+        log: (message: string) => logger.info(message),
       });
     },
     // Issue #2030: lane lease per repository, and a cross-host claim per

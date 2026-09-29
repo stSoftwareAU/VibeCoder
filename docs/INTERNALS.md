@@ -4250,7 +4250,13 @@ consequences are worth naming:
   still merges — what is lost is the pacing, not the branch. The default tip is
   read **before** the count, because reading it is what fetches it: counting
   against a stale `origin/<default>` would answer "level" for a branch that is
-  behind, which is the very defect this gate exists to stop.
+  behind, which is the very defect this gate exists to stop. A count that
+  fails on git's `ignoring broken ref refs/remotes/origin/<branch>` warning is
+  repaired once — the named ref is deleted and re-fetched, one log line names
+  it, and the count is retried once — and still failing falls into the same
+  deferral. The PR comment then says how far behind the branch is "could not
+  be measured" and quotes git's reason, rather than claiming the branch is
+  still behind (Issue #2824).
 - **Only a charged failure spends the budget.** A conflict every granted rung
   left undecided is charged; a ruleset-refused push, a merge-gate refusal or
   any other `not-charged` verdict is not — charging the branch for a fault that

@@ -13,11 +13,19 @@
  * refused — are reachable from a test. An unmeasurable branch is never a
  * branch that goes unsynced: the caller logs the reason and sorts it as level.
  *
+ * The count itself is made via {@link countCommitsAheadRepairingBrokenRef}, so
+ * a broken remote-tracking ref left over from an earlier crash or race no
+ * longer blocks the count (Issue #2824): it is deleted and re-fetched once,
+ * then the count is retried.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { Result } from "../types.ts";
-import { countCommitsAhead } from "./git_issue_branches.ts";
+import {
+  countCommitsAhead,
+  countCommitsAheadRepairingBrokenRef,
+} from "./git_issue_branches.ts";
 import { buildFetchTrackingRefArgs } from "./git_ref_args.ts";
 import type { GitCommandOptions, GitCommandOutput } from "./git_timeout.ts";
 import { runGitCommand } from "./git_timeout.ts";
@@ -40,6 +48,8 @@ export interface MilestoneBehindCountRequest {
   gitFn?: GitRunner;
   /** Counts commits; defaults to {@link countCommitsAhead}. */
   countFn?: typeof countCommitsAhead;
+  /** Logs a repaired broken ref (Issue #2824); defaults to `console.warn` so it is never dropped. */
+  log?: (message: string) => void;
 }
 
 /**
@@ -63,6 +73,7 @@ export async function measureMilestoneBehindCount(
   const { milestoneBranch, defaultBranch, cwd } = request;
   const gitFn = request.gitFn ?? runGitCommand;
   const countFn = request.countFn ?? countCommitsAhead;
+  const log = request.log ?? console.warn;
 
   const fetched = await gitFn(
     buildFetchTrackingRefArgs("origin", milestoneBranch),
@@ -79,9 +90,10 @@ export async function measureMilestoneBehindCount(
     };
   }
 
-  return await countFn(
+  return await countCommitsAheadRepairingBrokenRef(
     `origin/${milestoneBranch}`,
     `origin/${defaultBranch}`,
     { cwd },
+    { log, countFn, gitFn },
   );
 }

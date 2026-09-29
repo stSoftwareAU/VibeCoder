@@ -134,6 +134,46 @@ Deno.test("measureMilestoneBehindCount - a count git refused is passed through u
   assertEquals(result, { ok: false, error: refusal });
 });
 
+Deno.test("measureMilestoneBehindCount - a broken remote-tracking ref is repaired and the retried count is returned (Issue #2824)", async () => {
+  const gitCalls: string[][] = [];
+  const logged: string[] = [];
+  let countCalls = 0;
+
+  const result = await measureMilestoneBehindCount({
+    milestoneBranch: "milestone/2824-repair",
+    defaultBranch: "main",
+    cwd: "/clones/VibeCoder",
+    log: (message) => logged.push(message),
+    gitFn: (args) => {
+      gitCalls.push([...args]);
+      return Promise.resolve(OK_OUTPUT);
+    },
+    countFn: () => {
+      countCalls++;
+      if (countCalls === 1) {
+        return Promise.resolve({
+          ok: false,
+          error: new Error(
+            "git rev-list --count exited 128: warning: ignoring broken ref " +
+              "refs/remotes/origin/main\nfatal: ambiguous argument",
+          ),
+        });
+      }
+      return Promise.resolve({ ok: true, value: 2 });
+    },
+  });
+
+  assertEquals(result, { ok: true, value: 2 });
+  assertEquals(countCalls, 2);
+  // One fetch to create the tracking ref, then update-ref and fetch to repair it.
+  assertEquals(gitCalls.length, 3);
+  assertStringIncludes(gitCalls[1]!.join(" "), "update-ref");
+  assertStringIncludes(gitCalls[1]!.join(" "), "refs/remotes/origin/main");
+  assertStringIncludes(gitCalls[2]!.join(" "), "fetch");
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0]!, "refs/remotes/origin/main");
+});
+
 Deno.test("measureMilestoneBehindCount - a level branch reports zero, not a failure", async () => {
   const result = await measureMilestoneBehindCount({
     milestoneBranch: "milestone/level",
