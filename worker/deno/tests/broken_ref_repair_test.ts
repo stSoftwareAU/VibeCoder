@@ -173,15 +173,30 @@ async function setupRemoteAndClone(): Promise<{
   return { workDir, remote, local };
 }
 
+/**
+ * Detach HEAD and delete the local `main` branch, so `checkout -B … main`
+ * cannot fall back to a local ref that happens to already be there — the
+ * only way to land the feature branch is through `origin/main`. Mirrors a
+ * shared clone whose lane worktrees, not the shared clone itself, hold the
+ * local branch checkouts.
+ */
+async function detachAndDropLocalMain(local: string): Promise<void> {
+  assertEquals(
+    (await runGit(local, ["checkout", "-q", "--detach", "HEAD"])).code,
+    0,
+  );
+  assertEquals((await runGit(local, ["branch", "-D", "main"])).code, 0);
+}
+
 Deno.test(
   "createFeatureBranchFromBase - self-heals a broken loose refs/heads ref (Issue #2880)",
   async () => {
     const { workDir, remote, local } = await setupRemoteAndClone();
     try {
-      // Push a new commit upstream so the fetch this repair unblocks is the
-      // only way to land on the remote's real tip — the unfixed fallback to
-      // the local 'main' branch would land on the stale initial commit
-      // instead, and say so ("from 'main'", not "from 'origin/main'").
+      await detachAndDropLocalMain(local);
+
+      // Push a new commit upstream. Without a repaired fetch the checkout
+      // can only fall back to the *stale* origin/main already in the clone.
       const upstream = `${workDir}/upstream`;
       assertEquals(
         (await runGit(workDir, ["clone", "-q", remote, upstream])).code,
@@ -195,7 +210,9 @@ Deno.test(
 
       // Corrupt an unrelated loose ref: a 40-hex sha of a nonexistent object.
       // This alone is enough to make `git fetch origin main` fail outright
-      // (Issue #2880), so the unfixed code falls back to the stale local ref.
+      // (Issue #2880) — confirmed against git 2.47 to name
+      // refs/remotes/origin/HEAD as the "bad object" (fetch resolves the
+      // remote's symbolic HEAD, which points at the corrupt origin/main).
       const brokenRefPath = `${local}/.git/refs/heads/issue-1661-x`;
       await Deno.writeTextFile(
         brokenRefPath,
@@ -226,14 +243,9 @@ Deno.test(
         }`,
       );
 
-      // Created from the freshly repaired fetch, not the stale local ref —
-      // the unfixed fallback path would say "from 'main'" and leave HEAD on
-      // the initial commit.
-      assert(
-        result.value.includes("from 'origin/main'"),
-        `expected the branch to be created from the repaired 'origin/main', got: ${result.value}`,
-      );
-
+      // Lands on the remote's real tip, which only a repaired, retried fetch
+      // can provide — the unfixed code has no local branch to fall back to
+      // and would fail outright here.
       const headRev = (await runGit(local, ["rev-parse", "HEAD"])).stdout
         .trim();
       assertEquals(
@@ -268,6 +280,8 @@ Deno.test(
   async () => {
     const { workDir, remote, local } = await setupRemoteAndClone();
     try {
+      await detachAndDropLocalMain(local);
+
       // Push a new commit upstream so the repaired remote-tracking ref
       // should land on the remote's real tip after the re-fetch.
       const upstream = `${workDir}/upstream`;
@@ -281,7 +295,10 @@ Deno.test(
         0,
       );
 
-      // Corrupt the local clone's remote-tracking ref for main.
+      // Corrupt the local clone's remote-tracking ref for main. With no
+      // local main branch to fall back to, both `checkout -B … main` and
+      // `checkout -B … origin/main` fail outright on the unfixed code
+      // (confirmed against git 2.47: "fatal: unable to read tree …").
       const brokenRefPath = `${local}/.git/refs/remotes/origin/main`;
       await Deno.writeTextFile(
         brokenRefPath,
@@ -320,9 +337,13 @@ Deno.test(
         "feature branch should land on the remote's real tip after repair",
       );
 
+      // git 2.47 blames the fetch failure on the remote's symbolic HEAD
+      // (refs/remotes/origin/HEAD), which resolves through the corrupted
+      // origin/main — removing it is enough for the retried fetch to
+      // recreate origin/main cleanly from the remote.
       const joined = warnings.join("\n");
       assert(
-        joined.includes("removed broken ref refs/remotes/origin/main"),
+        joined.includes("removed broken ref refs/remotes/origin/HEAD"),
         `expected a warning naming the repaired ref, got: ${joined}`,
       );
     } finally {
