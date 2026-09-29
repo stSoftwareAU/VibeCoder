@@ -551,7 +551,10 @@ Deno.test("presyncMilestoneBranchForIssueRun - a broken ref that stays broken re
   const workDir = await Deno.makeTempDir({ prefix: "issue-2824-caller-" });
   const refDir = await Deno.makeTempDir({ prefix: "issue-2824-ref-" });
   const refPath = `${refDir}/main`;
-  await Deno.writeTextFile(refPath, "0000000000000000000000000000000000000zz\n");
+  await Deno.writeTextFile(
+    refPath,
+    "0000000000000000000000000000000000000zz\n",
+  );
   try {
     let countCalls = 0;
     let synced = 0;
