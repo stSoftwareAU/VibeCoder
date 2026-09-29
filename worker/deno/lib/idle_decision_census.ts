@@ -126,6 +126,19 @@
  * The `idle-task` count deliberately ignores PR blocking — idle-task
  * claiming is gated by repo busyness, not by `getBlockingPRForIssue`.
  *
+ * **The host-local blank-stream lock** (Issue #2800) sits after the scan
+ * entirely. While one slot runs a repository's no-milestone issue, the slot
+ * pool's `BlankStreamLockRegistry` (Issue #2335) refuses every sibling slot
+ * any other no-milestone issue in that repository — whatever its tier, so
+ * the #2532 stream-sharing exemption does not apply. An idle sibling's
+ * census read those `work-on` issues as claimable: on 2026-09-28
+ * vibe-coder-665:84 logged `work_on=2 stream_occupied=0
+ * inversion_signal=true` for `stSoftwareAU/GRQ-AutoTrader` on three cycles
+ * while every claim logged `stream busy ... (blank) held by slot s2`. The
+ * caller passes the held repositories in as
+ * {@link RepoCensusInput.blankStreamHeld}, and those issues are counted as
+ * `stream_occupied`.
+ *
  * # Escalation needs a scan that actually refused the work (Issue #437)
  *
  * The inversion signal answers "is there claimable work while an idle-task
@@ -602,6 +615,17 @@ export interface RepoCensusInput {
    * scan's own default.
    */
   fleetPrSlots?: number;
+  /**
+   * True when a slot on this host holds the repo's blank stream in the
+   * pool's host-local `BlankStreamLockRegistry` (Issue #2335). The pool then
+   * refuses every other no-milestone issue in the repo — every tier,
+   * `work-on` and `top-priority` included — so the census counts them as
+   * `stream_occupied` (Issue #2800).
+   *
+   * Omitted → no host-local hold is modelled, preserving the pre-#2800
+   * behaviour.
+   */
+  blankStreamHeld?: boolean;
 }
 
 /** Per-priority unblocked counts for a repo. */
@@ -635,9 +659,10 @@ export interface RepoCensusEntry {
    * Count of priority (`top-priority` / `work-on` / `low-priority`) issues
    * that passed the label/assignee checks but were excluded solely because
    * their work stream already hosts a worker-assigned open issue — the
-   * scan's `milestone-occupied` skip (Issue #3852). Kept separate from
-   * `unblocked` so the deferral stays observable in the `[idle-census]`
-   * line.
+   * scan's `milestone-occupied` skip (Issue #3852), or because a slot on
+   * this host holds the repo's blank stream (Issues #2335, #2800). Kept
+   * separate from `unblocked` so the deferral stays observable in the
+   * `[idle-census]` line.
    */
   streamOccupied: number;
   /**
@@ -1041,6 +1066,7 @@ function countUnblocked(
   deferredHolds: ReadonlySet<number> = new Set<number>(),
   openMilestones: ReadonlySet<string> = new Set<string>(),
   fleetPrSlots?: number,
+  blankStreamHeld = false,
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
@@ -1109,9 +1135,14 @@ function countUnblocked(
     // fresh conversation (Issue #2530) and the collectors no longer refuse
     // it, so counting it here as `stream_occupied` would make the census
     // disagree with the scan — the divergence the idle-task drought was.
+    //
+    // Issue #2800: the host-local blank-stream lock (Issue #2335) has no
+    // such exemption — while a sibling slot holds the repo's blank stream,
+    // the pool refuses every no-milestone issue whatever its tier.
     if (
-      occupiedStreams.has(issue.milestone) &&
-      !isStreamSharingTier(issue.labels, DEFAULT_STREAM_SHARING_TIERS)
+      (blankStreamHeld && issue.milestone.trim() === "") ||
+      (occupiedStreams.has(issue.milestone) &&
+        !isStreamSharingTier(issue.labels, DEFAULT_STREAM_SHARING_TIERS))
     ) {
       streamOccupied += 1;
       continue;
@@ -1294,6 +1325,7 @@ export function buildIdleDecisionCensus(opts: {
       input.deferredHolds ?? new Set<number>(),
       input.openMilestones ?? new Set<string>(),
       input.fleetPrSlots,
+      input.blankStreamHeld ?? false,
     );
     const { verdict, availableStreams, occupiedStreams } = availabilityFor(
       input.issues,

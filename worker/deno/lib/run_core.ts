@@ -1512,6 +1512,11 @@ export interface RunCoreDeps {
    * (Issue #213) held them. The scan skips those before any collector runs,
    * so `claimScanCompleted` says nothing about them and they must not
    * escalate as work the scan refused.
+   *
+   * Issue #2800: `blankStreamHeldRepos` names the repos whose blank stream a
+   * slot on this host holds (Issue #2335). The pool refuses a sibling every
+   * non-milestone issue of those repos, whatever its tier, so the census
+   * counts them as stream-occupied rather than claimable. Omitted → none.
    */
   runIdleDecisionCensus?: (
     info: {
@@ -1519,6 +1524,7 @@ export interface RunCoreDeps {
       claimScanCompleted: boolean;
       claimedRepos: readonly string[];
       scanExcludedRepos: readonly string[];
+      blankStreamHeldRepos?: readonly string[];
     },
   ) => Promise<
     {
@@ -4149,6 +4155,10 @@ async function runSlot(
             // Without them the audit would call a sibling's in-flight
             // repository a mis-classification on every observation.
             scanExcludedRepos: [...hookExcludedRepos],
+            // Issue #2800: a sibling's blank-stream hold refuses this slot
+            // every non-milestone issue of that repo, whatever its tier, so
+            // the census must not count them as claimable.
+            blankStreamHeldRepos: pool.blankStreamLocks.heldRepos(),
           });
         }
         await deps.sleep(rescanMs);
@@ -4968,6 +4978,11 @@ interface IdleHookRequest {
    * observation.
    */
   scanExcludedRepos: readonly string[];
+  /**
+   * Repos whose blank stream a slot on this host holds (Issue #2800). See
+   * `runIdleDecisionCensus`'s `blankStreamHeldRepos`.
+   */
+  blankStreamHeldRepos: readonly string[];
 }
 
 /** What the hooks decided. */
@@ -5171,6 +5186,9 @@ function runIdleWorkHooks(
           // the scan, which then records no reason for any of its
           // issues — the empty section in every escalation filed.
           scanExcludedRepos: req.scanExcludedRepos,
+          // Issue #2800: the pool refuses a sibling every non-milestone
+          // issue of a repo whose blank stream a slot holds.
+          blankStreamHeldRepos: req.blankStreamHeldRepos,
         });
         if (
           censusResult !== undefined &&
@@ -6784,6 +6802,9 @@ export async function runCoreLoop(
                   scanResult.eligibilityScanCompleted === true,
                 claimedRepos: [...tracker.claimedRepos],
                 scanExcludedRepos: scanResult.scanExcludedRepos ?? [],
+                // Every slot has drained, so no blank stream is held
+                // (Issue #2800).
+                blankStreamHeldRepos: [],
               });
               // Issue #855: the census already knows why every repo was
               // passed over, so it names the reason the fleet's idle
