@@ -1,11 +1,11 @@
 # Code owners for privileged paths (Issue #2606).
 #
-# The main ruleset (infra/rulesets/main.json) sets require_code_owner_review,
-# so a PR touching any path below cannot merge until a listed owner approves.
-# Owners are the human repository admins only: the worker bot identities
-# (stservice, VibeCoderST) are deliberately absent, so the fleet can never
-# satisfy code-owner review on its own changes to CI or ruleset config.
-# Every other path has no owner and merges through the normal gate.
+# Review routing only: code-owner review is NOT required (infra/rulesets/
+# main.json sets require_code_owner_review false). The fleet reviewer is a
+# GitHub App, which can never be a code owner, so its approval is the gate
+# and a PR that removes or loosens tests is held for the owner (THREAT-MODEL
+# R14). The owners below are still requested as reviewers on these paths.
+# The worker bot identities (stservice, VibeCoderST) stay absent.
 #
 # Last matching pattern wins. Guarded by worker/deno/tests/codeowners_test.ts.
 

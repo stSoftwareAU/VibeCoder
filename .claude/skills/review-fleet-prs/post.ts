@@ -8,7 +8,7 @@
 // sent back or held for the owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
-//          --allow-env=HOME post.ts --input=<file>
+//          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
 // Output: one line of JSON, { posted, outcome?, reason? }.
 // Exit 2 when the review is malformed; nothing is posted and the PR comes
 // back on the next gate pass.

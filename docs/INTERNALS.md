@@ -2620,6 +2620,18 @@ milestone branch pushable on unattended hosts:
   resets to `origin/<branch>` when the two have diverged. A plain pull
   manufactures a local merge commit on divergence, which the same rules then
   reject on push.
+- `create_feature_branch_from_base()` (`createFeatureBranchFromBase` in
+  [git_branch.ts](../worker/deno/lib/git_branch.ts), with the helpers in
+  [broken_ref_repair.ts](../worker/deno/lib/broken_ref_repair.ts)) repairs a
+  **broken ref**: a loose ref under `refs/heads/` or `refs/remotes/` that
+  points at an object which no longer exists. Git then refuses the fetch or
+  checkout (`fatal: bad object refs/heads/…`, `warning: ignoring broken ref
+  refs/remotes/origin/<base>`). The worker deletes each ref git names, logs
+  one warning per ref, and retries the fetch and checkout. It stops after 10
+  refs per call, and a failure that persists still fails setup with git's
+  words. Every ref is recoverable from the remote. This is distinct from
+  object-store corruption, which re-clones (Issue #1093). Introduced by
+  Issue #2880 (GRQ-AutoTrader#1811).
 
 ```mermaid
 flowchart TD

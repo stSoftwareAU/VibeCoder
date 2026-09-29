@@ -627,6 +627,23 @@ canonical home for every PR summary — keep it out of `docs/` root.
 Create the directory if it does not exist. This file SHOULD be committed as part
 of your changes, providing permanent documentation of the PR.
 
+**Describe the final state of the branch, not the history of the run.** The
+summary is the PR body and the permanent record, so a reader takes every claim
+in it as true of the head commit. Write it last, and whenever a later commit on
+the branch changes what the PR does — a fix after the independent review, a
+retry after a failed check, a resumed attempt — rewrite it, never append to it:
+
+- Before the last commit, re-read `git diff <base>...HEAD` and rerun the tests
+  the summary names, then make every claim match the head: the reproduction
+  status, each test's pass/fail result, any "known defect" note, and every
+  function, file and helper it names — each must exist at the head and be used
+  as described.
+- Drop the interim notes from earlier attempts: a superseded approach, a red
+  test that is now green, a helper "not imported anywhere" that now is. A
+  summary saying the fix is broken or unfinished when the head holds a working,
+  tested fix is a wrong record — anyone reading the archive concludes the issue
+  is unfixed.
+
 The file MUST contain:
 
 1. **Summary**: A brief description of what was changed and why, **including

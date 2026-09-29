@@ -1,7 +1,7 @@
 /**
  * Tests for the CODEOWNERS parser and the committed `.github/CODEOWNERS`
- * coverage (Issue #2606): the ruleset's `require_code_owner_review` is a
- * no-op unless the privileged paths name a human owner.
+ * coverage (Issue #2606): the privileged paths name a human owner, so they
+ * are requested as reviewers (code-owner review itself is off: R14).
  */
 
 import { assertEquals, assertThrows } from "@std/assert";
