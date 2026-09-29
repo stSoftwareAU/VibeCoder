@@ -2831,7 +2831,7 @@ Deno.test("milestone deadlock rollup - a failed partial rollup for one milestone
   assertStringIncludes(logs.join("\n"), "WARNING");
 });
 
-Deno.test("milestone deadlock rollup - the final rollup still fires once the milestone completes, with no partial rollup", async () => {
+Deno.test("milestone deadlock rollup - the final rollup still fires after a merged partial rollup, with no new partial rollup", async () => {
   _resetBaseProtectionMemo();
   const MILESTONE = "Web src";
   const BRANCH = "milestone/web-src";
@@ -2848,6 +2848,14 @@ Deno.test("milestone deadlock rollup - the final rollup still fires once the mil
       milestone: { title: MILESTONE },
     },
   ];
+  // The deadlock's earlier partial rollup, now merged.
+  const mergedPartialRollup = [{
+    number: 601,
+    headRefName: "partial-rollup/web-src-abcdef1",
+    headRefOid: DEADLOCK_SHA,
+    body: partialRollupMarker(MILESTONE),
+    author: { login: "bot" },
+  }];
   const calls: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
@@ -2870,6 +2878,14 @@ Deno.test("milestone deadlock rollup - the final rollup still fires once the mil
     }
     if (key.includes("issue list") && key.includes("--state closed")) {
       return Promise.resolve(JSON.stringify(closedIssues));
+    }
+    // The partial rollup's own idempotency search — merged, and no open one.
+    if (key.includes("pr list") && key.includes("vibe-partial-rollup")) {
+      return Promise.resolve(
+        key.includes("--state merged")
+          ? JSON.stringify(mergedPartialRollup)
+          : "[]",
+      );
     }
     if (key.includes("pr list") && key.includes("--state all")) {
       return Promise.resolve("[]");
@@ -2905,10 +2921,6 @@ Deno.test("milestone deadlock rollup - the final rollup still fires once the mil
   assertEquals(creates.length, 1);
   const created = creates[0]!;
   assertEquals(created[created.indexOf("--head") + 1], BRANCH);
-  assertFalse(
-    calls.some((a) =>
-      a[0] === "pr" && a[1] === "create" &&
-      (a[a.indexOf("--head") + 1] ?? "").startsWith("partial-rollup/")
-    ),
-  );
+  assertEquals(created[created.indexOf("--base") + 1], "main");
+  assertEquals(refPostCalls(calls).length, 0);
 });

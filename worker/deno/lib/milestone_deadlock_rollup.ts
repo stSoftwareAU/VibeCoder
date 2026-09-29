@@ -170,7 +170,7 @@ export async function raiseDeadlockPartialRollups(
   for (const deadlock of deadlocks) {
     try {
       o.log(
-        `Milestone deadlock: '${deadlock.milestone}' in ${o.repo} holds ` +
+        `WARNING: Milestone deadlock: '${deadlock.milestone}' in ${o.repo} holds ` +
           `#${deadlock.heldIssue} behind closed dependency ` +
           `#${deadlock.closedDependency}, blocking open issue(s) ` +
           `${deadlock.blockingOpenIssues.map((n) => `#${n}`).join(", ")} ` +
