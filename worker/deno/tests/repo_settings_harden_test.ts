@@ -3,7 +3,9 @@
  * write-side twin of the settings pre-filer. It reads the same four
  * surfaces, plans the changes that close each open setting, and applies
  * them only under `--apply`. One approving review on the default branch is
- * part of the default plan (Issue #2680); code-owner review stays opt-in.
+ * part of the default plan (Issue #2680). Code-owner review is never turned
+ * on and is turned off wherever a ruleset requires it: the fleet reviewer
+ * App cannot be a code owner, and its approval is the gate.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -68,7 +70,7 @@ const HARDENED = {
   rules: [{
     type: "pull_request",
     parameters: {
-      require_code_owner_review: true,
+      require_code_owner_review: false,
       required_approving_review_count: 1,
     },
   }],
@@ -91,7 +93,7 @@ Deno.test("buildAllowedActionPatterns - GitHub-owned stay implicit; each third-p
   ]);
 });
 
-Deno.test("planRepoSettingsHardening - an open repository plans every safe change; code-owner review only when asked for (Issues #4397 #4398 #4401)", () => {
+Deno.test("planRepoSettingsHardening - an open repository plans every safe change and never turns code-owner review on (Issues #4397 #4398 #4401)", () => {
   const plan = planRepoSettingsHardening(OPEN, {
     thirdPartyPatterns: ["denoland/setup-deno@*"],
     defaultBranch: "Develop",
@@ -118,7 +120,7 @@ Deno.test("planRepoSettingsHardening - an open repository plans every safe chang
   });
   assert(
     !plan.some((s) => s.kind === "ruleset-reviews"),
-    "code-owner review is opt-in",
+    "code-owner review is never turned on",
   );
 });
 
@@ -534,41 +536,56 @@ Deno.test("allowListCovers - GitHub allow-list globs: owner/repo@*, owner/* and 
 // Issue #4397 — code-owner review without stopping the fleet
 // =============================================================================
 
-Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans code-owner review only, leaving the approval count alone (Issue #4397)", () => {
-  const plan = planRepoSettingsHardening(OPEN, {
-    thirdPartyPatterns: [],
-    requireCodeOwnerReview: true,
-    defaultBranch: "Develop",
-  });
-  const rule = plan.find((s) => s.kind === "ruleset-reviews");
-  assert(rule, "the code-owner step is planned");
-  const body = JSON.parse(rule.body ?? "{}") as Record<string, unknown>;
-  assertEquals(body, { require_code_owner_review: true });
-  assert(rule.title.includes("code-owner"), rule.title);
-  // The warning describes the actual blast radius: owned paths only.
-  assert(rule.warning?.includes("CODEOWNERS"), rule.warning);
-  assert(!rule.warning?.includes("Stops the fleet"), rule.warning);
-});
-
-Deno.test("planRepoSettingsHardening - requireCodeOwnerReview plans nothing when the rule already enforces it (Issue #4397)", () => {
-  const ownerOnly = {
+Deno.test("planRepoSettingsHardening - a ruleset requiring code-owner review plans turning it off, leaving the approval count alone", () => {
+  const ownerRequired = {
     ...HARDENED,
     rules: [{
       type: "pull_request",
       parameters: {
         require_code_owner_review: true,
-        required_approving_review_count: 0,
+        required_approving_review_count: 1,
       },
     }],
   };
-  assertEquals(
-    planRepoSettingsHardening(ownerOnly, {
-      thirdPartyPatterns: ["x/y@*"],
-      requireCodeOwnerReview: true,
-      defaultBranch: "Develop",
-    }),
-    [],
-  );
+  const plan = planRepoSettingsHardening(ownerRequired, {
+    thirdPartyPatterns: ["x/y@*"],
+    defaultBranch: "Develop",
+  });
+  assertEquals(plan.map((s) => s.kind), ["ruleset-reviews"]);
+  const step = plan[0]!;
+  assertEquals(JSON.parse(step.body ?? "{}"), {
+    require_code_owner_review: false,
+  });
+  assert(step.title.includes("code-owner"), step.title);
+  assertEquals(step.held, undefined);
+});
+
+Deno.test("planRepoSettingsHardening - code-owner review is turned off when any of the branch's pull_request rules requires it", () => {
+  // VibeCoder's own main carries two rulesets with a pull_request rule each.
+  const twoRules = {
+    ...HARDENED,
+    rules: [
+      {
+        type: "pull_request",
+        parameters: {
+          require_code_owner_review: false,
+          required_approving_review_count: 1,
+        },
+      },
+      {
+        type: "pull_request",
+        parameters: {
+          require_code_owner_review: true,
+          required_approving_review_count: 0,
+        },
+      },
+    ],
+  };
+  const plan = planRepoSettingsHardening(twoRules, {
+    thirdPartyPatterns: ["x/y@*"],
+    defaultBranch: "main",
+  });
+  assertEquals(plan.map((s) => s.kind), ["ruleset-reviews"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -780,7 +797,7 @@ function hardenedRoutes(repo: string): Record<string, unknown> {
     [`repos/${repo}/rules/branches/main`]: [{
       type: "pull_request",
       parameters: {
-        require_code_owner_review: true,
+        require_code_owner_review: false,
         required_approving_review_count: 1,
       },
     }],
@@ -802,7 +819,7 @@ const VIBE_RULESET = {
     {
       type: "pull_request",
       parameters: {
-        require_code_owner_review: false,
+        require_code_owner_review: true,
         required_approving_review_count: 0,
         dismiss_stale_reviews_on_push: true,
       },
@@ -815,16 +832,15 @@ const VIBE_RULESET = {
 };
 
 /**
- * Routes for a repo whose default branch lacks code-owner review. Like
- * GitHub, each pull_request rule on the branch names the ruleset it comes
- * from (`ruleset_id`), one per ruleset that holds one.
+ * Routes for a repo whose default branch carries `rulesets`. Like GitHub,
+ * each pull_request rule on the branch names the ruleset it comes from
+ * (`ruleset_id`) and carries that ruleset's own parameters.
  */
 function codeOwnerRoutes(
   repo: string,
   rulesets: Array<Record<string, unknown>>,
 ): Record<string, unknown> {
   const routes = hardenedRoutes(repo);
-  // One approval already holds, so only the code-owner step is in play.
   routes[`repos/${repo}/rules/branches/main`] = rulesets
     .filter((r) =>
       (r["rules"] as Array<{ type: string }>).some((rule) =>
@@ -835,7 +851,9 @@ function codeOwnerRoutes(
       type: "pull_request",
       ruleset_id: r["id"],
       parameters: {
-        require_code_owner_review: false,
+        ...(r["rules"] as Array<{ type: string; parameters?: object }>)
+          .find((rule) => rule.type === "pull_request")!.parameters,
+        // One approval already holds, so only the code-owner step is in play.
         required_approving_review_count: 1,
       },
     }));
@@ -849,41 +867,52 @@ function codeOwnerRoutes(
   return routes;
 }
 
-Deno.test("hardenRepo - a Vibe-only ruleset gets exactly one write turning on code-owner review (Issue #2626)", async () => {
+/** `ruleset` with its pull_request rule's code-owner flag set to `on`. */
+function withCodeOwner(
+  ruleset: typeof VIBE_RULESET,
+  on: boolean,
+): typeof VIBE_RULESET {
+  const copy = structuredClone(ruleset);
+  const rule = copy.rules.find((r) => r.type === "pull_request")!;
+  (rule.parameters as Record<string, unknown>).require_code_owner_review = on;
+  return copy;
+}
+
+/** The PUT body that turns `ruleset`'s code-owner review off. */
+function turnedOff(ruleset: typeof VIBE_RULESET) {
+  return { rules: withCodeOwner(ruleset, false).rules };
+}
+
+Deno.test("hardenRepo - code-owner review is turned off in every ruleset that requires it", async () => {
   const repo = uniqueRepo();
-  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [VIBE_RULESET]));
+  // VibeCoder's own main: a "main" and a "Review Needed" ruleset both did.
+  const legacy = { ...VIBE_RULESET, id: 3, name: "main" };
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [legacy, VIBE_RULESET]));
   const report = await hardenRepo(repo, {
     apply: true,
     ghCommandFn: gh,
     defaultBranchCachePath: BRANCH_CACHE,
-    requireCodeOwnerReview: true,
   });
-  assertEquals(writes.length, 1);
-  assertEquals(writes[0]?.method, "PUT");
-  assertEquals(writes[0]?.endpoint, `repos/${repo}/rulesets/7`);
-  const expected = structuredClone(VIBE_RULESET.rules);
-  expected[0]!.parameters = {
-    ...expected[0]!.parameters,
-    require_code_owner_review: true,
-  } as typeof expected[0]["parameters"];
-  assertEquals(writes[0]?.body, { rules: expected });
+  assertEquals(writes.map((w) => [w.method, w.endpoint, w.body]), [
+    ["PUT", `repos/${repo}/rulesets/3`, turnedOff(legacy)],
+    ["PUT", `repos/${repo}/rulesets/7`, turnedOff(VIBE_RULESET)],
+  ]);
   assertEquals(report.results.map((r) => r.status), ["applied"]);
 });
 
-Deno.test("hardenRepo - the Vibe ruleset is preferred over the branch-named one (Issue #2626)", async () => {
+Deno.test("hardenRepo - a ruleset that no longer requires code-owner review is left alone", async () => {
   const repo = uniqueRepo();
-  const legacy = { ...VIBE_RULESET, id: 3, name: "main" };
-  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [legacy, VIBE_RULESET]));
+  const already = withCodeOwner({ ...VIBE_RULESET, id: 5, name: "old" }, false);
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [already, VIBE_RULESET]));
   await hardenRepo(repo, {
     apply: true,
     ghCommandFn: gh,
     defaultBranchCachePath: BRANCH_CACHE,
-    requireCodeOwnerReview: true,
   });
   assertEquals(writes.map((w) => w.endpoint), [`repos/${repo}/rulesets/7`]);
 });
 
-Deno.test("hardenRepo - code-owner review goes to the ruleset the branch's pull_request rule names, whatever it is called (Issue #2685)", async () => {
+Deno.test("hardenRepo - code-owner review is turned off in the ruleset the branch's pull_request rule names, whatever it is called (Issue #2685)", async () => {
   const repo = uniqueRepo();
   // GRQ: the pull_request rule sits in a ruleset named neither after the
   // branch nor "Vibe Coder default branch".
@@ -894,18 +923,39 @@ Deno.test("hardenRepo - code-owner review goes to the ruleset the branch's pull_
     name: "tags",
     rules: [{ type: "deletion" }],
   };
-  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [unrelated, grq]));
+  const { gh, writes } = makeGh(
+    codeOwnerRoutes(repo, [unrelated as typeof VIBE_RULESET, grq]),
+  );
   const report = await hardenRepo(repo, {
     apply: true,
     ghCommandFn: gh,
     defaultBranchCachePath: BRANCH_CACHE,
-    requireCodeOwnerReview: true,
   });
   assertEquals(writes.map((w) => w.endpoint), [`repos/${repo}/rulesets/42`]);
   assertEquals(report.results.map((r) => r.status), ["applied"]);
 });
 
-Deno.test("hardenRepo - no pull_request rule on the branch at apply time fails naming the branch, with no write (Issue #2685)", async () => {
+Deno.test("hardenRepo - an organisation ruleset requiring code-owner review is reported for the owner, not written", async () => {
+  const repo = uniqueRepo();
+  const org = {
+    ...VIBE_RULESET,
+    id: 11,
+    name: "org",
+    source_type: "Organization",
+  };
+  const { gh, writes } = makeGh(codeOwnerRoutes(repo, [org]));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  const reviews = report.results.find((r) => r.step.kind === "ruleset-reviews");
+  assertEquals(reviews?.status, "failed");
+  assert(reviews?.detail?.includes("11"), reviews?.detail);
+});
+
+Deno.test("hardenRepo - code-owner review already gone at apply time is skipped with no write (Issue #2685)", async () => {
   const repo = uniqueRepo();
   let branchReads = 0;
   const { gh: base, writes } = makeGh(codeOwnerRoutes(repo, [VIBE_RULESET]));
@@ -920,13 +970,10 @@ Deno.test("hardenRepo - no pull_request rule on the branch at apply time fails n
     apply: true,
     ghCommandFn: gh,
     defaultBranchCachePath: BRANCH_CACHE,
-    requireCodeOwnerReview: true,
   });
   assertEquals(writes, []);
   const reviews = report.results.find((r) => r.step.kind === "ruleset-reviews");
-  assertEquals(reviews?.status, "failed");
-  assert(reviews?.detail?.includes("main"), reviews?.detail);
-  assert(reviews?.detail?.includes("pull_request"), reviews?.detail);
+  assertEquals(reviews?.status, "skipped");
 });
 
 /** Routes serving `files` from the default branch through the contents API. */
@@ -1063,7 +1110,6 @@ Deno.test("hardenRepo - an already-hardened repo makes zero writes under apply (
     apply: true,
     ghCommandFn: gh,
     defaultBranchCachePath: BRANCH_CACHE,
-    requireCodeOwnerReview: true,
   });
   assertEquals(writes, []);
   assertEquals(report.results, []);
@@ -1177,7 +1223,7 @@ Deno.test("hardenRepo - an invalid repo is one failed result and no gh call (Iss
   assertEquals(writes, []);
 });
 
-Deno.test("hardenRepo - a Vibe ruleset with no pull_request rule fails without a write (Issue #2626)", async () => {
+Deno.test("hardenRepo - a Vibe ruleset with no pull_request rule plans no code-owner step and writes nothing (Issue #2626)", async () => {
   const repo = uniqueRepo();
   const noPullRequest = {
     ...VIBE_RULESET,
@@ -1188,12 +1234,9 @@ Deno.test("hardenRepo - a Vibe ruleset with no pull_request rule fails without a
     apply: true,
     ghCommandFn: gh,
     defaultBranchCachePath: BRANCH_CACHE,
-    requireCodeOwnerReview: true,
   });
-  assertEquals(writes, []);
-  const reviews = report.results.find((r) => r.step.kind === "ruleset-reviews");
-  assertEquals(reviews?.status, "failed");
-  assert(reviews?.detail?.includes("no pull_request rule"), reviews?.detail);
+  assertEquals(writes.filter((w) => w.endpoint.includes("rulesets/")), []);
+  assert(!report.results.some((r) => r.step.kind === "ruleset-reviews"));
 });
 
 // ---------------------------------------------------------------------------
@@ -1730,43 +1773,6 @@ Deno.test("planRepoSettingsHardening - a direct-push default branch that cannot 
     merge?.held?.detail.includes("squash-only") ?? false,
     merge?.held?.detail,
   );
-});
-
-Deno.test("planRepoSettingsHardening - code-owner review on a direct-push default branch with no pull_request rule is skipped, not failed", () => {
-  // Observed 2026-09-27 on GRQ-validation: main is fed by direct pushes
-  // ("Auto commit models"), so the approval step rightly held off adding a
-  // pull_request rule, and the code-owner step then reported "failed" for
-  // want of the rule the approval step had declined to add.
-  const plan = planRepoSettingsHardening(
-    mergeSnapshot([CHECKS_ONLY_RULESET as TestRuleset], false, {
-      pushPolicy: {
-        kind: "direct-push",
-        sha: "b".repeat(40),
-        subject: "Auto commit models",
-        detail: "Auto commit models",
-      },
-    }),
-    { ...PLAN_OPTS, requireCodeOwnerReview: true },
-  );
-  const review = plan.find((s) => s.kind === "ruleset-reviews");
-  assert(review, "the code-owner step is still planned, and reported");
-  assertEquals(review.held?.status, "skipped");
-  assert(
-    review.held?.detail.includes("direct-push") ?? false,
-    review.held?.detail,
-  );
-});
-
-Deno.test("planRepoSettingsHardening - code-owner review on a PR-only default branch with no pull_request rule is not held", () => {
-  // The approval step adds the pull_request rule there, and the code-owner
-  // step finds it when it re-reads the live ruleset.
-  const plan = planRepoSettingsHardening(
-    mergeSnapshot([CHECKS_ONLY_RULESET as TestRuleset], false),
-    { ...PLAN_OPTS, requireCodeOwnerReview: true },
-  );
-  const review = plan.find((s) => s.kind === "ruleset-reviews");
-  assert(review, "the code-owner step is planned");
-  assertEquals(review.held, undefined);
 });
 
 Deno.test("applyRepoSettingsPlan - merge commits are not switched on when keeping the default branch squash-only failed (Issue #2690)", async () => {

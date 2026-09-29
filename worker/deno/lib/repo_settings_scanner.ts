@@ -57,8 +57,6 @@ export interface RepoSettingsFinding {
 export interface ScanRepoSettingsOptions {
   /** The branch whose rules are read (the default branch). */
   defaultBranch: string;
-  /** Whether `.github/CODEOWNERS` exists in the checkout. */
-  hasCodeowners: boolean;
   knownOpenFindingIds?: Iterable<string>;
   onLookupFailure?: (what: string, reason: string) => void;
   /**
@@ -259,7 +257,6 @@ export async function scanRepoSettings(
     const approvals = typeof pr?.required_approving_review_count === "number"
       ? pr.required_approving_review_count as number
       : 0;
-    const codeowners = pr?.require_code_owner_review === true;
     // Every default branch needs one approval (Issue #2680) — code-owner
     // review alone gates only the owned paths, so it no longer excuses a
     // zero count. Setup's `repo-settings-harden` closes this finding.
@@ -282,22 +279,9 @@ export async function scanRepoSettings(
         evidence: `required_approving_review_count=${approvals}`,
       });
     }
-    if (options.hasCodeowners && !codeowners) {
-      add({
-        findingId: "BP-REPO-CODEOWNERS-NOT-ENFORCED",
-        severity: "high",
-        title:
-          "🔴 CODEOWNERS is inert — the ruleset does not require code-owner review",
-        file: FILE,
-        lines: 0,
-        whyItMatters:
-          ".github/CODEOWNERS names owners for the workflow directory, but a CODEOWNERS entry only takes effect when the " +
-          "branch rule requires code-owner review; it does not (Issue #4397, GHA-PERM-004).",
-        suggestedFix:
-          `${ADMIN} On the ${options.defaultBranch} ruleset's pull_request rule tick "Require review from Code Owners".`,
-        evidence: `require_code_owner_review=${codeowners}`,
-      });
-    }
+    // Code-owner review being off is deliberate, never a finding: the fleet
+    // reviewer App cannot be a code owner, so repo-settings-harden turns it
+    // off and a finding would only turn it back on.
   }
 
   // 4. Secret scanning and push protection (GHA-MONITOR-004).

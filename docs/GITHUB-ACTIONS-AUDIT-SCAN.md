@@ -1069,13 +1069,14 @@ Workflow YAML can be perfect while the repository settings under it are
 wide open. `lib/repo_settings_scanner.ts` reads, read-only, the workflow
 token defaults (`actions/permissions/workflow`), which actions may run and
 whether SHA pinning is enforced (`actions/permissions`), the default
-branch's pull-request rule (`rules/branches/<default>` — approvals and
-code-owner review, the latter only when `.github/CODEOWNERS` exists), and
+branch's pull-request rule (`rules/branches/<default>` — the approval
+count; code-owner review is deliberately off fleet-wide and never a
+finding, see THREAT-MODEL R14), and
 secret scanning / push protection (`security_and_analysis`). Each open
 setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-ACTIONS-MAY-APPROVE-PRS`, `BP-REPO-ACTIONS-ALLOW-ALL`,
 `BP-REPO-SHA-PIN-NOT-ENFORCED`, `BP-REPO-RULESET-NO-REVIEW`,
-`BP-REPO-CODEOWNERS-NOT-ENFORCED`, `BP-REPO-SECRET-SCANNING-OFF`,
+`BP-REPO-SECRET-SCANNING-OFF`,
 `BP-REPO-PUSH-PROTECTION-OFF`, and — when the repository runs a "selected"
 allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
 workflows need that the list omits, composite steps included,)
@@ -1193,17 +1194,14 @@ branch that takes direct pushes, or has opted out (`direct-push` topic or the
 would refuse every push — and the plan reports the skip; an unreadable push
 history is a failed step, never a guess. This closes
 `BP-REPO-RULESET-NO-REVIEW`.
-`--require-code-owner-review` also turns `require_code_owner_review` on for
-the default branch's pull-request rule: a PR that touches a path named in
-`.github/CODEOWNERS` — the workflows, actions and scripts, i.e. every
-unreviewed grant of CI credentials — also waits for an owner's approval. The
-code-owner rule is written to the ruleset the default branch's
-`pull_request` rule comes from — found by the rule's `ruleset_id`, never by
-the ruleset's name (Issue #2685), preferring the fleet's own
-`Vibe Coder default branch` ruleset when several carry one; with no
-`pull_request` rule on the branch, the step fails naming the branch.
-`--require-reviews` is the retired spelling of `--require-code-owner-review`:
-it used to add the one-approval rule too, which is now always planned.
+Code-owner review is turned **off** in every repository ruleset whose
+`pull_request` rule requires it (found by each rule's `ruleset_id`, never by
+name — Issue #2685) and never turned on: the fleet reviewer is a GitHub App,
+which cannot be a code owner, so its approval is the gate and a PR that
+removes or loosens tests is held for the owner (THREAT-MODEL R14). An
+organisation ruleset that requires it is a failed step naming the ruleset,
+for an owner to change there. The old `--require-code-owner-review` and
+`--require-reviews` flags are refused with that explanation.
 Needs an admin token —
 an operator command, not a fleet task. Applied to VibeCoder on 2026-08-18
 (everything except the review rule).

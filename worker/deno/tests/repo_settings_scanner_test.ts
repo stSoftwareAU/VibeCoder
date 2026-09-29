@@ -88,7 +88,6 @@ const OPEN = {
 Deno.test("scanRepoSettings - a hardened repository yields no findings (Issues #4397 #4398 #4401)", async () => {
   const findings = await scanRepoSettings("org/repo", ghFor(HARDENED), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
   });
   assertEquals(findings, []);
 });
@@ -96,13 +95,11 @@ Deno.test("scanRepoSettings - a hardened repository yields no findings (Issues #
 Deno.test("scanRepoSettings - every open setting becomes one stable, admin-actionable finding (Issues #4397 #4398 #4401)", async () => {
   const findings = await scanRepoSettings("org/repo", ghFor(OPEN), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
   });
   const ids = findings.map((f) => f.findingId).sort();
   assertEquals(ids, [
     "BP-REPO-ACTIONS-ALLOW-ALL",
     "BP-REPO-ACTIONS-MAY-APPROVE-PRS",
-    "BP-REPO-CODEOWNERS-NOT-ENFORCED",
     "BP-REPO-DEFAULT-TOKEN-WRITE",
     "BP-REPO-PUSH-PROTECTION-OFF",
     "BP-REPO-RULESET-NO-REVIEW",
@@ -138,13 +135,14 @@ Deno.test("scanRepoSettings - every open setting becomes one stable, admin-actio
   assertEquals(allowAll.severity, "medium");
 });
 
-Deno.test("scanRepoSettings - CODEOWNERS finding only when the file exists; review-count finding regardless (Issue #4397)", async () => {
+Deno.test("scanRepoSettings - code-owner review being off is never a finding: the fleet reviewer's approval is the gate", async () => {
+  // Filing it would oscillate with repo-settings-harden, which turns
+  // code-owner review off because the reviewer App cannot be a code owner.
   const findings = await scanRepoSettings("org/repo", ghFor(OPEN), {
     defaultBranch: "Develop",
-    hasCodeowners: false,
   });
   const ids = findings.map((f) => f.findingId);
-  assert(!ids.includes("BP-REPO-CODEOWNERS-NOT-ENFORCED"));
+  assert(!ids.some((id) => id.includes("CODEOWNER")), ids.join(", "));
   assert(ids.includes("BP-REPO-RULESET-NO-REVIEW"));
 });
 
@@ -155,7 +153,6 @@ Deno.test("scanRepoSettings - a failed lookup is reported and skipped, never rea
     ghFor({ ...OPEN, "/actions/permissions": new Error("HTTP 403") }),
     {
       defaultBranch: "Develop",
-      hasCodeowners: true,
       knownOpenFindingIds: ["BP-REPO-DEFAULT-TOKEN-WRITE"],
       onLookupFailure: (what, reason) => {
         failures.push(`${what}: ${reason}`);
@@ -198,7 +195,6 @@ Deno.test("scanRepoSettings - a private repository files neither secret-scanning
     ghFor(openWithVisibility({ visibility: "private", private: true })),
     {
       defaultBranch: "Develop",
-      hasCodeowners: true,
       onCheckSkipped: (what, reason) => skips.push(`${what}: ${reason}`),
       onLookupFailure: () => {
         throw new Error("a skip must not be reported as a lookup failure");
@@ -225,7 +221,6 @@ Deno.test("scanRepoSettings - an internal repository is exempt like a private on
     ghFor(openWithVisibility({ visibility: "internal", private: true })),
     {
       defaultBranch: "Develop",
-      hasCodeowners: true,
       onCheckSkipped: (what) => skips.push(what),
     },
   );
@@ -249,7 +244,6 @@ Deno.test("scanRepoSettings - a private repository with both settings already on
     }),
     {
       defaultBranch: "Develop",
-      hasCodeowners: true,
       onCheckSkipped: (what) => skips.push(what),
     },
   );
@@ -264,7 +258,6 @@ Deno.test("scanRepoSettings - a public repository still files both findings (Iss
     ghFor(openWithVisibility({ visibility: "public", private: false })),
     {
       defaultBranch: "Develop",
-      hasCodeowners: true,
       onCheckSkipped: (what) => skips.push(what),
     },
   );
@@ -278,7 +271,6 @@ Deno.test("scanRepoSettings - an unreadable visibility is evaluated exactly as t
   const skips: string[] = [];
   const findings = await scanRepoSettings("org/repo", ghFor(OPEN), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
     onCheckSkipped: (what) => skips.push(what),
   });
   const ids = findings.map((f) => f.findingId);
@@ -294,7 +286,6 @@ Deno.test("scanRepoSettings - the boolean private flag alone exempts the reposit
     ghFor(openWithVisibility({ private: true })),
     {
       defaultBranch: "Develop",
-      hasCodeowners: true,
       onCheckSkipped: (what) => skips.push(what),
     },
   );
@@ -322,7 +313,6 @@ Deno.test("scanRepoSettings - a selected allow-list missing a required pattern i
   };
   const incomplete = await scanRepoSettings("org/repo", ghFor(withList), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
     requiredActionPatterns: [
       "aquasecurity/setup-trivy@*",
       "aquasecurity/trivy-action@*",
@@ -338,7 +328,6 @@ Deno.test("scanRepoSettings - a selected allow-list missing a required pattern i
 
   const complete = await scanRepoSettings("org/repo", ghFor(withList), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
     requiredActionPatterns: ["aquasecurity/trivy-action@*"],
   });
   assertEquals(complete, []);
@@ -346,7 +335,6 @@ Deno.test("scanRepoSettings - a selected allow-list missing a required pattern i
   // Without the required set the check is not made (nothing to compare).
   const unknown = await scanRepoSettings("org/repo", ghFor(withList), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
   });
   assertEquals(unknown, []);
 });
@@ -355,7 +343,7 @@ Deno.test("scanRepoSettings - a selected allow-list missing a required pattern i
 // Issue #4397 — code-owner review is a human gate
 // =============================================================================
 
-Deno.test("scanRepoSettings - code-owner review with zero approvals is still a NO-REVIEW finding; neither gate is both findings (Issues #4397 #2680)", async () => {
+Deno.test("scanRepoSettings - code-owner review with zero approvals is still a NO-REVIEW finding, with or without it (Issues #4397 #2680)", async () => {
   const ownerOnly = {
     ...HARDENED,
     "/rules/branches/Develop": [
@@ -370,7 +358,6 @@ Deno.test("scanRepoSettings - code-owner review with zero approvals is still a N
   };
   const findings = await scanRepoSettings("org/repo", ghFor(ownerOnly), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
   });
   assertEquals(findings.map((f) => f.findingId), [
     "BP-REPO-RULESET-NO-REVIEW",
@@ -390,10 +377,6 @@ Deno.test("scanRepoSettings - code-owner review with zero approvals is still a N
   };
   const open = await scanRepoSettings("org/repo", ghFor(neither), {
     defaultBranch: "Develop",
-    hasCodeowners: true,
   });
-  assertEquals(open.map((f) => f.findingId).sort(), [
-    "BP-REPO-CODEOWNERS-NOT-ENFORCED",
-    "BP-REPO-RULESET-NO-REVIEW",
-  ]);
+  assertEquals(open.map((f) => f.findingId), ["BP-REPO-RULESET-NO-REVIEW"]);
 });
