@@ -292,7 +292,7 @@ Every path written inside the container, and the class it was assigned:
 | Writer | Was | Now | Class |
 | ------ | --- | --- | ----- |
 | the staged worker source (Issue #4302) | `${HOME}/.worker-src` | `${VIBE_SCRATCH_DIR}/worker-src` | scratch — `rm -rf`'d and re-copied every start |
-| git's global config (`safe.directory`, the HTTPS rewrite, the credential helper, the identity) | `${HOME}/.gitconfig` | `${VIBE_STATE_DIR}/gitconfig` via `GIT_CONFIG_GLOBAL` | durable state — recomputed from the mounted credential every start, and rebuilt from it mid-run if it is lost (Issue #564) |
+| git's global config (`safe.directory`, the HTTPS rewrite, the credential helper, the identity) | `${HOME}/.gitconfig` | `${VIBE_STATE_DIR}/gitconfig` via `GIT_CONFIG_GLOBAL` | durable state — recomputed from the mounted credential every start, and rebuilt from it mid-run if it is lost (Issue #564); a clone git refuses as dubious ownership restores the `safe.directory` line and retries once (Issue #2825) |
 | the writable `gh` config copy (Issue #4220) | `${HOME}/.config/gh-runtime` | `${VIBE_SECRETS_DIR}/gh` via `GH_CONFIG_DIR`, falling back to `${VIBE_STATE_DIR}/gh` | durable state — re-copied from the read-only mount every start, and re-staged from it mid-run if it goes missing (Issue #564) |
 | temporary files (`mktemp`, `Deno.makeTempDir`) | `/tmp` | `/tmp`, or `${VIBE_SCRATCH_DIR}/tmp` via `TMPDIR` when `/tmp` is refused | scratch |
 | the browser profile | `/tmp/vibe-playwright-profile-<user>` | unchanged | scratch |

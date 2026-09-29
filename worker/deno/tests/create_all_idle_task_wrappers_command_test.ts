@@ -24,6 +24,7 @@ import type { CreateAllIdleTaskWrappersResult } from "../lib/create_all_idle_tas
 import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
 import type { Result, WorkerConfig } from "../types.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
+import { openIdleTaskIssues } from "./support/open_idle_task_issues.ts";
 
 /** Narrow the non-generic CommandResult.data to the helper's result shape. */
 function dataOf(
@@ -79,7 +80,7 @@ Deno.test("create-all-idle-task-wrappers - clean repo seeds all ten wrappers", a
       __testDeps: {
         ghCommandFn: fn,
         ensureLabelFn: labelOk,
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
         nowFn: stableNow,
         rootDir: REPO_ROOT,
         log: () => {},
@@ -109,14 +110,15 @@ Deno.test("create-all-idle-task-wrappers - clean repo seeds all ten wrappers", a
 
 Deno.test("create-all-idle-task-wrappers - skips wrappers already open", async () => {
   const { fn } = makeMockGh();
-  const allOpen = new Set<string>(IDLE_TASK_WRAPPER_TITLES);
+  const allOpen = [...IDLE_TASK_WRAPPER_TITLES];
   const result = await createAllIdleTaskWrappersCommand.execute(
     {
       repo: "stSoftwareAU/private-repo-14",
       __testDeps: {
         ghCommandFn: fn,
         ensureLabelFn: labelOk,
-        findExistingWrapperTitlesFn: () => Promise.resolve(allOpen),
+        findOpenIdleTaskIssuesFn: () =>
+          Promise.resolve(openIdleTaskIssues(allOpen)),
         nowFn: stableNow,
         rootDir: REPO_ROOT,
         log: () => {},
@@ -141,7 +143,7 @@ Deno.test("create-all-idle-task-wrappers - gh failure surfaces as failed result"
       __testDeps: {
         ghCommandFn: fn,
         ensureLabelFn: labelOk,
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
         nowFn: stableNow,
         rootDir: REPO_ROOT,
         log: () => {},
@@ -167,7 +169,7 @@ Deno.test("create-all-idle-task-wrappers - prints the outcome table on success",
       __testDeps: {
         ghCommandFn: fn,
         ensureLabelFn: labelOk,
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
         nowFn: stableNow,
         rootDir: REPO_ROOT,
         log: (line: string) => lines.push(line),
@@ -193,7 +195,7 @@ Deno.test("create-all-idle-task-wrappers - prints the outcome table and exits no
       __testDeps: {
         ghCommandFn: fn,
         ensureLabelFn: labelOk,
-        findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+        findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
         nowFn: stableNow,
         rootDir: REPO_ROOT,
         log: (line: string) => lines.push(line),

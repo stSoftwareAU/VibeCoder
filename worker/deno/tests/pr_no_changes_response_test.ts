@@ -176,3 +176,22 @@ Deno.test("formatClassifierTrailer - the stock body ends with exactly this trail
     true,
   );
 });
+
+Deno.test("buildCiNoChangesResponse - human-gate returns the code-fix-required response (Issue #2726)", () => {
+  // This path classifies the agent's own output, so a gate line there must not
+  // let the agent dodge the escalation a code-fix failure gets.
+  const signals = ["check:bootstrap-applied", "text:vibe-human-gate"];
+  const gate: CiFailureClassification = {
+    ...classification("human-gate", "shared reason", signals),
+    humanStep: "apply infra/bootstrap.yaml",
+  };
+  const res = buildCiNoChangesResponse("bootstrap-applied", gate);
+  const expected = buildCiNoChangesResponse(
+    "bootstrap-applied",
+    classification("code-fix-required", "shared reason", signals),
+  );
+  assertEquals(res, expected);
+  assertEquals(res.category, "code-fix-required");
+  assertEquals(res.addNeedsHuman, true);
+  assertStringIncludes(res.body, "needs-human");
+});

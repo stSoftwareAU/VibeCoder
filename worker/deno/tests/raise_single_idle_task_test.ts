@@ -15,7 +15,9 @@
  *   - idempotent -> an already-open wrapper is skipped;
  *   - per-repo error isolation -> a failing repo never aborts the sweep;
  *   - partial progress (Issue #3862) -> a failed repo reports the per-template
- *     failure, and an off-allowlist repo aborts before any gh call.
+ *     failure, and an off-allowlist repo aborts before any gh call;
+ *   - any-open gate (Issue #2753) -> an open idle task blocks the repo unless
+ *     `force`, which logs action=forced and never duplicates an open title.
  *
  * All dependencies are injected so the tests never touch the network. The real
  * template body builders read `prompts/<scan>/prompt.md`, so the seeding
@@ -36,6 +38,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import type { Result } from "../types.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
+import { openIdleTaskIssues } from "./support/open_idle_task_issues.ts";
 
 const labelOk = (): Promise<Result<void>> =>
   Promise.resolve({ ok: true, value: undefined });
@@ -80,7 +83,7 @@ Deno.test("raiseSingleIdleTask - unknown template name fails loud", async () => 
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -97,7 +100,7 @@ Deno.test("raiseSingleIdleTask - seeds exactly the one named wrapper per repo", 
     repos,
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -123,7 +126,7 @@ Deno.test("raiseSingleIdleTask - honours a different template name", async () =>
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -141,8 +144,8 @@ Deno.test("raiseSingleIdleTask - skips a wrapper already open", async () => {
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () =>
-      Promise.resolve(new Set<string>([DOCUMENTATION_AUDIT_ISSUE_TITLE])),
+    findOpenIdleTaskIssuesFn: () =>
+      Promise.resolve(openIdleTaskIssues([DOCUMENTATION_AUDIT_ISSUE_TITLE])),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -161,7 +164,7 @@ Deno.test("raiseSingleIdleTask - a failing repo never aborts the sweep", async (
     repos: ["org/alpha", "org/beta"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -190,7 +193,7 @@ Deno.test("raiseSingleIdleTask - an off-allowlist repo aborts in preflight witho
       repos: ["org/alpha", "org/beta"],
       ghCommandFn: fn,
       ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
     });
@@ -217,7 +220,7 @@ Deno.test("raiseSingleIdleTask - a failed repo reports the failure per template"
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -230,4 +233,54 @@ Deno.test("raiseSingleIdleTask - a failed repo reports the failure per template"
   assertEquals(alpha?.failed?.length, 1);
   assertEquals(alpha?.failed?.[0]?.template, "documentation-audit");
   assertEquals(alpha?.terminal, false);
+});
+
+// ---------------------------------------------------------------------------
+// Any-open gate and --force (Issue #2753)
+// ---------------------------------------------------------------------------
+
+Deno.test("raiseSingleIdleTask - an open idle task blocks the repo unless forced", async () => {
+  for (const force of [false, true]) {
+    const { fn, created } = makeMockGh();
+    const logs: string[] = [];
+    const result = await raiseSingleIdleTask({
+      template: "documentation-audit",
+      repos: ["org/alpha"],
+      ghCommandFn: fn,
+      ensureLabelFn: labelOk,
+      findOpenIdleTaskIssuesFn: () =>
+        Promise.resolve(openIdleTaskIssues([SECURITY_SCAN_ISSUE_TITLE])),
+      nowFn: stableNow,
+      rootDir: REPO_ROOT,
+      force,
+      log: (line) => logs.push(line),
+    });
+
+    assert(result.ok);
+    assertEquals(created.length, force ? 1 : 0);
+    assertEquals(
+      logs.includes("[idle-task] repo=org/alpha issue=1 action=forced"),
+      force,
+    );
+  }
+});
+
+Deno.test("raiseSingleIdleTask - force never duplicates the open canonical title", async () => {
+  const { fn, created } = makeMockGh();
+  const result = await raiseSingleIdleTask({
+    template: "documentation-audit",
+    repos: ["org/alpha"],
+    ghCommandFn: fn,
+    ensureLabelFn: labelOk,
+    findOpenIdleTaskIssuesFn: () =>
+      Promise.resolve(openIdleTaskIssues([DOCUMENTATION_AUDIT_ISSUE_TITLE])),
+    nowFn: stableNow,
+    rootDir: REPO_ROOT,
+    force: true,
+  });
+
+  assert(result.ok);
+  if (!result.ok) return;
+  assertEquals(created.length, 0);
+  assertEquals(result.value.totalSkipped, 1);
 });

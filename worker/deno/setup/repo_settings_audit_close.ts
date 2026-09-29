@@ -23,16 +23,14 @@
  *     `hardenRepo` as one failed `ruleset-reviews` read of `repos/<repo>`)
  *     read nothing, so it confirms nothing and closes nothing.
  *  2. **The re-scan completed.** `scanRepoSettings` is re-run through the same
- *     gh seam; any `onLookupFailure`, an unresolvable default branch or an
- *     unreadable CODEOWNERS lookup is a failed re-scan: nothing closes and one
- *     warning says so.
+ *     gh seam; any `onLookupFailure` or an unresolvable default branch is a
+ *     failed re-scan: nothing closes and one warning says so.
  *  3. **The re-scan no longer reports the id** — and, where the scanner's
  *     silence alone proves nothing, the read-back positively shows the fix:
  *     secret scanning / push protection must read `enabled` (a token without
  *     admin sees no `security_and_analysis`, and a private repo is exempted,
- *     both silently); CODEOWNERS-NOT-ENFORCED needs a CODEOWNERS file to have
- *     been checked; ALLOW-LIST-INCOMPLETE needs the repo to be on a `selected`
- *     allow-list.
+ *     both silently); ALLOW-LIST-INCOMPLETE needs the repo to be on a
+ *     `selected` allow-list.
  *
  * Only open issues carrying the finding's marker (parsed by the one
  * definition in `admin_only_finding.ts`) **and authored by a fleet login**
@@ -52,7 +50,6 @@
 import { parseRepoSettingsFindingId } from "../lib/admin_only_finding.ts";
 import {
   buildAllowedActionPatterns,
-  findCodeownersOnDefaultBranch,
   type HardenRepoOutcome,
   type HardenStep,
 } from "../lib/repo_settings_harden.ts";
@@ -97,7 +94,6 @@ export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
   "BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE": "actions-allow-list",
   "BP-REPO-SHA-PIN-NOT-ENFORCED": "sha-pinning-required",
   "BP-REPO-RULESET-NO-REVIEW": "default-branch-approval",
-  "BP-REPO-CODEOWNERS-NOT-ENFORCED": "ruleset-reviews",
   "BP-REPO-SECRET-SCANNING-OFF": "secret-scanning",
   "BP-REPO-PUSH-PROTECTION-OFF": "secret-scanning",
 };
@@ -230,13 +226,6 @@ async function confirmFixed(
     }
     branch = resolved.value;
   }
-  const codeowners = await findCodeownersOnDefaultBranch(
-    repo,
-    opts.ghCommandFn,
-  );
-  if (codeowners.state === "error") {
-    return { ok: false, reason: codeowners.message };
-  }
 
   // Every settings read the re-scan makes, kept for the positive checks.
   const seen = new Map<string, unknown>();
@@ -254,7 +243,6 @@ async function confirmFixed(
   const failures: string[] = [];
   const findings = await scanRepoSettings(repo, recordingGh, {
     defaultBranch: branch,
-    hasCodeowners: codeowners.state === "present",
     requiredActionPatterns: buildAllowedActionPatterns(outcome.coordinates),
     onLookupFailure: (what, reason) => failures.push(`${what}: ${reason}`),
   });
@@ -277,7 +265,6 @@ async function confirmFixed(
       statusOf("secret_scanning") === "enabled",
     "BP-REPO-PUSH-PROTECTION-OFF": () =>
       statusOf("secret_scanning_push_protection") === "enabled",
-    "BP-REPO-CODEOWNERS-NOT-ENFORCED": () => codeowners.state === "present",
     "BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE": () =>
       actions?.allowed_actions === "selected",
   };

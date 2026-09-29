@@ -208,6 +208,16 @@ Deno.test("token_usage - lookupModelPricing returns pricing for Sonnet 5 (Issue 
   assertEquals(pricing?.cacheReadPerMillion, 0.20);
 });
 
+Deno.test("token_usage - lookupModelPricing returns pricing for Sonnet 5.5 (Issue #2812)", () => {
+  for (const model of ["claude-sonnet-5-5", "claude-sonnet-5-5-20260915"]) {
+    const pricing = lookupModelPricing(model);
+    assertEquals(pricing?.inputPerMillion, 2, model);
+    assertEquals(pricing?.outputPerMillion, 10, model);
+    assertEquals(pricing?.cacheWritePerMillion, 2.50, model);
+    assertEquals(pricing?.cacheReadPerMillion, 0.20, model);
+  }
+});
+
 Deno.test("token_usage - lookupModelPricing tier fallback gives Sonnet 4.x pricing for unknown 4-family minor (Issue #2407)", () => {
   // An unknown-but-tiered Sonnet 4 id must inherit the 4.x rate via the
   // tier-aware fallback rather than returning null. Sonnet 5 is cheaper and

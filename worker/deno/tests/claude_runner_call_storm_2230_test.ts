@@ -181,11 +181,17 @@ const POLICY: ProgressExtensionPolicy = {
   checkSeconds: 1,
 };
 
-/** Three calls in a one-second window is a storm, for test purposes. */
+/**
+ * Three calls in a one-second window is a storm, for test purposes. The
+ * bursts are one `echo wN` repeated, so one novel call in three or four;
+ * the share is raised to half so a window that small still reads as the
+ * repetition it is (Issue #2773).
+ */
 const CALL_STORM: CallStormPolicy = {
   enabled: true,
   windowSeconds: 1,
   callThreshold: 3,
+  novelShare: 0.5,
 };
 
 /**
@@ -296,6 +302,10 @@ Deno.test({
       assert(
         stall.includes("4 calls in 1s"),
         `the reason must name the rate: ${stall}`,
+      );
+      assert(
+        stall.includes("1 novel (25%)"),
+        `the reason must name the novel share (Issue #2773): ${stall}`,
       );
       assert(
         stall.includes("tree unchanged"),

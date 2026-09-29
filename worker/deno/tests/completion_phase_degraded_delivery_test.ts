@@ -87,6 +87,31 @@ Did all of it.
 - **clean** — Australian English, TDD, fail-loud error handling
 `;
 
+/** Issue #2695 (a): no `## Acceptance Criteria`, no accepted scope. */
+const ISSUE_WITHOUT_SCOPE = `## Problem
+
+The parser mishandles a leap year.
+`;
+
+/** Issue #2695 (c): the first criterion `partial`, the second `met`. */
+const SUMMARY_PARTIAL_AND_MET = `## Summary
+
+Did a little.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: partial — reason: execution only
+- **met** — the docs table lists opus — evidence: \`docs/MODEL-AND-CACHING.md\` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, TDD, fail-loud error handling
+`;
+
 const DEGRADED: PhaseClaudeResult[] = [{ fallbackModel: "haiku" }];
 const HEALTHY: PhaseClaudeResult[] = [];
 
@@ -274,21 +299,72 @@ Deno.test("completion - a degraded run that met every criterion raises the PR wi
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
 });
 
-Deno.test("completion - #2543 reproduction: a degraded run with no summary on a grill-me issue files every scope item", async () => {
+Deno.test("completion - #2543 reproduction (b): a degraded run with no summary on a grill-me issue files no follow-up but says so in the PR (Issue #2695)", async () => {
   const outcome = await runCompletion({
     issueBody: GRILL_ME_ISSUE,
     summary: null,
     claudeRunStats: DEGRADED,
   });
+  const healthy = await runCompletion({
+    issueBody: GRILL_ME_ISSUE,
+    summary: null,
+    claudeRunStats: HEALTHY,
+  });
 
   assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 0, "every item is unassessed");
+  assertEquals(outcome.prBodies.length, 1);
+  const pr = outcome.prBodies[0]!;
+  assert(pr.startsWith("## ⚠️ Degraded run"));
+  assertStringIncludes(pr, "`haiku`");
+  assertStringIncludes(
+    pr,
+    "no acceptance criterion was assessed `partial` or `missing`",
+  );
+  assertStringIncludes(pr, "Raise the Claude Code pin.");
+  assert(!pr.includes("#900"), "no follow-up is referenced");
+  // Past the note, the PR is exactly the one a healthy run raises.
+  assert(pr.endsWith(healthy.prBodies[0]!));
+  assertStringIncludes(pr, `#${ISSUE}`);
+});
+
+Deno.test("completion - (a) a degraded run on an issue stating no criteria files no follow-up but says so in the PR (Issue #2695)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITHOUT_SCOPE,
+    summary: null,
+    claudeRunStats: DEGRADED,
+  });
+  const healthy = await runCompletion({
+    issueBody: ISSUE_WITHOUT_SCOPE,
+    summary: null,
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 0);
+  assertEquals(outcome.prBodies.length, 1);
+  const pr = outcome.prBodies[0]!;
+  assert(pr.startsWith("## ⚠️ Degraded run"));
+  assertStringIncludes(pr, "`haiku`");
+  assertStringIncludes(pr, "the issue states no acceptance criteria");
+  assert(!pr.includes("#900"), "no follow-up is referenced");
+  assert(pr.endsWith(healthy.prBodies[0]!));
+});
+
+Deno.test("completion - (c) a degraded run with one partial criterion files the follow-up as before (Issue #2695)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: DEGRADED,
+  });
+
+  assertEquals(outcome.status, "continue", outcome.reason);
   assertEquals(outcome.issueCreates.length, 1);
-  const create = outcome.issueCreates[0]!;
-  const body = create[create.indexOf("--body") + 1]!;
-  assertStringIncludes(body, "Route the planning phases to opus.");
-  assertStringIncludes(body, "Raise the Claude Code pin.");
-  assertStringIncludes(body, "Bump the release floor to 1.9.0.");
-  assertStringIncludes(outcome.prBodies[0]!, "#900");
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, "Degraded run — partial delivery");
+  assertStringIncludes(pr, "#900");
+  assertStringIncludes(pr, "**partial** — The router sends planning to opus.");
+  assert(!pr.includes("The docs table lists opus"), "met items are not listed");
 });
 
 Deno.test("completion - a degraded run whose follow-up cannot be filed raises no PR", async () => {

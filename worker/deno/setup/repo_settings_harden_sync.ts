@@ -17,9 +17,9 @@
  *    wait for `/review-fleet-prs` or the owner instead of auto-merging
  *    unreviewed. A branch that takes direct pushes gets no pull_request rule
  *    (it would refuse every push); its line says so for the owner to decide;
- *  - code-owner review on the Vibe ruleset, but only once CODEOWNERS is on
- *    the default branch — a ruleset demanding owners that do not exist would
- *    stop every merge;
+ *  - code-owner review turned OFF in every repository ruleset that requires
+ *    it: the fleet reviewer App cannot be a code owner, so its approval is
+ *    the gate and CODEOWNERS only routes review requests;
  *  - merge commits allowed, with the default branch kept squash-only, so a
  *    milestone sync PR lands as a merge commit and converges without an
  *    admin bypass (Issue #2690);
@@ -182,18 +182,8 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Why code-owner review was not asked for, from the default-branch lookup. */
-function codeOwnerSkipReason(location: CodeownersLocation): string {
-  return location.state === "error"
-    ? `code-owner review: CODEOWNERS lookup failed: ${location.message}`
-    : "code-owner review: no CODEOWNERS on the default branch";
-}
-
 /** Count one repository's outcome into applied/unchanged/skipped/failed. */
-function tallyOutcome(
-  outcome: HardenRepoOutcome,
-  location: CodeownersLocation,
-): RepoTally {
+function tallyOutcome(outcome: HardenRepoOutcome): RepoTally {
   const tally = emptyTally();
   const count = (r: HardenResult) => {
     if (r.status === "applied") {
@@ -222,9 +212,6 @@ function tallyOutcome(
     } else if (kind === "codeql-default-setup" && outcome.codeqlSkipNote) {
       tally.skipped++;
       tally.skips.push(outcome.codeqlSkipNote);
-    } else if (kind === "ruleset-reviews" && location.state !== "present") {
-      tally.skipped++;
-      tally.skips.push(codeOwnerSkipReason(location));
     } else {
       tally.unchanged++;
     }
@@ -410,8 +397,7 @@ export async function runRepoSettingsHarden(
         needsAdmin.push(renderInertRepoSlug(repo));
         continue;
       }
-      // One default-branch lookup per repo, shared by the writer and the
-      // code-owner decision: they must agree on what they saw.
+      // One default-branch lookup per repo, memoised for the writer.
       let lookup: Promise<CodeownersLocation> | undefined;
       const findOnDefaultBranch = (slug: string) =>
         slug === repo
@@ -431,12 +417,10 @@ export async function runRepoSettingsHarden(
       } catch (err) {
         codeowners = { status: "error", message: errorMessage(err) };
       }
-      const location = await findOnDefaultBranch(repo);
 
       const outcome = await harden(repo, {
         apply: !dryRun,
         ghCommandFn: deps.ghCommandFn,
-        requireCodeOwnerReview: location.state === "present",
         fleetAccounts,
         orgOwners: await ownersOf(repo.split("/")[0] ?? ""),
         ...(login === UNKNOWN_LOGIN ? {} : { setupLogin: login }),
@@ -447,7 +431,7 @@ export async function runRepoSettingsHarden(
           ? { defaultBranchCachePath: deps.defaultBranchCachePath }
           : {}),
       });
-      tally = tallyOutcome(outcome, location);
+      tally = tallyOutcome(outcome);
 
       // The closer comments on and closes issues: never in a dry run.
       if (!dryRun) await closeFindings(repo, outcome, config, deps);

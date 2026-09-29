@@ -178,6 +178,7 @@ Deno.test("call storm config - the guard reaches the runner option (Issue #2230)
         enabled: true,
         windowSeconds: 300,
         callThreshold: 60,
+        novelShare: 0.25,
       });
     });
   } finally {
@@ -229,6 +230,6 @@ Deno.test("buildCallStormPolicy - a hand-built config with nonsense tunables gua
       callStormCalls: 60,
       callStormWindowSeconds: 300,
     }),
-    { enabled: true, windowSeconds: 300, callThreshold: 60 },
+    { enabled: true, windowSeconds: 300, callThreshold: 60, novelShare: 0.25 },
   );
 });

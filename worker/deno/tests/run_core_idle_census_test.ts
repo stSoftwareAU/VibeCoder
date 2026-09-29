@@ -22,10 +22,13 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
+  type DiscoveredIssue,
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
 import { InFlightRepoRegistry } from "../lib/in_flight_repos.ts";
+import { BlankStreamLockRegistry } from "../lib/stream_lock.ts";
+import { waitUntil } from "./support/rendezvous.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
   return {
@@ -460,5 +463,54 @@ Deno.test(
     await runCoreLoop(config, deps);
 
     assertEquals(calls, [true]);
+  },
+);
+
+Deno.test(
+  "run_core - an idle slot tells the census which repos' blank stream a sibling holds (Issue #2800)",
+  async () => {
+    // Host 665:84: slot s2 ran GRQ-AutoTrader#1593 (no milestone), so the pool
+    // refused its siblings every other no-milestone issue there — work-on
+    // included — while their census still counted #1684 and #1659 claimable.
+    const repo = "stSoftwareAU/GRQ-AutoTrader";
+    const locks = new BlankStreamLockRegistry();
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    config.maxConcurrentIssues = 2;
+    config.enableSessionResume = true;
+    const cycleMs = config.runDurationSeconds * 1000;
+    let nowValue = 0;
+    const remaining: DiscoveredIssue[] = [
+      { repo, issueNumber: 1593, issueTitle: "t1593", milestoneTitle: "" },
+    ];
+    const calls: Array<readonly string[] | undefined> = [];
+
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: (ms?: number) => {
+        nowValue += ms ?? 30_000;
+        return Promise.resolve();
+      },
+      inFlightRepos: new InFlightRepoRegistry(),
+      blankStreamLocks: locks,
+      findNextIssue: () =>
+        Promise.resolve({ ok: true as const, value: remaining[0] ?? null }),
+      processIssue: async (issue) => {
+        remaining.splice(remaining.indexOf(issue), 1);
+        // Hold the stream until the idle sibling has asked the census.
+        await waitUntil(() => calls.length > 0);
+        nowValue = cycleMs + 1;
+        return { ok: true, value: { success: true } };
+      },
+      runIdleDecisionCensus: ({ blankStreamHeldRepos }) => {
+        calls.push(blankStreamHeldRepos && [...blankStreamHeldRepos]);
+        return Promise.resolve();
+      },
+    });
+
+    await runCoreLoop(config, deps);
+
+    assertEquals(calls[0], [repo]);
+    assertEquals(locks.size, 0, "the finished run releases its hold");
   },
 );

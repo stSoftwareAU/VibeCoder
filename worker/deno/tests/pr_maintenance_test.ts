@@ -391,6 +391,7 @@ function makeChangesRequestedGh(
         login: reviewerLogin,
         id: 700,
         body: "Please hand this off — tracked separately in #4321",
+        state: "CHANGES_REQUESTED",
         commit_id: "abc123",
       }]));
     }
@@ -735,6 +736,7 @@ function makeReviewOnlyGh(
           login,
           id: 1500,
           body: "Tracked separately in #4321 — out of scope here.",
+          state: "CHANGES_REQUESTED",
           commit_id: "sha15",
         },
       ]));
@@ -2213,7 +2215,13 @@ Deno.test("findPrCommentsToFix - self-skip guards still ignore the host's own co
       { login: HOST, id: 902, body: "my own note", thumbs_up: 5 },
     ]),
     "pulls/103/reviews": JSON.stringify([
-      { login: HOST, id: 903, body: "my own review", commit_id: "sha103" },
+      {
+        login: HOST,
+        id: 903,
+        body: "my own review",
+        state: "CHANGES_REQUESTED",
+        commit_id: "sha103",
+      },
     ]),
   });
 

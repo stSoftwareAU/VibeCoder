@@ -76,7 +76,7 @@ function makeState(overrides?: Partial<PhaseState>): PhaseState {
 /**
  * Create fake dependencies that simulate a rebase conflict scenario:
  * - First rev-list call returns behind=2 (triggers declined)
- * - Cherry-pick fails with conflict
+ * - Merging the base in fails with conflict (merge, not rebase — #2809)
  * - Agent pass is invoked
  * - On success: second rev-list call returns behind=0
  * - On failure: no second rev-list call, handoff with conflict comment
@@ -156,6 +156,10 @@ function makeBranchConflictDeps(
           // Simulate conflict failure on the first cherry-pick
           stdout = "CONFLICT (content): Merge conflict in src/file.ts\n";
           code = 1; // Non-zero to trigger conflict
+        } // PR-raise sync merges the base in (Issue #2809): simulate a conflict
+        else if (args[0] === "merge" && args[1] === "--no-edit") {
+          stdout = "CONFLICT (content): Merge conflict in src/file.ts\n";
+          code = 1;
         } // Handle cherry-pick --abort, rebase --abort, merge --abort
         else if (
           (args[0] === "cherry-pick" && args[1] === "--abort") ||

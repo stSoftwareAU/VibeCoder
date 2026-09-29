@@ -67,13 +67,12 @@ import {
 } from "../issue_lifecycle.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
 import { createPullRequestViaRest } from "../pr_create_rest.ts";
-import { ensureBranchCurrent } from "../branch_currency.ts";
 import {
   buildRebasePassPrompt,
   postBranchConflictComment,
   runDeclinedRebasePass,
 } from "../branch_conflict_pass.ts";
-import { rebaseOntoBase } from "../stale_branch_lineage.ts";
+import { syncBranchesForPrRaise } from "../pr_raise_sync.ts";
 import { isPrimaryRateLimitMessage } from "../primary_quota_latch.ts";
 import {
   autoMergeOutcomeNeedsComment,
@@ -84,7 +83,10 @@ import {
   formatBuildStamp,
   resolveWorkerBuildInfo,
 } from "../worker_build_info.ts";
-import { bindIssueRunBehindSync } from "../milestone_presync.ts";
+import {
+  bindIssueRunBehindSync,
+  presyncMilestoneBranchForIssueRun,
+} from "../milestone_presync.ts";
 import { repoDirName } from "../work_volume_tiers.ts";
 import {
   IMPLEMENTATION_RUN_STATS_PHASE,
@@ -147,7 +149,9 @@ import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   assessDegradedDelivery,
+  buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
+  degradedNeedsFollowUp,
   fileDegradedFollowUp,
 } from "../degraded_delivery.ts";
 import { IDLE_TASK_LABEL } from "../idle_task_issue.ts";
@@ -1177,18 +1181,53 @@ async function completionBody(
   // commits were already squashed away. This one handles the ordinary case:
   // the base simply moved on while the agent worked.
   //
-  // Never fatal. A dirty tree, a real content conflict or an unreadable
-  // comparison all leave the branch exactly as it was and the PR proceeds —
-  // an extra CI run is a cost, a wrongly-rebased branch is a defect, and
-  // diverged content belongs to the conflict ladder.
-  const currency = await ensureBranchCurrent({
+  // Issue #2809: a milestone base is first merged up to the default branch,
+  // THEN the feature branch merges the milestone in — both merge and plain
+  // push, never a rebase or a force-push. Never fatal: a dirty tree, a real
+  // content conflict or an unreadable comparison leave the branch as it was
+  // and the PR proceeds; diverged content belongs to the conflict ladder.
+  const sharedClonePath = `${config.workDir}/${repoDirName(repo)}`;
+  const prRaiseSync = await syncBranchesForPrRaise({
     branch: state.branchName,
     baseBranch,
+    ...(state.milestoneBranch && state.defaultBranch && config.workDir
+      ? { milestoneBranch: state.milestoneBranch }
+      : {}),
     runGit: deps.git.runGitCommand,
     cwd: state.repoPath,
-    rebase: rebaseOntoBase,
+    sharedClonePath,
+    syncMilestone: () =>
+      presyncMilestoneBranchForIssueRun({
+        repo,
+        milestoneTitle: milestoneTitle && milestoneTitle.length > 0
+          ? milestoneTitle
+          : baseBranch.replace(/^milestone\//, ""),
+        milestoneBranch: baseBranch,
+        defaultBranch: state.defaultBranch,
+        cwd: sharedClonePath,
+        workDir: config.workDir,
+        config,
+        logger,
+        ...(ctx.cycleDeadlineEpochMs !== undefined
+          ? { cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs }
+          : {}),
+        syncMilestoneBranchFn: deps.git.syncMilestoneBranchWithDefault,
+        countCommitsAheadFn: deps.git.countCommitsAhead,
+        runGitCommandFn: deps.git.runGitCommand,
+        runAgentFn: deps.claude.runClaudeWithRetry,
+        ghCommandFn: deps.github.runGhCommand,
+      }),
     log: (m: string) => logger.info(m),
+    warn: (m: string) => logger.warn(m),
   });
+  if (prRaiseSync.kind === "refused") {
+    return {
+      status: "failure",
+      reason: `Refusing to raise the PR for \`${state.branchName}\`: ` +
+        `${prRaiseSync.detail} (Issue #2809)`,
+    };
+  }
+  const currency = prRaiseSync.currency;
   // Issue #2459: a decline means the content genuinely diverged, and until now
   // the PR was raised on the stale head and sat unmergeable until the conflict
   // ladder found it hours later. Spend exactly one agent pass trying to close
@@ -1295,7 +1334,7 @@ async function completionBody(
   });
   if (!pushResult.ok) {
     // Issue #1952: GitHub refusing a workflow file for want of the scope is
-    // not a stale branch. Fetch, rebase and retry cannot supply a missing
+    // not a stale branch. Fetch, merge and retry cannot supply a missing
     // scope, so stop on the first refusal with the fix named — and with the
     // phrase that classifies the run as `token_scope`, not `push_failure`.
     if (isWorkflowScopePushRefusal(pushResult.error.message)) {
@@ -2005,13 +2044,15 @@ async function completionBody(
   // but every accepted scope item not shown `met` is filed as an `idle-task`
   // follow-up the fleet picks up, and the PR body names the gap. A healthy
   // run, or a degraded one that met everything, is untouched.
+  //
+  // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
   // ---------------------------------------------------------------------
   const degradedDelivery = assessDegradedDelivery({
     claudeResults: state.claudeRunStats ?? [],
     issueBody: ctx.issueBody,
     prBody,
   });
-  if (degradedDelivery.shortfalls.length > 0) {
+  if (degradedNeedsFollowUp(degradedDelivery)) {
     const labelled = await deps.github.ensureLabelExists(
       repo,
       IDLE_TASK_LABEL,
@@ -2057,6 +2098,15 @@ async function completionBody(
     );
     prBody = buildDegradedPrSection(degradedDelivery, followUp.value.number) +
       prBody;
+  } else if (degradedDelivery.shortfalls.length > 0) {
+    logger.warn(
+      "Degraded run: no shortfall partial or missing — no follow-up filed",
+      {
+        reason: degradedDelivery.reason,
+        unassessed: degradedDelivery.shortfalls.length,
+      },
+    );
+    prBody = buildDegradedNoFollowUpSection(degradedDelivery) + prBody;
   }
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),

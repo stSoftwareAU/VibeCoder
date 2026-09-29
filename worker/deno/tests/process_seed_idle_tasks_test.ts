@@ -14,7 +14,9 @@
  *     issue/agent-authored text can only select a config entry;
  *   - a seeding failure is loud: reported on the issue, issue left open,
  *     `success: false`;
- *   - the run's cross-repo grant never leaks past the command.
+ *   - the run's cross-repo grant never leaks past the command;
+ *   - a target already holding an open `idle-task` issue is skipped with an
+ *     `existing_wrapper_open` log and nothing filed (Issue #2752).
  *
  * All seams are injected, so no network and no journal writes occur.
  *
@@ -332,4 +334,61 @@ Deno.test("process-seed-idle-tasks - rejects missing arguments", async () => {
   );
   assertEquals(badNumber.success, false);
   assertStringIncludes(badNumber.message, "--issue-number");
+});
+
+// ---------------------------------------------------------------------------
+// Any-open idle-task gate (Issue #2752)
+// ---------------------------------------------------------------------------
+
+Deno.test("process-seed-idle-tasks - blocked repo: an open idle-task issue stops seeding (Issue #2752)", async () => {
+  try {
+    const calls: string[][] = [];
+    const logged: string[] = [];
+    const logger: Logger = {
+      ...makeLogger(),
+      info: (m: string) => logged.push(m),
+      warn: (m: string) => logged.push(m),
+    };
+    // The default createWrappersFn is left wired so the real gate runs.
+    const runGhCommand = (args: string[]): Promise<string> => {
+      calls.push([...args]);
+      const isIdleList = args[0] === "issue" && args[1] === "list" &&
+        args.includes("idle-task");
+      return Promise.resolve(
+        isIdleList
+          ? JSON.stringify([{
+            number: 638,
+            title: "Finish #638: tidy docs",
+            url: `https://github.com/${TARGET_REPO}/issues/638`,
+            labels: [{ name: "idle-task" }, { name: "needs-human" }],
+          }])
+          : "",
+      );
+    };
+
+    await processSeedIdleTasksCommand.execute(
+      {
+        "repo": REQUEST_REPO,
+        "issue-number": 2752,
+        "title": `seed-idle-tasks: ${TARGET_REPO}`,
+        "__testDeps": { runGhCommand, logger },
+      },
+      makeConfig([REQUEST_REPO, TARGET_REPO]),
+    );
+
+    assertEquals(
+      calls.filter((c) => c[0] === "issue" && c[1] === "create").length,
+      0,
+    );
+    assert(
+      logged.some((l) =>
+        l.includes(
+          `[idle-task] repo=${TARGET_REPO} issue=638 action=skipped reason=existing_wrapper_open`,
+        )
+      ),
+      `expected an existing_wrapper_open skip log, got: ${logged.join(" | ")}`,
+    );
+  } finally {
+    resetWriteRepoAllowlist();
+  }
 });

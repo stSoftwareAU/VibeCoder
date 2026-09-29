@@ -11,9 +11,9 @@
 // until something is ready and only then exits, so an idle night costs no
 // model tokens at all.
 //
-// Each pass also rewrites ~/.review-fleet-prs/summary.md (see review_log.ts).
+// Each pass also rewrites summary.md in the log directory (see review_log.ts).
 //
-// Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME gate.ts
+// Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts
 //          [--config=<path>] [--repo=<owner/name>] [--watch=<seconds>]
 //          [--sleep-first]
 // --sleep-first waits one interval before the first poll, so a PR whose
@@ -29,10 +29,12 @@ const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
 
 import {
   type Finding,
+  migrateLegacyStateDir,
   previousFindings,
   prKey,
   readLog,
   REVIEW_MARKER,
+  sameLogin,
   stateDir,
   writeSummary,
 } from "./review_log.ts";
@@ -179,7 +181,7 @@ export function reviewedAtHead(
   headSha: string,
 ): boolean {
   return reviews.some((r) =>
-    r.author?.login === reviewer && r.commit?.oid === headSha &&
+    sameLogin(r.author?.login, reviewer) && r.commit?.oid === headSha &&
     (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" ||
       r.state === "DISMISSED" ||
       (r.state === "COMMENTED" && (r.body ?? "").includes(REVIEW_MARKER)))
@@ -218,22 +220,48 @@ function arg(name: string): string | undefined {
   return hit?.slice(name.length + 3);
 }
 
-async function gh(args: string[]): Promise<string> {
-  const out = await new Deno.Command("gh", {
+// A GitHub call that stalls mid-read can otherwise hang for many minutes (a
+// 14-minute GraphQL read ended only in "connection reset by peer"), and the
+// watch loop waits on it with no sign of trouble. Killed at the limit, it
+// fails like any other gh error and the next pass tries again.
+const GH_TIMEOUT_MS = 120_000;
+
+export async function runWithTimeout(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<string> {
+  const out = await new Deno.Command(cmd, {
     args,
     stdout: "piped",
     stderr: "piped",
+    signal: AbortSignal.timeout(timeoutMs),
   }).output();
+  if (out.signal !== null) {
+    throw new Error(
+      `${cmd} ${args[0] ?? ""} ${
+        args[1] ?? ""
+      }: timed out after ${timeoutMs} ms`,
+    );
+  }
   if (!out.success) {
     const err = new TextDecoder().decode(out.stderr).trim();
-    throw new Error(`gh ${args[0]} ${args[1] ?? ""}: ${err}`);
+    throw new Error(`${cmd} ${args[0] ?? ""} ${args[1] ?? ""}: ${err}`);
   }
   return new TextDecoder().decode(out.stdout);
 }
 
+const gh = (args: string[]) => runWithTimeout("gh", args, GH_TIMEOUT_MS);
+
+// 10 PRs a page: each PR carries its last 20 review bodies, and the reviews
+// this skill posts are long. 100 a page grew past what GitHub will serve
+// (HTTP 502s, then "Resource limits for this query exceeded"). 30 a page took
+// 9 s as a user and hit GitHub's ~10 s limit (HTTP 504) as the reviewer App,
+// whose token costs more per PR; 10 takes about 9 s at worst. Paging keeps
+// the total the same.
 const SEARCH_QUERY = `
 query($q: String!, $after: String) {
-  search(query: $q, type: ISSUE, first: 100, after: $after) {
+  search(query: $q, type: ISSUE, first: 10, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
       number title url isDraft mergeable mergeStateStatus headRefOid baseRefName
@@ -447,6 +475,7 @@ async function pass(
 }
 
 async function main() {
+  await migrateLegacyStateDir(stateDir());
   const config = JSON.parse(
     await Deno.readTextFile(arg("config") ?? DEFAULT_CONFIG),
   );
@@ -455,7 +484,9 @@ async function main() {
     ...(config.service_accounts ?? []),
   ]);
   const repos = new Set<string>(arg("repo") ? [arg("repo")!] : config.repos);
-  const reviewer = (await gh(["api", "user", "--jq", ".login"])).trim();
+  // A reviewer App passes its bot login: an App token cannot read /user.
+  const reviewer = arg("reviewer") ??
+    (await gh(["api", "user", "--jq", ".login"])).trim();
   const watchSeconds = Number(arg("watch") ?? 0);
 
   const sleep = () => new Promise((r) => setTimeout(r, watchSeconds * 1000));

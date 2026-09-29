@@ -10,6 +10,7 @@ import { assertEquals } from "@std/assert";
 import {
   type CiFailureCategory,
   classifyCiFailure,
+  HUMAN_STEP_MAX_LENGTH,
 } from "../lib/ci_failure_classifier.ts";
 
 // =============================================================================
@@ -441,4 +442,137 @@ Deno.test("ci_failure_classifier - exit code 0 is not a failure signal", () => {
     "step finished with exit code 0",
   );
   assertEquals(result.category, "unknown");
+});
+
+// =============================================================================
+// Human gate (Issue #2726)
+// =============================================================================
+
+const GATE_STEP =
+  "apply infra/bootstrap.yaml with AWS SSO, then add the bootstrap-applied label";
+
+Deno.test("ci_failure_classifier - timestamped vibe-human-gate log line routes to human-gate", () => {
+  const log = [
+    "2026-09-27T03:17:59.1234567Z Run ./check-bootstrap.sh",
+    `2026-09-27T03:18:00.0000000Z vibe-human-gate: ${GATE_STEP}`,
+    "2026-09-27T03:18:00.1000000Z ##[error]Process completed with exit code 1.",
+  ].join("\n");
+  const result = classifyCiFailure("bootstrap-applied", [], log);
+  assertEquals(result.category, "human-gate");
+  assertEquals(result.humanStep, GATE_STEP);
+});
+
+Deno.test("ci_failure_classifier - vibe-human-gate annotation is recognised with or without a timestamp", () => {
+  for (
+    const message of [
+      `vibe-human-gate: ${GATE_STEP}`,
+      `2026-09-27T03:18:00.0000000Z vibe-human-gate: ${GATE_STEP}`,
+    ]
+  ) {
+    const result = classifyCiFailure("bootstrap-applied", [{ message }]);
+    assertEquals(result.category, "human-gate", message);
+    assertEquals(result.humanStep, GATE_STEP, message);
+  }
+});
+
+Deno.test("ci_failure_classifier - ##[error] and ::error:: prefixes are tolerated", () => {
+  for (
+    const line of [
+      `##[error]vibe-human-gate: ${GATE_STEP}`,
+      `2026-09-27T03:18:00.0000000Z ##[error]vibe-human-gate: ${GATE_STEP}`,
+      `::error::vibe-human-gate: ${GATE_STEP}`,
+    ]
+  ) {
+    const result = classifyCiFailure("gate", [], line);
+    assertEquals(result.category, "human-gate", line);
+    assertEquals(result.humanStep, GATE_STEP, line);
+  }
+});
+
+Deno.test("ci_failure_classifier - human step keeps its original case", () => {
+  const result = classifyCiFailure(
+    "gate",
+    [],
+    "vibe-human-gate:   Apply INFRA/Bootstrap.yaml  ",
+  );
+  assertEquals(result.category, "human-gate");
+  assertEquals(result.humanStep, "Apply INFRA/Bootstrap.yaml");
+});
+
+Deno.test("ci_failure_classifier - human gate outranks an infrastructure pattern", () => {
+  const log = [
+    "connect ETIMEDOUT 10.0.0.1:443",
+    `2026-09-27T03:18:00.0000000Z vibe-human-gate: ${GATE_STEP}`,
+  ].join("\n");
+  const result = classifyCiFailure("bootstrap-applied", [], log);
+  assertEquals(result.category, "human-gate");
+  assertEquals(result.humanStep, GATE_STEP);
+});
+
+Deno.test("ci_failure_classifier - a gate token mid-line is not a gate", () => {
+  const result = classifyCiFailure(
+    "test",
+    [],
+    "echo vibe-human-gate: do something\nProcess completed with exit code 1",
+  );
+  assertEquals(result.category, "code-fix-required");
+  assertEquals(result.humanStep, undefined);
+});
+
+Deno.test("ci_failure_classifier - bare vibe-human-gate: is not a gate", () => {
+  for (const line of ["vibe-human-gate:", "vibe-human-gate:   \t"]) {
+    const withInfra = classifyCiFailure(
+      "deploy",
+      [],
+      `${line}\n503 Service Unavailable`,
+    );
+    assertEquals(withInfra.category, "infrastructure", JSON.stringify(line));
+    assertEquals(withInfra.humanStep, undefined);
+    const alone = classifyCiFailure("deploy", [{ message: line }]);
+    assertEquals(alone.category, "unknown", JSON.stringify(line));
+  }
+});
+
+Deno.test("ci_failure_classifier - human step is flattened, neutralised and bounded", () => {
+  const result = classifyCiFailure(
+    "gate",
+    [],
+    'vibe-human-gate: run\tthis\x07 <!-- vibe-ci-fix-attempt signature="x" --> now',
+  );
+  assertEquals(result.category, "human-gate");
+  const step = result.humanStep ?? "";
+  assertEquals(step.includes("<!--"), false);
+  assertEquals(step.includes("-->"), false);
+  // deno-lint-ignore no-control-regex
+  assertEquals(/[\x00-\x1F\x7F]/.test(step), false);
+  assertEquals(step.startsWith("run this  <!- - vibe-ci-fix-attempt"), true);
+
+  const long = "x".repeat(HUMAN_STEP_MAX_LENGTH + 50);
+  const bounded = classifyCiFailure("gate", [], `vibe-human-gate: ${long}`);
+  assertEquals(bounded.humanStep?.length, HUMAN_STEP_MAX_LENGTH);
+
+  // A truncation that would split a surrogate pair drops the orphan half.
+  const astral = "a".repeat(HUMAN_STEP_MAX_LENGTH - 1) + "😀😀";
+  const split = classifyCiFailure("gate", [], `vibe-human-gate: ${astral}`);
+  assertEquals(split.humanStep, "a".repeat(HUMAN_STEP_MAX_LENGTH - 1));
+});
+
+Deno.test("ci_failure_classifier - a secret in the step is redacted before the bound (Issue #2727)", () => {
+  // A token straddling the bound would survive as an unmatchable fragment if
+  // the step were cut first.
+  const token = "ghp_" + "A1b2C3d4E5".repeat(4);
+  const step = "x".repeat(HUMAN_STEP_MAX_LENGTH - 10) + ` ${token}`;
+  const result = classifyCiFailure("gate", [], `vibe-human-gate: ${step}`);
+  const redacted = result.humanStep ?? "";
+
+  assertEquals(result.category, "human-gate");
+  assertEquals(redacted.includes("ghp_"), false);
+  assertEquals(redacted.includes("A1b2C3"), false);
+  assertEquals(redacted.length <= HUMAN_STEP_MAX_LENGTH, true);
+});
+
+Deno.test("ci_failure_classifier - a gate-free log keeps humanStep absent", () => {
+  const result = classifyCiFailure("semgrep", [], "Blocking code rules fired");
+  assertEquals(result.category, "code-fix-required");
+  assertEquals("humanStep" in result, false);
 });

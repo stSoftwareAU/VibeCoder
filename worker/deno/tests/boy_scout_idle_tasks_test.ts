@@ -35,6 +35,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import type { Result } from "../types.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
+import { openIdleTaskIssues } from "./support/open_idle_task_issues.ts";
 
 const BOY_SCOUT_TITLES = [
   DEAD_CODE_ISSUE_TITLE,
@@ -90,7 +91,7 @@ Deno.test("raiseBoyScoutIdleTasks - seeds exactly the four Boy Scout wrappers pe
     repos,
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -121,8 +122,8 @@ Deno.test("raiseBoyScoutIdleTasks - skips wrappers already open", async () => {
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () =>
-      Promise.resolve(new Set<string>(BOY_SCOUT_TITLES)),
+    findOpenIdleTaskIssuesFn: () =>
+      Promise.resolve(openIdleTaskIssues(BOY_SCOUT_TITLES)),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -140,7 +141,7 @@ Deno.test("raiseBoyScoutIdleTasks - a failing repo never aborts the sweep", asyn
     repos: ["org/alpha", "org/beta"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -180,7 +181,7 @@ Deno.test("raiseBoyScoutIdleTasks - a partly-failed repo still reports what it f
     repos: ["org/alpha"],
     ghCommandFn: fn,
     ensureLabelFn: labelOk,
-    findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+    findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
     nowFn: stableNow,
     rootDir: REPO_ROOT,
   });
@@ -205,7 +206,7 @@ Deno.test("raiseBoyScoutIdleTasks - an off-allowlist repo aborts in preflight wi
       repos: ["org/alpha", "org/beta"],
       ghCommandFn: fn,
       ensureLabelFn: labelOk,
-      findExistingWrapperTitlesFn: () => Promise.resolve(new Set<string>()),
+      findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
       nowFn: stableNow,
       rootDir: REPO_ROOT,
     });

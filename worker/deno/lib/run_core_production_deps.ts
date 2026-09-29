@@ -508,6 +508,15 @@ const RESUME_LISTING_LIMIT = 200;
 const STALL_OPEN_PR_LIMIT = 50;
 
 /**
+ * Appended to a maintenance pass's lease-deferral warning (Issue #2789). The
+ * refused lease reserved the repository, so the operator can see the PR is
+ * queued behind the current issue run rather than silently starved.
+ */
+const RESERVED_SUFFIX =
+  " — repository reserved for the maintenance lane; no new issue slot " +
+  "takes it until this PR is serviced (Issue #2789)";
+
+/**
  * Home directory, in the order `agent_transcript.ts` resolves it.
  *
  * @param env - Reads `HOME` then `USERPROFILE` (Issue #967).
@@ -1085,6 +1094,32 @@ export async function createProductionRunCoreDeps(
     const issueState = raw.trim().toUpperCase();
     if (issueState === "CLOSED") return true;
     if (issueState === "OPEN") return false;
+    return undefined;
+  }
+
+  /**
+   * Whether the PR that reserved a repository for the maintenance lane is
+   * closed or merged (Issue #2795). `undefined` for any other state, which
+   * keeps the reservation; a failed read throws and the lane logs it.
+   */
+  async function isReservingPrClosed(
+    repo: string,
+    pr: number,
+  ): Promise<boolean | undefined> {
+    const raw = await runGhCommand([
+      "pr",
+      "view",
+      String(pr),
+      "--repo",
+      repo,
+      "--json",
+      "state",
+      "--jq",
+      ".state",
+    ]);
+    const prState = raw.trim().toUpperCase();
+    if (prState === "CLOSED" || prState === "MERGED") return true;
+    if (prState === "OPEN") return false;
     return undefined;
   }
 
@@ -2055,10 +2090,15 @@ export async function createProductionRunCoreDeps(
       // Lease the repository before touching it — a slot already working
       // there means this PR waits for the next cycle rather than fighting it
       // for the working tree. Outside the lane the lease is uncontended.
-      const lease = acquireMaintenanceRepoLease(comment.repo, comment.prNumber);
+      const lease = acquireMaintenanceRepoLease(
+        comment.repo,
+        comment.prNumber,
+        { reserve: true },
+      );
       if (lease === null) {
-        logger.info(
-          "Deferring PR feedback: an issue slot holds the repository",
+        logger.warn(
+          "Deferring PR feedback: an issue slot holds the repository" +
+            RESERVED_SUFFIX,
           { repo: comment.repo, prNumber: comment.prNumber },
         );
         return { ok: true, value: { processed: false } };
@@ -2194,10 +2234,13 @@ export async function createProductionRunCoreDeps(
 
       // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
       // checkout, so this pass and an issue slot never write one tree.
-      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
+      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber, {
+        reserve: true,
+      });
       if (lease === null) {
-        logger.info(
-          "Deferring spelling fix: an issue slot holds the repository",
+        logger.warn(
+          "Deferring spelling fix: an issue slot holds the repository" +
+            RESERVED_SUFFIX,
           { repo: check.repo, prNumber: check.prNumber },
         );
         return { ok: true, value: { processed: false } };
@@ -2299,12 +2342,18 @@ export async function createProductionRunCoreDeps(
 
       // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
       // checkout, so this pass and an issue slot never write one tree.
-      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber);
+      const lease = acquireMaintenanceRepoLease(check.repo, check.prNumber, {
+        reserve: true,
+      });
       if (lease === null) {
-        logger.info("Deferring CI fix: an issue slot holds the repository", {
-          repo: check.repo,
-          prNumber: check.prNumber,
-        });
+        logger.warn(
+          "Deferring CI fix: an issue slot holds the repository" +
+            RESERVED_SUFFIX,
+          {
+            repo: check.repo,
+            prNumber: check.prNumber,
+          },
+        );
         return { ok: true, value: { processed: false } };
       }
       try {
@@ -2747,7 +2796,9 @@ export async function createProductionRunCoreDeps(
         // Issue #213: lease the shared `${WORK_DIR}/<repo>` clone before the
         // merge, so this pass and an issue slot never write one tree.
         acquireLease: (conflict) =>
-          acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber),
+          acquireMaintenanceRepoLease(conflict.repo, conflict.prNumber, {
+            reserve: true,
+          }),
         // Issue #1774: the queue comes from a listing up to ten minutes old,
         // so the live state is re-read before the clone, the agent and the
         // merge push.
@@ -2858,6 +2909,9 @@ export async function createProductionRunCoreDeps(
 
       return { ok: true, value: { processed: drain.processed } };
     },
+
+    // Maintenance lane: drop a reservation once its PR closes (#2795).
+    isReservingPrClosed,
 
     // -- Priority 1.05: raise PRs a secondary rate limit refused (#1951) --
     async drainDeferredPrs() {
@@ -3534,6 +3588,7 @@ export async function createProductionRunCoreDeps(
               const lease = acquireMaintenanceRepoLease(
                 candidate.repo,
                 candidate.prNumber,
+                { reserve: true },
               );
               if (lease === null) {
                 return {
@@ -5237,9 +5292,17 @@ export async function createProductionRunCoreDeps(
     // the filer and audit above. Best-effort — any throw is caught here
     // and logged so a census failure never reaches the loop's catch.
     runIdleDecisionCensus: async (
-      { decisionPoint, claimScanCompleted, claimedRepos, scanExcludedRepos },
+      {
+        decisionPoint,
+        claimScanCompleted,
+        claimedRepos,
+        scanExcludedRepos,
+        blankStreamHeldRepos,
+      },
     ) => {
       try {
+        // Issue #2800: repos whose blank stream a slot on this host holds.
+        const heldBlankStreams = new Set(blankStreamHeldRepos ?? []);
         const host = `${Deno.hostname()}:${Deno.pid}`;
         // Issue #898: the repos this cycle's eligibility pass was never shown
         // because the maintenance lane leased them (Issue #1091: a slot's
@@ -5350,6 +5413,9 @@ export async function createProductionRunCoreDeps(
               // Issue #2663: the per-repo slot cap the scan applies, so the
               // census counts the same default-branch hold (#460 / #2563).
               fleetPrSlots: resolveFleetPrSlots(config, repo),
+              // Issue #2800: the pool refuses every non-milestone issue of a
+              // repo whose blank stream a slot holds, whatever its tier.
+              blankStreamHeld: heldBlankStreams.has(repo),
               mergedPRs,
               // Issue #655: the candidates `find_oldest_issue.ts` drops after
               // every collector has passed them — a persisted retry cooldown,

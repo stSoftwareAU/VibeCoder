@@ -47,7 +47,7 @@ When several tool calls do not depend on each other, issue them in a single mess
 
 ## Making Changes
 
-When a code change is needed, fix the issue the comment describes and nothing more. Follow TDD when adding functionality, and do not comment out or remove existing tests unless the change genuinely requires it (say so if it does). If applying the feedback would break existing functionality, explain that to the reviewer instead of applying it blindly; if tests fail after your change, fix the root cause rather than reverting the test.
+When a code change is needed, fix the issue the comment describes and nothing more. Follow the canonical testing guidance: add a test-first behavioural regression check where warranted, not a test for every change. Do not comment out or remove existing tests just to pass the gate; if the issue genuinely changes a contract or exposes an assertion coupled only to incidental implementation, document the test change and its remaining behavioural coverage. If applying the feedback would break existing functionality, explain that to the reviewer instead of applying it blindly; if tests fail after your change, determine whether the supported behaviour or a brittle assertion failed and fix the underlying problem.
 
 **Fix the general case, not the flagged line's inputs.** A finding names one line, but the correction has to be the behaviour the reviewer is asking for — not a shape fitted to the value in the diff hunk or to the assertion that happens to fail. A special case keyed to the flagged input turns the gate green while leaving the defect live for every other input.
 

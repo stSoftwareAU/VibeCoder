@@ -91,8 +91,8 @@ Deno.test("issue reviewers - each switch adds exactly its own definitions", () =
   );
 });
 
-Deno.test("issue reviewers - the reviewer key is off by default", () => {
-  assertEquals(buildDefaultWorkerConfig().issueReviewerAgents, false);
+Deno.test("issue reviewers - the reviewer key is on by default (Issue #2812)", () => {
+  assertEquals(buildDefaultWorkerConfig().issueReviewerAgents, true);
 });
 
 Deno.test("issue reviewers - each reviewer names an explicit model and effort below the advisor's", () => {
