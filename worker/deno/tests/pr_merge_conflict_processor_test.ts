@@ -2587,6 +2587,7 @@ Deno.test("processMergeConflict - a conflicting rung merge is aborted and record
   assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
   assertStringIncludes(comment, `head="${script.headSha}"`);
   assertStringIncludes(comment, "conflicted");
+  assertStringIncludes(comment, "the `merge` rung did not complete");
   assertEquals(captured.labelsAdded, []);
 });
 

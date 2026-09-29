@@ -769,7 +769,11 @@ export function buildRungFailedComment(
       "one.";
   return [
     conflictRungFailedMarker(rung, head),
-    `⚠️ **Stale merge verdict — the \`${rung}\` rung did not complete**`,
+    // The marker keeps the `rebase` id so markers already on threads still
+    // read back; the heading names what the rung does now (Issue #2806).
+    `⚠️ **Stale merge verdict — the \`${
+      rung === "rebase" ? "merge" : rung
+    }\` rung did not complete**`,
     "",
     // The reason quotes git's own output, and a fork chooses its branch name
     // — so a marker-shaped string can reach this body. Render it inert
