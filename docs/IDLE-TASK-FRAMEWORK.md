@@ -157,6 +157,8 @@ Key points:
   [`ensureRepoClone`](../worker/deno/lib/ensure_repo_clone.ts) for a recognised
   wrapper, which reuses the setup phase's `setupRepo()` **only when the clone is
   missing**; an existing clone is left untouched (no fetch, no `reset --hard`).
+  A directory holding no git repository — an interrupted clone — is not a
+  clone: it is discarded and cloned afresh (Issue #2848).
   Adding a repo to `.config.json` and raising its wrappers is therefore enough
   to bring it up — no manual clone.
 - **A claimed idle task always runs to completion.** The throttle

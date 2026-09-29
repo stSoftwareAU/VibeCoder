@@ -152,3 +152,69 @@ Deno.test("sweepGitRunnerFor - a spawn failure is reported, never swallowed (Iss
   assertEquals(result.stdout, "");
   assert(result.stderr.length > 0, "the spawn failure must carry a reason");
 });
+
+/** A throwaway checkout holding only the ledger and its one module. */
+async function ledgerCheckout(): Promise<string> {
+  const dir = await Deno.makeTempDir({ prefix: "sweep-drift-ancestry-" });
+  await Deno.mkdir(`${dir}/docs/audits`, { recursive: true });
+  await Deno.mkdir(`${dir}/worker/deno/lib`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/worker/deno/lib/a.ts`, "export {};\n");
+  await Deno.writeTextFile(
+    `${dir}/docs/audits/lib-sweep-coverage.json`,
+    JSON.stringify(ledger()),
+  );
+  return dir;
+}
+
+function ancestryRunner(onDefault: boolean) {
+  const calls: string[] = [];
+  const runGit = (args: readonly string[]) => {
+    calls.push(args.join(" "));
+    if (args[0] === "merge-base") {
+      return Promise.resolve({
+        code: onDefault ? 0 : 1,
+        stdout: "",
+        stderr: "",
+      });
+    }
+    return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+  };
+  return { runGit, calls };
+}
+
+Deno.test("sweep-drift command - --default-branch fails on a sweptAt off that branch, naming the slice (Issue #2754)", async () => {
+  const dir = await ledgerCheckout();
+  try {
+    const { runGit, calls } = ancestryRunner(false);
+    const result = await sweepDriftCommand.execute(
+      { repo: dir, "default-branch": "origin/main", runGit },
+      {} as never,
+    );
+    assertEquals(result.success, false);
+    assert(result.message?.includes("slice 12a (#1214)"), result.message);
+    assert(result.message?.includes(COMMIT), result.message);
+    // The drift report never ran over a ledger that failed the guard.
+    assert(!calls.some((call) => call.startsWith("diff ")), calls.join("\n"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweep-drift command - --default-branch passes a ledger on that branch, then reports drift (Issue #2754)", async () => {
+  const dir = await ledgerCheckout();
+  try {
+    const { runGit, calls } = ancestryRunner(true);
+    const result = await sweepDriftCommand.execute(
+      { repo: dir, "default-branch": "origin/main", runGit },
+      {} as never,
+    );
+    assertEquals(result.success, true, result.message);
+    assert(
+      calls.includes(`merge-base --is-ancestor ${COMMIT} origin/main`),
+      calls.join("\n"),
+    );
+    assert(calls.some((call) => call.startsWith("diff ")), calls.join("\n"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
