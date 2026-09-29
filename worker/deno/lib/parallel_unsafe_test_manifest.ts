@@ -168,6 +168,9 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // the two review headings; only a growth measurement separates that scan
   // from the ambiguous `\s*:?\s*$` tail it deliberately does not copy (#2242).
   "tests/closure_verdict_test.ts",
+  // The described-code-change path scan returns the right answer on a long
+  // hostile line, only quadratically slowly — so only growth can pin it (#2826).
+  "tests/described_code_change_test.ts",
   // The grill-me stem strip walks a run of trailing punctuation an untrusted
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).
