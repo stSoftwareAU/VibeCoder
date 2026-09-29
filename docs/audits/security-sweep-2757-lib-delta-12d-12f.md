@@ -85,10 +85,10 @@ attacker-controlled input reaches a sink unsafely.
 We checked for duplicates against the open `security` issues at sweep time:
 [#2776](https://github.com/stSoftwareAU/VibeCoder/issues/2776),
 [#2777](https://github.com/stSoftwareAU/VibeCoder/issues/2777) and
-[#2778](https://github.com/stSoftwareAU/VibeCoder/issues/2778), all filed by the
-#2755 sweep. Each is a different root cause. A title/body search for
-`described_code_change`, `detectDescribedCodeChange` and `PATH_RE` returned no
-open match.
+[#2778](https://github.com/stSoftwareAU/VibeCoder/issues/2778), all three filed
+by the sweep for issue #2755. Each is a different root cause. A title/body
+search for `described_code_change`, `detectDescribedCodeChange` and `PATH_RE`
+returned no open match.
 
 **Why it was filed rather than fixed.** #2757 asks for each surviving finding to
 be filed as its own issue. The fix needs to decide how long a line may be, and
