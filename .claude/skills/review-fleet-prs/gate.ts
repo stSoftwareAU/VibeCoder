@@ -11,9 +11,9 @@
 // until something is ready and only then exits, so an idle night costs no
 // model tokens at all.
 //
-// Each pass also rewrites ~/.review-fleet-prs/summary.md (see review_log.ts).
+// Each pass also rewrites summary.md in the log directory (see review_log.ts).
 //
-// Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME gate.ts
+// Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts
 //          [--config=<path>] [--repo=<owner/name>] [--watch=<seconds>]
 //          [--sleep-first]
 // --sleep-first waits one interval before the first poll, so a PR whose
@@ -29,6 +29,7 @@ const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
 
 import {
   type Finding,
+  migrateLegacyStateDir,
   previousFindings,
   prKey,
   readLog,
@@ -474,6 +475,7 @@ async function pass(
 }
 
 async function main() {
+  await migrateLegacyStateDir(stateDir());
   const config = JSON.parse(
     await Deno.readTextFile(arg("config") ?? DEFAULT_CONFIG),
   );

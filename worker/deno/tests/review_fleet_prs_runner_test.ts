@@ -34,6 +34,7 @@ async function fixture(
   await stub(
     "deno",
     `case "$*" in
+  *review_log.ts*) echo "$HOME/logs/review-fleet-prs"; exit 0 ;;
   *app_token.ts*) printf '%s' '${tokenOutput}'
     [ ${tokenExit} = 0 ] || echo "reviewer App token: Bad credentials" >&2
     exit ${tokenExit} ;;
@@ -82,6 +83,14 @@ Deno.test("run.sh --once reviews the gate's ready PRs in one headless Claude rou
   assertStringIncludes(args, "-p");
   assertStringIncludes(args, '"repo":"owner/repo","number":7');
   assertStringIncludes(args, "do NOT start gate.ts");
+  // The headless session may write its round files: only an Edit rule on
+  // an absolute (//-anchored) path allows that.
+  assertStringIncludes(args, "Edit(//");
+  // The log sits beside the Vibe Coder's own, not in a hidden directory.
+  assertStringIncludes(
+    await Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`),
+    "gate: owner/repo#7",
+  );
 });
 
 Deno.test("run.sh --once starts no Claude session when nothing is ready", async () => {
@@ -100,7 +109,7 @@ Deno.test("run.sh --once fails without a Claude session when the gate fails", as
 
 Deno.test("run.sh refuses to start while another runner holds the lock", async () => {
   const home = await fixture(READY);
-  const lock = `${home}/.review-fleet-prs/runner.lock`;
+  const lock = `${home}/logs/review-fleet-prs/runner.lock`;
   await Deno.mkdir(lock, { recursive: true });
   await Deno.writeTextFile(`${lock}/pid`, String(Deno.pid)); // alive
   const { code, output } = await run(home, "--once");
@@ -111,7 +120,7 @@ Deno.test("run.sh refuses to start while another runner holds the lock", async (
 
 Deno.test("run.sh takes over a lock left by a runner that died", async () => {
   const home = await fixture(READY);
-  const lock = `${home}/.review-fleet-prs/runner.lock`;
+  const lock = `${home}/logs/review-fleet-prs/runner.lock`;
   await Deno.mkdir(lock, { recursive: true });
   await Deno.writeTextFile(`${lock}/pid`, "999999"); // no such process
   const { code, output } = await run(home, "--once");

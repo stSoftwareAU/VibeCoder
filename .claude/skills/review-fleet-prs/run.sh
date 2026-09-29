@@ -11,8 +11,9 @@
 #   run.sh --install [owner/name] # run at login, restart on exit
 #                                 # (launchd on macOS, systemd on Linux)
 #
-# Log: ~/.review-fleet-prs/runner.log; each round's files in
-# ~/.review-fleet-prs/rounds/<timestamp>/.
+# Logs sit beside the Vibe Coder's own, in <log_dir>/review-fleet-prs/
+# (~/logs/review-fleet-prs with the fleet's config): runner.log, and each
+# round's files in rounds/<timestamp>/.
 set -uo pipefail
 
 # Service managers start us with a bare PATH. Appended, so a caller's PATH
@@ -21,9 +22,6 @@ export PATH="$PATH:$HOME/.deno/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local
 
 SKILL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CHECKOUT=$(cd "$SKILL_DIR/../../.." && pwd)
-STATE_DIR="$HOME/.review-fleet-prs"
-LOG="$STATE_DIR/runner.log"
-LOCK="$STATE_DIR/runner.lock"
 INTERVAL=300
 ROUND_TIMEOUT=3000 # a hung round must not wedge the loop, nor outlive its token
 LABEL="au.com.stsoftware.review-fleet-prs"
@@ -120,7 +118,7 @@ pass() {
   fi
 
   if ! ready=$(cd "$SKILL_DIR" && deno run --allow-run=gh --allow-read \
-    --allow-write --allow-env=HOME gate.ts \
+    --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts \
     ${reviewer[@]+"${reviewer[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
     2> >(errors)); then
     log "gate failed; skipping this pass"
@@ -150,7 +148,7 @@ round report."
 
   (cd "$CHECKOUT" && perl -e 'alarm shift; exec @ARGV' "$ROUND_TIMEOUT" \
     claude -p "$prompt" \
-    --allowedTools "Agent" "Read" "Grep" "Glob" "Write($dir/**)" \
+    --allowedTools "Agent" "Read" "Grep" "Glob" "Edit(/$dir/**)" \
     "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
     2>&1) | tee -a "$LOG" "$dir/claude.log"
   log "round done: $dir"
@@ -159,6 +157,14 @@ round report."
 main() {
   local once=false
   repo_arg=()
+  # The Vibe Coder's log directory, as the worker resolves it (review_log.ts).
+  STATE_DIR=$(cd "$SKILL_DIR" && deno run --allow-read \
+    --allow-env=HOME,XDG_STATE_HOME review_log.ts) || {
+    echo "cannot resolve the log directory (see above)" >&2
+    return 1
+  }
+  LOG="$STATE_DIR/runner.log"
+  LOCK="$STATE_DIR/runner.lock"
   case "${1:-}" in
   --install)
     shift
