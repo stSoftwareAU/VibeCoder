@@ -4627,6 +4627,10 @@ non-fleet-approval policy), and its answer decides what happens:
   reason, and a retry next cycle. A green PR is never closed and never handed
   to abandon-and-redo.
 
+A repository with `skip_auto_merge: true` never reaches the merge path: its
+green PR is **awaiting a manual merge**, logged at info with no merge, comment
+or label, the same opt-out every other worker merge path honours.
+
 #### The merge-conflict ladder owns its own PRs
 
 A PR GitHub reports `CONFLICTING`, or one carrying `merge-conflict`, belongs to

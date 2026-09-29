@@ -24,7 +24,7 @@ import {
 } from "../lib/blocking_pr_stall_detector.ts";
 import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 import { MERGE_CONFLICT_LABEL } from "../lib/pr_merge_conflict_scan.ts";
-import type { Logger, Result } from "../types.ts";
+import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { MergeResult } from "../lib/direct_merge.ts";
 
 const REPO = "owner/repo";
@@ -984,6 +984,7 @@ type DirectMergeCall = {
 /** Run one scan over a single green blocking PR with a stubbed merge path. */
 async function scanGreenPr(
   mergeOutcome: () => Promise<Result<MergeResult>>,
+  repoConfig?: Record<string, RepoConfig>,
 ) {
   const fixture: ScanFixture = {
     issues: [{ number: 93, labels: ["work-on"] }],
@@ -1002,7 +1003,11 @@ async function scanGreenPr(
     fleetAuthors: ["vibe-coder"],
     authorisedCommenters: ["nigel"],
     ghCommandFn: gh,
-    config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
+    config: {
+      blockingPrStallThresholdSeconds: THRESHOLD,
+      fleetPrSlots: 1,
+      repoConfig,
+    },
     logger: { ...logger, warn: (message: string) => warnings.push(message) },
     nowSeconds: () => NOW,
     directMergeFn: (repo, prNumber, _gh, _gate, options) => {
@@ -1061,6 +1066,34 @@ Deno.test("a green PR needing no approval is passed to directMergePr exactly onc
   }]);
   assertEquals(comments, []);
   assertEquals(writes, []);
+});
+
+Deno.test("a green PR in a skip_auto_merge repo is left for a human merge — never merged, no gh write", async () => {
+  const { result, comments, writes, mergeCalls, warnings } = await scanGreenPr(
+    () => Promise.resolve({ ok: true as const, value: { merged: true } }),
+    { [REPO]: { skipAutoMerge: true } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, [], "awaiting a human merge is not a stall");
+  assertEquals(mergeCalls, [], "the operator opted out of worker merges");
+  assertEquals(comments, [], "no comment posted");
+  assertEquals(writes, [], "no gh write of any kind");
+  assertEquals(warnings, [], "healthy, so nothing is reported");
+});
+
+Deno.test("skip_auto_merge on another repo does not stop a green PR merging", async () => {
+  const { result, mergeCalls } = await scanGreenPr(
+    () => Promise.resolve({ ok: true as const, value: { merged: true } }),
+    {
+      "other/repo": { skipAutoMerge: true },
+      [REPO]: { skipAutoMerge: false },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, []);
+  assertEquals(mergeCalls.length, 1, "the repo's own setting governs");
 });
 
 Deno.test("a green PR whose merge is refused is never closed or re-queued, and the refusal is loud (Issue #2801)", async () => {

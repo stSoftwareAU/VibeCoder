@@ -35,7 +35,8 @@
  * it: a PR that only lacks approval is **awaiting approval** and left alone;
  * any other green PR is **mergeable** and merged. A merge refused for any
  * other reason is logged loudly and retried next cycle — a green PR is never
- * closed or abandoned.
+ * closed or abandoned. A repository with `skip_auto_merge` never reaches the
+ * merge path: its green PR is awaiting a manual merge and left alone.
  *
  * It also stays out of the merge-conflict ladder's way (Issue #1213). A
  * `CONFLICTING` PR — or one carrying `merge-conflict` — is never reported as
@@ -62,6 +63,7 @@ import {
 } from "./issue_query.ts";
 import { buildDedupMarker } from "./needs_human_escalation.ts";
 import { MERGE_CONFLICT_LABEL } from "./pr_merge_conflict_scan.ts";
+import { getRepoConfig } from "./repo_config.ts";
 
 /** Default stall threshold: 2 hours (Issue #4025). */
 export const DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS = 7200;
@@ -946,6 +948,20 @@ export async function scanBlockingPrStalls(
     // Issue #2801: a green PR is not a stall. `unmerged-green` only trips
     // when nothing else has, so such a stall carries that signal alone.
     if (stall.signals.every((s) => s.reason === "unmerged-green")) {
+      // The repository opted out of worker merges (`skip_auto_merge`): the
+      // operator merges by hand, so a green PR is awaiting that merge —
+      // no merge, no comment, no label. Every other worker merge path
+      // honours the same key.
+      if (
+        getRepoConfig(config.repoConfig, stall.repo, "skipAutoMerge") ===
+          "true"
+      ) {
+        logger.info(
+          "Blocking-PR stall: green PR awaiting a manual merge (skip_auto_merge) — not a stall",
+          { repo: stall.repo, pr: stall.prNumber },
+        );
+        continue;
+      }
       await resolveGreenBlockingPr(stall, {
         directMergeFn: opts.directMergeFn ?? directMergePr,
         ghCommandFn: opts.ghCommandFn,
