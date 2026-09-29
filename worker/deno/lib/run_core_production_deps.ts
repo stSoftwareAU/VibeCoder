@@ -5296,9 +5296,17 @@ export async function createProductionRunCoreDeps(
     // the filer and audit above. Best-effort — any throw is caught here
     // and logged so a census failure never reaches the loop's catch.
     runIdleDecisionCensus: async (
-      { decisionPoint, claimScanCompleted, claimedRepos, scanExcludedRepos },
+      {
+        decisionPoint,
+        claimScanCompleted,
+        claimedRepos,
+        scanExcludedRepos,
+        blankStreamHeldRepos,
+      },
     ) => {
       try {
+        // Issue #2800: repos whose blank stream a slot on this host holds.
+        const heldBlankStreams = new Set(blankStreamHeldRepos ?? []);
         const host = `${Deno.hostname()}:${Deno.pid}`;
         // Issue #898: the repos this cycle's eligibility pass was never shown
         // because the maintenance lane leased them (Issue #1091: a slot's
@@ -5409,6 +5417,9 @@ export async function createProductionRunCoreDeps(
               // Issue #2663: the per-repo slot cap the scan applies, so the
               // census counts the same default-branch hold (#460 / #2563).
               fleetPrSlots: resolveFleetPrSlots(config, repo),
+              // Issue #2800: the pool refuses every non-milestone issue of a
+              // repo whose blank stream a slot holds, whatever its tier.
+              blankStreamHeld: heldBlankStreams.has(repo),
               mergedPRs,
               // Issue #655: the candidates `find_oldest_issue.ts` drops after
               // every collector has passed them — a persisted retry cooldown,
