@@ -859,6 +859,15 @@ would put the census back in disagreement with the scan — and
 `[idle-detect] … ALERT mis_classification` line still fires if the two ever
 part company.
 
+One exception covers every tier (Issue #2800). While one of **this host's**
+slots holds a repository's blank stream, `BlankStreamLockRegistry` refuses the
+sibling slots every other no-milestone issue of that repository, `work-on` and
+`top-priority` included. The slot's census is told which repositories those are
+(`blankStreamHeldRepos`, from `heldRepos()`), and it counts every no-milestone
+issue there as `stream_occupied`. Before this, `stSoftwareAU/GRQ-AutoTrader`
+logged `work_on=2 inversion_signal=true` on three cycles while its blank stream
+was `held by slot s2 on #1593`.
+
 Since Issue #1071 it is not merely "the same gate" but the same **function**:
 `occupiedStreamsFor` calls `isMilestoneOccupied`, over the fleet-identity set
 `run_core_production_deps.ts` resolves for the selector. The census used to
@@ -875,7 +884,7 @@ flowchart LR
     L -- no --> X[not counted]
     L -- yes --> B{Blocking label<br/>or assignee?}
     B -- yes --> X
-    B -- no --> S{"Stream occupied,<br/>and tier is low-priority<br/>or idle-task?"}
+    B -- no --> S{"Stream occupied and tier is<br/>low-priority or idle-task,<br/>or blank stream held here?"}
     S -- yes --> SO["stream_occupied+1"]
     S -- no --> P{Open PR blocks<br/>its stream?}
     P -- yes --> PB["pr_blocked+1"]
