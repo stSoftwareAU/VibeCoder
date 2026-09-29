@@ -2489,7 +2489,7 @@ flowchart TD
     style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-### 🔁 One-pass rebase for a declined branch (`branch_conflict_pass.ts`)
+### 🔁 One-pass merge for a declined branch (`branch_conflict_pass.ts`)
 
 `ensureBranchCurrent` in `branch_currency.ts` is deliberately not a
 merge-conflict resolver: when content has genuinely diverged it declines and
@@ -2497,8 +2497,10 @@ leaves the branch alone. The PR was then raised on the stale head, armed, and
 sat unmergeable until the merge-conflict ladder found it hours later — the run
 had an agent right there and spent it on nothing (Issue #2459).
 
-`runDeclinedRebasePass` spends exactly one agent pass closing that gap. The
-resolving lives here, not in `branch_currency.ts`, which stays a non-resolver.
+`runDeclinedRebasePass` spends exactly one agent pass closing that gap: the
+agent merges `origin/<base>` in and resolves the conflicts — never a rebase
+(Issue #2809). The resolving lives here, not in `branch_currency.ts`, which
+stays a non-resolver.
 
 - **One invocation, never a loop.** One call through the injected `runAgentFn`
   seam — no retry, no `sleep`, no polling.
@@ -2524,7 +2526,7 @@ flowchart TD
     T -- no --> H["restore nothing,<br/>hand off"]
     T -- yes --> B{"runway ≥ 180s<br/>before deadline?"}
     B -- no --> H
-    B -- yes --> A["one agent pass:<br/>rebase onto origin/base"]
+    B -- yes --> A["one agent pass:<br/>merge origin/base in"]
     A --> M{"re-measured<br/>behind === 0?"}
     M -- no --> R["reset --hard to<br/>the pre-attempt tip"]
     R --> H

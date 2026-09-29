@@ -116,7 +116,7 @@ This means: if a non-milestone issue has a stuck PR targeting the default branch
 
 A feature branch is brought up to its target at three points, each by **merge
 and a plain push — never a rebase, never a force-push** (Issues #2807, #2809).
-`worker/deno/tests/sync_points_test.ts` holds one test per point.
+`worker/deno/tests/sync_points_test.ts` covers each point, over real repositories.
 
 1. **Work start** — the issue-run presync merges the milestone branch up to the
    default branch, then `createFeatureBranchFromBase` fetches the target and

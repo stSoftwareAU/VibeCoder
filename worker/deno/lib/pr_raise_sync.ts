@@ -33,6 +33,19 @@ async function gitSucceeds(
   return result.ok && result.value.code === 0;
 }
 
+/** Read the working tree: clean, dirty, or unreadable (never assumed clean). */
+async function treeState(
+  runGit: GitRunner,
+  cwd?: string,
+): Promise<"clean" | "dirty" | "unreadable"> {
+  const status = await runGit(
+    ["status", "--porcelain"],
+    cwd === undefined ? undefined : { cwd },
+  );
+  if (!status.ok || status.value.code !== 0) return "unreadable";
+  return status.value.stdout.trim() === "" ? "clean" : "dirty";
+}
+
 /**
  * Merge `baseRef` into `branch` — the `ensureBranchCurrent` seam at PR raise.
  *
@@ -54,11 +67,11 @@ export async function mergeOntoBase(
   assertSafeGitRef(baseRef, "PR-raise merge base");
   const gitOptions = cwd === undefined ? undefined : { cwd };
 
-  const status = await runGit(["status", "--porcelain"], gitOptions);
-  if (!status.ok || status.value.code !== 0) {
+  const tree = await treeState(runGit, cwd);
+  if (tree === "unreadable") {
     return { ok: false, error: new Error("git status could not be read") };
   }
-  if (status.value.stdout.trim() !== "") {
+  if (tree === "dirty") {
     return {
       ok: false,
       error: new Error(
@@ -161,13 +174,8 @@ export async function syncBranchesForPrRaise(
 
   if (milestoneBranch !== undefined) {
     const shared = options.sharedClonePath === cwd;
-    const status = shared
-      ? await runGit(["status", "--porcelain"], { cwd })
-      : undefined;
-    const dirty = status !== undefined &&
-      (!status.ok || status.value.code !== 0 ||
-        status.value.stdout.trim() !== "");
-    if (dirty) {
+    // An unreadable shared tree counts as dirty: never reset what we cannot see.
+    if (shared && await treeState(runGit, cwd) !== "clean") {
       milestone = {
         status: "skipped",
         detail: `'${milestoneBranch}' was not synced with the default branch ` +
