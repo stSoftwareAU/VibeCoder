@@ -146,7 +146,20 @@ async function attemptCreateFeatureBranch(
     const detail = fetchResult.ok
       ? fetchResult.value.stderr.trim() || `exit ${fetchResult.value.code}`
       : fetchResult.error.message;
-    if (fetchResult.ok) stderrTexts.push(fetchResult.value.stderr);
+    const fetchStderr = fetchResult.ok ? fetchResult.value.stderr : "";
+    if (fetchResult.ok) stderrTexts.push(fetchStderr);
+
+    // A broken loose ref (Issue #2880) can fail the fetch outright while a
+    // *stale* origin/<baseBranch> from an earlier successful fetch is still
+    // on disk. Falling back to local refs here would let the checkout below
+    // silently succeed from that stale tip instead of surfacing the failure
+    // for repair — give the caller's repair-and-retry loop first refusal
+    // whenever the fetch failure names a repairable ref.
+    if (brokenRefsIn(fetchStderr).length > 0) {
+      failures.push(`fetch origin ${baseBranch} failed: ${detail}`);
+      return undefined;
+    }
+
     console.warn(
       `[git_branch] Warning: failed to fetch origin/${baseBranch} (${detail}); ` +
         `falling back to local ref`,
