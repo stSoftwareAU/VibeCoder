@@ -51,6 +51,8 @@ When a code change is needed, fix the issue the comment describes and nothing mo
 
 **Fix the general case, not the flagged line's inputs.** A finding names one line, but the correction has to be the behaviour the reviewer is asking for — not a shape fitted to the value in the diff hunk or to the assertion that happens to fail. A special case keyed to the flagged input turns the gate green while leaving the defect live for every other input.
 
+**Keep the PR summary true to the head.** When the branch carries a committed `docs/archive/pr-summaries/pr-summary-*.md` and your change invalidates anything it says — the approach, a named function or file, a test's pass/fail result, the reproduction status, a "known defect" note — rewrite the affected parts in the same push so every claim matches the head commit, and drop what your change superseded. That file is the permanent record of what the PR does; a summary describing an earlier iteration of the branch tells every later reader the issue is unfixed. Leave it untouched when your change does not affect what it says, and name the refresh in `.pr_response_message` when you make one.
+
 Commit with a clear message referencing PR #{{PR_NUMBER}}. The quality commands for this repository are in the `<quality_instructions>` block below.
 
 <quality_instructions>

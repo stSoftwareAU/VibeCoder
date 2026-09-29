@@ -757,6 +757,14 @@ for every PR summary — containing:
    for bug fixes. If visual evidence cannot be provided, state why.
 3. **Test Plan** — Tests added or modified.
 
+The summary describes the **final** state of the branch, not the history of the
+run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
+it names, and rewrite — never append to — the summary so every claim
+(reproduction status, test results, "known defect" notes, named functions and
+files) matches the head. Any later commit on the branch — a review fix, a PR
+feedback or CI-fix run — refreshes the summary in the same push when it changes
+what the summary says.
+
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
 GitHub and often tells the story better than prose.
