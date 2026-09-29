@@ -15,8 +15,8 @@ import { createDependencyLandedLookup } from "../lib/dependency_landed.ts";
 import { partialRollupMarker } from "../lib/milestone_partial_rollup.ts";
 
 const REPO = "owner/repo";
-const SHA1 = "1111111111111111111111111111111111111a";
-const SHA2 = "2222222222222222222222222222222222222b";
+const SHA1 = "1111111111111111111111111111111111111a11";
+const SHA2 = "2222222222222222222222222222222222222b22";
 
 interface FakeIssue {
   milestone?: string;
@@ -40,7 +40,7 @@ class FakeGh {
   branchFetches = 0;
   throwOnGraphQL = false;
   issues = new Map<number, FakeIssue>();
-  /** sha → compare status ("behind" | "identical" | "ahead" | "diverged"). */
+  /** "target...sha" → compare status ("behind" | "identical" | "ahead" | "diverged"). */
   compareStatus = new Map<string, string>();
   rollupPrs: FakeRollupPr[] = [];
 
@@ -70,8 +70,8 @@ class FakeGh {
       }));
     }
     if (args[0] === "api" && (args[1] ?? "").includes("/compare/")) {
-      const sha = (args[1] ?? "").split("...")[1] ?? "";
-      const status = this.compareStatus.get(sha) ?? "diverged";
+      const key = (args[1] ?? "").split("/compare/")[1] ?? "";
+      const status = this.compareStatus.get(key) ?? "diverged";
       return Promise.resolve(`${status}\n`);
     }
     if (args[0] === "pr" && args[1] === "list") {
@@ -86,7 +86,7 @@ class FakeGh {
 Deno.test("landed via a closing PR merge commit already behind the default branch", async () => {
   const gh = new FakeGh();
   gh.issues.set(10, { nodes: [{ merged: true, mergeCommit: { oid: SHA1 } }] });
-  gh.compareStatus.set(SHA1, "behind");
+  gh.compareStatus.set(`${gh.defaultBranch}...${SHA1}`, "behind");
   const logs: string[] = [];
   const lookup = createDependencyLandedLookup(REPO, gh.defaultBranch, gh.gh, {
     log: (m) => logs.push(m),
@@ -98,7 +98,7 @@ Deno.test("landed via a closing PR merge commit already behind the default branc
 Deno.test("landed via a closing PR merge commit identical to the default branch", async () => {
   const gh = new FakeGh();
   gh.issues.set(20, { nodes: [{ merged: true, mergeCommit: { oid: SHA1 } }] });
-  gh.compareStatus.set(SHA1, "identical");
+  gh.compareStatus.set(`${gh.defaultBranch}...${SHA1}`, "identical");
   const lookup = createDependencyLandedLookup(REPO, gh.defaultBranch, gh.gh);
   assertEquals(await lookup(20), true);
 });
@@ -109,8 +109,9 @@ Deno.test("landed via a merged partial-rollup head when the closing PR itself ha
     milestone: "Foundation",
     nodes: [{ merged: true, mergeCommit: { oid: SHA1 } }],
   });
-  // The closing PR's own merge commit has diverged — not itself landed.
-  gh.compareStatus.set(SHA1, "diverged");
+  // The closing PR's own merge commit has diverged from the default branch —
+  // not itself landed there.
+  gh.compareStatus.set(`${gh.defaultBranch}...${SHA1}`, "diverged");
   gh.rollupPrs.push({
     number: 900,
     headRefName: "partial-rollup/foundation-abc1234",
@@ -118,17 +119,26 @@ Deno.test("landed via a merged partial-rollup head when the closing PR itself ha
     body: partialRollupMarker("Foundation"),
     author: { login: "bot" },
   });
-  gh.compareStatus.set(SHA2, "behind");
+  // But the closing PR's merge commit *is* an ancestor of the (squash-merged)
+  // partial-rollup head — landed via the rollup, checked with the head as
+  // the compare target.
+  gh.compareStatus.set(`${SHA2}...${SHA1}`, "behind");
   const lookup = createDependencyLandedLookup(REPO, gh.defaultBranch, gh.gh, {
     rollupLookup: { authorOptions: { fleetAuthors: ["bot"] }, log: () => {} },
   });
   assertEquals(await lookup(30), true);
+  assertEquals(
+    gh.calls.some((a) =>
+      a[0] === "api" && a[1] === `repos/${REPO}/compare/${SHA2}...${SHA1}`
+    ),
+    true,
+  );
 });
 
 Deno.test("not landed — every signal diverged or ahead of default", async () => {
   const gh = new FakeGh();
   gh.issues.set(40, { nodes: [{ merged: true, mergeCommit: { oid: SHA1 } }] });
-  gh.compareStatus.set(SHA1, "ahead");
+  gh.compareStatus.set(`${gh.defaultBranch}...${SHA1}`, "ahead");
   const lookup = createDependencyLandedLookup(REPO, gh.defaultBranch, gh.gh);
   assertEquals(await lookup(40), false);
 });
@@ -152,16 +162,22 @@ Deno.test("an unmerged closing PR or a missing merge commit is not treated as la
       { merged: true, mergeCommit: null },
     ],
   });
-  const lookup = createDependencyLandedLookup(REPO, gh.defaultBranch, gh.gh);
+  const logs: string[] = [];
+  const lookup = createDependencyLandedLookup(REPO, gh.defaultBranch, gh.gh, {
+    log: (m) => logs.push(m),
+  });
   assertEquals(await lookup(60), false);
-  // Neither node yields a usable SHA, so no ancestry check is ever issued.
+  assertEquals(logs.length, 1);
+  // Neither node yields a usable SHA, so there is nothing to check ancestry
+  // for — no compare call and no rollup (pr list) lookup is ever issued.
   assertEquals(gh.calls.some((a) => (a[1] ?? "").includes("/compare/")), false);
+  assertEquals(gh.calls.some((a) => a[0] === "pr" && a[1] === "list"), false);
 });
 
 Deno.test("results are memoised — the second lookup issues no further gh calls", async () => {
   const gh = new FakeGh();
   gh.issues.set(70, { nodes: [{ merged: true, mergeCommit: { oid: SHA1 } }] });
-  gh.compareStatus.set(SHA1, "behind");
+  gh.compareStatus.set(`${gh.defaultBranch}...${SHA1}`, "behind");
   const lookup = createDependencyLandedLookup(REPO, gh.defaultBranch, gh.gh);
   assertEquals(await lookup(70), true);
   const callsAfterFirst = gh.calls.length;
@@ -172,9 +188,9 @@ Deno.test("results are memoised — the second lookup issues no further gh calls
 Deno.test("a lazily resolved default branch is fetched once across two issues", async () => {
   const gh = new FakeGh();
   gh.issues.set(80, { nodes: [{ merged: true, mergeCommit: { oid: SHA1 } }] });
-  gh.compareStatus.set(SHA1, "behind");
+  gh.compareStatus.set(`${gh.defaultBranch}...${SHA1}`, "behind");
   gh.issues.set(81, { nodes: [{ merged: true, mergeCommit: { oid: SHA2 } }] });
-  gh.compareStatus.set(SHA2, "identical");
+  gh.compareStatus.set(`${gh.defaultBranch}...${SHA2}`, "identical");
   const lookup = createDependencyLandedLookup(REPO, undefined, gh.gh);
   assertEquals(await lookup(80), true);
   assertEquals(await lookup(81), true);

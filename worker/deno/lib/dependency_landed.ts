@@ -13,9 +13,10 @@
  * has, rather than waiting for the entire milestone.
  *
  * Landed is decided by ancestry, never by state alone: the dependency's
- * closing PR's merge commit (or a merged partial-rollup head, which may be
- * squash-merged so the original commit is not itself an ancestor) must be
- * an ancestor of the default branch, checked with the GitHub compare API.
+ * closing PR's merge commit must be an ancestor of the default branch, or —
+ * because a partial rollup may be squash-merged, so the original commit is
+ * never itself an ancestor of the default branch — an ancestor of a merged
+ * partial-rollup head, checked with the GitHub compare API.
  *
  * Fails safe throughout: any lookup failure reports "not landed" (`false`)
  * rather than releasing the hold against unmerged work, and every failure
@@ -72,16 +73,16 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** True when `sha` is already an ancestor of `defaultBranch` (landed). */
-async function isAncestorOfDefault(
+/** True when `sha` is already an ancestor of `target` (landed relative to it). */
+async function isAncestorOf(
   repo: string,
-  defaultBranch: string,
+  target: string,
   sha: string,
   ghFn: GhCommandFn,
 ): Promise<boolean> {
   const status = (await ghFn([
     "api",
-    `repos/${repo}/compare/${defaultBranch}...${sha}`,
+    `repos/${repo}/compare/${target}...${sha}`,
     "--jq",
     ".status",
   ])).trim();
@@ -161,8 +162,12 @@ export function createDependencyLandedLookup(
           typeof oid === "string" && SHA_PATTERN.test(oid)
         );
 
+      if (mergedShas.length === 0) {
+        throw new Error("no merged closing PR with a merge commit");
+      }
+
       for (const sha of mergedShas) {
-        if (await isAncestorOfDefault(repo, branch, sha, ghFn)) {
+        if (await isAncestorOf(repo, branch, sha, ghFn)) {
           return true;
         }
       }
@@ -176,8 +181,11 @@ export function createDependencyLandedLookup(
           options.rollupLookup ?? {},
         );
         for (const head of heads) {
-          if (await isAncestorOfDefault(repo, branch, head, ghFn)) {
-            return true;
+          if (!SHA_PATTERN.test(head)) continue;
+          for (const sha of mergedShas) {
+            if (await isAncestorOf(repo, head, sha, ghFn)) {
+              return true;
+            }
           }
         }
       }
