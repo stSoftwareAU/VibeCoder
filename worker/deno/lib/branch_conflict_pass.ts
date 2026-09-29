@@ -1,6 +1,6 @@
 /**
- * One in-run agent rebase-and-fix pass, for the branch whose pre-PR rebase
- * declined (Issue #2459).
+ * One in-run agent merge-and-fix pass, for the branch whose pre-PR merge of
+ * its base declined (Issues #2459, #2809).
  *
  * `ensureBranchCurrent` in `branch_currency.ts` is deliberately not a
  * merge-conflict resolver: when content has genuinely diverged it declines and
@@ -50,31 +50,35 @@ export type AgentRebaseFn = (
 ) => Promise<Result<unknown>>;
 
 /**
- * The one prompt the pass sends. Deliberately narrow: rebase this branch onto
- * this base, resolve the conflicts, stop. The caller re-measures the drift
- * afterwards, so the agent is never trusted to report its own success.
+ * The one prompt the pass sends. Deliberately narrow: merge this base into
+ * this branch, resolve the conflicts, stop. A merge, never a rebase, so the
+ * push that follows stays a plain fast-forward (Issue #2809). The caller
+ * re-measures the drift afterwards, so the agent is never trusted to report
+ * its own success.
  */
 export function buildRebasePassPrompt(request: AgentRebaseRequest): string {
   const budget = request.budgetSeconds === undefined
     ? ""
     : `\nYou have about ${request.budgetSeconds} seconds. If you cannot finish ` +
-      `in that time, run \`git rebase --abort\` and stop.\n`;
+      `in that time, run \`git merge --abort\` and stop.\n`;
   return [
-    `Rebase the local branch \`${request.branch}\` onto \`${request.baseRef}\` ` +
+    `Merge \`${request.baseRef}\` into the local branch \`${request.branch}\` ` +
     `and resolve the merge conflicts.`,
     "",
-    `The automatic rebase declined: ${request.detail}`,
+    `The automatic merge declined: ${request.detail}`,
     budget,
     "Rules:",
-    `- Run \`git rebase ${request.baseRef}\` on \`${request.branch}\`, resolve ` +
-    `each conflict, \`git add\` the resolved files and \`git rebase --continue\`.`,
+    `- Run \`git merge --no-edit ${request.baseRef}\` on \`${request.branch}\`, ` +
+    `resolve each conflict, \`git add\` the resolved files and ` +
+    `\`git commit --no-edit\`.`,
+    "- Never rebase, reset or rewrite this branch's history.",
     "- Keep both sides' intent. Never discard the base's changes to win a " +
     "conflict, and never discard this branch's work.",
     "- Change nothing beyond what resolving the conflicts requires. Do not " +
     "refactor, reformat or add features.",
     "- Do not push, do not create or merge a pull request, and do not touch " +
     "any other branch.",
-    `- If you cannot resolve a conflict correctly, run \`git rebase --abort\` ` +
+    `- If you cannot resolve a conflict correctly, run \`git merge --abort\` ` +
     `and stop. A clean stop is better than a wrong resolution.`,
     "",
     "Finish with the branch checked out and the working tree clean.",
@@ -166,7 +170,7 @@ export async function runDeclinedRebasePass(
   }
 
   log(
-    `'${branch}' declined its pre-PR rebase — spending one agent pass to bring it onto '${baseRef}'`,
+    `'${branch}' declined its pre-PR merge — spending one agent pass to bring it onto '${baseRef}'`,
   );
   const attempt = await runAgentFn({
     branch,
