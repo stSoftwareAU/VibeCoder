@@ -89,6 +89,10 @@ committed to the repository as permanent documentation and contains:
 The worker reads this file and includes its contents in the PR body. If no PR
 summary file is created, a warning note is included in the PR body.
 
+The summary must describe the **final** state of the branch: it is rewritten,
+not appended to, whenever a later commit changes what the PR does, so a stale
+record of an earlier iteration never reaches the archive (Issue #2879).
+
  moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
 so `docs/` root remains a curated table of contents. The worker still checks the
 legacy `docs/pr-summary-{n}.md` location for older PRs (precedence order is
