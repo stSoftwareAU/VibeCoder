@@ -65,9 +65,6 @@ async function fixture(): Promise<{ root: string; clone: string }> {
   await git(["push", "-u", "origin", MILESTONE_BRANCH], clone);
 
   await git(["checkout", "main"], clone);
-  await Deno.writeTextFile(`${clone}/default.txt"`, "moved on\n").catch(
-    () => {},
-  );
   await Deno.writeTextFile(`${clone}/default.txt`, "moved on\n");
   await git(["add", "default.txt"], clone);
   await git(["commit", "-m", "default branch moves on"], clone);

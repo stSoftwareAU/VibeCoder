@@ -174,7 +174,7 @@ Deno.test(
       const logged: string[] = [];
       const logger: Logger = {
         ...silentLogger,
-        info: (message: string) => logged.push(message),
+        warn: (message: string) => logged.push(message),
       };
 
       const result = await presyncMilestoneBranchForIssueRun({

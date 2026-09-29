@@ -733,7 +733,7 @@ export async function presyncMilestoneBranchForIssueRun(
           {
             countFn: countBehindFn,
             gitFn,
-            log: (message: string) => logger.info(message),
+            log: (message: string) => logger.warn(message),
           },
         ),
       defaultTipSha: () => readLocalDefaultTip(defaultBranch, cwd),
