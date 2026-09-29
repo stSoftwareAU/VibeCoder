@@ -355,10 +355,10 @@ bash `worker/run_core.sh` conductor. It sequences:
    rate-limit pre-flight per sweep, a stop at the first primary-quota
    refusal — reported as one skipped sweep that resumes next cycle, never as
    one failure per repository — the shared `.gh-scan-cache` and
-   `.gh-timeline-cache` on the work volume, and its own watermark
-   (`merged_issue_sweep_watermarks.json`) that advances only past PRs it
-   closed or ruled out for good, so what it left open is reconsidered next
-   cycle.
+   `.gh-timeline-cache` on the work volume, and its own processed set
+   (`merged_issue_sweep_watermarks.json`, Issue #2833) that records only the
+   PRs it closed or ruled out for good, so what it left open — or a PR merged
+   out of number order — is reconsidered next cycle.
 
 ```mermaid
 flowchart TD

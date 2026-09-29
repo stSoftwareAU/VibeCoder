@@ -69,8 +69,12 @@ import {
   isPrimaryRateLimitMessage,
 } from "./primary_quota_latch.ts";
 import {
-  loadSweepWatermarks,
-  saveSweepWatermarks,
+  isProcessed,
+  loadProcessedSweepState,
+  markProcessed,
+  type ProcessedSweepState,
+  pruneToWindow,
+  saveProcessedSweepState,
 } from "./merged_sweep_watermark.ts";
 
 /** Default cooldown for the closed-unmerged half of the fleet PR fetch. */
@@ -103,13 +107,14 @@ export interface MergedPrIssueSweepOptions {
   /** Maximum open issues examined per repo. */
   issueLimit?: number;
   /**
-   * Path of the per-repo sweep watermark file (Issue #1477). When set, a
-   * candidate whose merged PR is at or below the persisted watermark was
-   * handled on an earlier cycle and is skipped without any network traffic.
-   * The watermark advances only past PRs the sweep closed or ruled out for
-   * good; anything it left open — `needs-human`, a change that has not
-   * landed, a failed close — holds it back so that PR is reconsidered next
-   * cycle. Unset (tests, ad hoc runs) means no persistence.
+   * Path of the per-repo processed-set file (Issue #1477, #2833). When set, a
+   * candidate whose merged PR is recorded as processed was handled on an
+   * earlier cycle and is skipped without any network traffic. A PR is
+   * recorded only once every issue it names was closed or ruled out for
+   * good; anything left open — `needs-human`, a change that has not landed,
+   * a failed close — leaves it unrecorded so it is reconsidered next cycle.
+   * Membership, not a high-water mark, so a PR merged out of number order is
+   * still swept. Unset (tests, ad hoc runs) means no persistence.
    */
   watermarkPath?: string;
 }
@@ -187,8 +192,8 @@ export interface MergedPrIssueSweepResult {
   quotaExhausted?: string;
   /** Repos left unswept by the quota stop, including the one that hit it. */
   reposSkipped: number;
-  /** Candidates skipped without a call because their PR is below the watermark. */
-  belowWatermark: number;
+  /** Candidates skipped without a call because their PR is already processed. */
+  alreadyProcessed: number;
   /** Human-readable summary for the housekeeping log. */
   message: string;
 }
@@ -257,6 +262,13 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Order-insensitive equality of two processed-number lists. */
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((n) => set.has(n));
+}
+
 /**
  * Record the quota stop (Issue #1477): one warning line naming the
  * condition and how much of the sweep it left for the next cycle. Never a
@@ -321,7 +333,7 @@ export async function sweepMergedPrIssues(
     records: [],
     failures: [],
     reposSkipped: 0,
-    belowWatermark: 0,
+    alreadyProcessed: 0,
     message: "",
   };
   const reposTotal = options.repos.length;
@@ -338,15 +350,14 @@ export async function sweepMergedPrIssues(
     }
   }
 
-  // Sweep watermarks (Issue #1477): a candidate whose merged PR is at or
-  // below the repo's watermark was handled on an earlier cycle and costs
-  // nothing now. The watermark only advances past PRs the sweep closed or
-  // ruled out for good; everything it left open holds it back.
+  // Processed set (Issue #1477, #2833): a candidate whose merged PR was
+  // handled on an earlier cycle costs nothing now. A PR is recorded only
+  // when the sweep closed or ruled out for good every issue it names.
   const watermarkPath = options.watermarkPath;
-  const watermarks = watermarkPath
-    ? await loadSweepWatermarks(watermarkPath)
-    : {};
-  let watermarksDirty = false;
+  let state: ProcessedSweepState | undefined = watermarkPath
+    ? await loadProcessedSweepState(watermarkPath, logger)
+    : undefined;
+  let stateDirty = false;
 
   let reposDone = 0;
   repos: for (const repo of options.repos) {
@@ -382,13 +393,12 @@ export async function sweepMergedPrIssues(
       continue;
     }
 
-    const mark = watermarks[repo] ?? 0;
-    let windowMax = 0;
-    for (const pr of closedPRs) {
-      if (pr.merged && pr.number > windowMax) windowMax = pr.number;
-    }
-    // Lowest merged PR this cycle left undone; the watermark stops below it.
-    let holdBack = Number.POSITIVE_INFINITY;
+    const windowNumbers = closedPRs.filter((pr) => pr.merged).map((pr) =>
+      pr.number
+    );
+    // Merged PRs this cycle left undone for some issue; every other merged
+    // PR in the window is recorded as processed once the repo completes.
+    const heldBack = new Set<number>();
 
     for (const issue of issues) {
       result.scanned++;
@@ -405,8 +415,8 @@ export async function sweepMergedPrIssues(
       const blocking = byBody ??
         isBlockedByRecentlyClosedPR(closedPRs, issue.number);
       if (!blocking || !blocking.merged) continue;
-      if (blocking.number <= mark) {
-        result.belowWatermark++;
+      if (state && isProcessed(state, repo, blocking.number)) {
+        result.alreadyProcessed++;
         continue;
       }
       result.candidates++;
@@ -423,11 +433,8 @@ export async function sweepMergedPrIssues(
           outcome,
           reason,
         });
-        // Only a close, or a verdict that can never change, lets the
-        // watermark pass this PR.
-        if (outcome !== "closed" && !settled) {
-          holdBack = Math.min(holdBack, blocking.number);
-        }
+        // Only a close, or a verdict that can never change, settles the PR.
+        if (outcome !== "closed" && !settled) heldBack.add(blocking.number);
       };
 
       if (issue.labels.includes(needsHumanLabel)) {
@@ -566,20 +573,31 @@ export async function sweepMergedPrIssues(
     }
 
     reposDone++;
-    if (watermarkPath && windowMax > 0) {
-      const advanced = Math.max(mark, Math.min(windowMax, holdBack - 1));
-      if (advanced !== mark) {
-        watermarks[repo] = advanced;
-        watermarksDirty = true;
+    // Reached only when the repo's fetch succeeded and its loop completed, so
+    // a failed fetch or a quota stop leaves this repo's entry untouched.
+    if (state) {
+      const before = state.repos[repo]?.processed ?? [];
+      let next = pruneToWindow(state, repo, windowNumbers);
+      for (const n of windowNumbers) {
+        if (!heldBack.has(n)) next = markProcessed(next, repo, n);
+      }
+      const after = next.repos[repo]?.processed ?? [];
+      if (!sameNumbers(before, after)) {
+        state = next;
+        stateDirty = true;
       }
     }
   }
 
-  if (watermarkPath && watermarksDirty) {
+  if (watermarkPath && state && stateDirty) {
     try {
-      await saveSweepWatermarks(watermarkPath, watermarks);
-    } catch {
-      // Persistence is an optimisation — never fail the sweep over it.
+      await saveProcessedSweepState(watermarkPath, state);
+    } catch (err) {
+      // Never fail the sweep over it — the next cycle re-examines the window.
+      logger.warn(
+        `[merged-pr-issue-sweep] could not save processed set to ` +
+          `${watermarkPath}: ${errorMessage(err)}`,
+      );
     }
   }
 
@@ -597,8 +615,8 @@ function summarise(
       result.failures.length === 1 ? "" : "s"
     }`
     : "";
-  const watermarkNote = result.belowWatermark > 0
-    ? `, ${result.belowWatermark} below watermark`
+  const processedNote = result.alreadyProcessed > 0
+    ? `, ${result.alreadyProcessed} already processed`
     : "";
   const quotaNote = result.quotaExhausted !== undefined
     ? ` — quota exhausted, sweep skipped (${result.reposSkipped} repo(s) ` +
@@ -606,6 +624,6 @@ function summarise(
     : "";
   return `closed ${result.closed} of ${result.candidates} ` +
     `merged-PR issue(s) across ${options.repos.length} repo(s) ` +
-    `(${result.scanned} open issues scanned)${watermarkNote}${failureNote}` +
+    `(${result.scanned} open issues scanned)${processedNote}${failureNote}` +
     quotaNote;
 }

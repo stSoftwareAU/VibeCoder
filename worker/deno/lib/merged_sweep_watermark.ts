@@ -1,11 +1,11 @@
 /**
- * Per-repo merged-PR sweep watermarks (Issue #4255).
+ * Per-repo merged-PR sweep state (Issue #4255, #2828).
  *
  * `cleanupMergedPrBranches` re-assessed the same last-30 merged PRs per
  * repo on every cycle — up to 28 × 30 × 2 GraphQL `pr list` calls to
- * delete, typically, zero branches. The watermark persists the highest
- * merged-PR number already swept per repo so the next cycle only looks at
- * PRs above it; on a quiet repo the sweep then costs one list call.
+ * delete, typically, zero branches. The processed set records which
+ * merged PRs were already swept per repo so the next cycle skips them; on a
+ * quiet repo the sweep then costs one list call.
  *
  * Same shape as the per-host scan cursor (#2427): a small JSON file in
  * `WORK_DIR`, written tempfile-then-rename so a crash mid-write cannot
@@ -18,9 +18,6 @@
 import type { Logger } from "../types.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { defaultLogger } from "./logger.ts";
-
-/** Highest merged-PR number already swept, keyed by "owner/repo". */
-export type SweepWatermarks = Record<string, number>;
 
 /** Resolve the watermark file path for a work directory. */
 export function mergedSweepWatermarkPath(workDir: string): string {
@@ -38,44 +35,12 @@ export function mergedReconcileWatermarkPath(workDir: string): string {
 }
 
 /**
- * Watermark file for the merged-PR issue sweep (Issue #1477). Its own file,
- * for the same reason as the reconciler's: the three merged-PR passes
- * advance independently, each holding back on what it alone left undone.
+ * State file for the merged-PR issue sweep (Issue #1477). Its own file, for
+ * the same reason as the reconciler's: the three merged-PR passes record
+ * independently, each leaving unrecorded what it alone left undone.
  */
 export function mergedIssueSweepWatermarkPath(workDir: string): string {
   return `${workDir}/merged_issue_sweep_watermarks.json`;
-}
-
-/** Load watermarks; a missing or corrupt file reads as empty. */
-export async function loadSweepWatermarks(
-  path: string,
-): Promise<SweepWatermarks> {
-  try {
-    const parsed = JSON.parse(await Deno.readTextFile(path));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const marks: SweepWatermarks = {};
-      for (const [repo, value] of Object.entries(parsed)) {
-        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-          marks[repo] = value;
-        }
-      }
-      return marks;
-    }
-  } catch {
-    // Missing or corrupt — start fresh; the sweep re-persists.
-  }
-  return {};
-}
-
-/** Persist watermarks atomically. Failures are the caller's to ignore. */
-export async function saveSweepWatermarks(
-  path: string,
-  marks: SweepWatermarks,
-): Promise<void> {
-  await atomicWrite({
-    targetFile: path,
-    content: JSON.stringify(marks, null, 2) + "\n",
-  });
 }
 
 // ---------------------------------------------------------------------------
