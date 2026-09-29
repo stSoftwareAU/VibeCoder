@@ -31,9 +31,14 @@ export interface DescribedCodeChange {
 const EXTENSIONS =
   "ts|tsx|js|mjs|cjs|jsx|py|rs|go|sh|bash|java|kt|rb|cs|php|swift|c|cpp|h|json|jsonc|yml|yaml|toml|md|sql|css|html";
 
-/** A path token: optional `dir/` segments, then `name.ext`, then `:line:col`. */
+/**
+ * A path token: optional `dir/` segments, then `name.ext`, then `:line:col`.
+ * The lookbehind starts a match only at a token boundary (leading slashes are
+ * skipped), so each run of path characters is scanned once — linear on a long
+ * hostile line rather than quadratic (Issue #2826).
+ */
 const PATH_RE = new RegExp(
-  `(\`?)((?:[\\p{L}\\p{N}_.-]+/)*[\\p{L}\\p{N}_-][\\p{L}\\p{N}_.-]*\\.(?:${EXTENSIONS}))(?::\\d+)*(?![\\p{L}\\p{N}_])`,
+  `(\`?)(?<![\\p{L}\\p{N}_./-])\\/*((?:[\\p{L}\\p{N}_.-]+/)*[\\p{L}\\p{N}_-][\\p{L}\\p{N}_.-]*\\.(?:${EXTENSIONS}))(?::\\d+)*(?![\\p{L}\\p{N}_])`,
   "gu",
 );
 
