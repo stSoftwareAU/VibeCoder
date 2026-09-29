@@ -2250,7 +2250,7 @@
       "ledger": "docs/audits/security-sweep-2880-broken-ref-repair.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: broken_ref_repair.ts (#2880)",
       "status": "swept",
-      "sweptAt": "a1e76f6210a842e9e802ef038f37a8c3ea735dfc",
+      "sweptAt": "427a8fc58af548ac3137794b15db622c90db2a4e",
       "paths": [
         "worker/deno/lib/broken_ref_repair.ts"
       ]
