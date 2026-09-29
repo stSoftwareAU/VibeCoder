@@ -2196,19 +2196,39 @@ failure carrying git's stderr; it is never retried with force.
 `main`, `master`, `develop`, `release`, `production`, `staging`, and
 `milestone/*` branches.
 
-**Lease baselines** — a recovery path that fetches or pulls before its
-last-resort force push must capture `refs/remotes/origin/<branch>` _before_ that
-refresh and push `--force-with-lease=<branch>:<sha>`. A bare
+**Lease baselines** — a recovery path that fetches before a force push (the
+stale-branch lineage heal below) must capture `refs/remotes/origin/<branch>`
+_before_ that refresh and push `--force-with-lease=<branch>:<sha>`. A bare
 `--force-with-lease` leases against the ref the fetch just updated, so it can
 never fail and silently behaves as a plain `--force`.
-`recover_from_push_rejection()` falls back to the bare lease only when no
-remote-tracking ref exists yet.
 
-**Recovery diagnostics** — every failure from `recoverFromPushRejection()` names
-the step that failed (`pull --rebase`, `conflict-resolution`,
-`force-with-lease`, `retry-push`) and carries git's own stderr. The CI,
-feedback, spelling and merge-conflict paths log that message rather than a bare
-"Push failed after recovery attempt".
+**Recovery diagnostics** (Issues #211, #2808) — `recoverFromPushRejection()`
+never forces and never rebases: a force push, even a leased one, can rewrite a
+PR under review. It fetches the branch into its remote-tracking ref, merges
+`origin/<branch>` in, and retries a plain push, reporting success only once
+that push is confirmed. Every failure names the step that failed (`fetch`,
+`merge`, `merge --abort`, `retry-push`) and carries git's own stderr; a
+conflicting merge is aborted, leaving the branch as it was, and lists the
+conflicted paths. The CI, feedback, spelling and merge-conflict paths log that
+message rather than a bare "Push failed after recovery attempt".
+
+```mermaid
+flowchart TD
+    R["push rejected"] --> F["fetch origin/branch"]
+    F -- fails --> XF["fail: step 'fetch'"]
+    F --> M["merge origin/branch"]
+    M -- conflict --> A["merge --abort"]
+    A --> XM["fail: step 'merge'<br/>+ conflicted paths"]
+    A -- abort fails --> XA["fail: step 'merge --abort'"]
+    M --> P["plain push (no --force)"]
+    P -- rejected --> XP["fail: step 'retry-push'"]
+    P --> OK["success"]
+    style XF fill:#9d0208,stroke:#6a040f,color:#fff
+    style XM fill:#9d0208,stroke:#6a040f,color:#fff
+    style XA fill:#9d0208,stroke:#6a040f,color:#fff
+    style XP fill:#9d0208,stroke:#6a040f,color:#fff
+    style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
 
 #### 🧮 "Is it pushed?" is a question for the remote
 
