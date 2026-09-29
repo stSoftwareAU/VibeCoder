@@ -590,3 +590,151 @@ Deno.test("the same collector releases the candidate once that milestone closes"
   assertEquals(result.candidates.length, 1);
   assertEquals(result.candidates[0]?.number, 42);
 });
+
+// ---------------------------------------------------------------------------
+// Release once the dependency has landed (Issue #2834)
+// ---------------------------------------------------------------------------
+
+Deno.test("(a) a closed dependency's landed code releases the hold even though its milestone is open", async () => {
+  const lookups: string[] = [];
+  const landedCalls: number[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  assertEquals(
+    await isDependencyBlocked(REPO, CANDIDATE, fetcher, undefined, {
+      candidateMilestone: "Dependant",
+      isMilestoneOpen: (title: string) => {
+        lookups.push(title);
+        return Promise.resolve(["Foundation", "Dependant"].includes(title));
+      },
+      isDependencyLanded: (issueNumber: number) => {
+        landedCalls.push(issueNumber);
+        return Promise.resolve(true);
+      },
+    }),
+    false,
+  );
+  assertEquals(lookups, ["Foundation"]);
+  assertEquals(landedCalls, [2170]);
+});
+
+Deno.test("(b) the release check falls back to the lookup carried on isMilestoneOpen", async () => {
+  const landedCalls: number[] = [];
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  const isMilestoneOpen = Object.assign(
+    (title: string) =>
+      Promise.resolve(["Foundation", "Dependant"].includes(title)),
+    {
+      isDependencyLanded: (issueNumber: number) => {
+        landedCalls.push(issueNumber);
+        return Promise.resolve(true);
+      },
+    },
+  );
+  assertEquals(
+    await isDependencyBlocked(REPO, CANDIDATE, fetcher, undefined, {
+      candidateMilestone: "Dependant",
+      isMilestoneOpen,
+    }),
+    false,
+  );
+  assertEquals(landedCalls, [2170]);
+});
+
+Deno.test("(c) the hold stays in place while the dependency's code has not landed, or the check fails", async () => {
+  const fetcher = makeFetcher(
+    "Depends on #2170",
+    { [`${REPO}#2170`]: { state: "CLOSED", milestone: "Foundation" } },
+  );
+  // Not landed yet — still held.
+  assertEquals(
+    await isDependencyBlocked(REPO, CANDIDATE, fetcher, undefined, {
+      candidateMilestone: "Dependant",
+      isMilestoneOpen: () => true,
+      isDependencyLanded: () => Promise.resolve(false),
+    }),
+    true,
+  );
+  // The landed lookup itself fails — fail safe, still held, not released.
+  assertEquals(
+    await isDependencyBlocked(REPO, CANDIDATE, fetcher, undefined, {
+      candidateMilestone: "Dependant",
+      isMilestoneOpen: () => true,
+      isDependencyLanded: () => Promise.reject(new Error("gh api failed")),
+    }),
+    true,
+  );
+});
+
+/**
+ * A `gh` stub extending {@link createCollectorGh}'s scenario with the calls
+ * `createDependencyLandedLookup` issues: the repo's default branch, the
+ * dependency's closing-PR GraphQL query, and the compare-with-default check.
+ * The dependency (#10) is reported as landed — its merge commit compares
+ * "behind" default — even though its milestone ("Foundation") stays open.
+ */
+function createLandedCollectorGh(openMilestones: string[], calls: string[]) {
+  const base = createCollectorGh(openMilestones, calls);
+  const landedSha = "3333333333333333333333333333333333333333";
+  return (args: string[]): Promise<string> => {
+    const command = args.join(" ");
+    if (
+      command.includes("repos/owner/repo") &&
+      command.includes(".default_branch")
+    ) {
+      calls.push(command);
+      return Promise.resolve("main");
+    }
+    // Only the dependency-landed lookup's own GraphQL query is answered here
+    // — the collector's batched label-timeline query (also `api graphql`)
+    // must still fall through to `base` untouched.
+    if (
+      args[0] === "api" && args[1] === "graphql" &&
+      command.includes("closedByPullRequestsReferences")
+    ) {
+      calls.push(command);
+      return Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            issue: {
+              milestone: { title: "Foundation" },
+              closedByPullRequestsReferences: {
+                nodes: [{ merged: true, mergeCommit: { oid: landedSha } }],
+              },
+            },
+          },
+        },
+      }));
+    }
+    if (command.includes("/compare/") && command.includes(".status")) {
+      calls.push(command);
+      return Promise.resolve("behind");
+    }
+    return base(args);
+  };
+}
+
+Deno.test("(d) a collector releases a candidate whose dependency has landed even though its milestone is open", async () => {
+  const calls: string[] = [];
+  const gh = createLandedCollectorGh(["Foundation", "Dependant"], calls);
+  const cache = new IssueCache(
+    Deno.makeTempDirSync({ prefix: "cross-milestone-landed-cache-" }),
+    600,
+  );
+  const result = await collectLowPriorityCandidates(
+    "owner/repo",
+    makeConfig(),
+    { githubUser: "bot", ghCommandFn: gh, cache },
+    [],
+    [],
+    createIssueFetcher(gh),
+    [],
+  );
+  assertEquals(result.candidates.length, 1);
+  assertEquals(result.candidates[0]?.number, 42);
+});

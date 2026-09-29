@@ -154,6 +154,60 @@ Deno.test(
   },
 );
 
+/** Corrupt `refs/remotes/origin/<defaultBranch>` in-place with unparsable loose content. */
+async function corruptOriginDefaultRef(
+  clone: string,
+  defaultBranch: string,
+): Promise<void> {
+  const refPath = `${clone}/.git/refs/remotes/origin/${defaultBranch}`;
+  await Deno.writeTextFile(refPath, "not-a-sha\n");
+}
+
+Deno.test(
+  "#2824 - a broken origin/main ref is repaired in place and the presync still measures the branch",
+  async () => {
+    const { root, clone } = await fixture();
+    const workDir = await Deno.makeTempDir({ prefix: "issue-2824-workdir-" });
+    try {
+      await corruptOriginDefaultRef(clone, "main");
+
+      const logged: string[] = [];
+      const logger: Logger = {
+        ...silentLogger,
+        warn: (message: string) => logged.push(message),
+      };
+
+      const result = await presyncMilestoneBranchForIssueRun({
+        repo: REPO,
+        milestoneTitle: "#1780 Presync",
+        milestoneBranch: MILESTONE_BRANCH,
+        defaultBranch: "main",
+        cwd: clone,
+        workDir,
+        config: { ...buildDefaultWorkerConfig(), workDir },
+        logger,
+      });
+
+      assert(
+        result.status === "level" || result.status === "synced",
+        `expected a measured result, got '${result.status}': ${result.detail}`,
+      );
+      assertEquals(typeof result.behindBy, "number");
+      assertEquals(result.unmeasured, undefined);
+
+      const repairLines = logged.filter((line) =>
+        line.includes(
+          "Repaired broken remote-tracking ref 'refs/remotes/origin/main'",
+        )
+      );
+      assertEquals(repairLines.length, 1);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+      await Deno.remove(workDir, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
 Deno.test(
   "#1780 - a milestone branch already level is reported level and nothing is pushed",
   async () => {

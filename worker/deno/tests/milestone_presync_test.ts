@@ -498,6 +498,166 @@ Deno.test("presyncMilestoneBranch - a behind count that cannot be read defers ra
   }
 });
 
+Deno.test("presyncMilestoneBranch - an unreadable count defers fail-closed and records git's reason (Issue #2824)", async () => {
+  const fx = await ledger();
+  try {
+    let synced = 0;
+    const reason =
+      "git rev-list --count exited 128: warning: ignoring broken ref " +
+      "refs/remotes/origin/main\nfatal: ambiguous argument";
+    const result = await presyncMilestoneBranch(
+      {
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs: NOW,
+      },
+      deps({
+        countBehind: () =>
+          Promise.resolve({ ok: false as const, error: new Error(reason) }),
+        syncBranch: () => {
+          synced++;
+          return Promise.resolve({
+            ok: true as const,
+            value: { message: "x" },
+          });
+        },
+      }),
+    );
+
+    assertEquals(result.status, "deferred");
+    assert(result.detail.startsWith(MILESTONE_BEHIND_DEFER_REASON));
+    assertEquals(
+      result.unmeasured,
+      "git rev-list --count exited 128: warning: ignoring broken ref " +
+        "refs/remotes/origin/main",
+    );
+    assertEquals(
+      synced,
+      0,
+      "no merge or sync is attempted for an unmeasured base",
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("presyncMilestoneBranchForIssueRun - a broken ref that stays broken repairs once, fails again, and still defers fail-closed (Issue #2824)", async () => {
+  // The count fails every time it is asked, always with the same broken-ref
+  // warning, so the repair's one retry is spent for nothing and the run must
+  // still defer rather than cut a branch from an unverified base.
+  const workDir = await Deno.makeTempDir({ prefix: "issue-2824-caller-" });
+  const refDir = await Deno.makeTempDir({ prefix: "issue-2824-ref-" });
+  const refPath = `${refDir}/main`;
+  await Deno.writeTextFile(
+    refPath,
+    "0000000000000000000000000000000000000zz\n",
+  );
+  try {
+    let countCalls = 0;
+    let synced = 0;
+    const gitCalls: string[][] = [];
+    const reason =
+      "git rev-list --count exited 128: warning: ignoring broken ref " +
+      "refs/remotes/origin/main\nfatal: ambiguous argument";
+
+    const args = {
+      repo: REPO,
+      milestoneTitle: "#1730 Resolve merge conflicts",
+      milestoneBranch: MILESTONE,
+      defaultBranch: DEFAULT_BRANCH,
+      cwd: workDir,
+      workDir,
+      config: { ...buildDefaultWorkerConfig(), workDir },
+      logger: silentLogger,
+      countCommitsAheadFn: () => {
+        countCalls++;
+        return Promise.resolve({
+          ok: false as const,
+          error: new Error(reason),
+        });
+      },
+      syncMilestoneBranchFn: (() => {
+        synced++;
+        return Promise.resolve({
+          ok: true as const,
+          value: { message: "merged" },
+        });
+      }) as unknown as IssueRunPresyncArgs["syncMilestoneBranchFn"],
+      runGitCommandFn: (async (cmdArgs: string[]) => {
+        gitCalls.push(cmdArgs);
+        if (cmdArgs[0] === "rev-parse" && cmdArgs[1] === "--git-path") {
+          return {
+            ok: true as const,
+            value: { code: 0, stdout: `${refPath}\n`, stderr: "" },
+          };
+        }
+        if (cmdArgs[0] === "fetch") {
+          return {
+            ok: true as const,
+            value: { code: 0, stdout: "", stderr: "" },
+          };
+        }
+        throw new Error(`unexpected git call: ${cmdArgs.join(" ")}`);
+      }) as IssueRunPresyncArgs["runGitCommandFn"],
+    } satisfies IssueRunPresyncArgs;
+
+    const result = await presyncMilestoneBranchForIssueRun(args);
+
+    assertEquals(result.status, "deferred");
+    assert(result.detail.startsWith(MILESTONE_BEHIND_DEFER_REASON));
+    assertEquals(result.unmeasured, reason.split("\n")[0]);
+    assertEquals(synced, 0, "no merge or branch cut for an unmeasured base");
+    assertEquals(
+      countCalls,
+      2,
+      "the original count plus one retry after the repair",
+    );
+    assert(
+      gitCalls.some((call) =>
+        call[0] === "rev-parse" && call[1] === "--git-path"
+      ),
+      "the repair looked up the broken ref's loose file",
+    );
+    assert(
+      gitCalls.some((call) => call[0] === "fetch"),
+      "the repair re-fetched the ref before retrying the count",
+    );
+    assertEquals(
+      await Deno.stat(refPath).then(() => true).catch(() => false),
+      false,
+      "the broken loose ref file was removed by the repair",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => {});
+    await Deno.remove(refDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("presyncMilestoneBranch - a measured result leaves unmeasured undefined", async () => {
+  const fx = await ledger();
+  try {
+    const result = await presyncMilestoneBranch(
+      {
+        repo: REPO,
+        milestoneBranch: MILESTONE,
+        defaultBranch: DEFAULT_BRANCH,
+        streakPath: fx.path,
+        grant: { agentAllowed: true },
+        nowMs: NOW,
+      },
+      deps({ behindBy: 0 }),
+    );
+
+    assertEquals(result.status, "level");
+    assertEquals(result.unmeasured, undefined);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 Deno.test("presyncMilestoneBranch - the default tip is read (and so fetched) before the branch is measured", async () => {
   // Order is load-bearing: reading the tip is what fetches `origin/<default>`,
   // and counting against a stale one would answer "level" for a branch that is
