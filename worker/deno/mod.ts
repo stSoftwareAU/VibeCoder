@@ -654,6 +654,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // Reads git history through --repo-dir/--branch/--default-branch; runs
       // in CI on a checkout that has no .config.json (Issue #1048).
       "check-resurrected-files",
+      // Checks the sweep ledger's sweptAt ancestry in CI with no config
+      // (Issue #2754).
+      "sweep-drift",
       // Full-history secrets sweep; runs in CI with no config (Issue #4190).
       "secrets-history-scan",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
@@ -781,6 +784,9 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       // Reads git history through --repo-dir/--branch/--default-branch; runs
       // in CI on a checkout that has no .config.json (Issue #1048).
       "check-resurrected-files",
+      // Checks the sweep ledger's sweptAt ancestry in CI with no config
+      // (Issue #2754).
+      "sweep-drift",
       // Hostile-fixture tabletop; runs on a schedule with no config (#4194).
       "security-tabletop",
       // Dossier checker; a pure file check with no config (Issue #4200).

@@ -18,16 +18,13 @@ import {
   raiseMilestoneSyncPr,
 } from "./milestone_sync_pr.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
-import { buildBranchDeleteArgs } from "./git_branch_args.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
 import {
   assertSafeGitRef,
   assertSafeRefComponent,
   buildCheckoutArgs,
-  buildCheckoutNewBranchArgs,
   buildFetchArgs,
   buildPushArgs,
-  buildRebaseArgs,
 } from "./git_ref_args.ts";
 import { checkoutPrBranchAtRemoteHead } from "./pr_branch_checkout.ts";
 import {
@@ -105,13 +102,13 @@ function checkoutFailureError(
 }
 
 /**
- * Sync a feature branch with the latest default branch (Issue #230).
+ * Sync a feature branch with the latest default branch (Issues #230, #2807).
  *
- * If the rebase encounters conflicts:
- *   1. Check if the remote has commits for this branch (Issue #586)
- *   2. If yes, reset to the remote version to preserve prior work, then
- *      attempt a merge from the default branch
- *   3. If no remote branch exists, recreate from the default branch
+ * Merges the published default branch (`origin/<default>`) into the feature
+ * branch — never a rebase — so a PR under review keeps its commits and the
+ * review comments anchored to them. A conflicting merge is aborted and
+ * reported as {@link prBranchConflictError}, the branch left exactly as it
+ * was for the conflict ladder; nothing here pushes.
  *
  * @param branchName - The feature branch to sync
  * @param defaultBranch - The default branch to sync with
@@ -133,7 +130,7 @@ export async function syncFeatureBranchWithDefault(
       error: err instanceof Error ? err : new Error(String(err)),
     };
   }
-  // Pre-check disk space before fetch/rebase (Issue #1174)
+  // Pre-check disk space before fetch/merge (Issue #1174)
   if (options.cwd) {
     const spaceCheck = await requireDiskSpaceForGitOperation(
       options.cwd,
@@ -172,12 +169,16 @@ export async function syncFeatureBranchWithDefault(
     }
   }
 
-  // Ensure enough history is present for range/rebase ops on a shallow clone (Issue #1502)
-  await ensureHistoryDepth(["HEAD", defaultBranch], options);
+  // Merge the published target (Issue #2807): the local default branch may
+  // be held behind by another lane's worktree (Issue #394).
+  const baseRef = await resolvePublishedBaseRef(defaultBranch, options);
 
-  // Check if rebase is needed
+  // Ensure enough history is present for range/merge ops on a shallow clone (Issue #1502)
+  await ensureHistoryDepth(["HEAD", baseRef], options);
+
+  // Check if a merge is needed
   const behindResult = await runGitCommand(
-    ["rev-list", "--count", `HEAD..${defaultBranch}`],
+    ["rev-list", "--count", `HEAD..${baseRef}`],
     options,
   );
   const behindCount = behindResult.ok && behindResult.value.code === 0
@@ -192,102 +193,21 @@ export async function syncFeatureBranchWithDefault(
     };
   }
 
-  // Attempt rebase
-  const rebaseResult = await runGitCommand(
-    buildRebaseArgs(defaultBranch),
+  const merged = await mergeBaseIntoBranch(
+    branchName,
+    defaultBranch,
+    baseRef,
     options,
   );
-
-  if (rebaseResult.ok && rebaseResult.value.code === 0) {
-    return {
-      ok: true,
-      value:
-        `Successfully synced '${branchName}' with '${defaultBranch}' (${behindCount} commit(s) integrated)`,
-    };
+  if (!merged.ok) {
+    // The PR processors run on regardless, so the refusal is logged here.
+    console.error(`[sync] ${merged.error.message}`);
+    return merged;
   }
-
-  // Rebase failed — likely merge conflicts
-  await runGitCommand(["rebase", "--abort"], options);
-
-  // Issue #586: Check if the remote has this branch with commits to preserve
-  await runGitCommand(buildFetchArgs("origin", branchName), options);
-  const showRefResult = await runGitCommand(
-    ["show-ref", "--verify", "--quiet", `refs/remotes/origin/${branchName}`],
-    options,
-  );
-
-  if (showRefResult.ok && showRefResult.value.code === 0) {
-    // Ensure enough history for the defaultBranch..origin/branch range (Issue #1502)
-    await ensureHistoryDepth([defaultBranch, `origin/${branchName}`], options);
-
-    const remoteCountResult = await runGitCommand(
-      ["rev-list", "--count", `${defaultBranch}..origin/${branchName}`],
-      options,
-    );
-    const remoteCommitCount =
-      remoteCountResult.ok && remoteCountResult.value.code === 0
-        ? parseInt(remoteCountResult.value.stdout.trim(), 10) || 0
-        : 0;
-
-    if (remoteCommitCount > 0) {
-      // Preserve remote commits (Issue #586)
-      await runGitCommand(buildCheckoutArgs(defaultBranch), options);
-      await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
-
-      const restoreResult = await runGitCommand(
-        buildCheckoutNewBranchArgs(branchName, `origin/${branchName}`),
-        options,
-      );
-
-      if (!restoreResult.ok || restoreResult.value.code !== 0) {
-        // Fall through to recreate
-        await runGitCommand(
-          buildCheckoutNewBranchArgs(branchName, defaultBranch),
-          options,
-        );
-        return {
-          ok: true,
-          value:
-            `SELF-HEALING: Branch '${branchName}' recreated from '${defaultBranch}' — prior feature commits were discarded`,
-        };
-      }
-
-      // Ensure history depth for the merge (Issue #1502)
-      await ensureHistoryDepth(["HEAD", defaultBranch], options);
-
-      // Try to merge default branch into the preserved remote version
-      const mergeResult = await runGitCommand(
-        ["merge", defaultBranch, "--no-edit"],
-        options,
-      );
-
-      if (mergeResult.ok && mergeResult.value.code === 0) {
-        return {
-          ok: true,
-          value:
-            `SELF-HEALING: Merged '${defaultBranch}' into preserved '${branchName}' — remote commits retained`,
-        };
-      }
-
-      // Merge also conflicts — keep the remote version without the merge
-      await runGitCommand(["merge", "--abort"], options);
-      return {
-        ok: true,
-        value:
-          `SELF-HEALING: Merge conflict with preserved '${branchName}' — keeping remote version without merge`,
-      };
-    }
-  }
-
-  // No remote branch or no remote commits — recreate from the default branch
-  await runGitCommand(buildCheckoutArgs(defaultBranch), options);
-  await runGitCommand(buildBranchDeleteArgs(branchName, true), options);
-  await runGitCommand(buildCheckoutNewBranchArgs(branchName), options);
-
   return {
     ok: true,
     value:
-      `SELF-HEALING: Branch '${branchName}' recreated from '${defaultBranch}' — prior feature commits were discarded`,
+      `Successfully synced '${branchName}' with '${defaultBranch}' (${behindCount} commit(s) merged in)`,
   };
 }
 
@@ -1377,15 +1297,78 @@ async function resolvePublishedBaseRef(
 }
 
 /**
- * Update a PR branch to be current with its base branch (Issue #379, #498).
+ * Merge `baseRef` into the checked-out branch, never picking a side
+ * (Issues #4373, #2807).
  *
- * Rebases the feature branch onto the base branch and force-pushes.
+ * A conflicting merge is aborted and returned as {@link prBranchConflictError}
+ * so the conflict ladder takes over with the branch exactly as it was. Any
+ * other merge failure is a failure carrying git's own output.
  *
- * Issue #1313: When reason is "conflicting", always uses merge-based
- * resolution regardless of behindCount. GitHub's merge analysis may detect
- * conflicts whether the branch is behind or has diverged (behind_by > 0 or
- * == 0). The merge-based path uses -X theirs to accept base branch changes
- * for conflicted files, ensuring the PR can be resolved automatically.
+ * @param branchName - The checked-out branch being updated
+ * @param baseBranch - The base branch's name, for the operator-facing verdict
+ * @param baseRef - The ref actually merged in
+ * @param options - Git command options
+ * @returns Success once the merge commit (or fast-forward) is in place
+ */
+async function mergeBaseIntoBranch(
+  branchName: string,
+  baseBranch: string,
+  baseRef: string,
+  options: GitCommandOptions,
+): Promise<Result<void>> {
+  const mergeResult = await runGitCommand(
+    ["merge", "--no-edit", "--end-of-options", baseRef],
+    options,
+  );
+  if (mergeResult.ok && mergeResult.value.code === 0) {
+    return { ok: true, value: undefined };
+  }
+
+  const unmerged = await listUnmergedPaths(options);
+  // Abort only a merge git actually started, and fail loud when the abort
+  // itself fails: a half-merged tree is not "left exactly as it was".
+  const merging = await runGitCommand(
+    ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+    options,
+  );
+  if (merging.ok && merging.value.code === 0) {
+    const aborted = await runGitCommand(["merge", "--abort"], options);
+    if (!aborted.ok || aborted.value.code !== 0) {
+      return {
+        ok: false,
+        error: new Error(
+          `Merging '${baseRef}' into '${branchName}' failed and ` +
+            `'git merge --abort' failed too: ${
+              describeGitFailure(aborted, { lines: 6, from: "head" })
+            }`,
+        ),
+      };
+    }
+  }
+  if (unmerged.ok && unmerged.value.length > 0) {
+    return {
+      ok: false,
+      error: prBranchConflictError(branchName, baseBranch, "merge"),
+    };
+  }
+  return {
+    ok: false,
+    error: new Error(
+      `Failed to merge '${baseRef}' into '${branchName}': ${
+        describeGitFailure(mergeResult, { lines: 6, from: "head" })
+      }`,
+    ),
+  };
+}
+
+/**
+ * Update a PR branch to be current with its base branch
+ * (Issues #379, #498, #2807).
+ *
+ * Merges the published base into the PR branch and pushes normally — never a
+ * rebase, never a force-push — so a PR under review keeps its commits and its
+ * review comments. A "conflicting" PR (Issue #1313) takes the same merge
+ * whatever its behind count, since GitHub has already seen the divergence.
  *
  * @param branchName - The feature branch to update
  * @param baseBranch - The base branch to sync with
@@ -1415,7 +1398,7 @@ export async function updatePrBranch(
   // Issue #394: the base ref this update is judged against is the *published*
   // one wherever it exists. `ensureDefaultBranchCurrent` cannot move a local
   // base branch that another lane's worktree has checked out — git refuses,
-  // correctly — so trusting the local ref would rebase onto a base that is
+  // correctly — so trusting the local ref would merge a base that is
   // already behind and leave the PR reported as behind for ever.
   const baseRef = await resolvePublishedBaseRef(baseBranch, options);
 
@@ -1430,7 +1413,7 @@ export async function updatePrBranch(
   // ref is overwritten rather than read — and it still refuses loudly, with
   // the typed ahead-of-remote error, when the local branch carries commits
   // origin has never seen: those are somebody's unpushed work and this pass
-  // force-pushes whatever it produces.
+  // pushes whatever it produces.
   const alignResult = await checkoutPrBranchAtRemoteHead(branchName, options);
   if (!alignResult.ok) {
     return { ok: false, error: alignResult.error };
@@ -1442,7 +1425,7 @@ export async function updatePrBranch(
   // Ensure enough history for range detection on a shallow clone (Issue #1502)
   await ensureHistoryDepth(["HEAD", baseRef], options);
 
-  // Check if rebase is needed
+  // Check if an update is needed
   const behindResult = await runGitCommand(
     ["rev-list", "--count", `HEAD..${baseRef}`],
     options,
@@ -1451,24 +1434,8 @@ export async function updatePrBranch(
     ? parseInt(behindResult.value.stdout.trim(), 10) || 0
     : 0;
 
-  // Issue #1313: When reason is "conflicting", always use merge-based
-  // resolution regardless of behindCount. GitHub's merge analysis has
-  // detected conflicts — rebase will fail for divergent branches.
-  // Use merge (with -X theirs fallback) to accept base branch changes.
-  if (reason === "conflicting") {
-    const conflicting = await resolveConflictingPrBranch(
-      branchName,
-      baseBranch,
-      baseRef,
-      options,
-    );
-    return conflicting.ok
-      ? { ok: true, value: `${alignNote}${conflicting.value}` }
-      : conflicting;
-  }
-
   // Return early when not behind and no conflict reason provided.
-  if (behindCount === 0) {
+  if (reason !== "conflicting" && behindCount === 0) {
     return {
       ok: true,
       value: `${alignNote}PR branch '${branchName}' is already up to date ` +
@@ -1476,113 +1443,32 @@ export async function updatePrBranch(
     };
   }
 
-  // Attempt rebase (history already deepened above)
-  const rebaseResult = await runGitCommand(
-    buildRebaseArgs(baseRef),
+  const merged = await mergeBaseIntoBranch(
+    branchName,
+    baseBranch,
+    baseRef,
     options,
   );
-
-  if (rebaseResult.ok && rebaseResult.value.code === 0) {
-    const pushed = await forcePushFeatureBranch(branchName, options);
-    return pushed.ok
-      ? { ok: true, value: `${alignNote}${pushed.value}` }
-      : pushed;
-  }
-
-  // Rebase conflicted (Issue #4373): abort and leave the branch exactly as
-  // it was. The old path resolved by `checkout --ours` (= upstream) per
-  // conflicted file and force-pushed, which silently threw away the PR's
-  // own changes to that file. Issue #386 still holds: never recreate the
-  // branch — that destroys all PR commits.
-  await runGitCommand(["rebase", "--abort"], options);
-  return {
-    ok: false,
-    error: prBranchConflictError(branchName, baseBranch, "rebase"),
-  };
+  if (!merged.ok) return merged;
+  const pushed = await pushFeatureBranch(branchName, options);
+  return pushed.ok
+    ? { ok: true, value: `${alignNote}${pushed.value}` }
+    : pushed;
 }
 
 /**
- * Resolve a PR branch that has merge conflicts but is not behind (Issue #1313).
+ * Push an updated feature branch with a plain, fast-forward push
+ * (Issue #2807).
  *
- * When GitHub reports a PR as CONFLICTING but behind_by is 0, the branches
- * have diverged in a way that standard rebase cannot detect locally. This
- * function merges the base branch into the feature branch, accepting base
- * branch changes for any conflicted files, then force-pushes.
- *
- * Strategy:
- * 1. Try a clean merge first (no conflicts → done)
- * 2. If merge conflicts, abort and retry with -X theirs (favour base branch)
- * 3. If that fails, manually resolve each conflicted file with checkout --theirs
- *
- * @param branchName - The feature branch
- * @param baseBranch - The base branch's name, for the operator-facing verdict
- * @param baseRef - The ref actually merged from — the published base wherever
- *   it exists (Issue #394)
- * @param options - Git command options
- * @returns Result indicating success or failure
- */
-async function resolveConflictingPrBranch(
-  branchName: string,
-  baseBranch: string,
-  baseRef: string,
-  options: GitCommandOptions = {},
-): Promise<Result<string>> {
-  // Ensure enough history for the merge on a shallow clone (Issue #1502)
-  await ensureHistoryDepth(["HEAD", baseRef], options);
-
-  // Attempt 1: Clean merge
-  const mergeResult = await runGitCommand(
-    ["merge", baseRef, "--no-edit"],
-    options,
-  );
-
-  if (mergeResult.ok && mergeResult.value.code === 0) {
-    return await fetchAndForcePush(branchName, options);
-  }
-
-  // The merge conflicted (Issue #4373): abort and leave the branch exactly
-  // as it was. The old path retried with `-X theirs` and then
-  // `checkout --theirs` per file — both discard the PR's conflicting hunks
-  // (or whole files) and force-push a commit that still carries the PR's
-  // message. A conflict here needs a real merge, not a side-pick.
-  await runGitCommand(["merge", "--abort"], options);
-  return {
-    ok: false,
-    error: prBranchConflictError(branchName, baseBranch, "merge"),
-  };
-}
-
-/**
- * Fetch a branch from origin then force-push it (Issue #1313).
- *
- * Fetching before force-pushing ensures the remote-tracking ref
- * (`refs/remotes/origin/<branch>`) is current. This makes
- * `--force-with-lease` accurate: if another user pushed since our last
- * fetch, the updated tracking ref will cause `--force-with-lease` to
- * correctly reject our push (protecting their work). If nobody pushed,
- * the fetch is a no-op and the push proceeds normally.
- *
- * @param branchName - The branch to fetch and then force-push
- * @param options - Git command options
- * @returns Result indicating success or failure
- */
-async function fetchAndForcePush(
-  branchName: string,
-  options: GitCommandOptions = {},
-): Promise<Result<string>> {
-  // Fetch to refresh the remote-tracking ref before the lease check
-  await runGitCommand(buildFetchArgs("origin", branchName), options);
-  return await forcePushFeatureBranch(branchName, options);
-}
-
-/**
- * Force-push a feature branch (safe — uses --force-with-lease).
+ * Never forced: a merge only adds commits, so the push fast-forwards. A
+ * rejection — somebody pushed meanwhile, or a branch rule refused it — is a
+ * failure carrying git's stderr, and is never retried with force.
  *
  * @param branchName - The branch to push
  * @param options - Git command options
  * @returns Result indicating success
  */
-async function forcePushFeatureBranch(
+async function pushFeatureBranch(
   branchName: string,
   options: GitCommandOptions = {},
 ): Promise<Result<string>> {
@@ -1591,15 +1477,16 @@ async function forcePushFeatureBranch(
   if (isProtectedBranch(branchName)) {
     return {
       ok: false,
-      error: new Error(`Cannot force-push to protected branch '${branchName}'`),
+      error: new Error(
+        `Cannot push a PR update to protected branch '${branchName}'`,
+      ),
     };
   }
 
   // Issue #275: through the sanctioned builder, so the branch name is
-  // validated and sits behind `--end-of-options`, and the lease flag stays
-  // ahead of the separator where git still reads it as a flag.
+  // validated and sits behind `--end-of-options`.
   const pushResult = await runGitCommand(
-    buildPushArgs("origin", branchName, { forceWithLease: true }),
+    buildPushArgs("origin", branchName),
     options,
   );
 
@@ -1610,7 +1497,7 @@ async function forcePushFeatureBranch(
     return {
       ok: false,
       error: new Error(
-        `Failed to push updated branch '${branchName}': ${errorMsg}`,
+        `Failed to push updated branch '${branchName}' (plain push, not retried with force): ${errorMsg}`,
       ),
     };
   }
@@ -1622,7 +1509,8 @@ async function forcePushFeatureBranch(
 }
 
 /**
- * Ensure a PR is mergeable by rebasing if behind (Issue #482).
+ * Ensure a PR is mergeable by merging its base in when behind
+ * (Issues #482, #2807).
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - The PR number
@@ -1683,7 +1571,7 @@ export async function ensurePrMergeable(
     }
   }
 
-  // Ensure enough history for the range/rebase on a shallow clone (Issue #1502)
+  // Ensure enough history for the range/merge on a shallow clone (Issue #1502)
   await ensureHistoryDepth(["HEAD", baseBranch], options);
 
   // Check if behind
@@ -1703,32 +1591,14 @@ export async function ensurePrMergeable(
     };
   }
 
-  // Attempt rebase
-  const rebaseResult = await runGitCommand(
-    buildRebaseArgs(baseBranch),
+  // Merge the base in (Issue #2807): a conflict is aborted and reported,
+  // never side-picked and never recreated (Issue #386).
+  const merged = await mergeBaseIntoBranch(
+    branchName,
+    baseBranch,
+    baseBranch,
     options,
   );
-
-  if (rebaseResult.ok && rebaseResult.value.code === 0) {
-    return await forcePushFeatureBranch(branchName, options);
-  }
-
-  // Rebase failed — attempt conflict resolution
-  const { resolveRebaseConflicts } = await import(
-    "./git_conflict_resolution.ts"
-  );
-  const conflictResult = await resolveRebaseConflicts(options);
-
-  if (conflictResult.ok) {
-    return await forcePushFeatureBranch(branchName, options);
-  }
-
-  // Issue #386: Do NOT recreate the branch
-  await runGitCommand(["rebase", "--abort"], options);
-  return {
-    ok: false,
-    error: new Error(
-      `Could not resolve merge conflicts for PR branch '${branchName}' — may require manual conflict resolution`,
-    ),
-  };
+  if (!merged.ok) return merged;
+  return await pushFeatureBranch(branchName, options);
 }

@@ -3,7 +3,14 @@
 // post.ts appends one record per posted review to log.jsonl; every gate pass
 // rewrites summary.md from the log and the open-PR search it already makes,
 // so keeping the owner informed costs no model tokens and no extra API calls.
-// Both live outside the checkout, which the worker resets.
+// Both live beside the Vibe Coder's own logs (stateDir), outside the
+// checkout, which the worker resets.
+
+import {
+  hostLogDirPlatform,
+  readConfiguredLogDirSync,
+  resolveLogDir,
+} from "../../../worker/deno/lib/log_dir.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
@@ -71,9 +78,89 @@ export const LOG_FILE = "log.jsonl";
 export const SUMMARY_FILE = "summary.md";
 export const OPEN_FILE = "open.json"; // PR keys the latest gate pass saw open
 
-export function stateDir(): string {
-  return `${Deno.env.get("HOME")}/.review-fleet-prs`;
+const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
+const STATE_NAME = "review-fleet-prs";
+
+// Beside the Vibe Coder's own logs: `<log_dir>/review-fleet-prs`, where
+// `log_dir` is the `.config.json` key, else the platform default, resolved by
+// the worker's own code so the two can never disagree.
+// `env` is injectable so a test never has to mutate the process environment.
+export function stateDir(
+  configPath: string | URL = DEFAULT_CONFIG,
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): string {
+  return `${
+    resolveLogDir(
+      env("HOME") ?? "",
+      env,
+      "posix",
+      hostLogDirPlatform(),
+      readConfiguredLogDirSync(
+        configPath instanceof URL
+          ? decodeURIComponent(configPath.pathname)
+          : configPath,
+      ),
+    )
+  }/${STATE_NAME}`;
 }
+
+// The skill used to keep everything in a hidden `~/.review-fleet-prs`. Moves
+// each entry into `dir` once, so the review history (and with it "already
+// reviewed" and earlier findings) carries over. An entry already in `dir` is
+// never overwritten; the old directory is removed only once it is empty.
+export async function migrateLegacyStateDir(
+  dir: string,
+  home: string | undefined = Deno.env.get("HOME"),
+): Promise<void> {
+  const legacy = `${home}/.${STATE_NAME}`;
+  let entries: Deno.DirEntry[];
+  try {
+    entries = await Array.fromAsync(Deno.readDir(legacy));
+  } catch {
+    return; // nothing to migrate
+  }
+  await Deno.mkdir(dir, { recursive: true });
+  for (const entry of entries) {
+    const to = `${dir}/${entry.name}`;
+    try {
+      await Deno.lstat(to);
+      if (!entry.isDirectory) continue; // the log directory's copy wins
+      // Both have it (rounds/): move what the log directory lacks.
+      await migrateTree(`${legacy}/${entry.name}`, to);
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) throw e;
+      await Deno.rename(`${legacy}/${entry.name}`, to);
+    }
+  }
+  try {
+    await Deno.remove(legacy, { recursive: false });
+  } catch {
+    // Not empty: something was kept because the log directory had its own.
+  }
+}
+
+async function migrateTree(from: string, to: string): Promise<void> {
+  for await (const entry of Deno.readDir(from)) {
+    try {
+      await Deno.lstat(`${to}/${entry.name}`);
+    } catch {
+      await Deno.rename(`${from}/${entry.name}`, `${to}/${entry.name}`);
+    }
+  }
+  try {
+    await Deno.remove(from);
+  } catch {
+    // kept entries
+  }
+}
+
+// Prints the directory, for run.sh.
+if (import.meta.main) console.log(stateDir());
+
+// GitHub spells a bot's login `slug[bot]` over REST but `slug` in GraphQL
+// review authors, so a reviewer App must match either spelling.
+export const sameLogin = (a: string | undefined, b: string) =>
+  a !== undefined && a.replace(/\[bot\]$/, "") === b.replace(/\[bot\]$/, "");
 
 export const prKey = (repo: string, number: number) => `${repo}#${number}`;
 

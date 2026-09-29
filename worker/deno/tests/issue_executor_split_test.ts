@@ -17,12 +17,19 @@ import type { RepoConfig } from "../types.ts";
 const OFF = { issueExecutorSplit: false };
 const ON = { issueExecutorSplit: true };
 
-Deno.test("issue_executor_split - defaults to disabled for the issue phase", () => {
+Deno.test("issue_executor_split - host-wide false disables the issue phase", () => {
   assertEquals(isIssueExecutorSplitEnabled("issue", undefined, OFF), false);
 });
 
-Deno.test("issue_executor_split - buildDefaultWorkerConfig defaults the key to false", () => {
-  assertEquals(buildDefaultWorkerConfig().issueExecutorSplit, false);
+Deno.test("issue_executor_split - buildDefaultWorkerConfig defaults the key to true (Issue #2812)", () => {
+  assertEquals(buildDefaultWorkerConfig().issueExecutorSplit, true);
+});
+
+Deno.test("issue_executor_split - the default config enables the issue phase (Issue #2812)", () => {
+  assertEquals(
+    isIssueExecutorSplitEnabled("issue", undefined, buildDefaultWorkerConfig()),
+    true,
+  );
 });
 
 Deno.test("issue_executor_split - host-wide true enables the issue phase", () => {

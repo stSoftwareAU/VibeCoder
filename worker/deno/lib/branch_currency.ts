@@ -12,13 +12,14 @@
  * the only one that ever mattered.
  *
  * This module answers one question — is the branch behind its base, and can it
- * be brought forward safely — and leaves the rebase itself to
- * {@link rebaseOntoBase}, which already refuses on a dirty tree or a genuine
- * content conflict and restores the previous tip before returning.
+ * be brought forward safely — and leaves the update itself to the injected
+ * seam. Production passes `mergeOntoBase` (`pr_raise_sync.ts`, Issue #2809),
+ * which refuses on a dirty tree and aborts a conflicting merge, so the branch
+ * only ever gains commits and the push that follows is never forced.
  *
  * It is deliberately NOT a merge-conflict resolver. A branch whose content has
  * diverged is left exactly as it is, for the conflict ladder to handle: a
- * silent rebase that picks a side is the one outcome worse than an extra CI
+ * silent merge that picks a side is the one outcome worse than an extra CI
  * run.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
@@ -103,9 +104,9 @@ export interface EnsureBranchCurrentOptions {
   runGit: GitRunner;
   cwd?: string;
   /**
-   * Rebase seam — production passes `rebaseOntoBase` from
-   * `stale_branch_lineage.ts`, which already refuses safely on a dirty tree
-   * or a cherry-pick conflict and restores the branch tip before returning.
+   * Update seam (named `rebase` for history) — production passes
+   * `mergeOntoBase` from `pr_raise_sync.ts`, which refuses on a dirty tree and
+   * aborts a conflicting merge, leaving the branch tip as it was (#2809).
    */
   rebase: (
     options: {
@@ -128,10 +129,10 @@ export interface EnsureBranchCurrentOptions {
  *
  * Never fails the caller. Every unhappy path — an unreadable comparison, a
  * dirty tree, a real content conflict — returns a verdict the caller proceeds
- * past, because an extra CI run is a cost and a wrongly-rebased branch is a
+ * past, because an extra CI run is a cost and a wrongly-merged branch is a
  * defect.
  *
- * @param options - Branch, base, git runner and the rebase seam.
+ * @param options - Branch, base, git runner and the update seam.
  * @returns What happened; `updated` means the caller must push before opening
  *   the PR.
  */

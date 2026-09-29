@@ -20,6 +20,38 @@ leave the session running:
 
 Optional argument: `owner/name` to review one repo only.
 
+## Running unattended
+
+On an always-on host, `run.sh` in this directory does the same without an
+open session. Every 5 minutes it runs one gate pass, and it starts a headless
+`claude -p` round only when a PR is ready. It loops for ever, retries after
+a failed pass, kills a round that runs over 50 minutes, and keeps one runner
+per machine.
+
+```bash
+.claude/skills/review-fleet-prs/run.sh --install   # start at login, restart on exit
+.claude/skills/review-fleet-prs/run.sh --once      # one pass, in the foreground
+```
+
+`--install` registers a launchd agent on macOS or a systemd user service on
+Linux. The host needs `deno`, `jq`, `gh` signed in, and `claude` signed in.
+The log is `runner.log` in the log directory below. A headless round cannot send the
+PushNotification in step 4; `summary.md` still shows what is waiting.
+
+### As a GitHub App
+
+With `pr_reviewer_app` in `.config.json` (see
+[CONFIGURATION.md](../../../docs/CONFIGURATION.md#-reviewer-app-for-fleet-pr-reviews)),
+`run.sh` reviews as that App's bot instead of the `gh` user. `app_token.ts`
+mints a fresh installation token for every pass, since one lasts an hour.
+When minting fails, the pass is skipped; it never falls back to posting as the
+`gh` user. The App needs **Pull requests** and **Issues** read and write,
+**Contents**, **Checks** and **Commit statuses** read, and installation on
+every monitored repo and on `stSoftwareAU/VibeCoder` (for improvement issues).
+Add `<app-slug>[bot]` to `authorized_commenters` (not `pr_reviewers`,
+which would make PR creation fail). An interactive `/review-fleet-prs`
+session still reviews as the `gh` user.
+
 ## Rules
 
 1. **Only PRs into the default branch are reviewed.** A PR into a milestone
@@ -102,7 +134,7 @@ night costs no tokens.
    the Bash tool's `run_in_background: true`:
 
    ```bash
-   deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME gate.ts --watch=300 [--repo=owner/name]
+   deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --watch=300 [--repo=owner/name]
    ```
 
 2. Do nothing until it finishes: you are re-invoked when it exits. Do not
@@ -216,7 +248,7 @@ reply>}` to a file in the scratchpad and run, from this skill's base
 directory:
 
 ```bash
-deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME post.ts --input=<file>
+deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
 ```
 
 The script does the rest, so do not post anything yourself:
@@ -233,8 +265,8 @@ The script does the rest, so do not post anything yourself:
 - It links an open issue with the same title instead of filing an
   unrelated issue twice. A failure to file one never stops the review.
 - It writes and posts the review body (listing any issues filed), appends
-  the result to `~/.review-fleet-prs/log.jsonl`, refreshes
-  `~/.review-fleet-prs/summary.md`, and raises a desktop notification when a
+  the result to `<logs>/review-fleet-prs/log.jsonl`, refreshes
+  `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
 It prints `{ posted, outcome?, filedIssues?, reason? }`. Exit code 2 means
@@ -247,7 +279,7 @@ After posting the round, treat repeated blocking findings as training data for
 VibeCoder's own guidance:
 
 1. For each blocking finding, identify the **root mistake**, not merely its
-   wording or file. Compare it with `~/.review-fleet-prs/log.jsonl` and the
+   wording or file. Compare it with `<logs>/review-fleet-prs/log.jsonl` and the
    recent review history it records. A recurrence means the same preventable
    mistake has appeared in at least **two independent PRs**; repeated comments
    on one PR or one head commit count once.
@@ -287,7 +319,7 @@ market`. It reaches the owner's phone when this session has Remote Control
 connected (`/remote-control` and the Claude app). Send nothing for rounds
 that only approved or had nothing ready.
 
-The owner's running view is `~/.review-fleet-prs/summary.md`: what is
+The owner's running view is `<logs>/review-fleet-prs/summary.md`: what is
 waiting for them, what was sent back to the fleet, and what was approved in
 the last 7 days. Every gate pass rewrites it at no token cost.
 
@@ -301,5 +333,8 @@ the last 7 days. Every gate pass rewrites it at no token cost.
   let an author approve their own PR.
 - Cost while idle: one GraphQL search (about 2 points) every 5 minutes, and
   no model tokens. Each ready PR adds one REST call for its file list.
-- The log and summary live in `~/.review-fleet-prs/`, outside the checkout,
-  which the worker resets. Each machine keeps its own.
+- `<logs>` is the Vibe Coder's own log directory: `.config.json` `log_dir`
+  (the fleet sets `~/logs`), else the platform default. Everything this skill
+  writes lives in `<logs>/review-fleet-prs/`, outside the checkout, which the
+  worker resets. Each machine keeps its own; history from the old hidden
+  `~/.review-fleet-prs` moves there on the first gate pass.

@@ -580,13 +580,13 @@ Deno.test("claude executor - buildClaudeModelArgs uses spelling_fix phase defaul
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses ci_fix phase default (effort-first, Issue #2391)", () => {
-  // Effort-first (#2391): ci_fix defaults to the single top tier.
+  // Issue #2812: ci_fix is a reactive phase and defaults to Sonnet.
   const args = buildClaudeModelArgs("ci_fix", emptyEnv);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_CI_FIX env override (Issue #1079)", () => {
-  // Use a value distinct from the top-tier default so the override is provable.
+  // Use a value distinct from the Sonnet default so the override is provable.
   const env = envFrom({ CLAUDE_MODEL_CI_FIX: "haiku" });
   const args = buildClaudeModelArgs("ci_fix", env);
   assertEquals(args, ["--model", "haiku"]);
@@ -595,9 +595,9 @@ Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_CI_FIX env overri
 Deno.test("claude executor - buildClaudeModelArgs ci_fix phase default overrides CLAUDE_MODEL (Issue #1079)", () => {
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
   const env = envFrom({ CLAUDE_MODEL: "haiku" });
-  // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
+  // Phase default (Sonnet, #2812) takes priority over CLAUDE_MODEL (Issue #1270)
   const args = buildClaudeModelArgs("ci_fix", env);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses question phase default (Issue #1071)", () => {
@@ -671,13 +671,13 @@ Deno.test("claude executor - buildClaudeModelArgs revision phase default overrid
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses pr_feedback phase default (effort-first, Issue #2391)", () => {
-  // Effort-first (#2391): pr_feedback defaults to the single top tier.
+  // Issue #2812: pr_feedback is a reactive phase and defaults to Sonnet.
   const args = buildClaudeModelArgs("pr_feedback", emptyEnv);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_PR_FEEDBACK env override (Issue #1080)", () => {
-  // Distinct from the top-tier default so the env override is provable.
+  // Distinct from the Sonnet default so the env override is provable.
   const env = envFrom({ CLAUDE_MODEL_PR_FEEDBACK: "haiku" });
   const args = buildClaudeModelArgs("pr_feedback", env);
   assertEquals(args, ["--model", "haiku"]);
@@ -686,9 +686,9 @@ Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_PR_FEEDBACK env o
 Deno.test("claude executor - buildClaudeModelArgs pr_feedback phase default overrides CLAUDE_MODEL (Issue #1080)", () => {
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
   const env = envFrom({ CLAUDE_MODEL: "haiku" });
-  // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
+  // Phase default (Sonnet, #2812) takes priority over CLAUDE_MODEL (Issue #1270)
   const args = buildClaudeModelArgs("pr_feedback", env);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -704,9 +704,9 @@ Deno.test("claude executor - buildClaudeModelArgs phase default overrides CLAUDE
 
 Deno.test("claude executor - buildClaudeModelArgs ci_fix phase default overrides CLAUDE_MODEL (Issue #1270)", () => {
   const env = envFrom({ CLAUDE_MODEL: "haiku" });
-  // ci_fix default (top tier) should take priority over CLAUDE_MODEL (haiku)
+  // ci_fix default (Sonnet, #2812) should take priority over CLAUDE_MODEL (haiku)
   const args = buildClaudeModelArgs("ci_fix", env);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs health phase default overrides CLAUDE_MODEL (Issue #1270)", () => {
@@ -765,13 +765,13 @@ Deno.test("claude executor - captureTimeoutDiagnostics handles empty output", ()
 });
 
 Deno.test("claude executor - buildClaudeModelArgs uses quality_fix phase default (effort-first, Issue #2391)", () => {
-  // Effort-first (#2391): quality_fix defaults to the single top tier.
+  // Issue #2812: quality_fix is a reactive phase and defaults to Sonnet.
   const args = buildClaudeModelArgs("quality_fix", emptyEnv);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_QUALITY_FIX env override (Issue #1082)", () => {
-  // Distinct from the top-tier default so the env override is provable.
+  // Distinct from the Sonnet default so the env override is provable.
   const env = envFrom({ CLAUDE_MODEL_QUALITY_FIX: "haiku" });
   const args = buildClaudeModelArgs("quality_fix", env);
   assertEquals(args, ["--model", "haiku"]);
@@ -780,9 +780,9 @@ Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_QUALITY_FIX env o
 Deno.test("claude executor - buildClaudeModelArgs quality_fix phase default overrides CLAUDE_MODEL (Issue #1082)", () => {
   // CLAUDE_MODEL set to a non-default value so the phase default is provable.
   const env = envFrom({ CLAUDE_MODEL: "haiku" });
-  // Phase default (top tier) takes priority over CLAUDE_MODEL (Issue #1270, #2391)
+  // Phase default (Sonnet, #2812) takes priority over CLAUDE_MODEL (Issue #1270)
   const args = buildClaudeModelArgs("quality_fix", env);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 // ---------------------------------------------------------------------------
