@@ -11,34 +11,33 @@ import {
   stateDir,
 } from "../../../.claude/skills/review-fleet-prs/review_log.ts";
 
+// The home directory is passed in, never set on the process: tests run in
+// parallel and share one environment (Issue #880).
 async function withHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
-  const home = await Deno.makeTempDir();
-  const saved = Deno.env.get("HOME");
-  Deno.env.set("HOME", home);
-  try {
-    return await fn(home);
-  } finally {
-    if (saved === undefined) Deno.env.delete("HOME");
-    else Deno.env.set("HOME", saved);
-  }
+  return await fn(await Deno.makeTempDir());
 }
+
+// The environment a host with this home and no XDG_STATE_HOME would have.
+const envFor = (home: string) => (name: string) =>
+  name === "HOME" ? home : undefined;
 
 Deno.test("stateDir lives in the configured log_dir, ~ expanded", async () => {
   await withHome(async (home) => {
     const config = `${home}/config.json`;
     await Deno.writeTextFile(config, JSON.stringify({ log_dir: "~/logs" }));
-    assertEquals(stateDir(config), `${home}/logs/review-fleet-prs`);
+    assertEquals(
+      stateDir(config, envFor(home)),
+      `${home}/logs/review-fleet-prs`,
+    );
   });
 });
 
 Deno.test("stateDir falls back to the Vibe Coder's platform log directory", async () => {
   await withHome(async (home) => {
-    const dir = stateDir(`${home}/no-such-config.json`);
+    const dir = stateDir(`${home}/no-such-config.json`, envFor(home));
     const expected = Deno.build.os === "darwin"
       ? `${home}/Library/Logs/vibe-coder/review-fleet-prs`
-      : `${
-        Deno.env.get("XDG_STATE_HOME") ?? `${home}/.local/state`
-      }/vibe-coder/review-fleet-prs`;
+      : `${home}/.local/state/vibe-coder/review-fleet-prs`;
     assertEquals(dir, expected);
   });
 });
@@ -53,7 +52,7 @@ Deno.test("migrateLegacyStateDir moves ~/.review-fleet-prs history into the log 
     await Deno.mkdir(target, { recursive: true });
     await Deno.writeTextFile(`${target}/runner.log`, "new\n"); // already there
 
-    await migrateLegacyStateDir(target);
+    await migrateLegacyStateDir(target, home);
 
     assertEquals(
       await Deno.readTextFile(`${target}/${LOG_FILE}`),
@@ -72,7 +71,7 @@ Deno.test("migrateLegacyStateDir moves ~/.review-fleet-prs history into the log 
     }
     assertEquals(legacyGone, true, "the hidden directory is removed");
 
-    await migrateLegacyStateDir(target); // nothing left to move: a no-op
+    await migrateLegacyStateDir(target, home); // nothing left to move: a no-op
     assertEquals(
       await Deno.readTextFile(`${target}/${LOG_FILE}`),
       '{"old":1}\n',
@@ -89,7 +88,7 @@ Deno.test("migrateLegacyStateDir never overwrites history already in the log dir
     await Deno.mkdir(target, { recursive: true });
     await Deno.writeTextFile(`${target}/${LOG_FILE}`, "current\n");
 
-    await migrateLegacyStateDir(target);
+    await migrateLegacyStateDir(target, home);
 
     assertEquals(await Deno.readTextFile(`${target}/${LOG_FILE}`), "current\n");
     assertEquals(await Deno.readTextFile(`${legacy}/${LOG_FILE}`), "old\n");

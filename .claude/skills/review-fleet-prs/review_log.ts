@@ -84,8 +84,11 @@ const STATE_NAME = "review-fleet-prs";
 // Beside the Vibe Coder's own logs: `<log_dir>/review-fleet-prs`, where
 // `log_dir` is the `.config.json` key, else the platform default, resolved by
 // the worker's own code so the two can never disagree.
-export function stateDir(configPath: string | URL = DEFAULT_CONFIG): string {
-  const env = (name: string) => Deno.env.get(name);
+// `env` is injectable so a test never has to mutate the process environment.
+export function stateDir(
+  configPath: string | URL = DEFAULT_CONFIG,
+  env: (name: string) => string | undefined = (name) => Deno.env.get(name),
+): string {
   return `${
     resolveLogDir(
       env("HOME") ?? "",
@@ -105,8 +108,11 @@ export function stateDir(configPath: string | URL = DEFAULT_CONFIG): string {
 // each entry into `dir` once, so the review history (and with it "already
 // reviewed" and earlier findings) carries over. An entry already in `dir` is
 // never overwritten; the old directory is removed only once it is empty.
-export async function migrateLegacyStateDir(dir: string): Promise<void> {
-  const legacy = `${Deno.env.get("HOME")}/.${STATE_NAME}`;
+export async function migrateLegacyStateDir(
+  dir: string,
+  home: string | undefined = Deno.env.get("HOME"),
+): Promise<void> {
+  const legacy = `${home}/.${STATE_NAME}`;
   let entries: Deno.DirEntry[];
   try {
     entries = await Array.fromAsync(Deno.readDir(legacy));
