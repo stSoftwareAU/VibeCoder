@@ -2249,7 +2249,7 @@
       "ledger": "docs/audits/security-sweep-2802-stall-repair.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stall_repair.ts (#2802)",
       "status": "swept",
-      "sweptAt": "7f63a30c92df718559c3eb1a4543de95081308d1",
+      "sweptAt": "d992f9bc6c952978d2684fb5bcc0bb460d771c14",
       "paths": [
         "worker/deno/lib/stall_repair.ts"
       ]
@@ -2261,7 +2261,7 @@
       "ledger": "docs/audits/security-sweep-2805-escalated-cleanup.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: escalated_cleanup.ts (#2805)",
       "status": "swept",
-      "sweptAt": "e210e1e003745dd5fb4714f889b92e463563405c",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/escalated_cleanup.ts"
       ]
