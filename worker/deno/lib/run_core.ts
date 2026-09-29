@@ -690,8 +690,9 @@ export interface RunCoreDeps {
   ) => Promise<boolean | undefined>;
 
   /**
-   * Priority 1.63: escalate PRs that block `work-on` issues while red or
-   * carrying an unanswered authorised comment (Issue #4025).
+   * Priority 1.63: repair PRs that block `work-on` issues while red or
+   * carrying an unanswered authorised comment (Issue #4025) — sync and rerun
+   * the owning lane once, then abandon and redo (Issue #2802).
    *
    * Optional — when absent the priority is a no-op, so a host wired
    * without the watchdog still runs every other priority unchanged.
@@ -1892,11 +1893,14 @@ export function buildPriorityDispatchTable(
     },
     {
       // Issue #4025: backstop watchdog over PRs that block `work-on`
-      // issues. Detects and escalates only — the fix routes stay with
-      // the CI-fix and PR-feedback priorities above. Never claims an
-      // issue, so it always returns `processed: false`.
+      // issues. Issue #2802: it repairs rather than escalates — sync and
+      // rerun the owning lane once, then abandon and redo — so it touches the
+      // clone and dispatches agent lanes, and runs in the maintenance lane
+      // under its lease. Never claims an issue: always `processed: false`.
       priority: 1.63,
-      name: "Blocking PR Stall Watchdog",
+      name: "Blocking PR Stall Repair",
+      agentBacked: true,
+      maintenanceLane: true,
       execute: () =>
         (deps.scanBlockingPrStalls?.() ??
           Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
