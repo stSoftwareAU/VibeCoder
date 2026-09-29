@@ -37,6 +37,11 @@ import type { FilterableIssue } from "./issue_filter.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { fetchOpenMilestoneClosedCounts } from "./issue_query.ts";
 import { withGraphQLSource } from "./gh_call_metrics.ts";
+import { runGhCommand } from "./github.ts";
+import {
+  createDependencyLandedLookup,
+  type DependencyLandedLookup,
+} from "./dependency_landed.ts";
 import {
   ISSUE_BODY_CACHE_PREFIX,
   ISSUE_STATE_CACHE_PREFIX,
@@ -659,8 +664,23 @@ export interface MilestoneScope {
    * Resolved lazily — only a closed dependency carrying a *different*
    * milestone consults it — and may reject, which fails safe (blocked).
    */
-  isMilestoneOpen: (title: string) => Promise<boolean> | boolean;
+  isMilestoneOpen: OpenMilestoneLookup;
+  /**
+   * Whether the dependency's own code has already landed on the default
+   * branch, releasing the hold early (Issue #2834). Falls back to
+   * `isMilestoneOpen.isDependencyLanded` when omitted.
+   */
+  isDependencyLanded?: (issueNumber: number) => Promise<boolean>;
 }
+
+/**
+ * The open-milestone predicate carried by {@link MilestoneScope}. A plain
+ * function without the optional `isDependencyLanded` tag remains assignable,
+ * so every pre-#2834 call site and test compiles unchanged.
+ */
+export type OpenMilestoneLookup =
+  & ((title: string) => Promise<boolean> | boolean)
+  & { isDependencyLanded?: DependencyLandedLookup };
 
 /**
  * Build the lazy open-milestone lookup behind {@link MilestoneScope}
@@ -675,6 +695,10 @@ export interface MilestoneScope {
  * rather than reading as "no open milestones" (fail loud, and fail safe at
  * the gate).
  *
+ * Also attaches {@link DependencyLandedLookup} (Issue #2834) so
+ * `isDependencyBlocked` can release a held dependant the moment its own code
+ * reaches the default branch, without waiting for the whole milestone.
+ *
  * @param repo - Repository in "owner/repo" format
  * @param cache - Optional iteration cache
  * @param ghFn - Optional gh command function for testing
@@ -684,9 +708,9 @@ export function createOpenMilestoneLookup(
   repo: string,
   cache?: IssueCache,
   ghFn?: (args: string[]) => Promise<string>,
-): (title: string) => Promise<boolean> {
+): OpenMilestoneLookup {
   let listing: Promise<Map<string, number>> | undefined;
-  return async (title: string) => {
+  const lookup: OpenMilestoneLookup = async (title: string) => {
     // The promise is cached, so concurrent callers share one in-flight call.
     // A rejection is not cached: the next candidate retries rather than
     // inheriting a transient failure for the whole iteration.
@@ -698,6 +722,12 @@ export function createOpenMilestoneLookup(
     }
     return (await listing).has(title);
   };
+  lookup.isDependencyLanded = createDependencyLandedLookup(
+    repo,
+    undefined,
+    ghFn ?? runGhCommand,
+  );
+  return lookup;
 }
 
 /**
@@ -765,6 +795,12 @@ export function describeDependencyBlockers(
  *
  * The hold is same-repo only: milestone titles are per-repository, so another
  * repo's milestone title has no meaning in this repo's open-milestone listing.
+ *
+ * Issue #2834: before honouring that cross-milestone hold, the dependency's
+ * own code is checked for having already landed on the default branch (via
+ * `milestoneScope.isDependencyLanded` or the lookup carried on
+ * `isMilestoneOpen`); if it has, the hold is released early rather than
+ * waiting for the whole milestone to close.
  *
  * When `blockers` is provided, collects all blockers instead of returning
  * early on the first one. Used to classify whether blockers are claimable
@@ -859,6 +895,15 @@ export async function isDependencyBlocked(
       ) {
         try {
           if (await milestoneScope.isMilestoneOpen(depMilestone)) {
+            // Issue #2834: the dependency's own code may already have
+            // landed on the default branch (directly, or via a merged
+            // partial rollup) even though its milestone is still open —
+            // release the hold rather than waiting for the whole milestone.
+            const landed = milestoneScope.isDependencyLanded ??
+              milestoneScope.isMilestoneOpen.isDependencyLanded;
+            if (landed && await landed(dep.number)) {
+              continue;
+            }
             if (blockers) {
               // Issue #2534: the gate is the *milestone*, not the dependency
               // itself — record it so a gate comment can name it.
