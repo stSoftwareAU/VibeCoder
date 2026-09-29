@@ -2489,7 +2489,7 @@ flowchart TD
     style OK fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-### 🔁 One-pass rebase for a declined branch (`branch_conflict_pass.ts`)
+### 🔁 One-pass merge for a declined branch (`branch_conflict_pass.ts`)
 
 `ensureBranchCurrent` in `branch_currency.ts` is deliberately not a
 merge-conflict resolver: when content has genuinely diverged it declines and
@@ -2497,8 +2497,10 @@ leaves the branch alone. The PR was then raised on the stale head, armed, and
 sat unmergeable until the merge-conflict ladder found it hours later — the run
 had an agent right there and spent it on nothing (Issue #2459).
 
-`runDeclinedRebasePass` spends exactly one agent pass closing that gap. The
-resolving lives here, not in `branch_currency.ts`, which stays a non-resolver.
+`runDeclinedRebasePass` spends exactly one agent pass closing that gap: the
+agent merges `origin/<base>` in and resolves the conflicts — never a rebase
+(Issue #2809). The resolving lives here, not in `branch_currency.ts`, which
+stays a non-resolver.
 
 - **One invocation, never a loop.** One call through the injected `runAgentFn`
   seam — no retry, no `sleep`, no polling.
@@ -2524,7 +2526,7 @@ flowchart TD
     T -- no --> H["restore nothing,<br/>hand off"]
     T -- yes --> B{"runway ≥ 180s<br/>before deadline?"}
     B -- no --> H
-    B -- yes --> A["one agent pass:<br/>rebase onto origin/base"]
+    B -- yes --> A["one agent pass:<br/>merge origin/base in"]
     A --> M{"re-measured<br/>behind === 0?"}
     M -- no --> R["reset --hard to<br/>the pre-attempt tip"]
     R --> H
@@ -4904,7 +4906,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [stale_workflow_detector.ts](../worker/deno/lib/stale_workflow_detector.ts)                                       | Stale workflow label detection and cleanup                                                                                                                                           |
 |                             | [pr_branch_lock.ts](../worker/deno/lib/pr_branch_lock.ts)                                                         | Distributed lock for PR branch updates and CI fixes — acquire, renew, release                                                                                                        |
 |                             | [stale_branch_lineage.ts](../worker/deno/lib/stale_branch_lineage.ts)                                             | Detect a branch whose work the base already carries as a squash, and rebase it past that merge before the push                                                                        |
-|                             | [branch_conflict_pass.ts](../worker/deno/lib/branch_conflict_pass.ts)                                             | One agent rebase-and-fix pass when the pre-PR rebase declines — re-measured, restored on failure, handed to the conflict ladder with one comment                                      |
+|                             | [branch_conflict_pass.ts](../worker/deno/lib/branch_conflict_pass.ts)                                             | One agent merge-and-fix pass when the pre-PR merge declines — re-measured, restored on failure, handed to the conflict ladder with one comment                                        |
 | **Security scan**           |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [security_scanner.ts](../worker/deno/lib/security_scanner.ts)                                                     | Four-phase scan executor — loads + substitutes the prompt, runs Claude with Write/Edit disallowed and Bash allowed so Claude can call `gh issue create` (outcome-only contract,)     |
 |                             | [idle_task_templates/security_scan_template.ts](../worker/deno/lib/idle_task_templates/security_scan_template.ts) | Idle-task template wrapper — snapshots open `security`-labelled issues before and after the scan, diffs to compute newly-filed issues, renders the close-comment summary             |
@@ -4970,6 +4972,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_default_tip.ts](../worker/deno/lib/milestone_default_tip.ts)                                       | Reads `git rev-parse origin/<default>` for the sync's cadence gate, so a cycle in which the default tip did not move syncs nothing                                                          |
 |                             | [milestone_presync.ts](../worker/deno/lib/milestone_presync.ts)                                                   | Brings a milestone branch level with the default branch before a child issue branch is cut from it, charged to the same conflict ledger, and reports the pacing the claim scan skips on      |
 |                             | [milestone_conflict_agent_binding.ts](../worker/deno/lib/milestone_conflict_agent_binding.ts)                      | The one binding of the ladder's agent rung — same instructions, same branch target and same grant-sized timeout for the periodic sweep and a child run's pre-cut sync alike                  |
+|                             | [pr_raise_sync.ts](../worker/deno/lib/pr_raise_sync.ts)                                                           | PR-raise sync point: merges the milestone up to the default branch, then merges the base into the feature branch — plain pushes, never a rebase (Issue #2809) |
 |                             | [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)                                             | Type-checks the sync's merged tree before it is pushed, and refuses the push when it does not compile                                                                                |
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |
