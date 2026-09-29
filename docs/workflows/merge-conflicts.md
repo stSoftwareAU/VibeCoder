@@ -36,12 +36,13 @@ of this rung is wired to the flag by the next sub-issue under #2298). A PR whose
 originating issue **cannot** be found is closed
 as well, and its flag issue carries `idle-task` and the PR's diff summary, so the
 flag is the re-do item. Two restarts per originating issue: the third
-exhaustion declines, and the PR is then left open on `merge-conflict` with a
-base-keyed park marker, re-attempted only when its base tip moves
-(Issue #2312). **The merge-conflict scan applies
-`needs-human` for no conflict outcome at all** (Issue #2310) — only for a
-*worker* fault, three attempts disrupted before any conclusion — and a
-hand-applied `needs-human` is still honoured as a veto.
+exhaustion declines — there is no third redo — and the **originating issue**
+gains `needs-human` plus one comment naming the PR and asking a human to fix it
+by hand, rescope the issue, or close it (Issue #2804). The PR itself stays
+open on `merge-conflict` with a base-keyed park marker (Issue #2312). **The
+merge-conflict scan applies `needs-human` to no conflicting PR** (Issue #2310)
+— only for a *worker* fault, three attempts disrupted before any conclusion —
+and a hand-applied `needs-human` is still honoured as a veto.
 
 Every attempt ends visibly: merged, failed, or escalated. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
@@ -532,10 +533,11 @@ A branch that has defeated two real merges is usually cheaper to **redo** than
 to reconcile, and redoing it needs nobody (Issue #1115,
 `worker/deno/lib/conflict_abandon_restart.ts`). So the rung a spent budget
 reaches closes the conflicting PR and re-queues its originating issue, and the
-pipeline raises a fresh PR off the current base. **No outcome of the scan's
-spent-budget branch ends at a person** (Issue #2310): it applies no
-`needs-human` label and posts no escalation comment, and every outcome it
-produces is recorded in the pass's own log instead.
+pipeline raises a fresh PR off the current base. **The scan's spent-budget
+branch puts no `needs-human` on the PR** (Issue #2310), and records every
+outcome in the pass's own log. The one route that reaches a person is an issue
+whose two redos are both spent (Issue #2804, below) — and that label goes on
+the originating issue, not the PR.
 
 - **"Start again" never means force-push.** The PR is *closed*, not merged; the
   branch is neither deleted nor rewritten, so every commit on it stays readable
@@ -578,12 +580,37 @@ produces is recorded in the pass's own log instead.
   useful share of those. A claim naming *this* PR declines whatever the count
   says: it means an earlier abandon of this very PR did not finish, and closing
   it twice is not a retry.
-- **After the second restart the PR is parked, not escalated** (Issue #2312).
-  The third exhaustion leaves the PR **open**, keeps `merge-conflict` on it,
-  appends the event to the PR's own `merge-fallback` flag, and posts one
-  comment carrying `<!-- vibe-merge-conflict-parked base="<sha>" -->`. It is
-  recorded as the `parked` skip reason and **no** `needs-human` label or
-  comment is applied anywhere on this path. The marker keys on the **base**
+- **After the second restart a human decides — there is no third redo**
+  (Issue #2804). When an issue already redone twice fails again, by any route
+  into the rung — the blocking-PR stall, the conflict-queue stall, or the
+  conflict ladder's own final rung — `abandonAndRestart` itself adds
+  `needs-human` to the **originating issue** and posts one comment through
+  `escalateToHuman`. The comment names the PR, says both redos are used, and
+  asks a human to decide: fix the PR by hand, rescope the issue, or close it.
+  The PR is not closed and the issue is not re-queued. It is idempotent: an
+  issue already carrying `needs-human` gets no second comment. A label or
+  comment that could not be applied is a `failed` outcome naming the
+  `issue-label` or `issue-comment` step (`abandon-failed`), never a quiet
+  decline. The outcome is still `declined` with `already-restarted`, so no
+  caller needed editing.
+
+  ```mermaid
+  flowchart TD
+      A["PR fails again<br/>(conflict budget or stall second trip)"] --> B{"Restarts recorded<br/>on the issue ≥ 2?"}
+      B -- no --> C["Close the PR, re-queue the issue<br/>(restart n of 2)"]
+      B -- yes --> D{"Issue already carries<br/>needs-human?"}
+      D -- yes --> E["Nothing more said<br/>(declined: already-restarted)"]
+      D -- no --> F["Add needs-human + one comment<br/>on the issue"]
+      F -- both landed --> E
+      F -- either failed --> G["failed: issue-label / issue-comment<br/>(abandon-failed)"]
+  ```
+
+- **The PR itself is parked, not escalated** (Issue #2312). The third
+  exhaustion leaves the PR **open**, keeps `merge-conflict` on it, appends the
+  event to the PR's own `merge-fallback` flag, and posts one comment carrying
+  `<!-- vibe-merge-conflict-parked base="<sha>" -->`. It is recorded as the
+  `parked` skip reason, and `needs-human` never reaches the PR on this path —
+  only its originating issue, as above. The marker keys on the **base**
   sha, unlike every other marker in this vocabulary, because nothing acts until
   the *base* tip moves: a base that has not moved cannot merge any better than
   it did an hour ago. Every later pass compares the PR's live `baseRefOid`
@@ -783,7 +810,9 @@ Five details carry the weight:
   its work through `abandonAndRestart` with a `stalled` reason; the re-queue
   label is the issue's own pickup label, else `idle-task`, never `work-on`.
   It files no issue and adds no label; both trips run under the maintenance
-  lease.
+  lease. When the issue has already been redone twice, the rung hands the
+  issue to a human instead of a third redo (Issue #2804,
+  [above](#-abandon-and-restart-before-a-human-is-asked)).
 
 ### 🤫 Why #116 went silent
 
@@ -891,10 +920,12 @@ that gap, and reading the queue means reading both:
   (Issue #1112). Its first trip posts one comment on the PR — label age, the
   silence, the skip reasons — and reruns the ladder once; its second trip
   abandons and redoes the PR through `abandonAndRestart` (Issue #2803).
-- **The watchdog files no issue and applies no label — never `escalated`,
-  never `needs-human`.** A mechanical stall is repaired, not reported, and
-  `needs-human` is a cross-subsystem veto that would remove the PR from the
-  very lane that clears it (Issue #569).
+- **The watchdog files no issue and applies no label to the PR — never
+  `escalated`, never `needs-human`.** A mechanical stall is repaired, not
+  reported, and `needs-human` is a cross-subsystem veto that would remove the
+  PR from the very lane that clears it (Issue #569). The one `needs-human` on
+  this path is the abandon rung's own, on the *originating issue* once both its
+  redos are spent (Issue #2804).
 - **The blocking-PR stall watchdog defers to this lane.** A `CONFLICTING` PR —
   or one carrying `merge-conflict` — is never reported as "green but unmerged",
   is never synced or abandoned by stall repair, and a live escalation from
@@ -904,7 +935,8 @@ that gap, and reading the queue means reading both:
   label. Its first trip syncs the branch and reruns the owning lane once; its
   second trip abandons the PR through this ladder's own `abandonAndRestart`
   rung, with a `stalled` reason, so the PR and issue comments say "stalled"
-  rather than "merge conflict" and the issue shares the same two restarts.
+  rather than "merge conflict" and the issue shares the same two restarts —
+  after which a further stall hands the issue to a human (Issue #2804).
   NEAT-AI-Ockham#119 was closed by hand thirteen minutes after that comment
   appeared, before rung 1 ran; see
   [Blocking-PR stall watchdog](../CONFIGURATION.md#-blocking-pr-stall-watchdog).
@@ -965,7 +997,7 @@ each carries the operands that make the decision checkable afterwards:
 | `needs-human` | `label` | A human already owns the conflict. Not emitted for a `needs-human` that came only from a CI-fix escalation — that PR is resolved (Issue #2728). |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
-| `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` label and no comment asking anybody for anything. |
+| `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` on the PR; its originating issue carries `needs-human` and one comment asking a human to decide (Issue #2804). |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |

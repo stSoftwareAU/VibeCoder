@@ -39,11 +39,13 @@ import {
   conflictParkedMarker,
   conflictRungFailedMarker,
 } from "../lib/merge_conflict_markers.ts";
-import type {
-  AbandonRestartDeps,
-  AbandonRestartOutcome,
-  AbandonRestartRequest,
+import {
+  type AbandonRestartDeps,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+  conflictRestartMarker,
 } from "../lib/conflict_abandon_restart.ts";
+import type { ConflictIssueContext } from "../lib/conflict_issue_context.ts";
 import type { RepoLease } from "../lib/maintenance_lane.ts";
 
 const HOUR = 3600_000;
@@ -564,6 +566,96 @@ Deno.test("repairConflictQueueStall - a declined or failed abandon is reported, 
     message: "gh pr close failed",
   });
   assertEquals(await repair(fakeGitHub([tripComment(8.5)]), failed), "failed");
+});
+
+Deno.test("repairConflictQueueStall - a second trip on an issue already redone twice adds needs-human and one comment (Issue #2804)", async () => {
+  const ISSUE = 7;
+  const github = fakeGitHub([tripComment(8.5)]);
+  const issue = {
+    labels: ["work-on"],
+    comments: [
+      comment(conflictRestartMarker(REPO, 61), 48),
+      comment(conflictRestartMarker(REPO, 62), 24),
+    ],
+  };
+  const issuePath = `/issues/${ISSUE}/`;
+  const gh = (args: string[]): Promise<string> => {
+    const path = args.find((arg) => arg.includes(issuePath)) ?? "";
+    if (args[0] === "issue" && args[1] === "view") {
+      github.calls.push(args);
+      return Promise.resolve(JSON.stringify({
+        state: "OPEN",
+        labels: issue.labels.map((name) => ({ name })),
+      }));
+    }
+    if (path === "") return github.gh(args);
+    github.calls.push(args);
+    if (args[1] !== "-X") {
+      return Promise.resolve(
+        path.includes("page=1") ? JSON.stringify(issue.comments) : "[]",
+      );
+    }
+    const field = args[5] ?? "";
+    if (path.endsWith("/labels")) {
+      issue.labels.push(field.replace(/^labels\[\]=/, ""));
+    } else if (path.endsWith("/comments")) {
+      issue.comments.push(comment(field.replace(/^body=/, ""), 0));
+    }
+    return Promise.resolve("");
+  };
+  const context: ConflictIssueContext = {
+    repo: REPO,
+    prNumber: PR,
+    prSide: {
+      resolved: true,
+      signal: "branch",
+      issue: {
+        number: ISSUE,
+        title: "Fix it",
+        state: "OPEN",
+        body: "",
+        bodyTruncated: false,
+      },
+    },
+    baseSide: [],
+    truncation: {
+      commitCapPaths: [],
+      issueCapHit: false,
+      textTruncatedIssues: [],
+      ghCallCapHit: false,
+    },
+    ghCallsUsed: 0,
+    warnings: [],
+  };
+  const stall = detect(observation(9, [tripComment(8.5)]));
+  assert(stall !== null);
+  const run = () =>
+    repairConflictQueueStall(stall, {
+      ghCommandFn: gh,
+      logger,
+      isTrustedAuthor,
+      nowMs: NOW,
+      trustedAuthors: [FLEET],
+      acquireLease: () => ({ release: noop }),
+      abandonDeps: {
+        resolveContext: () => Promise.resolve(context),
+        findOtherPrs: () => Promise.resolve([]),
+      },
+    });
+
+  assertEquals(await run(), "abandon-declined");
+
+  assertEquals(issue.labels, ["work-on", "needs-human"]);
+  assertEquals(issue.comments.length, 3);
+  assertStringIncludes(String(issue.comments[2]?.body), `${REPO}#${PR}`);
+  assert(
+    !github.calls.some((call) => call[0] === "pr" && call[1] === "close"),
+    "no third redo closes the PR",
+  );
+
+  // A later check finds needs-human already there and says nothing more.
+  assertEquals(await run(), "abandon-declined");
+  assertEquals(issue.comments.length, 3);
 });
 
 Deno.test("repairConflictQueueStall - an untrusted or pre-label trip marker is not a trip", async () => {
