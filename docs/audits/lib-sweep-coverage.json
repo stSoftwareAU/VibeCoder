@@ -479,6 +479,7 @@
         "worker/deno/lib/branch_head_tracker.ts",
         "worker/deno/lib/branch_history_rewrite.ts",
         "worker/deno/lib/branch_protection_definitions.ts",
+        "worker/deno/lib/broken_clone.ts",
         "worker/deno/lib/bucket_check_numbering.ts",
         "worker/deno/lib/bucket_docs_check.ts",
         "worker/deno/lib/builtin_prompt_overrides.ts",
