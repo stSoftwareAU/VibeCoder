@@ -362,6 +362,29 @@ singular key with an array value:
 }
 ```
 
+## 🔍 Reviewer App for fleet PR reviews
+
+`pr_reviewer_app` makes the unattended `review-fleet-prs` runner
+(`.claude/skills/review-fleet-prs/run.sh`) review as a GitHub App instead of
+the host's signed-in `gh` user. It is read by that skill only, never by the
+worker.
+
+```json
+{
+  "pr_reviewer_app": {
+    "app_id": 5119297,
+    "private_key_path": "~/.vibe-coder/stsoftware-pr-reviewer.private-key.pem"
+  }
+}
+```
+
+The installation is looked up from the App on the owner of `repos`. Keep the
+key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
+mounted into the container. Use a different App from the worker's own
+`github_app_*` identity, since GitHub refuses an approval from a PR's author. Then add
+`<app-slug>[bot]` to `pr_reviewers` and `authorized_commenters` on every fleet
+host, so the worker acts on its change requests.
+
 ## 📊 Configuration Defaults
 
 The following settings have built-in defaults. Only values you override via

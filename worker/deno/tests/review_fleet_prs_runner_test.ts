@@ -16,7 +16,14 @@ const READY = JSON.stringify({
   skipped: {},
 });
 
-async function fixture(gateOutput: string, gateExit = 0) {
+// The App token stub prints `tokenOutput` (empty = no pr_reviewer_app) and
+// exits `tokenExit`; the gate stub records its token and arguments.
+async function fixture(
+  gateOutput: string,
+  gateExit = 0,
+  tokenOutput = "",
+  tokenExit = 0,
+) {
   const home = await Deno.makeTempDir();
   const bin = `${home}/bin`;
   await Deno.mkdir(bin);
@@ -24,8 +31,19 @@ async function fixture(gateOutput: string, gateExit = 0) {
     await Deno.writeTextFile(`${bin}/${name}`, `#!/bin/sh\n${body}\n`);
     await Deno.chmod(`${bin}/${name}`, 0o755);
   };
-  await stub("deno", `echo '${gateOutput}'; exit ${gateExit}`);
-  await stub("claude", `printf '%s\\n' "$@" > "$HOME/claude-args"`);
+  await stub(
+    "deno",
+    `case "$*" in
+  *app_token.ts*) printf '%s' '${tokenOutput}'; exit ${tokenExit} ;;
+esac
+echo "GH_TOKEN=\${GH_TOKEN:-} $*" > "$HOME/gate-args"
+echo '${gateOutput}'; exit ${gateExit}`,
+  );
+  await stub(
+    "claude",
+    `echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
+printf '%s\\n' "$@" >> "$HOME/claude-args"`,
+  );
   return home;
 }
 
@@ -44,13 +62,14 @@ async function run(home: string, ...args: string[]) {
   };
 }
 
-async function claudeArgs(home: string): Promise<string | null> {
+async function recorded(home: string, file: string): Promise<string | null> {
   try {
-    return await Deno.readTextFile(`${home}/claude-args`);
+    return await Deno.readTextFile(`${home}/${file}`);
   } catch {
     return null;
   }
 }
+const claudeArgs = (home: string) => recorded(home, "claude-args");
 
 Deno.test("run.sh --once reviews the gate's ready PRs in one headless Claude round", async () => {
   const home = await fixture(READY);
@@ -96,4 +115,36 @@ Deno.test("run.sh takes over a lock left by a runner that died", async () => {
   const { code, output } = await run(home, "--once");
   assertEquals(code, 0, output);
   assert(await claudeArgs(home), "Claude was not started");
+});
+
+const APP_TOKEN = JSON.stringify({
+  token: "ghs_test",
+  login: "stsoftware-pr-reviewer[bot]",
+});
+
+Deno.test("run.sh reviews as the reviewer App when pr_reviewer_app is set", async () => {
+  const home = await fixture(READY, 0, APP_TOKEN);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const gate = await recorded(home, "gate-args");
+  assertStringIncludes(gate!, "GH_TOKEN=ghs_test");
+  assertStringIncludes(gate!, "--reviewer=stsoftware-pr-reviewer[bot]");
+  assertStringIncludes((await claudeArgs(home))!, "GH_TOKEN=ghs_test");
+});
+
+Deno.test("run.sh reviews as the gh user when no reviewer App is configured", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const gate = await recorded(home, "gate-args");
+  assertStringIncludes(gate!, "GH_TOKEN= ");
+  assertEquals(gate!.includes("--reviewer"), false);
+});
+
+Deno.test("run.sh never falls back to the gh user when the App token fails", async () => {
+  const home = await fixture(READY, 0, "", 1);
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await recorded(home, "gate-args"), null);
+  assertEquals(await claudeArgs(home), null);
 });

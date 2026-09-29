@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Runs the review-fleet-prs skill unattended, for ever, on an always-on host.
 #
-# The gate (gate.ts --watch) does the polling for free: it checks every
-# 5 minutes and only exits when a PR is ready for review. Only then is a
-# headless Claude session started to review that round, so an idle night
-# costs no tokens.
+# Every 5 minutes it runs one gate pass (a GitHub search, no model). Only
+# when a PR is ready is a headless Claude session started to review that
+# round, so an idle night costs no tokens. With `pr_reviewer_app` in
+# .config.json, reviews post as that GitHub App (see app_token.ts).
 #
 #   run.sh [owner/name]           # loop for ever (all repos, or one)
-#   run.sh --once [owner/name]    # one gate pass and at most one round
+#   run.sh --once [owner/name]    # one pass: gate, then at most one round
 #   run.sh --install [owner/name] # run at login, restart on exit
 #                                 # (launchd on macOS, systemd on Linux)
 #
@@ -25,7 +25,7 @@ STATE_DIR="$HOME/.review-fleet-prs"
 LOG="$STATE_DIR/runner.log"
 LOCK="$STATE_DIR/runner.lock"
 INTERVAL=300
-ROUND_TIMEOUT=3600 # a hung Claude session must not wedge the loop
+ROUND_TIMEOUT=3000 # a hung round must not wedge the loop, nor outlive its token
 LABEL="au.com.stsoftware.review-fleet-prs"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
@@ -98,23 +98,33 @@ EOF
   echo "Log:  tail -f $LOG"
 }
 
-# One round: wait for the gate, then have Claude review what it found.
-# Returns non-zero when the gate failed.
-round() {
-  local watch=() ready dir prompt
-  if [[ $once == false ]]; then
-    watch=("--watch=$INTERVAL")
-    [[ -n $sleep_first ]] && watch+=("$sleep_first")
+# One pass: a gate check, then a Claude round if anything is ready.
+# Returns non-zero when the App token or the gate failed.
+pass() {
+  local reviewer=() ready dir prompt minted
+  # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
+  # Its token lasts an hour, so every pass mints a fresh one; a failure skips
+  # the pass rather than post as the gh user instead.
+  unset GH_TOKEN
+  if ! minted=$(cd "$SKILL_DIR" && deno run --allow-read \
+    --allow-net=api.github.com --allow-env app_token.ts 2>>"$LOG"); then
+    log "reviewer App token failed (see above)"
+    return 1
   fi
-  log "gate: waiting for a PR that is ready for review"
+  if [[ -n "$minted" ]]; then
+    GH_TOKEN=$(jq -r .token <<<"$minted")
+    export GH_TOKEN
+    reviewer=("--reviewer=$(jq -r .login <<<"$minted")")
+  fi
+
   if ! ready=$(cd "$SKILL_DIR" && deno run --allow-run=gh --allow-read \
-    --allow-write --allow-env=HOME gate.ts ${watch[@]+"${watch[@]}"} \
-    ${repo_arg[@]+"${repo_arg[@]}"} 2>>"$LOG"); then
+    --allow-write --allow-env=HOME gate.ts \
+    ${reviewer[@]+"${reviewer[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
+    2>>"$LOG"); then
     log "gate failed (see above)"
     return 1
   fi
   if [[ $(jq '.ready | length' <<<"$ready" 2>/dev/null) == 0 ]]; then
-    log "gate: nothing ready"
     return 0
   fi
 
@@ -145,8 +155,7 @@ round report."
 }
 
 main() {
-  once=false
-  sleep_first=""
+  local once=false
   repo_arg=()
   case "${1:-}" in
   --install)
@@ -176,19 +185,16 @@ main() {
   trap 'rm -rf "$LOCK"' EXIT
 
   if [[ $once == true ]]; then
-    round
+    pass
     return
   fi
+  log "runner started"
+  # A failed pass (GitHub unreachable, a bad token) is retried next interval
+  # rather than waiting for someone to restart this by hand.
   while true; do
     housekeep
-    if round; then
-      sleep_first="--sleep-first"
-    else
-      # The gate gives up after an hour without GitHub. Keep going rather
-      # than wait for someone to restart this by hand.
-      sleep_first=""
-      sleep "$INTERVAL"
-    fi
+    pass
+    sleep "$INTERVAL"
   done
 }
 

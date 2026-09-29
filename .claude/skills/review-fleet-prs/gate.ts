@@ -33,6 +33,7 @@ import {
   prKey,
   readLog,
   REVIEW_MARKER,
+  sameLogin,
   stateDir,
   writeSummary,
 } from "./review_log.ts";
@@ -179,7 +180,7 @@ export function reviewedAtHead(
   headSha: string,
 ): boolean {
   return reviews.some((r) =>
-    r.author?.login === reviewer && r.commit?.oid === headSha &&
+    sameLogin(r.author?.login, reviewer) && r.commit?.oid === headSha &&
     (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" ||
       r.state === "DISMISSED" ||
       (r.state === "COMMENTED" && (r.body ?? "").includes(REVIEW_MARKER)))
@@ -479,7 +480,9 @@ async function main() {
     ...(config.service_accounts ?? []),
   ]);
   const repos = new Set<string>(arg("repo") ? [arg("repo")!] : config.repos);
-  const reviewer = (await gh(["api", "user", "--jq", ".login"])).trim();
+  // A reviewer App passes its bot login: an App token cannot read /user.
+  const reviewer = arg("reviewer") ??
+    (await gh(["api", "user", "--jq", ".login"])).trim();
   const watchSeconds = Number(arg("watch") ?? 0);
 
   const sleep = () => new Promise((r) => setTimeout(r, watchSeconds * 1000));
