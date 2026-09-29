@@ -17,6 +17,7 @@ import {
   countCommitsAheadRepairingBrokenRef,
 } from "../lib/git_issue_branches.ts";
 import type { GitCommandOutput } from "../lib/git_timeout.ts";
+import { measureMilestoneBehindCount } from "../lib/milestone_behind_count.ts";
 
 async function git(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
@@ -198,6 +199,74 @@ function fakeGitOutput(
 ): Result<GitCommandOutput> {
   return ok({ code, stdout, stderr });
 }
+
+Deno.test(
+  "#2824 - measureMilestoneBehindCount repairs a broken origin/main that fails the tracking-ref fetch",
+  async () => {
+    const { root, clone } = await fixture();
+    try {
+      await corruptOriginMainRef(clone);
+
+      // Real git refuses the milestone tracking-ref fetch before any count
+      // runs, so the sweep path must reach the repair from the fetch failure.
+      const warnings: string[] = [];
+      const result = await measureMilestoneBehindCount({
+        milestoneBranch: MILESTONE_BRANCH,
+        defaultBranch: "main",
+        cwd: clone,
+        log: (message) => warnings.push(message),
+      });
+
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(result.value, 1);
+      assertEquals(
+        warnings.filter((line) => line.includes("refs/remotes/origin/main"))
+          .length,
+        1,
+        `expected exactly one repair line: ${JSON.stringify(warnings)}`,
+      );
+
+      // The ref is healed on disk: a plain count now reads it.
+      const plain = await countCommitsAhead(
+        `origin/${MILESTONE_BRANCH}`,
+        "origin/main",
+        { cwd: clone },
+      );
+      assert(plain.ok, plain.ok ? "" : plain.error.message);
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+Deno.test(
+  "#2824 - measureMilestoneBehindCount returns the fetch failure when nothing is repaired",
+  async () => {
+    const warnings: string[] = [];
+    let countCalls = 0;
+    const result = await measureMilestoneBehindCount({
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+      cwd: "/nonexistent-2824",
+      log: (message) => warnings.push(message),
+      gitFn: (args) =>
+        Promise.resolve<Result<GitCommandOutput>>({
+          ok: true,
+          value: args[0] === "fetch"
+            ? { code: 128, stdout: "", stderr: "fatal: unable to access" }
+            : { code: 128, stdout: "", stderr: `unexpected ${args[0]}` },
+        }),
+      countFn: () => {
+        countCalls++;
+        return Promise.resolve({ ok: true, value: 3 });
+      },
+    });
+    assert(!result.ok, "an unrepaired fetch failure must not become a count");
+    assertStringIncludes(result.error.message, "fatal: unable to access");
+    assertEquals(warnings, []);
+    assert(countCalls <= 1, `count called ${countCalls} times`);
+  },
+);
 
 Deno.test(
   "#2824 - a successful count makes no git calls and logs nothing",

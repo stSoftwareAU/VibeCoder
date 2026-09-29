@@ -16,7 +16,10 @@
  * The count itself is made via {@link countCommitsAheadRepairingBrokenRef}, so
  * a broken remote-tracking ref left over from an earlier crash or race no
  * longer blocks the count (Issue #2824): it is deleted and re-fetched once,
- * then the count is retried.
+ * then the count is retried. A broken `origin/<default>` fails the milestone
+ * tracking-ref fetch first (`fatal: bad object refs/remotes/origin/<default>`
+ * from git's connectivity check), so a failed fetch also attempts that repair
+ * and, once a ref has been repaired, fetches again before counting.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -77,25 +80,65 @@ export async function measureMilestoneBehindCount(
   const countFn = request.countFn ?? countCommitsAhead;
   const log = request.log ?? console.warn;
 
-  const fetched = await gitFn(
-    buildFetchTrackingRefArgs("origin", milestoneBranch),
-    { cwd },
-  );
+  const fetchArgs = buildFetchTrackingRefArgs("origin", milestoneBranch);
+  const baseRef = `origin/${milestoneBranch}`;
+  const ref = `origin/${defaultBranch}`;
+  const repairDeps = {
+    log,
+    countFn,
+    gitFn,
+    removeFileFn: request.removeFileFn,
+  };
+
+  const fetched = await gitFn(fetchArgs, { cwd });
   if (!fetched.ok) return { ok: false, error: fetched.error };
-  if (fetched.value.code !== 0) {
+  if (fetched.value.code === 0) {
+    return await countCommitsAheadRepairingBrokenRef(
+      baseRef,
+      ref,
+      { cwd },
+      repairDeps,
+    );
+  }
+
+  const fetchFailure = new Error(
+    `git fetch origin ${milestoneBranch} exited ${fetched.value.code}: ` +
+      (fetched.value.stderr.trim() || "(no output)"),
+  );
+
+  // A broken remote-tracking ref for either counted branch fails the fetch
+  // before any count runs (Issue #2824). The count's own `ignoring broken
+  // ref` warning names it, so let the count drive the repair; only when a
+  // ref was actually repaired is the fetch worth running again.
+  let repaired = false;
+  await countCommitsAheadRepairingBrokenRef(baseRef, ref, { cwd }, {
+    ...repairDeps,
+    log: (message) => {
+      repaired = true;
+      log(message);
+    },
+  });
+  if (!repaired) return { ok: false, error: fetchFailure };
+
+  const refetched = await gitFn(fetchArgs, { cwd });
+  if (!refetched.ok) {
     return {
       ok: false,
       error: new Error(
-        `git fetch origin ${milestoneBranch} exited ${fetched.value.code}: ` +
-          (fetched.value.stderr.trim() || "(no output)"),
+        `${fetchFailure.message} — fetch retried after repairing a broken ` +
+          `ref and could not run: ${refetched.error.message}`,
       ),
     };
   }
-
-  return await countCommitsAheadRepairingBrokenRef(
-    `origin/${milestoneBranch}`,
-    `origin/${defaultBranch}`,
-    { cwd },
-    { log, countFn, gitFn, removeFileFn: request.removeFileFn },
-  );
+  if (refetched.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `${fetchFailure.message} — fetch retried after repairing a broken ` +
+          `ref and exited ${refetched.value.code}: ` +
+          (refetched.value.stderr.trim() || "(no output)"),
+      ),
+    };
+  }
+  return await countFn(baseRef, ref, { cwd });
 }

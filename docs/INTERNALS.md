@@ -4256,7 +4256,13 @@ consequences are worth naming:
   it, and the count is retried once — and still failing falls into the same
   deferral. The PR comment then says how far behind the branch is "could not
   be measured" and quotes git's reason, rather than claiming the branch is
-  still behind (Issue #2824).
+  still behind (Issue #2824). The longest-behind-first sweep
+  ([milestone_behind_count.ts](../worker/deno/lib/milestone_behind_count.ts))
+  fetches the milestone's own tracking ref before it counts, and a broken
+  `origin/<default>` fails that fetch first (`fatal: bad object
+  refs/remotes/origin/<default>`). A failed fetch therefore still runs the
+  repairing count; when it repairs a ref, the fetch is run again before the
+  branch is counted, and when it repairs nothing the fetch failure stands.
 - **Only a charged failure spends the budget.** A conflict every granted rung
   left undecided is charged; a ruleset-refused push, a merge-gate refusal or
   any other `not-charged` verdict is not — charging the branch for a fault that
