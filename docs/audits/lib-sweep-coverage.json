@@ -951,13 +951,13 @@
       "issue": 1668,
       "chunk": "12k",
       "title": "top-up: the Claude credential pool added after the chunk-12 slices",
-      "ledger": "docs/audits/security-sweep-1668-claude-credential-pool.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12j recorded their coverage: claude_credential_pool.ts (#1668)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/claude_credential_pool.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63"
     },
     {
       "issue": 1679,
@@ -999,13 +999,13 @@
       "issue": 1885,
       "chunk": "top-up-1885",
       "title": "top-up: the weekly Claude quota pace gate",
-      "ledger": "docs/audits/security-sweep-1885-claude-week-pace.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: claude_week_pace.ts (#1885)",
       "status": "swept",
       "paths": [
         "worker/deno/lib/claude_week_pace.ts"
       ],
-      "sweptAt": "2d1e11776c5765a1a2d8b5c9caf003d958c529d1"
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63"
     },
     {
       "issue": 1862,
@@ -1219,10 +1219,10 @@
       "issue": 1822,
       "chunk": "top-up-1822",
       "title": "top-up: the file-scoped audit check table",
-      "ledger": "docs/audits/security-sweep-1822-workflow-file-checks.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: workflow_file_checks.ts (#1822)",
       "status": "swept",
-      "sweptAt": "4eb02c0c733703491e41faeddc1595aa2d4753f0",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/workflow_file_checks.ts"
       ]
@@ -1243,10 +1243,10 @@
       "issue": 1859,
       "chunk": "top-up-1859",
       "title": "top-up: the pre-PR changed-workflow gate",
-      "ledger": "docs/audits/security-sweep-1859-changed-workflow-gate.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: changed_workflow_gate.ts (#1859)",
       "status": "swept",
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/changed_workflow_gate.ts"
       ]
@@ -1255,13 +1255,13 @@
       "issue": 1767,
       "chunk": "12q",
       "title": "the shared merge-conflict agent",
-      "ledger": "docs/audits/security-sweep-1767-merge-conflict-agent.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to lib/ after the chunk-12 slices recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/merge_conflict_agent.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63"
     },
     {
       "issue": 1770,
@@ -1279,25 +1279,25 @@
       "issue": 1771,
       "chunk": "12s",
       "title": "the milestone roll-back",
-      "ledger": "docs/audits/security-sweep-1771-milestone-rollback.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to lib/ after 12a-12r recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_rollback.ts"
       ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63"
     },
     {
       "issue": 1774,
       "chunk": "12t",
       "title": "the claim-point PR state read",
-      "ledger": "docs/audits/security-sweep-1774-pr-live-state.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to lib/ after 12a-12s recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/pr_live_state.ts"
       ],
-      "sweptAt": "624ca0ede491370759a88ba03bd1f11310366ce5"
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63"
     },
     {
       "issue": 1776,
@@ -1315,13 +1315,13 @@
       "issue": 1781,
       "chunk": "12v",
       "title": "the milestone roll-back re-queue",
-      "ledger": "docs/audits/security-sweep-1781-milestone-rollback-requeue.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to lib/ after 12a-12u recorded their coverage",
       "status": "swept",
       "paths": [
         "worker/deno/lib/milestone_rollback_requeue.ts"
       ],
-      "sweptAt": "eebe47243f5a634a25e831f582f76450490212b6"
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63"
     },
     {
       "issue": 1697,
@@ -1341,7 +1341,7 @@
       "issue": 1695,
       "chunk": "12x",
       "title": "the agent output adapters",
-      "ledger": "docs/audits/security-sweep-1695-agent-output-adapters.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to lib/ after 12a-12w recorded their coverage",
       "status": "swept",
       "paths": [
@@ -1349,7 +1349,7 @@
         "worker/deno/lib/claude_output_adapter.ts",
         "worker/deno/lib/codex_output_adapter.ts"
       ],
-      "sweptAt": "4aeeef52ea89a6d8b7603cf01cdf626c3c46882e"
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63"
     },
     {
       "issue": 1696,
@@ -1371,10 +1371,10 @@
       "issue": 1910,
       "chunk": "12z",
       "title": "top-up: the implementation-prompt comment selection",
-      "ledger": "docs/audits/security-sweep-1910-implementation-comments.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12y recorded their coverage: implementation_comments.ts (#1910)",
       "status": "swept",
-      "sweptAt": "fb59c3cc27acbf14d4c15d15d0d07f74bde84b60",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/implementation_comments.ts"
       ]
@@ -1409,10 +1409,10 @@
       "issue": 1877,
       "chunk": "12ac",
       "title": "top-up: the CI-fix attempt markers",
-      "ledger": "docs/audits/security-sweep-1877-ci-fix-attempt-markers.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12z recorded their coverage: ci_fix_attempt_markers.ts (#1877)",
       "status": "swept",
-      "sweptAt": "e965e018b6f4543aa1090e6c701ee03ab52cb46d",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/ci_fix_attempt_markers.ts"
       ]
@@ -1433,10 +1433,10 @@
       "issue": 1879,
       "chunk": "12ae",
       "title": "top-up: the CI-fix PR marker reader",
-      "ledger": "docs/audits/security-sweep-1879-ci-fix-pr-markers.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: ci_fix_pr_markers.ts (#1879)",
       "status": "swept",
-      "sweptAt": "e965e018b6f4543aa1090e6c701ee03ab52cb46d",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/ci_fix_pr_markers.ts"
       ]
@@ -1497,10 +1497,10 @@
       "issue": 2023,
       "chunk": "top-up-2023",
       "title": "top-up: the milestone sync's ported rule",
-      "ledger": "docs/audits/security-sweep-2023-milestone-conflict-ported.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_conflict_ported.ts (#2023)",
       "status": "swept",
-      "sweptAt": "c2607ccc5177dcdc8342ee4e612b9a4730f917f3",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/milestone_conflict_ported.ts"
       ]
@@ -1509,10 +1509,10 @@
       "issue": 2030,
       "chunk": "top-up-2030",
       "title": "top-up: the cross-host milestone sync claim",
-      "ledger": "docs/audits/security-sweep-2030-milestone-sync-claim.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_sync_claim.ts (#2030)",
       "status": "swept",
-      "sweptAt": "a9c41731b2c7fd150e7504815a3de92273407b0c",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/milestone_sync_claim.ts"
       ]
@@ -1521,10 +1521,10 @@
       "issue": 1927,
       "chunk": "top-up-1927",
       "title": "top-up: the subscription restart/soak status",
-      "ledger": "docs/audits/security-sweep-1927-subscription-soak.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: subscription_soak_status.ts (#1927)",
       "status": "swept",
-      "sweptAt": "66643327347ffe9ef233d8b54f23e39678bb0fbe",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/subscription_soak_status.ts"
       ]
@@ -1533,10 +1533,10 @@
       "issue": 1965,
       "chunk": "top-up-1965",
       "title": "top-up: the milestone sync's gate repair",
-      "ledger": "docs/audits/security-sweep-1965-milestone-gate-repair.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_gate_repair.ts (#1965)",
       "status": "swept",
-      "sweptAt": "f4e269bc6d5a7eddfcc17ae0e26642d7f27cfa43",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/milestone_gate_repair.ts"
       ]
@@ -1557,10 +1557,10 @@
       "issue": 2070,
       "chunk": "top-up-2070",
       "title": "top-up: the toolchain-selfcheck command",
-      "ledger": "docs/audits/security-sweep-2070-toolchain-selfcheck-command.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/commands/ after 12a-12af recorded their coverage: toolchain_selfcheck.ts (#2070)",
       "status": "swept",
-      "sweptAt": "cdc3fa34a2f58fdbc44a5f53a5daf8ad8473feb5",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/commands/toolchain_selfcheck.ts"
       ]
@@ -1593,10 +1593,10 @@
       "issue": 2107,
       "chunk": "top-up-2107",
       "title": "top-up: the host-failure hook",
-      "ledger": "docs/audits/security-sweep-2107-host-failure-hook.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: host_failure_hook.ts (#2107)",
       "status": "swept",
-      "sweptAt": "75172c1d5474145ea17e5303992de90d7673458c",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/host_failure_hook.ts"
       ]
@@ -1605,10 +1605,10 @@
       "issue": 2189,
       "chunk": "top-up-2189",
       "title": "top-up: the in-run summary-rule gate recovery",
-      "ledger": "docs/audits/security-sweep-2189-summary-rule-gate-retry.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: summary_rule_gate_retry.ts (#2189)",
       "status": "swept",
-      "sweptAt": "7e75ebb286a816729bd7ab750166bf8e0179f0af",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/summary_rule_gate_retry.ts"
       ]
@@ -1763,10 +1763,10 @@
       "issue": 2276,
       "chunk": "top-up-2276",
       "title": "top-up: the stale-verdict ladder reader",
-      "ledger": "docs/audits/security-sweep-2276-conflict-verdict-ladder.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_verdict_ladder.ts (#2276)",
       "status": "swept",
-      "sweptAt": "a5d48aa1bd1bbbc4f6b0f5940f6d859a8aaa7a7b",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/conflict_verdict_ladder.ts"
       ]
@@ -1775,10 +1775,10 @@
       "issue": 2279,
       "chunk": "top-up-2279",
       "title": "top-up: the stale-verdict ladder's rebase rung",
-      "ledger": "docs/audits/security-sweep-2279-conflict-rebase-rung.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_rebase_rung.ts (#2279)",
       "status": "swept",
-      "sweptAt": "58ce828f78de9e8034f9a4d6afb14a9f2bb82a26",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/conflict_rebase_rung.ts"
       ]
@@ -1799,10 +1799,10 @@
       "issue": 2314,
       "chunk": "top-up-2314",
       "title": "top-up: the Graft pull-side wiring",
-      "ledger": "docs/audits/security-sweep-2314-graft-run.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: graft_run.ts (#2314)",
       "status": "swept",
-      "sweptAt": "f6f972004e37b67fc5e7c51e9667c32052a2eaa8",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/graft_run.ts"
       ]
@@ -1811,10 +1811,10 @@
       "issue": 2319,
       "chunk": "top-up-2319",
       "title": "top-up: the plan-coverage self-repair",
-      "ledger": "docs/audits/security-sweep-2319-plan-coverage-repair.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: plan_coverage_repair.ts (#2319)",
       "status": "swept",
-      "sweptAt": "18d6898055bfcf06795a9139fcf57899c5bf27f8",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/plan_coverage_repair.ts"
       ]
@@ -1919,10 +1919,10 @@
       "issue": 2390,
       "chunk": "top-up-2390",
       "title": "top-up: the masked-instruction detector",
-      "ledger": "docs/audits/security-sweep-2390-masked-instructions.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: masked_instructions.ts (#2390)",
       "status": "swept",
-      "sweptAt": "4cd5254ff6ee6870bc021e3dd250af3e0e74b55d",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/masked_instructions.ts"
       ]
@@ -1955,10 +1955,10 @@
       "issue": 2341,
       "chunk": "top-up-2341",
       "title": "top-up: the issue-executor split resolver",
-      "ledger": "docs/audits/security-sweep-2341-issue-executor-split.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_executor_split.ts (#2341)",
       "status": "swept",
-      "sweptAt": "07c55f785d2e29bd98ec08b682f19ac1d6ba6003",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/issue_executor_split.ts"
       ]
@@ -2004,10 +2004,10 @@
       "issue": 2438,
       "chunk": "top-up-2438",
       "title": "top-up: the milestone PR reviewer clear",
-      "ledger": "docs/audits/security-sweep-2438-milestone-pr-reviewers.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_pr_reviewers.ts (#2438)",
       "status": "swept",
-      "sweptAt": "bf351a3217a3d86d44c7fba7c29e0ed5f76e94ec",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/milestone_pr_reviewers.ts"
       ]
@@ -2041,10 +2041,10 @@
       "issue": 2493,
       "chunk": "top-up-2493",
       "title": "top-up: the dependency-chain promotion resolver",
-      "ledger": "docs/audits/security-sweep-2493-dependency-chain-promotion.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: dependency_chain_promotion.ts (#2493)",
       "status": "swept",
-      "sweptAt": "54561e566ad899a385b85bbc24da8db6de0e1810",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/dependency_chain_promotion.ts"
       ]
@@ -2089,10 +2089,10 @@
       "issue": 2562,
       "chunk": "top-up-2562",
       "title": "top-up: the degraded-run delivery guard",
-      "ledger": "docs/audits/security-sweep-2562-degraded-delivery.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: degraded_delivery.ts (#2562)",
       "status": "swept",
-      "sweptAt": "3e07b2c3fa1f8f9e1285b970e2626caa9d13ed5a",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/degraded_delivery.ts"
       ]
@@ -2101,10 +2101,10 @@
       "issue": 2578,
       "chunk": "top-up-2578",
       "title": "top-up: the GitHub Actions audit cost and speed pre-pass",
-      "ledger": "docs/audits/security-sweep-2578-workflow-cost-scanner.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: workflow_cost_scanner.ts (#2578)",
       "status": "swept",
-      "sweptAt": "1ca8b9ec0f8a18d405c5b0ddf87cc6ae7460ea9c",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/workflow_cost_scanner.ts"
       ]
@@ -2113,10 +2113,10 @@
       "issue": 2579,
       "chunk": "top-up-2579",
       "title": "top-up: the CloudFormation cost pre-scan",
-      "ledger": "docs/audits/security-sweep-2579-cfn-cost-checks.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: cfn_cost_checks.ts (#2579)",
       "status": "swept",
-      "sweptAt": "1ca8b9ec0f8a18d405c5b0ddf87cc6ae7460ea9c",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/cfn_cost_checks.ts"
       ]
@@ -2137,10 +2137,10 @@
       "issue": 2606,
       "chunk": "top-up-2606",
       "title": "top-up: the CODEOWNERS parser",
-      "ledger": "docs/audits/security-sweep-2606-codeowners.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: codeowners.ts (#2606)",
       "status": "swept",
-      "sweptAt": "cb328358866cc29ffd3062427bd8108cda362eb0",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/codeowners.ts"
       ]
@@ -2161,10 +2161,10 @@
       "issue": 2629,
       "chunk": "top-up-2629",
       "title": "top-up: the repo-settings audit-issue close-out",
-      "ledger": "docs/audits/security-sweep-2629-repo-settings-audit-close.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/setup/ after 12a-12af recorded their coverage: repo_settings_audit_close.ts (#2629)",
       "status": "swept",
-      "sweptAt": "334b8925cf8bf7bbf628f268b70e1906c8c4ab1d",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/setup/repo_settings_audit_close.ts"
       ]
@@ -2197,10 +2197,10 @@
       "issue": 2688,
       "chunk": "top-up-2688",
       "title": "top-up: worker work-on → planning hand-off",
-      "ledger": "docs/audits/security-sweep-2688-planning-handoff.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: planning_handoff.ts, planning_handoff_trust.ts (#2688)",
       "status": "swept",
-      "sweptAt": "cce5d6b2965f43fc25979050737b8894d8e44726",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/planning_handoff.ts",
         "worker/deno/lib/planning_handoff_trust.ts"
@@ -2210,10 +2210,10 @@
       "issue": 2701,
       "chunk": "top-up-2701",
       "title": "top-up: the Copilot code review setup question",
-      "ledger": "docs/audits/security-sweep-2701-copilot-review-setup.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/setup/ after 12a-12af recorded their coverage: copilot_review_setup.ts (#2701)",
       "status": "swept",
-      "sweptAt": "d7418ce59f0ab608691cfe6b130a105706e8beff",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/setup/copilot_review_setup.ts"
       ]
@@ -2222,10 +2222,10 @@
       "issue": 2682,
       "chunk": "top-up-2682",
       "title": "top-up: the Prompt-is-too-long fresh-session retry",
-      "ledger": "docs/audits/security-sweep-2682-prompt-too-long.md",
+      "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: prompt_too_long.ts (#2682)",
       "status": "swept",
-      "sweptAt": "d7418ce59f0ab608691cfe6b130a105706e8beff",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
       "paths": [
         "worker/deno/lib/prompt_too_long.ts"
       ]
