@@ -42,11 +42,11 @@ Deno.test("brokenRefsIn - extracts a ref from 'bad ref'", () => {
 Deno.test("brokenRefsIn - the production Issue #2880 message yields both refs", () => {
   const message = [
     "git checkout -B issue-1811-x --end-of-options Develop exited 128: " +
-      "fatal: bad object refs/heads/issue-1661-activity-transactions-empty-though-autotrader-s-bu;",
+    "fatal: bad object refs/heads/issue-1661-activity-transactions-empty-though-autotrader-s-bu;",
     "git checkout -B issue-1811-x --end-of-options origin/Develop exited 128: " +
-      "warning: ignoring broken ref refs/remotes/origin/Develop",
+    "warning: ignoring broken ref refs/remotes/origin/Develop",
     "fatal: 'origin/Develop' is not a commit and a branch " +
-      "'issue-1811-x' cannot be created from it",
+    "'issue-1811-x' cannot be created from it",
   ].join("\n");
   const refs = brokenRefsIn(message);
   assertEquals(refs, [
