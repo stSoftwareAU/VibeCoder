@@ -1751,7 +1751,7 @@ unless explicitly overridden.
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. PR-feedback and CI-fix runs post no run-stats comment, so their outcome is on the run's result and in the worker log. Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. The rewrite hook is a Claude-CLI feature, so a run routed to **Codex, Gemini or DeepSeek** records RTK as `unsupported` and proceeds without it. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
-| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red, carry an unanswered authorised comment, or sit green and unmerged, before the watchdog escalates it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog escalates it, or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
 
 ### 🌱 Graft repo-context injection
@@ -4583,6 +4583,22 @@ which cannot block — and trips on either signal:
   a red PR is a red PR, not a green one — and never for a PR the
   [merge-conflict ladder](workflows/merge-conflicts.md) owns.
 
+#### A green PR is never a stall
+
+Since Issue #2801 the green signal is **not escalated**. A green PR is handed,
+once per cycle, to the worker's own gated merge path (`directMergePr`, with the
+non-fleet-approval policy), and its answer decides what happens:
+
+- **awaiting approval** — the PR targets the default branch and has no
+  approving review from outside the fleet (`default_branch_unapproved`). That
+  is healthy: it is waiting on a human. No comment, no label, never closed.
+- **mergeable** — any other green PR goes through the pre-merge gate and is
+  merged.
+- **merge refused** for any other reason (behind its base, head too recent, a
+  protection rule, a lookup failure) — a loud warning naming the PR and the
+  reason, and a retry next cycle. A green PR is never closed and never handed
+  to abandon-and-redo.
+
 #### The merge-conflict ladder owns its own PRs
 
 A PR GitHub reports `CONFLICTING`, or one carrying `merge-conflict`, belongs to
@@ -4602,7 +4618,7 @@ or close it", was labelled `merge-conflict` at 10:00, and a human — acting on
 the fleet's own thirteen-minute-old comment — closed it at 10:10, before the
 ladder's first attempt ever ran. The work was redone by hand two hours later.
 
-On a trip it posts **one** escalation comment per PR per stall reason (deduped
+On a red-CI or unanswered-comment trip it posts **one** escalation comment per PR per stall reason (deduped
 by the `needs-human-escalation` HTML marker, so a long stall never accrues a
 comment per iteration) and applies `needs-human`. It is a **detector only** —
 the fix routes stay with the CI-fix (1.55) and PR-feedback (1) priorities. When
@@ -4626,14 +4642,19 @@ flowchart TD
     E --> L{"CONFLICTING or<br/>merge-conflict label?"}
     L -->|yes| N["Ladder owns it:<br/>no green signal, lane-aware<br/>next step, live escalation<br/>withdrawn"]
     L -->|no| M{"green, no auto-merge armed,<br/>no movement past threshold?"}
+    M -->|yes| P{"directMergePr"}
+    P -->|default_branch_unapproved| Q["Awaiting approval:<br/>not a stall, nothing posted"]
+    P -->|merged| R["Merged"]
+    P -->|other refusal| S["Loud warning,<br/>retry next cycle"]
     F -->|yes| K
-    M -->|yes| K
     G -->|yes| K{"auto-fix cap<br/>already escalated?"}
     K -->|yes| J["Suppressed — the human<br/>already owns this PR"]
     K -->|no| H["needs-human +<br/>ONE marker-deduped comment<br/>per stall reason"]
     style H fill:#7f1d1d,stroke:#450a0a,color:#fff
     style D fill:#14532d,stroke:#052e16,color:#fff
     style N fill:#14532d,stroke:#052e16,color:#fff
+    style Q fill:#14532d,stroke:#052e16,color:#fff
+    style R fill:#14532d,stroke:#052e16,color:#fff
 ```
 
 ## 📦 In-Repo Configuration removed (`.vibecoder.json`,)

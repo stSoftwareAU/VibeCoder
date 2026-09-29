@@ -24,11 +24,18 @@
  *   with the PR; it simply is not landing, and the repository's whole work
  *   stream is stopped behind it.
  *
- * On trip it escalates through the shared `escalateToHuman()` chokepoint —
- * one deduped comment per PR per stall reason, plus `needs-human`. It never
- * attempts a fix: the fix routes belong to `pr_ci_processor.ts` and
- * `pr_feedback_processor.ts` (reachable again since Issue #4023). Detection
- * and escalation only.
+ * A red or unanswered PR escalates through the shared `escalateToHuman()`
+ * chokepoint — one deduped comment per PR per stall reason. The watchdog
+ * never attempts a fix for those: the fix routes belong to
+ * `pr_ci_processor.ts` and `pr_feedback_processor.ts` (reachable again since
+ * Issue #4023).
+ *
+ * A green PR is never a stall and never escalated (Issue #2801). It is handed
+ * to the worker's own merge path, `directMergePr`, whose approval gate splits
+ * it: a PR that only lacks approval is **awaiting approval** and left alone;
+ * any other green PR is **mergeable** and merged. A merge refused for any
+ * other reason is logged loudly and retried next cycle — a green PR is never
+ * closed or abandoned.
  *
  * It also stays out of the merge-conflict ladder's way (Issue #1213). A
  * `CONFLICTING` PR — or one carrying `merge-conflict` — is never reported as
@@ -42,6 +49,7 @@
  */
 
 import type { Logger, Result, WorkerConfig } from "../types.ts";
+import { directMergePr, type MergeResult } from "./direct_merge.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import type { IssueCache } from "./issue_cache.ts";
@@ -95,6 +103,8 @@ const FAILING_CONCLUSIONS = new Set([
  * landing, and while it does not land its repository's whole work stream is
  * stopped. `GRQ-GTC#305` sat exactly like that for five days and no host
  * said a word about it, because the two signals above both looked healthy.
+ * Since Issue #2801 the scan never escalates it: the PR is handed to the merge
+ * path instead (see {@link resolveGreenBlockingPr}).
  */
 export type BlockingPrStallReason =
   | "red-ci"
@@ -1036,13 +1046,21 @@ export interface ScanBlockingPrStallsOptions
   dedupAuthors?: EscalateBlockingPrStallDeps["dedupAuthors"];
   /** Optional clock override (epoch seconds). */
   nowSeconds?: () => number;
+  /**
+   * The worker's own merge path for a green blocking PR (Issue #2801).
+   * Defaults to {@link directMergePr}; production injects it explicitly.
+   */
+  directMergeFn?: typeof directMergePr;
 }
 
 /**
  * One scan iteration: find blocking PRs, detect stalls, escalate.
  *
- * A per-PR escalation failure is logged and the scan continues; the
- * returned list contains every stall that was detected, escalated or not.
+ * A green PR is not a stall (Issue #2801): it goes to
+ * {@link resolveGreenBlockingPr} once per cycle and is left out of the
+ * returned list. A per-PR escalation failure is logged and the scan
+ * continues; the returned list contains every stall that was detected,
+ * escalated or not.
  */
 export async function scanBlockingPrStalls(
   opts: ScanBlockingPrStallsOptions,
@@ -1088,6 +1106,18 @@ export async function scanBlockingPrStalls(
       nowSeconds: now,
     });
     if (!stall) continue;
+
+    // Issue #2801: a green PR is not a stall. `unmerged-green` only trips
+    // when nothing else has, so such a stall carries that signal alone.
+    if (stall.signals.every((s) => s.reason === "unmerged-green")) {
+      await resolveGreenBlockingPr(stall, {
+        directMergeFn: opts.directMergeFn ?? directMergePr,
+        ghCommandFn: opts.ghCommandFn,
+        fleetAuthors: opts.fleetAuthors,
+        logger,
+      });
+      continue;
+    }
     stalls.push(stall);
 
     logger.warn("Blocking PR has stalled — escalating", {
@@ -1119,6 +1149,87 @@ export async function scanBlockingPrStalls(
   }
 
   return { ok: true, value: stalls };
+}
+
+// ---------------------------------------------------------------------------
+// Green PR resolution (Issue #2801)
+// ---------------------------------------------------------------------------
+
+/** What happened to a green blocking PR this cycle. */
+export type GreenBlockingPrOutcome =
+  | "merged"
+  | "awaiting-approval"
+  | "merge-refused";
+
+/** Dependencies for {@link resolveGreenBlockingPr}. */
+export interface ResolveGreenBlockingPrDeps {
+  /** The worker's own merge path — {@link directMergePr} in production. */
+  directMergeFn: typeof directMergePr;
+  /** Injected `gh` CLI runner, passed through to the merge path. */
+  ghCommandFn: (args: string[]) => Promise<string>;
+  /** Fleet logins — an approval from one of these is not an approval. */
+  fleetAuthors: readonly string[];
+  /** Logger. */
+  logger: Logger;
+}
+
+/**
+ * Hand a green blocking PR to the worker's merge path and classify the result.
+ *
+ * `directMergePr` applies the approval gate: a default-branch PR without an
+ * approving review from outside the fleet comes back
+ * `default_branch_unapproved` — healthy, awaiting a human, so nothing is
+ * posted. Any other PR goes through the pre-merge gate and merges. Every other
+ * refusal is a loud warning and a retry next cycle; this function never
+ * comments, labels, closes or re-queues.
+ */
+export async function resolveGreenBlockingPr(
+  pr: Pick<BlockingPrStall, "repo" | "prNumber">,
+  deps: ResolveGreenBlockingPrDeps,
+): Promise<GreenBlockingPrOutcome> {
+  const { repo, prNumber } = pr;
+  // An empty fleet list would count a fleet approval as a human one, so the
+  // approval policy is only offered when the fleet is known.
+  const options = deps.fleetAuthors.length > 0
+    ? { approvedDefaultBranch: { fleetAuthors: [...deps.fleetAuthors] } }
+    : {};
+
+  let merge: Result<MergeResult>;
+  try {
+    merge = await deps.directMergeFn(
+      repo,
+      prNumber,
+      deps.ghCommandFn,
+      undefined,
+      options,
+    );
+  } catch (err) {
+    merge = { ok: false, error: new Error(errorMessage(err)) };
+  }
+
+  if (merge.ok && merge.value.merged) {
+    deps.logger.info("Blocking-PR stall: green PR merged", {
+      repo,
+      pr: prNumber,
+    });
+    return "merged";
+  }
+  if (merge.ok && merge.value.blocked === "default_branch_unapproved") {
+    deps.logger.info(
+      "Blocking-PR stall: green PR awaiting approval — not a stall",
+      { repo, pr: prNumber },
+    );
+    return "awaiting-approval";
+  }
+
+  const reason = merge.ok
+    ? merge.value.blocked ?? "merge not performed"
+    : merge.error.message;
+  deps.logger.warn(
+    `Blocking-PR stall: green PR ${repo}#${prNumber} could not be merged (${reason}) — retrying next cycle, never abandoned`,
+    { repo, pr: prNumber, reason },
+  );
+  return "merge-refused";
 }
 
 // ---------------------------------------------------------------------------
