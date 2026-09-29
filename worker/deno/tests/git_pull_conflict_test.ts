@@ -325,6 +325,47 @@ Deno.test("updatePrBranch - a 'behind' PR with NO conflict merges the base in an
   }
 });
 
+Deno.test("updatePrBranch - a 'conflicting' PR whose merge is clean merges the base in and pushes without force (Issue #2807)", async () => {
+  const tmpDir = await createTempDir();
+  const trace = await startGitTrace();
+  try {
+    const { localPath } = await setupTestRepos(tmpDir);
+    await runGitCommand(["checkout", "-b", "issue-9-docs"], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/docs.md`, "feature docs\n");
+    await runGitCommand(["add", "docs.md"], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "Feature docs"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "issue-9-docs"], { cwd: localPath });
+    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/other.md`, "main change\n");
+    await runGitCommand(["add", "other.md"], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+    await runGitCommand(["checkout", "issue-9-docs"], { cwd: localPath });
+    const before = await heads(localPath, "issue-9-docs");
+
+    const result = await updatePrBranch("issue-9-docs", "main", {
+      cwd: localPath,
+      env: trace.env,
+    }, "conflicting");
+
+    assertEquals(result.ok, true, JSON.stringify(result));
+    const after = await heads(localPath, "issue-9-docs");
+    assertEquals(after.local, after.remote, "merged head pushed");
+    const ancestor = await runGitCommand(
+      ["merge-base", "--is-ancestor", before.remote, after.remote],
+      { cwd: localPath },
+    );
+    assertEquals(ancestor.ok && ancestor.value.code, 0, "old head preserved");
+    const pushes = await recordedPushes(trace);
+    assertEquals(pushes.length, 1, JSON.stringify(pushes));
+    assertEquals(isForcedPush(pushes[0]!), false, pushes[0]!.join(" "));
+    assertEquals(await recordedRebase(trace), false, "no git rebase ran");
+  } finally {
+    await trace.dispose();
+    await cleanup(tmpDir);
+  }
+});
+
 Deno.test("updatePrBranch - a rejected plain push fails loud with git's stderr and is never retried with force (Issue #2807)", async () => {
   const tmpDir = await createTempDir();
   try {

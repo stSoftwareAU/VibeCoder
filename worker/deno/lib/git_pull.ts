@@ -199,7 +199,11 @@ export async function syncFeatureBranchWithDefault(
     baseRef,
     options,
   );
-  if (!merged.ok) return merged;
+  if (!merged.ok) {
+    // The PR processors run on regardless, so the refusal is logged here.
+    console.error(`[sync] ${merged.error.message}`);
+    return merged;
+  }
   return {
     ok: true,
     value:
@@ -1321,7 +1325,26 @@ async function mergeBaseIntoBranch(
   }
 
   const unmerged = await listUnmergedPaths(options);
-  await runGitCommand(["merge", "--abort"], options);
+  // Abort only a merge git actually started, and fail loud when the abort
+  // itself fails: a half-merged tree is not "left exactly as it was".
+  const merging = await runGitCommand(
+    ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+    options,
+  );
+  if (merging.ok && merging.value.code === 0) {
+    const aborted = await runGitCommand(["merge", "--abort"], options);
+    if (!aborted.ok || aborted.value.code !== 0) {
+      return {
+        ok: false,
+        error: new Error(
+          `Merging '${baseRef}' into '${branchName}' failed and ` +
+            `'git merge --abort' failed too: ${
+              describeGitFailure(aborted, { lines: 6, from: "head" })
+            }`,
+        ),
+      };
+    }
+  }
   if (unmerged.ok && unmerged.value.length > 0) {
     return {
       ok: false,
