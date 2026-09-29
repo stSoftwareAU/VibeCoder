@@ -161,6 +161,11 @@ export interface CheckRunEntry {
 export interface PrScanOptions {
   /** GitHub username to filter PRs by. */
   githubUser: string;
+  /**
+   * Restrict the scan to this one PR number (Issue #2802) — the stall-repair
+   * pass reruns a lane on the stalled PR, not on whichever PR is next.
+   */
+  onlyPrNumber?: number;
   /** Repositories to scan. */
   repos: string[];
   /** Logger for diagnostic output. */
@@ -524,7 +529,8 @@ export async function listActionablePrs(
     seen.add(pr.number);
     prs.push(pr);
   }
-  return prs;
+  const only = options.onlyPrNumber;
+  return only === undefined ? prs : prs.filter((pr) => pr.number === only);
 }
 
 /**

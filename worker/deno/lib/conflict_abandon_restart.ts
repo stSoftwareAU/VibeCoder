@@ -486,6 +486,12 @@ export type AbandonRestartOutcome =
   }
   /** A precondition refused the abandon; nothing was changed. */
   | { outcome: "declined"; reason: AbandonDeclineReason }
+  /**
+   * A stalled PR naming no originating issue was closed, and — by design —
+   * no issue was filed or re-queued (Issue #2802). Only a `stalled`
+   * {@link AbandonReason} produces it.
+   */
+  | { outcome: "closed-without-issue"; reason: PrUnresolvedReason }
   /** A step failed; the caller must escalate naming {@link step}. */
   | {
     outcome: "failed";
@@ -531,6 +537,14 @@ export type ExhaustedEscalationRoute =
 export function exhaustedEscalationRoute(
   outcome: Exclude<AbandonRestartOutcome, { outcome: "abandoned" }>,
 ): ExhaustedEscalationRoute {
+  if (outcome.outcome === "closed-without-issue") {
+    // Only the stall route produces this (Issue #2802); recorded, not routed.
+    return {
+      kind: "abandon-declined",
+      detail: "This PR names no originating issue " +
+        `(${outcome.reason}), so it was closed with nothing re-queued.`,
+    };
+  }
   if (outcome.outcome === "failed") {
     return {
       kind: "abandon-failed",
@@ -642,6 +656,20 @@ export function exhaustedEscalationDedupKey(
 // Request and seams
 // ---------------------------------------------------------------------------
 
+/**
+ * Why a PR is being abandoned (Issue #2802). Omitted means a merge conflict,
+ * the reason this rung was written for; `stalled` is the blocking-PR stall
+ * repair's second trip, and changes only what the comments say — and that a
+ * PR naming no originating issue is closed without filing a flag issue.
+ */
+export type AbandonReason =
+  | { kind: "merge-conflict" }
+  | {
+    kind: "stalled";
+    /** What the stall watchdog saw, quoted in the comments. */
+    detail: string;
+  };
+
 /** The exhausted PR to abandon. */
 export interface AbandonRestartRequest {
   /** Repository in `owner/repo` form. */
@@ -663,6 +691,8 @@ export interface AbandonRestartRequest {
    * outsider's text as the fleet's own record.
    */
   prComments?: readonly unknown[];
+  /** Why the PR is abandoned (Issue #2802). Defaults to a merge conflict. */
+  reason?: AbandonReason;
 }
 
 /** Injected seams so the whole path is testable without GitHub. */
@@ -1089,6 +1119,103 @@ export function buildNoIssueAbandonPrComment(args: {
   ].join("\n");
 }
 
+/** Where a re-queued issue's pickup label came from, for a comment. */
+function describeRequeueLabel(label: RequeueLabel): string {
+  const name = requeueLabelName(label);
+  return "kept" in label
+    ? `\`${name}\`, the pickup label it already carries`
+    : `\`${name}\`, applied by the worker`;
+}
+
+/**
+ * The PR comment for a stalled PR abandoned with an originating issue
+ * (Issue #2802). Stands alone months later: what stalled, that one repair was
+ * tried, what happens now, and where the branch is.
+ */
+export function buildStalledAbandonPrComment(args: {
+  request: AbandonRestartRequest;
+  detail: string;
+  issueNumber: number;
+  label: RequeueLabel;
+}): string {
+  const branch = sanitiseIssueText(args.request.branchName);
+  const base = sanitiseIssueText(args.request.baseBranch);
+  return [
+    "♻️ **Abandoning this stalled PR and restarting the work**",
+    "",
+    `This PR ${
+      sanitiseIssueText(args.detail)
+    }. The stall-repair pass already ` +
+    `synced it with \`${base}\` and reran its owning lane once, and it is ` +
+    "still stalled, so the work is redone rather than nursed further.",
+    "",
+    `This PR is being **closed** — not merged — and issue ` +
+    `#${args.issueNumber} is being re-queued ` +
+    `(${describeRequeueLabel(args.label)}) so the fleet raises a fresh PR ` +
+    `off \`${base}\`.`,
+    "",
+    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
+    "force-pushed, so the abandoned work remains readable and linked from here.",
+  ].join("\n");
+}
+
+/**
+ * The originating-issue comment for a stalled PR (Issue #2802). Carries the
+ * same restart marker as the merge-conflict route, so both share the issue's
+ * {@link MAX_RESTARTS_PER_ISSUE} restarts.
+ */
+export function buildStalledRestartIssueComment(args: {
+  request: AbandonRestartRequest;
+  detail: string;
+  label: RequeueLabel;
+  restartNumber: number;
+}): string {
+  const { request } = args;
+  return [
+    conflictRestartMarker(request.repo, request.prNumber),
+    "♻️ **Re-queued: the PR for this issue stalled**",
+    "",
+    `${request.repo}#${request.prNumber} ${sanitiseIssueText(args.detail)}. ` +
+    "It was synced with its base and its owning lane rerun once, and it is " +
+    "still stalled.",
+    "",
+    `That PR is being closed and this issue re-queued ` +
+    `(${describeRequeueLabel(args.label)}) so the work is redone. The ` +
+    `abandoned branch \`${sanitiseIssueText(request.branchName)}\` is kept, ` +
+    "not deleted.",
+    "",
+    `This is restart **${args.restartNumber} of ${MAX_RESTARTS_PER_ISSUE}** ` +
+    "for this issue.",
+  ].join("\n");
+}
+
+/**
+ * The PR comment for a stalled PR naming no originating issue (Issue #2802):
+ * closed, and no issue filed — the branch is the record.
+ */
+export function buildStalledNoIssueClosePrComment(args: {
+  request: AbandonRestartRequest;
+  detail: string;
+  reason: PrUnresolvedReason;
+}): string {
+  const branch = sanitiseIssueText(args.request.branchName);
+  return [
+    "♻️ **Closing this stalled PR**",
+    "",
+    `This PR ${
+      sanitiseIssueText(args.detail)
+    }. The stall-repair pass already ` +
+    "synced it and reran its owning lane once, and it is still stalled.",
+    "",
+    `It names **no originating issue** (${args.reason}), so there is nothing ` +
+    "to re-queue, and the stall watchdog files no issue of its own. It is " +
+    "closed so it stops blocking the queue.",
+    "",
+    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
+    "force-pushed, so the work remains readable and linked from here.",
+  ].join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // The rung
 // ---------------------------------------------------------------------------
@@ -1165,6 +1292,39 @@ async function abandonWithoutOriginatingIssue(
   const { repo, prNumber } = request;
   const gh = deps.gh;
   const logger = deps.logger;
+
+  // Issue #2802: a stalled PR files no issue — comment, close, done.
+  if (request.reason?.kind === "stalled") {
+    try {
+      await gh([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        buildStalledNoIssueClosePrComment({
+          request,
+          detail: request.reason.detail,
+          reason,
+        }),
+      ]);
+    } catch (error) {
+      return failed("pr-comment", error);
+    }
+    try {
+      // No `--delete-branch`: the abandoned commits must stay readable.
+      await gh(["pr", "close", String(prNumber), "--repo", repo]);
+    } catch (error) {
+      return failed("pr-close", error);
+    }
+    logger?.warn?.(
+      `Stalled PR #${prNumber} named no originating issue (${reason}) — ` +
+        "closed it; no issue filed",
+      { repo, prNumber },
+    );
+    return { outcome: "closed-without-issue", reason };
+  }
 
   let comments: readonly unknown[];
   try {
@@ -1485,14 +1645,21 @@ export async function abandonAndRestart(
       "--repo",
       repo,
       "--body",
-      buildRestartIssueComment({
-        request,
-        history,
-        label: requeueLabel,
-        // Read off the thread, never assumed: the comment is permanent, and
-        // "this is your last restart" must be true when it says so.
-        restartNumber: claimed.length + 1,
-      }),
+      request.reason?.kind === "stalled"
+        ? buildStalledRestartIssueComment({
+          request,
+          detail: request.reason.detail,
+          label: requeueLabel,
+          restartNumber: claimed.length + 1,
+        })
+        : buildRestartIssueComment({
+          request,
+          history,
+          label: requeueLabel,
+          // Read off the thread, never assumed: the comment is permanent, and
+          // "this is your last restart" must be true when it says so.
+          restartNumber: claimed.length + 1,
+        }),
     ]);
   } catch (error) {
     return failed("issue-comment", error, issueNumber);
@@ -1507,13 +1674,20 @@ export async function abandonAndRestart(
       "--repo",
       repo,
       "--body",
-      buildAbandonPrComment({
-        request,
-        history,
-        context,
-        issueNumber,
-        label: requeueLabel,
-      }),
+      request.reason?.kind === "stalled"
+        ? buildStalledAbandonPrComment({
+          request,
+          detail: request.reason.detail,
+          issueNumber,
+          label: requeueLabel,
+        })
+        : buildAbandonPrComment({
+          request,
+          history,
+          context,
+          issueNumber,
+          label: requeueLabel,
+        }),
     ]);
   } catch (error) {
     return failed("pr-comment", error, issueNumber);

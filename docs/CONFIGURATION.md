@@ -1751,7 +1751,7 @@ unless explicitly overridden.
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. PR-feedback and CI-fix runs post no run-stats comment, so their outcome is on the run's result and in the worker log. Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. The rewrite hook is a Claude-CLI feature, so a run routed to **Codex, Gemini or DeepSeek** records RTK as `unsupported` and proceeds without it. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
-| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog escalates it, or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
+| Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog repairs it (sync and rerun once, then abandon and redo), or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
 
 ### 🌱 Graft repo-context injection
@@ -4607,24 +4607,45 @@ schedule. Three rules keep this watchdog out of its way (Issue #1213):
 
 - **It is never "green but unmerged".** A conflicting PR is not landing because
   it conflicts, so that signal stays silent for it.
-- **The next step names the lane, not a menu.** Any escalation the PR does
-  carry — red CI, an unanswered comment — ends in "the merge-conflict ladder
-  owns it, leave the PR open", never "or close it".
-- **A live escalation is withdrawn when the PR enters the lane.** One retraction
-  comment per PR, deduped by `<!-- blocking-pr-stall-withdrawn -->`.
+- **Stall repair leaves it alone.** A red or unanswered PR the ladder owns is
+  neither synced nor abandoned by this watchdog (Issue #2802) — closing is the
+  ladder's own last rung.
+- **A live escalation is withdrawn when the PR enters the lane.** An escalation
+  posted before Issue #2802 retired them gets one retraction comment per PR,
+  deduped by `<!-- blocking-pr-stall-withdrawn -->`.
 
 `NEAT-AI-Ockham#119` is why. It was escalated at 09:57 as "green and unmerged …
 or close it", was labelled `merge-conflict` at 10:00, and a human — acting on
 the fleet's own thirteen-minute-old comment — closed it at 10:10, before the
 ladder's first attempt ever ran. The work was redone by hand two hours later.
 
-On a red-CI or unanswered-comment trip it posts **one** escalation comment per PR per stall reason (deduped
-by the `needs-human-escalation` HTML marker, so a long stall never accrues a
-comment per iteration) and applies `needs-human`. It is a **detector only** —
-the fix routes stay with the CI-fix (1.55) and PR-feedback (1) priorities. When
-the [auto-fix attempt cap](#-auto-fix-attempt-cap) has already
-escalated the PR, the watchdog stays silent rather than adding a second
-escalation.
+#### A red or unanswered PR is repaired, never escalated
+
+Since Issue #2802 the watchdog files **no issue** and applies **no `escalated`
+label**. A red-CI or unanswered-comment stall goes to the stall-repair pass
+(`worker/deno/lib/stall_repair.ts`), which runs in the maintenance lane under
+the repository's lane lease — a repository an issue slot holds is skipped until
+the next cycle — and climbs a two-trip ladder:
+
+- **First trip** — it posts a hidden `<!-- vibe-stall-repair … -->` marker
+  comment on the PR (the claim, posted first), syncs the branch with its target
+  through `updatePrBranch` (`git_pull.ts`), then reruns the owning lane **once**
+  on that PR: CI fix (1.55) for red CI, PR feedback (1) for an unanswered
+  comment. The same stall seen again before the next check reruns nothing.
+- **Second trip** — once the marker is older than the threshold and the PR is
+  still stalled, it is abandoned through `abandonAndRestart` with a `stalled`
+  reason: the PR is closed (its branch kept) and its originating issue is
+  re-queued, keeping its own pickup label or gaining `idle-task` — never
+  `work-on`. A PR naming no originating issue is closed and **no** issue is
+  filed. The issue shares its two restarts with the merge-conflict ladder.
+- **Auto-fix cap** — a PR carrying the
+  [auto-fix attempt cap](#-auto-fix-attempt-cap) marker skips the rerun (its
+  lane has already given up) and goes straight to the second trip.
+- **Human-authored PRs** — only a PR a push-capable fleet login authored is
+  repaired or abandoned. Anyone else's stalled PR is logged and left alone.
+
+Only fleet-authored marker comments count, so an outsider cannot trip the
+ladder by pasting a marker.
 
 The threshold is `blocking_pr_stall_threshold_seconds` (default `7200` — 2
 hours), overridable per repo via
@@ -4640,17 +4661,18 @@ flowchart TD
     E --> F{"red CI, no newer push,<br/>past threshold?"}
     E --> G{"authorised comment newer<br/>than fleet reply/push,<br/>past threshold?"}
     E --> L{"CONFLICTING or<br/>merge-conflict label?"}
-    L -->|yes| N["Ladder owns it:<br/>no green signal, lane-aware<br/>next step, live escalation<br/>withdrawn"]
+    L -->|yes| N["Ladder owns it:<br/>no green signal, no repair,<br/>live escalation withdrawn"]
     L -->|no| M{"green, no auto-merge armed,<br/>no movement past threshold?"}
     M -->|yes| P{"directMergePr"}
     P -->|default_branch_unapproved| Q["Awaiting approval:<br/>not a stall, nothing posted"]
     P -->|merged| R["Merged"]
     P -->|other refusal| S["Loud warning,<br/>retry next cycle"]
-    F -->|yes| K
-    G -->|yes| K{"auto-fix cap<br/>already escalated?"}
-    K -->|yes| J["Suppressed — the human<br/>already owns this PR"]
-    K -->|no| H["needs-human +<br/>ONE marker-deduped comment<br/>per stall reason"]
-    style H fill:#7f1d1d,stroke:#450a0a,color:#fff
+    F -->|yes| W
+    G -->|yes| W{"worker-authored,<br/>lane lease won?"}
+    W -->|no| X["Logged, left alone<br/>(or retried next cycle)"]
+    W -->|yes| K{"auto-fix cap marker, or<br/>trip marker past threshold?"}
+    K -->|no trip yet| H["First trip: marker,<br/>sync branch, rerun<br/>owning lane once"]
+    K -->|yes| J["Second trip:<br/>abandonAndRestart —<br/>close PR, re-queue issue"]
     style D fill:#14532d,stroke:#052e16,color:#fff
     style N fill:#14532d,stroke:#052e16,color:#fff
     style Q fill:#14532d,stroke:#052e16,color:#fff

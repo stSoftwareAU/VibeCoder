@@ -891,8 +891,14 @@ that gap, and reading the queue means reading both:
   would remove the PR from the very lane that clears it (Issue #569).
 - **The blocking-PR stall watchdog defers to this lane.** A `CONFLICTING` PR —
   or one carrying `merge-conflict` — is never reported as "green but unmerged",
-  its escalation says the ladder owns the PR rather than offering "or close it",
-  and a live escalation is withdrawn when the PR enters the lane (Issue #1213).
+  is never synced or abandoned by stall repair, and a live escalation from
+  before Issue #2802 is withdrawn when the PR enters the lane (Issue #1213).
+- **The blocking-PR stall watchdog repairs, it does not escalate.** Since Issue
+  #2802 a red or unanswered blocking PR files no issue and gets no `escalated`
+  label. Its first trip syncs the branch and reruns the owning lane once; its
+  second trip abandons the PR through this ladder's own `abandonAndRestart`
+  rung, with a `stalled` reason, so the PR and issue comments say "stalled"
+  rather than "merge conflict" and the issue shares the same two restarts.
   NEAT-AI-Ockham#119 was closed by hand thirteen minutes after that comment
   appeared, before rung 1 ran; see
   [Blocking-PR stall watchdog](../CONFIGURATION.md#-blocking-pr-stall-watchdog).

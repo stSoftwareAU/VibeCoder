@@ -24,11 +24,11 @@
  *   with the PR; it simply is not landing, and the repository's whole work
  *   stream is stopped behind it.
  *
- * A red or unanswered PR escalates through the shared `escalateToHuman()`
- * chokepoint — one deduped comment per PR per stall reason. The watchdog
- * never attempts a fix for those: the fix routes belong to
- * `pr_ci_processor.ts` and `pr_feedback_processor.ts` (reachable again since
- * Issue #4023).
+ * A red or unanswered PR is returned to the caller and never escalated
+ * (Issue #2802): no issue is filed and no `escalated` label is applied. The
+ * stall-repair pass (`stall_repair.ts`) owns what happens next — sync the
+ * branch and rerun the owning lane once, then abandon the PR and redo its
+ * originating issue if it is still stalled at the next check.
  *
  * A green PR is never a stall and never escalated (Issue #2801). It is handed
  * to the worker's own merge path, `directMergePr`, whose approval gate splits
@@ -53,24 +53,15 @@ import { directMergePr, type MergeResult } from "./direct_merge.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import type { IssueCache } from "./issue_cache.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
-import {
-  fetchIssueCommentPages,
-  issueCommentsContainMarker,
-} from "./issue_comment_pages.ts";
+import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import {
   fetchIssuesByLabel,
   fetchOpenPRsForFleet,
   getBlockingPRForIssue,
   resolveFleetPrSlots,
 } from "./issue_query.ts";
-import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
+import { buildDedupMarker } from "./needs_human_escalation.ts";
 import { MERGE_CONFLICT_LABEL } from "./pr_merge_conflict_scan.ts";
-import {
-  escalateAsWork,
-  ESCALATED_AS_WORK_LABEL,
-  type WorkEscalation,
-} from "./escalate_as_work.ts";
 
 /** Default stall threshold: 2 hours (Issue #4025). */
 export const DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS = 7200;
@@ -85,6 +76,13 @@ export const DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS = 7200;
  */
 export const AUTO_FIX_CAP_MARKER_PREFIX =
   "<!-- needs-human-escalation: auto-fix-cap:";
+
+/**
+ * Prefix of the hidden trip marker the stall-repair pass posts on a PR
+ * (Issue #2802). Defined here, not in `stall_repair.ts`, because the detector
+ * must not read that marker as a fleet reply.
+ */
+export const STALL_REPAIR_MARKER_PREFIX = "<!-- vibe-stall-repair";
 
 /** Check conclusions that count as a red build. */
 const FAILING_CONCLUSIONS = new Set([
@@ -133,8 +131,13 @@ export interface BlockingPrObservation {
   lastFleetPushAt?: string;
   /** ISO timestamp of the newest comment from an authorised commenter. */
   lastAuthorisedCommentAt?: string;
-  /** ISO timestamp of the newest comment from a fleet account. */
+  /**
+   * ISO timestamp of the newest comment from a fleet account — excluding the
+   * stall-repair trip marker, which is not a reply (Issue #2802).
+   */
   lastFleetReplyAt?: string;
+  /** ISO timestamp of the newest fleet stall-repair trip marker (Issue #2802). */
+  lastStallRepairAt?: string;
   /** ISO timestamp the PR was opened (Issue #1082). */
   createdAt?: string;
   /** True when GitHub's native auto-merge is armed on the PR (Issue #1082). */
@@ -159,6 +162,12 @@ export interface BlockingPrObservation {
    * queue marker, so it names the lane that owns the PR.
    */
   labels?: readonly string[];
+  /** PR author login (Issue #2802) — only a worker's own PR is repaired. */
+  author?: string;
+  /** Head branch (Issue #2802) — synced and named when the PR is abandoned. */
+  headRefName?: string;
+  /** Base branch (Issue #2802) — the target the head is synced with. */
+  baseRefName?: string;
 }
 
 /** One tripped staleness signal. */
@@ -167,7 +176,7 @@ export interface BlockingPrStallSignal {
   reason: BlockingPrStallReason;
   /** How long the PR has been stalled on this signal, in seconds. */
   stalledSeconds: number;
-  /** Human-readable explanation used in the escalation comment. */
+  /** Human-readable explanation quoted in the stall-repair comments. */
   detail: string;
 }
 
@@ -182,12 +191,17 @@ export interface BlockingPrStall {
   /** Every signal that tripped, in detection order. */
   signals: BlockingPrStallSignal[];
   /**
-   * True when the merge-conflict ladder owns this PR (Issue #1213). The
-   * escalation then names the ladder instead of offering a menu that ends in
-   * "close it" — closing is the ladder's own rung 3, not a human's minute-zero
-   * option.
+   * True when the merge-conflict ladder owns this PR (Issue #1213). Stall
+   * repair then leaves it to the ladder — closing is the ladder's own rung 3,
+   * taken after its attempts fail (Issue #2802).
    */
   mergeConflictLaneOwned?: boolean;
+  /** PR author login, when observed (Issue #2802). */
+  author?: string;
+  /** Head branch, when observed (Issue #2802). */
+  headRefName?: string;
+  /** Base branch, when observed (Issue #2802). */
+  baseRefName?: string;
 }
 
 /**
@@ -307,7 +321,12 @@ export function detectBlockingPrStall(
   const commentAt = epochSeconds(observation.lastAuthorisedCommentAt);
   if (commentAt !== undefined) {
     const replyAt = epochSeconds(observation.lastFleetReplyAt);
-    const answeredAt = maxDefined(replyAt, pushAt);
+    // Issue #2802: once stall repair has tripped on this comment, its own
+    // sync push is not an answer — only a real fleet reply is. Otherwise the
+    // repair would clear the stall it is meant to settle.
+    const tripAt = epochSeconds(observation.lastStallRepairAt);
+    const repairedSince = tripAt !== undefined && tripAt >= commentAt;
+    const answeredAt = repairedSince ? replyAt : maxDefined(replyAt, pushAt);
     const answered = answeredAt !== undefined && answeredAt >= commentAt;
     const stalledSeconds = nowSeconds - commentAt;
     if (!answered && stalledSeconds >= thresholdSeconds) {
@@ -355,6 +374,13 @@ export function detectBlockingPrStall(
     blockedIssues: [...observation.blockedIssues],
     signals,
     mergeConflictLaneOwned: laneOwned,
+    ...(observation.author !== undefined ? { author: observation.author } : {}),
+    ...(observation.headRefName !== undefined
+      ? { headRefName: observation.headRefName }
+      : {}),
+    ...(observation.baseRefName !== undefined
+      ? { baseRefName: observation.baseRefName }
+      : {}),
   };
 }
 
@@ -371,7 +397,10 @@ function isGreen(observation: BlockingPrObservation): boolean {
   return counts.total > 0 && counts.pending === 0;
 }
 
-/** Dedup key handed to `escalateToHuman` for one stall reason. */
+/**
+ * Dedup key of the retired stall escalation (Issue #2802). Still read so a
+ * live escalation on an old thread can be withdrawn (Issue #1213).
+ */
 export function blockingPrStallDedupKey(
   reason: BlockingPrStallReason,
 ): string {
@@ -383,7 +412,7 @@ export function blockingPrStallMarker(reason: BlockingPrStallReason): string {
   return buildDedupMarker(blockingPrStallDedupKey(reason));
 }
 
-/** Build the `**Why:**` body for one tripped signal. */
+/** Explain one tripped signal — quoted in the stall-repair comments. */
 export function buildBlockingPrStallReason(
   stall: BlockingPrStall,
   signal: BlockingPrStallSignal,
@@ -399,24 +428,6 @@ export function buildBlockingPrStallReason(
     } to this PR, so the work stream is stopped until the PR moves.`
   );
 }
-
-/** Next step printed in the escalation comment. */
-/** Short noun phrase naming the stall, for the escalation issue's title. */
-export function describeStallSummary(reason: BlockingPrStallReason): string {
-  switch (reason) {
-    case "red-ci":
-      return "CI is red and no fix has landed";
-    case "unanswered-comment":
-      return "an authorised comment is unanswered";
-    case "unmerged-green":
-      return "the PR is green but is not being merged";
-  }
-}
-
-export const BLOCKING_PR_STALL_NEXT_STEP =
-  "Push a fix, reply to the outstanding comment, approve or merge the PR, or " +
-  "close it — whichever unblocks it — so the deferred `work-on` issues can be " +
-  "picked up again.";
 
 /**
  * Next step for a PR the merge-conflict ladder owns (Issue #1213).
@@ -437,203 +448,6 @@ export const MERGE_CONFLICT_LANE_NEXT_STEP =
   "PR open: it is in the merge-conflict lane, so the merge-conflict ladder " +
   "owns whether it is resolved, rebased or retired. Retiring it by hand skips " +
   "the ladder's attempts and the work has to be redone from scratch.";
-
-/**
- * Choose the next step for a stall: the merge-conflict lane's when the ladder
- * owns the PR, otherwise the general one.
- */
-export function buildBlockingPrStallNextStep(
-  stall: Pick<BlockingPrStall, "mergeConflictLaneOwned">,
-): string {
-  return stall.mergeConflictLaneOwned === true
-    ? MERGE_CONFLICT_LANE_NEXT_STEP
-    : BLOCKING_PR_STALL_NEXT_STEP;
-}
-
-// ---------------------------------------------------------------------------
-// Escalation
-// ---------------------------------------------------------------------------
-
-/** Dependencies for {@link escalateBlockingPrStall}. */
-export interface EscalateBlockingPrStallDeps {
-  /** Injected `gh` CLI runner. */
-  ghCommandFn: (args: string[]) => Promise<string>;
-  /**
-   * Retained for callers that still pass it. NOT applied to a stalled PR any
-   * more (Issue #569) — a mechanical stall is filed as work instead.
-   */
-  needsHumanLabel: string;
-  /** Non-vetoing marker for the PR. Defaults to `escalated`. */
-  escalatedLabel?: string;
-  /** Files the blockage into the work queue. Injected by tests. */
-  escalateWork?: (
-    escalation: WorkEscalation,
-  ) => Promise<Result<{ issueNumber: number; filed: boolean }>>;
-  /** GitHub login used in the comment footer. */
-  githubUser?: string;
-  /** Optional `ensureLabelExists` override (tests). */
-  ensureLabelExists?: (
-    repo: string,
-    labelName: string,
-    colour?: string,
-    description?: string,
-  ) => Promise<Result<void>>;
-  /**
-   * Fleet identity used to verify who wrote a suppressing marker (Issue
-   * #1216). Omitted in production, which reads the configured fleet identity.
-   */
-  dedupAuthors?: AlertDedupAuthorOptions;
-  /** Logger. */
-  logger: Logger;
-}
-
-/** Outcome of {@link escalateBlockingPrStall}. */
-export interface EscalateBlockingPrStallOutcome {
-  /** Reasons for which a comment was posted on this call. */
-  postedReasons: BlockingPrStallReason[];
-  /**
-   * True when the whole escalation was skipped because the auto-fix
-   * attempt cap has already escalated this PR to a human.
-   */
-  suppressedByAutoFixCap: boolean;
-}
-
-/**
- * Escalate a stalled blocking PR: one deduped comment per stall reason plus
- * the `needs-human` label, via the shared `escalateToHuman()` chokepoint.
- *
- * Two suppressions apply:
- *
- * - **auto-fix cap** — when `auto_fix_attempt_tracker.ts` has already
- *   escalated this PR, the human already owns it; a second escalation
- *   comment is noise.
- * - **marker dedup** — a reason whose marker is already on the thread is
- *   never commented twice, so a long stall does not accrue a comment per
- *   scan iteration.
- */
-export async function escalateBlockingPrStall(
-  stall: BlockingPrStall,
-  deps: EscalateBlockingPrStallDeps,
-): Promise<Result<EscalateBlockingPrStallOutcome>> {
-  const { ghCommandFn, needsHumanLabel: _unusedLabel, githubUser, logger } =
-    deps;
-  // Issue #569: the PR gets a marker that vetoes no other lane; the blockage
-  // itself goes to the work queue. `needsHumanLabel` stays on the options for
-  // the callers that still pass it, and is deliberately not applied here.
-  const escalatedLabel = deps.escalatedLabel ?? ESCALATED_AS_WORK_LABEL;
-  const escalateWork = deps.escalateWork ??
-    ((escalation: WorkEscalation) => escalateAsWork(escalation, { logger }));
-
-  let capEscalated: boolean;
-  try {
-    capEscalated = await issueCommentsContainMarker(
-      stall.repo,
-      stall.prNumber,
-      AUTO_FIX_CAP_MARKER_PREFIX,
-      ghCommandFn,
-      deps.dedupAuthors,
-      (message) => logger.warn(message),
-    );
-  } catch (err) {
-    return {
-      ok: false,
-      error: new Error(
-        `blocking-PR stall watchdog: could not read comments on ${stall.repo}#${stall.prNumber}: ${
-          errorMessage(err)
-        }`,
-      ),
-    };
-  }
-
-  if (capEscalated) {
-    logger.info(
-      "Blocking-PR stall: suppressed — auto-fix cap already escalated",
-      { repo: stall.repo, pr: stall.prNumber },
-    );
-    return {
-      ok: true,
-      value: { postedReasons: [], suppressedByAutoFixCap: true },
-    };
-  }
-
-  const ghClient = createGhEscalationClient(ghCommandFn);
-  const postedReasons: BlockingPrStallReason[] = [];
-
-  for (const signal of stall.signals) {
-    const marker = blockingPrStallMarker(signal.reason);
-    let alreadyPosted: boolean;
-    try {
-      alreadyPosted = await issueCommentsContainMarker(
-        stall.repo,
-        stall.prNumber,
-        marker,
-        ghCommandFn,
-        deps.dedupAuthors,
-        (message) => logger.warn(message),
-      );
-    } catch (err) {
-      return {
-        ok: false,
-        error: new Error(
-          `blocking-PR stall watchdog: marker lookup failed on ${stall.repo}#${stall.prNumber}: ${
-            errorMessage(err)
-          }`,
-        ),
-      };
-    }
-    if (alreadyPosted) continue;
-
-    // Issue #569: this stall is WORK, not a decision. A PR red for two hours
-    // or carrying an unanswered comment is exactly what the CI-fix and
-    // PR-feedback lanes exist for, so it is filed into the fleet's own queue
-    // and the PR keeps a non-vetoing marker. The old `needs-human` here was
-    // doubly wrong: it declared a human necessary for a mechanical failure,
-    // AND it removed the PR from the merge-conflict lane, which skips any PR
-    // carrying that label. VibeCoder #549 was stranded exactly that way.
-    const filed = await escalateWork({
-      repo: stall.repo,
-      prNumber: stall.prNumber,
-      summary: describeStallSummary(signal.reason),
-      reason: buildBlockingPrStallReason(stall, signal),
-      nextStep: buildBlockingPrStallNextStep(stall),
-    });
-    if (!filed.ok) {
-      logger.warn?.("Could not file the blocking-PR stall as work", {
-        repo: stall.repo,
-        prNumber: stall.prNumber,
-        error: filed.error.message,
-      });
-    }
-
-    const escalation = await escalateToHuman({
-      ghClient,
-      repo: stall.repo,
-      target: { kind: "pr", number: stall.prNumber },
-      needsHumanLabel: escalatedLabel,
-      heading: "Blocking PR has stalled",
-      reason: buildBlockingPrStallReason(stall, signal),
-      nextStep: buildBlockingPrStallNextStep(stall),
-      dedupKey: blockingPrStallDedupKey(signal.reason),
-      ensureLabelColour: "d4c5f9",
-      ensureLabelDescription:
-        "The fleet filed this PR's blockage as work; it is not waiting on a " +
-        "human decision",
-      ...(githubUser !== undefined ? { githubUser } : {}),
-      ...(deps.ensureLabelExists !== undefined
-        ? { deps: { github: { ensureLabelExists: deps.ensureLabelExists } } }
-        : {}),
-      logger,
-    });
-
-    if (!escalation.ok) return { ok: false, error: escalation.error };
-    if (escalation.value.commentPosted) postedReasons.push(signal.reason);
-  }
-
-  return {
-    ok: true,
-    value: { postedReasons, suppressedByAutoFixCap: false },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Withdrawal (Issue #1213)
@@ -965,7 +779,9 @@ async function observeBlockingPr(params: {
     "--json",
     // Issue #1213: `mergeable` and `labels` say whether the merge-conflict
     // ladder owns this PR.
-    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest,isDraft,mergeable,labels",
+    // Issue #2802: `author` and the branches say whether, and how, the
+    // stall-repair pass may act on the PR.
+    "comments,commits,statusCheckRollup,createdAt,autoMergeRequest,isDraft,mergeable,labels,author,headRefName,baseRefName",
   ]);
 
   const view = parseObject(raw);
@@ -990,6 +806,14 @@ async function observeBlockingPr(params: {
     observation.mergeable = view.mergeable;
   }
   observation.labels = parseLabelNames(view.labels);
+  const author = readLogin(view.author);
+  if (author) observation.author = author;
+  if (typeof view.headRefName === "string" && view.headRefName) {
+    observation.headRefName = view.headRefName;
+  }
+  if (typeof view.baseRefName === "string" && view.baseRefName) {
+    observation.baseRefName = view.baseRefName;
+  }
 
   const lastFleetPushAt = newestCommitDate(view.commits);
   if (lastFleetPushAt) observation.lastFleetPushAt = lastFleetPushAt;
@@ -1003,6 +827,14 @@ async function observeBlockingPr(params: {
     if (!author || !createdAt) continue;
 
     if (isFleetAuthor(author, authors)) {
+      const body = typeof obj.body === "string" ? obj.body : "";
+      if (body.includes(STALL_REPAIR_MARKER_PREFIX)) {
+        observation.lastStallRepairAt = newerOf(
+          observation.lastStallRepairAt,
+          createdAt,
+        );
+        continue;
+      }
       observation.lastFleetReplyAt = newerOf(
         observation.lastFleetReplyAt,
         createdAt,
@@ -1034,16 +866,8 @@ export interface ScanBlockingPrStallsOptions
       "blockingPrStallThresholdSeconds" | "repoConfig"
     >
     & Partial<Pick<WorkerConfig, "fleetPrSlots">>;
-  /** Label name to apply — typically `config.needsHumanLabel`. */
-  needsHumanLabel: string;
-  /** GitHub login used in the comment footer. */
-  githubUser?: string;
   /** Logger. */
   logger: Logger;
-  /** Optional `ensureLabelExists` override (tests). */
-  ensureLabelExists?: EscalateBlockingPrStallDeps["ensureLabelExists"];
-  /** Fleet identity the marker-author check uses (Issue #1216). */
-  dedupAuthors?: EscalateBlockingPrStallDeps["dedupAuthors"];
   /** Optional clock override (epoch seconds). */
   nowSeconds?: () => number;
   /**
@@ -1054,21 +878,19 @@ export interface ScanBlockingPrStallsOptions
 }
 
 /**
- * One scan iteration: find blocking PRs, detect stalls, escalate.
+ * One scan iteration: find blocking PRs and detect stalls.
  *
  * A green PR is not a stall (Issue #2801): it goes to
  * {@link resolveGreenBlockingPr} once per cycle and is left out of the
- * returned list. A per-PR escalation failure is logged and the scan
- * continues; the returned list contains every stall that was detected,
- * escalated or not.
+ * returned list. A red or unanswered PR is returned and nothing else is done
+ * to it here (Issue #2802) — no issue, no label, no comment. The caller,
+ * `stall_repair.ts`, decides between the first and the second trip.
  */
 export async function scanBlockingPrStalls(
   opts: ScanBlockingPrStallsOptions,
 ): Promise<Result<BlockingPrStall[]>> {
   const {
     config,
-    needsHumanLabel,
-    githubUser,
     logger,
     nowSeconds = () => Math.floor(Date.now() / 1000),
   } = opts;
@@ -1120,32 +942,12 @@ export async function scanBlockingPrStalls(
     }
     stalls.push(stall);
 
-    logger.warn("Blocking PR has stalled — escalating", {
+    logger.warn("Blocking PR has stalled — handing it to stall repair", {
       repo: stall.repo,
       pr: stall.prNumber,
       blockedIssues: stall.blockedIssues.join(", "),
       reasons: stall.signals.map((s) => s.reason).join(", "),
     });
-
-    const escalation = await escalateBlockingPrStall(stall, {
-      ghCommandFn: opts.ghCommandFn,
-      needsHumanLabel,
-      ...(githubUser !== undefined ? { githubUser } : {}),
-      ...(opts.ensureLabelExists !== undefined
-        ? { ensureLabelExists: opts.ensureLabelExists }
-        : {}),
-      ...(opts.dedupAuthors !== undefined
-        ? { dedupAuthors: opts.dedupAuthors }
-        : {}),
-      logger,
-    });
-    if (!escalation.ok) {
-      logger.warn("Blocking-PR stall escalation failed", {
-        repo: stall.repo,
-        pr: stall.prNumber,
-        error: escalation.error.message,
-      });
-    }
   }
 
   return { ok: true, value: stalls };
