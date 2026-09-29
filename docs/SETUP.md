@@ -1530,7 +1530,7 @@ Neither check is allowed to pass by silence (Issue #1952):
 - with no verdict recorded, a branch that touches `.github/workflows/` is
   logged at WARN rather than failed — GitHub decides at the push;
 - a push that still reaches GitHub's refusal fails the run, with the fix in
-  the message and the run recorded as `token-scope` — no rebase recovery and
+  the message and the run recorded as `token-scope` — no merge recovery and
   no in-process retry, because neither can supply a missing scope.
 
 ```mermaid
@@ -1549,7 +1549,7 @@ flowchart TD
     F2 --> REL
     REL --> MEM["This install remembers it,<br/>never re-claims"]
     REL -->|3rd token_scope release in a row| PARK["One comment; hosts without<br/>the scope leave it"]
-    P -->|other rejection| RC["Rebase recovery, retry"]
+    P -->|other rejection| RC["Merge recovery, plain retry"]
     style F fill:#9d0208,stroke:#6a040f,color:#fff
     style F2 fill:#9d0208,stroke:#6a040f,color:#fff
 ```
