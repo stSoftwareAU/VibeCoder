@@ -93,6 +93,8 @@ With the loop red and the cause named, read the failing test, CI config, and rel
 
 **Fix the general case, not the specific input the failing test uses.** Never branch on, hardcode, or special-case a fixture value to satisfy an assertion — a check that goes green because the code recognises the fixture leaves the defect live for every other input. If the general fix is not obvious, say so in `.pr_response_message` rather than fitting the code to the test.
 
+**Keep the PR summary true to the head.** When the branch carries a committed `docs/archive/pr-summaries/pr-summary-*.md` and your fix invalidates anything it says — the approach, a named function or file, a test's pass/fail result, the reproduction status, a "known defect" note — rewrite the affected parts in the same push so every claim matches the head commit, and drop what your fix superseded. A summary describing an earlier iteration of the branch tells every later reader the issue is unfixed. A bot's pull request usually has no summary file; do not create one.
+
 <use_parallel_tool_calls>
 The failing test, the CI config, the workflow file, and the source under test are independent reads — issue them in a single message so they run in parallel, rather than one per turn. Only sequence a read when it needs the result of a previous one, such as a path resolved from a search or a run id resolved from `gh pr checks`.
 </use_parallel_tool_calls>
