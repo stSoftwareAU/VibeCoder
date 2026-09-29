@@ -67,7 +67,10 @@ import {
 } from "./milestone_sync_streak.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { readLocalDefaultTip } from "./milestone_default_tip.ts";
-import { countCommitsAhead } from "./git_issue_branches.ts";
+import {
+  countCommitsAhead,
+  countCommitsAheadRepairingBrokenRef,
+} from "./git_issue_branches.ts";
 import { syncMilestoneBranchWithDefault } from "./git_pull.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
@@ -109,6 +112,8 @@ export interface MilestonePresyncResult {
    * `origin/<milestone>`, this is the record of which commit that was.
    */
   baseSha?: string;
+  /** Git's reason when the behind-count could not be read at all (Issue #2824); absent when it was measured. */
+  unmeasured?: string;
 }
 
 /** The branch and clone the pre-cut sync is asked about. */
@@ -270,11 +275,14 @@ export async function presyncMilestoneBranch(
     // Never the permissive direction: a base nobody could measure is a base no
     // child branch is cut from. The wording does not claim the branch IS
     // behind — that is the one thing this case could not establish.
-    return deferral(
-      `how far '${milestoneBranch}' stands from '${defaultBranch}' could not ` +
-        `be read (${behind.error.message}), so no branch is cut from an ` +
-        `unverified base`,
-    );
+    return {
+      ...deferral(
+        `how far '${milestoneBranch}' stands from '${defaultBranch}' could ` +
+          `not be read (${behind.error.message}), so no branch is cut from ` +
+          `an unverified base`,
+      ),
+      unmeasured: (behind.error.message.split("\n")[0] ?? "").trim(),
+    };
   }
   if (behind.value === 0) {
     return {
@@ -714,10 +722,20 @@ export async function presyncMilestoneBranchForIssueRun(
       grant,
       nowMs,
     }, {
+      // Issue #2824: a broken remote-tracking ref left over from a crash or a
+      // racing fetch must not defer this run for ever — repair it in place and
+      // retry the count once before giving up on it.
       countBehind: () =>
-        countBehindFn(`origin/${milestoneBranch}`, `origin/${defaultBranch}`, {
-          cwd,
-        }),
+        countCommitsAheadRepairingBrokenRef(
+          `origin/${milestoneBranch}`,
+          `origin/${defaultBranch}`,
+          { cwd },
+          {
+            countFn: countBehindFn,
+            gitFn,
+            log: (message: string) => logger.warn(message),
+          },
+        ),
       defaultTipSha: () => readLocalDefaultTip(defaultBranch, cwd),
       milestoneTipSha: () =>
         readRefSha(`origin/${milestoneBranch}`, cwd, gitFn),
