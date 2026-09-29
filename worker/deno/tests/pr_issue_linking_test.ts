@@ -1665,11 +1665,11 @@ Deno.test("pr_issue_linking - a PR whose issue close failed is not marked and is
   try {
     const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
     const prs = JSON.stringify([mergedPr(40, 44), mergedPr(41, 45)]);
+    const good = createRecordingGh({ prs });
     const failingClose = (args: string[]): Promise<string> =>
       args[0] === "issue" && args[1] === "close" && args[2] === "44"
         ? Promise.reject(new Error("HTTP 502"))
         : good.fn(args);
-    const good = createRecordingGh({ prs });
     const c1 = await closeIssuesForMergedPrs(
       ["owner/repo"],
       "bot-user",
