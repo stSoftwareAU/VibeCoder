@@ -148,7 +148,7 @@ round report."
 
   (cd "$CHECKOUT" && perl -e 'alarm shift; exec @ARGV' "$ROUND_TIMEOUT" \
     claude -p "$prompt" \
-    --allowedTools "Agent" "Read" "Grep" "Glob" "Write($dir/**)" \
+    --allowedTools "Agent" "Read" "Grep" "Glob" "Edit($dir/**)" \
     "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
     2>&1) | tee -a "$LOG" "$dir/claude.log"
   log "round done: $dir"
