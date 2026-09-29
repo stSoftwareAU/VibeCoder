@@ -475,7 +475,7 @@ async function _processSpellingWithHeartbeat(
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           input.branchName,
-          `Fix spelling check failures: ${checkName}\n\nRetry after rebase recovery for PR #${prNumber} (Issue #1643).`,
+          `Fix spelling check failures: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
           { cwd: processorDeps.workDir },
           false,
           preFlight,
@@ -486,7 +486,7 @@ async function _processSpellingWithHeartbeat(
           finalUnpushedAfterPush = 0;
         } else {
           failureDetail = retryFinalise.ok
-            ? `retry after rebase recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
+            ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
             : retryFinalise.error.message;
         }
       }
