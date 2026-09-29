@@ -775,6 +775,26 @@ git exit in a `SweepLedgerError` naming the slice, its `sweptAt` and this
 remedy, so the failure says which slice to repoint rather than only what git
 said (#2178).
 
+**A top-up records `git merge-base origin/main HEAD`, never a branch commit.**
+The branch's own `HEAD` resolves while its PR is open, so nothing notices until
+the squash-merge deletes it; 34 top-up slices reached `main` that way and had to
+be repointed (#2754). CI now refuses it on the PR that writes it: the `validate`
+job (full history, `fetch-depth: 0`) fetches the default branch and runs
+`mod.ts sweep-drift --repo ../.. --default-branch origin/<default>`. With
+`--default-branch`, `verifySweptAtsOnDefaultBranch` first checks every slice
+with `git merge-base --is-ancestor <sweptAt> origin/<default>` and fails naming
+each offending slice, its commit and the repoint command above. A merge-base
+commit is already on the default branch, so a new slice passes while its PR is
+still open.
+
+```mermaid
+flowchart LR
+    A[top-up slice] --> B{sweptAt}
+    B -->|git merge-base origin/main HEAD| C[on main: CI passes]
+    B -->|feature-branch HEAD| D[not an ancestor: CI fails naming slice + repoint]
+    D -.->|if merged anyway| E[squash deletes it: fatal bad object]
+```
+
 **Adding a top-up slice.** A module that enters the ledger roots after the
 chunk-12 slices recorded their coverage gets its own slice, with its own
 written record under `docs/audits/`. Its `chunk` id is **`top-up-<issue>`**

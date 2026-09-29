@@ -340,6 +340,24 @@ jobs:
           cd worker/deno
           deno lint
 
+      # Issue #2754: every sweep-ledger `sweptAt` must be on the default
+      # branch. A top-up that recorded its feature branch's HEAD resolves while
+      # the PR is open, then squash-merge deletes it and `sweep-drift` dies on
+      # `fatal: bad object`. Needs this job's full history (fetch-depth: 0);
+      # the ancestry check fails naming the slice, its commit and the repoint.
+      - name: Sweep ledger sweptAt ancestry
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          echo "=== sweep-ledger sweptAt ancestry (Issue #2754) ==="
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          cd worker/deno
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-env --allow-run \
+            mod.ts sweep-drift --repo ../.. \
+            --default-branch "origin/$DEFAULT_BRANCH"
+
       # Issue #4066: the run.ps1 launcher tests only run where PowerShell
       # exists, and a skipped test is not a passed one. The runner image ships
       # PowerShell 7 — fail loud here if that ever changes, rather than letting

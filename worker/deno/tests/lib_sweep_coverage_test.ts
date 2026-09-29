@@ -36,6 +36,7 @@ import {
   SweepLedgerError,
   topUpChunkId,
   unnamedSmallSliceModules,
+  verifySweptAtsOnDefaultBranch,
 } from "../lib/lib_sweep_coverage.ts";
 
 /** A valid `sweptAt` used by fixtures (Issue #1609). */
@@ -740,4 +741,178 @@ Deno.test("driftSince - an unreachable sweptAt names the slice, the commit and t
   assert(message.includes(FIXTURE_COMMIT), message);
   assert(message.includes("reachable from the default branch"), message);
   assert(message.includes("docs/audits/fixture.md"), message);
+});
+
+/**
+ * Git runner that answers the ancestry guard from a set of commits on the
+ * default branch (Issue #2754). `cat-file -e` resolves only `known` commits;
+ * `merge-base --is-ancestor` exits 0 for `onDefault` and 1 otherwise, as git
+ * does, and 128 for an object git cannot find.
+ */
+function ancestryGit(
+  defaultRef: string,
+  known: ReadonlySet<string>,
+  onDefault: ReadonlySet<string>,
+): { runGit: SweepGitRunner; calls: string[] } {
+  const calls: string[] = [];
+  const runGit: SweepGitRunner = (args) => {
+    calls.push(args.join(" "));
+    const ok = { code: 0, stdout: "", stderr: "" };
+    if (args[0] === "rev-parse") {
+      return Promise.resolve(
+        args[2] === `${defaultRef}^{commit}`
+          ? { ...ok, stdout: "f".repeat(40) }
+          : {
+            code: 128,
+            stdout: "",
+            stderr: `fatal: Needed a single revision`,
+          },
+      );
+    }
+    if (args[0] === "cat-file") {
+      const sha = args[2]!.replace("^{commit}", "");
+      return Promise.resolve(
+        known.has(sha) ? ok : { code: 1, stdout: "", stderr: "" },
+      );
+    }
+    if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+      const sha = args[2]!;
+      if (!known.has(sha)) {
+        return Promise.resolve({
+          code: 128,
+          stdout: "",
+          stderr: `fatal: Not a valid commit name ${sha}`,
+        });
+      }
+      return Promise.resolve(
+        onDefault.has(sha) && args[3] === defaultRef ? ok : {
+          code: 1,
+          stdout: "",
+          stderr: "",
+        },
+      );
+    }
+    return Promise.reject(new Error(`unexpected git call: ${args.join(" ")}`));
+  };
+  return { runGit, calls };
+}
+
+const LANDED = "1".repeat(40);
+const BRANCH_ONLY = "2".repeat(40);
+const SQUASHED_AWAY = "3".repeat(40);
+
+function ancestryLedger(sweptAts: string[]): SweepCoverageLedger {
+  const base = ledgerFixture(
+    sweptAts.map((_, i) => ({
+      chunk: topUpChunkId(1000 + i),
+      paths: [`worker/deno/lib/m${i}.ts`],
+    })),
+  );
+  return {
+    ...base,
+    slices: base.slices.map((slice, i) => ({
+      ...slice,
+      ledger: `docs/audits/security-sweep-${slice.issue}.md`,
+      sweptAt: sweptAts[i]!,
+    })),
+  };
+}
+
+async function ancestryError(
+  ledger: SweepCoverageLedger,
+  runGit: SweepGitRunner,
+): Promise<string> {
+  try {
+    await verifySweptAtsOnDefaultBranch(ledger, "origin/main", runGit);
+  } catch (error) {
+    assert(error instanceof SweepLedgerError, String(error));
+    return error.message;
+  }
+  throw new Error("expected verifySweptAtsOnDefaultBranch to throw");
+}
+
+Deno.test("verifySweptAtsOnDefaultBranch - a branch-only sweptAt names the slice, the commit and the repoint command (Issue #2754)", async () => {
+  // Fail direction: a top-up that recorded its feature branch's HEAD resolves
+  // while the PR is open but is not on the default branch, and squash-merge
+  // deletes it — 34 slices reached `main` this way before the guard existed.
+  const { runGit } = ancestryGit(
+    "origin/main",
+    new Set([LANDED, BRANCH_ONLY]),
+    new Set([LANDED]),
+  );
+  const message = await ancestryError(
+    ancestryLedger([LANDED, BRANCH_ONLY]),
+    runGit,
+  );
+  assert(message.includes("top-up-1001 (#1001)"), message);
+  assert(message.includes(BRANCH_ONLY), message);
+  assert(message.includes("not an ancestor of origin/main"), message);
+  assert(
+    message.includes(
+      "git log --diff-filter=A -1 --format=%H origin/main -- " +
+        "docs/audits/security-sweep-1001.md",
+    ),
+    message,
+  );
+  assert(!message.includes("top-up-1000 "), message);
+});
+
+Deno.test("verifySweptAtsOnDefaultBranch - an unresolvable sweptAt fails as missing, and every offender is listed (Issue #2754)", async () => {
+  const { runGit } = ancestryGit(
+    "origin/main",
+    new Set([LANDED, BRANCH_ONLY]),
+    new Set([LANDED]),
+  );
+  const message = await ancestryError(
+    ancestryLedger([SQUASHED_AWAY, LANDED, BRANCH_ONLY]),
+    runGit,
+  );
+  assert(message.includes("2 slice(s)"), message);
+  assert(message.includes("top-up-1000 (#1000)"), message);
+  assert(message.includes(`${SQUASHED_AWAY} does not resolve`), message);
+  assert(message.includes("top-up-1002 (#1002)"), message);
+  assert(message.includes("security-sweep-1000.md"), message);
+});
+
+Deno.test("verifySweptAtsOnDefaultBranch - the repaired ledger passes (Issue #2754)", async () => {
+  // The same ledger after the repoint: the branch-only slice now names the
+  // commit its record landed at, which is on the default branch.
+  const repointed = "4".repeat(40);
+  const { runGit, calls } = ancestryGit(
+    "origin/main",
+    new Set([LANDED, BRANCH_ONLY, repointed]),
+    new Set([LANDED, repointed]),
+  );
+  await verifySweptAtsOnDefaultBranch(
+    ancestryLedger([LANDED, repointed]),
+    "origin/main",
+    runGit,
+  );
+  assert(
+    calls.includes(`merge-base --is-ancestor ${repointed} origin/main`),
+    calls.join("\n"),
+  );
+});
+
+Deno.test("verifySweptAtsOnDefaultBranch - an unresolvable default branch fails loud rather than passing (Issue #2754)", async () => {
+  // A CI job that forgot to fetch the default branch must not report every
+  // slice clean — nor blame every slice for the missing ref.
+  const { runGit } = ancestryGit(
+    "origin/main",
+    new Set([LANDED]),
+    new Set([LANDED]),
+  );
+  let thrown: unknown;
+  try {
+    await verifySweptAtsOnDefaultBranch(
+      ancestryLedger([LANDED]),
+      "origin/trunk",
+      runGit,
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assert(thrown instanceof SweepLedgerError, String(thrown));
+  assert(thrown.message.includes("origin/trunk"), thrown.message);
+  assert(thrown.message.includes("git fetch"), thrown.message);
 });
