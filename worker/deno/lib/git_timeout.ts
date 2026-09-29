@@ -33,6 +33,10 @@ const DEFAULT_GIT_MERGE_TIMEOUT = 120;
 
 /** Exit code returned when a git operation times out. */
 import { noteGitOutputForVolumeFault } from "./work_volume_fault.ts";
+import {
+  isDubiousOwnershipFailure,
+  repairSafeDirectory,
+} from "./git_safe_directory.ts";
 
 export const TIMEOUT_EXIT_CODE = 124;
 
@@ -262,6 +266,16 @@ export async function runGitCommand(
           return retry;
         }
       }
+    }
+
+    // Issue #2825: git refused the clone as dubious ownership because the
+    // staged `safe.directory` line went missing. A refused call did nothing,
+    // so restoring the line and retrying once is safe.
+    if (
+      isDubiousOwnershipFailure({ code: process.code, stderr }) &&
+      await repairSafeDirectory(options.env)
+    ) {
+      return await runGitCommand(args, options);
     }
 
     // Issue #2380: journal `git push` mutations to the audit log.
