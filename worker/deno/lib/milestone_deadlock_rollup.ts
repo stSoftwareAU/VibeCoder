@@ -155,6 +155,9 @@ export interface DeadlockRollupOptions {
 export async function raiseDeadlockPartialRollups(
   o: DeadlockRollupOptions,
 ): Promise<void> {
+  // No open milestone means no cross-milestone deadlock is possible — skip
+  // the open-issue listing call.
+  if (o.openMilestones.length === 0) return;
   const graph = await buildMilestoneDependencyGraph(
     o.repo,
     o.openMilestones,
