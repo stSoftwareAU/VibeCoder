@@ -56,6 +56,7 @@ import {
   updatePrBranch,
 } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { discardBrokenClone } from "../lib/broken_clone.ts";
 import { cleanWorkingTree } from "../lib/ignored_path_clean.ts";
 import {
   assertSafeRefComponent,
@@ -619,6 +620,14 @@ export async function setupRepo(
       message: `Refusing to set up repo with unsafe path segment ` +
         `"${repoName}" derived from slug "${repo}".`,
     };
+  }
+
+  // A directory left by an interrupted clone holds no repository: every git
+  // call in it dies at the filesystem boundary, wedging each run at setup.
+  // Discard it so the clone below starts afresh (Issue #2848).
+  const discarded = await discardBrokenClone(repoPath);
+  if (!discarded.ok) {
+    return { success: false, message: discarded.error.message };
   }
 
   // Check if repo directory exists
