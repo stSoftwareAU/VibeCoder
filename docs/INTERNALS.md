@@ -944,8 +944,9 @@ flowchart LR
   only sets an explicit skip reason for the claim gates (`host_disk_low`,
   `work_volume_fault`, `cycle_deadline`); a fleet that was genuinely scanned
   is split further by the census's per-repo counts, so
-  `dependency_blocked`, `stream_occupied`, `pr_blocked`, `cooldown_local` and
-  `low_priority_suppressed` are reachable rather than merely declared. Idle
+  `dependency_blocked`, `stream_occupied`, `pr_blocked`, `cooldown_local`,
+  `low_priority_suppressed` and `work_on_suppressed` are reachable rather than
+  merely declared. Idle
   while unblocked priority work was open (`nothing_claimable_backlog`) is
   reported separately from idle with nothing to claim
   (`nothing_claimable_empty`) — the first is a fault, the second is not.
