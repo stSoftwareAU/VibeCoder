@@ -177,7 +177,11 @@ Deno.test("execute_claude_phase - an ok collection gets the line and the server 
 
   const mcp = observed.runOptions?.mcpConfig;
   assert(typeof mcp === "object", "the graft server must be requested");
-  assertEquals(mcp.playwright, true, "the browser rides every run (Issue #2925)");
+  assertEquals(
+    mcp.playwright,
+    true,
+    "the browser rides every run (Issue #2925)",
+  );
   assertEquals(mcp.servers?.graft?.command, "graft");
   assertEquals(mcp.servers?.graft?.args, ["mcp", "/tmp/graft-2314-work/repo"]);
 
