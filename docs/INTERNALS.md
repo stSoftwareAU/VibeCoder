@@ -4543,6 +4543,45 @@ flowchart TD
     style J fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
+### 🩹 Host-fault failure labels release themselves (Issue #2890)
+
+The milestone-branch refusal release above frees a milestone's issues once a
+repo-level fact clears; the same problem exists one level down, for a single
+repository. When the failure that earned an issue `failed-once` or `failed` was
+really the worker's host — a corrupt clone, a clone that could not be made, a
+full disk, a container image that failed to build — the failure comment gains a
+**Host fault:** line naming the kind and a final marker
+(`<!-- vibe-host-fault kind="<kind>" -->`), detected by
+[host_fault.ts](../worker/deno/lib/host_fault.ts):
+
+| Kind                     | Fault                                                     |
+| ------------------------ | --------------------------------------------------------- |
+| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the clone |
+| `clone-failed`           | The clone could not be created                            |
+| `disk-full`              | The host ran out of disk space                            |
+| `container-build-failed` | The issue's container image failed to build               |
+
+`releaseHostFaultFailureLabels`
+([host_fault_release.ts](../worker/deno/lib/host_fault_release.ts)) mirrors
+`releaseMilestoneBranchRefusalLabels`: it runs once per repository per worker
+process, triggered after the setup phase successfully creates a feature branch
+in that repository — proof the clone is healthy again — and lists the
+repository's open `failed-once` / `failed` issues. It reads only fleet-authored
+comments (the same `selectFleetAuthoredComments` filter, for the same forgery
+reason) and releases an issue only when **every** fleet failure record on it is a
+host fault. A failure record is any comment headed by a fleet path that applies
+`failed-once` or `failed`: "Automated Processing Failed" or "Paused", "Milestone
+branch unavailable", "Claim Churn Detected", "Question Answering Failed" or
+"Automatic Escalation to Planning Mode". Only an "Automated Processing Failed"
+record can be a host fault: either it carries the marker, or — for failures made
+before this change had no marker to write — its body matches the `clone-corrupt`
+git broken-ref/bad-object signature. Any issue carrying even one non-host-fault
+record (an agent failure, claim churn, an ordinary setup error such as an
+invalid base branch) keeps its label. `failed` is released only when a host-fault
+"Second Attempt" record, the run that applies it, explains it; otherwise the
+issue keeps both labels. Errors are logged, never swallowed; a
+comment-read failure leaves the label in place.
+
 ### 📊 Token usage tracking
 
 [credit_tracker.ts](../worker/deno/lib/credit_tracker.ts) now logs token usage
