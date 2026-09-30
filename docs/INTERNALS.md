@@ -2629,10 +2629,31 @@ milestone branch pushable on unattended hosts:
   checkout (`fatal: bad object refs/heads/…`, `warning: ignoring broken ref
   refs/remotes/origin/<base>`). The worker deletes each ref git names, logs
   one warning per ref, and retries the fetch and checkout. It stops after 10
-  refs per call, and a failure that persists still fails setup with git's
-  words. Every ref is recoverable from the remote. This is distinct from
-  object-store corruption, which re-clones (Issue #1093). Introduced by
+  refs per call. Every ref is recoverable from the remote. Introduced by
   Issue #2880 (GRQ-AutoTrader#1811).
+- **A failure that persists climbs a cheapest-first repair ladder rather than
+  failing setup outright (Issue #2884).** `isBrokenRefFailure()`
+  (`broken_ref_repair.ts`) narrows `createFeatureBranchFromBase`'s own failure
+  to the genuine broken-ref symptom — `bad object refs/…` or `ignoring broken
+  ref refs/…`, with `'<ref>' is not a commit` counted only when the same
+  message already named that ref broken — so an ordinary "no such branch"
+  failure sharing some of the wording is never mistaken for clone damage. On a
+  match the setup phase runs `sweepBrokenRefs()`: list every ref under
+  `refs/heads` and `refs/remotes` with `git for-each-ref`, remove each that
+  fails `git rev-parse --verify <ref>^{commit}`, `git fetch --prune origin` to
+  recreate the remote-tracking refs clean, then retry branch creation once. If
+  the sweep itself fails or the retry still fails, the same #1093 re-clone
+  ladder below runs next (`repairObjectStore` + `setupRepo` + retry) — sweeping
+  loose refs cannot repair a genuinely corrupt object store, so the re-clone is
+  still the necessary fallback. The whole ladder — sweep, then re-clone —
+  shares the #1093 `claimObjectStoreRepair` claim and so runs **at most once
+  per repository per run**, whichever rung is reached first. A failure that
+  survives both rungs escalates `needs-human` with heading "Broken refs in
+  shared clone", naming the repository (dedup key `broken-refs-<repo>`), and
+  is categorised `clone_corrupt` rather than counted against the issue — see
+  "`clone_corrupt` is its own failure category" below. This is still distinct
+  from plain object-store corruption, which skips straight to the re-clone
+  rung (Issue #1093).
 
 ```mermaid
 flowchart TD
@@ -4344,7 +4365,10 @@ consequences are worth naming:
   fails on git's `ignoring broken ref refs/remotes/origin/<branch>` warning is
   repaired once — the named ref is deleted and re-fetched, one log line names
   it, and the count is retried once — and still failing falls into the same
-  deferral. The PR comment then says how far behind the branch is "could not
+  deferral, never the setup phase's `clone_corrupt` ladder: this is a narrower,
+  local repair of the one ref the count just met, not the full
+  sweep-then-re-clone rung `createFeatureBranchFromBase` climbs (Issue #2884).
+  The PR comment then says how far behind the branch is "could not
   be measured" and quotes git's reason, rather than claiming the branch is
   still behind (Issue #2824). The longest-behind-first sweep
   ([milestone_behind_count.ts](../worker/deno/lib/milestone_behind_count.ts))
@@ -4626,6 +4650,39 @@ flowchart TD
     style C fill:#f4a261,stroke:#b5651d,color:#000
     style J fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+#### `clone_corrupt` is its own failure category
+
+A broken ref or a corrupt object store in the host's **shared** clone
+(Issues #2880, #1093, #2884) is a fault of the host, not of the issue: an
+in-process retry against the same damaged clone fails identically, and the
+same fault meets every other issue claimed against that repository. Charging
+the issue's `failed-once` / `failed` budget for it would park a healthy issue
+over infrastructure it cannot fix.
+
+`detectFailureCategory` (`failure_diagnosis.ts`) checks for the worker-authored
+`CLONE_CORRUPT_MARKER` ("the host's shared clone of this repository is
+damaged") before its generic patterns, so a setup-phase diagnosis always wins
+over any raw git error text the same failure message happens to quote. A match
+comes out `clone_corrupt` (display `clone-corrupt`), is `not_code_fixable`, and
+`isInfrastructureFailure()` returns `false` for it — deliberately, for the same
+reason `prompt_too_long` does: the setup phase already ran the sweep/re-clone
+ladder once before giving up, so a further in-process retry can only burn a
+claim on a fault no in-process attempt can clear. The run-outcome class is
+`clone-corrupt`. No `failed-once` or `failed` label is ever applied for it, so
+the fault never charges the issue's own retry budget. It is not left
+claimable, though: the setup-phase ladder's `needs-human` escalation (heading
+"Broken refs in shared clone" / "Corrupt git object store", dedup keys
+`broken-refs-<repo>` / `object-store-corrupt-<repo>`) puts `needs-human` on
+this specific issue whenever the repair — the sweep/prune-fetch retry or the
+re-clone fallback from #1093 — did not clear the fault, including when this
+run's one repair attempt was already spent by an earlier issue and this issue
+therefore attempted no repair at all. `findIssuesByLabel` excludes any issue
+carrying `needsHumanLabel`, so an operator must remove that label after
+repairing the host's clone for the issue to become claimable again. See
+"`create_feature_branch_from_base()`" above and
+[docs/workflows/README.md](workflows/README.md#one-shared-store-means-one-repository-wide-fault-issue-1093)
+for the sweep-then-re-clone repair ladder that produces this category.
 
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
