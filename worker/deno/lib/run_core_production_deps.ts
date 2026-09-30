@@ -3250,8 +3250,8 @@ export async function createProductionRunCoreDeps(
     async cleanupMergedBranches() {
       // Issue #1787: pass `issueCache` so the merged-PR fetch and the
       // per-branch open-PR safety check share the iteration-scoped
-      // cache. Issue #4255: the persisted watermark skips PRs already
-      // swept on earlier cycles, and the summary line makes this step's
+      // cache. Issue #4255, #2832: the persisted processed set skips PRs
+      // already swept on earlier cycles, and the summary line makes this step's
       // cost visible — it used to be a 12–20 minute silent hole.
       const startedAt = Date.now();
       const result = await cleanupMergedPrBranches(
@@ -3300,6 +3300,8 @@ export async function createProductionRunCoreDeps(
             // close, so the maintenance author set is what is trusted here.
             fleetAuthors: maintenanceAuthors,
             logFn: (message: string) => logger.info(message),
+            // Issue #2831: a failed fetch or state save is logged, not lost.
+            logger,
           },
         );
         const seconds = Math.round((Date.now() - startedAt) / 1000);

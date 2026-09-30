@@ -8,7 +8,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import {
   fetchClosedPRsByBranch,
@@ -29,9 +29,13 @@ import {
   rollbackSkipReason,
 } from "./milestone_rollback_marker.ts";
 import {
-  loadSweepWatermarks,
-  saveSweepWatermarks,
+  isProcessed,
+  loadProcessedSweepState,
+  markProcessed,
+  pruneToWindow,
+  saveProcessedSweepState,
 } from "./merged_sweep_watermark.ts";
+import { defaultLogger } from "./logger.ts";
 
 /** Build a canonical PR URL for the given repo and PR number. */
 function buildPrUrl(repo: string, prNumber: number): string {
@@ -865,12 +869,13 @@ export async function closeIssuesForMergedPrs(
   cache?: IssueCache,
   options?: {
     /**
-     * Path of the per-repo reconcile watermark file (Issue #4256). When
-     * set, merged PRs at or below the persisted watermark were already
-     * reconciled on an earlier cycle and are skipped without an issue
-     * view — this priority used to burn 4–6 minutes and up to 840
-     * GraphQL views per cycle re-discovering that old issues are still
-     * closed. Unset: every PR in the window is checked, as before.
+     * Path of the per-repo reconcile state file (Issues #4256, #2831). When
+     * set, merged PRs recorded as processed on an earlier cycle are skipped
+     * without an issue view — this priority used to burn 4–6 minutes and up
+     * to 840 GraphQL views per cycle re-discovering that old issues are
+     * still closed. The store is the v2 processed set, not a number
+     * watermark, so a lower-numbered PR merged after a higher-numbered one
+     * is still reconciled. Unset: every PR in the window is checked.
      */
     watermarkPath?: string;
     /**
@@ -890,15 +895,21 @@ export async function closeIssuesForMergedPrs(
     fleetAuthors?: string[];
     /** Sink for the roll-back skip line; production passes `logger.info`. */
     logFn?: (message: string) => void;
+    /** Sink for state-file and fetch failures (Issue #2831). */
+    logger?: Pick<Logger, "warn">;
   },
 ): Promise<number> {
   let closedCount = 0;
 
+  const logger = options?.logger ?? defaultLogger;
   const watermarkPath = options?.watermarkPath;
-  const watermarks = watermarkPath
-    ? await loadSweepWatermarks(watermarkPath)
-    : {};
-  let watermarksDirty = false;
+  // Issue #2831: a legacy v1 number map loads as empty, so the first run
+  // after deploy re-examines the whole window once (closing an already
+  // closed issue is a no-op) and then records each PR it finished.
+  let state = watermarkPath
+    ? await loadProcessedSweepState(watermarkPath, logger)
+    : undefined;
+  let stateDirty = false;
 
   for (const repo of repos) {
     let mergedPrs: MergedPR[];
@@ -906,22 +917,26 @@ export async function closeIssuesForMergedPrs(
       // Issue #2537: every merged PR, not just this host's — a milestone
       // child is closed by nothing else, whoever wrote its PR.
       mergedPrs = await fetchMergedPRsAnyAuthor(repo, cache, 30, ghCommandFn);
-    } catch {
-      // Repo-level failure is not fatal
+    } catch (err) {
+      // Repo-level failure is not fatal, but it is not silent either — and
+      // the repo's state is left untouched: a missing window must not prune.
+      logger.warn(
+        `[close-merged-pr] ${repo}: merged-PR fetch failed; state unchanged: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       continue;
     }
 
     let mutated = false;
-    const mark = watermarks[repo] ?? 0;
-    // Lowest PR number still needing attention next cycle: a failed view
-    // or close must be retried, and a planning issue stays deliberately
-    // open — keep re-checking it until the label comes off or it closes.
-    let holdBack = Infinity;
-    let windowMax = 0;
+    // PRs whose every issue was handled (or was a positive no-op) this cycle.
+    // Anything held back — a failed view or close, a planning issue kept
+    // deliberately open, an unlanded merge — stays unmarked for a retry.
+    const finished: number[] = [];
 
     for (const pr of mergedPrs) {
-      if (pr.number > windowMax) windowMax = pr.number;
-      if (pr.number <= mark) continue;
+      if (state && isProcessed(state, repo, pr.number)) continue;
+      let heldBack = false;
 
       // The issues this PR fixes: the title's trailing `(#N)` / `(Issue #N)`
       // and, since Issue #1528, the body's closing keywords — the reference
@@ -935,8 +950,6 @@ export async function closeIssuesForMergedPrs(
           ...(pr.closingRefs ?? []),
         ]),
       ];
-      if (issueNumbers.length === 0) continue;
-
       for (const issueNumber of issueNumbers) {
         try {
           const issueOutput = await ghCommandFn([
@@ -969,29 +982,29 @@ export async function closeIssuesForMergedPrs(
           );
           if (ordering !== "issue-predates-merge") {
             // `issue-postdates-merge` is permanent — the number can never
-            // become this PR's subject, so it is watermarked away rather than
+            // become this PR's subject, so it is marked processed rather than
             // re-examined for ever. An `unknown` ordering is transient (a cache
             // entry written before `mergedAt` was collected), so it is held
             // back and decided next cycle: closing is destructive and
             // unprompted, while deferring costs one cycle.
             if (ordering === "unknown") {
-              holdBack = Math.min(holdBack, pr.number);
+              heldBack = true;
             }
             continue;
           }
 
           if (issueData.labels.some((l) => l.name === planningLabel)) {
-            holdBack = Math.min(holdBack, pr.number);
+            heldBack = true;
             continue;
           }
 
           // A merged PR is not a landed change (Issue #4396): held back, not
-          // watermarked away, so an orphaned merge is re-examined next cycle
+          // marked processed, so an orphaned merge is re-examined next cycle
           // rather than silently forgotten.
           const landing = await (options?.verifyMergeLandedFn ??
             verifyMergeLanded)(repo, pr.number, ghCommandFn);
           if (!landing.landed) {
-            holdBack = Math.min(holdBack, pr.number);
+            heldBack = true;
             continue;
           }
 
@@ -1017,7 +1030,7 @@ export async function closeIssuesForMergedPrs(
                   err instanceof Error ? err.message : String(err)
                 }`,
             );
-            holdBack = Math.min(holdBack, pr.number);
+            heldBack = true;
             continue;
           }
           if (rollback) {
@@ -1025,7 +1038,7 @@ export async function closeIssuesForMergedPrs(
               `[close-merged-pr] ${repo}#${issueNumber}: ` +
                 rollbackSkipReason(rollback),
             );
-            holdBack = Math.min(holdBack, pr.number);
+            heldBack = true;
             continue;
           }
 
@@ -1046,17 +1059,22 @@ export async function closeIssuesForMergedPrs(
           mutated = true;
         } catch {
           // Individual issue close failure is not fatal — but it must be
-          // retried next cycle rather than watermarked away (Issue #4256).
-          holdBack = Math.min(holdBack, pr.number);
+          // retried next cycle rather than marked processed (Issue #4256).
+          heldBack = true;
         }
       }
+      if (!heldBack) finished.push(pr.number);
     }
 
-    if (watermarkPath && windowMax > 0) {
-      const advanced = Math.max(mark, Math.min(windowMax, holdBack - 1));
-      if (advanced !== mark) {
-        watermarks[repo] = advanced;
-        watermarksDirty = true;
+    if (state) {
+      const before = JSON.stringify(state.repos[repo]?.processed ?? []);
+      let next = pruneToWindow(state, repo, mergedPrs.map((pr) => pr.number));
+      for (const prNumber of finished) {
+        next = markProcessed(next, repo, prNumber);
+      }
+      if (JSON.stringify(next.repos[repo]?.processed ?? []) !== before) {
+        state = next;
+        stateDirty = true;
       }
     }
 
@@ -1068,11 +1086,17 @@ export async function closeIssuesForMergedPrs(
     }
   }
 
-  if (watermarkPath && watermarksDirty) {
+  if (watermarkPath && state && stateDirty) {
     try {
-      await saveSweepWatermarks(watermarkPath, watermarks);
-    } catch {
-      // Persistence is an optimisation — never fail the pass over it.
+      await saveProcessedSweepState(watermarkPath, state);
+    } catch (err) {
+      // Persistence is an optimisation — never fail the pass over it, but
+      // say so: an unsaved state re-examines the window next cycle.
+      logger.warn(
+        `[close-merged-pr] could not save ${watermarkPath}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 
