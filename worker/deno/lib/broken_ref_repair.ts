@@ -278,8 +278,13 @@ const BAD_OBJECT_OR_BROKEN_REF =
  * @returns True when the message reports a broken ref this module can repair.
  */
 export function isBrokenRefFailure(message: string): boolean {
-  BAD_OBJECT_OR_BROKEN_REF.lastIndex = 0;
-  return BAD_OBJECT_OR_BROKEN_REF.test(message);
+  for (const match of message.matchAll(BAD_OBJECT_OR_BROKEN_REF)) {
+    const raw = match[1];
+    if (raw === undefined) continue;
+    const ref = raw.replace(TRAILING_PUNCTUATION, "");
+    if (isRepairableNamespace(ref)) return true;
+  }
+  return false;
 }
 
 /**

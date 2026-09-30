@@ -419,7 +419,7 @@ flowchart TD
     A["createFeatureBranchFromBase fails"] --> B{"isBrokenRefFailure?"}
     B -- yes --> C["sweepBrokenRefs:<br/>remove unverifiable refs,<br/>fetch --prune, retry once"]
     C -- ok --> Z["Branch created"]
-    C -- still fails --> D
+    C -- still fails --> E
     B -- no --> D{"Object-store corruption?"}
     D -- yes --> E["repairObjectStore + setupRepo, retry once"]
     E -- ok --> Z

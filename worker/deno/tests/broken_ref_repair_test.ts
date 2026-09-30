@@ -521,6 +521,12 @@ Deno.test("isBrokenRefFailure - false for 'bad object' naming a non-refs path", 
   assert(!isBrokenRefFailure("fatal: bad object HEAD~3"));
 });
 
+Deno.test("isBrokenRefFailure - false for 'bad object' naming a non-repairable namespace", () => {
+  // Issue #2884: refs/tags/… is outside the refs/heads/ and refs/remotes/
+  // namespaces this module repairs, so it must not be treated as repairable.
+  assert(!isBrokenRefFailure("fatal: bad object refs/tags/v1"));
+});
+
 // ---------------------------------------------------------------------------
 // sweepBrokenRefs
 // ---------------------------------------------------------------------------
