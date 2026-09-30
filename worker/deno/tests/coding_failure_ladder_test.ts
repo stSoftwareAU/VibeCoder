@@ -17,6 +17,7 @@ import {
 } from "../lib/coding_failure_ladder.ts";
 import {
   buildScheduledReleaseReason,
+  CLONE_CORRUPT_MARKER,
   DEADLINE_BOUND_TIMEOUT_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import type { HandleFailureOptions } from "../lib/label_types.ts";
@@ -90,6 +91,15 @@ Deno.test("classifyCodingFailure - an out-of-credit account state is transient",
   assertEquals(decision.failureClass, "out-of-credit");
 });
 
+Deno.test("classifyCodingFailure - a damaged shared clone is transient, never the ladder (Issue #2884)", () => {
+  const decision = classifyCodingFailure(
+    `Failed to create feature branch: ${CLONE_CORRUPT_MARKER} — fatal: bad object refs/heads/x`,
+  );
+  assertEquals(decision.disposition, "transient");
+  assertEquals(decision.category, "clone_corrupt");
+  assertEquals(decision.failureClass, "clone-corrupt");
+});
+
 Deno.test("classifyCodingFailure - an empty reason enters the ladder (fail loud)", () => {
   const decision = classifyCodingFailure("");
   assertEquals(decision.disposition, "ladder");
@@ -150,6 +160,23 @@ Deno.test("applyCodingFailureLadder - a rate-limited run never touches the ladde
 
   assertEquals(outcome.decision.disposition, "transient");
   assertEquals(outcome.ladder, undefined);
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("applyCodingFailureLadder - a damaged shared clone never touches the ladder (Issue #2884)", async () => {
+  const { calls, handleIssueFailure } = recordingHandler();
+
+  const outcome = await applyCodingFailureLadder({
+    repo: "owner/repo",
+    issueNumber: 42,
+    githubUser: "vibe-bot",
+    failureReason:
+      `Failed to create feature branch: ${CLONE_CORRUPT_MARKER} — fatal: bad object refs/heads/x`,
+  }, { handleIssueFailure });
+
+  assertEquals(outcome.decision.disposition, "transient");
+  assertEquals(outcome.ladder, undefined);
+  // No failed-once/failed label is ever applied for a host fault.
   assertEquals(calls.length, 0);
 });
 

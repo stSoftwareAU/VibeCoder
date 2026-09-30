@@ -543,6 +543,38 @@ Deno.test("label manager - handleIssueFailure never labels a scheduled release (
   }
 });
 
+Deno.test("label manager - handleIssueFailure never labels a damaged shared clone (Issue #2884)", async () => {
+  const dir = await makeTempDir();
+  try {
+    const calls: string[][] = [];
+    const mockGh = async (args: string[]): Promise<string> => {
+      calls.push(args);
+      return "";
+    };
+
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage:
+        "Failed to create feature branch: the host's shared clone of this " +
+        "repository is damaged — fatal: bad object refs/heads/x",
+    }, { ghCommandFn: mockGh, cacheDir: dir });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.markedAsFailed, false);
+      assertEquals(result.value.markedAsFailedOnce, false);
+      assertEquals(result.value.failureCategory, "clone_corrupt");
+      assertEquals(result.value.isInfrastructure, false);
+    }
+    // No label, no comment: the host's clone is at fault, not the issue.
+    assertEquals(calls.length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Question Failure
 // ---------------------------------------------------------------------------
