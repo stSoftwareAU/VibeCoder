@@ -72,12 +72,67 @@ export function buildDeferralMarker(ref: string): string {
  * escalates instead, so the loop fails loud to a human rather than quietly
  * repeating.
  *
- * @param comments - The issue's comment text, as fetched for the run.
+ * @param comments - Comment text to search — the full thread where available,
+ *   the budgeted prompt blob otherwise (see {@link hasPriorDeferralOnThread}).
  * @param ref - `owner/repo#N` of the dependency this run reports.
  */
 export function hasPriorDeferral(comments: string, ref: string): boolean {
   if (!comments) return false;
   return comments.toLowerCase().includes(buildDeferralMarker(ref));
+}
+
+/** Options accepted by {@link hasPriorDeferralOnThread}. */
+export interface PriorDeferralLookup {
+  ghClient: Pick<GitHubClient, "getIssueComments">;
+  repo: string;
+  issueNumber: number;
+  /** `owner/repo#N` of the dependency this run reports. */
+  ref: string;
+  /** The run's budgeted prompt comment blob — used only if the fetch fails. */
+  fallbackComments: string;
+  logger: Logger;
+}
+
+/**
+ * Loop guard, read off the full comment thread (Issue #2936).
+ *
+ * `ctx.issueComments` is the implementation prompt's blob, capped at
+ * `IMPLEMENTATION_COMMENT_LIMITS` (20 comments / 12,000 chars). On a busy
+ * thread that cap drops the earlier `vibe-blocked-deferral` marker, and
+ * {@link hasPriorDeferral} over that blob alone never sees the repeat — so the
+ * worker defers the same dependency again on every scan. This fetches the
+ * issue's whole comment history instead and checks every comment, from every
+ * author: a fleet runs several worker accounts, so restricting the scan to one
+ * login would miss a marker a different account posted. A forged marker from
+ * an untrusted author can only escalate this issue to a human early (the
+ * repeat-deferral branch), never suppress a real one, so scanning every author
+ * costs nothing on the downside.
+ *
+ * @returns true when a prior deferral for `ref` is found anywhere on the
+ *   thread.
+ */
+export async function hasPriorDeferralOnThread(
+  opts: PriorDeferralLookup,
+): Promise<boolean> {
+  const { ghClient, repo, issueNumber, ref, fallbackComments, logger } = opts;
+  try {
+    const comments = await ghClient.getIssueComments(repo, issueNumber);
+    return comments.some((c) =>
+      typeof c.body === "string" && hasPriorDeferral(c.body, ref)
+    );
+  } catch (err) {
+    logger.warn(
+      "Failed to read the full comment thread for the deferral loop guard " +
+        "— falling back to the budgeted prompt comments",
+      {
+        repo,
+        issueNumber,
+        ref,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    return hasPriorDeferral(fallbackComments, ref);
+  }
 }
 
 /** Injectable dependencies for {@link deferBlockedIssue} (testing). */
