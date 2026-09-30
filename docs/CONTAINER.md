@@ -1235,6 +1235,27 @@ next maintenance pass rebuilt into fresh image blocks — 45 GB of image for
 reclaim skipped: …` and the host is left to the launcher's volume reset
 (Issue #2077).
 
+### HOST_DISK_LOW pauses maintenance-lane passes (Issue #2889)
+
+A host below its claiming floor stops claiming new issues, but it does not
+sit idle: the serial passes (landing open PRs, the reclaim above) keep
+running every cycle. What pauses is narrower — every `maintenanceLane`
+handler (milestone branch sync, the shared-clone ref sweep below) stands down
+for the cycle, pool or no pool, because a fetch or ref write interrupted by
+low disk is exactly what leaves broken refs in the shared clones. One warn
+line per cycle names the paused passes:
+
+```text
+[HOST_DISK_LOW] paused maintenance-lane passes while the host disk is low:
+Milestone Branch Sync, Shared Clone Ref Sweep (Issue #2889)
+```
+
+As soon as the episode ends — reclaim reports `healed`, or the next cycle's
+reading is no longer low — the shared-clone ref sweep runs straight away
+rather than waiting out its usual hourly cadence, on the reasoning above: see
+[Shared clone ref sweep](INTERNALS.md#shared-clone-ref-sweep-issue-2889) in
+INTERNALS.md for the sweep itself.
+
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
 On the Apple `container` runtime the trim above has **never** worked. As

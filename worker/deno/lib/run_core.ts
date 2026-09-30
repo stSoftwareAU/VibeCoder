@@ -730,6 +730,13 @@ export interface RunCoreDeps {
     opts?: HandlerExecuteOptions,
   ) => Promise<Result<void>>;
 
+  /**
+   * Priority 1.73: hourly sweep of shared clones for broken refs, also run
+   * straight after a HOST_DISK_LOW episode ends (Issue #2889). Optional so
+   * existing test deps need no change.
+   */
+  sweepSharedCloneRefs?: () => Promise<Result<void>>;
+
   // Priority 1.7: Milestone completions
   checkMilestoneCompletions: () => Promise<Result<void>>;
 
@@ -1990,6 +1997,23 @@ export function buildPriorityDispatchTable(
             ? { ok: true as const, value: { processed: false } }
             : { ok: false as const, error: r.error }
         ),
+    },
+    {
+      // Issue #2889: hourly sweep of the shared clones for broken refs, also
+      // run straight after a HOST_DISK_LOW episode — a fetch or ref write
+      // interrupted by low disk is what leaves NUL-filled refs behind. Runs
+      // in the maintenance lane, leasing each repository it touches, and
+      // never claims an issue.
+      priority: 1.73,
+      name: "Shared Clone Ref Sweep",
+      maintenanceLane: true,
+      execute: () =>
+        (deps.sweepSharedCloneRefs?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
     },
     {
       priority: 1.75,
@@ -6073,10 +6097,14 @@ export async function runCoreLoop(
 
           // --- Host disk (Issue #226) ---
           // A host short of room claims nothing new this iteration, but the
-          // maintenance passes below still run — they are what lands the
-          // PRs already open and what reclaims space. Reported once per
-          // cycle; the pool's own pre-claim guard reports a mid-pool drop.
+          // serial maintenance passes below still run — they are what lands
+          // the PRs already open and what reclaims space. Maintenance-lane
+          // passes that write the shared clones pause instead (Issue #2889):
+          // a fetch or ref write interrupted by low disk is what left
+          // NUL-filled refs behind. Reported once per cycle; the pool's own
+          // pre-claim guard reports a mid-pool drop.
           let skipScanForHostDisk = false;
+          let pauseLaneForHostDisk = false;
           if (deps.checkHostDisk) {
             const disk = await deps.checkHostDisk();
             if (disk.level === "low") {
@@ -6105,12 +6133,13 @@ export async function runCoreLoop(
                 hostDiskLowReported = false;
               } else {
                 skipScanForHostDisk = true;
+                pauseLaneForHostDisk = true;
                 if (!hostDiskLowReported) {
                   hostDiskLowReported = true;
-                  // Degraded and continuing — maintenance still runs and the
-                  // next launch reclaims the disk — so a WARNING.
+                  // Degraded and continuing — serial maintenance still runs
+                  // and the next launch reclaims the disk — so a WARNING.
                   warnOf(deps)(
-                    `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues this cycle; maintenance continues (Issue #226).`,
+                    `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues and pausing maintenance-lane passes this cycle; serial maintenance continues (Issue #226, #2889).`,
                   );
                 }
               }
@@ -6565,6 +6594,12 @@ export async function runCoreLoop(
            * Collected so the cycle logs one line rather than one per sweep.
            */
           const skippedDeferrable: string[] = [];
+          /**
+           * Maintenance-lane passes paused this cycle because the host disk
+           * is low (Issue #2889) — collected so the cycle logs one warning
+           * rather than one per pass.
+           */
+          const pausedLanePasses: string[] = [];
           // Consume the tier gate: this cycle owns the reading that set it,
           // and only the next reading can arm it again (Issue #2449).
           const inReserveThisCycle = budgetInReserve;
@@ -6587,6 +6622,16 @@ export async function runCoreLoop(
             // the tier holds wherever the handler would have run.
             if (inReserveThisCycle && handler.budgetTier === "deferrable") {
               skippedDeferrable.push(handler.name);
+              continue;
+            }
+
+            // Issue #2889: a fetch or ref write under disk pressure is what
+            // left NUL-filled refs in the shared clones — so lane passes,
+            // which write those clones, pause while the host disk is low.
+            // This applies whether or not the lane/pool is enabled: a
+            // lane-flagged handler writes the shared clones serially too.
+            if (handler.maintenanceLane === true && pauseLaneForHostDisk) {
+              pausedLanePasses.push(handler.name);
               continue;
             }
 
@@ -6623,6 +6668,16 @@ export async function runCoreLoop(
               `budget-pacing: in reserve — skipped deferrable sweeps: ${
                 skippedDeferrable.join(", ")
               }`,
+            );
+          }
+
+          // Issue #2889: one warning per cycle naming the maintenance-lane
+          // passes paused while the host disk is low.
+          if (pausedLanePasses.length > 0) {
+            warnOf(deps)(
+              `[HOST_DISK_LOW] paused maintenance-lane passes while the host disk is low: ${
+                pausedLanePasses.join(", ")
+              } (Issue #2889)`,
             );
           }
 

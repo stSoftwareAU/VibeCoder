@@ -2646,6 +2646,82 @@ flowchart TD
     style F fill:#adb5bd,stroke:#6c757d,color:#000
 ```
 
+#### Shared clone ref sweep (Issue #2889)
+
+The on-demand repair above only fires when something touches the exact broken
+ref. [`shared_clone_ref_sweep.ts`](../worker/deno/lib/shared_clone_ref_sweep.ts)
+sweeps every shared clone proactively, as priority-1.73 handler
+`Shared Clone Ref Sweep` in `buildPriorityDispatchTable` — a maintenance-lane
+pass, not agent-backed, wired to the production dependency
+`sweepSharedCloneRefs`. It runs roughly hourly on every host
+(`SHARED_CLONE_SWEEP_INTERVAL_MS`), and is forced on the first cycle after a
+`HOST_DISK_LOW` episode ends, since a fetch or ref write interrupted by low
+disk is exactly what leaves broken refs behind.
+
+For each shared clone under `${WORK_DIR}/<repo>`, the sweep first skips the
+repo — recording a `skipped` self-heal event — when there is no clone yet, or
+when `acquireMaintenanceRepoLease()` returns `null` because a lane already
+holds the repo. Otherwise it finds broken refs two ways: it walks the loose
+ref files under the clone's git common directory (`refs/heads` and
+`refs/remotes` directly, bypassing `for-each-ref`) for any file that is empty
+or NUL-filled — the 41-byte NUL files disk pressure writes, which
+`git update-ref -d` refuses to touch — and removes it outright, restoring the
+ref `restored-from-packed` if `packed-refs` still resolves it; and it loops
+`git for-each-ref` in bounded rounds (a `fatal: missing object` aborts the
+listing outright, hiding every ref after it), parsing `brokenRefsIn()` out of
+stderr and removing each with `removeBrokenRef()` (`broken_ref_repair.ts`,
+Issue #2880).
+
+A ref with no surviving packed copy is restored by the same policy
+regardless of how it was found: a remote-tracking ref is refetched from its
+remote (`deleted-gone-on-origin` when the branch is gone on origin); a local
+`issue-*` or `milestone/*` branch is deleted only, never resurrected; any
+other local branch is refetched and reset to `origin/<branch>` if that branch
+still exists there, otherwise deleted.
+
+Every repair emits a `repair-broken-ref` event (module
+`shared-clone-ref-sweep`) to `self-heal.jsonl` carrying last-writer
+provenance: the loose ref file's mtime, the last reflog line, which
+worktrees have the branch checked out (lanes `s1`, `s2` and
+`pr-branch-update` share one ref store), and any `oom-*` log under
+`~/logs` within 15 minutes of the mtime. Repair timestamps per repo are kept
+in `${WORK_DIR}/.shared-clone-ref-repairs.json`, pruned to a 24-hour window;
+more than 2 repairing sweeps for the same repo in that window logs
+`[SHARED_CLONE_REF_CHURN] <repo>: …` and an `escalate` event with result
+`failed` — the surest sign the root cause (disk pressure mid-write) is still
+happening.
+
+While the host disk is low and reclaim did not heal it, every
+`maintenanceLane`-flagged handler — this sweep and the milestone branch sync
+alike — is skipped for the cycle (pool or no pool), with one warn line naming
+them; see [HOST_DISK_LOW pauses maintenance-lane passes](CONTAINER.md#host_disk_low-pauses-maintenance-lane-passes-issue-2889)
+in CONTAINER.md. Serial passes (landing PRs, reclaim) keep running.
+
+```mermaid
+flowchart TD
+    A["Sweep due: hourly, or forced<br/>after HOST_DISK_LOW ends"] --> B{"Clone exists<br/>and lease free?"}
+    B -->|no clone / leased| S["skipped event"]
+    B -->|yes| N["Scan refs/heads, refs/remotes<br/>for empty/NUL-filled files"]
+    N --> R{"packed-refs<br/>still resolves it?"}
+    R -->|yes| P["restored-from-packed"]
+    R -->|no| L["restore policy"]
+    N --> E["for-each-ref loop<br/>(bounded rounds)"]
+    E --> D["brokenRefsIn(stderr) →<br/>removeBrokenRef()"]
+    D --> L
+    L -->|remote-tracking| F1["refetch from remote<br/>(deleted-gone-on-origin if absent)"]
+    L -->|"issue-*/milestone/*"| F2[delete only]
+    L -->|other local branch| F3["refetch + reset to origin,<br/>else delete"]
+    F1 --> V["repair-broken-ref event<br/>+ provenance"]
+    F2 --> V
+    F3 --> V
+    P --> V
+    V --> C{">2 repairs<br/>in 24h?"}
+    C -->|yes| X["SHARED_CLONE_REF_CHURN escalate"]
+    C -->|no| Y[done]
+    style S fill:#adb5bd,stroke:#6c757d,color:#000
+    style X fill:#a4161a,stroke:#6a040f,color:#fff
+```
+
 **Branch cleanup never deletes a milestone branch** —
 `cleanup_merged_pr_branches()` deletes the head branch of every merged worker
 PR, and a milestone summary PR's head branch _is_ the shared `milestone/<slug>`
