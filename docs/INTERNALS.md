@@ -2667,6 +2667,83 @@ flowchart TD
     style F fill:#adb5bd,stroke:#6c757d,color:#000
 ```
 
+#### Shared clone ref sweep (Issue #2889)
+
+The on-demand repair above only fires when something touches the exact broken
+ref. [`shared_clone_ref_sweep.ts`](../worker/deno/lib/shared_clone_ref_sweep.ts)
+sweeps every shared clone proactively, as priority-1.73 handler
+`Shared Clone Ref Sweep` in `buildPriorityDispatchTable` — a maintenance-lane
+pass, not agent-backed, wired to the production dependency
+`sweepSharedCloneRefs`. It runs roughly hourly on every host
+(`SHARED_CLONE_SWEEP_INTERVAL_MS`), and is forced on the first cycle after a
+`HOST_DISK_LOW` episode ends, since a fetch or ref write interrupted by low
+disk is exactly what leaves broken refs behind.
+
+For each shared clone under `${WORK_DIR}/<repo>`, the sweep first skips the
+repo — recording a `skipped` self-heal event — when there is no clone yet, or
+when `acquireMaintenanceRepoLease()` returns `null` because a lane already
+holds the repo. Otherwise it finds broken refs two ways: it walks the loose
+ref files under the clone's git common directory (`refs/heads` and
+`refs/remotes` directly, bypassing `for-each-ref`) for any file that is empty
+or NUL-filled — the 41-byte NUL files disk pressure writes, which
+`git update-ref -d` refuses to touch — and removes it outright, restoring the
+ref `restored-from-packed` if `packed-refs` still resolves it; and it loops
+`git for-each-ref` in bounded rounds (a `fatal: missing object` aborts the
+listing outright, hiding every ref after it), parsing `brokenRefsIn()` out of
+stderr on every round, whatever the exit code, since git still exits 0 after
+`warning: ignoring broken ref` for a truncated loose ref, and removing each with
+`removeBrokenRef()` (`broken_ref_repair.ts`, Issue #2880).
+
+A ref with no surviving packed copy is restored by the same policy
+regardless of how it was found: a remote-tracking ref is refetched from its
+remote (`deleted-gone-on-origin` when the branch is gone on origin); a local
+`issue-*` or `milestone/*` branch is deleted only, never resurrected; any
+other local branch is refetched and reset to `origin/<branch>` if that branch
+still exists there, otherwise deleted.
+
+Every repair emits a `repair-broken-ref` event (module
+`shared-clone-ref-sweep`) to `self-heal.jsonl` carrying last-writer
+provenance: the loose ref file's mtime, the last reflog line, which
+worktrees have the branch checked out (lanes `s1`, `s2` and
+`pr-branch-update` share one ref store), and any `oom-*` log under
+`~/logs` within 15 minutes of the mtime. Repair timestamps per repo are kept
+in `${WORK_DIR}/.shared-clone-ref-repairs.json`, pruned to a 24-hour window;
+more than 2 repairing sweeps for the same repo in that window logs
+`[SHARED_CLONE_REF_CHURN] <repo>: …` and an `escalate` event with result
+`failed` — the surest sign the root cause (disk pressure mid-write) is still
+happening.
+
+While the host disk is low and reclaim did not heal it, this sweep alone is
+skipped for the cycle (the handler's `pausesOnHostDiskLow` flag). Every other
+pass, lane or serial, keeps running because those passes land the PRs already
+open (Issue #226). See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
+in CONTAINER.md.
+
+```mermaid
+flowchart TD
+    A["Sweep due: hourly, or forced<br/>after HOST_DISK_LOW ends"] --> B{"Clone exists<br/>and lease free?"}
+    B -->|no clone / leased| S["skipped event"]
+    B -->|yes| N["Scan refs/heads, refs/remotes<br/>for empty/NUL-filled files"]
+    N --> R{"packed-refs<br/>still resolves it?"}
+    R -->|yes| P["restored-from-packed"]
+    R -->|no| L["restore policy"]
+    N --> E["for-each-ref loop<br/>(bounded rounds)"]
+    E --> D["brokenRefsIn(stderr) →<br/>removeBrokenRef()"]
+    D --> L
+    L -->|remote-tracking| F1["refetch from remote<br/>(deleted-gone-on-origin if absent)"]
+    L -->|"issue-*/milestone/*"| F2[delete only]
+    L -->|other local branch| F3["refetch + reset to origin,<br/>else delete"]
+    F1 --> V["repair-broken-ref event<br/>+ provenance"]
+    F2 --> V
+    F3 --> V
+    P --> V
+    V --> C{">2 repairs<br/>in 24h?"}
+    C -->|yes| X["SHARED_CLONE_REF_CHURN escalate"]
+    C -->|no| Y[done]
+    style S fill:#adb5bd,stroke:#6c757d,color:#000
+    style X fill:#a4161a,stroke:#6a040f,color:#fff
+```
+
 **Branch cleanup never deletes a milestone branch** —
 `cleanup_merged_pr_branches()` deletes the head branch of every merged worker
 PR, and a milestone summary PR's head branch _is_ the shared `milestone/<slug>`
@@ -4599,6 +4676,45 @@ repairing the host's clone for the issue to become claimable again. See
 "`create_feature_branch_from_base()`" above and
 [docs/workflows/README.md](workflows/README.md#one-shared-store-means-one-repository-wide-fault-issue-1093)
 for the sweep-then-re-clone repair ladder that produces this category.
+
+### 🩹 Host-fault failure labels release themselves (Issue #2890)
+
+The milestone-branch refusal release above frees a milestone's issues once a
+repo-level fact clears; the same problem exists one level down, for a single
+repository. When the failure that earned an issue `failed-once` or `failed` was
+really the worker's host — a corrupt clone, a clone that could not be made, a
+full disk, a container image that failed to build — the failure comment gains a
+**Host fault:** line naming the kind and a final marker
+(`<!-- vibe-host-fault kind="<kind>" -->`), detected by
+[host_fault.ts](../worker/deno/lib/host_fault.ts):
+
+| Kind                     | Fault                                                     |
+| ------------------------ | --------------------------------------------------------- |
+| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the clone |
+| `clone-failed`           | The clone could not be created                            |
+| `disk-full`              | The host ran out of disk space                            |
+| `container-build-failed` | The issue's container image failed to build               |
+
+`releaseHostFaultFailureLabels`
+([host_fault_release.ts](../worker/deno/lib/host_fault_release.ts)) mirrors
+`releaseMilestoneBranchRefusalLabels`: it runs once per repository per worker
+process, triggered after the setup phase successfully creates a feature branch
+in that repository — proof the clone is healthy again — and lists the
+repository's open `failed-once` / `failed` issues. It reads only fleet-authored
+comments (the same `selectFleetAuthoredComments` filter, for the same forgery
+reason) and releases an issue only when **every** fleet failure record on it is a
+host fault. A failure record is any comment headed by a fleet path that applies
+`failed-once` or `failed`: "Automated Processing Failed" or "Paused", "Milestone
+branch unavailable", "Claim Churn Detected", "Question Answering Failed" or
+"Automatic Escalation to Planning Mode". Only an "Automated Processing Failed"
+record can be a host fault: either it carries the marker, or — for failures made
+before this change had no marker to write — its body matches the `clone-corrupt`
+git broken-ref/bad-object signature. Any issue carrying even one non-host-fault
+record (an agent failure, claim churn, an ordinary setup error such as an
+invalid base branch) keeps its label. `failed` is released only when a host-fault
+"Second Attempt" record, the run that applies it, explains it; otherwise the
+issue keeps both labels. Errors are logged, never swallowed; a
+comment-read failure leaves the label in place.
 
 ### 📊 Token usage tracking
 

@@ -2295,6 +2295,20 @@
       ]
     },
     {
+      "issue": 2890,
+      "chunk": "top-up-2890",
+      "title": "top-up: the host-fault failure-label release",
+      "ledger": "docs/audits/security-sweep-2890-host-fault-release.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: host_fault.ts, host_fault_release.ts, issue_sweep_parse.ts (#2890)",
+      "status": "swept",
+      "sweptAt": "1c32005e710bb1d61c4f175a386d16816be1a4b4",
+      "paths": [
+        "worker/deno/lib/host_fault.ts",
+        "worker/deno/lib/host_fault_release.ts",
+        "worker/deno/lib/issue_sweep_parse.ts"
+      ]
+    },
+    {
       "issue": 2925,
       "chunk": "top-up-2925",
       "title": "top-up: the browser grant",
@@ -2304,6 +2318,20 @@
       "sweptAt": "1c32005e710bb1d61c4f175a386d16816be1a4b4",
       "paths": [
         "worker/deno/lib/browser_grant.ts"
+      ]
+    },
+    {
+      "issue": 2889,
+      "chunk": "top-up-2889",
+      "title": "top-up: the shared clone ref sweep",
+      "ledger": "docs/audits/security-sweep-2889-shared-clone-ref-sweep.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: shared_clone_ref_sweep.ts, shared_clone_ref_provenance.ts, shared_clone_repair_history.ts (#2889)",
+      "status": "swept",
+      "sweptAt": "1c32005e710bb1d61c4f175a386d16816be1a4b4",
+      "paths": [
+        "worker/deno/lib/shared_clone_ref_provenance.ts",
+        "worker/deno/lib/shared_clone_ref_sweep.ts",
+        "worker/deno/lib/shared_clone_repair_history.ts"
       ]
     }
   ],

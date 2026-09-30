@@ -58,7 +58,7 @@ spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
 merge-conflict resolution (1.61), CI nudges
 and the blocking-PR stall repair (1.62, 1.63), auto-merge (1.65), issue closure
 (1.67), closed-PR recovery (1.68), milestone completion (1.7),
-closed-milestone housekeeping (1.71) and branch sync (1.72), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
+closed-milestone housekeeping (1.71), branch sync (1.72) and shared-clone ref sweep (1.73), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
 the Failure-Detection repair resume (1.81), questions (1.85), configured
 custom-label prompts (1.86) and their PR-phase twin (1.87, both only when an
 operator configured a mapping of that phase),
@@ -159,7 +159,8 @@ flowchart TD
   P168 --> P17["1.7: Milestone completion"]
   P17 --> P171["1.71: Closed-milestone housekeeping"]
   P171 --> P172["1.72: Milestone branch sync"]
-  P172 --> P175["1.75: Refinement"]
+  P172 --> P173["1.73: Shared clone ref sweep"]
+  P173 --> P175["1.75: Refinement"]
   P175 --> P178["1.78: Grill-me"]
   P178 --> P179["1.79: Quorum plan-off"]
   P179 --> P18["1.80: Planning"]
@@ -206,6 +207,7 @@ flowchart TD
 | 1.7      | Milestone completion                                  | Final consolidation PR                                                                                                                   |
 | 1.71     | Closed-milestone housekeeping                         | Drop a closed milestone's worktrees, local branches and stream session on this host                                                      |
 | 1.72     | Milestone branch sync                                 | Merge the default branch into open `milestone/*` branches; claims nothing                                                                |
+| 1.73     | Shared clone ref sweep                                | Repair broken or NUL-filled loose refs in each shared clone about hourly; skips a clone whose repo lock is held; claims nothing          |
 | 1.75     | Issue refinement                                      | `refine-issue` label                                                                                                                     |
 | 1.78 | Grill-me clarification | `grill-me` label — runs before planning so a freshly-grilled issue is not also planned in the same pass |
 | 1.79 | Quorum plan-off | `quorum` label — decides what the plan is before planning splits it |

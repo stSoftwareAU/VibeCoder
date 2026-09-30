@@ -1233,6 +1233,22 @@ next maintenance pass rebuilt into fresh image blocks — 45 GB of image for
 reclaim skipped: …` and the host is left to the launcher's volume reset
 (Issue #2077).
 
+### HOST_DISK_LOW pauses the shared-clone ref sweep (Issue #2889)
+
+A host below its claiming floor stops claiming new issues, but every
+maintenance pass keeps running each cycle, because those passes land the
+PRs already open (Issue #226). The one exception is the shared-clone ref
+sweep: it stands down while the disk is low and reclaim did not heal it,
+since a ref write interrupted by low disk is exactly what it repairs. The
+one-time-per-episode `[HOST_DISK_LOW]` warning described above is unchanged;
+there is no separate warn line for the pause.
+
+As soon as the episode ends — reclaim reports `healed`, or the next cycle's
+reading is no longer low — the shared-clone ref sweep runs straight away
+rather than waiting out its usual hourly cadence, on the reasoning above: see
+[Shared clone ref sweep](INTERNALS.md#shared-clone-ref-sweep-issue-2889) in
+INTERNALS.md for the sweep itself.
+
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
 On the Apple `container` runtime the trim above has **never** worked. As

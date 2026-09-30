@@ -65,6 +65,7 @@ import { repairMilestoneCreateBlockAndRetry } from "../milestone_create_block_re
 import { releaseMilestoneBranchRefusalLabels } from "../milestone_branch_refusal_release.ts";
 import { isBrokenRefFailure } from "../broken_ref_repair.ts";
 import { CLONE_CORRUPT_MARKER } from "../failure_diagnosis.ts";
+import { releaseHostFaultFailureLabels } from "../host_fault_release.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -984,6 +985,41 @@ export async function workOnIssueSetupBranch(
   }
 
   state.repoPath = repoPath;
+
+  // A feature branch just got created off a fresh clone on this host — the
+  // first witness that the host is healthy again. Any issue still carrying
+  // `failed-once`/`failed` purely because a host fault (corrupt clone, full
+  // disk, failed container build) was blamed on it can be released now
+  // (Issue #2890). Best-effort — the branch is usable whatever the sweep
+  // finds — but never silent.
+  const hostFaultRelease = await releaseHostFaultFailureLabels({
+    repo,
+    labels: {
+      failedLabel: config.failedLabel,
+      failedOnceLabel: config.failedOnceLabel,
+    },
+    ghCommandFn: deps.github.runGhCommand,
+    authorOptions: {
+      fleetAuthors: resolveFleetMaintenanceAuthorSet({
+        githubUser,
+        fleetPrAuthors: config.fleetPrAuthors,
+        serviceAccounts: config.serviceAccounts,
+      }),
+    },
+    log: (message) => logger.warn(message, { repo }),
+  });
+  if (hostFaultRelease.released.length > 0) {
+    logger.info(
+      "Released failure labels left by a worker-host fault (Issue #2890)",
+      { repo, released: hostFaultRelease.released },
+    );
+  }
+  for (const error of hostFaultRelease.errors) {
+    logger.warn(
+      `Host-fault label sweep: ${error} (Issue #2890)`,
+      { repo },
+    );
+  }
 
   // Run repository-specific pre-setup command if configured (Issue #85, #1184)
   const preSetupResult = await runPreSetupCommand(
