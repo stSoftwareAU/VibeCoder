@@ -856,13 +856,25 @@ flowchart TD
     B -- no --> W[Work the PR as before]
     B -- yes --> M{"Which pass?"}
     M -- merge-conflict --> S["Stand down: left to<br/>the milestone sync"]
-    M -- spelling / CI fix --> C[GET /rules/branches/head]
+    M -- spelling --> C[GET /rules/branches/head]
     C -- unreadable --> W
     C --> D{"required_status_checks<br/>or pull_request rule?"}
     D -- no --> W
     D -- yes --> E[Stand down: no agent run,<br/>no attempt, no retry]
     E --> F[One comment per branch,<br/>naming the rule]
     S --> F2[One comment per branch,<br/>naming the sync]
+    M -- CI fix --> G[GET /rules/branches/head]
+    G -- unreadable --> W
+    G --> H{"required_status_checks<br/>or pull_request rule?"}
+    H -- no --> W
+    H -- yes --> I{"Any open milestone-fix<br/>PR for this PR already?"}
+    I -- yes --> J["Stand down silently: no agent run,<br/>no attempt, no retry, no comment"]
+    I -- no --> K["Fix on milestone-fix/pr-N-ci-n,<br/>PR into the gated head,<br/>auto-merge armed"]
+    M -- review feedback --> G2[GET /rules/branches/head]
+    G2 -- unreadable --> W
+    G2 --> H2{"required_status_checks<br/>or pull_request rule?"}
+    H2 -- no --> W
+    H2 -- yes --> K2["Fix on milestone-fix/pr-N-feedback-commentId,<br/>PR into the gated head,<br/>auto-merge armed<br/>(no pre-agent stand-down)"]
 ```
 
 What each pass does with a `milestone/**` head:
@@ -870,7 +882,8 @@ What each pass does with a `milestone/**` head:
 | Pass | On a `milestone/**` head | Marker on the comment |
 | --- | --- | --- |
 | Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head` |
-| CI fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head` |
+| CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) only while any fix PR for this head is already open (Issue #2907) | None — the stand-down is silent; the open fix PR itself carries the explanation |
+| Review feedback | Fixes on its own `milestone-fix/<leaf>/pr-<N>-feedback-<commentId>` branch and raises an auto-merge-armed PR the same way; no pre-agent stand-down — a different comment's fix in flight does not stop this one (Issue #2907) | None |
 | Merge conflict | **Left to the milestone sync**, gated or not (Issue #1772) | `vibe-milestone-head` |
 
 - **The merge-conflict pass is left to the milestone sync.** The every-cycle
@@ -882,9 +895,26 @@ What each pass does with a `milestone/**` head:
   (`skipped: milestone head — resolved by the milestone branch sync`) and one
   comment naming the sync. The CI-nudge behaviour (Issue #1762) is unchanged by
   this.
-- **The agent never runs on a gated head**, so nothing is committed that cannot
-  be pushed, and no attempt or retry is spent — the guard runs before
-  `recordCiCheckRetry` and before the merge-conflict attempt marker is posted.
+- **The spelling pass's agent never runs on a gated head**, so nothing is
+  committed that cannot be pushed, and no attempt or retry is spent —
+  `guardGatedHead` runs before the checkout.
+- **CI fix and review feedback fix instead of standing down** (Issue #2907).
+  Each checks the gated head's rules the same way, but instead of refusing
+  outright it works on a `milestone-fix/<leaf>/pr-<N>-ci-<n>` (CI fix) or
+  `milestone-fix/<leaf>/pr-<N>-feedback-<commentId>` (review feedback) side
+  branch, runs the agent there, and — once the fix pushes — opens (or reuses)
+  an auto-merge-armed pull request into the gated head via
+  `raiseMilestoneFixPr()` (`milestone_fix_pr.ts`). A retry is spent on that
+  attempt exactly as an ungated head would.
+  - **CI fix stands down before the agent runs** when `findOpenMilestoneFixPr()`
+    finds *any* open `milestone-fix/pr-<N>-*` PR for that head, so a repeat CI
+    failure on the same PR does not spend a retry racing a fix already in
+    flight.
+  - **Review feedback has no such pre-check** — each comment gets its own
+    `feedback-<commentId>` branch, so a different comment's fix in flight does
+    not stand this one down. `raiseMilestoneFixPr()`'s own reuse only matches
+    that exact branch name, which recurs solely on a retried attempt at the
+    same comment.
 - **The CI-nudge pass asks too** (Issue #1762). Its `none` path adds an empty
   commit and pushes it to the head, so on VibeCoder#1741's own milestone head
   it was refused with GH013 every cycle the PR stayed a nudge candidate. The
@@ -1005,7 +1035,8 @@ default tip never refills the attempt count.
 | Default branch **cannot be resolved**               | Push allowed (fail-open)                                   | Feature-branch pushes are never blocked by a transient lookup failure          |
 | Ruleset write **fails for one repo**                | Logged as a non-fatal warning                              | Setup continues; the next setup run retries idempotently                       |
 | Required check is **unsatisfiable** on the repo     | Check is dropped from the required set                     | The merge is never blocked by a check that can never pass                      |
-| PR head is a **ruleset-gated** `milestone/**` branch | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
+| PR head is a **ruleset-gated** `milestone/**` branch (spelling pass) | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
+| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while any fix PR for the head is already open | The fix PR's own CI runs and it auto-merges into the gated head once green |
 
 ## Related implementation
 
@@ -1019,10 +1050,16 @@ default tip never refills the attempt count.
   — `getReportedCheckNames()`, the genuinely-reported check names the candidates
   are intersected with.
 - [`worker/deno/lib/gated_head_guard.ts`](../worker/deno/lib/gated_head_guard.ts)
-  — `assessGatedHead()` / `guardGatedHead()`, the stand-down the spelling and
-  CI-fix passes make on a head no direct push can reach, and
-  `standDownMilestoneHead()`, the merge-conflict pass's own stand-down on any
-  `milestone/**` head (Issue #1772).
+  — `assessGatedHead()`, the read the CI-fix and review-feedback passes use to
+  detect a gated head before working on a `milestone-fix/**` branch instead
+  (Issue #2907), `guardGatedHead()`, the stand-down the spelling pass still
+  makes on a head no direct push can reach, and `standDownMilestoneHead()`,
+  the merge-conflict pass's own stand-down on any `milestone/**` head
+  (Issue #1772).
+- [`worker/deno/lib/milestone_fix_pr.ts`](../worker/deno/lib/milestone_fix_pr.ts)
+  — `milestoneFixBranchFor()`, `findOpenMilestoneFixPr()` and
+  `raiseMilestoneFixPr()`, the CI-fix and review-feedback passes' delivery of a
+  gated-head fix through an auto-merge-armed pull request (Issue #2907).
 - [`worker/deno/lib/branch_push_policy.ts`](../worker/deno/lib/branch_push_policy.ts)
   — `assessBranchPushPolicy()`, the direct-push / opt-out detection that keeps a
   data repo's branch unlocked.

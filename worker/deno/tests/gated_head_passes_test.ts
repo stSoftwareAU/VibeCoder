@@ -7,6 +7,13 @@
  * CI-fix retry on a push that could never land. These tests assert the pass
  * stops before the agent runs and before its budget is spent.
  *
+ * Issue #2907 changed the CI-fix pass so a gated head is no longer a
+ * permanent dead end: with no fix PR yet in flight it now pushes the fix to
+ * a `milestone-fix/**` side branch and raises a PR into the gated head
+ * instead of giving up. The CI-fix test below covers the remaining
+ * stand-down case — a fix PR already in flight — so a second attempt spends
+ * no retry rather than raising a duplicate.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
@@ -21,6 +28,7 @@ import {
   processMergeConflict,
 } from "../lib/pr_merge_conflict_processor.ts";
 import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
+import { milestoneFixPrefixFor } from "../lib/milestone_fix_pr.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import type { ClaudeDeps, GitHubDeps } from "../lib/issue_worker_wiring.ts";
@@ -68,6 +76,18 @@ function makeDeps(observed: Observed) {
       if (joined.includes("pr view")) {
         return Promise.resolve(JSON.stringify({ comments: [] }));
       }
+      // Issue #2907: the CI-fix pass looks for an already-open milestone-fix
+      // PR before it stands down. Answering with one in flight (rather than
+      // leaving the default "" — no open PR) exercises the "already in
+      // flight, no new attempt" branch instead of the "no fix PR yet, so
+      // raise one" branch this mock deliberately does not model.
+      if (args[0] === "pr" && args[1] === "list") {
+        return Promise.resolve(JSON.stringify([{
+          number: 9001,
+          url: "https://github.com/org/repo/pull/9001",
+          headRefName: `${milestoneFixPrefixFor(GATED_HEAD, 4702)}ci-1`,
+        }]));
+      }
       return Promise.resolve("");
     },
   };
@@ -86,7 +106,8 @@ function makeDeps(observed: Observed) {
 /** True when any `gh` call was a write beyond the stand-down comment. */
 function wroteAnythingElse(observed: Observed): boolean {
   return observed.ghCalls.some((args) =>
-    !(args[0] === "pr" && (args[1] === "comment" || args[1] === "view")) &&
+    !(args[0] === "pr" &&
+      (args[1] === "comment" || args[1] === "view" || args[1] === "list")) &&
     !args.join(" ").includes("rules/branches")
   );
 }
@@ -129,7 +150,7 @@ Deno.test("spelling pass - stands down from a gated head without running the age
   assertStringIncludes(comments[0]!, "required_status_checks");
 });
 
-Deno.test("CI-fix pass - a gated head spends no retry (Issue #1679)", async () => {
+Deno.test("CI-fix pass - a gated head with a fix already in flight spends no retry (Issues #1679, #2907)", async () => {
   resetGatedHeadReportsForTest();
   const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-ci-" });
   try {
@@ -176,12 +197,17 @@ Deno.test("CI-fix pass - a gated head spends no retry (Issue #1679)", async () =
       assertEquals(
         result.value.retryCount,
         0,
-        "a refusal that recurs every run must not spend a CI-fix retry",
+        "a fix PR already in flight must not spend another CI-fix retry",
       );
+      assertStringIncludes(result.value.summary, "already in flight");
     }
     assertEquals(observed.agentRuns, 0);
     assertEquals(wroteAnythingElse(observed), false);
-    assertEquals(standDownComments(observed).length, 1);
+    // Issue #2907: reusing an already-open fix PR stands down silently — the
+    // fix PR itself carries the explanation, so no duplicate comment is
+    // posted on the milestone PR (unlike the spelling and merge-conflict
+    // passes above, which still post one).
+    assertEquals(standDownComments(observed).length, 0);
     assertEquals(renewals, 1, "the lock is taken and released as usual");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
