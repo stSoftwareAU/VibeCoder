@@ -150,8 +150,10 @@ Deno.test("dispatch table - the repo-clone agent passes are lane-eligible, the r
   // `${WORK_DIR}/<repo>`: PR feedback, spelling, CI fix, merge conflict, and
   // — since Issue #2030 — the milestone branch sync, whose self-heal and
   // sync both lease each repository they touch — and, since Issue #2802, the
-  // blocking-PR stall repair, which leases the PR's repository to sync it.
-  assertEquals(lane, [1, 1.5, 1.55, 1.61, 1.63, 1.72]);
+  // blocking-PR stall repair, which leases the PR's repository to sync it —
+  // and, since Issue #2889, the shared clone ref sweep, which leases each
+  // repository whose shared clone it repairs.
+  assertEquals(lane, [1, 1.5, 1.55, 1.61, 1.63, 1.72, 1.73]);
 
   // Planning and the other label-driven agents stay serial: they run from the
   // work-dir root with no repo lease, so they must not race a slot.
