@@ -2258,6 +2258,18 @@
       "paths": [
         "worker/deno/lib/broken_ref_repair.ts"
       ]
+    },
+    {
+      "issue": 2907,
+      "chunk": "top-up-2907",
+      "title": "top-up: the milestone fix PR",
+      "ledger": "docs/audits/security-sweep-2907-milestone-fix-pr.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_fix_pr.ts (#2907)",
+      "status": "swept",
+      "sweptAt": "2d26679e573752d2b24cf905401c7077e307bc32",
+      "paths": [
+        "worker/deno/lib/milestone_fix_pr.ts"
+      ]
     }
   ],
   "roots": [
