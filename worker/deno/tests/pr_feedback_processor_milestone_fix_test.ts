@@ -212,7 +212,7 @@ Deno.test("processPrFeedback - gated head: works on a fix branch and raises a fi
   assertStringIncludes(body, MILESTONE_HEAD);
 });
 
-Deno.test("processPrFeedback - gated head: fix PR creation failure => push-failed reply", async () => {
+Deno.test("processPrFeedback - gated head: fix PR creation failure => honest fix-PR-raise-failed reply", async () => {
   const captured: CapturedGh = { comments: [], calls: [] };
   const gitCalls: string[][] = [];
 
@@ -240,9 +240,62 @@ Deno.test("processPrFeedback - gated head: fix PR creation failure => push-faile
 
   assertEquals(result.value.changesPushed, false);
 
+  // Issue #2907: the fix branch DID push successfully to origin — only the
+  // follow-on PR into the gated head failed — so the reply must not claim
+  // the work is "still on the worker's local branch" (it isn't).
   const body = captured.comments.at(-1) ?? "";
-  assertStringIncludes(body, "failed to push");
-  assertStringIncludes(body, "fix PR");
+  assertStringIncludes(body, "pushed the fix to");
+  assertStringIncludes(body, "on origin");
+  assertStringIncludes(body, "could not raise");
+  assertStringIncludes(body, MILESTONE_HEAD);
+});
+
+Deno.test("processPrFeedback - gated head: fix-branch checkout failure => honest gated-checkout-failed reply", async () => {
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: {
+      runGitCommand: ((args: string[], _opts?: unknown) => {
+        gitCalls.push(args);
+        if (args[0] === "checkout" && args[1] === "-B") {
+          return Promise.resolve({
+            ok: true,
+            value: { code: 1, stdout: "", stderr: "cannot lock ref" },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }) as unknown as GitDeps["runGitCommand"],
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-checkout-fail",
+    workRoot: "/tmp/test-milestone-fix-checkout-fail",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.changesPushed, false);
+
+  // Claude never ran here, so the reply must not claim a fix was made.
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "ruleset-gated");
+  assertStringIncludes(body, "could not create the fix");
+  assertStringIncludes(body, "No changes were made");
+  assertStringIncludes(body, "cannot lock ref");
 });
 
 Deno.test("processPrFeedback - non-gated head: unchanged behaviour, pushes to the original branch", async () => {

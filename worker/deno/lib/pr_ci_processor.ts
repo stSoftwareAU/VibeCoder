@@ -1681,7 +1681,7 @@ async function _processCiWithHeartbeat(
         : recoveryResult.error.message;
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
-          input.branchName,
+          pushBranch,
           `Fix CI failure: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
           { cwd: processorDeps.workDir },
           false,
@@ -1723,12 +1723,12 @@ async function _processCiWithHeartbeat(
   if (beforeSha !== undefined) {
     const movedResult = await deps.git.branchHeadChanged(
       beforeSha,
-      input.branchName,
+      pushBranch,
       { cwd: processorDeps.workDir },
     );
     if (movedResult.ok && movedResult.value) {
       logger.info("Branch HEAD moved during Claude run", {
-        branchName: input.branchName,
+        branchName: pushBranch,
         beforeSha,
       });
       hasChanges = true;
@@ -1752,7 +1752,7 @@ async function _processCiWithHeartbeat(
   let pushVerification: PushVerification | undefined;
   const verifyFn = processorDeps.verifyPushFn ?? verifyPushLanded;
   if (hasChanges && pushSucceeded) {
-    pushVerification = await verifyFn(input.branchName, {
+    pushVerification = await verifyFn(pushBranch, {
       ...(processorDeps.workDir !== undefined
         ? { cwd: processorDeps.workDir }
         : {}),
@@ -1765,7 +1765,7 @@ async function _processCiWithHeartbeat(
         {
           repo,
           prNumber,
-          branchName: input.branchName,
+          branchName: pushBranch,
           reason: pushVerification.reason,
         },
       );
@@ -1773,7 +1773,7 @@ async function _processCiWithHeartbeat(
       logger.info("Push verified against the remote", {
         repo,
         prNumber,
-        branchName: input.branchName,
+        branchName: pushBranch,
         remoteSha: pushVerification.remoteSha,
       });
     }
@@ -1805,7 +1805,7 @@ async function _processCiWithHeartbeat(
     if (alreadyRebuilt) {
       logger.warn(
         "Secret finding survived a history rebuild — it is in the base branch",
-        { repo, prNumber, checkName, branchName: input.branchName },
+        { repo, prNumber, checkName, branchName: pushBranch },
       );
     } else {
       const defaultBranchResult = await deps.git.getRepoDefaultBranch(
@@ -1820,7 +1820,7 @@ async function _processCiWithHeartbeat(
         });
       } else {
         const rebuild = await rebuildBranchHistory({
-          branchName: input.branchName,
+          branchName: pushBranch,
           baseBranch: defaultBranchResult.value,
           commitMessage: buildRewriteCommitMessage(checkName, prNumber),
           ...(processorDeps.workDir !== undefined
@@ -1844,7 +1844,7 @@ async function _processCiWithHeartbeat(
           // that is no longer the branch head is precisely the false claim
           // Issue #579 exists to prevent, and a rebuild is the one path that
           // makes an honest verification go stale.
-          pushVerification = await verifyFn(input.branchName, {
+          pushVerification = await verifyFn(pushBranch, {
             ...(processorDeps.workDir !== undefined
               ? { cwd: processorDeps.workDir }
               : {}),
@@ -1857,7 +1857,7 @@ async function _processCiWithHeartbeat(
               {
                 repo,
                 prNumber,
-                branchName: input.branchName,
+                branchName: pushBranch,
                 reason: pushVerification.reason,
               },
             );
@@ -1870,7 +1870,7 @@ async function _processCiWithHeartbeat(
             repo,
             prNumber,
             checkName,
-            branchName: input.branchName,
+            branchName: pushBranch,
             error: rebuild.error.message,
           });
         }
@@ -1878,8 +1878,12 @@ async function _processCiWithHeartbeat(
     }
   }
 
-  // Re-enable auto-merge after pushing fix
-  if (hasChanges && pushSucceeded) {
+  // Re-enable auto-merge after pushing fix. Only meaningful when the push
+  // landed on the milestone PR's own head (Issue #2907): a fix branch push
+  // never touches `input.branchName`, so re-arming auto-merge here would be
+  // arming it against a head that did not change. The fix PR's own
+  // auto-merge is armed separately, inside `raiseMilestoneFixPr`.
+  if (hasChanges && pushSucceeded && fixBranch === undefined) {
     try {
       // Issue #3909: pass the head branch so the milestone open-children
       // gate needs no extra lookup.
@@ -1893,12 +1897,44 @@ async function _processCiWithHeartbeat(
     }
   }
 
-  const actuallyPushed = hasChanges && pushSucceeded;
+  let actuallyPushed = hasChanges && pushSucceeded;
+
+  // Issue #2907: on a fix branch, deliver the pushed commits into the
+  // gated milestone branch via a pull request — this PR's own head was
+  // never written to directly. Failure here is loud: the push landed on
+  // the fix branch but nothing carries it into the milestone branch, so the
+  // fix is treated the same as a failed push (`changesPushed: false`).
+  let milestoneFixPr: { number: number; url: string } | undefined;
+  let milestoneFixPrError: string | undefined;
+  if (actuallyPushed && fixBranch !== undefined) {
+    const raised = await raiseMilestoneFixPr({
+      repo,
+      milestoneBranch: input.branchName,
+      milestonePrNumber: prNumber,
+      fixBranch,
+      pass: "CI fix",
+    }, {
+      gh: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+      log: (message: string) => logger.info(message),
+      warn: (message: string) => logger.warn(message),
+    });
+    if (raised.ok) {
+      milestoneFixPr = raised.value;
+    } else {
+      milestoneFixPrError = raised.error.message;
+      actuallyPushed = false;
+      logger.error(
+        "Could not raise a milestone-fix pull request for the pushed fix " +
+          "(Issue #2907)",
+        { repo, prNumber, fixBranch, error: milestoneFixPrError },
+      );
+    }
+  }
 
   // Issue #3753: record the push (with its short SHA) so an observer can see
   // the fix land without reading the worker log.
   if (actuallyPushed) {
-    const afterShaResult = await deps.git.captureBranchHead(input.branchName, {
+    const afterShaResult = await deps.git.captureBranchHead(pushBranch, {
       cwd: processorDeps.workDir,
     });
     const shortSha = afterShaResult.ok
@@ -1973,7 +2009,7 @@ async function _processCiWithHeartbeat(
     : `\n\n${attemptMarker}`;
 
   // Reply with outcome — only claim "pushed" if push actually succeeded
-  if (hasChanges && pushSucceeded) {
+  if (hasChanges && pushSucceeded && actuallyPushed) {
     const base = customMessage ??
       `I've pushed a fix for the CI failure (**${safeCheckName}**). Please review the changes.`;
     // Issue #630: a force-push that silently rewrote the branch would be an
@@ -1985,17 +2021,31 @@ async function _processCiWithHeartbeat(
         `failed again. The branch is now a single commit and was force-pushed with a lease. ` +
         `If you have it checked out, re-fetch rather than pulling.`
       : base;
+    // Issue #2907: a fix on a gated head landed on a `milestone-fix/**`
+    // branch, not the PR's own head — say so, and name the pull request
+    // that carries it into the milestone branch.
+    const withFixPr = milestoneFixPr
+      ? `${rebuilt}\n\nThis PR's head is under a ruleset that refuses direct pushes, ` +
+        `so the fix was delivered via #${milestoneFixPr.number}.`
+      : rebuilt;
     // Issue #579: carry the SHA the claim was verified against, so a stale
     // claim is falsifiable at a glance rather than by a human comparing the
     // comment against `git log`.
-    const body = rebuilt +
+    const body = withFixPr +
       (pushVerification ? formatVerifiedPushSuffix(pushVerification) : "") +
       markerSuffix;
     await replyToComment(repo, prNumber, body, deps);
-  } else if (hasChanges && !pushSucceeded) {
+  } else if (hasChanges && !actuallyPushed) {
     // Issue #211: carry the failing recovery step and git's stderr into the
     // comment — "check the branch status" alone gives a human nothing to act on.
-    const detail = pushFailureDetail
+    // Issue #2907: a fix branch push that landed but whose milestone-fix PR
+    // could not be raised is reported as its own failure, not folded into
+    // the generic "failed to push" wording — the branch push itself
+    // succeeded, only delivery into the milestone branch did not.
+    const detail = milestoneFixPrError !== undefined
+      ? `\n\nThe fix was pushed to \`${fixBranch}\`, but the pull request ` +
+        `into \`${input.branchName}\` could not be raised: ${milestoneFixPrError}`
+      : pushFailureDetail
       ? `\n\nPush recovery detail: ${pushFailureDetail}`
       : "";
     // Always its own comment: a push that failed is news, and folding it
@@ -2221,7 +2271,11 @@ async function _processCiWithHeartbeat(
       annotationCount: annotations.length,
       retryCount: newRetryCount,
       summary: actuallyPushed
-        ? `Pushed CI fix for PR #${prNumber} (${checkName}, attempt ${newRetryCount}/${maxCiRetries})`
+        ? milestoneFixPr
+          ? `Pushed CI fix for PR #${prNumber} (${checkName}, attempt ${newRetryCount}/${maxCiRetries}) via fix PR #${milestoneFixPr.number}`
+          : `Pushed CI fix for PR #${prNumber} (${checkName}, attempt ${newRetryCount}/${maxCiRetries})`
+        : milestoneFixPrError !== undefined
+        ? `Fixed CI failure for PR #${prNumber} (${checkName}) but could not raise the milestone-fix PR: ${milestoneFixPrError}`
         : hasChanges
         ? `Fixed CI failure for PR #${prNumber} (${checkName}) but failed to push`
         : `Reviewed CI failure for PR #${prNumber} (${checkName}) — no changes needed`,
