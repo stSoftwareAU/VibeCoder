@@ -33,7 +33,7 @@ import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   buildHostFaultMarker,
-  describeHostFault,
+  buildHostFaultNote,
   detectHostFault,
 } from "./host_fault.ts";
 
@@ -163,11 +163,7 @@ export async function markIssueAsFailedOnce(
   // fault of this issue, so it is called out so a later sweep can release
   // the label once the host is healthy again.
   const hostFault = detectHostFault(options.failureMessage);
-  const hostFaultLine = hostFault
-    ? `\n\n**Host fault:** \`${hostFault}\` — ${
-      describeHostFault(hostFault)
-    }. This failure came from the worker host, not from this issue; the label is released automatically once the host is healthy again.`
-    : "";
+  const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
 
   let commentBody = `## Automated Processing Failed (First Attempt)
 
@@ -347,11 +343,7 @@ export async function markIssueAsFailed(
 
   // Issue #2890: see the matching note in markIssueAsFailedOnce.
   const hostFault = detectHostFault(options.failureMessage);
-  const hostFaultLine = hostFault
-    ? `\n\n**Host fault:** \`${hostFault}\` — ${
-      describeHostFault(hostFault)
-    }. This failure came from the worker host, not from this issue; the label is released automatically once the host is healthy again.`
-    : "";
+  const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
 
   let commentBody =
     `## Automated Processing Failed (Second Attempt - Permanently Failed)

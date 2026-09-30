@@ -14,8 +14,6 @@
  * is healthy again. Detection is deliberately conservative: an ambiguous
  * failure is left unclassified (`null`) rather than guessed at, because a
  * host fault silently swallows a label a human genuinely needed to see.
- *
- * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { brokenRefsIn } from "./broken_ref_repair.ts";
@@ -137,4 +135,19 @@ export function describeHostFault(kind: HostFaultKind): string {
     case "container-build-failed":
       return "the worker host could not build the container image";
   }
+}
+
+/**
+ * Build the `**Host fault:** ...` note line appended to a failure comment's
+ * `**Category:**` line, shared by `markIssueAsFailedOnce` and
+ * `markIssueAsFailed` in `lib/label_failure.ts` so the wording cannot drift
+ * between the two call sites (Issue #2890).
+ *
+ * Returned without any leading newlines — callers that need the blank-line
+ * separator prepend it themselves (e.g. `` `\n\n${buildHostFaultNote(kind)}` ``).
+ */
+export function buildHostFaultNote(kind: HostFaultKind): string {
+  return `**Host fault:** \`${kind}\` — ${
+    describeHostFault(kind)
+  }. This failure came from the worker host, not from this issue; the label is released automatically once the host is healthy again.`;
 }

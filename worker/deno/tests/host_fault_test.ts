@@ -9,6 +9,7 @@
 import { assertEquals } from "@std/assert";
 import {
   buildHostFaultMarker,
+  buildHostFaultNote,
   describeHostFault,
   detectHostFault,
   HOST_FAULT_KINDS,
@@ -160,6 +161,19 @@ Deno.test("host fault - describeHostFault covers every kind with non-empty text"
     const description = describeHostFault(kind as HostFaultKind);
     assertEquals(typeof description, "string");
     assertEquals(description.length > 0, true);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// buildHostFaultNote
+// ---------------------------------------------------------------------------
+
+Deno.test("host fault - buildHostFaultNote embeds the kind and description with no leading newline", () => {
+  for (const kind of HOST_FAULT_KINDS) {
+    const note = buildHostFaultNote(kind);
+    assertEquals(note.startsWith("**Host fault:**"), true);
+    assertEquals(note.includes(`\`${kind}\``), true);
+    assertEquals(note.includes(describeHostFault(kind)), true);
   }
 });
 
