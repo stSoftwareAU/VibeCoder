@@ -354,6 +354,19 @@ Deno.test("classifyRunFailure - a scheduled release is not_code_fixable and clas
   assert(RUN_FAILURE_CLASSES.includes("scheduled-release"));
 });
 
+// Issue #2884 — a damaged host shared clone is a host fault, never auto-filed
+// as a worker defect a code change could fix.
+Deno.test("classifyRunFailure - a damaged shared clone is not_code_fixable and classed 'clone-corrupt'", () => {
+  const c = classifyRunFailure(
+    "clone_corrupt",
+    "Failed to create feature branch: the host's shared clone of this " +
+      "repository is damaged — fatal: bad object refs/heads/x",
+  );
+  assertEquals(c.fixability, "not_code_fixable");
+  assertEquals(c.failureClass, "clone-corrupt");
+  assert(RUN_FAILURE_CLASSES.includes("clone-corrupt"));
+});
+
 // ===========================================================================
 // Issue #249 — agent narration is not worker crash evidence
 // ===========================================================================

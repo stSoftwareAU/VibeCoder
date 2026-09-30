@@ -256,6 +256,116 @@ async function confirmInsideGitCommonDir(
   return { ok: true, value: realPath };
 }
 
+/** Refs git's own wording blames for a broken-ref failure, per {@link isBrokenRefFailure}. */
+const BAD_OBJECT_OR_BROKEN_REF =
+  /(?:bad object|ignoring broken ref) (refs\/\S+)/g;
+
+/**
+ * Narrow check for whether a git failure message is a broken-ref failure
+ * (Issue #2884) — as opposed to an ordinary "no such branch" failure that
+ * happens to share some wording (e.g. `'nosuch' is not a commit`).
+ *
+ * True only when the message names at least one `refs/heads/…` or
+ * `refs/remotes/…` ref via `bad object` or `ignoring broken ref`. A
+ * `'<X>' is not a commit` line — which git also emits for an ordinary
+ * "no such branch" failure — is never enough on its own: it only appears
+ * here as the trailing symptom of the same `refs/remotes/<X>` /
+ * `refs/heads/<X>` being reported broken, which the `bad object` /
+ * `ignoring broken ref` check above already covers (see the module doc
+ * comment for the full three-line example).
+ *
+ * @param message - The failure text to inspect (typically joined stderr).
+ * @returns True when the message reports a broken ref this module can repair.
+ */
+export function isBrokenRefFailure(message: string): boolean {
+  for (const match of message.matchAll(BAD_OBJECT_OR_BROKEN_REF)) {
+    const raw = match[1];
+    if (raw === undefined) continue;
+    const ref = raw.replace(TRAILING_PUNCTUATION, "");
+    if (isRepairableNamespace(ref)) return true;
+  }
+  return false;
+}
+
+/**
+ * Sweep every `refs/heads/` and `refs/remotes/` ref in a shared clone for
+ * broken loose refs and remove them, then re-fetch so the remote-tracking
+ * refs are recreated clean (Issue #2884).
+ *
+ * This is the cheapest-first rung of shared-clone repair, run *before* the
+ * full re-clone fallback tracked under #1093: a targeted sweep is far
+ * cheaper than discarding and re-cloning the whole shared clone, and fixes
+ * exactly the same class of failure (a stray broken loose ref blocking every
+ * fetch/checkout in the clone) without losing any other local state.
+ *
+ * @param options - Git command options (cwd, etc.)
+ * @param runGit - Injectable seam for running git. Defaults to
+ *   {@link runGitCommand}.
+ * @returns `ok: true` with the refs removed (possibly empty) once the sweep
+ *   and re-fetch both succeed; `ok: false` naming whichever git step failed.
+ */
+export async function sweepBrokenRefs(
+  options: GitCommandOptions,
+  runGit: typeof runGitCommand = runGitCommand,
+): Promise<Result<{ removed: string[] }>> {
+  const listArgs = [
+    "for-each-ref",
+    "--format=%(refname)",
+    "refs/heads",
+    "refs/remotes",
+  ];
+  const listed = await runGit(listArgs, options);
+  if (!listed.ok || listed.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Could not sweep broken refs: ${describe(listArgs, listed)}`,
+      ),
+    };
+  }
+  const refs = listed.value.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const removed: string[] = [];
+  for (const ref of refs) {
+    const verifyArgs = [
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      "--end-of-options",
+      `${ref}^{commit}`,
+    ];
+    const verified = await runGit(verifyArgs, options);
+    if (verified.ok && verified.value.code === 0) continue;
+
+    const removal = await removeBrokenRef(ref, options, runGit);
+    if (!removal.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Could not sweep broken refs: failed to remove '${ref}': ${removal.error.message}`,
+        ),
+      };
+    }
+    removed.push(ref);
+  }
+
+  const fetchArgs = ["fetch", "--prune", "origin"];
+  const fetched = await runGit(fetchArgs, options);
+  if (!fetched.ok || fetched.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `Could not sweep broken refs: ${describe(fetchArgs, fetched)}`,
+      ),
+    };
+  }
+
+  return { ok: true, value: { removed } };
+}
+
 /** Describe a git command outcome for an error message. */
 function describe(
   args: readonly string[],
