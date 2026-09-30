@@ -19,6 +19,12 @@ slices are not repeated here.
 > **Result: nil.** All 35 slices were swept and every candidate was refuted. No
 > finding survived, so no issue was filed.
 
+> **`top-up-2279` retired under [#2842](https://github.com/stSoftwareAU/VibeCoder/issues/2842).**
+> `conflict_rebase_rung.ts` was deleted and its slice removed from
+> `lib-sweep-coverage.json`; the row below is dropped with it. 34 slices remain
+> enforced — the refutation for the deleted module is kept under
+> [conflict ladder](#conflict-ladder) for history.
+
 ```mermaid
 flowchart LR
     A["sweep-drift per slice<br/>(driftSince)"] --> B["35 drifting slices"]
@@ -87,7 +93,6 @@ None. No duplicate search was needed because nothing survived.
 | top-up-2107 | `worker/deno/lib/host_failure_hook.ts`                                                                                   | modified | nil — [host failure hook](#host-failure-hook)                 |
 | top-up-2189 | `worker/deno/lib/summary_rule_gate_retry.ts`                                                                             | modified | nil — [summary rule gate](#summary-rule-gate)                 |
 | top-up-2276 | `worker/deno/lib/conflict_verdict_ladder.ts`                                                                             | added    | nil — [conflict ladder](#conflict-ladder)                     |
-| top-up-2279 | `worker/deno/lib/conflict_rebase_rung.ts`                                                                                | added    | nil — [conflict ladder](#conflict-ladder)                     |
 | top-up-2314 | `worker/deno/lib/graft_run.ts`                                                                                           | modified | nil — constant prompt line moved first                        |
 | top-up-2319 | `worker/deno/lib/plan_coverage_repair.ts`                                                                                | added    | nil — [plan coverage repair](#plan-coverage-repair)           |
 | top-up-2341 | `worker/deno/lib/issue_executor_split.ts`                                                                                | added    | nil — [small pure modules](#small-pure-modules)               |
@@ -249,7 +254,9 @@ text change is constant.
 ### conflict ladder
 
 The #2023, #2030, #2276 and #2279 git rungs all run git as argv through an
-injected runner, never through a shell.
+injected runner, never through a shell. `top-up-2279`'s slice was later
+retired under #2842 (module deleted); its refutation is kept here for
+history.
 
 - `milestone_conflict_ported.ts` (top-up-2023, added) calls `assertSafeGitRef`
   and `assertSafeRefComponent`, then runs `ls-files -u`,
@@ -350,6 +357,6 @@ the issue open. Its callers are `setup_cli.ts` and
 
 ## Coverage ledger
 
-All 35 slices in the table above now point `ledger` at this record, with
+All 34 slices in the table above now point `ledger` at this record, with
 `sweptAt: 42c876e1aa6f8df81177cc19ddb807dd7912bf63`, as
 [`docs/SECURITY-SCAN.md`](../SECURITY-SCAN.md) requires (#2178, #2754).
