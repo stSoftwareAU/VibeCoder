@@ -53,6 +53,39 @@ in the close comment, instead of escalating it to a human.
 - If the work is genuinely blocked on another issue, that is a deferral, not a
   resolution: use the guidelines' `## Blocked:` shape, not this marker.
 
+### Data not there yet → emit the defer-until marker (Issue #2873)
+
+An analysis-only run can find that the issue is well-formed but its answer
+genuinely cannot exist yet — for example "measure X over the last 7 days" when
+that window has not elapsed, or the metric it needs has not been recorded a
+single time. That is not a dependency on another issue (use `## Blocked:` for
+that), and it is not "already resolved". When it is a **wait for time to
+pass**, end your final message with this marker on its own line:
+
+```text
+<!-- vibe-defer-until until="<ISO-8601 time with Z or ±HH:MM offset>" reason="<why the data is not there yet>" -->
+```
+
+The worker parks the issue: it posts one comment, keeps the discovery label
+(no `needs-human`), releases the claim, and re-runs you automatically once
+`until` has passed.
+
+- `until` must be in the **future** and **at most 30 days** away. A marker
+  that is in the past, unparseable, or further out than 30 days is ignored and
+  the run falls through to the ordinary no-changes handling.
+- `reason` is required — state plainly what is missing (the window, the
+  metric, the log source) so the eventual re-run, or a human reading the
+  history, knows why the wait was needed.
+- This is a **time** wait only; there is no "wait N runs" variant.
+- **Deferral has a budget.** After three time-deferrals on the same issue, the
+  next `vibe-defer-until` marker is not honoured — the worker instead applies
+  the usual analysis-only `needs-human` hand-off, with the deferral history in
+  the comment. Do not keep emitting the marker hoping the data will appear;
+  once the budget is spent, say what you found and let a human decide.
+- If the real blocker is another issue rather than the calendar, use the
+  guidelines' `## Blocked:` shape instead — that is a dependency deferral, not
+  a time-gated one.
+
 ## Instructions
 
 1. Follow the repository's canonical testing guidance. A test must protect a
