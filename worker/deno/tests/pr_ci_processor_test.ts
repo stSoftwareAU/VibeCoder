@@ -2420,3 +2420,132 @@ Deno.test("processCiFailure - two check runs on the same gated milestone PR neve
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("processCiFailure - a stale remote fix branch (cross-host name collision) is deleted before checkout, never merged back in (PR #2909 review)", async () => {
+  // Regression test for the remaining gap the PR #2909 review found: folding
+  // `checkRunId` into the discriminator only makes the name unique *per
+  // host* — `newRetryCount` is a per-host file, so a second host working the
+  // same still-open check run computes the identical fix-branch name. Here
+  // origin already holds GATED_FIX_BRANCH (as a closed-unmerged fix PR would
+  // leave it); the fix must delete it before `checkout -B` rather than let
+  // the push diverge and have `recoverFromPushRejection` merge the stale,
+  // rejected commits back into a fresh auto-merge-armed PR.
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-ci-stale-" });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const ghCalls: string[][] = [];
+    const gitCommands: string[][] = [];
+    let recoveryCalled = false;
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () =>
+            Promise.resolve("https://github.com/org/repo/pull/9200"),
+        }),
+      },
+      git: {
+        runGitCommand: ((args: string[]) => {
+          gitCommands.push(args);
+          if (args[0] === "ls-remote") {
+            // Stale branch from an earlier, closed-unmerged fix PR is still
+            // on origin under this exact name.
+            return Promise.resolve({
+              ok: true,
+              value: {
+                code: 0,
+                stdout: `abc123\trefs/heads/${GATED_FIX_BRANCH}`,
+                stderr: "",
+              },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+        recoverFromPushRejection: (() => {
+          recoveryCalled = true;
+          return Promise.resolve({ ok: true, value: "recovered" });
+        }) as unknown as GitDeps["recoverFromPushRejection"],
+      },
+    });
+
+    const result = await processCiFailure(
+      makeInput({
+        repo: "org/repo",
+        prNumber: GATED_PR_NUMBER,
+        branchName: GATED_MILESTONE_HEAD,
+        checkRunId: "gated-happy-1",
+      }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, true);
+      assertEquals(result.value.changesPushed, true);
+    }
+    assertEquals(
+      recoveryCalled,
+      false,
+      "the stale branch must be removed up front, never merged back in via recovery",
+    );
+
+    const deleteIndex = gitCommands.findIndex((args) =>
+      args[0] === "push" && args.includes("--delete") &&
+      args.includes(GATED_FIX_BRANCH)
+    );
+    const checkoutIndex = gitCommands.findIndex((args) =>
+      args[0] === "checkout" && args[1] === "-B" &&
+      args[2] === GATED_FIX_BRANCH
+    );
+    assertEquals(deleteIndex >= 0, true, "the stale remote branch is deleted");
+    assertEquals(
+      checkoutIndex >= 0,
+      true,
+      "the fix branch is still checked out",
+    );
+    assertEquals(
+      deleteIndex < checkoutIndex,
+      true,
+      "the stale branch is deleted before it can be diverged from",
+    );
+
+    const prCreateCall = ghCalls.find((args) =>
+      args[0] === "pr" && args[1] === "create"
+    );
+    if (prCreateCall === undefined) throw new Error("pr create was not called");
+    assertEquals(
+      prCreateCall[prCreateCall.indexOf("--head") + 1],
+      GATED_FIX_BRANCH,
+      "the raised PR head is the freshly re-created branch, not stale content",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

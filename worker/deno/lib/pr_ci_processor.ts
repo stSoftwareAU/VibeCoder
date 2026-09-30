@@ -86,6 +86,7 @@ import {
   verifyPushLanded,
 } from "./push_claim_verification.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
+import { assertSafeGitRef } from "./git_ref_args.ts";
 import {
   buildAutoFixCapSummary,
   computeFailureSignature,
@@ -888,8 +889,11 @@ async function _processCiFailureLocked(
     // the plain push is rejected, and `recoverFromPushRejection`'s merge-based
     // recovery (deliberately never forced, Issue #2808) resurrects the
     // rejected commits into a fresh, auto-merge-armed fix PR. Folding the
-    // check run id in makes every attempt's branch name unique, so a stale
-    // branch from an earlier check run is never reused.
+    // check run id in makes every attempt's branch name unique *per host* —
+    // `newRetryCount` is a per-host counter, so a second fleet host working
+    // the same still-failing check run can still compute this exact name.
+    // The checkout site below closes that gap by deleting any stale remote
+    // branch under this name before it can be diverged from.
     fixBranch = milestoneFixBranchFor(
       input.branchName,
       prNumber,
@@ -1143,6 +1147,64 @@ async function _processCiWithHeartbeat(
   // not contention is still fail-loud: the working tree is left on whatever
   // branch it was on, so the agent must not run.
   if (fixBranch !== undefined) {
+    // PR #2909 review: `newRetryCount` comes from a per-host file
+    // (`getCiCheckRetryCount`, `.ci_check_state` under each host's own work
+    // directory), so a second fleet host working this same still-failing
+    // check run computes the identical discriminator and therefore the
+    // identical fix-branch name. `findOpenMilestoneFixPr` above only proved
+    // no PR is currently open under this *prefix* — it says nothing about
+    // whether this exact name still exists on origin from an earlier
+    // attempt whose fix PR a human closed unmerged. Left in place, a plain
+    // `checkout -B` here would diverge from that stale history, the
+    // subsequent push would be rejected, and the ordinary push-rejection
+    // recovery merges rejected commits straight back into a fresh
+    // auto-merge-armed PR — unattended. Since no open PR uses this name
+    // (checked above), any remote branch under it is abandoned and safe to
+    // delete before it can be diverged from.
+    assertSafeGitRef(fixBranch, "milestone-fix branch");
+    const staleRemote = await deps.git.runGitCommand(
+      [
+        "ls-remote",
+        "--exit-code",
+        "--heads",
+        "--end-of-options",
+        "origin",
+        fixBranch,
+      ],
+      { cwd: processorDeps.workDir },
+    );
+    if (staleRemote.ok && staleRemote.value.code === 0) {
+      const deleted = await deps.git.runGitCommand(
+        ["push", "--delete", "--end-of-options", "origin", fixBranch],
+        { cwd: processorDeps.workDir },
+      );
+      if (!deleted.ok || deleted.value.code !== 0) {
+        const err = deleted.ok
+          ? deleted.value.stderr.trim()
+          : deleted.error.message;
+        logger.error(
+          "Could not delete a stale milestone-fix branch left by a closed " +
+            "fix PR — standing down rather than risk merging its rejected " +
+            "commits back into a fresh fix (Issue #2909)",
+          { repo, prNumber, fixBranch, error: err },
+        );
+        return {
+          ok: true,
+          value: {
+            processed: false,
+            changesPushed: false,
+            annotationCount: 0,
+            retryCount: newRetryCount - 1,
+            summary:
+              `stale milestone-fix branch '${fixBranch}' could not be removed — ${err}`,
+          },
+        };
+      }
+      logger.warn(
+        "Deleted a stale milestone-fix branch left by a closed-unmerged fix PR",
+        { repo, prNumber, fixBranch },
+      );
+    }
     let fixCheckout = await deps.git.runGitCommand(
       ["checkout", "-B", fixBranch],
       { cwd: processorDeps.workDir },
