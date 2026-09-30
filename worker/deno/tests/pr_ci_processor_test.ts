@@ -1999,7 +1999,7 @@ Deno.test("processCiFailure - a refused milestone-fix branch checkout spends no 
                 code: 128,
                 stdout: "",
                 stderr:
-                  "fatal: 'milestone-fix/2909-checkout-refused/pr-777-ci-1' " +
+                  "fatal: 'milestone-fix/2909-checkout-refused/pr-777-ci-refused-1-1' " +
                   "is already used by worktree at '/home/dev/other'",
               },
             });
@@ -2067,10 +2067,14 @@ Deno.test("processCiFailure - a refused milestone-fix branch checkout spends no 
 
 const GATED_MILESTONE_HEAD = "milestone/2907-gated-fix";
 const GATED_PR_NUMBER = 555;
+// The discriminator folds in `checkRunId` (PR #2909 review) so a stale
+// closed-unmerged fix branch from an earlier check run can never collide
+// with this one — this must track the "gated-happy-1" checkRunId the happy-
+// path test below feeds in.
 const GATED_FIX_BRANCH = milestoneFixBranchFor(
   GATED_MILESTONE_HEAD,
   GATED_PR_NUMBER,
-  "ci-1",
+  "ci-gated-happy-1-1",
 );
 
 /** A `gh` stub answering the gated-head assessment and the fix-PR lookups. */
@@ -2317,6 +2321,100 @@ Deno.test("processCiFailure - a gated head whose fix PR cannot be raised reports
       failureComment !== undefined,
       true,
       "the reply explains the push landed but delivery failed",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - two check runs on the same gated milestone PR never reuse a fix branch name (PR #2909 review)", async () => {
+  // Regression test: before this fix the discriminator was `ci-<retryCount>`
+  // alone, and the retry counter is keyed by checkRunId — so every *new*
+  // check run on the milestone PR restarted at `ci-1`. A fix PR closed
+  // unmerged (a human rejecting a bad fix) left `origin/…-ci-1` in place;
+  // a later child-PR merge triggers a fresh check run, which reused the
+  // identical branch name. `checkout -B` on that name diverges from the
+  // stale remote history, the plain push is rejected, and the merge-based
+  // recovery in git_push_recovery.ts resurrects the rejected commits into a
+  // brand-new, auto-merge-armed fix PR — unattended. Folding `checkRunId`
+  // into the discriminator makes every check run's fix branch name unique,
+  // so this collision can no longer happen.
+  const tmpDir = await Deno.makeTempDir({
+    prefix: "vibe-gated-ci-branch-uniq-",
+  });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const checkoutBranches: string[] = [];
+
+    const runOnce = async (checkRunId: string): Promise<void> => {
+      const ghCalls: string[][] = [];
+      const deps = createMockDeps({
+        claude: {
+          runClaudeWithRetry: (() =>
+            Promise.resolve({
+              ok: true,
+              value: { output: "Fixed", exitCode: 0, timedOut: false },
+            })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+        },
+        github: {
+          runGhCommand: makeGatedFixGh(ghCalls, {
+            prCreate: () =>
+              Promise.resolve("https://github.com/org/repo/pull/9100"),
+          }),
+        },
+        git: {
+          runGitCommand: ((args: string[]) => {
+            if (args[0] === "checkout" && args[1] === "-B") {
+              checkoutBranches.push(args[2]!);
+            }
+            return Promise.resolve({
+              ok: true,
+              value: { code: 0, stdout: "", stderr: "" },
+            });
+          }) as unknown as GitDeps["runGitCommand"],
+          commitAndPushPending: (() =>
+            Promise.resolve({
+              ok: true,
+              value: {
+                committedNewChanges: false,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+              },
+            })) as unknown as GitDeps["commitAndPushPending"],
+        },
+      });
+
+      const result = await processCiFailure(
+        makeInput({
+          repo: "org/repo",
+          prNumber: GATED_PR_NUMBER,
+          branchName: GATED_MILESTONE_HEAD,
+          checkRunId,
+        }),
+        {
+          promptsDir: PROMPTS_DIR,
+          logger: makeSilentLogger(),
+          deps,
+          stateDir,
+          workDir: tmpDir,
+          workRoot: tmpDir,
+          verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        },
+      );
+      assertEquals(result.ok, true);
+    };
+
+    // Two distinct check runs on the same milestone PR, each its own first
+    // retry — the exact shape of "fix PR from check run A closed unmerged,
+    // child PR merges, check run B fails".
+    await runOnce("check-run-A");
+    await runOnce("check-run-B");
+
+    assertEquals(checkoutBranches.length, 2);
+    assertEquals(
+      checkoutBranches[0] === checkoutBranches[1],
+      false,
+      "different check runs must never check out the same fix branch name",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

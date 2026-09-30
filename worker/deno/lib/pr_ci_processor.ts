@@ -881,10 +881,19 @@ async function _processCiFailureLocked(
         },
       };
     }
+    // The discriminator includes `checkRunId` (PR #2909 review): the retry
+    // count alone restarts at 1 for every new check run, so a fix PR closed
+    // unmerged (a human rejecting a bad fix) left `origin/…-ci-1` in place —
+    // the next check run's `checkout -B` on that same name diverges from it,
+    // the plain push is rejected, and `recoverFromPushRejection`'s merge-based
+    // recovery (deliberately never forced, Issue #2808) resurrects the
+    // rejected commits into a fresh, auto-merge-armed fix PR. Folding the
+    // check run id in makes every attempt's branch name unique, so a stale
+    // branch from an earlier check run is never reused.
     fixBranch = milestoneFixBranchFor(
       input.branchName,
       prNumber,
-      `ci-${newRetryCount}`,
+      `ci-${checkRunId}-${newRetryCount}`,
     );
   }
 
