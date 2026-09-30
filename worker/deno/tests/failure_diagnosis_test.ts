@@ -7,6 +7,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
+  CLONE_CORRUPT_MARKER,
   detectFailureCategory,
   extractKeyErrorLines,
   type FailureCategory,
@@ -719,4 +720,26 @@ Deno.test("workflow_gate category - diagnosis, oneliner, display and validation 
   );
   // A defect in the change, not the environment: never retried as transient.
   assertEquals(isInfrastructureFailure("workflow_gate"), false);
+});
+
+Deno.test("detectFailureCategory - a damaged shared clone is clone_corrupt (Issue #2884)", () => {
+  const reason = "Failed to create feature branch: " + CLONE_CORRUPT_MARKER +
+    " — fatal: bad object refs/heads/x";
+  assertEquals(detectFailureCategory(reason), "clone_corrupt");
+});
+
+Deno.test("clone_corrupt category - diagnosis, oneliner, display and validation all handle it (Issue #2884)", () => {
+  assertEquals(normaliseFailureCategory("clone_corrupt"), "clone_corrupt");
+  assertEquals(getFailureCategoryDisplay("clone_corrupt"), "clone-corrupt");
+  assertStringIncludes(
+    getFailureDiagnosis("clone_corrupt"),
+    "shared clone",
+  );
+  assertStringIncludes(
+    getFailureDiagnosisOneliner("clone_corrupt"),
+    "shared clone",
+  );
+  // A host fault, not the issue's: an in-process retry hits the same damaged
+  // clone, so it is never treated as infrastructure to retry in-process.
+  assertEquals(isInfrastructureFailure("clone_corrupt"), false);
 });

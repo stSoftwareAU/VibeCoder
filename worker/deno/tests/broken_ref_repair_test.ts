@@ -5,8 +5,13 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
-import { brokenRefsIn, removeBrokenRef } from "../lib/broken_ref_repair.ts";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  brokenRefsIn,
+  isBrokenRefFailure,
+  removeBrokenRef,
+  sweepBrokenRefs,
+} from "../lib/broken_ref_repair.ts";
 import { createFeatureBranchFromBase } from "../lib/git_branch.ts";
 import type { GitCommandOutput } from "../lib/git_timeout.ts";
 import type { Result } from "../types.ts";
@@ -469,6 +474,217 @@ Deno.test(
       assert(
         joined.includes("removed broken ref refs/remotes/origin/HEAD"),
         `expected a warning naming the repaired ref, got: ${joined}`,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// isBrokenRefFailure
+// ---------------------------------------------------------------------------
+
+Deno.test("isBrokenRefFailure - true for the production Issue #2884 three-line sample", () => {
+  const message = [
+    "fatal: bad object refs/heads/issue-1661-foo",
+    "warning: ignoring broken ref refs/remotes/origin/Develop",
+    "fatal: 'origin/Develop' is not a commit and a branch " +
+    "'issue-1787-x' cannot be created from it",
+  ].join("\n");
+  assert(isBrokenRefFailure(message));
+});
+
+Deno.test("isBrokenRefFailure - true for a lone 'bad object refs/…'", () => {
+  assert(isBrokenRefFailure("fatal: bad object refs/heads/x"));
+});
+
+Deno.test("isBrokenRefFailure - true for a lone 'ignoring broken ref refs/…'", () => {
+  assert(
+    isBrokenRefFailure("warning: ignoring broken ref refs/remotes/origin/main"),
+  );
+});
+
+Deno.test("isBrokenRefFailure - false for 'is not a commit' alone", () => {
+  assert(
+    !isBrokenRefFailure(
+      "fatal: 'nosuch' is not a commit and a branch 'b' cannot be created from it",
+    ),
+  );
+});
+
+Deno.test("isBrokenRefFailure - false for an ordinary invalid-reference failure", () => {
+  assert(!isBrokenRefFailure("fatal: invalid reference: nosuch"));
+});
+
+Deno.test("isBrokenRefFailure - false for 'bad object' naming a non-refs path", () => {
+  assert(!isBrokenRefFailure("fatal: bad object HEAD~3"));
+});
+
+Deno.test("isBrokenRefFailure - false for 'bad object' naming a non-repairable namespace", () => {
+  // Issue #2884: refs/tags/… is outside the refs/heads/ and refs/remotes/
+  // namespaces this module repairs, so it must not be treated as repairable.
+  assert(!isBrokenRefFailure("fatal: bad object refs/tags/v1"));
+});
+
+// ---------------------------------------------------------------------------
+// sweepBrokenRefs
+// ---------------------------------------------------------------------------
+
+Deno.test("sweepBrokenRefs - fails loud when for-each-ref fails", async () => {
+  const fn = (args: string[]): Promise<Result<GitCommandOutput>> => {
+    if (args[0] === "for-each-ref") {
+      return Promise.resolve({
+        ok: true,
+        value: { code: 128, stdout: "", stderr: "fatal: not a git repository" },
+      });
+    }
+    return Promise.resolve({
+      ok: false,
+      error: new Error(`unexpected git ${args.join(" ")}`),
+    });
+  };
+  const result = await sweepBrokenRefs({}, fn);
+  assert(!result.ok, "expected failure when for-each-ref fails");
+  assertStringIncludes(result.error.message, "not a git repository");
+});
+
+Deno.test("sweepBrokenRefs - fails loud when the fetch fails", async () => {
+  const fn = (args: string[]): Promise<Result<GitCommandOutput>> => {
+    if (args[0] === "for-each-ref") {
+      return Promise.resolve({
+        ok: true,
+        value: { code: 0, stdout: "refs/heads/main\n", stderr: "" },
+      });
+    }
+    if (args[0] === "rev-parse") {
+      return Promise.resolve({
+        ok: true,
+        value: { code: 0, stdout: "deadbeef\n", stderr: "" },
+      });
+    }
+    if (args[0] === "fetch") {
+      return Promise.resolve({
+        ok: true,
+        value: { code: 128, stdout: "", stderr: "fatal: unable to access" },
+      });
+    }
+    return Promise.resolve({
+      ok: false,
+      error: new Error(`unexpected git ${args.join(" ")}`),
+    });
+  };
+  const result = await sweepBrokenRefs({}, fn);
+  assert(!result.ok, "expected failure when fetch fails");
+  assertStringIncludes(result.error.message, "unable to access");
+});
+
+Deno.test(
+  "sweepBrokenRefs - real git repairs a broken loose ref and lets a base branch check-out succeed",
+  async () => {
+    const workDir = await Deno.realPath(
+      await Deno.makeTempDir({ prefix: "vibe-sweep-broken-ref-" }),
+    );
+    try {
+      const seed = `${workDir}/seed`;
+      await Deno.mkdir(seed, { recursive: true });
+      assertEquals(
+        (await runGit(seed, ["init", "-q", "-b", "main"])).code,
+        0,
+      );
+      await commitEmpty(seed, "initial");
+
+      const remote = `${workDir}/remote.git`;
+      assertEquals(
+        (await runGit(workDir, ["clone", "--bare", "-q", seed, remote])).code,
+        0,
+      );
+
+      const local = `${workDir}/local`;
+      assertEquals(
+        (await runGit(workDir, ["clone", "-q", remote, local])).code,
+        0,
+      );
+
+      // No local `main` to fall back to — the only way to land `feat` is
+      // through `origin/main`, so a broken `origin/main` genuinely blocks
+      // a plain `checkout -B`.
+      await detachAndDropLocalMain(local);
+
+      // Corrupt the remote-tracking ref with a 40-hex sha the object store
+      // never had.
+      const brokenRefPath = `${local}/.git/refs/remotes/origin/main`;
+      await Deno.writeTextFile(
+        brokenRefPath,
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n",
+      );
+
+      // `createFeatureBranchFromBase` already self-heals broken refs
+      // (Issue #2880), so a raw `checkout -B` is used here to show the
+      // failure the sweep exists to pre-empt.
+      const before = await runGit(local, [
+        "checkout",
+        "-B",
+        "feat-before",
+        "origin/main",
+      ]);
+      assert(before.code !== 0, "checkout should fail before the sweep");
+
+      const sweep = await sweepBrokenRefs({ cwd: local });
+      assert(sweep.ok, sweep.ok ? "" : sweep.error.message);
+      assert(
+        sweep.value.removed.includes("refs/remotes/origin/main"),
+        `expected refs/remotes/origin/main among removed refs: ${
+          JSON.stringify(sweep.value.removed)
+        }`,
+      );
+
+      // origin/main is restored to a real commit by the `--prune` fetch —
+      // no longer the corrupted sha (the loose ref file itself is
+      // recreated by that same fetch, so its mere presence proves nothing).
+      const restored = (await Deno.readTextFile(brokenRefPath)).trim();
+      assert(
+        restored !== "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        "origin/main should be restored to a real commit by the sweep's fetch",
+      );
+
+      const after = await createFeatureBranchFromBase("feat", "main", {
+        cwd: local,
+      });
+      assert(
+        after.ok,
+        `expected checkout to succeed after the sweep: ${
+          !after.ok && after.error.message
+        }`,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "sweepBrokenRefs - an invalid base name still fails, and is not a broken-ref failure",
+  async () => {
+    const workDir = await Deno.realPath(
+      await Deno.makeTempDir({ prefix: "vibe-sweep-invalid-base-" }),
+    );
+    try {
+      assertEquals(
+        (await runGit(workDir, ["init", "-q", "-b", "main"])).code,
+        0,
+      );
+      await commitEmpty(workDir, "initial");
+
+      const result = await createFeatureBranchFromBase(
+        "feat",
+        "no-such-base",
+        { cwd: workDir },
+      );
+      assert(!result.ok, "expected failure for a nonexistent base branch");
+      assert(
+        !isBrokenRefFailure(result.error.message),
+        `plain branch-creation failure should not read as a broken-ref failure: ${result.error.message}`,
       );
     } finally {
       await Deno.remove(workDir, { recursive: true });

@@ -75,6 +75,7 @@ export const RUN_FAILURE_CLASSES = [
   "workflow-gate",
   "repo-config",
   "prompt-too-long",
+  "clone-corrupt",
   "unknown",
 ] as const;
 
@@ -421,6 +422,16 @@ export function classifyRunFailure(
         failureClass: "prompt-too-long",
         rationale:
           "The agent CLI refused the run as Prompt is too long, even on a fresh session — the issue's context outgrew the model, not a worker defect.",
+      };
+    case "clone_corrupt":
+      // Issue #2884: the host's shared clone is damaged (broken refs or a
+      // corrupt object store). An operator repairs the host's clone; no
+      // worker code change would help, so it is never auto-filed.
+      return {
+        fixability: "not_code_fixable",
+        failureClass: "clone-corrupt",
+        rationale:
+          "Branch creation failed because the host's shared clone is damaged — a host infrastructure fault, not a worker defect.",
       };
     case "push_failure":
       // A rejected push is usually permissions/protection or a race — not

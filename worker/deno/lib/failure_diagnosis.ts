@@ -89,6 +89,14 @@ export type FailureCategory =
    * failure recorded here is one a fresh session could not clear either.
    */
   | "prompt_too_long"
+  /**
+   * Branch creation failed because the host's shared clone of the repository
+   * is damaged — broken refs or a corrupt object store (Issue #2884). A fault
+   * of the HOST, not of the issue: an in-process retry against the same
+   * damaged clone would fail identically, so it must never count against the
+   * issue's retry budget.
+   */
+  | "clone_corrupt"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -113,6 +121,8 @@ export type CategoryDisplay =
   | "repo-config"
   /** Issue #2682: the agent CLI refused the run as `Prompt is too long`. */
   | "prompt-too-long"
+  /** Issue #2884: the host's shared clone is damaged (broken refs / corrupt object store). */
+  | "clone-corrupt"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -175,6 +185,17 @@ export const WORKFLOW_GATE_MARKER =
  */
 export const PROMPT_TOO_LONG_MARKER =
   "The agent CLI refused the run: Prompt is too long";
+
+/**
+ * Phrase the setup phase opens a broken-shared-clone failure reason with
+ * (Issue #2884). Worker-authored, like {@link WORKFLOW_GATE_MARKER}: the
+ * setup phase (`lib/phases/setup_branch_phase.ts`) puts this in its failure
+ * reason when branch creation fails because the host's shared clone has
+ * broken refs or a corrupt object store, and the detector keys off the
+ * worker's own words rather than sniffing raw git error text.
+ */
+export const CLONE_CORRUPT_MARKER =
+  "the host's shared clone of this repository is damaged";
 
 /**
  * The operator-facing reason line for a scheduled release (Issue #424).
@@ -292,6 +313,13 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // after the same rules as the gate above, for the same reason.
   if (failureMessage.includes(PROMPT_TOO_LONG_MARKER)) {
     return "prompt_too_long";
+  }
+
+  // The setup phase's own broken-shared-clone reason (Issue #2884) — checked
+  // before the generic patterns below so a worker-authored diagnosis wins
+  // over any raw git error text the same message happens to quote.
+  if (failureMessage.includes(CLONE_CORRUPT_MARKER)) {
+    return "clone_corrupt";
   }
 
   if (
@@ -436,6 +464,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "workflow_gate",
   "repo_config",
   "prompt_too_long",
+  "clone_corrupt",
   "unknown",
 ]);
 
@@ -501,6 +530,12 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // second in-process retry would only resend the same oversized prompt.
     case "prompt_too_long":
       return false;
+    // Not infrastructure (Issue #2884): an in-process retry would run
+    // against the same damaged clone and fail identically — the setup phase
+    // already repaired it once before giving up, so a bounded retry here can
+    // only burn claims on a fault no in-process attempt can clear.
+    case "clone_corrupt":
+      return false;
     default:
       return false;
   }
@@ -545,6 +580,8 @@ export function getFailureCategoryDisplay(
       return "repo-config";
     case "prompt_too_long":
       return "prompt-too-long";
+    case "clone_corrupt":
+      return "clone-corrupt";
     case "unknown":
       return "unknown";
     default:
@@ -859,6 +896,12 @@ export function getFailureDiagnosis(
 - This failure is counted because the fresh session overflowed too, so the issue's own context (body, comments, prompt) is likely too large for one run
 - Consider trimming the issue body or splitting the task into smaller sub-issues`;
 
+    case "clone_corrupt":
+      return `- Branch creation failed because the host's shared clone of this repository is damaged — broken refs or a corrupt object store
+- This is a **host infrastructure** fault, not a property of this issue: every issue claimed on this host hits the same damaged clone
+- No \`failed-once\` or \`failed\` label was applied, but the setup-phase repair ladder's escalation already put \`needs-human\` on this issue — either its repair attempt did not clear the fault, or this run's one repair attempt was already spent by an earlier issue — and it stays parked until a human removes that label
+- An operator should check the host's shared clone (e.g. \`git fsck\`) and re-clone or repair it if refs or objects are missing or corrupt, then remove the \`needs-human\` label so the issue is claimable again`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -954,6 +997,10 @@ export function getFailureDiagnosisOneliner(
       return "Blocked by the changed-workflow file checks: a workflow file this run touched carries a finding the base commit did not.";
     case "prompt_too_long":
       return "Likely cause: the agent CLI refused the run as 'Prompt is too long' even on a fresh session (Issue #2682).";
+    // Deliberately not "Likely cause": nothing was guessed. The setup phase
+    // detected the host's shared clone was damaged and said so (Issue #2884).
+    case "clone_corrupt":
+      return "Host's shared clone of this repository is damaged (broken refs or corrupt object store) — the same fault meets every issue on this host; no failed-once/failed was applied, but this issue was escalated to needs-human (its repair attempt failed, or this run's one repair attempt was already spent) and stays parked until a human removes that label.";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":
