@@ -4591,7 +4591,14 @@ Two changes close that:
   record `repo_config`. Judging it by the category, not by a bare refusal
   pattern, means the whole precedence order applies: a quality-gate record
   that merely *quotes* the branch and the ruleset's words is `quality_check`
-  and keeps its label. Both success paths call it — the setup phase, and the
+  and keeps its label. Every heading a fleet path writes when it applies
+  `failed-once` / `failed` counts as a failure record — the shared
+  `FAILURE_RECORD_HEADING_PATTERN` in `issue_sweep_parse.ts`, which also
+  covers **Claim Churn Detected**, **Question Answering Failed** and
+  **Automatic Escalation to Planning Mode** — so a newer one of those stops
+  the scan and keeps the labels; only an Automated Processing Failed /
+  Paused or Milestone branch unavailable record can be the refusal (Issue
+  #2943). Both success paths call it — the setup phase, and the
   per-cycle `selfHealMilestoneBranches` pass, which is the only one that
   reaches a milestone whose children **all** reached `failed`, since those are
   filtered out of label discovery and can never claim their way into setup.
