@@ -77,6 +77,7 @@ import {
 import { verifyWorkOnContentIntegrity } from "./work_on_content_integrity.ts";
 import { buildBatchedGh } from "./timeline_batch.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+import { isTimeDeferred } from "./time_deferral.ts";
 
 /**
  * `labelIndex` for idle-task candidates. Set above low-priority's 199 so
@@ -145,6 +146,9 @@ export async function collectIdleTaskCandidates(
   // repo so the per-child `getIssueState` calls inside
   // `isDependencyBlocked` collapse to local map reads on the warm path.
   const openStateMap = buildOpenIssueStateMap(repoAllIssues);
+
+  // Issue #2873: one clock reading per scan, not per issue.
+  const nowMs = Date.now();
 
   // Issue #2173: the lazy open-milestone lookup for the cross-milestone
   // dependency hold. Built once per repo and shared by every candidate; the
@@ -384,6 +388,24 @@ export async function collectIdleTaskCandidates(
           continue;
         }
       }
+    }
+
+    // Issue #2873: skip while the issue's own `Deferred until` clock has
+    // not yet passed — getIssueBody is memoised, so this read is free.
+    // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
+    // fails toward NOT deferring rather than stalling the issue forever.
+    let isDeferred = false;
+    try {
+      isDeferred = isTimeDeferred(
+        await fetcher.getIssueBody(repo, issue.number),
+        nowMs,
+      );
+    } catch {
+      isDeferred = false;
+    }
+    if (isDeferred) {
+      diag?.logIssueSkipped(repo, issue.number, "time-deferred");
+      continue;
     }
 
     if (

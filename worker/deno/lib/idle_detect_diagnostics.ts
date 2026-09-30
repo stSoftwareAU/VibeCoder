@@ -111,6 +111,7 @@ import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 // Issue #4037: the audit's per-repo probe also feeds the access store.
 import { recordRepoProbeBestEffort } from "./monitored_repo_access.ts";
 import { extractDependencyReferencesDetailed } from "./issue_dependencies.ts";
+import { isTimeDeferred } from "./time_deferral.ts";
 
 // ---------------------------------------------------------------------------
 // Label sets
@@ -381,6 +382,8 @@ export type IssueExclusionReason =
   | "merged_pr_blocked"
   /** Names an open dependency the scan refuses it for (#460, GRQ#4465). */
   | "dependency_blocked"
+  /** A future `Deferred until` line in the worker record block (#2873). */
+  | "time_deferred"
   /** Held back by this run's own cooldown / processed-issue registry (#655). */
   | "run_local_hold"
   /**
@@ -612,6 +615,8 @@ export function classifyIssues(
   );
   const repo = opts.repo ?? "";
   const pushCapableAuthors = opts.pushCapableAuthors ?? [];
+  // Issue #2873: one clock reading per audit, not per issue.
+  const nowMs = Date.now();
 
   // Issue #1050: the scan's own view of the issue set, so the two gates
   // below are answered by the scan's own functions rather than by a second
@@ -778,6 +783,19 @@ export function classifyIssues(
         number: issue.number,
         claimable: false,
         excludedBy: "dependency_blocked",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
+    // Issue #2873: mirrors the scan's own `isTimeDeferred` gate, applied in
+    // the scan's own order — an issue refused for a more fundamental reason
+    // keeps that reason. Absent body → not deferred, same fail-safe
+    // direction as the dependency gate above.
+    if (isTimeDeferred(issue.body ?? "", nowMs)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "time_deferred",
         milestone: issue.milestone,
       });
       continue;

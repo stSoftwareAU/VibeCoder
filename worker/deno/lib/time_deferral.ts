@@ -28,6 +28,7 @@ import {
 } from "./worker_record_block.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
+import type { IssueFetcher } from "./issue_dependencies.ts";
 import type { GitHubClient, Logger } from "../types.ts";
 
 /** Marker the run emits to request a time-gated deferral. */
@@ -164,6 +165,37 @@ export function parseTimeDeferralUntil(body: string): number | undefined {
 export function isTimeDeferred(body: string, nowMs: number): boolean {
   const until = parseTimeDeferralUntil(body);
   return until !== undefined && nowMs < until;
+}
+
+/**
+ * Discovery-side check: is `repo#issueNumber` still time-deferred right now?
+ *
+ * One helper shared by every collector (Issue #2873), rather than each
+ * re-implementing the same read-and-check. Fails toward **not** deferred
+ * when the body cannot be read — the same fail-safe direction
+ * `isDependencyBlocked` takes on an unreadable body — but the failure is
+ * reported through `onReadError`, not swallowed, so a persistently
+ * unreadable body is visible rather than silently parking the issue in
+ * discovery's blind spot.
+ */
+export async function isIssueTimeDeferred(
+  fetcher: Pick<IssueFetcher, "getIssueBody">,
+  repo: string,
+  issueNumber: number,
+  nowMs: number,
+  onReadError?: (message: string) => void,
+): Promise<boolean> {
+  try {
+    const body = await fetcher.getIssueBody(repo, issueNumber);
+    return isTimeDeferred(body, nowMs);
+  } catch (error) {
+    onReadError?.(
+      `Could not read ${repo}#${issueNumber} to check time deferral: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return false;
+  }
 }
 
 /**
