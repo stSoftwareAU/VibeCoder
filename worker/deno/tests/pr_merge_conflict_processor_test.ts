@@ -21,7 +21,6 @@ import {
   buildAttemptComment,
   buildConflictEscalationReason,
   buildFailedComment,
-  buildMergeComment,
   buildNudgeComment,
   buildNudgeCommitMessage,
   buildResolvedComment,
