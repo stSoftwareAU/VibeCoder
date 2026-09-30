@@ -2281,6 +2281,18 @@
       "paths": [
         "worker/deno/lib/broken_ref_repair.ts"
       ]
+    },
+    {
+      "issue": 2914,
+      "chunk": "top-up-2914",
+      "title": "top-up: the cancelled-check re-run",
+      "ledger": "docs/audits/security-sweep-2914-ci-infrastructure-rerun.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: ci_infrastructure_rerun.ts (#2914)",
+      "status": "swept",
+      "sweptAt": "1e1b50304391da2877c1bcfa68ad10b76487535b",
+      "paths": [
+        "worker/deno/lib/ci_infrastructure_rerun.ts"
+      ]
     }
   ],
   "roots": [
