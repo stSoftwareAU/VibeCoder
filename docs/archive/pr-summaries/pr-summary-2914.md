@@ -4,10 +4,12 @@ A PR whose only red checks were `cancelled` was invisible to the CI-fix scan: `f
 
 The scan now reads `failure` **and** `cancelled`. A new module, `worker/deno/lib/ci_infrastructure_rerun.ts`, sorts each red check into one of two kinds:
 
-- **Infrastructure:** `cancelled`, or `failure` whose Actions job has zero steps. The scan runs `gh run rerun <run-id>` at most once per PR head commit, recorded by a marker in the CI check state directory. It never hands these checks to the agent, and it logs `skipReason` `ci-cancelled`.
+- **Infrastructure:** `cancelled`, `failure` whose Actions job has zero steps, or (added on review) an `if: always()` aggregator whose own redness traces only to one of those infrastructure jobs. The scan runs `gh run rerun <run-id>` at most once per PR head commit **per host**, recorded by a marker in the CI check state directory. It never hands these checks to the agent, and it logs `skipReason` `ci-cancelled`.
 - **Code:** everything else. These go to the CI-fix lane exactly as before.
 
-A run that also holds a real failure is not re-run, because the CI-fix fix-push restarts it. If GitHub refuses a rerun, the scan logs a warning and tries again on the next scan. If a head was already re-run and is still red, the scan logs a warning and leaves it for a human.
+A run that also holds a real failure is not re-run, because the CI-fix fix-push restarts it — except an aggregator whose own failure is explained entirely by an infrastructure job on the same run: it is now reclassified as infrastructure too (`reason: "aggregator"`) and re-run alongside it, so it is neither silently dropped by the Issue #1878 aggregator filter nor left stranded with no CI-fix agent to reach it. If GitHub refuses a rerun, the scan logs a warning and tries again on the next scan. If a head was already re-run **on this host** and is still red, the scan logs a warning and leaves it for a human.
+
+**Known limitation, accepted rather than fixed here:** the once-per-head bound is enforced by a local marker file, so with `fleet_pr_authors` configured each host scanning the same PR keeps its own marker — a fleet of N hosts can each re-run the same head once before every host's own escalation fires. A fleet-wide bound would need the same PR-comment marker approach `ci_fix_attempt_markers.ts` uses for the CI-fix attempt cap; that is left as follow-up work rather than folded into this PR, and `docs/workflows/ci-fix.md` states the limitation plainly.
 
 The review-gate label (`ci-cancelled` in `review-fleet-prs`) is **not** in this PR. That gate lives under `.claude/skills/`, a hidden path the worker's pre-commit safety gate refuses to commit. That refusal is what killed this issue's first attempt. The change is written up in stSoftwareAU/VibeCoder#2916 (needs-human) so a human can land it.
 
@@ -32,6 +34,7 @@ flowchart TD
 
 - The full gate `./quality.sh < /dev/null` passed after the final code change: `Result: PASSED (with skipped checks)`. The only skip was `config integration`, which was also skipped before this change.
 - Targeted run: 196 tests passed across `ci_infrastructure_rerun_2914_test.ts`, `check_runs_batch_test.ts`, `pr_maintenance_test.ts`, `pr_maintenance_aggregator_check_test.ts`, `pr_maintenance_ci_deferral_test.ts`, `pr_maintenance_bot_prs_test.ts`, `ci_check_state_dir_test.ts`, `pr_uninvited_action_test.ts` and `pr_uninvited_action_drift_test.ts`.
+- Review follow-up: 191 tests passed re-running `check_runs_batch_test.ts` (21), `ci_infrastructure_rerun_2914_test.ts` (11), `pr_ci_processor_aggregator_check_test.ts`, `pr_maintenance_aggregator_check_test.ts`, `pr_maintenance_bot_prs_test.ts`, `pr_maintenance_ci_deferral_test.ts`, `pr_maintenance_command_test.ts`, `pr_maintenance_issue_state_cache_test.ts`, `pr_maintenance_pr_list_cache_test.ts`, `pr_maintenance_review_head_moved_test.ts` and `pr_maintenance_test.ts` (72) after the aggregator-stranding fix and the fetch-filter test fixes below.
 
 ## Reproduction
 
@@ -69,5 +72,10 @@ flowchart TD
   - `classifyRedChecks` lookup-failure paths (two tests)
   - `rerunInfrastructureChecks` invalid-sha guard
 - Existing CI-scan suites still pass unchanged (listed under Evidence).
+- **Review follow-up (PR #2918):**
+  - `classifyRedChecks` reclassifies an `if: always()` aggregator as infrastructure when its redness traces only to an already-infrastructure job, so it is re-run with that job instead of being dropped by both lanes; new regression test `findFailedCiChecks - a cancelled job plus its same-run aggregator is re-run once, not stranded`.
+  - Every existing scan-level test forced the batched GraphQL fetch to fail so only the REST fallback ran, and the REST stub ignored its own `--jq` conclusion filter — so neither fetch path actually exercised `RED_CHECK_CONCLUSIONS`. Added `findFailedCiChecks - a cancelled check is re-run via the batched GraphQL path, not only the REST fallback` (drives a real GraphQL rollup with an uppercase `CANCELLED` enum) and made the REST stub honour the `--jq` clause it is given, so reverting either conclusions pass-through now fails these tests.
+  - Added `check_runs_batch_test.ts::RED_CHECK_CONCLUSIONS keeps cancelled runs too, lowercased off the wire`, pinning `convertBatch`'s lowercasing and `rollupToFailedCheckRuns`'s filter together on the same path `buildFailedCheckRunsLookup` uses.
+  - `docs/workflows/ci-fix.md` corrected: the "run that also holds a genuinely failing job is left alone" claim did not hold for the aggregator shape above, and the "at most once per PR head commit" bound is host-local, not fleet-wide, when `fleet_pr_authors` is configured — a fleet-wide bound is left as follow-up work rather than built into this PR.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

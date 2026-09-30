@@ -20,6 +20,8 @@ import {
   classifyRedChecks,
   rerunInfrastructureChecks,
 } from "../lib/ci_infrastructure_rerun.ts";
+import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
+import { fakeGithubGraphQL } from "./support/github_graphql_fake.ts";
 import type { Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -30,6 +32,29 @@ const REPO = "org/repo";
 const PR_NUMBER = 42;
 const HEAD_SHA = "a".repeat(40);
 const HEAD_SHA_2 = "b".repeat(40);
+
+/**
+ * The NEAT-AI-Backpropagation `ci-required` shape: an `if: always()`
+ * aggregator that needs `validation`, so it fails for real whenever that
+ * job is cancelled.
+ */
+const CI_YML_WITH_AGGREGATOR = `name: CI
+on:
+  pull_request:
+jobs:
+  validation:
+    name: Project Validation
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo validate
+  ci-required:
+    name: CI Required Checks
+    if: always()
+    needs: [validation]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo gate
+`;
 
 /** A recording logger that also captures skipReasons and warn/info calls. */
 function makeRecordingLogger(): Logger & {
@@ -69,9 +94,28 @@ interface JobRow {
 }
 
 /**
+ * Read the `.conclusion == "…"` alternatives out of a `--jq` argument, the
+ * way the real `gh api … --jq 'select(...)'` filter would see them — so a
+ * stub honouring this actually exercises the conclusions the caller asked
+ * for, rather than ignoring the filter and returning its own fixed list
+ * (PR #2918 review: the bypassed filter let a reverted `RED_CHECK_CONCLUSIONS`
+ * stay green here while the real #2914 regression returned).
+ */
+function jqConclusions(args: string[]): Set<string> | null {
+  const jqIndex = args.indexOf("--jq");
+  if (jqIndex === -1) return null;
+  const clause = args[jqIndex + 1] ?? "";
+  const wanted = new Set<string>();
+  for (const m of clause.matchAll(/\.conclusion\s*==\s*"([^"]+)"/g)) {
+    wanted.add(m[1] as string);
+  }
+  return wanted.size > 0 ? wanted : null;
+}
+
+/**
  * A `gh` stub modelling: `pr list` (one PR), `api graphql` failing (forces
- * REST fallback), the REST check-runs endpoint (already jq-filtered, as
- * the real jq would produce), `actions/jobs/<id>` from a job table,
+ * REST fallback), the REST check-runs endpoint filtered by the `--jq`
+ * clause the caller actually passed, `actions/jobs/<id>` from a job table,
  * `run rerun` recording, and `annotations` returning `[]`.
  */
 function ghStub(opts: {
@@ -99,10 +143,14 @@ function ghStub(opts: {
       return Promise.resolve("[]");
     }
     if (key.includes("check-runs") && !key.includes("annotations")) {
-      // Models the REST fallback's jq output directly — the stub itself
-      // filters to the checks it wants returned.
+      // Honour the `--jq` clause the caller passed, mirroring what the
+      // real jq `select(...)` would keep.
+      const wanted = jqConclusions(args);
+      const checks = wanted === null
+        ? redChecks
+        : redChecks.filter((check) => wanted.has(check.conclusion));
       return Promise.resolve(JSON.stringify(
-        redChecks.map((check) => ({
+        checks.map((check) => ({
           id: check.id,
           name: check.name,
           status: "completed",
@@ -353,6 +401,137 @@ Deno.test("findFailedCiChecks - a rerun that throws is logged at warn, and the n
     assertEquals(found2, null);
     assertEquals(reruns2.length, 1);
   } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a cancelled check is re-run via the batched GraphQL path, not only the REST fallback", async () => {
+  // Regression for the PR #2918 review: every other test here forces the
+  // GraphQL call to fail so `buildFailedCheckRunsLookup` falls back to
+  // REST, which never exercises `RED_CHECK_CONCLUSIONS` flowing through
+  // `fetchFailedCheckRunsBatch` → `rollupToFailedCheckRuns` on the
+  // production path. This drives a real (successful) GraphQL rollup with
+  // an uppercase `CANCELLED` check run instead.
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-gql-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const { gh: graphqlGh } = fakeGithubGraphQL({
+      owner: "org",
+      name: "repo",
+      pullRequests: {
+        [PR_NUMBER]: {
+          headOid: HEAD_SHA,
+          rollupState: "FAILURE",
+          contexts: [{
+            kind: "checkRun",
+            databaseId: 1,
+            name: "Job A",
+            status: "COMPLETED",
+            conclusion: "CANCELLED",
+          }],
+        },
+      },
+    });
+    const jobs: JobRow[] = [
+      { id: 1, run_id: 900, conclusion: "cancelled", steps: [] },
+    ];
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) {
+        return Promise.resolve(JSON.stringify([{
+          number: PR_NUMBER,
+          headRefName: "issue-1-fix",
+          headRefOid: HEAD_SHA,
+          baseRefName: "main",
+        }]));
+      }
+      if (key.includes("api graphql")) return graphqlGh(args);
+      const jobMatch = key.match(/actions\/jobs\/(\d+)/);
+      if (jobMatch) {
+        const id = Number(jobMatch[1]);
+        const job = jobs.find((j) => j.id === id);
+        if (job === undefined) {
+          return Promise.reject(new Error(`no such job ${id}`));
+        }
+        return Promise.resolve(JSON.stringify(job));
+      }
+      if (key.startsWith("run rerun")) {
+        reruns.push(args);
+        return Promise.resolve("");
+      }
+      if (key.includes("annotations")) return Promise.resolve("[]");
+      return Promise.resolve("[]");
+    };
+
+    const found = await scan(ghFn, logger, stateDir);
+    assertEquals(found, null);
+    assertEquals(reruns.length, 1);
+    assertEquals(reruns[0], ["run", "rerun", "900", "--repo", REPO]);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a cancelled job plus its same-run aggregator is re-run once, not stranded", async () => {
+  // Regression for the PR #2918 review: the aggregator ran and failed for
+  // real (non-zero steps), so classifyRedChecks used to put its run id in
+  // codeRunIds — which made rerunInfrastructureChecks skip the cancelled
+  // job's run "left for the CI-fix fix-push" — while the #1878 aggregator
+  // filter separately dropped the aggregator itself. Neither lane acted.
+  const workDir = await Deno.makeTempDir({ prefix: "ci-infra-agg-" });
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-agg-state-" });
+  try {
+    const checkout = repoCheckoutPath(workDir, REPO);
+    await Deno.mkdir(`${checkout}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${checkout}/.github/workflows/ci.yml`,
+      CI_YML_WITH_AGGREGATOR,
+    );
+
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const skips = logger.skips;
+    const ghFn = ghStub({
+      redChecks: [
+        { id: 1, name: "Project Validation", conclusion: "cancelled" },
+        { id: 2, name: "CI Required Checks", conclusion: "failure" },
+      ],
+      jobs: [
+        { id: 1, run_id: 900, conclusion: "cancelled", steps: [] },
+        {
+          id: 2,
+          run_id: 900,
+          conclusion: "failure",
+          steps: [{ name: "echo gate", conclusion: "failure" }],
+        },
+      ],
+      reruns,
+    });
+
+    const options: CiCheckScanOptions = {
+      githubUser: "testbot",
+      repos: [REPO],
+      logger,
+      isRepoAllowed: () => true,
+      isAuthorisedCommenter: () => true,
+      ghCommandFn: ghFn,
+      workDir,
+      stateDir,
+    };
+    const result = await findFailedCiChecks(options);
+    assertEquals(result.ok, true);
+    const found = result.ok ? result.value : null;
+
+    // Neither check is stranded: the run is re-run once, and nothing is
+    // handed to the CI-fix agent for a job that ran none of the repo's code.
+    assertEquals(found, null);
+    assertEquals(reruns.length, 1);
+    assertEquals(reruns[0], ["run", "rerun", "900", "--repo", REPO]);
+    assert(skips.some((s) => s.startsWith("ci-cancelled: ")));
+    assert(skips.some((s) => s.includes("CI Required Checks (aggregator)")));
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
     await Deno.remove(stateDir, { recursive: true });
   }
 });

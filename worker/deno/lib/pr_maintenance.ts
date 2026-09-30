@@ -1493,6 +1493,10 @@ export async function findFailedCiChecks(
         checks: redChecks,
         ghCommandFn,
         logger,
+        // Issue #2914 follow-up: lets an `if: always()` aggregator whose
+        // redness is explained only by an infrastructure job be treated
+        // as infrastructure too, instead of stranding both.
+        jobNeeds,
       });
       const failedChecks = classified.code;
       // All red names, including infrastructure ones — so an aggregator
@@ -1504,9 +1508,9 @@ export async function findFailedCiChecks(
         logger.skipReason(
           "ci-cancelled",
           `${repo}#${prNumber}: ${
-            classified.infrastructure.map((c) => c.name).join(", ")
-          } cancelled or never started — infrastructure, not code; no ` +
-            `CI-fix agent (Issue #2914)`,
+            classified.infrastructure.map((c) => `${c.name} (${c.reason})`)
+              .join(", ")
+          } — infrastructure, not code; no CI-fix agent (Issue #2914)`,
         );
         await rerunInfrastructureChecks({
           repo,

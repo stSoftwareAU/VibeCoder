@@ -20,6 +20,10 @@
 
 import type { CheckRunEntry } from "./pr_maintenance.ts";
 import { sanitiseRepoName } from "./pr_ci_checks.ts";
+import {
+  isDownstreamOfRedJob,
+  type JobNeedsMap,
+} from "./workflow_job_needs.ts";
 import type { Logger } from "../types.ts";
 
 /** Red conclusions the CI-fix scan reads, beyond the historical `failure` only. */
@@ -32,7 +36,7 @@ export interface InfrastructureCheck {
   /** The check name. */
   name: string;
   /** Why it was classified as infrastructure. */
-  reason: "cancelled" | "never-started";
+  reason: "cancelled" | "never-started" | "aggregator";
   /** The Actions workflow run id behind the check, when it could be resolved. */
   runId: number | null;
 }
@@ -75,12 +79,24 @@ async function lookupActionsJob(
  * zero steps (it never actually started); any other shape, including a
  * lookup that could not resolve the job at all, keeps it on the CI-fix
  * route so a real failure is never dropped on a guess.
+ *
+ * A second pass then catches an `if: always()` aggregator (e.g. `CI
+ * Required Checks`) that ran and failed for real: when `jobNeeds` is
+ * given and the aggregator's redness is explained entirely by jobs this
+ * pass has already put in `infrastructure` — and not by any other check
+ * still in `code` — it is moved to `infrastructure` too, and its run id
+ * is dropped from `codeRunIds`. Without this, the aggregator's run id
+ * "protects" the cancelled job's run from {@link rerunInfrastructureChecks}
+ * while the #1878 aggregator filter drops the aggregator itself from the
+ * CI-fix lane — stranding the PR with neither a rerun nor a fix.
  */
 export async function classifyRedChecks(opts: {
   repo: string;
   checks: CheckRunEntry[];
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
+  /** `needs:` topology, when a clone was available (Issue #2914 follow-up). */
+  jobNeeds?: JobNeedsMap | null;
 }): Promise<
   {
     code: CheckRunEntry[];
@@ -88,10 +104,11 @@ export async function classifyRedChecks(opts: {
     codeRunIds: Set<number>;
   }
 > {
-  const { repo, checks, ghCommandFn, logger } = opts;
-  const code: CheckRunEntry[] = [];
+  const { repo, checks, ghCommandFn, logger, jobNeeds = null } = opts;
+  let code: CheckRunEntry[] = [];
   const infrastructure: InfrastructureCheck[] = [];
   const codeRunIds = new Set<number>();
+  const codeRunIdByName = new Map<string, number>();
 
   for (const check of checks) {
     if (check.conclusion !== "cancelled" && check.conclusion !== "failure") {
@@ -145,7 +162,42 @@ export async function classifyRedChecks(opts: {
     code.push(check);
     if (job?.runId !== null && job?.runId !== undefined) {
       codeRunIds.add(job.runId);
+      codeRunIdByName.set(check.name, job.runId);
     }
+  }
+
+  // Second pass: an aggregator in `code` whose redness traces only to
+  // `infrastructure` jobs (never to another `code` job) is infrastructure
+  // too. `otherCodeNames` excludes the check itself so a self-loop in the
+  // `needs:` graph can never explain its own redness.
+  if (jobNeeds !== null && infrastructure.length > 0 && code.length > 0) {
+    const infraNames = infrastructure.map((c) => c.name);
+    const remaining: CheckRunEntry[] = [];
+    for (const check of code) {
+      const otherCodeNames = code
+        .filter((c) => c.name !== check.name)
+        .map((c) => c.name);
+      const downstreamOfInfra = isDownstreamOfRedJob(
+        check.name,
+        infraNames,
+        jobNeeds,
+      );
+      const downstreamOfOtherCode = otherCodeNames.length > 0 &&
+        isDownstreamOfRedJob(check.name, otherCodeNames, jobNeeds);
+      if (downstreamOfInfra && !downstreamOfOtherCode) {
+        const runId = codeRunIdByName.get(check.name) ?? null;
+        if (runId !== null) codeRunIds.delete(runId);
+        infrastructure.push({
+          id: check.id,
+          name: check.name,
+          reason: "aggregator",
+          runId,
+        });
+        continue;
+      }
+      remaining.push(check);
+    }
+    code = remaining;
   }
 
   return { code, infrastructure, codeRunIds };
