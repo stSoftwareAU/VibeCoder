@@ -1613,6 +1613,31 @@ Deno.test("findConflictingPr - an exhausted PR with no originating issue is clos
 });
 
 /**
+ * A spent restart budget hands the *originating issue* to a human
+ * (Issue #2804): `needs-human` lands on that issue, never on the PR, whose
+ * place in the conflict queue stays the scan's.
+ */
+function assertNeedsHumanOnIssueOnly(fake: FakeGh, issueNumber: number): void {
+  const issuePath = `/issues/${issueNumber}/`;
+  const naming = fake.calls.filter((args) =>
+    args.some((arg) => arg.includes("needs-human"))
+  );
+  assert(
+    naming.some((args) =>
+      args.some((arg) => arg.endsWith(`${issuePath}labels`)) &&
+      args.includes("labels[]=needs-human")
+    ),
+    `needs-human was not added to issue #${issueNumber}`,
+  );
+  const elsewhere = naming.filter((args) =>
+    !args.some((arg) => arg.includes(issuePath)) &&
+    // Creating the repo label itself touches no issue or PR.
+    !args.some((arg) => /^repos\/[^/]+\/[^/]+\/labels$/.test(arg))
+  );
+  assertEquals(elsewhere, [], "needs-human may only reach the issue");
+}
+
+/**
  * A PR whose issue has already been restarted `restarts` times (Issue #2312).
  *
  * The markers live on the *issue*, because the PR that replaced each abandoned
@@ -1662,7 +1687,7 @@ Deno.test("findConflictingPr - one restart on the issue still allows a second (I
   assertNoNeedsHumanWrites(fake);
 });
 
-Deno.test("findConflictingPr - the third exhaustion parks the PR, asking no human (Issue #2312)", async () => {
+Deno.test("findConflictingPr - the third exhaustion parks the PR and hands its issue to a human (Issues #2312, #2804)", async () => {
   const fake = makeFakeGh(restartedState(2));
 
   const { log } = await scanWith(fake);
@@ -1675,7 +1700,7 @@ Deno.test("findConflictingPr - the third exhaustion parks the PR, asking no huma
     0,
   );
   assertEquals(escalatedToHuman(fake, 61), false);
-  assertNoNeedsHumanWrites(fake);
+  assertNeedsHumanOnIssueOnly(fake, 16);
 
   // One comment, carrying the marker the next pass reads back.
   const parkComments = fake.commentsPosted.filter((c) =>
@@ -1754,7 +1779,7 @@ Deno.test("findConflictingPr - a park whose marker cannot be posted is not a par
   const { log } = await scanWith(fake);
 
   assertEquals(reasonFor(log, 61), "budget-spent");
-  assertNoNeedsHumanWrites(fake);
+  assertNeedsHumanOnIssueOnly(fake, 16);
 });
 
 Deno.test("findConflictingPr - an unreadable base tip leaves a parked PR parked (Issue #2312)", async () => {
@@ -1808,7 +1833,7 @@ Deno.test("findConflictingPr - an unreadable base tip cannot park a PR either (I
       .length,
     0,
   );
-  assertNoNeedsHumanWrites(fake);
+  assertNeedsHumanOnIssueOnly(fake, 16);
 });
 
 Deno.test("findConflictingPr - a half-done abandon is not parked away (Issue #2312)", async () => {

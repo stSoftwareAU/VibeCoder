@@ -312,18 +312,22 @@ automatic ladder is the whole answer:
    the PR's diff summary so it *is* the re-do item. A milestone roll-back that
    could not merge records the default-branch tip it answered for and is
    offered its two runs again once that tip moves, so no conflict outcome
-   needs a person to release it.
+   needs a person to release it. The one exception is deliberate: an issue
+   whose two redos are both spent and whose PR fails again gains
+   `needs-human` on the **issue** — never the PR — with one comment asking a
+   human to fix the PR, rescope the issue, or close it (Issue #2804).
 
 Every comment the sync or the conflict processor posts is a **record** of what
 the ladder did and will do next, on the thread as it stands. It never reopens a
-planning issue, never applies `needs-human`, and never asks a person to merge
+planning issue, never applies `needs-human` to a PR, and never asks a person to merge
 (Issues #2214, #2226, #2310, #2311) — a hand-applied `needs-human` is still
 honoured as a veto, because a human who labels a PR owns it, and the
 resolution processor's own last escalation was removed under the remaining
 sub-issue of #2298. The streak escalation that survives on the milestone path
 answers a **non-conflict** failure — a fetch, a push, an ordinary git error —
-never a conflict. A path that hands a conflict to a human is a bug to fix the
-same day, not a design choice. The canonical operator manual is
+never a conflict. Beyond the spent-redo hand-off above (Issue #2804), a path
+that hands a conflict to a human is a bug to fix the same day, not a design
+choice. The canonical operator manual is
 [docs/INTERNALS.md § Milestone and dependency handling](docs/INTERNALS.md).
 
 ### Milestone independence

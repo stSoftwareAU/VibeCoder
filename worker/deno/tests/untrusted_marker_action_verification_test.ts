@@ -24,7 +24,7 @@
  *   | `workflow_sync`            | file the issue                      |
  *   | `shared_cooldown`          | do not suppress the work            |
  *   | `failure_detection_resume` | retry rather than escalate          |
- *   | `escalate_as_work`         | file a fresh escalation             |
+ *   | `escalated_cleanup`        | close nothing (destructive write)   |
  *   | `collaborator_precheck`    | file a fresh issue                  |
  *   | `best_practices_relabel`   | write no labels                     |
  *
@@ -65,7 +65,7 @@ import {
   MAX_FAILURE_DETECTION_RESUME_ATTEMPTS,
   resumeFailureDetectionRepair,
 } from "../lib/failure_detection_resume.ts";
-import { escalateAsWork } from "../lib/escalate_as_work.ts";
+import { sweepEscalatedLeftovers } from "../lib/escalated_cleanup.ts";
 import {
   PRECHECK_DEDUP_TAG,
   verifyMonitoredCollaborators,
@@ -888,82 +888,54 @@ Deno.test("failure-detection resume - a fleet-authored attempt marker still spen
 });
 
 // ===========================================================================
-// 6a. escalate_as_work.ts — the escalation body lands on the matched issue
+// 6a. escalated_cleanup.ts — a title match drives an issue close
 // ===========================================================================
 
-function escalationGh(
-  issues: { number: number; title: string; author: string }[],
-) {
+function cannotLandGh(author: string) {
   const commands: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     commands.push(args);
-    if (args[1] === "list") {
-      return Promise.resolve(JSON.stringify(
-        issues.map((i) => ({
-          number: i.number,
-          title: i.title,
-          author: { login: i.author },
-        })),
-      ));
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify([{
+        number: 55,
+        title: "PR #7 cannot land: CI has been red for 2h",
+        author: { login: author },
+      }]));
     }
-    if (args[1] === "create") {
-      return Promise.resolve(`https://github.com/${REPO}/issues/321\n`);
-    }
-    return Promise.resolve("");
+    return Promise.resolve("[]");
   };
-  const comments = () => commands.filter((c) => c[1] === "comment");
-  const creates = () => commands.filter((c) => c[1] === "create");
-  return { gh, commands, comments, creates };
+  const closes = () => commands.filter((c) => c[1] === "close");
+  return { gh, closes };
 }
 
-Deno.test("escalate as work - a planted title never receives the escalation body", async () => {
-  const escalation = {
-    repo: REPO,
-    prNumber: 7,
-    summary: "CI has been red for 2h",
-    reason: "semgrep is failing",
-    nextStep: "fix the semgrep finding",
-  };
-  const title = (await import("../lib/escalate_as_work.ts"))
-    .workEscalationTitle(escalation);
-  const gh = escalationGh([{ number: 55, title, author: OUTSIDER }]);
+Deno.test("escalated cleanup - a planted cannot-land title is never closed", async () => {
+  const gh = cannotLandGh(OUTSIDER);
 
-  const result = await escalateAsWork(escalation, {
-    gh: gh.gh,
+  const outcome = await sweepEscalatedLeftovers(REPO, {
+    ghCommandFn: gh.gh,
+    logger: silentLogger(),
     fleetAuthors: FLEET,
   });
 
-  assert(result.ok);
-  assertEquals(
-    gh.comments(),
-    [],
-    "the escalation must not be redirected onto an attacker-chosen issue",
-  );
-  assertEquals(gh.creates().length, 1, "a fresh escalation is filed instead");
-  assertEquals(result.value.filed, true);
+  assertEquals(gh.closes(), [], "a human-filed issue must not be closed");
+  assertEquals(outcome.issuesClosed, []);
 });
 
-Deno.test("escalate as work - a fleet-authored title still deduplicates", async () => {
-  const escalation = {
-    repo: REPO,
-    prNumber: 7,
-    summary: "CI has been red for 2h",
-    reason: "semgrep is failing",
-    nextStep: "fix the semgrep finding",
-  };
-  const title = (await import("../lib/escalate_as_work.ts"))
-    .workEscalationTitle(escalation);
-  const gh = escalationGh([{ number: 55, title, author: HOST }]);
+Deno.test("escalated cleanup - an unresolved fleet closes nothing", async () => {
+  const gh = cannotLandGh(HOST);
 
-  const result = await escalateAsWork(escalation, {
-    gh: gh.gh,
-    fleetAuthors: FLEET,
+  const outcome = await sweepEscalatedLeftovers(REPO, {
+    ghCommandFn: gh.gh,
+    logger: silentLogger(),
+    fleetAuthors: [],
   });
 
-  assert(result.ok);
-  assertEquals(result.value.issueNumber, 55);
-  assertEquals(result.value.filed, false);
-  assertEquals(gh.comments().length, 1, "an ongoing blockage stays one issue");
+  assertEquals(
+    gh.closes(),
+    [],
+    "an issue the fleet cannot attribute must never be closed",
+  );
+  assertEquals(outcome.issuesClosed, []);
 });
 
 // ===========================================================================

@@ -214,7 +214,6 @@
         "worker/deno/lib/diagnose.ts",
         "worker/deno/lib/diagnose_issue.ts",
         "worker/deno/lib/direct_merge.ts",
-        "worker/deno/lib/escalate_as_work.ts",
         "worker/deno/lib/escalation_cleanup.ts",
         "worker/deno/lib/execute_claude_phase.ts",
         "worker/deno/lib/failure_detection_gate.ts",
@@ -2245,6 +2244,30 @@
       "sweptAt": "cbf99f632d163a2db61b41ee87af6774edc0059c",
       "paths": [
         "worker/deno/lib/ci_human_gate_comment.ts"
+      ]
+    },
+    {
+      "issue": 2802,
+      "chunk": "top-up-2802",
+      "title": "top-up: the blocking-PR stall repair",
+      "ledger": "docs/audits/security-sweep-2802-stall-repair.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stall_repair.ts (#2802)",
+      "status": "swept",
+      "sweptAt": "d992f9bc6c952978d2684fb5bcc0bb460d771c14",
+      "paths": [
+        "worker/deno/lib/stall_repair.ts"
+      ]
+    },
+    {
+      "issue": 2805,
+      "chunk": "top-up-2805",
+      "title": "top-up: the escalated clean-up sweep",
+      "ledger": "docs/audits/security-sweep-2805-escalated-cleanup.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: escalated_cleanup.ts (#2805)",
+      "status": "swept",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
+      "paths": [
+        "worker/deno/lib/escalated_cleanup.ts"
       ]
     },
     {
