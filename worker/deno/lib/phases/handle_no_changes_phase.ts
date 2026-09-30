@@ -36,10 +36,10 @@ import {
 import { deferBlockedIssue, hasPriorDeferral } from "../blocked_deferral.ts";
 import {
   buildDeferralExhaustedComment,
+  countPriorTimeDeferrals,
   deferIssueUntil,
   detectTimeDeferral,
   MAX_TIME_DEFERRALS,
-  priorTimeDeferrals,
 } from "../time_deferral.ts";
 import {
   detectPlanningHandoff,
@@ -241,9 +241,16 @@ export async function workOnIssueHandleNoChanges(
       { repo, issueNumber, why: timeDeferral.why },
     );
   } else if (timeDeferral?.kind === "valid") {
-    const history = priorTimeDeferrals(ctx.issueComments);
+    const ghClient = deps.github.createClient(logger);
+    const history = await countPriorTimeDeferrals({
+      ghClient,
+      repo,
+      issueNumber,
+      githubUser,
+      fallbackComments: ctx.issueComments,
+      logger,
+    });
     if (history.length < MAX_TIME_DEFERRALS) {
-      const ghClient = deps.github.createClient(logger);
       const result = await deferIssueUntil({
         ghClient,
         repo,
@@ -276,7 +283,6 @@ export async function workOnIssueHandleNoChanges(
         "deferring again",
       { repo, issueNumber, priorCount: history.length },
     );
-    const ghClient = deps.github.createClient(logger);
     try {
       await ghClient.postComment(
         repo,

@@ -225,6 +225,55 @@ export function priorTimeDeferrals(comments: string): string[] {
   return found;
 }
 
+/** Options accepted by {@link countPriorTimeDeferrals}. */
+export interface CountPriorTimeDeferralsOptions {
+  ghClient: GitHubClient;
+  repo: string;
+  issueNumber: number;
+  /** The worker's own login: only its park comments count. */
+  githubUser: string;
+  /** The prompt comment blob, read only when the thread cannot be fetched. */
+  fallbackComments: string;
+  logger: Logger;
+}
+
+/**
+ * The `until` values of this issue's earlier park comments, oldest first,
+ * read from the full comment thread.
+ *
+ * Not from the prompt comment blob: that is capped at 20 comments / 12,000
+ * characters and admits worker comments last, so on a busy thread it holds
+ * none of the park comments and the {@link MAX_TIME_DEFERRALS} bound never
+ * fires (#2873 review). Only the worker's own comments count, so a marker
+ * pasted by anyone else cannot move the budget. A failed fetch falls back to
+ * the blob, logged as degraded.
+ */
+export async function countPriorTimeDeferrals(
+  options: CountPriorTimeDeferralsOptions,
+): Promise<string[]> {
+  const { ghClient, repo, issueNumber, githubUser, logger } = options;
+  try {
+    const thread = await ghClient.getIssueComments(repo, issueNumber);
+    return priorTimeDeferrals(
+      thread
+        .filter((c) => c.author === githubUser)
+        .map((c) => c.body)
+        .join("\n\n"),
+    );
+  } catch (err) {
+    logger.warn(
+      "Could not fetch the issue thread to count prior time deferrals — " +
+        "counting from the prompt comment blob, which may undercount",
+      {
+        repo,
+        issueNumber,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    return priorTimeDeferrals(options.fallbackComments);
+  }
+}
+
 /** Injectable dependencies for {@link deferIssueUntil} (testing). */
 export interface DeferIssueUntilDeps {
   /** Override the claim-release helper. Defaults to {@link releaseClaim}. */

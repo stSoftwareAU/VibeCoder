@@ -17,7 +17,7 @@ import { workOnIssueHandleNoChanges } from "../lib/phases/handle_no_changes_phas
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
-import type { GitHubClient, GitHubIssue } from "../types.ts";
+import type { GitHubClient, GitHubComment, GitHubIssue } from "../types.ts";
 import { MAX_TIME_DEFERRALS } from "../lib/time_deferral.ts";
 
 const REPO = "stSoftwareAU/NEAT-AI-Backpropagation";
@@ -63,7 +63,11 @@ function makeCalls(): StubCalls {
   return { addLabel: [], postComment: [], editIssue: [], unassignIssue: 0 };
 }
 
-function makeClient(calls: StubCalls, body = "Original body."): GitHubClient {
+function makeClient(
+  calls: StubCalls,
+  body = "Original body.",
+  thread: GitHubComment[] = [],
+): GitHubClient {
   const issue: GitHubIssue = {
     number: ISSUE,
     title: "Report on the rolling 7-day window",
@@ -76,7 +80,7 @@ function makeClient(calls: StubCalls, body = "Original body."): GitHubClient {
   };
   return {
     getIssue: () => Promise.resolve(issue),
-    getIssueComments: () => Promise.resolve([]),
+    getIssueComments: () => Promise.resolve(thread),
     addLabel: (_r, _i, label) => {
       calls.addLabel.push(label);
       return Promise.resolve();
@@ -125,6 +129,38 @@ function makeState(claudeOutput: string): PhaseState {
     baselineQualityPassed: true,
     baselineQualityOutput: "",
   };
+}
+
+/** A full-thread comment, as `getIssueComments` returns it. */
+function comment(id: number, author: string, body: string): GitHubComment {
+  return {
+    id,
+    body,
+    author,
+    createdAt: "",
+    reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+  } as GitHubComment;
+}
+
+/**
+ * The full thread behind a busy issue: 25 human comments (more than the
+ * prompt blob's 20-comment budget admits) followed by `parks` of the
+ * worker's own park comments.
+ */
+function busyThread(parks: number, parkAuthor = "testbot"): GitHubComment[] {
+  const thread: GitHubComment[] = [];
+  for (let i = 0; i < 25; i++) {
+    thread.push(
+      comment(i + 1, "human", `Human note ${i + 1}: ${"x".repeat(600)}`),
+    );
+  }
+  buildPriorDeferralComments(parks).split("\n\n").filter(Boolean).forEach(
+    (marker, i) =>
+      thread.push(
+        comment(100 + i, parkAuthor, `## Deferred until …\n\n${marker}`),
+      ),
+  );
+  return thread;
 }
 
 /** Build `count` prior `vibe-time-deferral` markers, as prior park comments carry. */
@@ -204,12 +240,14 @@ Deno.test(
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
-      github: { createClient: () => makeClient(calls) },
+      github: {
+        createClient: () =>
+          makeClient(calls, undefined, busyThread(MAX_TIME_DEFERRALS)),
+      },
     });
 
-    const priorComments = buildPriorDeferralComments(MAX_TIME_DEFERRALS);
     const result = await workOnIssueHandleNoChanges(
-      makeContext({ issueComments: priorComments }),
+      makeContext(),
       makeState(DEFER_OUTPUT),
       deps,
     );
@@ -269,5 +307,105 @@ Deno.test(
       "deferred: depends on stSoftwareAU/NEAT-AI-core#560",
     );
     assertEquals(calls.addLabel, []);
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - the limit fires on a busy thread the prompt blob truncates (#2873 review)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(calls, undefined, busyThread(MAX_TIME_DEFERRALS)),
+      },
+    });
+
+    // The prompt blob admits worker comments last, after 20+ human ones have
+    // used the budget: it carries none of the park comments.
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: "Human note 1 … Human note 20" }),
+      makeState(DEFER_OUTPUT),
+      deps,
+    );
+
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+      "a fourth park must not happen",
+    );
+    assertEquals(calls.addLabel, ["needs-human"]);
+    assertEquals(calls.editIssue, []);
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - the park comment numbers the deferral from the full thread (#2873 review)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => makeClient(calls, undefined, busyThread(1)),
+      },
+    });
+
+    await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: "" }),
+      makeState(DEFER_OUTPUT),
+      deps,
+    );
+
+    assertStringIncludes(
+      calls.postComment[0] ?? "",
+      `Deferral 2 of ${MAX_TIME_DEFERRALS}`,
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - park markers from another author are not counted (#2873 review)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(calls, undefined, busyThread(MAX_TIME_DEFERRALS, "human")),
+      },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext(),
+      makeState(DEFER_OUTPUT),
+      deps,
+    );
+
+    assert(
+      (result as { reason: string }).reason.startsWith("deferred: until"),
+      "only the worker's own park comments count toward the limit",
+    );
+    assertStringIncludes(calls.postComment[0] ?? "", "Deferral 1 of");
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - a failed thread fetch counts from the prompt blob (#2873 review)",
+  async () => {
+    const calls = makeCalls();
+    const client = makeClient(calls);
+    client.getIssueComments = () => Promise.reject(new Error("gh: 502"));
+    const deps = createMockDeps({ github: { createClient: () => client } });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({
+        issueComments: buildPriorDeferralComments(MAX_TIME_DEFERRALS),
+      }),
+      makeState(DEFER_OUTPUT),
+      deps,
+    );
+
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
   },
 );
