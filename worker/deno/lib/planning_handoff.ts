@@ -11,7 +11,7 @@
  *
  * ```mermaid
  * flowchart TD
- *   R["Run emits vibe-needs-planning"] --> P{"Prior hand-off<br/>marker on the issue?"}
+ *   R["Run emits vibe-needs-planning"] --> P{"Prior hand-off marker on the thread?"}
  *   P -->|yes| H["needs-human (loop guard)"]
  *   P -->|no| G{"Guard allows planning?"}
  *   G -->|no| H
@@ -31,6 +31,16 @@ import { redactSecrets } from "./secret_redaction.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import type { AuditMutation } from "./audit_entry.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
+
+/** Options accepted by {@link hasPriorPlanningHandoffOnThread}. */
+export interface PriorPlanningHandoffLookup {
+  ghClient: Pick<GitHubClient, "getIssueComments">;
+  repo: string;
+  issueNumber: number;
+  /** The run's budgeted prompt comment blob — used only if the fetch fails. */
+  fallbackComments: string;
+  logger: Logger;
+}
 
 /** Marker the run emits to request the hand-off. */
 export const PLANNING_HANDOFF_REQUEST_MARKER_NAME = "vibe-needs-planning";
@@ -72,10 +82,54 @@ export function buildPlanningHandoffMarker(): string {
   return `<!-- ${PLANNING_HANDOFF_MARKER_NAME} -->`;
 }
 
-/** True when the worker has already handed this issue to planning once. */
+/**
+ * True when the worker has already handed this issue to planning once.
+ *
+ * Searches the given text only — the full thread where available (see
+ * {@link hasPriorPlanningHandoffOnThread}), the budgeted prompt comment blob
+ * otherwise.
+ */
 export function hasPriorPlanningHandoff(comments: string): boolean {
   if (!comments) return false;
   return comments.toLowerCase().includes(buildPlanningHandoffMarker());
+}
+
+/**
+ * Loop guard, read off the full comment thread (Issue #2942).
+ *
+ * `ctx.issueComments` is the implementation prompt's blob, capped at
+ * `IMPLEMENTATION_COMMENT_LIMITS` (20 comments / 12,000 chars). On a busy
+ * thread that cap drops the earlier `vibe-planning-handoff` marker, and
+ * {@link hasPriorPlanningHandoff} over that blob alone never sees the repeat
+ * — so the worker hands the same issue off to planning again on every scan.
+ * This fetches the issue's whole comment history instead and checks every
+ * comment, from every author: a forged marker from an untrusted author can
+ * only force the safe `needs-human` fallback early, never suppress a real
+ * repeat, so scanning every author costs nothing on the downside.
+ *
+ * @returns true when a prior hand-off marker is found anywhere on the thread.
+ */
+export async function hasPriorPlanningHandoffOnThread(
+  opts: PriorPlanningHandoffLookup,
+): Promise<boolean> {
+  const { ghClient, repo, issueNumber, fallbackComments, logger } = opts;
+  try {
+    const comments = await ghClient.getIssueComments(repo, issueNumber);
+    return comments.some((c) =>
+      typeof c.body === "string" && hasPriorPlanningHandoff(c.body)
+    );
+  } catch (err) {
+    logger.warn(
+      "Failed to read the full comment thread for the planning hand-off " +
+        "loop guard — falling back to the budgeted prompt comments",
+      {
+        repo,
+        issueNumber,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    return hasPriorPlanningHandoff(fallbackComments);
+  }
 }
 
 /**
