@@ -955,6 +955,28 @@ crash, a missing tool, an unexplained external kill. All keep the flat cooldown
 and are retried as before, and the host-state ones are filed against the worker
 rather than the issue.
 
+**An issue labelled `failed-once` or `failed` for a host fault releases itself**
+once the host recovers — no action needed. A failure comment caused by a broken
+worker clone or environment, rather than the issue's own code, carries a **Host
+fault:** line naming the kind:
+
+| Kind                     | Meaning                                                            |
+| ------------------------ | ------------------------------------------------------------------ |
+| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the worker's clone |
+| `clone-failed`           | The clone itself could not be created                              |
+| `disk-full`              | The host ran out of disk space                                     |
+| `container-build-failed` | The issue's container image failed to build                        |
+
+The next time that repository's setup phase successfully creates a feature
+branch — proof the host's clone is healthy again — a sweep checks every open
+`failed-once` / `failed` issue in the repository. If **every** recorded failure
+on an issue was a host fault, the sweep removes the label and posts a short
+comment; if the issue also has an ordinary failure (an agent failure, a bad
+quality gate, claim churn, a failed question, an invalid base branch, and so on)
+mixed in, the label stays, because that failure is not the host's. A `failed`
+label stays unless the host-fault run that applied it (its "Second Attempt"
+record) is on the issue.
+
 ## 🤝 Worker stopped looking at an issue and posted a `needs-human` comment
 
 When the worker cannot complete an issue autonomously, it adds the `needs-human`
