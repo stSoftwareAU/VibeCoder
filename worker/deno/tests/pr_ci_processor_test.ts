@@ -21,6 +21,8 @@ import {
 } from "../lib/pr_ci_checks.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
+import { milestoneFixBranchFor } from "../lib/milestone_fix_pr.ts";
+import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { Logger } from "../types.ts";
@@ -1947,6 +1949,727 @@ Deno.test("processCiFailure - an unreadable PR state skips the cycle without spe
     // No retry was charged: the counter is untouched, so the next scan gets
     // the full budget rather than one attempt fewer.
     assertEquals(await getCiCheckRetryCount(stateDir, "org/repo", "67890"), 0);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a refused milestone-fix branch checkout spends no retry (PR #2909 review)", async () => {
+  // Regression test: the fix-branch `checkout -B` used to run *after*
+  // `recordCiCheckRetry`, so a refused checkout (e.g. Issue #1677 lane
+  // contention on the deterministic fix-branch name) burned a real retry
+  // with the agent never running, while still reporting `newRetryCount - 1`
+  // — a count that disagreed with the state file it had just written. The
+  // checkout is now attempted before the retry is recorded, so a refusal
+  // here costs nothing.
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-ci-refused-" });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const milestoneHead = "milestone/2909-checkout-refused";
+    const prNumber = 777;
+    let claudeRuns = 0;
+    const ghCalls: string[][] = [];
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() => {
+          claudeRuns++;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () => {
+            throw new Error("pr create must not be called");
+          },
+        }),
+      },
+      git: {
+        // Not a recognised lane-worktree holder, so the detach repair does
+        // not apply — the checkout stays refused for this cycle, same as
+        // the "another worktree" case `preparePrBranch` handles.
+        runGitCommand: ((args: string[]) => {
+          if (args[0] === "checkout" && args[1] === "-B") {
+            return Promise.resolve({
+              ok: true,
+              value: {
+                code: 128,
+                stdout: "",
+                stderr:
+                  "fatal: 'milestone-fix/2909-checkout-refused/pr-777-ci-refused-1-1' " +
+                  "is already used by worktree at '/home/dev/other'",
+              },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+      },
+    });
+
+    // Two cycles of a refused fix-branch checkout …
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const result = await processCiFailure(
+        makeInput({
+          repo: "org/repo",
+          prNumber,
+          branchName: milestoneHead,
+          checkRunId: "refused-1",
+        }),
+        {
+          promptsDir: PROMPTS_DIR,
+          logger: makeSilentLogger(),
+          deps,
+          stateDir,
+          workDir: tmpDir,
+          workRoot: tmpDir,
+        },
+      );
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(result.value.processed, false);
+        assertEquals(
+          result.value.retryCount,
+          0,
+          "a refused fix-branch checkout must report the count that " +
+            "actually matches the (unwritten) state",
+        );
+        assertStringIncludes(
+          result.value.summary,
+          "milestone-fix branch",
+        );
+      }
+    }
+    assertEquals(claudeRuns, 0, "the agent never runs on a refused checkout");
+    // … and the retry budget is untouched: no counter was ever written.
+    let counter: string | undefined;
+    try {
+      counter = await Deno.readTextFile(
+        `${stateDir}/org_repo_refused-1.retries`,
+      );
+    } catch {
+      counter = undefined;
+    }
+    assertEquals(counter, undefined, "a refused checkout is not an attempt");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// ============================================================================
+// Gated head — the milestone-fix branch happy path (Issue #2907, PR #2909)
+// ============================================================================
+
+const GATED_MILESTONE_HEAD = "milestone/2907-gated-fix";
+const GATED_PR_NUMBER = 555;
+// The discriminator folds in `checkRunId` (PR #2909 review) so a stale
+// closed-unmerged fix branch from an earlier check run can never collide
+// with this one — this must track the "gated-happy-1" checkRunId the happy-
+// path test below feeds in.
+const GATED_FIX_BRANCH = milestoneFixBranchFor(
+  GATED_MILESTONE_HEAD,
+  GATED_PR_NUMBER,
+  "ci-gated-happy-1-1",
+);
+
+/** A `gh` stub answering the gated-head assessment and the fix-PR lookups. */
+function makeGatedFixGh(
+  ghCalls: string[][],
+  options: { prCreate: () => Promise<string> },
+): GitHubDeps["runGhCommand"] {
+  return ((args: string[]) => {
+    if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+    ghCalls.push(args);
+    const joined = args.join(" ");
+    if (joined.includes("rules/branches")) {
+      return Promise.resolve(
+        JSON.stringify([{ type: "required_status_checks" }]),
+      );
+    }
+    if (args[0] === "pr" && args[1] === "list") {
+      // Neither findOpenMilestoneFixPr nor raiseMilestoneFixPr's own dedup
+      // check finds an existing fix PR — this run raises the first one.
+      return Promise.resolve("[]");
+    }
+    if (args[0] === "pr" && args[1] === "create") {
+      return options.prCreate();
+    }
+    if (args[0] === "api" && args.includes("-X") && args.includes("GET")) {
+      // clearMilestoneReviewRequests: no auto-requested reviewers.
+      return Promise.resolve("{}");
+    }
+    return Promise.resolve("");
+  }) as unknown as GitHubDeps["runGhCommand"];
+}
+
+Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a milestone-fix branch and raises a PR (Issue #2907)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-ci-happy-" });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const gitCommands: string[][] = [];
+    const commitAndPushCalls: string[] = [];
+    const ghCalls: string[][] = [];
+    let claudeRan = false;
+    let fixBranchCheckoutBeforeClaude = false;
+    let enableAutoMergeCalls = 0;
+
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() => {
+        claudeRan = true;
+        return Promise.resolve({
+          ok: true,
+          value: { output: "Fixed", exitCode: 0, timedOut: false },
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () =>
+            Promise.resolve("https://github.com/org/repo/pull/9002"),
+        }),
+      },
+      git: {
+        runGitCommand: ((args: string[]) => {
+          gitCommands.push(args);
+          if (
+            args[0] === "checkout" && args[1] === "-B" &&
+            args[2] === GATED_FIX_BRANCH
+          ) {
+            fixBranchCheckoutBeforeClaude = !claudeRan;
+          }
+          if (args[0] === "ls-remote") {
+            // Exit 2 ("no matching refs") is the production-normal outcome:
+            // no stale branch, so proceed straight to checkout without
+            // deleting anything (PR #2909 review).
+            return Promise.resolve({
+              ok: true,
+              value: { code: 2, stdout: "", stderr: "" },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: ((branchName: string) => {
+          commitAndPushCalls.push(branchName);
+          return Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          });
+        }) as unknown as GitDeps["commitAndPushPending"],
+      },
+      pr: {
+        enableAutoMerge: ((() => {
+          enableAutoMergeCalls++;
+          return Promise.resolve({
+            result: AutoMergeResult.Enabled,
+            message: "should not be called",
+          });
+        }) as unknown) as PrDeps["enableAutoMerge"],
+      },
+    });
+
+    const result = await processCiFailure(
+      makeInput({
+        repo: "org/repo",
+        prNumber: GATED_PR_NUMBER,
+        branchName: GATED_MILESTONE_HEAD,
+        checkRunId: "gated-happy-1",
+      }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, true);
+      assertEquals(result.value.changesPushed, true);
+      assertStringIncludes(result.value.summary, "via fix PR #9002");
+    }
+
+    assertEquals(
+      fixBranchCheckoutBeforeClaude,
+      true,
+      "the fix branch is checked out before Claude runs",
+    );
+    assertEquals(
+      commitAndPushCalls,
+      [GATED_FIX_BRANCH],
+      "the fix, not the PR's own head, receives the commit and push",
+    );
+    assertEquals(
+      gitCommands.some((args) =>
+        args[0] === "push" && args.includes("--delete")
+      ),
+      false,
+      "ls-remote exit 2 means the branch is absent — nothing to delete " +
+        "(PR #2909 review)",
+    );
+
+    const prCreateCall = ghCalls.find((args) =>
+      args[0] === "pr" && args[1] === "create"
+    );
+    if (prCreateCall === undefined) throw new Error("pr create was not called");
+    assertEquals(
+      prCreateCall[prCreateCall.indexOf("--base") + 1],
+      GATED_MILESTONE_HEAD,
+      "the fix PR targets the gated milestone head",
+    );
+    assertEquals(
+      prCreateCall[prCreateCall.indexOf("--head") + 1],
+      GATED_FIX_BRANCH,
+    );
+
+    assertEquals(
+      enableAutoMergeCalls,
+      0,
+      "the milestone PR's own auto-merge is not re-armed — only the fix " +
+        "PR's is (armed separately inside raiseMilestoneFixPr)",
+    );
+
+    const commentBody = ghCalls
+      .filter((args) => args[0] === "pr" && args[1] === "comment")
+      .map((args) => args[args.indexOf("--body") + 1] ?? "")
+      .find((body) => body.includes("delivered via #9002"));
+    assertEquals(
+      commentBody !== undefined,
+      true,
+      "the reply names the fix PR that carries the change",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a gated head whose fix PR cannot be raised reports changesPushed: false (Issue #2907)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-ci-fail-" });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const ghCalls: string[][] = [];
+
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () =>
+            Promise.reject(new Error("GitHub API rate limit exceeded")),
+        }),
+      },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const result = await processCiFailure(
+      makeInput({
+        repo: "org/repo",
+        prNumber: GATED_PR_NUMBER,
+        branchName: GATED_MILESTONE_HEAD,
+        checkRunId: "gated-fail-1",
+      }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, true);
+      assertEquals(
+        result.value.changesPushed,
+        false,
+        "the fix was made and pushed to the fix branch, but never delivered",
+      );
+      assertStringIncludes(
+        result.value.summary,
+        "could not raise the milestone-fix PR",
+      );
+      // A real attempt was made (the branch checked out and Claude ran), so
+      // this cycle still spends a retry.
+      assertEquals(result.value.retryCount, 1);
+    }
+    const failureComment = ghCalls
+      .filter((args) => args[0] === "pr" && args[1] === "comment")
+      .map((args) => args[args.indexOf("--body") + 1] ?? "")
+      .find((body) => body.includes("could not be raised"));
+    assertEquals(
+      failureComment !== undefined,
+      true,
+      "the reply explains the push landed but delivery failed",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - two check runs on the same gated milestone PR never reuse a fix branch name (PR #2909 review)", async () => {
+  // Regression test: before this fix the discriminator was `ci-<retryCount>`
+  // alone, and the retry counter is keyed by checkRunId — so every *new*
+  // check run on the milestone PR restarted at `ci-1`. A fix PR closed
+  // unmerged (a human rejecting a bad fix) left `origin/…-ci-1` in place;
+  // a later child-PR merge triggers a fresh check run, which reused the
+  // identical branch name. `checkout -B` on that name diverges from the
+  // stale remote history, the plain push is rejected, and the merge-based
+  // recovery in git_push_recovery.ts resurrects the rejected commits into a
+  // brand-new, auto-merge-armed fix PR — unattended. Folding `checkRunId`
+  // into the discriminator makes every check run's fix branch name unique,
+  // so this collision can no longer happen.
+  const tmpDir = await Deno.makeTempDir({
+    prefix: "vibe-gated-ci-branch-uniq-",
+  });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const checkoutBranches: string[] = [];
+
+    const runOnce = async (checkRunId: string): Promise<void> => {
+      const ghCalls: string[][] = [];
+      const deps = createMockDeps({
+        claude: {
+          runClaudeWithRetry: (() =>
+            Promise.resolve({
+              ok: true,
+              value: { output: "Fixed", exitCode: 0, timedOut: false },
+            })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+        },
+        github: {
+          runGhCommand: makeGatedFixGh(ghCalls, {
+            prCreate: () =>
+              Promise.resolve("https://github.com/org/repo/pull/9100"),
+          }),
+        },
+        git: {
+          runGitCommand: ((args: string[]) => {
+            if (args[0] === "checkout" && args[1] === "-B") {
+              checkoutBranches.push(args[2]!);
+            }
+            if (args[0] === "ls-remote") {
+              // Exit 2 ("no matching refs") — no stale branch either time
+              // (PR #2909 review).
+              return Promise.resolve({
+                ok: true,
+                value: { code: 2, stdout: "", stderr: "" },
+              });
+            }
+            return Promise.resolve({
+              ok: true,
+              value: { code: 0, stdout: "", stderr: "" },
+            });
+          }) as unknown as GitDeps["runGitCommand"],
+          commitAndPushPending: (() =>
+            Promise.resolve({
+              ok: true,
+              value: {
+                committedNewChanges: false,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+              },
+            })) as unknown as GitDeps["commitAndPushPending"],
+        },
+      });
+
+      const result = await processCiFailure(
+        makeInput({
+          repo: "org/repo",
+          prNumber: GATED_PR_NUMBER,
+          branchName: GATED_MILESTONE_HEAD,
+          checkRunId,
+        }),
+        {
+          promptsDir: PROMPTS_DIR,
+          logger: makeSilentLogger(),
+          deps,
+          stateDir,
+          workDir: tmpDir,
+          workRoot: tmpDir,
+          verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        },
+      );
+      assertEquals(result.ok, true);
+    };
+
+    // Two distinct check runs on the same milestone PR, each its own first
+    // retry — the exact shape of "fix PR from check run A closed unmerged,
+    // child PR merges, check run B fails".
+    await runOnce("check-run-A");
+    await runOnce("check-run-B");
+
+    assertEquals(checkoutBranches.length, 2);
+    assertEquals(
+      checkoutBranches[0] === checkoutBranches[1],
+      false,
+      "different check runs must never check out the same fix branch name",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a stale remote fix branch (cross-host name collision) is deleted before checkout, never merged back in (PR #2909 review)", async () => {
+  // Regression test for the remaining gap the PR #2909 review found: folding
+  // `checkRunId` into the discriminator only makes the name unique *per
+  // host* — `newRetryCount` is a per-host file, so a second host working the
+  // same still-open check run computes the identical fix-branch name. Here
+  // origin already holds GATED_FIX_BRANCH (as a closed-unmerged fix PR would
+  // leave it); the fix must delete it before `checkout -B` rather than let
+  // the push diverge and have `recoverFromPushRejection` merge the stale,
+  // rejected commits back into a fresh auto-merge-armed PR.
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-ci-stale-" });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const ghCalls: string[][] = [];
+    const gitCommands: string[][] = [];
+    let recoveryCalled = false;
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () =>
+            Promise.resolve("https://github.com/org/repo/pull/9200"),
+        }),
+      },
+      git: {
+        runGitCommand: ((args: string[]) => {
+          gitCommands.push(args);
+          if (args[0] === "ls-remote") {
+            // Stale branch from an earlier, closed-unmerged fix PR is still
+            // on origin under this exact name.
+            return Promise.resolve({
+              ok: true,
+              value: {
+                code: 0,
+                stdout: `abc123\trefs/heads/${GATED_FIX_BRANCH}`,
+                stderr: "",
+              },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+        recoverFromPushRejection: (() => {
+          recoveryCalled = true;
+          return Promise.resolve({ ok: true, value: "recovered" });
+        }) as unknown as GitDeps["recoverFromPushRejection"],
+      },
+    });
+
+    const result = await processCiFailure(
+      makeInput({
+        repo: "org/repo",
+        prNumber: GATED_PR_NUMBER,
+        branchName: GATED_MILESTONE_HEAD,
+        checkRunId: "gated-happy-1",
+      }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, true);
+      assertEquals(result.value.changesPushed, true);
+    }
+    assertEquals(
+      recoveryCalled,
+      false,
+      "the stale branch must be removed up front, never merged back in via recovery",
+    );
+
+    const deleteIndex = gitCommands.findIndex((args) =>
+      args[0] === "push" && args.includes("--delete") &&
+      args.includes(GATED_FIX_BRANCH)
+    );
+    const checkoutIndex = gitCommands.findIndex((args) =>
+      args[0] === "checkout" && args[1] === "-B" &&
+      args[2] === GATED_FIX_BRANCH
+    );
+    assertEquals(deleteIndex >= 0, true, "the stale remote branch is deleted");
+    assertEquals(
+      checkoutIndex >= 0,
+      true,
+      "the fix branch is still checked out",
+    );
+    assertEquals(
+      deleteIndex < checkoutIndex,
+      true,
+      "the stale branch is deleted before it can be diverged from",
+    );
+
+    const prCreateCall = ghCalls.find((args) =>
+      args[0] === "pr" && args[1] === "create"
+    );
+    if (prCreateCall === undefined) throw new Error("pr create was not called");
+    assertEquals(
+      prCreateCall[prCreateCall.indexOf("--head") + 1],
+      GATED_FIX_BRANCH,
+      "the raised PR head is the freshly re-created branch, not stale content",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - an ls-remote failure (non-2 exit) stands down instead of assuming the stale branch is absent (PR #2909 review)", async () => {
+  // Regression test for the review gap: `ls-remote --exit-code` only
+  // documents exit 2 as "no matching refs". A transient failure (network,
+  // auth — modelled here with exit 128) must not be read as "branch
+  // absent", or `checkout -B` would cut a fix branch that can silently
+  // diverge from a stale remote branch a closed-unmerged fix PR left behind.
+  const tmpDir = await Deno.makeTempDir({
+    prefix: "vibe-gated-ci-lsremote-fail-",
+  });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const ghCalls: string[][] = [];
+    const gitCommands: string[][] = [];
+    let claudeCalled = false;
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() => {
+          claudeCalled = true;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () =>
+            Promise.resolve("https://github.com/org/repo/pull/9300"),
+        }),
+      },
+      git: {
+        runGitCommand: ((args: string[]) => {
+          gitCommands.push(args);
+          if (args[0] === "ls-remote") {
+            return Promise.resolve({
+              ok: true,
+              value: { code: 128, stdout: "", stderr: "fatal: could not read" },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const result = await processCiFailure(
+      makeInput({
+        repo: "org/repo",
+        prNumber: GATED_PR_NUMBER,
+        branchName: GATED_MILESTONE_HEAD,
+        checkRunId: "gated-lsremote-fail-1",
+      }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, false);
+      assertEquals(result.value.retryCount, 0);
+    }
+    assertEquals(
+      claudeCalled,
+      false,
+      "Claude must not run when the stale-branch check itself failed",
+    );
+    assertEquals(
+      gitCommands.some((args) => args[0] === "checkout" && args[1] === "-B"),
+      false,
+      "no fix branch is cut when ls-remote's result could not be trusted",
+    );
+    assertEquals(
+      ghCalls.some((args) => args[0] === "pr" && args[1] === "create"),
+      false,
+      "no fix PR is raised when the stale-branch check failed",
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
