@@ -220,6 +220,12 @@ not after a reviewer finds it weeks later.
   updated — and fix any that still describe the old behaviour.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
+- When a change alters what an existing **state, enum variant, field or value**
+  means — even though its name stays — find every place that **renders or
+  explains** it: API response strings and labels, reason and stage sentences,
+  UI copy, and the docs prose for those fields. Make each one true for **every
+  case** the new behaviour produces, not only the common one. Grep for the
+  variant or field name **and** for the old wording.
 
 ## Visual Documentation
 
