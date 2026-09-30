@@ -123,7 +123,7 @@ still carrying it is refused at load, naming the edit.
 | --- | --- | --- |
 | Human with write access, not a Vibe Coder | **yes** | yes |
 | Vibe Coder (`VibeCoderST`, `stservice`) | **no** | yes |
-| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** | yes |
+| Known bot (`github-copilot[bot]`, `github-actions[bot]`) | **no** — except adding `idle-task` (below) | yes |
 | Anyone else — the public, unknown bots | **no** | **no** |
 
 ### Axis 1 — who may direct work
@@ -159,12 +159,26 @@ and you get exactly what you wrote.
 **The asymmetry is the point.** A Vibe Coder's or a known bot's review is
 accepted as input; neither may schedule or change work.
 
+### The one exception: `idle-task`
+
+A Vibe Coder login or an `authorized_commenters` bot may add the `idle-task`
+label, the lowest-priority work trigger, and the idle-task collector honours
+that add: an issue whose most recent `idle-task` add came from such a login is
+claimable. This is the only grant axis 2 carries into axis 1, and it is
+narrow — a listed bot is trusted only as the **adder** of that one label,
+never as the issue author, and never for `work-on`, `top-priority`,
+`low-priority` or `planning`, which it still cannot raise or change. The
+motivating case is the fleet PR-reviewer App
+(`stsoftware-pr-reviewer[bot]`, listed in `authorized_commenters` on fleet
+hosts), which files improvement issues labelled `idle-task` via the
+review-fleet-prs skill (Issue #2882).
+
 ### Which key serves which axis
 
 | Key | Axis | What it does |
 | --- | ---- | ------------ |
 | _(none — derived)_ | 1 | Who may direct work. Repository collaborators with write/maintain/admin, minus the Vibe Coder logins and bots, intersected across the monitored repos. |
-| `authorized_commenters` | 2 | The known bots whose input the worker acts on. Never a grant of the right to direct work. |
+| `authorized_commenters` | 2 | The known bots whose input the worker acts on. Never a grant of the right to direct work, except that an `idle-task` label it adds is honoured (Issue #2882). |
 | `service_accounts` | neither | The fleet's own logins (identity-guard allowlist). Also **the exclusion input** for axis 1, and part of the fleet-identity set that governs scheduling. |
 | `fleet_pr_authors` | neither | Sibling fleet logins. Same two roles as `service_accounts`. |
 | `exclusion_team` | 1 | Optional **additional** exclusion, `org/slug`. Never required to exclude the fleet's own accounts. |
@@ -3755,7 +3769,8 @@ The budget log records each invocation's token breakdown, enabling operators to:
 > the Vibe Coder logins and bots — can trigger PR feedback fixes. So can the
 > Vibe Coders and the `authorized_commenters` bots, whose reviews and test
 > results are input the worker acts on but who may **never** raise, label or
-> schedule work. See [Two axes of trust](#two-axes-of-trust).
+> schedule work — except that adding the `idle-task` label is honoured. See
+> [Two axes of trust](#two-axes-of-trust).
 
 To add bot accounts to the authorised commenters list, use one of these methods:
 

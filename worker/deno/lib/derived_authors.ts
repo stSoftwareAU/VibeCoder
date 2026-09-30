@@ -10,7 +10,7 @@
  * | ------------------------------------------- | --------------- | ---------------- |
  * | Human with write access, not a Vibe Coder   | yes             | yes              |
  * | Vibe Coder (`service_accounts` / `fleet_pr_authors`) | no      | yes              |
- * | Known bot (`authorized_commenters`)         | no              | yes              |
+ * | Known bot (`authorized_commenters`)         | idle-task only  | yes              |
  * | Anyone else — no write access, unknown bots | no              | no               |
  *
  * **`allowedAuthors` — who may direct work** (raise, label, schedule):
@@ -26,7 +26,9 @@
  * stop processing Copilot reviews and Actions results.
  *
  * The asymmetry is the point: a Vibe Coder's or a bot's review is accepted as
- * input, and neither may schedule or change work.
+ * input, and neither may schedule or change work — except that either may add
+ * the `idle-task` label, which `collect_idle_task_candidates.ts` honours as
+ * the sole grant (Issue #2882).
  *
  * A fetch error from the configured team, or a transient error from any
  * repo, fails the whole resolve — there is no partially-successful variant,
