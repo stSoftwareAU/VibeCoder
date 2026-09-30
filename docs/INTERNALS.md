@@ -2669,8 +2669,9 @@ or NUL-filled — the 41-byte NUL files disk pressure writes, which
 ref `restored-from-packed` if `packed-refs` still resolves it; and it loops
 `git for-each-ref` in bounded rounds (a `fatal: missing object` aborts the
 listing outright, hiding every ref after it), parsing `brokenRefsIn()` out of
-stderr and removing each with `removeBrokenRef()` (`broken_ref_repair.ts`,
-Issue #2880).
+stderr on every round, whatever the exit code, since git still exits 0 after
+`warning: ignoring broken ref` for a truncated loose ref, and removing each with
+`removeBrokenRef()` (`broken_ref_repair.ts`, Issue #2880).
 
 A ref with no surviving packed copy is restored by the same policy
 regardless of how it was found: a remote-tracking ref is refetched from its
@@ -2691,12 +2692,11 @@ more than 2 repairing sweeps for the same repo in that window logs
 `failed` — the surest sign the root cause (disk pressure mid-write) is still
 happening.
 
-While the host disk is low and reclaim did not heal it, every
-`maintenanceLane`-flagged handler — this sweep and the milestone branch sync
-alike — is skipped for the cycle (pool or no pool); the existing one-time
-`[HOST_DISK_LOW]` warning already names this pause, so there is no separate
-warn line. See [HOST_DISK_LOW pauses maintenance-lane passes](CONTAINER.md#host_disk_low-pauses-maintenance-lane-passes-issue-2889)
-in CONTAINER.md. Serial passes (landing PRs, reclaim) keep running.
+While the host disk is low and reclaim did not heal it, this sweep alone is
+skipped for the cycle (the handler's `pausesOnHostDiskLow` flag). Every other
+pass, lane or serial, keeps running because those passes land the PRs already
+open (Issue #226). See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
+in CONTAINER.md.
 
 ```mermaid
 flowchart TD

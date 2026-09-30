@@ -191,10 +191,10 @@ Deno.test("dispatch table - Shared Clone Ref Sweep propagates an error Result (I
 });
 
 // ============================================================================
-// Maintenance-lane pause while the host disk is low (Issue #2889)
+// Sweep pause while the host disk is low (Issue #2889)
 // ============================================================================
 
-Deno.test("host disk low - maintenance-lane passes are paused; the existing HOST_DISK_LOW warning covers it (Issue #2889)", async () => {
+Deno.test("host disk low - only the shared-clone sweep pauses; other lane passes keep landing PRs (Issue #2889, #226)", async () => {
   let now = 0;
   let syncCalls = 0;
   let sweepCalls = 0;
@@ -212,7 +212,7 @@ Deno.test("host disk low - maintenance-lane passes are paused; the existing HOST
         level: "low" as const,
         detail: "18.0 GB free — below the floor",
       }),
-    // No reclaimDiskSpace: the reclaim never heals, so the lane pause holds.
+    // No reclaimDiskSpace: the reclaim never heals, so the sweep pause holds.
     syncMilestoneBranches: () => {
       syncCalls++;
       return Promise.resolve({ ok: true, value: undefined });
@@ -226,10 +226,11 @@ Deno.test("host disk low - maintenance-lane passes are paused; the existing HOST
 
   await runOneCycle(deps, 1);
 
-  assertEquals(
-    syncCalls,
-    0,
-    "a maintenance-lane handler must not run while the host disk is low",
+  // Issue #226: the other lane passes are what land the PRs already open,
+  // so low disk must not stop them.
+  assert(
+    syncCalls > 0,
+    "a maintenance-lane handler other than the sweep keeps running",
   );
   assertEquals(
     sweepCalls,
@@ -237,16 +238,11 @@ Deno.test("host disk low - maintenance-lane passes are paused; the existing HOST
     "the shared-clone ref sweep must not run while the host disk is low",
   );
   // No separate warn line per cycle: the one-time HOST_DISK_LOW warning
-  // (asserted elsewhere in the host-disk tests) already says so, and it is
-  // gated to fire once per episode, not once per pass or per cycle.
+  // is gated to fire once per episode, not once per pass or per cycle.
   assertEquals(
     warnings.filter((m) => m.startsWith("[HOST_DISK_LOW]")).length,
     1,
     "the low disk is reported once, not once per paused pass",
-  );
-  assert(
-    warnings.some((m) => m.includes("pausing maintenance-lane passes")),
-    warnings.join("\n"),
   );
 });
 

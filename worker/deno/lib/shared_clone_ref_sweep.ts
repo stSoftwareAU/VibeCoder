@@ -394,11 +394,13 @@ async function sweepForEachRefLoop(ctx: SweepContext): Promise<void> {
       );
       return;
     }
-    if (result.value.code === 0) return; // Healthy — nothing left to repair.
-
+    // Parsed on every round, whatever the exit code: git prints
+    // "warning: ignoring broken ref <ref>" for a truncated loose ref and
+    // still exits 0, so exit 0 alone does not mean healthy (#2889 review).
     const broken = brokenRefsIn(result.value.stderr);
     const newRefs = broken.filter((ref) => !ctx.handled.has(ref));
     if (newRefs.length === 0) {
+      if (result.value.code === 0) return; // Healthy — nothing left to repair.
       ctx.outcome.failures.push("for-each-ref");
       ctx.deps.logError(
         `Shared-clone sweep: for-each-ref exited ${result.value.code} in ${ctx.repo} without naming a broken ref: ${result.value.stderr.trim()}`,

@@ -203,6 +203,47 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
+// 1c. A truncated, non-NUL loose ref: git warns and still exits 0
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "#2889 - a truncated loose ref git only warns about (exit 0) is repaired",
+  async () => {
+    const { root, workDir, clone } = await fixture();
+    try {
+      // A partial write: a few hex characters, no newline, no NUL. git
+      // prints "warning: ignoring broken ref" and still exits 0.
+      await Deno.writeTextFile(
+        `${clone}/.git/refs/heads/issue-7-partial`,
+        "abcdef12",
+      );
+
+      const { deps } = makeDeps();
+      const outcome = await sweepSharedClone("acme/widget", workDir, deps);
+
+      assertEquals(outcome.failures, []);
+      assert(
+        outcome.repaired.some((r) => r.ref === "refs/heads/issue-7-partial"),
+        `expected the truncated ref to be repaired: ${
+          JSON.stringify(outcome.repaired)
+        }`,
+      );
+
+      const forEachRef = await new Deno.Command("git", {
+        args: ["for-each-ref", "refs/heads", "refs/remotes"],
+        cwd: clone,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const stderr = new TextDecoder().decode(forEachRef.stderr);
+      assert(!stderr.includes("warning"), `unexpected warning: ${stderr}`);
+    } finally {
+      await cleanup(root);
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // 2. Healthy clone
 // ---------------------------------------------------------------------------
 

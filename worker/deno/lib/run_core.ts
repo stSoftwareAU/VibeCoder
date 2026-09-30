@@ -333,6 +333,14 @@ export interface PriorityHandler {
    */
   maintenanceLane?: boolean;
   /**
+   * Skip this handler for the cycle while the host disk is low and reclaim
+   * did not heal it (Issue #2889). Set only on the shared-clone ref sweep:
+   * a ref write interrupted by low disk is what it exists to repair. Every
+   * other pass keeps running under low disk, because those are what land
+   * the PRs already open (Issue #226).
+   */
+  pausesOnHostDiskLow?: boolean;
+  /**
    * `deferrable` marks a **fixed-cost maintenance sweep** the cycle skips
    * while the GraphQL budget is inside its reserve (Issue #2449). These
    * sweeps spend their calls whether or not there is work for them, so once
@@ -2007,6 +2015,7 @@ export function buildPriorityDispatchTable(
       priority: 1.73,
       name: "Shared Clone Ref Sweep",
       maintenanceLane: true,
+      pausesOnHostDiskLow: true,
       execute: () =>
         (deps.sweepSharedCloneRefs?.() ??
           Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
@@ -6097,14 +6106,12 @@ export async function runCoreLoop(
 
           // --- Host disk (Issue #226) ---
           // A host short of room claims nothing new this iteration, but the
-          // serial maintenance passes below still run — they are what lands
-          // the PRs already open and what reclaims space. Maintenance-lane
-          // passes that write the shared clones pause instead (Issue #2889):
-          // a fetch or ref write interrupted by low disk is what left
-          // NUL-filled refs behind. The one-time warning below already says
-          // so; the pool's own pre-claim guard reports a mid-pool drop.
+          // maintenance passes below still run — they are what lands the
+          // PRs already open and what reclaims space. Only the shared-clone
+          // ref sweep pauses (Issue #2889). Reported once per cycle; the
+          // pool's own pre-claim guard reports a mid-pool drop.
           let skipScanForHostDisk = false;
-          let pauseLaneForHostDisk = false;
+          let pauseSweepForHostDisk = false;
           if (deps.checkHostDisk) {
             const disk = await deps.checkHostDisk();
             if (disk.level === "low") {
@@ -6133,13 +6140,13 @@ export async function runCoreLoop(
                 hostDiskLowReported = false;
               } else {
                 skipScanForHostDisk = true;
-                pauseLaneForHostDisk = true;
+                pauseSweepForHostDisk = true;
                 if (!hostDiskLowReported) {
                   hostDiskLowReported = true;
-                  // Degraded and continuing — serial maintenance still runs
-                  // and the next launch reclaims the disk — so a WARNING.
+                  // Degraded and continuing — maintenance still runs and the
+                  // next launch reclaims the disk — so a WARNING.
                   warnOf(deps)(
-                    `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues and pausing maintenance-lane passes this cycle; serial maintenance continues (Issue #226, #2889).`,
+                    `[HOST_DISK_LOW] ${disk.detail} — claiming no new issues this cycle; maintenance continues (Issue #226).`,
                   );
                 }
               }
@@ -6619,13 +6626,10 @@ export async function runCoreLoop(
               continue;
             }
 
-            // Issue #2889: a fetch or ref write under disk pressure is what
-            // left NUL-filled refs in the shared clones — so lane passes,
-            // which write those clones, pause while the host disk is low.
-            // This applies whether or not the lane/pool is enabled: a
-            // lane-flagged handler writes the shared clones serially too.
-            // The one-time HOST_DISK_LOW warning above already covers this.
-            if (handler.maintenanceLane === true && pauseLaneForHostDisk) {
+            // Issue #2889: the shared-clone ref sweep stands down while the
+            // host disk is low — a ref write interrupted by low disk is what
+            // it repairs. Every other pass keeps landing PRs (Issue #226).
+            if (handler.pausesOnHostDiskLow === true && pauseSweepForHostDisk) {
               continue;
             }
 

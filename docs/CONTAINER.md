@@ -1233,22 +1233,15 @@ next maintenance pass rebuilt into fresh image blocks — 45 GB of image for
 reclaim skipped: …` and the host is left to the launcher's volume reset
 (Issue #2077).
 
-### HOST_DISK_LOW pauses maintenance-lane passes (Issue #2889)
+### HOST_DISK_LOW pauses the shared-clone ref sweep (Issue #2889)
 
-A host below its claiming floor stops claiming new issues, but it does not
-sit idle: the serial passes (landing open PRs, the reclaim above) keep
-running every cycle. What pauses is narrower — every `maintenanceLane`
-handler (milestone branch sync, the shared-clone ref sweep below) stands down
-for the cycle, pool or no pool, because a fetch or ref write interrupted by
-low disk is exactly what leaves broken refs in the shared clones. This is
-covered by the same one-time-per-episode `[HOST_DISK_LOW]` warning already
-described above — there is no separate warn line per cycle:
-
-```text
-[HOST_DISK_LOW] 18.0 GB free … — claiming no new issues and pausing
-maintenance-lane passes this cycle; serial maintenance continues
-(Issue #226, #2889).
-```
+A host below its claiming floor stops claiming new issues, but every
+maintenance pass keeps running each cycle, because those passes land the
+PRs already open (Issue #226). The one exception is the shared-clone ref
+sweep: it stands down while the disk is low and reclaim did not heal it,
+since a ref write interrupted by low disk is exactly what it repairs. The
+one-time-per-episode `[HOST_DISK_LOW]` warning described above is unchanged;
+there is no separate warn line for the pause.
 
 As soon as the episode ends — reclaim reports `healed`, or the next cycle's
 reading is no longer low — the shared-clone ref sweep runs straight away
