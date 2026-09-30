@@ -84,11 +84,19 @@ async function lookupActionsJob(
  * Required Checks`) that ran and failed for real: when `jobNeeds` is
  * given and the aggregator's redness is explained entirely by jobs this
  * pass has already put in `infrastructure` — and not by any other check
- * still in `code` — it is moved to `infrastructure` too, and its run id
- * is dropped from `codeRunIds`. Without this, the aggregator's run id
- * "protects" the cancelled job's run from {@link rerunInfrastructureChecks}
- * while the #1878 aggregator filter drops the aggregator itself from the
- * CI-fix lane — stranding the PR with neither a rerun nor a fix.
+ * still in `code` — it is moved to `infrastructure` too. Without this,
+ * the aggregator's run id "protects" the cancelled job's run from
+ * {@link rerunInfrastructureChecks} while the #1878 aggregator filter
+ * drops the aggregator itself from the CI-fix lane — stranding the PR
+ * with neither a rerun nor a fix.
+ *
+ * `codeRunIds` is rebuilt from what is still in `code` once the pass is
+ * done, rather than deleted from as each aggregator is reclassified: a
+ * run id is shared by every check on that Actions run, so dropping it as
+ * soon as *one* check on the run turns out to be the aggregator would
+ * also strip the protection of a genuine, non-aggregator failure that
+ * happens to share the same run — re-running a run the CI-fix fix-push
+ * is about to restart (PR #2918 review).
  */
 export async function classifyRedChecks(opts: {
   repo: string;
@@ -185,19 +193,26 @@ export async function classifyRedChecks(opts: {
       const downstreamOfOtherCode = otherCodeNames.length > 0 &&
         isDownstreamOfRedJob(check.name, otherCodeNames, jobNeeds);
       if (downstreamOfInfra && !downstreamOfOtherCode) {
-        const runId = codeRunIdByName.get(check.name) ?? null;
-        if (runId !== null) codeRunIds.delete(runId);
         infrastructure.push({
           id: check.id,
           name: check.name,
           reason: "aggregator",
-          runId,
+          runId: codeRunIdByName.get(check.name) ?? null,
         });
         continue;
       }
       remaining.push(check);
     }
     code = remaining;
+
+    // Rebuild codeRunIds from what actually remains as code: a run id is
+    // shared by every check on that run, so a run id is only dropped once
+    // no check still in `code` maps to it.
+    codeRunIds.clear();
+    for (const check of code) {
+      const runId = codeRunIdByName.get(check.name);
+      if (runId !== undefined) codeRunIds.add(runId);
+    }
   }
 
   return { code, infrastructure, codeRunIds };

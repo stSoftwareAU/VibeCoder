@@ -536,6 +536,73 @@ Deno.test("findFailedCiChecks - a cancelled job plus its same-run aggregator is 
   }
 });
 
+Deno.test("findFailedCiChecks - a same-run real failure the aggregator does not need is never re-run alongside it", async () => {
+  // Regression for the PR #2918 review: the second aggregator pass used
+  // to delete the aggregator's run id from `codeRunIds` unconditionally,
+  // even though `Lint` — a genuine failure the aggregator does not
+  // `need` — shares that same run. That stripped the run's protection
+  // and re-ran it, wasting an Actions run and racing the CI-fix fix-push
+  // that `Lint` was about to trigger.
+  const workDir = await Deno.makeTempDir({ prefix: "ci-infra-agg2-" });
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-agg2-state-" });
+  try {
+    const checkout = repoCheckoutPath(workDir, REPO);
+    await Deno.mkdir(`${checkout}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${checkout}/.github/workflows/ci.yml`,
+      CI_YML_WITH_AGGREGATOR,
+    );
+
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const ghFn = ghStub({
+      redChecks: [
+        { id: 1, name: "Project Validation", conclusion: "cancelled" },
+        { id: 2, name: "Lint", conclusion: "failure" },
+        { id: 3, name: "CI Required Checks", conclusion: "failure" },
+      ],
+      jobs: [
+        { id: 1, run_id: 900, conclusion: "cancelled", steps: [] },
+        {
+          id: 2,
+          run_id: 900,
+          conclusion: "failure",
+          steps: [{ name: "run lint", conclusion: "failure" }],
+        },
+        {
+          id: 3,
+          run_id: 900,
+          conclusion: "failure",
+          steps: [{ name: "echo gate", conclusion: "failure" }],
+        },
+      ],
+      reruns,
+    });
+
+    const options: CiCheckScanOptions = {
+      githubUser: "testbot",
+      repos: [REPO],
+      logger,
+      isRepoAllowed: () => true,
+      isAuthorisedCommenter: () => true,
+      ghCommandFn: ghFn,
+      workDir,
+      stateDir,
+    };
+    const result = await findFailedCiChecks(options);
+    assertEquals(result.ok, true);
+    const found = result.ok ? result.value : null;
+
+    // The run is left alone — Lint is a genuine failure sharing it — and
+    // Lint itself is handed to the CI-fix lane.
+    assertEquals(reruns.length, 0);
+    assertEquals(found?.checkName, "Lint");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // classifyRedChecks — direct unit tests
 // ---------------------------------------------------------------------------
