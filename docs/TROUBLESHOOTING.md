@@ -972,8 +972,10 @@ branch — proof the host's clone is healthy again — a sweep checks every open
 `failed-once` / `failed` issue in the repository. If **every** recorded failure
 on an issue was a host fault, the sweep removes the label and posts a short
 comment; if the issue also has an ordinary failure (an agent failure, a bad
-quality gate, an invalid base branch, and so on) mixed in, the label stays,
-because that failure is not the host's.
+quality gate, claim churn, a failed question, an invalid base branch, and so on)
+mixed in, the label stays, because that failure is not the host's. A `failed`
+label stays unless the host-fault run that applied it (its "Second Attempt"
+record) is on the issue.
 
 ## 🤝 Worker stopped looking at an issue and posted a `needs-human` comment
 

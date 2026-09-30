@@ -81,6 +81,26 @@ const MARKED_DISK_FULL_COMMENT =
     buildHostFaultMarker("disk-full")
   }`;
 
+/**
+ * A marked disk-full record from the second attempt — the run that applies
+ * `failed` (label_failure.ts).
+ */
+const MARKED_DISK_FULL_SECOND_ATTEMPT_COMMENT =
+  `## Automated Processing Failed (Second Attempt - Permanently Failed)\n\n` +
+  `**Category:** \`unknown\`\n\n### Error Output\n> No space left on device\n\n${
+    buildHostFaultMarker("disk-full")
+  }`;
+
+/** The churn record claim_issue.ts posts when it applies `failed`. */
+const CLAIM_CHURN_COMMENT =
+  `## Claim Churn Detected\n\nThis issue has been claimed and released 5 ` +
+  `times (threshold: 5). Marking as failed — a human should review whether ` +
+  `this issue needs to be broken down into smaller tasks.`;
+
+/** The record label_question_failure.ts posts with `failed-once`. */
+const QUESTION_FAILURE_COMMENT =
+  `## Question Answering Failed\n\nThe question could not be answered.`;
+
 /** An ordinary agent-fault quality-check failure record. */
 const QUALITY_COMMENT =
   `## Automated Processing Failed (First Attempt)\n\n**Category:** ` +
@@ -244,7 +264,10 @@ Deno.test("releaseHostFaultFailureLabels - both present labels are removed for t
     {
       number: 106,
       labels: ["failed", "bug"],
-      comments: [LEGACY_CLONE_CORRUPT_COMMENT, MARKED_DISK_FULL_COMMENT],
+      comments: [
+        LEGACY_CLONE_CORRUPT_COMMENT,
+        MARKED_DISK_FULL_SECOND_ATTEMPT_COMMENT,
+      ],
     },
   ];
   const gh = fakeGh(issues);
@@ -357,4 +380,92 @@ Deno.test("buildHostFaultReleaseComment - names the host fault kind(s) (Issue #2
   const multi = buildHostFaultReleaseComment(["clone-corrupt", "disk-full"]);
   assertStringIncludes(multi, "clone-corrupt");
   assertStringIncludes(multi, "disk-full");
+});
+
+Deno.test("releaseHostFaultFailureLabels - a host fault plus a claim-churn record keeps failed (Issue #2890 review)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const issues: FakeIssue[] = [
+    {
+      number: 110,
+      labels: ["failed-once", "failed"],
+      comments: [LEGACY_CLONE_CORRUPT_COMMENT, CLAIM_CHURN_COMMENT],
+    },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained, [110]);
+  assertEquals(gh.byNumber.get(110)?.labels, ["failed-once", "failed"]);
+  assertEquals(gh.calls.some((c) => c[1] === "edit"), false);
+});
+
+Deno.test("releaseHostFaultFailureLabels - a host fault plus a question-failure record keeps its label (Issue #2890 review)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const issues: FakeIssue[] = [
+    {
+      number: 111,
+      labels: ["failed-once"],
+      comments: [MARKED_DISK_FULL_COMMENT, QUESTION_FAILURE_COMMENT],
+    },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  assertEquals(outcome.released, []);
+  assertEquals(gh.byNumber.get(111)?.labels, ["failed-once"]);
+});
+
+Deno.test("releaseHostFaultFailureLabels - a lone first-attempt host fault does not strip failed (Issue #2890 review)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  // `failed` with no second-attempt record: something other than the
+  // host-fault run applied it (a person, or a path with no record).
+  const issues: FakeIssue[] = [
+    {
+      number: 112,
+      labels: ["failed"],
+      comments: [MARKED_DISK_FULL_COMMENT],
+    },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained, [112]);
+  assertEquals(gh.byNumber.get(112)?.labels, ["failed"]);
+});
+
+Deno.test("releaseHostFaultFailureLabels - an unexplained failed keeps both labels (Issue #2890 review)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const issues: FakeIssue[] = [
+    {
+      number: 113,
+      labels: ["failed-once", "failed"],
+      comments: [MARKED_DISK_FULL_COMMENT],
+    },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  // Dropping failed-once alone would leave the issue out of the queue while
+  // the release comment said it was back in it.
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained, [113]);
+  assertEquals(gh.byNumber.get(113)?.labels, ["failed-once", "failed"]);
 });

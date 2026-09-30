@@ -4568,12 +4568,18 @@ process, triggered after the setup phase successfully creates a feature branch
 in that repository — proof the clone is healthy again — and lists the
 repository's open `failed-once` / `failed` issues. It reads only fleet-authored
 comments (the same `selectFleetAuthoredComments` filter, for the same forgery
-reason) and releases an issue only when **every** recorded "Automated Processing
-Failed" comment on it is a host fault: either it carries the marker, or — for
-failures made before this change had no marker to write — its body matches the
-`clone-corrupt` git broken-ref/bad-object signature. Any issue carrying even one
-non-host-fault record (an agent failure, an ordinary setup error such as an
-invalid base branch) keeps its label. Errors are logged, never swallowed; a
+reason) and releases an issue only when **every** fleet failure record on it is a
+host fault. A failure record is any comment headed by a fleet path that applies
+`failed-once` or `failed`: "Automated Processing Failed" or "Paused", "Milestone
+branch unavailable", "Claim Churn Detected", "Question Answering Failed" or
+"Automatic Escalation to Planning Mode". Only an "Automated Processing Failed"
+record can be a host fault: either it carries the marker, or — for failures made
+before this change had no marker to write — its body matches the `clone-corrupt`
+git broken-ref/bad-object signature. Any issue carrying even one non-host-fault
+record (an agent failure, claim churn, an ordinary setup error such as an
+invalid base branch) keeps its label. `failed` is released only when a host-fault
+"Second Attempt" record, the run that applies it, explains it; otherwise the
+issue keeps both labels. Errors are logged, never swallowed; a
 comment-read failure leaves the label in place.
 
 ### 📊 Token usage tracking

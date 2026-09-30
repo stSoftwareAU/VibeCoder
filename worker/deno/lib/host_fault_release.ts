@@ -98,9 +98,27 @@ export function resetHostFaultReleaseSweepsForTest(): void {
   swept.clear();
 }
 
-/** Whether a comment body is a failure record: it starts with the heading. */
+/**
+ * Every heading a fleet path writes when it applies `failed-once` or
+ * `failed` (#2890 review). Any of them makes the comment a failure record,
+ * so a label another path applied is never mistaken for a host fault's:
+ * `label_failure.ts` (Failed / Paused), the milestone-branch refusal,
+ * `claim_issue.ts` (Claim Churn Detected), `label_question_failure.ts` and
+ * `label_planning_escalation.ts`.
+ */
+const FAILURE_RECORD_RE =
+  /^##\s+(?:Automated Processing (?:Failed|Paused)|Milestone branch unavailable|Claim Churn Detected|Question Answering Failed|Automatic Escalation to Planning Mode)/;
+
+/** Only an `Automated Processing Failed` record can be a host fault. */
+const HOST_FAULT_CANDIDATE_RE = /^##\s+Automated Processing Failed\b/;
+
+/** The record of the run that applied `failed` (`label_failure.ts`). */
+const SECOND_ATTEMPT_RE =
+  /^##\s+Automated Processing Failed \(Second Attempt\b/;
+
+/** Whether a comment body is a failure record: it starts with a heading. */
 function isFailureRecord(body: string): boolean {
-  return body.trimStart().startsWith("## Automated Processing Failed");
+  return FAILURE_RECORD_RE.test(body.trimStart());
 }
 
 /**
@@ -113,6 +131,7 @@ function isFailureRecord(body: string): boolean {
  * broken ref, both unambiguous and narrow (`detectHostFault`).
  */
 function classifyFailureRecord(body: string): HostFaultKind | null {
+  if (!HOST_FAULT_CANDIDATE_RE.test(body.trimStart())) return null;
   const marked = parseHostFaultMarker(body);
   if (marked !== null) return marked;
   return detectHostFault(body) === "clone-corrupt" ? "clone-corrupt" : null;
@@ -267,6 +286,18 @@ export async function releaseHostFaultFailureLabels(
     }
 
     if (!allHostFaults) {
+      outcome.retained.push(issueNumber);
+      continue;
+    }
+
+    // `failed` is released only when a host-fault second-attempt record —
+    // the run that applies it — explains it. Otherwise something else put it
+    // there (a person, or a path with no record), and the issue stays out
+    // of the queue; releasing `failed-once` alone would not put it back.
+    if (
+      present.has(labels.failedLabel) &&
+      !bodies.some((body) => SECOND_ATTEMPT_RE.test(body.trimStart()))
+    ) {
       outcome.retained.push(issueNumber);
       continue;
     }
