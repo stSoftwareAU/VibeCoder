@@ -1,12 +1,13 @@
 /**
- * The main-loop execute phase must grant the Playwright MCP browser only to a
- * run that needs one (Issue #192).
+ * The main-loop execute phase grants the Playwright MCP browser to every run
+ * unless the repository sets `skip_screenshot_check` (Issue #2925).
  *
- * This is the fleet path that hands the agent a `cwd`, and a `cwd` alone used
- * to wire the browser — outbound HTTP through a full browser context — into
- * every issue the worker touched, including backend issues with no UI. The
- * grant now rides an explicit need signal: the `needs-screenshot` label, or a
- * repo configured with `requiresScreenshots`.
+ * Issue #192 wired it only on an explicit need signal — the `needs-screenshot`
+ * label or `requiresScreenshots` — but the screenshot gate decides "UI change"
+ * afterwards, from the diff. A run that touched UI files with no label had no
+ * tool to take the screenshot the gate then demanded, and failed
+ * (GRQ-AutoTrader#1772, #1788 and four more). Seconds of browser start-up are
+ * cheaper than a failed run and a retry.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -69,11 +70,20 @@ async function capturedMcpConfig(
   return seen[0]!.mcpConfig as boolean | undefined;
 }
 
-Deno.test("execute_phase - a backend issue is run with no browser MCP server (Issue #192)", async () => {
+Deno.test("execute_phase - an issue with no screenshot label is still granted the browser (Issue #2925)", async () => {
   assertEquals(
     await capturedMcpConfig(["enhancement", "work-on"]),
+    true,
+    "the gate judges UI changes from the diff, so the tool must be there up front",
+  );
+});
+
+Deno.test("execute_phase - skip_screenshot_check withholds the browser, even with the label (Issue #2925)", async () => {
+  assertEquals(
+    await capturedMcpConfig(["enhancement", "needs-screenshot"], {
+      "org/repo": { skipScreenshotCheck: true } as unknown as RepoConfig,
+    }),
     false,
-    "a cwd alone must not grant browser/network capability",
   );
 });
 
