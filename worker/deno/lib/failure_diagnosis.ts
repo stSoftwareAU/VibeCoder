@@ -905,7 +905,8 @@ export function getFailureDiagnosis(
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
-- The issue will be retried with explicit screenshot instructions`;
+- Every run is given the headless browser unless the repository sets \`skip_screenshot_check\` (Issue #2925); if the agent reported a browser error, it is quoted in the PR summary or the run log
+- A retry happens only while the issue is not labelled \`failed\`; once it is, the issue is retried only after a human removes that label`;
 
     case "internal_error":
       return `- An internal error occurred in the worker tooling or Claude CLI

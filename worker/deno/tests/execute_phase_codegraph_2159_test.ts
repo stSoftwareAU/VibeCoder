@@ -101,7 +101,7 @@ Deno.test("execute_phase - the switch off leaves the prompt and MCP config untou
   const observed = await runPhase(false, { status: "off", enabled: false });
 
   assertEquals(observed.prepared[0]?.enabled, false);
-  assertEquals(observed.runOptions[0]?.mcpConfig, false);
+  assertEquals(observed.runOptions[0]?.mcpConfig, true);
   assertEquals(
     String(observed.runOptions[0]?.prompt).includes("CodeGraph index"),
     false,
@@ -134,7 +134,7 @@ Deno.test("execute_phase - an indexed run gets the line and the server together"
     playwright?: boolean;
     servers?: Record<string, { command: string }>;
   };
-  assertEquals(mcp.playwright, false);
+  assertEquals(mcp.playwright, true);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
   assertCodegraphRootedAt(
     mcp,
@@ -152,7 +152,7 @@ Deno.test("execute_phase - a failed index adds neither half and the run proceeds
       Bash: 3,
     });
 
-    assertEquals(observed.runOptions[0]?.mcpConfig, false);
+    assertEquals(observed.runOptions[0]?.mcpConfig, true);
     assertEquals(
       String(observed.runOptions[0]?.prompt).includes("CodeGraph index"),
       false,
