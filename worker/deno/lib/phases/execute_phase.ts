@@ -12,6 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { browserGranted } from "../browser_grant.ts";
 import {
   type IssueContext,
   type PhaseResult,
@@ -491,16 +492,12 @@ async function executeClaudeBody(
   );
   const customInstructions = getCustomInstructions(config.repoConfig, repo);
 
-  // Browser/network capability is granted on need, not by default
-  // (Issue #192). This is the main-loop path that hands the agent a `cwd`,
-  // so before the gate it wired the Playwright MCP server — outbound HTTP
-  // through a full browser context — into every issue the fleet worked.
-  // Now only an issue that must produce screenshot evidence gets it: the
+  // Whether this issue must produce screenshot evidence: the
   // `needs-screenshot` label, or a repo configured with
-  // `requiresScreenshots` — and never a repo that sets
-  // `skip_screenshot_check`, which overrides both (Issue #1584). A backend
-  // issue's agent has no browser tool for a prompt injection to steer at an
-  // internal or attacker-controlled host.
+  // `requiresScreenshots`, and never a repo that sets `skip_screenshot_check`
+  // (Issue #1584). It drives the prompt's screenshot retry notice only; the
+  // browser itself is granted on every run unless `skip_screenshot_check`
+  // (`browserGranted`, Issue #2925).
   const screenshotRequired = detectScreenshotRequired(
     ctx.issueLabels.join(","),
     LABEL_DEFAULTS.needsScreenshotLabel,
@@ -510,8 +507,8 @@ async function executeClaudeBody(
   );
   if (screenshotRequired) {
     logger.info(
-      "Screenshot evidence required — wiring the Playwright MCP browser for " +
-        "this run (Issue #192)",
+      "Screenshot evidence required — injecting the screenshot retry notice " +
+        "(Issue #192)",
     );
   }
 
@@ -921,10 +918,12 @@ async function executeClaudeBody(
           killAfterSeconds: config.claudeKillAfter,
           model: config.claudeModel || undefined,
           cwd: state.repoPath,
-          // Opt-in browser (Issue #192) — see `screenshotRequired` above.
-          // Issue #2159 layers the `codegraph` server beside that grant on an
-          // enabled run whose index built, and changes nothing otherwise.
-          mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
+          // The browser on every run unless `skip_screenshot_check`
+          // (Issue #2925). Issue #2159 layers the `codegraph` server beside
+          // that grant on an enabled run whose index built.
+          mcpConfig: graft.mcpConfig(
+            codegraph.mcpConfig(browserGranted(config.repoConfig, repo)),
+          ),
           // Issue #2342: only a split run carries the executor definition,
           // and only a split run carries the guard that keeps every
           // `Edit`/`Write` inside one of them (Issue #2344).
