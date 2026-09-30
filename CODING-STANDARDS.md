@@ -712,6 +712,15 @@ every surface that mentions it — README, `docs/`, operator manuals, prompt
 templates, and agent instructions — in the same change. Do it before the commit,
 not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
 
+- Changing the **behaviour or meaning** of an existing function, field,
+  setting or endpoint while keeping its name also owes a docs change — the
+  rename rule alone misses it, because there is no old name to grep for.
+- Grep for the **unchanged name**, then re-read every hit — including the doc
+  comment directly above the changed code and the prose beside any example you
+  updated — and fix any that still describe the old behaviour.
+- Updating an example alone is not enough: if the surrounding prose still
+  describes the old contract, the doc is still stale.
+
 ## A Contract a Deployed Extension Reads Is Additive-Only
 
 The worker updates itself on every host within the hour. An operator's
