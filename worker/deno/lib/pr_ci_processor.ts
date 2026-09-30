@@ -63,6 +63,10 @@ import {
 } from "./quality_gate_phase.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
+  detachLaneWorktreeHead,
+  laneWorktreeHoldingBranch,
+} from "./lane_worktree.ts";
+import {
   findOpenMilestoneFixPr,
   milestoneFixBranchFor,
   raiseMilestoneFixPr,
@@ -1118,19 +1122,44 @@ async function _processCiWithHeartbeat(
     };
   }
 
-  // The branch is the PR's: this is a real attempt, so it counts against
-  // `maxCiRetries` (Issue #1677 — see `_processCiFailureLocked`).
-  await recordCiCheckRetry(stateDir, repo, checkRunId);
-
   // Issue #2907: the PR head is gated — check out the milestone-fix side
-  // branch instead of committing on the (unpushable) PR head directly. A
-  // checkout failure is fail-loud: the working tree is left on whatever
+  // branch instead of committing on the (unpushable) PR head directly.
+  // Checked *before* `recordCiCheckRetry` (PR #2909 review): the branch name
+  // is deterministic per attempt (`milestone-fix/<leaf>/pr-N-ci-<n>`), and
+  // lane worktrees share one clone's branches (Issue #1677), so a lane still
+  // parked on this exact name from an earlier run is contention, not a fix
+  // failure — it must not burn a retry either. This mirrors the
+  // `branch_held` repair `preparePrBranch` makes for the PR branch itself,
+  // reusing the same lane-worktree detach logic. A checkout failure that is
+  // not contention is still fail-loud: the working tree is left on whatever
   // branch it was on, so the agent must not run.
   if (fixBranch !== undefined) {
-    const fixCheckout = await deps.git.runGitCommand(
+    let fixCheckout = await deps.git.runGitCommand(
       ["checkout", "-B", fixBranch],
       { cwd: processorDeps.workDir },
     );
+    if (!fixCheckout.ok || fixCheckout.value.code !== 0) {
+      const err = fixCheckout.ok
+        ? fixCheckout.value.stderr.trim()
+        : fixCheckout.error.message;
+      const heldBy = laneWorktreeHoldingBranch(err);
+      if (heldBy !== undefined) {
+        const released = await detachLaneWorktreeHead(
+          heldBy,
+          deps.git.runGitCommand,
+        );
+        logger.warn(
+          "milestone-fix branch is held by a lane worktree on this host",
+          { repo, prNumber, fixBranch, heldBy, released },
+        );
+        if (released) {
+          fixCheckout = await deps.git.runGitCommand(
+            ["checkout", "-B", fixBranch],
+            { cwd: processorDeps.workDir },
+          );
+        }
+      }
+    }
     if (!fixCheckout.ok || fixCheckout.value.code !== 0) {
       const err = fixCheckout.ok
         ? fixCheckout.value.stderr.trim()
@@ -1140,6 +1169,8 @@ async function _processCiWithHeartbeat(
           "delivered this run (Issue #2907)",
         { repo, prNumber, fixBranch, error: err },
       );
+      // Not recorded above, so newRetryCount - 1 (== currentRetries) is the
+      // true count — this attempt cost nothing (PR #2909 review).
       return {
         ok: true,
         value: {
@@ -1153,6 +1184,11 @@ async function _processCiWithHeartbeat(
       };
     }
   }
+
+  // The branch is the PR's: this is a real attempt, so it counts against
+  // `maxCiRetries` (Issue #1677 — see `_processCiFailureLocked`).
+  await recordCiCheckRetry(stateDir, repo, checkRunId);
+
   const pushBranch = fixBranch ?? input.branchName;
 
   // Issue #1878: repeat the scan's aggregator decision against the branch
