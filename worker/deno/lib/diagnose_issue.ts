@@ -507,11 +507,13 @@ export async function diagnoseIssue(
         ? "Wait for the deferral to expire, or clear the worker record's `Deferred until` line"
         : undefined,
     });
-  } catch {
+  } catch (error) {
     checks.push({
       name: "not-time-deferred",
       passed: true,
-      detail: "Could not check time deferral (assuming not deferred)",
+      detail: `Could not check time deferral (assuming not deferred): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     });
   }
 

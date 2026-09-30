@@ -66,14 +66,9 @@ export type TimeDeferralDetection =
   | { kind: "valid"; request: TimeDeferralRequest }
   | { kind: "invalid"; why: string };
 
-const REQUEST_RE = new RegExp(
-  `<!--\\s*${TIME_DEFERRAL_MARKER}(?![A-Za-z0-9_:-])([^]*?)-->`,
-  "i",
-);
-const ATTR_RE = (name: string) =>
-  new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i");
-const UNTIL_RE = ATTR_RE("until");
-const REASON_RE = ATTR_RE("reason");
+const REQUEST_RE = /<!--\s*vibe-defer-until(?![A-Za-z0-9_:-])([^]*?)-->/i;
+const UNTIL_RE = /\buntil\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
+const REASON_RE = /\breason\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 
 /** Strict ISO-8601 date-time with an explicit offset — `Z` or `±HH:MM`. */
 const STRICT_ISO_RE =
@@ -209,10 +204,8 @@ function buildTimeDeferralRecordMarker(until: string): string {
   return `<!-- ${TIME_DEFERRAL_RECORD_MARKER} until="${until}" -->`;
 }
 
-const RECORD_MARKER_RE = new RegExp(
-  `<!--\\s*${TIME_DEFERRAL_RECORD_MARKER}(?![A-Za-z0-9_:-])([^]*?)-->`,
-  "gi",
-);
+const RECORD_MARKER_RE =
+  /<!--\s*vibe-time-deferral(?![A-Za-z0-9_:-])([^]*?)-->/gi;
 
 /**
  * The `until` values of earlier park comments, oldest first.
