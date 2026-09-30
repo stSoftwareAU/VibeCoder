@@ -899,8 +899,8 @@ export function getFailureDiagnosis(
     case "clone_corrupt":
       return `- Branch creation failed because the host's shared clone of this repository is damaged — broken refs or a corrupt object store
 - This is a **host infrastructure** fault, not a property of this issue: every issue claimed on this host hits the same damaged clone
-- No \`failed-once\` or \`failed\` label was applied, and the issue stays claimable — once the host's clone is repaired, the next scan picks it up with no human action
-- An operator should check the host's shared clone (e.g. \`git fsck\`) and re-clone or repair it if refs or objects are missing or corrupt`;
+- No \`failed-once\` or \`failed\` label was applied, but the setup-phase repair ladder's escalation already put \`needs-human\` on this issue — either its repair attempt did not clear the fault, or this run's one repair attempt was already spent by an earlier issue — and it stays parked until a human removes that label
+- An operator should check the host's shared clone (e.g. \`git fsck\`) and re-clone or repair it if refs or objects are missing or corrupt, then remove the \`needs-human\` label so the issue is claimable again`;
 
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
@@ -1000,7 +1000,7 @@ export function getFailureDiagnosisOneliner(
     // Deliberately not "Likely cause": nothing was guessed. The setup phase
     // detected the host's shared clone was damaged and said so (Issue #2884).
     case "clone_corrupt":
-      return "Host's shared clone of this repository is damaged (broken refs or corrupt object store) — the same fault meets every issue on this host, so this issue is left unlabelled and claimable.";
+      return "Host's shared clone of this repository is damaged (broken refs or corrupt object store) — the same fault meets every issue on this host; no failed-once/failed was applied, but this issue was escalated to needs-human (its repair attempt failed, or this run's one repair attempt was already spent) and stays parked until a human removes that label.";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":

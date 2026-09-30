@@ -4585,12 +4585,17 @@ comes out `clone_corrupt` (display `clone-corrupt`), is `not_code_fixable`, and
 reason `prompt_too_long` does: the setup phase already ran the sweep/re-clone
 ladder once before giving up, so a further in-process retry can only burn a
 claim on a fault no in-process attempt can clear. The run-outcome class is
-`clone-corrupt`. No `failed-once` or `failed` label is ever applied for it, and
-the claim is released with the issue left claimable — the next scan picks it up
-once the host's clone is repaired, with no human action needed on the issue
-itself. The `needs-human` escalation from the setup-phase ladder (heading
-"Broken refs in shared clone", dedup key `broken-refs-<repo>`) is what tells an
-operator to look at the host, not a label on the issue. See
+`clone-corrupt`. No `failed-once` or `failed` label is ever applied for it, so
+the fault never charges the issue's own retry budget. It is not left
+claimable, though: the setup-phase ladder's `needs-human` escalation (heading
+"Broken refs in shared clone" / "Corrupt git object store", dedup keys
+`broken-refs-<repo>` / `object-store-corrupt-<repo>`) puts `needs-human` on
+this specific issue whenever the repair — the sweep/prune-fetch retry or the
+re-clone fallback from #1093 — did not clear the fault, including when this
+run's one repair attempt was already spent by an earlier issue and this issue
+therefore attempted no repair at all. `findIssuesByLabel` excludes any issue
+carrying `needsHumanLabel`, so an operator must remove that label after
+repairing the host's clone for the issue to become claimable again. See
 "`create_feature_branch_from_base()`" above and
 [docs/workflows/README.md](workflows/README.md#one-shared-store-means-one-repository-wide-fault-issue-1093)
 for the sweep-then-re-clone repair ladder that produces this category.
