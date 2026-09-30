@@ -108,6 +108,11 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
   "worker-crash",
   "missing-tools",
   "token-scope",
+  // A damaged host shared clone (Issue #2884) is host state too: every issue
+  // claimed on this host hits the same broken refs / corrupt object store,
+  // and no attempt of the issue's could clear it, so it must not consume an
+  // attempt or earn the escalating cooldown.
+  "clone-corrupt",
 ]);
 
 /**

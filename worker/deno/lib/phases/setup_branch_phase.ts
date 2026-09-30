@@ -63,6 +63,8 @@ import {
 } from "../object_store_repair.ts";
 import { repairMilestoneCreateBlockAndRetry } from "../milestone_create_block_repair.ts";
 import { releaseMilestoneBranchRefusalLabels } from "../milestone_branch_refusal_release.ts";
+import { isBrokenRefFailure } from "../broken_ref_repair.ts";
+import { CLONE_CORRUPT_MARKER } from "../failure_diagnosis.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -84,6 +86,17 @@ export const OBJECT_STORE_NEXT_STEP =
   "is the usual cause. The worker already re-cloned once this run and the " +
   "corruption survived it, so the fault is in the volume rather than in the " +
   "objects.";
+
+/**
+ * What a human must do when broken refs in the shared clone survive a sweep
+ * and a re-clone (Issue #2884). Exported so tests assert the handoff wording.
+ */
+export const BROKEN_REFS_NEXT_STEP =
+  "Delete the repository's clone and its lane worktrees under the work " +
+  "volume by hand and check the host's free disk. The worker already swept " +
+  "the broken refs, pruned and fetched from origin, and — when that did not " +
+  "hold — re-cloned the repository once this run, so the fault is in the " +
+  "volume rather than a ref the worker could clear itself.";
 
 /**
  * Set up the repository and create/checkout the feature branch.

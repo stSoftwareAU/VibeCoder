@@ -467,6 +467,26 @@ export async function handleIssueFailure(
     };
   }
 
+  // A damaged host shared clone never enters the ladder either (Issue
+  // #2884). Broken refs or a corrupt object store on the host's shared clone
+  // meet every issue claimed on this host identically, so this is defence in
+  // depth: `clone_corrupt` is already non-infrastructure per
+  // `isInfrastructureFailure` and already in the ladder's transient class,
+  // but a caller reaching this function directly must still never label the
+  // issue `failed-once`/`failed` for a fault that is the host's, not the
+  // issue's.
+  if (failureCategory === "clone_corrupt") {
+    return {
+      ok: true,
+      value: {
+        markedAsFailed: false,
+        markedAsFailedOnce: false,
+        failureCategory,
+        isInfrastructure: false,
+      },
+    };
+  }
+
   // A repository-level milestone-branch refusal never enters the ladder
   // either (Issue #2220). The repository refused the branch — a ruleset, a
   // protection, or a permission the fleet account lacks — and it refuses it

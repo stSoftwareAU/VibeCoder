@@ -394,6 +394,41 @@ once per issue. Only a repair that does not clear the corruption escalates, with
 the repository named, because at that point the work volume is the fault rather
 than the objects.
 
+**A broken ref is repaired cheaper, first (Issue #2884).** A loose ref under
+`refs/heads/` or `refs/remotes/` that names an object the store no longer has
+makes git refuse the fetch or checkout (`fatal: bad object refs/…`, `warning:
+ignoring broken ref refs/…`) without the object store itself being corrupt at
+all — every such ref is individually recoverable from the remote, so discarding
+and re-cloning the whole shared clone for it is needless. When
+`createFeatureBranchFromBase` fails that way, setup runs `sweepBrokenRefs()`
+before it ever reaches the re-clone rung above: list every `refs/heads` and
+`refs/remotes` ref (`git for-each-ref`), remove each that
+`git rev-parse --verify <ref>^{commit}` cannot confirm, `git fetch --prune
+origin` to recreate the remote-tracking refs clean, then retry branch creation
+once. Only a sweep that fails, or a retry that still fails, falls through to
+the object-store re-clone above — the same `claimObjectStoreRepair` claim
+covers both rungs, so the whole ladder still runs **at most once per
+repository per run**. A failure that survives both rungs escalates
+`needs-human` ("Broken refs in shared clone", named per repository) and is
+categorised `clone_corrupt`: no `failed-once`/`failed` label is applied and the
+issue's retry budget is never charged, because the fault is the host's shared
+clone, not the issue.
+
+```mermaid
+flowchart TD
+    A["createFeatureBranchFromBase fails"] --> B{"isBrokenRefFailure?"}
+    B -- yes --> C["sweepBrokenRefs:<br/>remove unverifiable refs,<br/>fetch --prune, retry once"]
+    C -- ok --> Z["Branch created"]
+    C -- still fails --> D
+    B -- no --> D{"Object-store corruption?"}
+    D -- yes --> E["repairObjectStore + setupRepo, retry once"]
+    E -- ok --> Z
+    E -- still fails --> F["needs-human, category clone_corrupt<br/>(no failed-once / failed, budget not charged)"]
+    D -- no --> G[Ordinary setup failure]
+    style Z fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style F fill:#9d4e15,stroke:#6b3410,color:#fff
+```
+
 **A lane holds no branch once its run ends (Issue #1677).** Refs are shared,
 so a lane worktree parked on a branch blocks every other pass that wants that
 branch in the shared clone. An issue lane used to stay on the feature branch it
