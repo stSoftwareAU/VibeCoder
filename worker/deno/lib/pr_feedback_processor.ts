@@ -629,10 +629,23 @@ async function _processFeedbackWithHeartbeat(
         (message: string) => logger.warn(message, { repo, prNumber }),
       );
       if (markError) {
+        // Issue #2909 review (round 2): a `pr_review` mark is a dismissed
+        // review — GitHub offers no un-dismissal, so `removeProcessedMark`
+        // always errors here — and a failed reaction DELETE errors too. In
+        // both cases the next scan will never rediscover this comment, so
+        // the only way to answer it is a direct reply now.
         logger.warn(
           "Could not release the eyes reaction after a branch-prepare " +
-            "failure — the comment may go unanswered until it does",
+            "failure — replying directly since the comment will not be " +
+            "rediscovered",
           { repo, prNumber, commentId, error: markError.message },
+        );
+        await replyBranchPrepareFailed(
+          repo,
+          prNumber,
+          deps,
+          input.branchName,
+          prepared.detail,
         );
       }
     }
@@ -1343,6 +1356,36 @@ async function replyGatedCheckoutFailed(
       `The head branch '${headBranch}' is ruleset-gated, so this feedback ` +
       `pass works on a fix branch instead. I could not create the fix ` +
       `branch '${fixBranch}': ${detail}\n\nNo changes were made.`,
+    ]);
+  } catch {
+    // Comment failure is non-critical
+  }
+}
+
+/**
+ * Posts a direct reply when a branch-prepare failure's processed mark could
+ * not be taken back (Issue #2909 review, round 2). Without this, a
+ * `pr_review` claim — always unable to un-dismiss — or a failed reaction
+ * DELETE leaves the comment eyes-reacted forever with nothing posted, so the
+ * next scan never rediscovers it either.
+ */
+async function replyBranchPrepareFailed(
+  repo: string,
+  prNumber: number,
+  deps: WorkerDeps,
+  branchName: string,
+  detail: string,
+): Promise<void> {
+  try {
+    await deps.github.runGhCommand([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      `I could not check out '${branchName}' on this host (${detail}). ` +
+      `No changes were made.`,
     ]);
   } catch {
     // Comment failure is non-critical

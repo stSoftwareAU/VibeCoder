@@ -413,3 +413,147 @@ Deno.test("processPrFeedback - gated head: PR branch held elsewhere => stands do
   );
   if (!deleted) throw new Error("expected the eyes reaction to be released");
 });
+
+Deno.test("processPrFeedback - gated head: pr_review branch_held => replies directly since the mark cannot come back", async () => {
+  // Regression for the PR #2909 review's round-2 finding: `claim_pr_comment`
+  // marks a `pr_review` comment processed by dismissing the review, and
+  // GitHub offers no un-dismissal — so `removeProcessedMark` always errors
+  // for this comment type, and the earlier fix's "take the mark back" path
+  // never fires. A dismissed CHANGES_REQUESTED review would otherwise never
+  // gate the merge, never be rediscovered, and never be answered.
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: {
+      runGitCommand: ((args: string[], _opts?: unknown) => {
+        gitCalls.push(args);
+        if (args[0] === "checkout" && args[1] === "--end-of-options") {
+          return Promise.resolve({
+            ok: true,
+            value: {
+              code: 1,
+              stdout: "",
+              stderr:
+                `fatal: '${MILESTONE_HEAD}' is already checked out at '/tmp/other-worktree'`,
+            },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }) as unknown as GitDeps["runGitCommand"],
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-pr-review-branch-held",
+    workRoot: "/tmp/test-milestone-fix-pr-review-branch-held",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(
+    makeInput({ commentType: "pr_review" }),
+    processorDeps,
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.changesPushed, false);
+
+  // A dismissed review cannot be un-dismissed, so removeProcessedMark never
+  // even looks up a reaction to delete for this comment type.
+  const deleted = captured.calls.find((c) =>
+    c[0] === "api" && c[1] === "-X" && c[2] === "DELETE" &&
+    c[3]?.includes("reactions")
+  );
+  assertEquals(deleted, undefined, "pr_review cannot un-dismiss; no DELETE");
+
+  const reply = captured.comments.find((body) =>
+    body.includes("I could not check out") && body.includes(MILESTONE_HEAD)
+  );
+  if (!reply) {
+    throw new Error(
+      "expected a direct PR reply since the processed mark cannot be taken back",
+    );
+  }
+  assertStringIncludes(reply, "No changes were made.");
+});
+
+Deno.test("processPrFeedback - gated head: branch_held with a failed reaction DELETE => replies directly", async () => {
+  // Second path to the same gap: removeProcessedMark also errors when the
+  // eyes-reaction DELETE itself fails (rate limit, permissions, etc.) —
+  // not only for the always-erroring pr_review case above.
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+  const baseGithub = makeMockGithub(captured, { gated: true });
+
+  const github: Partial<GitHubDeps> = {
+    runGhCommand: (args: string[]) => {
+      if (
+        args[0] === "api" && args[1] === "-X" && args[2] === "DELETE" &&
+        args[3]?.includes("reactions")
+      ) {
+        captured.calls.push(args);
+        return Promise.reject(new Error("HTTP 403: rate limited"));
+      }
+      return baseGithub.runGhCommand!(args);
+    },
+  };
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github,
+    git: {
+      runGitCommand: ((args: string[], _opts?: unknown) => {
+        gitCalls.push(args);
+        if (args[0] === "checkout" && args[1] === "--end-of-options") {
+          return Promise.resolve({
+            ok: true,
+            value: {
+              code: 1,
+              stdout: "",
+              stderr:
+                `fatal: '${MILESTONE_HEAD}' is already checked out at '/tmp/other-worktree'`,
+            },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }) as unknown as GitDeps["runGitCommand"],
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-delete-fails",
+    workRoot: "/tmp/test-milestone-fix-delete-fails",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(result.value.processed, false);
+
+  const reply = captured.comments.find((body) =>
+    body.includes("I could not check out") && body.includes(MILESTONE_HEAD)
+  );
+  if (!reply) {
+    throw new Error(
+      "expected a direct PR reply when the reaction DELETE itself fails",
+    );
+  }
+});
