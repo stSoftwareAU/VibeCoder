@@ -263,6 +263,7 @@ import {
   type RepoIssueInfo,
 } from "./repo_availability.ts";
 import { suppressesLowerTiers } from "./skip_reason_clearing.ts";
+import { isTimeDeferred } from "./time_deferral.ts";
 
 // ---------------------------------------------------------------------------
 // Public data shape
@@ -334,6 +335,10 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // {@link RepoCensusInput.openMilestones}, which is what kept refusing
     // GRQ-AutoTrader#662 while this map already claimed the gate modelled.
     "dependency-blocked": "modelled",
+    // Issue #2873: modelled from the issue body's machine-owned
+    // `Deferred until` line, exactly as `isTimeDeferred` reads it for
+    // discovery — the census has the same `body` field.
+    "time-deferred": "modelled",
     // Issue #655: the caller hands the census the same run-local hold set
     // `find_oldest_issue.ts` filters candidates against — the persisted retry
     // cooldown and this run's processed-issue registry — as
@@ -703,6 +708,14 @@ export interface RepoCensusEntry {
   dependencyBlocked: number;
   /**
    * Count of priority (`top-priority` / `work-on` / `low-priority`) issues
+   * that passed every other check but carry a future `Deferred until` line in
+   * their machine-owned record block, which the scan refuses as
+   * `time-deferred` (Issue #2873). Kept separate from `unblocked` so the
+   * deferral stays observable in the `[idle-census]` line.
+   */
+  timeDeferred: number;
+  /**
+   * Count of priority (`top-priority` / `work-on` / `low-priority`) issues
    * that GitHub says are claimable but this run is holding back — the
    * `cooldown` skip `find_oldest_issue.ts` applies to every tier's
    * candidates (Issue #655). Kept separate from `unblocked` so the hold
@@ -1042,6 +1055,7 @@ function hasSuppressingWorkOn(
   repo: string,
   openIssueNumbers: ReadonlySet<number>,
   openMilestones: ReadonlySet<string>,
+  nowMs: number = Date.now(),
 ): boolean {
   return issues.some((issue) => {
     if (!isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel)) return false;
@@ -1052,6 +1066,7 @@ function hasSuppressingWorkOn(
         repo,
         openIssueNumbers,
         openMilestones,
+        nowMs,
       ),
     );
   });
@@ -1070,6 +1085,7 @@ function censusVisibleRefusal(
   repo: string,
   openIssueNumbers: ReadonlySet<number>,
   openMilestones: ReadonlySet<string>,
+  nowMs: number = Date.now(),
 ): SkipReason | undefined {
   if (isMergedPrBlocked(issue, mergedPRs)) return "merged-pr-permanent";
   if (
@@ -1082,6 +1098,7 @@ function censusVisibleRefusal(
   ) {
     return "dependency-blocked";
   }
+  if (isTimeDeferred(issue.body ?? "", nowMs)) return "time-deferred";
   return undefined;
 }
 
@@ -1099,12 +1116,14 @@ function countUnblocked(
   openMilestones: ReadonlySet<string> = new Set<string>(),
   fleetPrSlots?: number,
   blankStreamHeld = false,
+  nowMs: number = Date.now(),
 ): {
   counts: UnblockedCounts;
   prBlocked: number;
   streamOccupied: number;
   mergedPrBlocked: number;
   dependencyBlocked: number;
+  timeDeferred: number;
   runLocalHold: number;
   claimRefused: number;
   lowPrioritySuppressed: number;
@@ -1136,6 +1155,7 @@ function countUnblocked(
     repo,
     openIssueNumbers,
     openMilestones,
+    nowMs,
   );
   // Issue #2922: `selectHighestPriority`'s Priority 2 rule drops every
   // `work-on` candidate whose repo+milestone stream matches a PR-blocked
@@ -1172,6 +1192,7 @@ function countUnblocked(
   let streamOccupied = 0;
   let mergedPrBlocked = 0;
   let dependencyBlocked = 0;
+  let timeDeferred = 0;
   let runLocalHold = 0;
   let claimRefused = 0;
   let lowPrioritySuppressed = 0;
@@ -1247,6 +1268,14 @@ function countUnblocked(
       dependencyBlocked += 1;
       continue;
     }
+    // Issue #2873: applied last of the refusal gates, mirroring the scan's
+    // own order — an issue refused for a more fundamental reason keeps that
+    // reason, so `time_deferred` marks only issues that would otherwise be
+    // claimable right now.
+    if (isTimeDeferred(issue.body ?? "", nowMs)) {
+      timeDeferred += 1;
+      continue;
+    }
     // Issue #655: last of the per-issue gates, mirroring the scan — the
     // cooldown filter runs on the candidates the collectors already passed,
     // so an issue refused for a more fundamental reason keeps that reason.
@@ -1299,6 +1328,7 @@ function countUnblocked(
     streamOccupied,
     mergedPrBlocked,
     dependencyBlocked,
+    timeDeferred,
     runLocalHold,
     claimRefused,
     lowPrioritySuppressed,
@@ -1386,6 +1416,7 @@ export function buildIdleDecisionCensus(opts: {
       streamOccupied,
       mergedPrBlocked,
       dependencyBlocked,
+      timeDeferred,
       runLocalHold,
       claimRefused,
       lowPrioritySuppressed,
@@ -1426,6 +1457,7 @@ export function buildIdleDecisionCensus(opts: {
       streamOccupied,
       mergedPrBlocked,
       dependencyBlocked,
+      timeDeferred,
       runLocalHold,
       claimRefused,
       lowPrioritySuppressed,
@@ -1534,6 +1566,7 @@ export function formatIdleDecisionCensus(
         `stream_occupied=${r.streamOccupied} ` +
         `merged_pr_blocked=${r.mergedPrBlocked} ` +
         `dependency_blocked=${r.dependencyBlocked} ` +
+        `time_deferred=${r.timeDeferred} ` +
         `run_local_hold=${r.runLocalHold} ` +
         `claim_refused=${r.claimRefused} ` +
         `low_priority_suppressed=${r.lowPrioritySuppressed} ` +

@@ -105,7 +105,8 @@ export function detectTimeDeferral(
   if (!STRICT_ISO_RE.test(rawUntil)) {
     return {
       kind: "invalid",
-      why: `'until' is not a strict ISO-8601 date-time with an offset: ${rawUntil}`,
+      why:
+        `'until' is not a strict ISO-8601 date-time with an offset: ${rawUntil}`,
     };
   }
   const parsedMs = Date.parse(rawUntil);
@@ -142,7 +143,8 @@ export function buildTimeDeferralLine(until: string): string {
   return `Deferred until ${until}`;
 }
 
-const RECORD_LINE_RE = /^Deferred until (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$/;
+const RECORD_LINE_RE =
+  /^Deferred until (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$/;
 
 /**
  * Read the `Deferred until` time out of the body's machine-owned block, in
@@ -253,8 +255,16 @@ function buildDeferralComment(
 export async function deferIssueUntil(
   options: DeferIssueUntilOptions,
 ): Promise<DeferIssueUntilResult> {
-  const { ghClient, repo, issueNumber, githubUser, request, priorCount, logger, deps } =
-    options;
+  const {
+    ghClient,
+    repo,
+    issueNumber,
+    githubUser,
+    request,
+    priorCount,
+    logger,
+    deps,
+  } = options;
   const releaseClaim = deps?.releaseClaim ?? defaultReleaseClaim;
 
   try {
