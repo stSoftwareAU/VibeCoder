@@ -97,7 +97,14 @@ export const CONFLICT_REBASE_MARKER = "<!-- vibe-merge-conflict-rebase";
 export const CONFLICT_RUNG_FAILED_MARKER =
   "<!-- vibe-merge-conflict-rung-failed";
 
-/** The rungs whose failure is recorded by {@link CONFLICT_RUNG_FAILED_MARKER}. */
+/**
+ * The rungs whose failure is recorded by {@link CONFLICT_RUNG_FAILED_MARKER}.
+ *
+ * `"rebase"` is legacy — the rung it named was dropped in Issue #2842, and
+ * nothing posts a `rung="rebase"` marker any more. It stays in this union
+ * only so a marker already on a PR thread from before the drop still reads
+ * back as a known rung, rather than being discarded as malformed.
+ */
 export type ConflictLadderRung = "rebase" | "abandon";
 
 /**
@@ -123,7 +130,14 @@ export function conflictNudgeMarker(head: string): string {
   return `${CONFLICT_NUDGE_MARKER} ${headAttribute("head", head)} -->`;
 }
 
-/** The marker line for one rebase, naming the head it replaced. */
+/**
+ * The marker line for one rebase, naming the head it replaced.
+ *
+ * Legacy — the rebase rung was dropped in Issue #2842, so nothing in
+ * production posts this any more. Kept only because tests still forge a
+ * legacy marker with it to prove the ladder still reads old threads back
+ * correctly.
+ */
 export function conflictRebaseMarker(
   oldHead: string,
   newHead: string,
