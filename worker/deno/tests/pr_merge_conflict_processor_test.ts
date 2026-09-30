@@ -2174,16 +2174,25 @@ Deno.test("processMergeConflict - a MERGEABLE verdict on the stale route only cl
   );
 });
 
-Deno.test("processMergeConflict - a nudge marker naming the current head climbs to the merge rung (Issues #2278, #2279)", async () => {
-  // Behaviour change recorded in Issue #2279: this case asserted the unwired
-  // rebase placeholder (nothing pushed, `processed: false`). The rung is wired
-  // now, so what it asserts is the ladder *climbing* — no second nudge at this
-  // head, and the merge rung taking over.
+Deno.test("processMergeConflict - a nudge marker naming the current head climbs to abandon (Issues #2278, #2279, #2842)", async () => {
+  // Behaviour change recorded in Issue #2279, then again in #2842: this case
+  // once asserted the unwired rebase placeholder, then a wired merge rung.
+  // That rung was dropped in Issue #2842 — nudge is now the only rung before
+  // abandon, so what it asserts is the ladder climbing straight there — no
+  // second nudge at this head.
   const script = staleVerdictScript();
+  const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
     makeInput(),
     script,
-    { trustedAuthors: [FLEET_AUTHOR] },
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "abandoned",
+        issueNumber: 234,
+        label: { kept: "top-priority" },
+      }),
+    },
     {
       postedCommentId: 9004,
       prHeadState: { headRefOid: script.headSha, mergeable: "CONFLICTING" },
@@ -2195,8 +2204,9 @@ Deno.test("processMergeConflict - a nudge marker naming the current head climbs 
   );
 
   assert(result.ok);
-  assertEquals(result.value.rung, "rebase");
+  assertEquals(result.value.rung, "abandon");
   assertEquals(result.value.attemptCharged, false);
+  assertEquals(seen.length, 1, "no second nudge at this head");
   assertEquals(captured.emptyCommits, [], "one nudge per head, not two");
   assertEquals(captured.labelsAdded, []);
   assertEquals(captured.labelsRemoved, []);
@@ -2479,14 +2489,16 @@ Deno.test("processMergeConflict - a nudge whose marker cannot be posted fails lo
 });
 
 // ---------------------------------------------------------------------------
-// The merge rung (Issues #2279, #2806)
+// A nudged head climbs straight to abandon (Issue #2842)
 // ---------------------------------------------------------------------------
 
 /**
- * Options that put the ladder on its second rung: GitHub still says
+ * Options that put the ladder one rung past its start: GitHub still says
  * `CONFLICTING` at `head`, and the fleet's own nudge marker already names it.
+ * The rung dropped in Issue #2842 used to run from here; now this state
+ * climbs straight to abandon.
  */
-function atMergeRung(
+function atNudgedHead(
   head: string,
   overrides?: { author?: string | null; commentId?: number },
 ) {
@@ -2504,206 +2516,36 @@ function atMergeRung(
   };
 }
 
-/** The merge rung's own merge — the processor's merge carries no `--no-ff`. */
+/** The dropped rung's own merge — a marker that none is ever issued again. */
 function rungMerges(captured: { gitArgs: string[][] }): string[][] {
   return captured.gitArgs.filter((args) =>
     args[0] === "merge" && args.includes("--no-ff")
   );
 }
 
-/** Pushes that force, lease or use a `+` refspec — there must be none. */
-function forcedPushArgs(pushes: string[][]): string[] {
-  return pushes.flat().filter((arg) =>
-    arg === "-f" || arg.startsWith("--force") || arg.startsWith("+")
-  );
-}
-
-Deno.test("processMergeConflict - the merge rung pushes a merge commit once, plainly (Issue #2806)", async () => {
-  // Models a clone whose `origin/BASE` moved past the head — the only state
-  // in which the rung's merge makes a commit to push.
-  const script = staleVerdictScript({
-    headAfterRungMerge: "5555555555555555555555555555555555555555",
-  });
-  const { captured, result } = await runProcessor(
-    makeInput(),
-    script,
-    { trustedAuthors: [FLEET_AUTHOR] },
-    atMergeRung(script.headSha),
-  );
-
-  assert(result.ok);
-  assertEquals(result.value.rung, "rebase");
-  assertEquals(result.value.processed, true);
-  assertEquals(result.value.merged, false);
-  assertEquals(result.value.escalated, false);
-  assertEquals(result.value.attemptCharged, false);
-
-  assertEquals(rungMerges(captured).length, 1);
-  assertEquals(
-    captured.gitArgs.filter((args) => args.includes("rebase")),
-    [],
-    "the rung never rebases",
-  );
-  assertEquals(captured.pushes.length, 1, "exactly one push");
-  assertEquals(forcedPushArgs(captured.pushes), [], "and never a forced one");
-
-  // One comment, carrying both shas and the no-rewrite claim.
-  assertEquals(captured.comments.length, 1);
-  const comment = captured.comments[0] ?? "";
-  assertStringIncludes(comment, CONFLICT_REBASE_MARKER);
-  assertStringIncludes(comment, `old="${script.headSha}"`);
-  assertStringIncludes(comment, `new="${script.headAfterRungMerge}"`);
-  assertStringIncludes(comment, "merge commit on top of every existing commit");
-
-  // Nothing is spent and nothing claims a resolution.
-  assertEquals(
-    captured.comments.filter((c) => c.includes(CONFLICT_ATTEMPT_MARKER)),
-    [],
-  );
-  assertEquals(
-    captured.comments.filter((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
-    [],
-  );
-  assertEquals(captured.labelsAdded, []);
-  assertEquals(captured.labelsRemoved, []);
-});
-
-Deno.test("processMergeConflict - a conflicting rung merge is aborted and recorded as a failed rung (Issue #2806)", async () => {
-  const script = staleVerdictScript({
-    rungMergeCode: 1,
-    rungMergeUnmerged: ["SECURITY.md"],
-  });
-  const { captured, result } = await runProcessor(
-    makeInput(),
-    script,
-    { trustedAuthors: [FLEET_AUTHOR] },
-    atMergeRung(script.headSha, { commentId: 9102 }),
-  );
-
-  assert(result.ok);
-  assertEquals(result.value.rung, "rebase");
-  assertEquals(result.value.processed, false);
-  assert(
-    captured.events.includes("git:rung-merge-abort"),
-    `the merge must be aborted; got ${captured.events.join(",")}`,
-  );
-  assertEquals(captured.pushes, [], "a conflicted merge pushes nothing");
-
-  assertEquals(captured.comments.length, 1);
-  const comment = captured.comments[0] ?? "";
-  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
-  assertStringIncludes(comment, `head="${script.headSha}"`);
-  assertStringIncludes(comment, "conflicted");
-  assertStringIncludes(comment, "the `merge` rung did not complete");
-  assertEquals(captured.labelsAdded, []);
-});
-
-Deno.test("processMergeConflict - a rung merge with nothing to merge pushes nothing and records the rung failed (Issue #2806)", async () => {
-  // The realistic default: the base is already in the head, so the merge
-  // moves nothing.
+Deno.test("processMergeConflict - a nudged head runs the abandon rung, no git merge or push (Issue #2842)", async () => {
   const script = staleVerdictScript();
+  const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
     makeInput(),
     script,
-    { trustedAuthors: [FLEET_AUTHOR] },
-    atMergeRung(script.headSha, { commentId: 9108 }),
+    {
+      trustedAuthors: [FLEET_AUTHOR],
+      abandonRestartFn: recordingAbandon(seen, {
+        outcome: "abandoned",
+        issueNumber: 234,
+        label: { kept: "top-priority" },
+      }),
+    },
+    atNudgedHead(script.headSha, { commentId: 9102 }),
   );
 
   assert(result.ok);
-  assertEquals(result.value.processed, false);
+  assertEquals(result.value.rung, "abandon");
+  assertEquals(seen.length, 1);
+  assertEquals(rungMerges(captured), [], "the merge rung was dropped");
   assertEquals(captured.pushes, []);
-  const comment = captured.comments[0] ?? "";
-  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
-  assertStringIncludes(comment, "nothing to merge");
-});
-
-Deno.test("processMergeConflict - a clone that is not at the judged head pushes nothing and reports the rung failed (Issue #2279)", async () => {
-  const judged = "9999999999999999999999999999999999999999";
-  const script = staleVerdictScript();
-  const { captured, result } = await runProcessor(
-    makeInput(),
-    script,
-    { trustedAuthors: [FLEET_AUTHOR] },
-    atMergeRung(judged, { commentId: 9103 }),
-  );
-
-  assert(result.ok);
-  assertEquals(result.value.rung, "rebase");
-  assertEquals(result.value.processed, false);
-  assertEquals(result.value.attemptCharged, false);
-  assertEquals(captured.pushes, [], "nothing is pushed");
-  assertEquals(captured.resets, [], "nothing is reset");
-  assertEquals(rungMerges(captured), [], "nothing is merged");
-
-  assertEquals(captured.comments.length, 1);
-  const comment = captured.comments[0] ?? "";
-  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
-  assertStringIncludes(comment, 'rung="rebase"');
-  assertStringIncludes(comment, `head="${judged}"`);
-  assertStringIncludes(comment, script.headSha);
-  assertEquals(captured.labelsAdded, []);
-});
-
-Deno.test("processMergeConflict - a refused plain push restores OLD and records git's stderr (Issue #2806)", async () => {
-  // Models a clone whose `origin/BASE` moved past the head — the only state
-  // in which the rung's merge makes a commit to push.
-  const script = staleVerdictScript({
-    headAfterRungMerge: "5555555555555555555555555555555555555555",
-    pushCode: 1,
-  });
-  const { captured, result } = await runProcessor(
-    makeInput(),
-    script,
-    { trustedAuthors: [FLEET_AUTHOR] },
-    atMergeRung(script.headSha, { commentId: 9104 }),
-  );
-
-  assert(result.ok);
-  assertEquals(result.value.rung, "rebase");
-  assertEquals(result.value.processed, false);
-  assertEquals(captured.pushes.length, 1, "no forced retry");
-  assertEquals(forcedPushArgs(captured.pushes), []);
-  assertEquals(
-    captured.resets.at(-1),
-    script.headSha,
-    "the unpushed merge is never left on the clone",
-  );
-
-  const comment = captured.comments[0] ?? "";
-  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
-  assertStringIncludes(comment, `head="${script.headSha}"`);
-  assertStringIncludes(comment, "push failed", "git's own words are kept");
-  assertEquals(
-    captured.comments.filter((c) => c.includes(CONFLICT_REBASE_MARKER)),
-    [],
-    "a refused push never claims a merge",
-  );
-});
-
-Deno.test("processMergeConflict - a rung fault still records the rung as failed (Issue #2279)", async () => {
-  // A merge that fails with no unmerged paths is a broken clone, not a
-  // conflict. Without the marker the next scan re-decides this rung at this
-  // same head and hits the same fault for ever — the loop the ladder exists
-  // to break — so the fault is loud *and* recorded.
-  const script = staleVerdictScript({
-    rungMergeCode: 1,
-    rungMergeUnmerged: [],
-  });
-  const { captured, result } = await runProcessor(
-    makeInput(),
-    script,
-    { trustedAuthors: [FLEET_AUTHOR] },
-    atMergeRung(script.headSha, { commentId: 9107 }),
-  );
-
-  assert(!result.ok);
-  assertStringIncludes(result.error.message, "no unmerged paths");
-  assertEquals(captured.pushes, [], "a broken clone pushes nothing");
-
-  assertEquals(captured.comments.length, 1);
-  const comment = captured.comments[0] ?? "";
-  assertStringIncludes(comment, CONFLICT_RUNG_FAILED_MARKER);
-  assertStringIncludes(comment, `head="${script.headSha}"`);
+  assertEquals(captured.comments, []);
   assertEquals(captured.labelsAdded, []);
 });
 
@@ -2724,106 +2566,38 @@ Deno.test("processMergeConflict - a rung-failed comment renders a marker-shaped 
   assertStringIncludes(body, conflictRungFailedMarker("rebase", "abc1234"));
 });
 
-Deno.test("processMergeConflict - a human-authored PR is never merged into by the ladder (Issue #2279)", async () => {
-  // The ladder goes *straight* to the abandon — without a single rung
-  // command on a branch the fleet does not own.
-  const script = staleVerdictScript();
-  const seen: AbandonRestartRequest[] = [];
-  const { captured, result } = await runProcessor(
-    makeInput(),
-    script,
-    {
-      trustedAuthors: [FLEET_AUTHOR],
-      abandonRestartFn: recordingAbandon(seen, {
-        outcome: "abandoned",
-        issueNumber: 234,
-        label: { kept: "top-priority" },
-      }),
-    },
-    atMergeRung(script.headSha, { author: "a-human", commentId: 9105 }),
-  );
+Deno.test("processMergeConflict - a nudged head runs the abandon rung for a human-authored PR, or an unreadable author, alike (Issue #2842)", async () => {
+  // Author-based gating decided whether the now-dropped merge rung ran; it
+  // has nothing left to gate. The ladder climbs the same regardless.
+  for (const author of ["a-human", null] as const) {
+    const script = staleVerdictScript();
+    const seen: AbandonRestartRequest[] = [];
+    const { captured, result } = await runProcessor(
+      makeInput(),
+      script,
+      {
+        trustedAuthors: [FLEET_AUTHOR],
+        abandonRestartFn: recordingAbandon(seen, {
+          outcome: "abandoned",
+          issueNumber: 234,
+          label: { kept: "top-priority" },
+        }),
+      },
+      atNudgedHead(script.headSha, { author, commentId: 9105 }),
+    );
 
-  assert(result.ok);
-  assertEquals(result.value.rung, "abandon");
-  assertEquals(seen.length, 1);
-  assertEquals(
-    rungMerges(captured),
-    [],
-    "no rung merge is issued for a branch the fleet does not own",
-  );
-  assertEquals(captured.pushes, []);
-  assertEquals(captured.comments, []);
-  assertEquals(captured.labelsAdded, []);
-});
-
-Deno.test("processMergeConflict - an unreadable PR author is never merged into by the ladder (Issue #2279)", async () => {
-  const script = staleVerdictScript();
-  const seen: AbandonRestartRequest[] = [];
-  const { captured, result } = await runProcessor(
-    makeInput(),
-    script,
-    {
-      trustedAuthors: [FLEET_AUTHOR],
-      abandonRestartFn: recordingAbandon(seen, {
-        outcome: "abandoned",
-        issueNumber: 234,
-        label: { kept: "top-priority" },
-      }),
-    },
-    atMergeRung(script.headSha, { author: null, commentId: 9106 }),
-  );
-
-  assert(result.ok);
-  assertEquals(result.value.rung, "abandon");
-  assertEquals(seen.length, 1, "the ladder climbs rather than stopping");
-  assertEquals(
-    rungMerges(captured),
-    [],
-    "the rung needs a positive fleet attribution, not the absence of one",
-  );
-  assertEquals(captured.pushes, []);
-});
-
-Deno.test("processMergeConflict - the merge rung leaves the next real attempt's number unchanged (Issue #2279)", async () => {
-  const withoutRung = [
-    { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->` },
-    { body: `${CONFLICT_FAILED_MARKER} n="1" -->` },
-  ];
-  const withRung = [
-    ...withoutRung,
-    // The bodies the rung really posts, not hand-rolled stand-ins.
-    {
-      body: buildMergeComment(
-        "main",
-        "1111111111111111111111111111111111111111",
-        "5555555555555555555555555555555555555555",
-      ),
-    },
-    {
-      body: buildRungFailedComment(
-        "rebase",
-        "1111111111111111111111111111111111111111",
-        "the push was refused",
-      ),
-    },
-  ];
-  assertEquals(
-    parseConflictAttempts(withRung).count,
-    parseConflictAttempts(withoutRung).count,
-  );
-  assertEquals(parseConflictAttempts(withRung).count, 1);
-});
-
-Deno.test("buildMergeComment - names both shas and states the push rewrote nothing (Issue #2806)", () => {
-  const body = buildMergeComment("Develop", "abc1234", "def5678");
-  assertStringIncludes(body, conflictRebaseMarker("abc1234", "def5678"));
-  assertStringIncludes(body, "`origin/Develop`");
-  assertStringIncludes(body, "plain `git push`");
-  assertStringIncludes(body, "no history rewritten");
-  assertEquals(body.includes("--force-with-lease"), false);
-  // The rung must stay invisible to the attempt budget.
-  assertEquals(body.includes(CONFLICT_ATTEMPT_MARKER), false);
-  assertEquals(body.includes(CONFLICT_RESOLVED_MARKER), false);
+    assert(result.ok, `author ${author}`);
+    assertEquals(result.value.rung, "abandon", `author ${author}`);
+    assertEquals(seen.length, 1, `author ${author}`);
+    assertEquals(
+      rungMerges(captured),
+      [],
+      "no rung merge is ever issued any more (Issue #2842)",
+    );
+    assertEquals(captured.pushes, []);
+    assertEquals(captured.comments, []);
+    assertEquals(captured.labelsAdded, []);
+  }
 });
 
 Deno.test("buildRungFailedComment - names the rung, the head and where the branch is (Issue #2279)", () => {
