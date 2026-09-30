@@ -161,7 +161,8 @@ import {
   findPrsNeedingCiNudge,
   processCiNudgeCandidate,
 } from "./pr_ci_nudge_scan.ts";
-import { scanBlockingPrStalls as libScanBlockingPrStalls } from "./blocking_pr_stall_detector.ts";
+import { runStallRepairPass, type StallLane } from "./stall_repair.ts";
+import { directMergePr } from "./direct_merge.ts";
 import {
   type ConflictPrDecision,
   findConflictingPr,
@@ -1734,6 +1735,16 @@ export async function createProductionRunCoreDeps(
   /** The prefetch pass in flight, shared by concurrent callers (#2662). */
   let fleetPrefetchInFlight: Promise<void> | null = null;
 
+  // Issue #2802: set by the stall-repair pass while it reruns one lane on one
+  // stalled PR, so that lane's scan considers that PR only. Lane passes run one
+  // at a time, so a single slot is enough.
+  let stallLaneTarget: { repo: string; prNumber: number } | undefined;
+  const stallLaneScope = () =>
+    stallLaneTarget === undefined ? {} : {
+      repos: [stallLaneTarget.repo],
+      onlyPrNumber: stallLaneTarget.prNumber,
+    };
+
   const deps: RunCoreDeps = {
     // -- Logging --
     log: (msg) => logger.info(msg),
@@ -2072,6 +2083,7 @@ export async function createProductionRunCoreDeps(
       const result = await scanPrComments({
         githubUser,
         repos,
+        ...stallLaneScope(),
         logger,
         isRepoAllowed: (repo) => isRepoAllowed(repos, repo),
         isAuthorisedCommenter: (author) =>
@@ -2320,6 +2332,7 @@ export async function createProductionRunCoreDeps(
       const result = await findFailedCiChecks({
         githubUser,
         repos,
+        ...stallLaneScope(),
         logger,
         isRepoAllowed: (repo) => isRepoAllowed(repos, repo),
         isAuthorisedCommenter: () => true,
@@ -2884,9 +2897,10 @@ export async function createProductionRunCoreDeps(
 
       // Issue #1112: the ladder above is attempt-driven, so it cannot see the
       // stall where no attempt record exists at all. This watchdog keys on the
-      // age of the `merge-conflict` label instead, and files a PR that has
-      // carried it for hours with nothing concluding as work — never
-      // `needs-human`, which would remove it from this very lane (Issue #569).
+      // age of the `merge-conflict` label instead, and repairs a PR that has
+      // carried it for hours with nothing concluding (Issue #2803): rerun the
+      // ladder once, then abandon and redo — never `needs-human`, which would
+      // remove it from this very lane (Issue #569).
       // Skipped once the cycle's deadline has passed: the drain stops there
       // for the same reason, and a watchdog that observes is never worth
       // running into the next pass's time.
@@ -2911,6 +2925,9 @@ export async function createProductionRunCoreDeps(
               await fetchAllOpenPRs(repo, issueCache, STALL_OPEN_PR_LIMIT),
             ),
           openPrListingLimit: STALL_OPEN_PR_LIMIT,
+          // Issue #2803: the second trip abandons and redoes through the
+          // same rung, which declines without the fleet's own logins.
+          trustedAuthors: [...trustedAuthors],
         });
       }
 
@@ -3079,10 +3096,10 @@ export async function createProductionRunCoreDeps(
       }
     },
 
-    // -- Priority 1.63: Blocking-PR stall watchdog (Issue #4025) --
+    // -- Priority 1.63: Blocking-PR stall repair (Issues #4025, #2802) --
     async scanBlockingPrStalls() {
       try {
-        const scan = await libScanBlockingPrStalls({
+        const scan = await runStallRepairPass({
           repos,
           workOnLabel: config.workOnLabel,
           fleetAuthors,
@@ -3092,17 +3109,72 @@ export async function createProductionRunCoreDeps(
           authorisedCommenters: trustHolder.read().authorisedCommenters,
           config,
           needsHumanLabel: config.needsHumanLabel,
-          githubUser,
           ghCommandFn: runGhCommand,
           // Share the iteration-scoped cache: the watchdog reuses the
           // `issues_all` / `prs_${author}` entries other priorities
           // already fetched.
           cache: issueCache,
+          // Issue #2801: a green blocking PR is merged through the worker's
+          // own gated merge path, never escalated.
+          directMergeFn: directMergePr,
           logger,
           log: (m) => logger.info(m),
+          repair: {
+            // Issue #2802: only the worker's own PRs are repaired.
+            workerAuthors: maintenanceAuthors,
+            nowSeconds: () => Math.floor(Date.now() / 1000),
+            // Runs under the pass's lease on this repository.
+            syncBranch: async (target) => {
+              const setup = await setupRepo(target.repo, workDir);
+              if (!setup.success) {
+                return { ok: false, error: new Error(setup.message) };
+              }
+              const gitOptions = { cwd: setup.message };
+              const fetched = await runGitCommand(
+                buildFetchArgs("origin", target.baseRefName),
+                gitOptions,
+              );
+              if (!fetched.ok || fetched.value.code !== 0) {
+                return {
+                  ok: false,
+                  error: new Error(
+                    `Failed to fetch base branch '${target.baseRefName}'`,
+                  ),
+                };
+              }
+              return await updatePrBranch(
+                target.headRefName,
+                target.baseRefName,
+                gitOptions,
+                "behind",
+              );
+            },
+            // Rerun the owning lane on this PR only; the lane takes its own
+            // lease, which the pass has already given back.
+            dispatchLane: async (target, lane: StallLane) => {
+              stallLaneTarget = {
+                repo: target.repo,
+                prNumber: target.prNumber,
+              };
+              try {
+                const ran = lane === "ci-fix"
+                  ? await deps.findAndProcessCiFailure()
+                  : await deps.findAndProcessPrFeedback();
+                if (!ran.ok) return { ok: false, error: ran.error };
+                logger.info(
+                  `Stall repair: ${lane} lane rerun on ` +
+                    `${target.repo}#${target.prNumber} ` +
+                    `(processed=${ran.value.processed})`,
+                );
+                return { ok: true, value: undefined };
+              } finally {
+                stallLaneTarget = undefined;
+              }
+            },
+          },
         });
         if (!scan.ok) {
-          logger.warn("Blocking-PR stall scan failed", {
+          logger.warn("Blocking-PR stall repair failed", {
             error: scan.error.message,
           });
         }
@@ -3110,7 +3182,7 @@ export async function createProductionRunCoreDeps(
       } catch (err) {
         // Never throw out of this handler — a watchdog must not be the
         // reason the main loop stops.
-        logger.warn("Blocking-PR stall scan: unexpected error", {
+        logger.warn("Blocking-PR stall repair: unexpected error", {
           error: err instanceof Error ? err.message : String(err),
         });
         return { ok: true, value: undefined };
@@ -3250,8 +3322,8 @@ export async function createProductionRunCoreDeps(
     async cleanupMergedBranches() {
       // Issue #1787: pass `issueCache` so the merged-PR fetch and the
       // per-branch open-PR safety check share the iteration-scoped
-      // cache. Issue #4255: the persisted watermark skips PRs already
-      // swept on earlier cycles, and the summary line makes this step's
+      // cache. Issue #4255, #2832: the persisted processed set skips PRs
+      // already swept on earlier cycles, and the summary line makes this step's
       // cost visible — it used to be a 12–20 minute silent hole.
       const startedAt = Date.now();
       const result = await cleanupMergedPrBranches(
@@ -3300,6 +3372,8 @@ export async function createProductionRunCoreDeps(
             // close, so the maintenance author set is what is trusted here.
             fleetAuthors: maintenanceAuthors,
             logFn: (message: string) => logger.info(message),
+            // Issue #2831: a failed fetch or state save is logged, not lost.
+            logger,
           },
         );
         const seconds = Math.round((Date.now() - startedAt) / 1000);
@@ -5931,6 +6005,7 @@ async function syncMilestoneBranchesFn(
         milestoneBranch,
         defaultBranch,
         cwd: `${workDir}/${repo.split("/")[1]}`,
+        log: (message: string) => logger.warn(message),
       });
     },
     // Issue #2030: lane lease per repository, and a cross-host claim per

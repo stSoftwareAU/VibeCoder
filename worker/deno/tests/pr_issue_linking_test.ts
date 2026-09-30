@@ -1364,6 +1364,23 @@ function createRecordingGh(handlers: {
   return { fn, calls, closed };
 }
 
+/**
+ * `owner/repo`'s processed PR numbers in the v2 state file (Issue #2831). No
+ * file yet means nothing was processed — the sweep only writes on a change.
+ */
+async function processedFor(path: string): Promise<number[]> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(path);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return [];
+    throw err;
+  }
+  const state = JSON.parse(text);
+  assertEquals(state.version, 2);
+  return state.repos["owner/repo"]?.processed ?? [];
+}
+
 Deno.test("pr_issue_linking - the reconcile watermark suppresses issue views on the next cycle (Issue #4256)", async () => {
   const tempDir = await Deno.makeTempDir();
   try {
@@ -1414,7 +1431,7 @@ Deno.test("pr_issue_linking - the reconcile watermark suppresses issue views on 
   }
 });
 
-Deno.test("pr_issue_linking - a failed issue view holds the watermark back for retry (Issue #4256)", async () => {
+Deno.test("pr_issue_linking - a failed issue view leaves the PR unprocessed for retry (Issues #4256, #2831)", async () => {
   const tempDir = await Deno.makeTempDir();
   try {
     const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
@@ -1440,11 +1457,10 @@ Deno.test("pr_issue_linking - a failed issue view holds the watermark back for r
       { verifyMergeLandedFn: alwaysLanded, watermarkPath },
     );
     assertEquals(c1, 0);
-    const marks = JSON.parse(await Deno.readTextFile(watermarkPath));
     assertEquals(
-      marks["owner/repo"],
-      6,
-      "a failed reconciliation must stay below the watermark",
+      await processedFor(watermarkPath),
+      [],
+      "a failed reconciliation must not be marked processed",
     );
 
     // Next cycle the view succeeds and the issue is closed.
@@ -1459,14 +1475,13 @@ Deno.test("pr_issue_linking - a failed issue view holds the watermark back for r
     );
     assertEquals(c2, 1);
     assertEquals(good.closed, ["77"]);
-    const after = JSON.parse(await Deno.readTextFile(watermarkPath));
-    assertEquals(after["owner/repo"], 7);
+    assertEquals(await processedFor(watermarkPath), [7]);
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }
 });
 
-Deno.test("pr_issue_linking - a planning-label skip holds the watermark back (Issue #4256)", async () => {
+Deno.test("pr_issue_linking - a planning-label skip leaves the PR unprocessed (Issues #4256, #2831)", async () => {
   const tempDir = await Deno.makeTempDir();
   try {
     const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
@@ -1497,13 +1512,188 @@ Deno.test("pr_issue_linking - a planning-label skip holds the watermark back (Is
       { verifyMergeLandedFn: alwaysLanded, watermarkPath },
     );
     assertEquals(c1, 0);
-    const marks = JSON.parse(await Deno.readTextFile(watermarkPath));
     assertEquals(
-      marks["owner/repo"],
-      8,
+      await processedFor(watermarkPath),
+      [],
       "a planning issue stays deliberately open — keep re-checking it " +
         "until the label comes off or the issue closes",
     );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+// --- closeIssuesForMergedPrs processed-set store (Issue #2831) ---
+
+/** A merged PR fixing `issue`, as the `gh pr list` listing returns it. */
+function mergedPr(number: number, issue: number) {
+  return {
+    number,
+    title: `Fix: Bug (#${issue})`,
+    headRefName: `issue-${issue}`,
+    mergedAt: "2026-01-02T00:00:00Z",
+  };
+}
+
+/** Records warnings so a test can assert a failure was logged, not swallowed. */
+function recordingWarn() {
+  const warnings: string[] = [];
+  return { warnings, logger: { warn: (m: string) => warnings.push(m) } };
+}
+
+Deno.test("pr_issue_linking - a lower-numbered PR merged after a processed higher one still closes its issue (Issue #2831)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
+    await Deno.writeTextFile(
+      watermarkPath,
+      JSON.stringify({
+        version: 2,
+        repos: { "owner/repo": { processed: [200] } },
+      }),
+    );
+    const gh = createRecordingGh({
+      prs: JSON.stringify([mergedPr(150, 15), mergedPr(200, 20)]),
+    });
+    const closed = await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      gh.fn,
+      "planning",
+      undefined,
+      { verifyMergeLandedFn: alwaysLanded, watermarkPath },
+    );
+    assertEquals(closed, 1);
+    assertEquals(gh.closed, ["15"]);
+    const views = gh.calls.filter((c) => c[0] === "issue" && c[1] === "view");
+    assertEquals(views.map((c) => c[2]), ["15"], "PR 200 is not re-examined");
+    assertEquals(await processedFor(watermarkPath), [150, 200]);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("pr_issue_linking - a legacy v1 watermark file re-examines the whole window once (Issue #2831)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
+    // v1 said everything up to 300 was done — the out-of-order bug's shape.
+    await Deno.writeTextFile(
+      watermarkPath,
+      JSON.stringify({ "owner/repo": 300 }),
+    );
+    const prs = JSON.stringify([mergedPr(100, 10), mergedPr(200, 20)]);
+    const first = createRecordingGh({
+      prs,
+      // Issue 20 was closed long ago: closing it again must stay a no-op.
+      view: (issue) =>
+        JSON.stringify({
+          state: issue === "20" ? "CLOSED" : "OPEN",
+          labels: [],
+          createdAt: "2026-01-01T00:00:00Z",
+        }),
+    });
+    const c1 = await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      first.fn,
+      "planning",
+      undefined,
+      { verifyMergeLandedFn: alwaysLanded, watermarkPath },
+    );
+    assertEquals(c1, 1);
+    assertEquals(first.closed, ["10"]);
+    assertEquals(await processedFor(watermarkPath), [100, 200]);
+
+    const second = createRecordingGh({ prs });
+    const c2 = await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      second.fn,
+      "planning",
+      undefined,
+      { verifyMergeLandedFn: alwaysLanded, watermarkPath },
+    );
+    assertEquals(c2, 0);
+    assertEquals(
+      second.calls.filter((c) => c[0] === "issue").length,
+      0,
+      "the catch-up examines each PR once, then marks it",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("pr_issue_linking - a failed merged-PR fetch leaves the state file byte-identical and is logged (Issue #2831)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
+    const original = JSON.stringify({
+      version: 2,
+      repos: {
+        "owner/repo": { processed: [1, 2, 3] },
+        "owner/other": { processed: [9] },
+      },
+    });
+    await Deno.writeTextFile(watermarkPath, original);
+    const fn = (args: string[]): Promise<string> =>
+      args[0] === "pr" && args[1] === "list"
+        ? Promise.reject(new Error("GraphQL: API rate limit already exceeded"))
+        : Promise.resolve("");
+    const { warnings, logger } = recordingWarn();
+    const closed = await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      fn,
+      "planning",
+      undefined,
+      { verifyMergeLandedFn: alwaysLanded, watermarkPath, logger },
+    );
+    assertEquals(closed, 0);
+    assertEquals(await Deno.readTextFile(watermarkPath), original);
+    assertEquals(warnings.length, 1);
+    assertEquals(warnings[0]!.includes("owner/repo"), true);
+    assertEquals(warnings[0]!.includes("API rate limit"), true);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("pr_issue_linking - a PR whose issue close failed is not marked and is retried next sweep (Issue #2831)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
+    const prs = JSON.stringify([mergedPr(40, 44), mergedPr(41, 45)]);
+    const good = createRecordingGh({ prs });
+    const failingClose = (args: string[]): Promise<string> =>
+      args[0] === "issue" && args[1] === "close" && args[2] === "44"
+        ? Promise.reject(new Error("HTTP 502"))
+        : good.fn(args);
+    const c1 = await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      failingClose,
+      "planning",
+      undefined,
+      { verifyMergeLandedFn: alwaysLanded, watermarkPath },
+    );
+    assertEquals(c1, 1);
+    assertEquals(good.closed, ["45"]);
+    assertEquals(await processedFor(watermarkPath), [41]);
+
+    const retry = createRecordingGh({ prs });
+    const c2 = await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      retry.fn,
+      "planning",
+      undefined,
+      { verifyMergeLandedFn: alwaysLanded, watermarkPath },
+    );
+    assertEquals(c2, 1);
+    assertEquals(retry.closed, ["44"]);
+    assertEquals(await processedFor(watermarkPath), [40, 41]);
   } finally {
     await Deno.remove(tempDir, { recursive: true });
   }

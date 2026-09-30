@@ -1437,15 +1437,15 @@ helper serves every site. The directions are pinned by test in
 | [`setup/workflow_sync.ts`](worker/deno/setup/workflow_sync.ts) | Suppressing a workflow issue, `--state all` | **File the issue.** |
 | [`shared_cooldown.ts`](worker/deno/lib/shared_cooldown.ts) | The whole fleet skipping an issue | **Do not suppress the work.** The `--jq` projection now carries `.user.login` through — it previously discarded the author before the check, leaving nothing to check. |
 | [`failure_detection_resume.ts`](worker/deno/lib/failure_detection_resume.ts) | Spending the retry budget, forcing `escalated` | **Retry.** An unverifiable tally counts as zero attempts rather than giving up on evidence it cannot read. |
-| [`escalate_as_work.ts`](worker/deno/lib/escalate_as_work.ts) | Posting the escalation body onto the matched issue | **File a fresh escalation.** Scoped by the work label *and* the author — applying a label needs triage permission. |
+| [`escalated_cleanup.ts`](worker/deno/lib/escalated_cleanup.ts) | `gh issue close` on a matched `PR #N cannot land:` issue | **Close nothing.** A human-filed issue with the same title is never touched (Issue #2805). |
 | [`setup/collaborator_precheck.ts`](worker/deno/setup/collaborator_precheck.ts) | Posting the follow-up, which carries `gh api …/collaborators` invite commands | **File a fresh issue.** |
 | [`setup/best_practices_relabel.ts`](worker/deno/setup/best_practices_relabel.ts) | Writing derived labels onto the matched issue | **Write no labels.** |
 | [`milestone_branch_sync.ts`](worker/deno/lib/milestone_branch_sync.ts) (`clearEarlierSyncEscalation`) | Removing `needs-human` from a milestone's tracking issue | **Leave the label alone.** The marker prefix is fixed text and the milestone branch it names is public on every milestone PR, so an unauthored match let any commenter strip a human-attention label (Issue #2231). Pinned by `worker/deno/tests/milestone_sync_escalation_author_2231_test.ts`. |
 | [`milestone_conflict_dedup.ts`](worker/deno/lib/milestone_conflict_dedup.ts) (`hasConflictEscalationComment`) | Suppressing the sync-conflict analysis a human must settle | **Report the conflict again.** A duplicate analysis is noise a reader skips; a suppressed one leaves the conflict unreported (Issue #2231). |
 
 - **Label scope where it holds, and only there.** Where a label is reliably
-  present on the fleet's own issues it is applied alongside the author check
-  (`escalate_as_work`), because applying a label needs triage permission —
+  present on the fleet's own issues it is applied alongside the author check,
+  because applying a label needs triage permission —
   the pattern `security_tree_sweep.ts` and `idle_task_activity.ts` already
   use. It is deliberately *not* applied where the label is generic or absent:
   workflow-sync issues get relabelled by their target repositories and the

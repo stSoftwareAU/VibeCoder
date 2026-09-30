@@ -704,6 +704,36 @@ to `redactSecrets()` is part of adding it, not a follow-up.
 The full standard, the list of sinks already wired, and the rationale live in
 [SECURITY.md → Secret Redaction — Every Outbound Sink](SECURITY.md#-secret-redaction--every-outbound-sink).
 
+## Path Confinement — Resolve Before You Check
+
+Guards that confine a path to, or keep it out of, a directory keep missing
+`..` traversal because they check a partly resolved path.
+
+- **Resolve fully, then check — in this order.** Before comparing a path
+  against an allowed or forbidden directory: (1) join it to the working
+  directory; (2) normalise or reject every `..` and `.` segment of the whole
+  joined path, including any tail that does not exist yet; (3) canonicalise the
+  longest existing prefix of the *normalised* path (following symlinks); (4)
+  compare. Then act on the path you checked, not the original string. The
+  order matters: canonicalising first and normalising the tail afterwards lets
+  `<dir>/missing/../link/file` collapse to `<dir>/link/file` after the
+  symlink check has already run, so a `link` pointing outside still escapes.
+  Never check a partly resolved path.
+- **Allow-list identifiers that become path segments.** Refs, names and IDs
+  joined into a path need their own allow-list validator that rejects `..`,
+  `/` and absolute paths. Do not reuse a validator written for another purpose
+  (e.g. `assertSafeGitRef`, which accepts `..`).
+- **Negative tests are part of the guard.** Every such guard ships with tests
+  for `..` traversal — including `..` after a not-yet-existing component —
+  and, on Unix, a symlink into the protected directory, plus the combined
+  case: `..` after a not-yet-existing component that lands on a symlink
+  pointing out (`<dir>/missing/../link/file`).
+- **Do not claim a traversal case is impossible** in a PR summary unless a
+  test proves it.
+
+Seen in VibeCoder#2881 (`assertSafeGitRef` accepting `..`) and GRQ-GTC#448 (a
+non-existent tail containing `..` appended after canonicalisation).
+
 ## A Code Change Owes a Docs Change
 
 When you rename a symbol, change a signature or a default, add or remove a flag,
@@ -711,6 +741,21 @@ or change a documented command, grep the repo's docs for the old name and update
 every surface that mentions it — README, `docs/`, operator manuals, prompt
 templates, and agent instructions — in the same change. Do it before the commit,
 not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
+
+- Changing the **behaviour or meaning** of an existing function, field,
+  setting or endpoint while keeping its name also owes a docs change — the
+  rename rule alone misses it, because there is no old name to grep for.
+- Grep for the **unchanged name**, then re-read every hit — including the doc
+  comment directly above the changed code and the prose beside any example you
+  updated — and fix any that still describe the old behaviour.
+- Updating an example alone is not enough: if the surrounding prose still
+  describes the old contract, the doc is still stale.
+- When a change alters what an existing **state, enum variant, field or value**
+  means — even though its name stays — find every place that **renders or
+  explains** it: API response strings and labels, reason and stage sentences,
+  UI copy, and the docs prose for those fields. Make each one true for **every
+  case** the new behaviour produces, not only the common one. Grep for the
+  variant or field name **and** for the old wording.
 
 ## A Contract a Deployed Extension Reads Is Additive-Only
 

@@ -210,10 +210,10 @@
         "worker/deno/lib/default_branch_approval.ts",
         "worker/deno/lib/dependency_conflict_decisions.ts",
         "worker/deno/lib/dependency_conflict_json.ts",
+        "worker/deno/lib/dependency_landed.ts",
         "worker/deno/lib/diagnose.ts",
         "worker/deno/lib/diagnose_issue.ts",
         "worker/deno/lib/direct_merge.ts",
-        "worker/deno/lib/escalate_as_work.ts",
         "worker/deno/lib/escalation_cleanup.ts",
         "worker/deno/lib/execute_claude_phase.ts",
         "worker/deno/lib/failure_detection_gate.ts",
@@ -280,12 +280,14 @@
         "worker/deno/lib/milestone_conflict_git.ts",
         "worker/deno/lib/milestone_conflict_ladder.ts",
         "worker/deno/lib/milestone_conflict_triage.ts",
+        "worker/deno/lib/milestone_deadlock_rollup.ts",
         "worker/deno/lib/milestone_escalation_target.ts",
         "worker/deno/lib/milestone_gate_wedge.ts",
         "worker/deno/lib/milestone_health.ts",
         "worker/deno/lib/milestone_merge_gate.ts",
         "worker/deno/lib/milestone_merge_state.ts",
         "worker/deno/lib/milestone_open_children.ts",
+        "worker/deno/lib/milestone_partial_rollup.ts",
         "worker/deno/lib/milestone_presync.ts",
         "worker/deno/lib/milestone_resolution_gate.ts",
         "worker/deno/lib/milestone_ruleset_check.ts",
@@ -701,6 +703,7 @@
         "worker/deno/lib/mermaid_validator.ts",
         "worker/deno/lib/milestone_branch_filter_scanner.ts",
         "worker/deno/lib/milestone_branch_rejection.ts",
+        "worker/deno/lib/milestone_deadlock.ts",
         "worker/deno/lib/milestone_local_branch.ts",
         "worker/deno/lib/milestone_priority.ts",
         "worker/deno/lib/milestone_progress.ts",
@@ -2244,6 +2247,30 @@
       ]
     },
     {
+      "issue": 2802,
+      "chunk": "top-up-2802",
+      "title": "top-up: the blocking-PR stall repair",
+      "ledger": "docs/audits/security-sweep-2802-stall-repair.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: stall_repair.ts (#2802)",
+      "status": "swept",
+      "sweptAt": "d992f9bc6c952978d2684fb5bcc0bb460d771c14",
+      "paths": [
+        "worker/deno/lib/stall_repair.ts"
+      ]
+    },
+    {
+      "issue": 2805,
+      "chunk": "top-up-2805",
+      "title": "top-up: the escalated clean-up sweep",
+      "ledger": "docs/audits/security-sweep-2805-escalated-cleanup.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: escalated_cleanup.ts (#2805)",
+      "status": "swept",
+      "sweptAt": "42c876e1aa6f8df81177cc19ddb807dd7912bf63",
+      "paths": [
+        "worker/deno/lib/escalated_cleanup.ts"
+      ]
+    },
+    {
       "issue": 2880,
       "chunk": "top-up-2880",
       "title": "top-up: the broken loose ref repair",
@@ -2253,6 +2280,18 @@
       "sweptAt": "427a8fc58af548ac3137794b15db622c90db2a4e",
       "paths": [
         "worker/deno/lib/broken_ref_repair.ts"
+      ]
+    },
+    {
+      "issue": 2914,
+      "chunk": "top-up-2914",
+      "title": "top-up: the cancelled-check re-run",
+      "ledger": "docs/audits/security-sweep-2914-ci-infrastructure-rerun.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: ci_infrastructure_rerun.ts (#2914)",
+      "status": "swept",
+      "sweptAt": "e916b2f7b000809564e815f78f648168938f58b0",
+      "paths": [
+        "worker/deno/lib/ci_infrastructure_rerun.ts"
       ]
     }
   ],

@@ -648,7 +648,30 @@ Deno.test("branch cleanup - the sweep watermark suppresses per-branch calls on t
   });
 });
 
-Deno.test("branch cleanup - an unsafe skip holds the watermark back so the branch is revisited (Issue #4255)", async () => {
+/** Collect warnings so a test can assert the sweep failed loud. */
+function recordingWarn(): {
+  warnings: string[];
+  logger: { warn(m: string): void };
+} {
+  const warnings: string[] = [];
+  return { warnings, logger: { warn: (m: string) => warnings.push(m) } };
+}
+
+/** `org/repo`'s processed set in a v2 state file; `[]` when never saved. */
+async function processedFor(path: string): Promise<number[]> {
+  let text: string;
+  try {
+    text = await Deno.readTextFile(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return [];
+    throw error;
+  }
+  const state = JSON.parse(text);
+  assertEquals(state.version, 2, "the sweep must persist the v2 processed set");
+  return state.repos["org/repo"]?.processed ?? [];
+}
+
+Deno.test("branch cleanup - an unsafe skip is left unprocessed so the branch is revisited (Issue #4255, #2832)", async () => {
   await withSandboxedWorkDir(async (tempDir) => {
     const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
     const responses = {
@@ -676,11 +699,10 @@ Deno.test("branch cleanup - an unsafe skip holds the watermark back so the branc
       assertEquals(r1.value.skippedCount, 1);
     }
 
-    const marks = JSON.parse(await Deno.readTextFile(watermarkPath));
     assertEquals(
-      marks["org/repo"],
-      9,
-      "the watermark must sit below the unsafe PR so it is reconsidered",
+      await processedFor(watermarkPath),
+      [12],
+      "only the deleted branch's PR is processed; the unsafe one is reconsidered",
     );
   });
 });
@@ -698,16 +720,227 @@ Deno.test("branch cleanup - a corrupt watermark file is treated as empty (Issue 
       "git/ref/heads/issue-3-fix": '{"ref": "refs/heads/issue-3-fix"}',
       "-X DELETE": "",
     });
+    const { warnings, logger } = recordingWarn();
+    const result = await cleanupMergedPrBranches(["org/repo"], "testuser", {
+      ghCommandFn,
+      watermarkPath,
+      workDir: tempDir,
+      logger,
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.deletedCount, 1);
+
+    assertEquals(
+      await processedFor(watermarkPath),
+      [3],
+      "the sweep must recover and re-persist",
+    );
+    assert(warnings.some((w) => w.includes("not valid JSON")));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Processed-set store (Issue #2832): merge-order independent
+// ---------------------------------------------------------------------------
+
+Deno.test("branch cleanup - a PR merged out of order is still swept when a higher one is processed (Issue #2832)", async () => {
+  await withSandboxedWorkDir(async (tempDir) => {
+    const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
+    await Deno.writeTextFile(
+      watermarkPath,
+      JSON.stringify({
+        version: 2,
+        repos: { "org/repo": { processed: [200] } },
+      }),
+    );
+    const { ghCommandFn, calls } = createMockGh({
+      "--state merged": JSON.stringify([
+        { number: 200, title: "Fix issue 200", headRefName: "issue-200-fix" },
+        { number: 150, title: "Fix issue 150", headRefName: "issue-150-fix" },
+      ]),
+      "--state open": "",
+      "git/ref/heads/issue-150-fix": '{"ref": "refs/heads/issue-150-fix"}',
+      "-X DELETE": "",
+    });
+
     const result = await cleanupMergedPrBranches(["org/repo"], "testuser", {
       ghCommandFn,
       watermarkPath,
       workDir: tempDir,
     });
+
     assertEquals(result.ok, true);
     if (result.ok) assertEquals(result.value.deletedCount, 1);
+    const joined = calls.map((c) => c.join(" "));
+    assert(
+      joined.includes(
+        "api -X DELETE repos/org/repo/git/refs/heads/issue-150-fix",
+      ),
+      "PR 150's branch must be deleted although PR 200 is already processed",
+    );
+    assert(
+      !joined.some((c) => c.includes("issue-200-fix")),
+      "the processed PR 200 must not be probed again",
+    );
+    assertEquals(await processedFor(watermarkPath), [150, 200]);
+  });
+});
 
-    const marks = JSON.parse(await Deno.readTextFile(watermarkPath));
-    assertEquals(marks["org/repo"], 3, "the sweep must recover and re-persist");
+Deno.test("branch cleanup - an already-gone branch is marked processed (Issue #2832)", async () => {
+  await withSandboxedWorkDir(async (tempDir) => {
+    const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
+    const { ghCommandFn } = createMockGh({
+      "--state merged": JSON.stringify([
+        { number: 21, title: "Fix issue 21", headRefName: "issue-21-fix" },
+        { number: 22, title: "Fix issue 22", headRefName: "issue-22-fix" },
+      ]),
+      "--state open": "",
+      // 21: the probe already 404s.
+      "git/ref/heads/issue-21-fix": new Error("gh: Not Found (HTTP 404)"),
+      // 22: gone between the probe and the delete — GitHub answers 422.
+      "git/ref/heads/issue-22-fix": '{"ref": "refs/heads/issue-22-fix"}',
+      "-X DELETE": new Error(
+        "gh: Reference does not exist (HTTP 422)",
+      ),
+    });
+
+    const result = await cleanupMergedPrBranches(["org/repo"], "testuser", {
+      ghCommandFn,
+      watermarkPath,
+      workDir: tempDir,
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.deletedCount, 0);
+      assertEquals(result.value.skippedMissingCount, 2);
+    }
+    assertEquals(await processedFor(watermarkPath), [21, 22]);
+  });
+});
+
+Deno.test("branch cleanup - a failed delete is logged, left unprocessed and retried next sweep (Issue #2832)", async () => {
+  await withSandboxedWorkDir(async (tempDir) => {
+    const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
+    const responses = {
+      "--state merged": JSON.stringify([
+        { number: 31, title: "Fix issue 31", headRefName: "issue-31-fix" },
+      ]),
+      "--state open": "",
+      "git/ref/heads/issue-31-fix": '{"ref": "refs/heads/issue-31-fix"}',
+      "-X DELETE": new Error("gh: Server Error (HTTP 502)"),
+    };
+    const { warnings, logger } = recordingWarn();
+
+    const first = createMockGh(responses);
+    await cleanupMergedPrBranches(["org/repo"], "testuser", {
+      ghCommandFn: first.ghCommandFn,
+      watermarkPath,
+      workDir: tempDir,
+      logger,
+    });
+    assertEquals(await processedFor(watermarkPath), []);
+    assert(
+      warnings.some((w) =>
+        w.includes("issue-31-fix") && w.includes("HTTP 502")
+      ),
+      `the failed delete must be logged, got: ${JSON.stringify(warnings)}`,
+    );
+
+    const second = createMockGh(responses);
+    await cleanupMergedPrBranches(["org/repo"], "testuser", {
+      ghCommandFn: second.ghCommandFn,
+      watermarkPath,
+      workDir: tempDir,
+      logger,
+    });
+    assert(
+      second.calls.some((c) => c.join(" ").includes("-X DELETE")),
+      "the next sweep must retry the delete",
+    );
+  });
+});
+
+Deno.test("branch cleanup - an inconclusive ref probe is logged and left unprocessed (Issue #2832)", async () => {
+  await withSandboxedWorkDir(async (tempDir) => {
+    const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
+    const { ghCommandFn, calls } = createMockGh({
+      "--state merged": JSON.stringify([
+        { number: 41, title: "Fix issue 41", headRefName: "issue-41-fix" },
+      ]),
+      "git/ref/heads/issue-41-fix": new Error("gh: Server Error (HTTP 503)"),
+    });
+    const { warnings, logger } = recordingWarn();
+
+    const result = await cleanupMergedPrBranches(["org/repo"], "testuser", {
+      ghCommandFn,
+      watermarkPath,
+      workDir: tempDir,
+      logger,
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.skippedMissingCount, 0);
+    assert(!calls.some((c) => c.join(" ").includes("-X DELETE")));
+    assertEquals(await processedFor(watermarkPath), []);
+    assert(warnings.some((w) => w.includes("issue-41-fix")));
+  });
+});
+
+Deno.test("branch cleanup - a failed merged-PR fetch leaves the state file unchanged (Issue #2832)", async () => {
+  await withSandboxedWorkDir(async (tempDir) => {
+    const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
+    const before = JSON.stringify(
+      { version: 2, repos: { "org/repo": { processed: [5, 6] } } },
+    );
+    await Deno.writeTextFile(watermarkPath, before);
+    const { ghCommandFn } = createMockGh({
+      "--state merged": new Error("gh: Server Error (HTTP 500)"),
+    });
+    const { warnings, logger } = recordingWarn();
+
+    const result = await cleanupMergedPrBranches(["org/repo"], "testuser", {
+      ghCommandFn,
+      watermarkPath,
+      workDir: tempDir,
+      logger,
+    });
+
+    assertEquals(result.ok, true);
+    assertEquals(await Deno.readTextFile(watermarkPath), before);
+    assert(
+      warnings.some((w) => w.includes("org/repo") && w.includes("HTTP 500")),
+      `the failed fetch must be logged, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+});
+
+Deno.test("branch cleanup - a legacy v1 watermark file reads as empty so the window is caught up (Issue #2832)", async () => {
+  await withSandboxedWorkDir(async (tempDir) => {
+    const watermarkPath = `${tempDir}/merged_sweep_watermarks.json`;
+    // v1 said "everything up to 300 is done" — which hid PR 150's branch.
+    await Deno.writeTextFile(
+      watermarkPath,
+      JSON.stringify({ "org/repo": 300 }),
+    );
+    const { ghCommandFn } = createMockGh({
+      "--state merged": JSON.stringify([
+        { number: 150, title: "Fix issue 150", headRefName: "issue-150-fix" },
+      ]),
+      "--state open": "",
+      "git/ref/heads/issue-150-fix": '{"ref": "refs/heads/issue-150-fix"}',
+      "-X DELETE": "",
+    });
+
+    const result = await cleanupMergedPrBranches(["org/repo"], "testuser", {
+      ghCommandFn,
+      watermarkPath,
+      workDir: tempDir,
+    });
+
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.deletedCount, 1);
+    assertEquals(await processedFor(watermarkPath), [150]);
   });
 });
 

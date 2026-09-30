@@ -8,25 +8,24 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   AUTO_FIX_CAP_MARKER_PREFIX,
-  BLOCKING_PR_STALL_NEXT_STEP,
   BLOCKING_PR_STALL_WITHDRAWAL_MARKER,
   type BlockingPrObservation,
   blockingPrStallMarker,
-  buildBlockingPrStallNextStep,
   buildBlockingPrStallReason,
   DEFAULT_BLOCKING_PR_STALL_THRESHOLD_SECONDS,
-  describeStallSummary,
   detectBlockingPrStall,
-  escalateBlockingPrStall,
   findBlockingPrObservations,
   isMergeConflictLaneOwned,
   resolveBlockingPrStallThresholdSeconds,
+  resolveGreenBlockingPr,
   scanBlockingPrStalls,
+  STALL_REPAIR_MARKER_PREFIX,
   withdrawBlockingPrStallEscalation,
 } from "../lib/blocking_pr_stall_detector.ts";
 import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 import { MERGE_CONFLICT_LABEL } from "../lib/pr_merge_conflict_scan.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, RepoConfig, Result } from "../types.ts";
+import type { MergeResult } from "../lib/direct_merge.ts";
 
 const REPO = "owner/repo";
 const NOW = Date.parse("2026-08-11T20:00:00Z") / 1000;
@@ -243,9 +242,6 @@ Deno.test("threshold resolves per-repo override then global default", () => {
 /** The fleet login the escalation stub writes its own comments as. */
 const FLEET_LOGIN = "vibe-coder-bot";
 
-/** Fleet identity the marker-author check is given instead of a config. */
-const FLEET_DEDUP = { fleetAuthors: [FLEET_LOGIN] };
-
 function buildEscalationGh(
   comments: string[],
   writes: string[][],
@@ -285,100 +281,6 @@ function buildEscalationGh(
     return Promise.resolve("{}");
   };
 }
-
-function redCiStall() {
-  return {
-    repo: REPO,
-    prNumber: 103,
-    blockedIssues: [93, 94],
-    signals: [
-      {
-        reason: "red-ci" as const,
-        stalledSeconds: 28380,
-        detail: "checks failing for 7 hours with no new push (quality)",
-      },
-    ],
-  };
-}
-
-Deno.test("escalation comment posted at most once per PR per stall reason", async () => {
-  const comments: string[] = [];
-  const writes: string[][] = [];
-  const gh = buildEscalationGh(comments, writes);
-  const deps = {
-    ghCommandFn: gh,
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    dedupAuthors: FLEET_DEDUP,
-    logger,
-  };
-
-  const first = await escalateBlockingPrStall(redCiStall(), deps);
-  assert(first.ok);
-  assertEquals(first.value.postedReasons, ["red-ci"]);
-
-  const second = await escalateBlockingPrStall(redCiStall(), deps);
-  assert(second.ok);
-  assertEquals(second.value.postedReasons, []);
-
-  const posted = comments.filter((c) =>
-    c.includes(blockingPrStallMarker("red-ci"))
-  );
-  assertEquals(posted.length, 1, "exactly one comment for the red-ci reason");
-  assertStringIncludes(posted[0]!, "#93, #94");
-});
-
-Deno.test("an auto-fix-cap marker planted by an outsider does not suppress the escalation (Issue #1216)", async () => {
-  // A PR comment is text any GitHub account may write, and this marker
-  // suppresses the whole stall escalation for the PR. Trusting the body alone
-  // let one planted comment silence the watchdog on that PR for good.
-  const writes: string[][] = [];
-  const comments: string[] = [];
-  const gh = buildEscalationGh(comments, writes, "drive-by-attacker");
-  comments.push(
-    `## Automatic fix attempts exhausted\n\n${
-      buildDedupMarker("auto-fix-cap:deadbeefdeadbeef")
-    }`,
-  );
-
-  const result = await escalateBlockingPrStall(redCiStall(), {
-    ghCommandFn: gh,
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    dedupAuthors: FLEET_DEDUP,
-    logger,
-  });
-
-  assert(result.ok);
-  assertEquals(result.value.suppressedByAutoFixCap, false);
-  assertEquals(result.value.postedReasons, ["red-ci"]);
-});
-
-Deno.test("escalation is suppressed when the auto-fix cap has already escalated", async () => {
-  const comments = [
-    `## Automatic fix attempts exhausted\n\n${
-      buildDedupMarker("auto-fix-cap:deadbeefdeadbeef")
-    }`,
-  ];
-  const writes: string[][] = [];
-  const gh = buildEscalationGh(comments, writes);
-
-  const result = await escalateBlockingPrStall(redCiStall(), {
-    ghCommandFn: gh,
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    dedupAuthors: FLEET_DEDUP,
-    logger,
-  });
-
-  assert(result.ok);
-  assertEquals(result.value.suppressedByAutoFixCap, true);
-  assertEquals(result.value.postedReasons, []);
-  assertEquals(writes.length, 0, "no label or comment writes when suppressed");
-});
 
 Deno.test("auto-fix cap marker prefix matches the escalation helper's marker", () => {
   assert(
@@ -512,7 +414,7 @@ Deno.test("observation gathering maps blocked work-on issues onto the blocking P
   assertEquals(obs.lastFleetReplyAt, "2026-08-11T11:00:00Z");
 });
 
-Deno.test("scan escalates a stalled blocking PR once and reports it", async () => {
+Deno.test("scan reports a stalled blocking PR and writes nothing — no issue, no label (Issue #2802)", async () => {
   const fixture: ScanFixture = {
     issues: [
       { number: 93, labels: ["work-on"] },
@@ -525,36 +427,24 @@ Deno.test("scan escalates a stalled blocking PR once and reports it", async () =
   const writes: string[][] = [];
   const gh = buildScanGh(fixture, comments, writes);
 
-  const scanOptions = {
+  const scan = await scanBlockingPrStalls({
     repos: [REPO],
     workOnLabel: "work-on",
     fleetAuthors: ["vibe-coder"],
     authorisedCommenters: ["nigel"],
     ghCommandFn: gh,
     config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
-    needsHumanLabel: "needs-human",
-    githubUser: "vibe-coder",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    dedupAuthors: FLEET_DEDUP,
     logger,
     nowSeconds: () => NOW,
-  };
-
-  const first = await scanBlockingPrStalls(scanOptions);
-  assert(first.ok);
-  assertEquals(first.value.length, 1);
-  assertEquals(first.value[0]!.signals.map((s) => s.reason), [
+  });
+  assert(scan.ok);
+  assertEquals(scan.value.length, 1);
+  assertEquals(scan.value[0]!.signals.map((s) => s.reason), [
     "red-ci",
     "unanswered-comment",
   ]);
-  assertEquals(comments.length, 2, "one comment per stall reason");
-
-  // A second iteration inside the same stall must not add more comments.
-  const second = await scanBlockingPrStalls(scanOptions);
-  assert(second.ok);
-  assertEquals(second.value.length, 1);
-  assertEquals(comments.length, 2, "marker dedup holds across iterations");
+  assertEquals(comments.length, 0, "the scan posts no escalation comment");
+  assertEquals(writes.length, 0, "the scan files and labels nothing");
 });
 
 Deno.test("scan ignores an open PR that blocks no work-on issue", async () => {
@@ -574,10 +464,6 @@ Deno.test("scan ignores an open PR that blocks no work-on issue", async () => {
     authorisedCommenters: ["nigel"],
     ghCommandFn: gh,
     config: {},
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    dedupAuthors: FLEET_DEDUP,
     logger,
     nowSeconds: () => NOW,
   });
@@ -586,65 +472,6 @@ Deno.test("scan ignores an open PR that blocks no work-on issue", async () => {
   assertEquals(result.value, []);
   assertEquals(comments.length, 0);
   assertEquals(writes.length, 0);
-});
-
-// ---------------------------------------------------------------------------
-// A mechanical stall is work, not a decision (Issue #569). VibeCoder #549 was
-// escalated here for a two-hour-old semgrep failure — which the CI-fix lane
-// exists to repair — and the `needs-human` that followed then locked the PR
-// out of the merge-conflict lane, which skips any PR carrying that label.
-// ---------------------------------------------------------------------------
-
-Deno.test("escalateBlockingPrStall - files the stall as work and never applies needs-human", async () => {
-  const comments: string[] = [];
-  const writes: string[][] = [];
-  const filed: { prNumber: number; summary: string }[] = [];
-
-  const result = await escalateBlockingPrStall(redCiStall(), {
-    ghCommandFn: buildEscalationGh(comments, writes),
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    escalateWork: (escalation) => {
-      filed.push({
-        prNumber: escalation.prNumber,
-        summary: escalation.summary,
-      });
-      return Promise.resolve({
-        ok: true as const,
-        value: { issueNumber: 601, filed: true },
-      });
-    },
-    logger,
-  });
-
-  assert(result.ok, "the escalation must not fail");
-  // The blockage went to the work queue…
-  assertEquals(filed.length, 1);
-  assertEquals(filed[0]?.prNumber, 103);
-  assertStringIncludes(filed[0]?.summary ?? "", "CI is red");
-
-  // …and `needs-human` — the cross-subsystem veto that strands a PR in every
-  // OTHER lane — was never applied.
-  const labelWrites = writes
-    .filter((args) => (args[3] ?? "").endsWith("/labels"))
-    .flat()
-    .filter((arg) => arg.startsWith("labels[]="))
-    .map((arg) => arg.slice("labels[]=".length));
-
-  assertEquals(
-    labelWrites.includes("needs-human"),
-    false,
-    `a mechanical stall must not veto the other lanes: ${
-      labelWrites.join(", ")
-    }`,
-  );
-  // The PR still carries a marker, so the queue stays visible on the artefact.
-  assertEquals(
-    labelWrites,
-    ["escalated"],
-    "the PR gets the non-vetoing marker and nothing else",
-  );
 });
 
 // ---------------------------------------------------------------------------
@@ -734,7 +561,7 @@ Deno.test("a green PR blocking nothing is out of scope", () => {
   assertEquals(stall, null);
 });
 
-Deno.test("the green-but-unmerged escalation names the PR and the blocked count", () => {
+Deno.test("the stall reason names the PR and the blocked count", () => {
   const stall = detectBlockingPrStall(
     observation({
       createdAt: "2026-08-06T05:46:00Z",
@@ -748,56 +575,6 @@ Deno.test("the green-but-unmerged escalation names the PR and the blocked count"
   assertStringIncludes(reason, `${REPO}#103`);
   assertStringIncludes(reason, "blocking 2 `work-on` issues");
   assertStringIncludes(reason, "#93, #94");
-  assertStringIncludes(
-    describeStallSummary("unmerged-green"),
-    "green but is not being merged",
-  );
-});
-
-Deno.test("a green-but-unmerged stall escalates exactly once", async () => {
-  const comments: string[] = [];
-  const writes: string[][] = [];
-  const gh = buildEscalationGh(comments, writes);
-  const stall = {
-    repo: REPO,
-    prNumber: 305,
-    blockedIssues: [93],
-    signals: [
-      {
-        reason: "unmerged-green" as const,
-        stalledSeconds: 432000,
-        detail: "been open and green for 120 hours with no auto-merge armed" +
-          " and no merge",
-      },
-    ],
-  };
-  const deps = {
-    ghCommandFn: gh,
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    escalateWork: () =>
-      Promise.resolve({
-        ok: true as const,
-        value: { issueNumber: 900, filed: true },
-      }),
-    dedupAuthors: FLEET_DEDUP,
-    logger,
-  };
-
-  const first = await escalateBlockingPrStall(stall, deps);
-  assert(first.ok);
-  assertEquals(first.value.postedReasons, ["unmerged-green"]);
-
-  const second = await escalateBlockingPrStall(stall, deps);
-  assert(second.ok);
-  assertEquals(second.value.postedReasons, []);
-
-  const posted = comments.filter((c) =>
-    c.includes(blockingPrStallMarker("unmerged-green"))
-  );
-  assertEquals(posted.length, 1, "exactly one comment for the stalled repo");
-  assertStringIncludes(posted[0]!, `${REPO}#305`);
 });
 
 Deno.test("a PR that merges inside the threshold is never escalated", async () => {
@@ -817,7 +594,6 @@ Deno.test("a PR that merges inside the threshold is never escalated", async () =
     authorisedCommenters: ["nleck"],
     ghCommandFn: gh,
     config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
-    needsHumanLabel: "needs-human",
     logger,
     nowSeconds: () => NOW,
   });
@@ -924,66 +700,40 @@ Deno.test("a red CONFLICTING PR still trips, and is marked lane-owned", () => {
   assertEquals(stall.mergeConflictLaneOwned, true);
 });
 
-Deno.test("a PR outside the lane keeps the original next step", () => {
-  const stall = detectBlockingPrStall(
-    observation({
-      failingChecks: [{ name: "quality", completedAt: "2026-08-11T12:07:00Z" }],
-      mergeable: "MERGEABLE",
-    }),
-    { thresholdSeconds: THRESHOLD, nowSeconds: NOW },
-  );
-
-  assert(stall);
-  assertEquals(stall.mergeConflictLaneOwned, false);
-  assertEquals(
-    buildBlockingPrStallNextStep(stall),
-    BLOCKING_PR_STALL_NEXT_STEP,
-  );
-});
-
-Deno.test("a lane-owned stall's next step never invites a close", () => {
-  const nextStep = buildBlockingPrStallNextStep({
-    mergeConflictLaneOwned: true,
-  });
-
-  assertStringIncludes(nextStep, "merge-conflict ladder");
-  assertEquals(
-    nextStep.includes("close it"),
-    false,
-    `the ladder owns the close decision: ${nextStep}`,
-  );
-});
-
-Deno.test("the escalation comment on a lane-owned PR omits the close invitation", async () => {
-  const comments: string[] = [];
-  const writes: string[][] = [];
-  const stall = {
-    ...redCiStall(),
-    mergeConflictLaneOwned: true,
+Deno.test("observation gathering reads the stall-repair marker apart from fleet replies (Issue #2802)", async () => {
+  const view = {
+    ...STALLED_VIEW,
+    comments: [
+      ...STALLED_VIEW.comments,
+      {
+        author: { login: "vibe-coder" },
+        createdAt: "2026-08-11T17:00:00Z",
+        body: `${STALL_REPAIR_MARKER_PREFIX} pr="103" -->\nSyncing.`,
+      },
+    ],
   };
+  const gh = buildScanGh(
+    {
+      issues: [{ number: 93, labels: ["work-on"] }],
+      prs: [{ number: 103, baseRefName: "Develop", headRefName: "issue-93" }],
+      views: { 103: view },
+    },
+    [],
+    [],
+  );
 
-  const result = await escalateBlockingPrStall(stall, {
-    ghCommandFn: buildEscalationGh(comments, writes),
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
-    escalateWork: () =>
-      Promise.resolve({
-        ok: true as const,
-        value: { issueNumber: 900, filed: true },
-      }),
-    logger,
+  const [obs] = await findBlockingPrObservations({
+    fleetPrSlotsFor: () => 1,
+    repos: [REPO],
+    workOnLabel: "work-on",
+    fleetAuthors: ["vibe-coder"],
+    authorisedCommenters: ["nigel"],
+    ghCommandFn: gh,
   });
 
-  assert(result.ok);
-  assertEquals(result.value.postedReasons, ["red-ci"]);
-  const posted = comments.at(-1) ?? "";
-  assertStringIncludes(posted, "merge-conflict ladder");
-  assertEquals(
-    posted.includes("close it"),
-    false,
-    `the watchdog must not ask a human to close a laddered PR: ${posted}`,
-  );
+  assert(obs);
+  assertEquals(obs.lastStallRepairAt, "2026-08-11T17:00:00Z");
+  assertEquals(obs.lastFleetReplyAt, "2026-08-11T11:00:00Z");
 });
 
 Deno.test("observation gathering reads the PR's mergeability and labels", async () => {
@@ -1016,7 +766,7 @@ Deno.test("observation gathering reads the PR's mergeability and labels", async 
 
 Deno.test("a live unmerged-green escalation is withdrawn once the PR enters the lane", async () => {
   const comments = [
-    `## Blocking PR has stalled\n\n**Next step:** ${BLOCKING_PR_STALL_NEXT_STEP}\n\n${
+    `## Blocking PR has stalled\n\n**Next step:** Push a fix, reply to the outstanding comment, approve or merge the PR, or close it.\n\n${
       blockingPrStallMarker("unmerged-green")
     }`,
   ];
@@ -1114,7 +864,7 @@ Deno.test("the scan withdraws the live escalation on a PR that entered the lane"
     },
   };
   const comments = [
-    `## Blocking PR has stalled\n\n**Next step:** ${BLOCKING_PR_STALL_NEXT_STEP}\n\n${
+    `## Blocking PR has stalled\n\n**Next step:** Push a fix, reply to the outstanding comment, approve or merge the PR, or close it.\n\n${
       blockingPrStallMarker("unmerged-green")
     }`,
   ];
@@ -1127,9 +877,6 @@ Deno.test("the scan withdraws the live escalation on a PR that entered the lane"
     authorisedCommenters: ["nigel"],
     ghCommandFn: buildScanGh(fixture, comments, writes),
     config: { blockingPrStallThresholdSeconds: THRESHOLD, fleetPrSlots: 1 },
-    needsHumanLabel: "needs-human",
-    ensureLabelExists: () =>
-      Promise.resolve({ ok: true as const, value: undefined }),
     logger,
     nowSeconds: () => NOW,
   };
@@ -1201,4 +948,204 @@ Deno.test("a withdrawal whose comment cannot be posted fails loud", async () => 
 
   assert(!result.ok, "a dropped retraction must not report success");
   assertStringIncludes(result.error.message, "comment refused");
+});
+
+// ---------------------------------------------------------------------------
+// Green PR resolution (Issue #2801) — a green PR is never a stall: it is
+// awaiting approval, merged, or retried next cycle; never escalated or
+// abandoned.
+// ---------------------------------------------------------------------------
+
+/** A blocking PR that has been green and idle for five days. */
+const GREEN_VIEW = {
+  comments: [],
+  commits: [{ oid: "ccc", committedDate: "2026-08-06T05:46:00Z" }],
+  createdAt: "2026-08-06T05:46:00Z",
+  autoMergeRequest: null,
+  isDraft: false,
+  mergeable: "MERGEABLE",
+  labels: [],
+  statusCheckRollup: [
+    {
+      name: "quality",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      completedAt: "2026-08-06T06:00:00Z",
+    },
+  ],
+};
+
+type DirectMergeCall = {
+  repo: string;
+  prNumber: number;
+  options: unknown;
+};
+
+/** Run one scan over a single green blocking PR with a stubbed merge path. */
+async function scanGreenPr(
+  mergeOutcome: () => Promise<Result<MergeResult>>,
+  repoConfig?: Record<string, RepoConfig>,
+) {
+  const fixture: ScanFixture = {
+    issues: [{ number: 93, labels: ["work-on"] }],
+    prs: [{ number: 305, baseRefName: "main", headRefName: "issue-93" }],
+    views: { 305: GREEN_VIEW },
+  };
+  const comments: string[] = [];
+  const writes: string[][] = [];
+  const gh = buildScanGh(fixture, comments, writes);
+  const mergeCalls: DirectMergeCall[] = [];
+  const warnings: string[] = [];
+
+  const result = await scanBlockingPrStalls({
+    repos: [REPO],
+    workOnLabel: "work-on",
+    fleetAuthors: ["vibe-coder"],
+    authorisedCommenters: ["nigel"],
+    ghCommandFn: gh,
+    config: {
+      blockingPrStallThresholdSeconds: THRESHOLD,
+      fleetPrSlots: 1,
+      repoConfig,
+    },
+    logger: { ...logger, warn: (message: string) => warnings.push(message) },
+    nowSeconds: () => NOW,
+    directMergeFn: (repo, prNumber, _gh, _gate, options) => {
+      mergeCalls.push({ repo, prNumber, options });
+      return mergeOutcome();
+    },
+  });
+
+  return { result, comments, writes, mergeCalls, warnings };
+}
+
+/** True when a recorded `gh` call is one of the escalate/abandon writes. */
+function isForbiddenWrite(args: string[]): boolean {
+  const joined = args.join(" ");
+  return joined.startsWith("pr comment") ||
+    joined.startsWith("issue create") ||
+    (joined.startsWith("pr edit") && joined.includes("--add-label")) ||
+    joined.startsWith("pr close") ||
+    (joined.startsWith("issue edit") && joined.includes("--add-label")) ||
+    (args[0] === "api" && args[1] === "-X");
+}
+
+Deno.test("a green PR awaiting approval is not a stall — no comment, label or close (Issue #2801)", async () => {
+  const { result, comments, writes, mergeCalls, warnings } = await scanGreenPr(
+    () =>
+      Promise.resolve({
+        ok: true as const,
+        value: { merged: false, blocked: "default_branch_unapproved" as const },
+      }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, [], "awaiting approval produces no stall");
+  assertEquals(mergeCalls.length, 1, "the approval gate was consulted");
+  assertEquals(comments, [], "no comment posted");
+  assertEquals(writes.filter(isForbiddenWrite), [], "no gh write of any kind");
+  assertEquals(writes, []);
+  assertEquals(
+    warnings.filter((w) => w.includes("stalled")),
+    [],
+    "never reported as a stall",
+  );
+});
+
+Deno.test("a green PR needing no approval is passed to directMergePr exactly once per cycle (Issue #2801)", async () => {
+  const { result, comments, writes, mergeCalls } = await scanGreenPr(() =>
+    Promise.resolve({ ok: true as const, value: { merged: true } })
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, [], "a merged PR is not a stall");
+  assertEquals(mergeCalls, [{
+    repo: REPO,
+    prNumber: 305,
+    options: { approvedDefaultBranch: { fleetAuthors: ["vibe-coder"] } },
+  }]);
+  assertEquals(comments, []);
+  assertEquals(writes, []);
+});
+
+Deno.test("a green PR in a skip_auto_merge repo is left for a human merge — never merged, no gh write", async () => {
+  const { result, comments, writes, mergeCalls, warnings } = await scanGreenPr(
+    () => Promise.resolve({ ok: true as const, value: { merged: true } }),
+    { [REPO]: { skipAutoMerge: true } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, [], "awaiting a human merge is not a stall");
+  assertEquals(mergeCalls, [], "the operator opted out of worker merges");
+  assertEquals(comments, [], "no comment posted");
+  assertEquals(writes, [], "no gh write of any kind");
+  assertEquals(warnings, [], "healthy, so nothing is reported");
+});
+
+Deno.test("skip_auto_merge on another repo does not stop a green PR merging", async () => {
+  const { result, mergeCalls } = await scanGreenPr(
+    () => Promise.resolve({ ok: true as const, value: { merged: true } }),
+    {
+      "other/repo": { skipAutoMerge: true },
+      [REPO]: { skipAutoMerge: false },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value, []);
+  assertEquals(mergeCalls.length, 1, "the repo's own setting governs");
+});
+
+Deno.test("a green PR whose merge is refused is never closed or re-queued, and the refusal is loud (Issue #2801)", async () => {
+  const refusals = [
+    () =>
+      Promise.resolve({
+        ok: true as const,
+        value: { merged: false, blocked: "behind_target" as const },
+      }),
+    () =>
+      Promise.resolve({
+        ok: false as const,
+        error: new Error("Failed to merge PR #305: protected branch"),
+      }),
+    () => Promise.reject(new Error("gh exploded")),
+  ];
+
+  for (const [i, refusal] of refusals.entries()) {
+    const { result, comments, writes, mergeCalls, warnings } =
+      await scanGreenPr(refusal);
+
+    assert(result.ok, `case ${i}`);
+    assertEquals(result.value, [], `case ${i}: never escalated as a stall`);
+    assertEquals(mergeCalls.length, 1, `case ${i}: one merge attempt`);
+    assertEquals(comments, [], `case ${i}: no comment`);
+    assertEquals(writes.filter(isForbiddenWrite), [], `case ${i}: no close`);
+    assertEquals(writes, [], `case ${i}: no requeue or label`);
+    const warning = warnings.find((w) => w.includes(`${REPO}#305`));
+    assert(warning, `case ${i}: a warning names the PR`);
+    assertStringIncludes(warning, "retrying next cycle");
+  }
+});
+
+Deno.test("resolveGreenBlockingPr names the refusal reason and withholds the approval policy without a fleet", async () => {
+  const warnings: string[] = [];
+  const seen: unknown[] = [];
+  const outcome = await resolveGreenBlockingPr({ repo: REPO, prNumber: 7 }, {
+    directMergeFn: (_repo, _pr, _gh, _gate, options) => {
+      seen.push(options);
+      return Promise.resolve({
+        ok: true as const,
+        value: { merged: false, blocked: "head_too_recent" as const },
+      });
+    },
+    ghCommandFn: () => Promise.resolve(""),
+    fleetAuthors: [],
+    logger: { ...logger, warn: (message: string) => warnings.push(message) },
+  });
+
+  assertEquals(outcome, "merge-refused");
+  assertEquals(seen, [{}], "no approval policy when the fleet is unknown");
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(warnings[0]!, "head_too_recent");
+  assertStringIncludes(warnings[0]!, `${REPO}#7`);
 });
