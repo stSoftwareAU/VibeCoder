@@ -13,6 +13,7 @@
  */
 
 import type { CiProviderConfig, Logger, RepoConfig, Result } from "../types.ts";
+import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
 import { loadRepoContextContent } from "./repo_context_reader.ts";
@@ -1714,9 +1715,11 @@ async function _processCiWithHeartbeat(
       phase: "ci_fix",
       cwd: processorDeps.workDir,
       logger,
-      // Absent unless the index built, so a switched-off run writes no MCP
-      // configuration at all — exactly as before.
-      ...graft.mcpConfigOption(codegraph.mcpConfig()),
+      // The browser unless `skip_screenshot_check` (Issue #2925). CodeGraph
+      // and Graft ride beside it only when their index built.
+      ...graft.mcpConfigOption(
+        codegraph.mcpConfig(browserGranted(processorDeps.repoConfigs, repo)),
+      ),
       // Issue #2384: absent unless RTK's hook is installed, so every other
       // run spawns the argv it always did.
       ...settingsJsonOption(undefined, rtk.hookSettings()),
@@ -2678,7 +2681,9 @@ async function _runPostClaudeQualityCheck(
         phase: "ci_fix",
         cwd,
         logger,
-        ...graft.mcpConfigOption(codegraph.mcpConfig()),
+        ...graft.mcpConfigOption(
+          codegraph.mcpConfig(browserGranted(repoConfigs, input.repo)),
+        ),
         ...settingsJsonOption(undefined, rtk.hookSettings()),
       },
       { maxRetries: maxRateLimitRetries },

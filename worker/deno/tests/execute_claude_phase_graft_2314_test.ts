@@ -134,7 +134,7 @@ Deno.test("execute_claude_phase - the switch off leaves the prompt and MCP confi
     createDeps(observed, { status: "off", enabled: false }),
   );
   assertEquals(observed.collected[0]?.enabled, false);
-  assertEquals(observed.runOptions?.mcpConfig, false);
+  assertEquals(observed.runOptions?.mcpConfig, true);
   assertEquals(
     observed.runOptions?.prompt?.includes(GRAFT_PROMPT_LINE),
     false,
@@ -177,7 +177,7 @@ Deno.test("execute_claude_phase - an ok collection gets the line and the server 
 
   const mcp = observed.runOptions?.mcpConfig;
   assert(typeof mcp === "object", "the graft server must be requested");
-  assertEquals(mcp.playwright, false, "no screenshot, no browser grant");
+  assertEquals(mcp.playwright, true, "the browser rides every run (Issue #2925)");
   assertEquals(mcp.servers?.graft?.command, "graft");
   assertEquals(mcp.servers?.graft?.args, ["mcp", "/tmp/graft-2314-work/repo"]);
 
@@ -200,7 +200,7 @@ Deno.test("execute_claude_phase - a failed collection adds neither half and neve
       { Bash: 3 },
     ),
   );
-  assertEquals(observed.runOptions?.mcpConfig, false);
+  assertEquals(observed.runOptions?.mcpConfig, true);
   assertEquals(
     (observed.runOptions?.prompt ?? "").includes(GRAFT_PROMPT_LINE),
     false,
