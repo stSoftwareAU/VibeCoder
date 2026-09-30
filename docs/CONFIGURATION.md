@@ -4684,6 +4684,13 @@ the next cycle — and climbs a two-trip ladder:
   lane has already given up) and goes straight to the second trip.
 - **Human-authored PRs** — only a PR a push-capable fleet login authored is
   repaired or abandoned. Anyone else's stalled PR is logged and left alone.
+- **A `needs-human` PR is left alone.** Before the lease is even taken, a
+  fleet PR carrying `needs_human_label` — hand-applied by a reviewer, or
+  applied by a lane's own escalation (e.g. the CI-fix lane's "log fetch
+  blocked by credentials" hand-off, which leaves the PR red but posts no
+  auto-fix-cap marker) — is skipped with no comment, no sync and no lane
+  rerun. A human already owns the PR; the same veto the merge-conflict
+  watchdog applies (`docs/workflows/merge-conflicts.md`).
 
 Only fleet-authored marker comments count, so an outsider cannot trip the
 ladder by pasting a marker.

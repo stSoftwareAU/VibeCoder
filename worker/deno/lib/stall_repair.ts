@@ -22,9 +22,11 @@
  * since recovered from is ignored, and the new stall gets its own first trip.
  *
  * Only a worker-authored PR is touched; a human-authored one is logged and
- * left alone. A PR the merge-conflict ladder owns is left to the ladder. Every
- * repair runs under the maintenance-lane lease on the PR's repository and is
- * skipped when the lease is held elsewhere.
+ * left alone. A PR carrying `needs-human` is likewise left alone — a human
+ * already owns it, whether they applied the label by hand or a lane's own
+ * escalation did (PR #2866 review). A PR the merge-conflict ladder owns is
+ * left to the ladder. Every repair runs under the maintenance-lane lease on
+ * the PR's repository and is skipped when the lease is held elsewhere.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -71,6 +73,7 @@ export interface StallRepairTarget {
 /** What the pass did with one stalled PR. */
 export type StallRepairAction =
   | "skipped-human-authored"
+  | "skipped-needs-human"
   | "skipped-merge-conflict-lane"
   | "skipped-lease-held"
   | "first-trip"
@@ -98,6 +101,13 @@ export interface StallRepairDeps {
   ) => Promise<Result<void>>;
   /** Stall threshold for the repo, in seconds. */
   thresholdSeconds: (repo: string) => number;
+  /**
+   * The hand-off label (`config.needsHumanLabel`) that vetoes repair. A PR
+   * carrying it — hand-applied by a reviewer, or by a lane's own escalation
+   * — already has a human owning it, so it is never synced, rerun or closed
+   * (PR #2866 review).
+   */
+  needsHumanLabel: string;
   /** Current time, epoch seconds. */
   nowSeconds: () => number;
   logger: Logger;
@@ -259,6 +269,25 @@ export async function repairStalledPr(
       where,
     );
     return "skipped-merge-conflict-lane";
+  }
+  const needsHumanLabel = deps.needsHumanLabel.trim().toLowerCase();
+  if (
+    needsHumanLabel &&
+    (stall.labels ?? []).some(
+      (label) =>
+        typeof label === "string" &&
+        label.trim().toLowerCase() === needsHumanLabel,
+    )
+  ) {
+    // A human already owns this PR — hand-applied, or by a lane's own
+    // credential/escalation path that posts no cap marker. Never synced,
+    // rerun or closed (PR #2866 review; DESIGN-PRINCIPLES.md, merge-conflict
+    // watchdog parity).
+    logger.info(
+      "Stall repair: PR carries needs-human — a human already owns it, left alone",
+      where,
+    );
+    return "skipped-needs-human";
   }
   if (!stall.headRefName || !stall.baseRefName) {
     logger.error("Stall repair: PR branches were not observed", where);
@@ -430,7 +459,12 @@ async function abandonStalledPr(
 /** Options for {@link runStallRepairPass}. */
 export interface StallRepairPassOptions extends ScanBlockingPrStallsOptions {
   /** Seams for each repair, minus what the scan options already carry. */
-  repair: Omit<StallRepairDeps, "ghCommandFn" | "logger" | "thresholdSeconds">;
+  repair: Omit<
+    StallRepairDeps,
+    "ghCommandFn" | "logger" | "thresholdSeconds" | "needsHumanLabel"
+  >;
+  /** The hand-off label that vetoes repair — `config.needsHumanLabel`. */
+  needsHumanLabel: string;
 }
 
 /**
@@ -468,6 +502,7 @@ export async function runStallRepairPass(
       logger: opts.logger,
       thresholdSeconds: (repo) =>
         resolveBlockingPrStallThresholdSeconds(opts.config, repo),
+      needsHumanLabel: opts.needsHumanLabel,
     });
     results.push({ stall, action });
   }

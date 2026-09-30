@@ -183,6 +183,7 @@ function harness(opts: {
       return Promise.resolve({ ok: true, value: undefined });
     },
     thresholdSeconds: () => THRESHOLD,
+    needsHumanLabel: "needs-human",
     nowSeconds: () => state.now,
     logger,
     acquireLease: () => {
@@ -356,6 +357,19 @@ Deno.test("a PR the merge-conflict ladder owns is left to the ladder", async () 
     "skipped-merge-conflict-lane",
   );
   assertEquals(state.calls, []);
+});
+
+Deno.test("a PR carrying needs-human is never synced, rerun or closed — the human veto is never overridden", async () => {
+  const { state, deps } = harness();
+  const stall = stallFor("red-ci", { labels: ["needs-human"] });
+
+  assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
+  state.now += THRESHOLD * 10;
+  assertEquals(await repairStalledPr(stall, deps), "skipped-needs-human");
+  assertEquals(state.calls, []);
+  assertEquals(state.prClosed, false);
+  assertEquals(state.syncs, 0);
+  assertEquals(state.lanes, []);
 });
 
 Deno.test("a stalled PR with no originating issue is closed and no issue is filed", async () => {

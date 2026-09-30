@@ -212,6 +212,11 @@ export interface BlockingPrStall {
   headRefName?: string;
   /** Base branch, when observed (Issue #2802). */
   baseRefName?: string;
+  /**
+   * Labels on the PR, when observed (PR #2866 review). A hand-applied or
+   * lane-applied `needs-human` here is a veto stall repair never overrides.
+   */
+  labels?: readonly string[];
 }
 
 /**
@@ -397,6 +402,7 @@ export function detectBlockingPrStall(
     ...(observation.baseRefName !== undefined
       ? { baseRefName: observation.baseRefName }
       : {}),
+    ...(observation.labels !== undefined ? { labels: observation.labels } : {}),
   };
 }
 
