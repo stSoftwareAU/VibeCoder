@@ -20,6 +20,7 @@ import {
 } from "../lib/check_runs_batch.ts";
 
 import { fakeGithubGraphQL } from "./support/github_graphql_fake.ts";
+import { RED_CHECK_CONCLUSIONS } from "../lib/ci_infrastructure_rerun.ts";
 
 // ---------------------------------------------------------------------------
 // Behaviour against a fake that models GitHub's own resolution rules
@@ -429,6 +430,64 @@ Deno.test("check_runs_batch - rollupToFailedCheckRuns filters failures only", ()
   assertEquals(out[0]?.id, 2);
   assertEquals(out[0]?.name, "test");
   assertEquals(out[0]?.conclusion, "failure");
+});
+
+Deno.test("check_runs_batch - RED_CHECK_CONCLUSIONS keeps cancelled runs too, lowercased off the wire (Issue #2914)", async () => {
+  // Drives the real GraphQL round trip — the fake emits uppercase enums the
+  // way GitHub does — so this pins both `convertBatch`'s lowercasing and
+  // `rollupToFailedCheckRuns`'s conclusion filter together, on the same
+  // production path `buildFailedCheckRunsLookup` uses (PR #2918 review).
+  const { gh } = fakeGithubGraphQL({
+    owner: "acme",
+    name: "tools",
+    pullRequests: {
+      10: {
+        headOid: "aaa111",
+        rollupState: "FAILURE",
+        contexts: [
+          {
+            kind: "checkRun",
+            databaseId: 1,
+            name: "build",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          },
+          {
+            kind: "checkRun",
+            databaseId: 2,
+            name: "test",
+            status: "COMPLETED",
+            conclusion: "FAILURE",
+          },
+          {
+            kind: "checkRun",
+            databaseId: 3,
+            name: "flaky-runner",
+            status: "COMPLETED",
+            conclusion: "CANCELLED",
+          },
+        ],
+      },
+    },
+  });
+
+  const result = await fetchCheckRunsBatch("acme/tools", [10], gh);
+  assert(result.ok);
+  if (!result.ok) return;
+  const rollup = result.rollups.get(10);
+  assert(rollup);
+
+  const out = rollupToFailedCheckRuns(rollup, RED_CHECK_CONCLUSIONS);
+  assertEquals(out.length, 2);
+  assertEquals(
+    out.map((r) => ({ name: r.name, conclusion: r.conclusion })).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    ),
+    [
+      { name: "flaky-runner", conclusion: "cancelled" },
+      { name: "test", conclusion: "failure" },
+    ],
+  );
 });
 
 // ===========================================================================
