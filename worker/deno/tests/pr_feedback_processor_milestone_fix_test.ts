@@ -68,6 +68,16 @@ function makeMockGithub(
       if (joined.includes("requested_reviewers")) {
         return Promise.resolve(JSON.stringify({ users: [], teams: [] }));
       }
+      // Issue #2909: removeProcessedMark's reaction lookup/takeback, used
+      // when a branch-prepare failure must release the claim it already won.
+      if (args[0] === "api" && args[1] === "user") {
+        return Promise.resolve("fleet-bot\n");
+      }
+      if (joined.includes("reactions") && args.includes("--paginate")) {
+        return Promise.resolve(
+          JSON.stringify([{ id: 42, login: "fleet-bot" }]),
+        );
+      }
       if (args[0] === "pr" && args[1] === "list") {
         // No pre-existing fix PR — always create a fresh one.
         return Promise.resolve("[]");
@@ -391,4 +401,15 @@ Deno.test("processPrFeedback - gated head: PR branch held elsewhere => stands do
     c[0] === "pr" && c[1] === "create"
   );
   assertEquals(created, undefined, "no fix PR expected");
+
+  // PR #2909 review: `claimPrComment` already left the eyes reaction on
+  // this comment before the branch-prepare check ran. `branch_held` is not
+  // the PR's fault, so the mark must come back off — otherwise
+  // `findActionableComment` would skip this comment forever and nobody
+  // would ever answer it (Issue #2269).
+  const deleted = captured.calls.find((c) =>
+    c[0] === "api" && c[1] === "-X" && c[2] === "DELETE" &&
+    c[3]?.includes("reactions/42")
+  );
+  if (!deleted) throw new Error("expected the eyes reaction to be released");
 });

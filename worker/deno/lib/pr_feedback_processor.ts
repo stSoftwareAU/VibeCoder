@@ -15,7 +15,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import type { CommentType } from "./pr_comments.ts";
+import { type CommentType, removeProcessedMark } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import {
   buildPrFeedbackPrompt,
@@ -610,6 +610,32 @@ async function _processFeedbackWithHeartbeat(
           : "could not be checked out"
       } — ${prepared.detail}`,
     );
+    // Issue #2909 review: `claimPrComment` already won the claim and left
+    // the eyes reaction before this point runs, and `findActionableComment`
+    // skips eyes-reacted comments — so returning here with only a log line
+    // left a `branch_held`/`checkout_failed` refusal answered by nobody,
+    // forever (Issue #2269 exists to stop exactly that). `branch_missing`
+    // is different: the PR merged or closed, so there is nothing left to
+    // answer and the mark is moot. For the other two, take the mark back so
+    // the next scan rediscovers and retries the comment once the
+    // contention clears — mirroring how the CI path (pr_ci_processor.ts)
+    // relies on the failing check run being rediscovered next cycle.
+    if (prepared.reason !== "branch_missing") {
+      const markError = await removeProcessedMark(
+        repo,
+        commentType,
+        commentId,
+        (args: string[]) => deps.github.runGhCommand(args),
+        (message: string) => logger.warn(message, { repo, prNumber }),
+      );
+      if (markError) {
+        logger.warn(
+          "Could not release the eyes reaction after a branch-prepare " +
+            "failure — the comment may go unanswered until it does",
+          { repo, prNumber, commentId, error: markError.message },
+        );
+      }
+    }
     return {
       ok: true,
       value: {
