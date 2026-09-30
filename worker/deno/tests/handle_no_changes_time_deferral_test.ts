@@ -388,6 +388,42 @@ Deno.test(
 );
 
 Deno.test(
+  "handle_no_changes_phase - park markers from a sibling fleet login count toward the limit (#2933 review)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(
+            calls,
+            undefined,
+            busyThread(MAX_TIME_DEFERRALS, "sibling-host"),
+          ),
+      },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({
+        config: {
+          ...buildDefaultWorkerConfig(),
+          serviceAccounts: ["sibling-host"],
+        },
+      }),
+      makeState(DEFER_OUTPUT),
+      deps,
+    );
+
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+      "a sibling fleet login's park comments must count — a fourth park " +
+        "must not happen",
+    );
+    assertEquals(calls.addLabel, ["needs-human"]);
+  },
+);
+
+Deno.test(
   "handle_no_changes_phase - a failed thread fetch counts from the prompt blob (#2873 review)",
   async () => {
     const calls = makeCalls();

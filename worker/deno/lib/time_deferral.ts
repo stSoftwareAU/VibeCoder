@@ -22,6 +22,7 @@
 
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 import {
   readWorkerRecordLines,
   upsertWorkerRecordLine,
@@ -230,8 +231,15 @@ export interface CountPriorTimeDeferralsOptions {
   ghClient: GitHubClient;
   repo: string;
   issueNumber: number;
-  /** The worker's own login: only its park comments count. */
-  githubUser: string;
+  /**
+   * Fleet-owned logins whose park comments count — this host plus every
+   * sibling `fleet_pr_authors` / `service_accounts` login, i.e.
+   * {@link resolveFleetMaintenanceAuthorSet}. A single login under-counts
+   * on a multi-host fleet: a sibling host's own park comments would not be
+   * seen, letting the issue be parked up to `MAX_TIME_DEFERRALS` times per
+   * login instead of per issue (Issue #2933 review).
+   */
+  fleetAuthors: readonly string[];
   /** The prompt comment blob, read only when the thread cannot be fetched. */
   fallbackComments: string;
   logger: Logger;
@@ -244,19 +252,21 @@ export interface CountPriorTimeDeferralsOptions {
  * Not from the prompt comment blob: that is capped at 20 comments / 12,000
  * characters and admits worker comments last, so on a busy thread it holds
  * none of the park comments and the {@link MAX_TIME_DEFERRALS} bound never
- * fires (#2873 review). Only the worker's own comments count, so a marker
- * pasted by anyone else cannot move the budget. A failed fetch falls back to
- * the blob, logged as degraded.
+ * fires (#2873 review). Only fleet-owned comments count (this host plus
+ * sibling `fleet_pr_authors` / `service_accounts` logins), so a marker
+ * pasted by anyone outside the fleet cannot move the budget, while a sibling
+ * host's own parks still do (Issue #2933 review). A failed fetch falls back
+ * to the blob, logged as degraded.
  */
 export async function countPriorTimeDeferrals(
   options: CountPriorTimeDeferralsOptions,
 ): Promise<string[]> {
-  const { ghClient, repo, issueNumber, githubUser, logger } = options;
+  const { ghClient, repo, issueNumber, fleetAuthors, logger } = options;
   try {
     const thread = await ghClient.getIssueComments(repo, issueNumber);
     return priorTimeDeferrals(
       thread
-        .filter((c) => c.author === githubUser)
+        .filter((c) => isFleetAuthor(c.author, [...fleetAuthors]))
         .map((c) => c.body)
         .join("\n\n"),
     );

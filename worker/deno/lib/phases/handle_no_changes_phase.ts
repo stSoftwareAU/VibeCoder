@@ -255,7 +255,14 @@ export async function workOnIssueHandleNoChanges(
       ghClient,
       repo,
       issueNumber,
-      githubUser,
+      // Fleet-wide, not this host alone (Issue #2933 review): a sibling
+      // host's park comments must count too, or the bound becomes
+      // MAX_TIME_DEFERRALS per login rather than per issue.
+      fleetAuthors: resolveFleetMaintenanceAuthorSet({
+        githubUser,
+        fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
+        serviceAccounts: ctx.config.serviceAccounts ?? [],
+      }),
       fallbackComments: ctx.issueComments,
       logger,
     });
