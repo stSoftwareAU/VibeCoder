@@ -13,6 +13,7 @@ import {
   buildTimeDeferralLine,
   deferIssueUntil,
   detectTimeDeferral,
+  isIssueTimeDeferred,
   isTimeDeferred,
   MAX_DEFERRAL_HORIZON_MS,
   MAX_TIME_DEFERRALS,
@@ -129,6 +130,56 @@ Deno.test("isTimeDeferred - a user-typed line outside the block never defers", (
   const body = "Deferred until 2099-01-01T00:00:00Z\n\nSome other text.";
   assertEquals(parseTimeDeferralUntil(body), undefined);
   assert(!isTimeDeferred(body, NOW));
+});
+
+// --- isIssueTimeDeferred ---------------------------------------------------
+
+Deno.test("isIssueTimeDeferred - true while the deferral is in the future", async () => {
+  const body = upsertWorkerRecordLine(
+    "Body.",
+    buildTimeDeferralLine("2026-10-07T00:00:00Z"),
+  );
+  const fetcher = { getIssueBody: () => Promise.resolve(body) };
+  const result = await isIssueTimeDeferred(
+    fetcher,
+    "owner/repo",
+    42,
+    Date.parse("2026-10-06T00:00:00Z"),
+  );
+  assert(result);
+});
+
+Deno.test("isIssueTimeDeferred - false once the deferral time has passed", async () => {
+  const body = upsertWorkerRecordLine(
+    "Body.",
+    buildTimeDeferralLine("2026-10-07T00:00:00Z"),
+  );
+  const fetcher = { getIssueBody: () => Promise.resolve(body) };
+  const result = await isIssueTimeDeferred(
+    fetcher,
+    "owner/repo",
+    42,
+    Date.parse("2026-10-08T00:00:00Z"),
+  );
+  assert(!result);
+});
+
+Deno.test("isIssueTimeDeferred - a getIssueBody failure fails loud, not deferred", async () => {
+  const fetcher = {
+    getIssueBody: () => Promise.reject(new Error("network down")),
+  };
+  const messages: string[] = [];
+  const result = await isIssueTimeDeferred(
+    fetcher,
+    "owner/repo",
+    42,
+    NOW,
+    (message) => messages.push(message),
+  );
+  assert(!result);
+  assertEquals(messages.length, 1);
+  assertStringIncludes(messages[0]!, "owner/repo#42");
+  assertStringIncludes(messages[0]!, "network down");
 });
 
 // --- priorTimeDeferrals --------------------------------------------------

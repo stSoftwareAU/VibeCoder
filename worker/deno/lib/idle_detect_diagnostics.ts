@@ -758,6 +758,20 @@ export function classifyIssues(
       });
       continue;
     }
+    // Issue #2873: mirrors the scan's own `isTimeDeferred` gate, applied
+    // immediately before the dependency-blocked gate below — the scan's own
+    // order — so an issue that is both time-deferred and dependency-blocked
+    // keeps `time_deferred`, not `dependency_blocked`. Absent body → not
+    // deferred, same fail-safe direction as the dependency gate below.
+    if (isTimeDeferred(issue.body ?? "", nowMs)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "time_deferred",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
     // Issue #857: the scan's eighth gate, absent here until now — the audit
     // counted dependency-blocked issues as claimable and disagreed with a
     // scan that was right, on every tick. Applied in the scan's own order,
@@ -783,19 +797,6 @@ export function classifyIssues(
         number: issue.number,
         claimable: false,
         excludedBy: "dependency_blocked",
-        milestone: issue.milestone,
-      });
-      continue;
-    }
-    // Issue #2873: mirrors the scan's own `isTimeDeferred` gate, applied in
-    // the scan's own order — an issue refused for a more fundamental reason
-    // keeps that reason. Absent body → not deferred, same fail-safe
-    // direction as the dependency gate above.
-    if (isTimeDeferred(issue.body ?? "", nowMs)) {
-      result.push({
-        number: issue.number,
-        claimable: false,
-        excludedBy: "time_deferred",
         milestone: issue.milestone,
       });
       continue;

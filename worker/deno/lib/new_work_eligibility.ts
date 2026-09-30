@@ -70,7 +70,7 @@ import {
   memoiseIssueFetcher,
   seedIssueFetcherFromListing,
 } from "./issue_finder_common.ts";
-import { isTimeDeferred } from "./time_deferral.ts";
+import { isIssueTimeDeferred } from "./time_deferral.ts";
 import {
   resolveFleetAuthors,
   resolveFleetMaintenanceAuthorSet,
@@ -384,16 +384,15 @@ export async function filterNewWorkEligible(
     // not yet passed — getIssueBody is memoised, so this read is free.
     // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
     // fails toward NOT deferring rather than stalling the issue forever.
-    let isDeferred = false;
-    try {
-      isDeferred = isTimeDeferred(
-        await ctx.fetcher.getIssueBody(repo, issue.number),
+    if (
+      await isIssueTimeDeferred(
+        ctx.fetcher,
+        repo,
+        issue.number,
         nowMs,
-      );
-    } catch {
-      isDeferred = false;
-    }
-    if (isDeferred) {
+        console.error,
+      )
+    ) {
       note(issue, "time-deferred");
       continue;
     }

@@ -51,7 +51,7 @@ import {
   type FindIssuesOptions,
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
-import { isTimeDeferred } from "./time_deferral.ts";
+import { isIssueTimeDeferred } from "./time_deferral.ts";
 import { verifyWorkOnContentIntegrity } from "./work_on_content_integrity.ts";
 import { buildBatchedGh } from "./timeline_batch.ts";
 
@@ -398,16 +398,15 @@ export async function collectLowPriorityCandidates(
     // not yet passed — getIssueBody is memoised, so this read is free.
     // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
     // fails toward NOT deferring rather than stalling the issue forever.
-    let isDeferred = false;
-    try {
-      isDeferred = isTimeDeferred(
-        await fetcher.getIssueBody(repo, issue.number),
+    if (
+      await isIssueTimeDeferred(
+        fetcher,
+        repo,
+        issue.number,
         nowMs,
-      );
-    } catch {
-      isDeferred = false;
-    }
-    if (isDeferred) {
+        console.error,
+      )
+    ) {
       diag?.logIssueSkipped(repo, issue.number, "time-deferred");
       continue;
     }

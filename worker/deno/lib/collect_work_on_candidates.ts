@@ -82,7 +82,7 @@ import { verifyWorkOnContentIntegrityDetailed } from "./work_on_content_integrit
 import { suppressesLowerTiers } from "./skip_reason_clearing.ts";
 import { buildBatchedGh } from "./timeline_batch.ts";
 import { stripUntrustedWorkOnLabel } from "./strip_untrusted_work_on.ts";
-import { isTimeDeferred } from "./time_deferral.ts";
+import { isIssueTimeDeferred } from "./time_deferral.ts";
 
 /**
  * Collect work-on candidates from a single repository.
@@ -624,16 +624,15 @@ export async function collectWorkOnCandidates(
     // not yet passed — getIssueBody is memoised, so this read is free.
     // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
     // fails toward NOT deferring rather than stalling the issue forever.
-    let isDeferred = false;
-    try {
-      isDeferred = isTimeDeferred(
-        await memoFetcher.getIssueBody(repo, issue.number),
+    if (
+      await isIssueTimeDeferred(
+        memoFetcher,
+        repo,
+        issue.number,
         nowMs,
-      );
-    } catch {
-      isDeferred = false;
-    }
-    if (isDeferred) {
+        console.error,
+      )
+    ) {
       noteBlocked(issue.number, milestoneTitle, "time-deferred");
       diag?.logIssueSkipped(repo, issue.number, "time-deferred");
       continue;

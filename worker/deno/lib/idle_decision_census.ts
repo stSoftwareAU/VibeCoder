@@ -1088,6 +1088,7 @@ function censusVisibleRefusal(
   nowMs: number = Date.now(),
 ): SkipReason | undefined {
   if (isMergedPrBlocked(issue, mergedPRs)) return "merged-pr-permanent";
+  if (isTimeDeferred(issue.body ?? "", nowMs)) return "time-deferred";
   if (
     isDependencyBlockedByOpenIssue(
       issue,
@@ -1098,7 +1099,6 @@ function censusVisibleRefusal(
   ) {
     return "dependency-blocked";
   }
-  if (isTimeDeferred(issue.body ?? "", nowMs)) return "time-deferred";
   return undefined;
 }
 
@@ -1253,6 +1253,13 @@ function countUnblocked(
       mergedPrBlocked += 1;
       continue;
     }
+    // Issue #2873: mirrors the scan's own order — the scan checks
+    // time-deferred before dependency-blocked, so an issue that is both
+    // keeps `time_deferred`, not `dependency_blocked`.
+    if (isTimeDeferred(issue.body ?? "", nowMs)) {
+      timeDeferred += 1;
+      continue;
+    }
     // Issue #460: applied last, mirroring the scan's own order — an issue
     // refused for a more fundamental reason keeps that reason, so
     // `dependency_blocked` marks only issues that would otherwise be
@@ -1266,14 +1273,6 @@ function countUnblocked(
       )
     ) {
       dependencyBlocked += 1;
-      continue;
-    }
-    // Issue #2873: applied last of the refusal gates, mirroring the scan's
-    // own order — an issue refused for a more fundamental reason keeps that
-    // reason, so `time_deferred` marks only issues that would otherwise be
-    // claimable right now.
-    if (isTimeDeferred(issue.body ?? "", nowMs)) {
-      timeDeferred += 1;
       continue;
     }
     // Issue #655: last of the per-issue gates, mirroring the scan — the

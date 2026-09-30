@@ -75,7 +75,7 @@ import {
   type FindIssuesOptions,
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
-import { isTimeDeferred } from "./time_deferral.ts";
+import { isIssueTimeDeferred } from "./time_deferral.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -431,16 +431,9 @@ export async function collectSelfDiagnosticCandidates(
     // not yet passed — getIssueBody is memoised, so this read is free.
     // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
     // fails toward NOT deferring rather than stalling the issue forever.
-    let isDeferred = false;
-    try {
-      isDeferred = isTimeDeferred(
-        await fetcher.getIssueBody(repo, issue.number),
-        nowMs,
-      );
-    } catch {
-      isDeferred = false;
-    }
-    if (isDeferred) {
+    if (
+      await isIssueTimeDeferred(fetcher, repo, issue.number, nowMs, log)
+    ) {
       diag?.logIssueSkipped(repo, issue.number, "time-deferred");
       continue;
     }
