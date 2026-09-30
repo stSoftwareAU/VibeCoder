@@ -1242,12 +1242,14 @@ sit idle: the serial passes (landing open PRs, the reclaim above) keep
 running every cycle. What pauses is narrower — every `maintenanceLane`
 handler (milestone branch sync, the shared-clone ref sweep below) stands down
 for the cycle, pool or no pool, because a fetch or ref write interrupted by
-low disk is exactly what leaves broken refs in the shared clones. One warn
-line per cycle names the paused passes:
+low disk is exactly what leaves broken refs in the shared clones. This is
+covered by the same one-time-per-episode `[HOST_DISK_LOW]` warning already
+described above — there is no separate warn line per cycle:
 
 ```text
-[HOST_DISK_LOW] paused maintenance-lane passes while the host disk is low:
-Milestone Branch Sync, Shared Clone Ref Sweep (Issue #2889)
+[HOST_DISK_LOW] 18.0 GB free … — claiming no new issues and pausing
+maintenance-lane passes this cycle; serial maintenance continues
+(Issue #226, #2889).
 ```
 
 As soon as the episode ends — reclaim reports `healed`, or the next cycle's

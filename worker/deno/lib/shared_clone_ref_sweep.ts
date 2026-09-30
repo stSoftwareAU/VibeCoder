@@ -23,18 +23,19 @@
 
 import { brokenRefsIn, removeBrokenRef } from "./broken_ref_repair.ts";
 import { assertSafeRefComponent } from "./git_ref_args.ts";
-import {
-  type GitCommandOptions,
-  runGitCommand,
-} from "./git_timeout.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import {
   acquireMaintenanceRepoLease,
   type RepoLease,
 } from "./maintenance_lane.ts";
+import { emitSelfHealEvent, type SelfHealEvent } from "./self_heal_events.ts";
 import {
-  emitSelfHealEvent,
-  type SelfHealEvent,
-} from "./self_heal_events.ts";
+  collectProvenance,
+  type RefProvenance,
+} from "./shared_clone_ref_provenance.ts";
+import { recordRepairAndMaybeEscalate } from "./shared_clone_repair_history.ts";
+
+export type { RefProvenance } from "./shared_clone_ref_provenance.ts";
 
 /** How often a shared clone is swept (Issue #2889). */
 export const SHARED_CLONE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -70,18 +71,6 @@ export interface SharedCloneRefSweepDeps {
   logsDir?: string;
 }
 
-/** Last-writer provenance collected for a repaired ref. */
-export interface RefProvenance {
-  /** ISO mtime of the loose ref file when one existed. */
-  refFileMtime?: string;
-  /** Last line of the ref's reflog, truncated to 300 characters. */
-  lastReflogEntry?: string;
-  /** Worktree paths (from `git worktree list`) with this branch checked out. */
-  checkedOutIn?: string[];
-  /** `oom-*` log basenames whose mtime is close to the ref's mtime. */
-  nearbyOomLogs?: string[];
-}
-
 /** Kind of brokenness found for a ref. */
 export type RepairedRefKind = "nul-filled" | "missing-object";
 
@@ -109,9 +98,17 @@ export interface SharedCloneSweepOutcome {
   escalated: boolean;
 }
 
-/** Repair-history file shape (Issue #2889). */
-interface RepairHistory {
-  repairs: Record<string, number[]>;
+/** Shared state threaded through the internal sweep helpers for one repo. */
+interface SweepContext {
+  repo: string;
+  clone: string;
+  commonDir: string;
+  runGit: typeof runGitCommand;
+  deps: SharedCloneRefSweepDeps;
+  now: () => Date;
+  emit: (event: SelfHealEvent) => Promise<void>;
+  outcome: SharedCloneSweepOutcome;
+  handled: Set<string>;
 }
 
 /** Whether a sweep is due, given the last sweep time. */
@@ -154,19 +151,18 @@ async function commonDirOf(
   return raw.startsWith("/") ? raw : `${clone}/${raw}`;
 }
 
-/**
- * Sweep one shared clone for broken refs, repair each, and track escalation.
- */
+/** Sweep one shared clone for broken refs, repair each, and track escalation. */
 export async function sweepSharedClone(
   repo: string,
   workDir: string,
   deps: SharedCloneRefSweepDeps,
 ): Promise<SharedCloneSweepOutcome> {
   const runGit = deps.runGit ?? runGitCommand;
-  const acquire = deps.acquireLease ?? ((r: string) =>
-    acquireMaintenanceRepoLease(r));
-  const emit = deps.emitEvent ?? ((event: SelfHealEvent) =>
-    emitSelfHealEvent(event, { workDir, now: deps.now }).then(() => {}));
+  const acquire = deps.acquireLease ??
+    ((r: string) => acquireMaintenanceRepoLease(r));
+  const emit = deps.emitEvent ??
+    ((event: SelfHealEvent) =>
+      emitSelfHealEvent(event, { workDir, now: deps.now }).then(() => {}));
   const now = deps.now ?? (() => new Date());
 
   const outcome: SharedCloneSweepOutcome = {
@@ -207,9 +203,7 @@ export async function sweepSharedClone(
       return outcome;
     }
 
-    const handled = new Set<string>();
-
-    await sweepNulFilledLooseRefs(
+    const ctx: SweepContext = {
       repo,
       clone,
       commonDir,
@@ -217,21 +211,12 @@ export async function sweepSharedClone(
       deps,
       now,
       emit,
-      handled,
       outcome,
-    );
+      handled: new Set<string>(),
+    };
 
-    await sweepForEachRefLoop(
-      repo,
-      clone,
-      commonDir,
-      runGit,
-      deps,
-      now,
-      emit,
-      handled,
-      outcome,
-    );
+    await sweepNulFilledLooseRefs(ctx);
+    await sweepForEachRefLoop(ctx);
   } finally {
     lease.release();
   }
@@ -268,39 +253,28 @@ export async function sweepSharedClones(
   return outcomes;
 }
 
-// ---------------------------------------------------------------------------
-// NUL-filled loose ref discovery
-// ---------------------------------------------------------------------------
+/** Record one repair on the outcome and report it (log + self-heal event). */
+async function recordRepair(
+  ctx: SweepContext,
+  ref: string,
+  kind: RepairedRefKind,
+  action: RepairedRefAction,
+  provenance: RefProvenance,
+): Promise<void> {
+  const repaired: RepairedRef = { ref, kind, action, provenance };
+  ctx.outcome.repaired.push(repaired);
+  await reportRepair(ctx, repaired);
+}
 
 /** Walk `<common-dir>/refs/heads` and `refs/remotes`, finding NUL-filled files. */
-async function sweepNulFilledLooseRefs(
-  repo: string,
-  clone: string,
-  commonDir: string,
-  runGit: typeof runGitCommand,
-  deps: SharedCloneRefSweepDeps,
-  now: () => Date,
-  emit: (event: SelfHealEvent) => Promise<void>,
-  handled: Set<string>,
-  outcome: SharedCloneSweepOutcome,
-): Promise<void> {
+async function sweepNulFilledLooseRefs(ctx: SweepContext): Promise<void> {
   for (const namespace of ["refs/heads", "refs/remotes"]) {
-    const found = await findNulFilledRefs(`${commonDir}/${namespace}`, "");
+    const found = await findNulFilledRefs(`${ctx.commonDir}/${namespace}`, "");
     for (const relative of found) {
       const ref = `${namespace}/${relative}`;
-      if (handled.has(ref)) continue;
-      handled.add(ref);
-      await repairNulFilledRef(
-        repo,
-        ref,
-        clone,
-        commonDir,
-        runGit,
-        deps,
-        now,
-        emit,
-        outcome,
-      );
+      if (ctx.handled.has(ref)) continue;
+      ctx.handled.add(ref);
+      await repairNulFilledRef(ctx, ref);
     }
   }
 }
@@ -352,192 +326,133 @@ async function findNulFilledRefs(
 
 /** Remove a NUL-filled loose ref and try the packed-refs fallback first. */
 async function repairNulFilledRef(
-  repo: string,
+  ctx: SweepContext,
   ref: string,
-  clone: string,
-  commonDir: string,
-  runGit: typeof runGitCommand,
-  deps: SharedCloneRefSweepDeps,
-  now: () => Date,
-  emit: (event: SelfHealEvent) => Promise<void>,
-  outcome: SharedCloneSweepOutcome,
 ): Promise<void> {
-  const looseRefPath = `${commonDir}/${ref}`;
-  // Path confinement: the path is built purely from the earlier directory
-  // walk, never from text git printed, so no ref-name escape is possible.
-  if (!looseRefPath.startsWith(`${commonDir}/`)) {
-    outcome.failures.push(ref);
-    deps.logError(
-      `Shared-clone sweep: refusing to touch ${looseRefPath} for ${ref} in ${repo}: outside the git common directory`,
+  const looseRefPath = `${ctx.commonDir}/${ref}`;
+  // Built purely from the earlier directory walk, so no ref-name escape is possible.
+  if (!looseRefPath.startsWith(`${ctx.commonDir}/`)) {
+    ctx.outcome.failures.push(ref);
+    ctx.deps.logError(
+      `Shared-clone sweep: refusing to touch ${looseRefPath} for ${ref} in ${ctx.repo}: outside the git common directory`,
     );
     return;
   }
 
-  const provenance = await collectProvenance(ref, clone, commonDir, deps, now);
+  const provenance = await collectProvenance(
+    ref,
+    ctx.clone,
+    ctx.commonDir,
+    ctx.deps,
+    ctx.now,
+  );
 
   try {
     await Deno.remove(looseRefPath);
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) {
       const message = error instanceof Error ? error.message : String(error);
-      outcome.failures.push(ref);
-      deps.logError(
-        `Shared-clone sweep: could not remove NUL-filled ref ${ref} in ${repo}: ${message}`,
+      ctx.outcome.failures.push(ref);
+      ctx.deps.logError(
+        `Shared-clone sweep: could not remove NUL-filled ref ${ref} in ${ctx.repo}: ${message}`,
       );
       return;
     }
   }
 
   // The loose file is gone — see if packed-refs already carries a healthy copy.
-  const verify = await runGit(
+  const verify = await ctx.runGit(
     ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
-    { cwd: clone },
+    { cwd: ctx.clone },
   );
   if (verify.ok && verify.value.code === 0) {
-    const repaired: RepairedRef = {
+    await recordRepair(
+      ctx,
       ref,
-      kind: "nul-filled",
-      action: "restored-from-packed",
+      "nul-filled",
+      "restored-from-packed",
       provenance,
-    };
-    outcome.repaired.push(repaired);
-    await reportRepair(repo, repaired, deps, now, emit);
+    );
     return;
   }
 
-  // No usable packed-refs copy — fall through to the same restore policy the
-  // for-each-ref loop uses for a missing-object ref.
-  await restoreBrokenRef(
-    repo,
-    ref,
-    "nul-filled",
-    clone,
-    provenance,
-    runGit,
-    deps,
-    now,
-    emit,
-    outcome,
-  );
+  // No usable packed-refs copy — fall through to the missing-object restore policy.
+  await restoreBrokenRef(ctx, ref, "nul-filled", provenance);
 }
 
-// ---------------------------------------------------------------------------
-// for-each-ref loop (missing-object refs)
-// ---------------------------------------------------------------------------
-
 /** Loop `for-each-ref`, repairing each newly named broken ref, up to a bound. */
-async function sweepForEachRefLoop(
-  repo: string,
-  clone: string,
-  commonDir: string,
-  runGit: typeof runGitCommand,
-  deps: SharedCloneRefSweepDeps,
-  now: () => Date,
-  emit: (event: SelfHealEvent) => Promise<void>,
-  handled: Set<string>,
-  outcome: SharedCloneSweepOutcome,
-): Promise<void> {
+async function sweepForEachRefLoop(ctx: SweepContext): Promise<void> {
   for (let round = 0; round < MAX_FOR_EACH_REF_ROUNDS; round++) {
-    const result = await runGit(
+    const result = await ctx.runGit(
       ["for-each-ref", "refs/heads", "refs/remotes"],
-      { cwd: clone },
+      { cwd: ctx.clone },
     );
     if (!result.ok) {
-      outcome.failures.push("for-each-ref");
-      deps.logError(
-        `Shared-clone sweep: for-each-ref failed in ${repo}: ${result.error.message}`,
+      ctx.outcome.failures.push("for-each-ref");
+      ctx.deps.logError(
+        `Shared-clone sweep: for-each-ref failed in ${ctx.repo}: ${result.error.message}`,
       );
       return;
     }
     if (result.value.code === 0) return; // Healthy — nothing left to repair.
 
     const broken = brokenRefsIn(result.value.stderr);
-    const newRefs = broken.filter((ref) => !handled.has(ref));
+    const newRefs = broken.filter((ref) => !ctx.handled.has(ref));
     if (newRefs.length === 0) {
-      outcome.failures.push("for-each-ref");
-      deps.logError(
-        `Shared-clone sweep: for-each-ref exited ${result.value.code} in ${repo} without naming a broken ref: ${result.value.stderr.trim()}`,
+      ctx.outcome.failures.push("for-each-ref");
+      ctx.deps.logError(
+        `Shared-clone sweep: for-each-ref exited ${result.value.code} in ${ctx.repo} without naming a broken ref: ${result.value.stderr.trim()}`,
       );
       return;
     }
 
     for (const ref of newRefs) {
-      handled.add(ref);
+      ctx.handled.add(ref);
       const provenance = await collectProvenance(
         ref,
-        clone,
-        commonDir,
-        deps,
-        now,
+        ctx.clone,
+        ctx.commonDir,
+        ctx.deps,
+        ctx.now,
       );
-      const removal = await removeBrokenRef(ref, { cwd: clone }, runGit);
+      const removal = await removeBrokenRef(
+        ref,
+        { cwd: ctx.clone },
+        ctx.runGit,
+      );
       if (!removal.ok) {
-        outcome.failures.push(ref);
-        deps.logError(
-          `Shared-clone sweep: could not remove broken ref ${ref} in ${repo}: ${removal.error.message}`,
+        ctx.outcome.failures.push(ref);
+        ctx.deps.logError(
+          `Shared-clone sweep: could not remove broken ref ${ref} in ${ctx.repo}: ${removal.error.message}`,
         );
         continue;
       }
-      await restoreBrokenRef(
-        repo,
-        ref,
-        "missing-object",
-        clone,
-        provenance,
-        runGit,
-        deps,
-        now,
-        emit,
-        outcome,
-      );
+      await restoreBrokenRef(ctx, ref, "missing-object", provenance);
     }
   }
 }
 
-// ---------------------------------------------------------------------------
-// Restore policy
-// ---------------------------------------------------------------------------
-
-/** Pattern allowed for a branch component landing in a refspec/argv. */
-const SAFE_BRANCH_NAME = /^[!-~]+$/; // Printable, no whitespace/control chars.
+/** Pattern allowed for a branch component landing in a refspec/argv (printable, no whitespace/control chars). */
+const SAFE_BRANCH_NAME = /^[!-~]+$/;
 
 /** Restore a ref whose broken copy is already gone, per the Issue #2889 policy. */
 async function restoreBrokenRef(
-  repo: string,
+  ctx: SweepContext,
   ref: string,
   kind: RepairedRefKind,
-  clone: string,
   provenance: RefProvenance,
-  runGit: typeof runGitCommand,
-  deps: SharedCloneRefSweepDeps,
-  now: () => Date,
-  emit: (event: SelfHealEvent) => Promise<void>,
-  outcome: SharedCloneSweepOutcome,
 ): Promise<void> {
+  const { repo, clone, runGit, deps, outcome } = ctx;
   const remoteMatch = ref.match(/^refs\/remotes\/([^/]+)\/(.+)$/);
-  if (remoteMatch) {
-    const [, remote, branch] = remoteMatch;
-    if (branch === "HEAD") {
-      // Never resurrected: origin/HEAD is a symbolic pointer, not a branch.
-      const repaired: RepairedRef = {
-        ref,
-        kind,
-        action: "deleted",
-        provenance,
-      };
-      outcome.repaired.push(repaired);
-      await reportRepair(repo, repaired, deps, now, emit);
-      return;
-    }
-    if (!isSafeBranchName(branch)) {
-      const repaired: RepairedRef = {
-        ref,
-        kind,
-        action: "deleted",
-        provenance,
-      };
-      outcome.repaired.push(repaired);
-      await reportRepair(repo, repaired, deps, now, emit);
+  if (
+    remoteMatch && remoteMatch[1] !== undefined && remoteMatch[2] !== undefined
+  ) {
+    const remote = remoteMatch[1];
+    const branch = remoteMatch[2];
+    // origin/HEAD is a symbolic pointer, not a branch, and an unsafe branch
+    // name cannot be refetched safely — both are resurrected by deletion only.
+    if (branch === "HEAD" || !isSafeBranchName(branch)) {
+      await recordRepair(ctx, ref, kind, "deleted", provenance);
       return;
     }
     const fetch = await runGit(
@@ -545,21 +460,12 @@ async function restoreBrokenRef(
       { cwd: clone },
     );
     if (fetch.ok && fetch.value.code === 0) {
-      const repaired: RepairedRef = { ref, kind, action: "refetched", provenance };
-      outcome.repaired.push(repaired);
-      await reportRepair(repo, repaired, deps, now, emit);
+      await recordRepair(ctx, ref, kind, "refetched", provenance);
       return;
     }
     const stderr = fetch.ok ? fetch.value.stderr : fetch.error.message;
     if (stderr.includes("couldn't find remote ref")) {
-      const repaired: RepairedRef = {
-        ref,
-        kind,
-        action: "deleted-gone-on-origin",
-        provenance,
-      };
-      outcome.repaired.push(repaired);
-      await reportRepair(repo, repaired, deps, now, emit);
+      await recordRepair(ctx, ref, kind, "deleted-gone-on-origin", provenance);
       return;
     }
     outcome.failures.push(ref);
@@ -570,7 +476,7 @@ async function restoreBrokenRef(
   }
 
   const localMatch = ref.match(/^refs\/heads\/(.+)$/);
-  if (!localMatch) {
+  if (!localMatch || localMatch[1] === undefined) {
     outcome.failures.push(ref);
     deps.logError(
       `Shared-clone sweep: ${ref} in ${repo} is outside the repaired namespaces`,
@@ -579,13 +485,13 @@ async function restoreBrokenRef(
   }
   const branch = localMatch[1];
 
-  if (branch.startsWith("issue-") || branch.startsWith("milestone/")) {
-    await deleteLocalBranchLeftovers(repo, ref, kind, clone, provenance, runGit, deps, now, emit, outcome);
-    return;
-  }
-
-  if (!isSafeBranchName(branch)) {
-    await deleteLocalBranchLeftovers(repo, ref, kind, clone, provenance, runGit, deps, now, emit, outcome);
+  // Issue/milestone branches are ephemeral work branches, and an unsafe name
+  // cannot be refetched safely — both are resurrected by deletion only.
+  if (
+    branch.startsWith("issue-") || branch.startsWith("milestone/") ||
+    !isSafeBranchName(branch)
+  ) {
+    await deleteLocalBranchLeftovers(ctx, ref, kind, provenance);
     return;
   }
 
@@ -596,7 +502,12 @@ async function restoreBrokenRef(
   if (lsRemote.ok && lsRemote.value.code === 0) {
     const trackingRef = `refs/remotes/origin/${branch}`;
     const fetch = await runGit(
-      ["fetch", "--end-of-options", "origin", `+refs/heads/${branch}:${trackingRef}`],
+      [
+        "fetch",
+        "--end-of-options",
+        "origin",
+        `+refs/heads/${branch}:${trackingRef}`,
+      ],
       { cwd: clone },
     );
     if (fetch.ok && fetch.value.code === 0) {
@@ -605,9 +516,7 @@ async function restoreBrokenRef(
         { cwd: clone },
       );
       if (update.ok && update.value.code === 0) {
-        const repaired: RepairedRef = { ref, kind, action: "refetched", provenance };
-        outcome.repaired.push(repaired);
-        await reportRepair(repo, repaired, deps, now, emit);
+        await recordRepair(ctx, ref, kind, "refetched", provenance);
         return;
       }
       outcome.failures.push(ref);
@@ -628,7 +537,7 @@ async function restoreBrokenRef(
   }
   if (lsRemote.ok && lsRemote.value.code === 2) {
     // Not on origin any more — delete only.
-    await deleteLocalBranchLeftovers(repo, ref, kind, clone, provenance, runGit, deps, now, emit, outcome);
+    await deleteLocalBranchLeftovers(ctx, ref, kind, provenance);
     return;
   }
   outcome.failures.push(ref);
@@ -643,34 +552,36 @@ async function restoreBrokenRef(
 
 /** Delete a local branch ref, mopping up any surviving packed-refs copy. */
 async function deleteLocalBranchLeftovers(
-  repo: string,
+  ctx: SweepContext,
   ref: string,
   kind: RepairedRefKind,
-  clone: string,
   provenance: RefProvenance,
-  runGit: typeof runGitCommand,
-  deps: SharedCloneRefSweepDeps,
-  now: () => Date,
-  emit: (event: SelfHealEvent) => Promise<void>,
-  outcome: SharedCloneSweepOutcome,
 ): Promise<void> {
+  const { repo, clone, runGit, deps, outcome } = ctx;
   const verify = await runGit(
     ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
     { cwd: clone },
   );
   if (verify.ok && verify.value.code === 0) {
-    // A packed copy still resolves to a real commit — leave it alone, the
-    // loose file removal already made the ref healthy again.
-    const repaired: RepairedRef = { ref, kind, action: "deleted", provenance };
-    outcome.repaired.push(repaired);
-    await reportRepair(repo, repaired, deps, now, emit);
+    // A packed copy still resolves to a real commit — the loose file removal
+    // already made the ref healthy again, so leave the packed copy alone.
+    await recordRepair(ctx, ref, kind, "restored-from-packed", provenance);
     return;
   }
-  // Still broken (or missing an object) — delete the packed entry too.
-  await runGit(["update-ref", "-d", "--end-of-options", ref], { cwd: clone });
-  const repaired: RepairedRef = { ref, kind, action: "deleted", provenance };
-  outcome.repaired.push(repaired);
-  await reportRepair(repo, repaired, deps, now, emit);
+  const del = await runGit(
+    ["update-ref", "-d", "--end-of-options", ref],
+    { cwd: clone },
+  );
+  if (!del.ok || del.value.code !== 0) {
+    outcome.failures.push(ref);
+    deps.logError(
+      `Shared-clone sweep: could not delete ${ref} in ${repo}: ${
+        del.ok ? del.value.stderr.trim() : del.error.message
+      }`,
+    );
+    return;
+  }
+  await recordRepair(ctx, ref, kind, "deleted", provenance);
 }
 
 /** Reject a branch name unsafe to interpolate into a refspec or argv. */
@@ -684,166 +595,29 @@ function isSafeBranchName(branch: string): boolean {
   return SAFE_BRANCH_NAME.test(branch);
 }
 
-// ---------------------------------------------------------------------------
-// Provenance
-// ---------------------------------------------------------------------------
-
-/** Best-effort provenance collection; every I/O error is narrowed and logged. */
-async function collectProvenance(
-  ref: string,
-  clone: string,
-  commonDir: string,
-  deps: SharedCloneRefSweepDeps,
-  now: () => Date,
-): Promise<RefProvenance> {
-  const provenance: RefProvenance = {};
-
-  let refFileMtimeMs: number | undefined;
-  try {
-    const stat = await Deno.lstat(`${commonDir}/${ref}`);
-    if (stat.mtime) {
-      provenance.refFileMtime = stat.mtime.toISOString();
-      refFileMtimeMs = stat.mtime.getTime();
-    }
-  } catch (error) {
-    // Already removed, or never existed as a loose file (packed-only) —
-    // provenance simply has no mtime to report.
-    if (!(error instanceof Deno.errors.NotFound)) {
-      deps.log(
-        `Shared-clone sweep: could not stat ${ref} for provenance: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-
-  try {
-    const reflog = await Deno.readTextFile(`${commonDir}/logs/${ref}`);
-    const lastLine = reflog.split("\n").map((l) => l.trim()).filter(Boolean)
-      .at(-1);
-    if (lastLine) provenance.lastReflogEntry = lastLine.slice(0, 300);
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      deps.log(
-        `Shared-clone sweep: could not read reflog for ${ref}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-
-  if (ref.startsWith("refs/heads/")) {
-    const branch = ref.slice("refs/heads/".length);
-    const checkedOutIn = await checkedOutWorktrees(clone, branch, deps);
-    if (checkedOutIn.length > 0) provenance.checkedOutIn = checkedOutIn;
-  }
-
-  if (deps.logsDir) {
-    const nearby = await nearbyOomLogs(
-      deps.logsDir,
-      refFileMtimeMs ?? now().getTime(),
-      deps,
-    );
-    if (nearby.length > 0) provenance.nearbyOomLogs = nearby;
-  }
-
-  return provenance;
-}
-
-/** Worktree paths with `branch` checked out, from `git worktree list --porcelain`. */
-async function checkedOutWorktrees(
-  clone: string,
-  branch: string,
-  deps: SharedCloneRefSweepDeps,
-): Promise<string[]> {
-  const runGit = deps.runGit ?? runGitCommand;
-  const result = await runGit(["worktree", "list", "--porcelain"], {
-    cwd: clone,
-  } satisfies GitCommandOptions);
-  if (!result.ok || result.value.code !== 0) return [];
-
-  const paths: string[] = [];
-  let currentPath: string | null = null;
-  for (const line of result.value.stdout.split("\n")) {
-    if (line.startsWith("worktree ")) {
-      currentPath = line.slice("worktree ".length).trim();
-    } else if (line.startsWith("branch ")) {
-      const branchRef = line.slice("branch ".length).trim();
-      if (currentPath && branchRef === `refs/heads/${branch}`) {
-        paths.push(currentPath);
-      }
-    } else if (line === "") {
-      currentPath = null;
-    }
-  }
-  return paths;
-}
-
-/** `logsDir/oom-*` basenames whose mtime is within 15 minutes of `targetMs`. */
-async function nearbyOomLogs(
-  logsDir: string,
-  targetMs: number,
-  deps: SharedCloneRefSweepDeps,
-): Promise<string[]> {
-  const windowMs = 15 * 60 * 1000;
-  const matches: string[] = [];
-  let entries: Deno.DirEntry[];
-  try {
-    entries = [];
-    for await (const entry of Deno.readDir(logsDir)) entries.push(entry);
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      deps.log(
-        `Shared-clone sweep: could not read logsDir for OOM correlation: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    return matches;
-  }
-  for (const entry of entries) {
-    if (!entry.isFile || !entry.name.startsWith("oom-")) continue;
-    try {
-      const stat = await Deno.stat(`${logsDir}/${entry.name}`);
-      if (stat.mtime && Math.abs(stat.mtime.getTime() - targetMs) <= windowMs) {
-        matches.push(entry.name);
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        deps.log(
-          `Shared-clone sweep: could not stat ${entry.name} for OOM correlation: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-  }
-  return matches;
-}
-
-// ---------------------------------------------------------------------------
-// Event/log reporting and escalation
-// ---------------------------------------------------------------------------
-
 /** Emit and log one repair. */
 async function reportRepair(
-  repo: string,
+  ctx: SweepContext,
   repaired: RepairedRef,
-  deps: SharedCloneRefSweepDeps,
-  now: () => Date,
-  emit: (event: SelfHealEvent) => Promise<void>,
 ): Promise<void> {
+  const { repo, deps, now, emit } = ctx;
   const summaryParts: string[] = [];
   if (repaired.provenance.checkedOutIn?.length) {
-    summaryParts.push(`checked out in ${repaired.provenance.checkedOutIn.join(", ")}`);
+    summaryParts.push(
+      `checked out in ${repaired.provenance.checkedOutIn.join(", ")}`,
+    );
   }
   if (repaired.provenance.lastReflogEntry) {
     summaryParts.push(`last reflog: ${repaired.provenance.lastReflogEntry}`);
   }
   if (repaired.provenance.nearbyOomLogs?.length) {
-    summaryParts.push(`nearby OOM logs: ${repaired.provenance.nearbyOomLogs.join(", ")}`);
+    summaryParts.push(
+      `nearby OOM logs: ${repaired.provenance.nearbyOomLogs.join(", ")}`,
+    );
   }
-  const summary = summaryParts.length > 0 ? ` (${summaryParts.join("; ")})` : "";
+  const summary = summaryParts.length > 0
+    ? ` (${summaryParts.join("; ")})`
+    : "";
   deps.log(
     `Shared-clone sweep: repaired ${repaired.kind} ref ${repaired.ref} in ${repo} → ${repaired.action}${summary}`,
   );
@@ -861,80 +635,4 @@ async function reportRepair(
       ...repaired.provenance,
     },
   });
-}
-
-/** Append this sweep's repair to the history file and escalate if it churns. */
-async function recordRepairAndMaybeEscalate(
-  repo: string,
-  workDir: string,
-  now: () => Date,
-  deps: SharedCloneRefSweepDeps,
-  emit: (event: SelfHealEvent) => Promise<void>,
-  outcome: SharedCloneSweepOutcome,
-): Promise<void> {
-  const historyPath = `${workDir}/${REPAIR_HISTORY_FILENAME}`;
-  const nowMs = now().getTime();
-
-  let history: RepairHistory = { repairs: {} };
-  try {
-    const text = await Deno.readTextFile(historyPath);
-    const parsed = JSON.parse(text);
-    if (
-      parsed && typeof parsed === "object" &&
-      parsed.repairs && typeof parsed.repairs === "object"
-    ) {
-      history = parsed as RepairHistory;
-    } else {
-      throw new Error("unexpected shape");
-    }
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) {
-      deps.logError(
-        `Shared-clone sweep: repair history file is corrupt, starting fresh: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-    history = { repairs: {} };
-  }
-
-  const windowStart = nowMs - REPAIR_WINDOW_MS;
-  const existing = (history.repairs[repo] ?? []).filter((t) => t >= windowStart);
-  existing.push(nowMs);
-  history.repairs[repo] = existing;
-
-  const tempPath = `${historyPath}.tmp-${crypto.randomUUID()}`;
-  try {
-    await Deno.writeTextFile(tempPath, JSON.stringify(history));
-    await Deno.rename(tempPath, historyPath);
-  } catch (error) {
-    deps.logError(
-      `Shared-clone sweep: could not write repair history for ${repo}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    try {
-      await Deno.remove(tempPath);
-    } catch {
-      /* best-effort cleanup of the temp file; nothing further to do */
-    }
-  }
-
-  const repairsInWindow = existing.length;
-  if (repairsInWindow > REPAIR_ESCALATION_THRESHOLD) {
-    outcome.escalated = true;
-    const message =
-      `[SHARED_CLONE_REF_CHURN] ${repo}: shared clone repaired ${repairsInWindow} ` +
-      "times in the last 24h — broken refs keep reappearing; last-writer " +
-      "provenance is in self-heal.jsonl (Issue #2889)";
-    deps.logError(message);
-    await emit({
-      timestamp: now().toISOString(),
-      module: SHARED_CLONE_REF_SWEEP_MODULE,
-      action: "escalate",
-      result: "failed",
-      reason: message,
-      details: { repo, repairsInWindow },
-    });
-  }
 }

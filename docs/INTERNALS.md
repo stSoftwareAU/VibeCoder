@@ -2693,8 +2693,9 @@ happening.
 
 While the host disk is low and reclaim did not heal it, every
 `maintenanceLane`-flagged handler — this sweep and the milestone branch sync
-alike — is skipped for the cycle (pool or no pool), with one warn line naming
-them; see [HOST_DISK_LOW pauses maintenance-lane passes](CONTAINER.md#host_disk_low-pauses-maintenance-lane-passes-issue-2889)
+alike — is skipped for the cycle (pool or no pool); the existing one-time
+`[HOST_DISK_LOW]` warning already names this pause, so there is no separate
+warn line. See [HOST_DISK_LOW pauses maintenance-lane passes](CONTAINER.md#host_disk_low-pauses-maintenance-lane-passes-issue-2889)
 in CONTAINER.md. Serial passes (landing PRs, reclaim) keep running.
 
 ```mermaid

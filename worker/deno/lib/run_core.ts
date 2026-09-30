@@ -6101,8 +6101,8 @@ export async function runCoreLoop(
           // the PRs already open and what reclaims space. Maintenance-lane
           // passes that write the shared clones pause instead (Issue #2889):
           // a fetch or ref write interrupted by low disk is what left
-          // NUL-filled refs behind. Reported once per cycle; the pool's own
-          // pre-claim guard reports a mid-pool drop.
+          // NUL-filled refs behind. The one-time warning below already says
+          // so; the pool's own pre-claim guard reports a mid-pool drop.
           let skipScanForHostDisk = false;
           let pauseLaneForHostDisk = false;
           if (deps.checkHostDisk) {
@@ -6594,12 +6594,6 @@ export async function runCoreLoop(
            * Collected so the cycle logs one line rather than one per sweep.
            */
           const skippedDeferrable: string[] = [];
-          /**
-           * Maintenance-lane passes paused this cycle because the host disk
-           * is low (Issue #2889) — collected so the cycle logs one warning
-           * rather than one per pass.
-           */
-          const pausedLanePasses: string[] = [];
           // Consume the tier gate: this cycle owns the reading that set it,
           // and only the next reading can arm it again (Issue #2449).
           const inReserveThisCycle = budgetInReserve;
@@ -6630,8 +6624,8 @@ export async function runCoreLoop(
             // which write those clones, pause while the host disk is low.
             // This applies whether or not the lane/pool is enabled: a
             // lane-flagged handler writes the shared clones serially too.
+            // The one-time HOST_DISK_LOW warning above already covers this.
             if (handler.maintenanceLane === true && pauseLaneForHostDisk) {
-              pausedLanePasses.push(handler.name);
               continue;
             }
 
@@ -6668,16 +6662,6 @@ export async function runCoreLoop(
               `budget-pacing: in reserve — skipped deferrable sweeps: ${
                 skippedDeferrable.join(", ")
               }`,
-            );
-          }
-
-          // Issue #2889: one warning per cycle naming the maintenance-lane
-          // passes paused while the host disk is low.
-          if (pausedLanePasses.length > 0) {
-            warnOf(deps)(
-              `[HOST_DISK_LOW] paused maintenance-lane passes while the host disk is low: ${
-                pausedLanePasses.join(", ")
-              } (Issue #2889)`,
             );
           }
 
