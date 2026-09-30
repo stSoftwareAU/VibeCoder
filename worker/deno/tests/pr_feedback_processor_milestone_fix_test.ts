@@ -333,3 +333,62 @@ Deno.test("processPrFeedback - non-gated head: unchanged behaviour, pushes to th
   assertEquals(result.value.changesPushed, true);
   assertEquals(result.value.summary, "Pushed fixes for PR #2866 feedback");
 });
+
+Deno.test("processPrFeedback - gated head: PR branch held elsewhere => stands down before cutting a fix branch", async () => {
+  // Regression for a PR #2909 review finding: preparePrBranch's result was
+  // never checked, so a `branch_held` worktree (Issue #1677) stayed on the
+  // previous task's branch and `checkout -B <fixBranch>` cut the fix branch
+  // from that wrong HEAD instead of standing down.
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: true }),
+    git: {
+      runGitCommand: ((args: string[], _opts?: unknown) => {
+        gitCalls.push(args);
+        if (args[0] === "checkout" && args[1] === "--end-of-options") {
+          return Promise.resolve({
+            ok: true,
+            value: {
+              code: 1,
+              stdout: "",
+              stderr:
+                `fatal: '${MILESTONE_HEAD}' is already checked out at '/tmp/other-worktree'`,
+            },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }) as unknown as GitDeps["runGitCommand"],
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-branch-held",
+    workRoot: "/tmp/test-milestone-fix-branch-held",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(result.value.processed, false);
+  assertEquals(result.value.changesPushed, false);
+
+  // No fix branch was ever cut, and no fix PR was raised, from the
+  // unverified HEAD.
+  const checkoutB = gitCalls.find((c) => c[0] === "checkout" && c[1] === "-B");
+  assertEquals(checkoutB, undefined, "no fix-branch checkout expected");
+  const created = captured.calls.find((c) =>
+    c[0] === "pr" && c[1] === "create"
+  );
+  assertEquals(created, undefined, "no fix PR expected");
+});

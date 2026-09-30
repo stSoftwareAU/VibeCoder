@@ -588,11 +588,38 @@ async function _processFeedbackWithHeartbeat(
   // Checkout the PR branch before running Claude (Issue #1458).
   // Shell work_on_pr_feedback did this; the Deno migration missed it,
   // leaving milestone-branch PRs running on the wrong branch.
-  await preparePrBranch(input.branchName, {
+  const prepared = await preparePrBranch(input.branchName, {
     logger,
     git: deps.git,
     cwd: processorDeps.workDir,
   });
+  if (!prepared.ok) {
+    // Mirrors the CI path (pr_ci_processor.ts): never run the agent — or cut
+    // a gated-head fix branch — from an unverified HEAD. Without this check,
+    // a `branch_held` worktree (Issue #1677) stays on the previous task's
+    // branch, `checkout -B <fixBranch>` cuts the fix branch from that wrong
+    // HEAD, and a gated head turns what used to be a GH013-refused push into
+    // a raised, auto-merge-armed PR carrying an unrelated branch's commits.
+    logger.warn(
+      `PR feedback skipped for PR #${prNumber}: PR branch '${input.branchName}' ${
+        prepared.reason === "branch_missing"
+          ? "no longer exists on origin (merged or closed?)"
+          : prepared.reason === "branch_held"
+          ? "is checked out in another worktree on this host — not the PR's " +
+            "fault (Issue #1677)"
+          : "could not be checked out"
+      } — ${prepared.detail}`,
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        summary:
+          `PR branch '${input.branchName}' unavailable (${prepared.reason})`,
+      },
+    };
+  }
 
   // Issue #2907: a milestone PR's head can itself be a ruleset-gated
   // `milestone/**` branch — the fleet account cannot push to it directly
