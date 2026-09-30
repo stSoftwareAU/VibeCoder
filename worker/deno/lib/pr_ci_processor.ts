@@ -61,7 +61,12 @@ import {
   type QualityGateRunResult,
   runQualityGateCheck,
 } from "./quality_gate_phase.ts";
-import { guardGatedHead } from "./gated_head_guard.ts";
+import { assessGatedHead } from "./gated_head_guard.ts";
+import {
+  findOpenMilestoneFixPr,
+  milestoneFixBranchFor,
+  raiseMilestoneFixPr,
+} from "./milestone_fix_pr.ts";
 import {
   preparePrBranch,
   readPrResponseMessage,
@@ -812,39 +817,72 @@ async function _processCiFailureLocked(
     };
   }
 
-  // Issue #1679: a head under a ruleset that refuses direct pushes can never
-  // receive this pass's commits — the push is declined with GH013, once per
-  // run. Standing down here, before the heartbeat, the claim comment and
-  // `recordCiCheckRetry`, means the refusal spends no retry and leaves no
-  // per-run churn on a PR this pass will never fix.
-  const pushGate = await guardGatedHead({
-    repo,
-    prNumber,
-    branchName: input.branchName,
-    pass: "CI fix",
-    logger,
-    runGhCommand: ghFn,
-  });
-  if (pushGate.gated) {
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        changesPushed: false,
-        annotationCount: 0,
-        retryCount: currentRetries,
-        summary:
-          `PR head '${input.branchName}' refuses direct pushes — ${pushGate.detail}`,
-      },
-    };
-  }
-
   // The attempt this run will be. It is *recorded* only once the PR branch is
   // checked out (Issue #1677, in `_processCiWithHeartbeat`): a checkout the
   // clone refused — the branch held by another lane's worktree, or gone from
   // origin — is not an attempt at the fix, and counting it burnt all three
   // retries on NEAT-AI-Ockham#184 without the agent ever running.
   const newRetryCount = currentRetries + 1;
+
+  // Issue #1679/#2907: a head under a ruleset that refuses direct pushes can
+  // never receive this pass's commits directly. Rather than standing down
+  // forever, the fix is pushed to a `milestone-fix/**` side branch and
+  // delivered into the gated branch via a pull request (mirroring the
+  // milestone-sync precedent, Issue #589). Only one such fix PR is kept open
+  // per milestone PR at a time, so a gated head with one already in flight
+  // stands down without spending a retry — checked before the heartbeat, the
+  // claim comment and `recordCiCheckRetry`.
+  const gateAssessment = await assessGatedHead(repo, input.branchName, ghFn);
+  let fixBranch: string | undefined;
+  if (gateAssessment.gated) {
+    const openFixPr = await findOpenMilestoneFixPr(
+      repo,
+      input.branchName,
+      prNumber,
+      { gh: ghFn },
+    );
+    if (!openFixPr.ok) {
+      logger.error(
+        "Could not check for an open milestone-fix pull request — standing " +
+          "down rather than risking a duplicate (Issue #2907)",
+        {
+          repo,
+          prNumber,
+          branchName: input.branchName,
+          error: openFixPr.error.message,
+        },
+      );
+      return {
+        ok: true,
+        value: {
+          processed: false,
+          changesPushed: false,
+          annotationCount: 0,
+          retryCount: currentRetries,
+          summary:
+            `Could not check for an open milestone-fix PR for '${input.branchName}': ${openFixPr.error.message}`,
+        },
+      };
+    }
+    if (openFixPr.value !== null) {
+      return {
+        ok: true,
+        value: {
+          processed: false,
+          changesPushed: false,
+          annotationCount: 0,
+          retryCount: currentRetries,
+          summary:
+            `fix PR #${openFixPr.value.number} already in flight for '${input.branchName}' (no retry spent)`,
+        },
+      };
+    }
+    fixBranch = milestoneFixBranchFor(
+      input.branchName,
+      prNumber,
+      `ci-${newRetryCount}`,
+    );
+  }
 
   // Start periodic heartbeat to prevent false crash detection (Issue #1204).
   // The initial record is awaited (Issue #1888); on failure return early so
@@ -893,6 +931,7 @@ async function _processCiFailureLocked(
       newRetryCount,
       graftSlot,
       carrier,
+      fixBranch,
     );
     await recordCiMilestone(
       processorDeps,
@@ -1006,6 +1045,9 @@ async function _processCiWithHeartbeat(
   newRetryCount: number,
   graftSlot: GraftContextSlot,
   carrier: CiRunCarrier,
+  /** Set only when the PR head is gated (Issue #2907) — the local branch the
+   * fix is checked out and pushed to, delivered via `raiseMilestoneFixPr`. */
+  fixBranch?: string,
 ): Promise<Result<CiFixResult>> {
   const { repo, prNumber, checkRunId, checkName, encodedAnnotations } = input;
   const {
@@ -1080,6 +1122,39 @@ async function _processCiWithHeartbeat(
   // `maxCiRetries` (Issue #1677 — see `_processCiFailureLocked`).
   await recordCiCheckRetry(stateDir, repo, checkRunId);
 
+  // Issue #2907: the PR head is gated — check out the milestone-fix side
+  // branch instead of committing on the (unpushable) PR head directly. A
+  // checkout failure is fail-loud: the working tree is left on whatever
+  // branch it was on, so the agent must not run.
+  if (fixBranch !== undefined) {
+    const fixCheckout = await deps.git.runGitCommand(
+      ["checkout", "-B", fixBranch],
+      { cwd: processorDeps.workDir },
+    );
+    if (!fixCheckout.ok || fixCheckout.value.code !== 0) {
+      const err = fixCheckout.ok
+        ? fixCheckout.value.stderr.trim()
+        : fixCheckout.error.message;
+      logger.error(
+        "Could not check out the milestone-fix branch — the fix cannot be " +
+          "delivered this run (Issue #2907)",
+        { repo, prNumber, fixBranch, error: err },
+      );
+      return {
+        ok: true,
+        value: {
+          processed: false,
+          changesPushed: false,
+          annotationCount: 0,
+          retryCount: newRetryCount - 1,
+          summary:
+            `milestone-fix branch '${fixBranch}' could not be checked out — ${err}`,
+        },
+      };
+    }
+  }
+  const pushBranch = fixBranch ?? input.branchName;
+
   // Issue #1878: repeat the scan's aggregator decision against the branch
   // that was actually checked out. The scan reads the host's clone, which
   // sits on the default branch, so a head that added or renamed the
@@ -1111,13 +1186,13 @@ async function _processCiWithHeartbeat(
   // work, so a Claude self-push leaves hasChanges=false and the worker posts
   // a misleading "no changes" reply. branchHeadChanged is the authoritative
   // signal.
-  const beforeShaResult = await deps.git.captureBranchHead(input.branchName, {
+  const beforeShaResult = await deps.git.captureBranchHead(pushBranch, {
     cwd: processorDeps.workDir,
   });
   const beforeSha = beforeShaResult.ok ? beforeShaResult.value : undefined;
   if (!beforeShaResult.ok) {
     logger.warn("Failed to capture pre-Claude HEAD SHA", {
-      branchName: input.branchName,
+      branchName: pushBranch,
       error: beforeShaResult.error.message,
     });
   }
@@ -1559,7 +1634,7 @@ async function _processCiWithHeartbeat(
   // known-broken CI "fix" is never pushed back into the expensive build.
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
   const finaliseResult = await deps.git.commitAndPushPending(
-    input.branchName,
+    pushBranch,
     `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
     { cwd: processorDeps.workDir },
     false,
@@ -1595,7 +1670,7 @@ async function _processCiWithHeartbeat(
         unpushed: finalUnpushedCount,
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
-        input.branchName,
+        pushBranch,
         { cwd: processorDeps.workDir },
       );
       // Issue #211: keep the reason the recovery failed — it names the step

@@ -182,7 +182,8 @@ export async function findOpenMilestoneFixPr(
     typeof entry.headRefName === "string" &&
     entry.headRefName.startsWith(prefix)
   );
-  if (!match || typeof match.number !== "number" ||
+  if (
+    !match || typeof match.number !== "number" ||
     typeof match.url !== "string"
   ) {
     return { ok: true, value: null };
@@ -274,8 +275,7 @@ export async function raiseMilestoneFixPr(
   options: RaiseMilestoneFixPrOptions,
   deps: MilestoneFixPrDeps,
 ): Promise<Result<MilestoneFixPr>> {
-  const { repo, milestoneBranch, milestonePrNumber, fixBranch, pass } =
-    options;
+  const { repo, milestoneBranch, milestonePrNumber, fixBranch, pass } = options;
 
   if (!REPO_PATTERN.test(repo)) {
     return {
@@ -316,7 +316,10 @@ export async function raiseMilestoneFixPr(
       "--json",
       "number,url",
     ]);
-    const open = JSON.parse(listed || "[]") as { number: number; url: string }[];
+    const open = JSON.parse(listed || "[]") as {
+      number: number;
+      url: string;
+    }[];
     if (Array.isArray(open) && open.length > 0) {
       const existing = open[0]!;
       deps.log?.(
