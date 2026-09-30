@@ -3108,6 +3108,7 @@ export async function createProductionRunCoreDeps(
           pushCapableAuthors: maintenanceAuthors,
           authorisedCommenters: trustHolder.read().authorisedCommenters,
           config,
+          needsHumanLabel: config.needsHumanLabel,
           ghCommandFn: runGhCommand,
           // Share the iteration-scoped cache: the watchdog reuses the
           // `issues_all` / `prs_${author}` entries other priorities
