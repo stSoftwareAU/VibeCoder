@@ -175,6 +175,27 @@ match wins and the loop restarts.
    comment nobody claimed is feedback no host would ever rediscover; when the
    claim is genuinely lost, the marker stands because the winner answers it.
 
+#### Every finding ends fixed or rebutted (Issue #2917)
+
+The pr_feedback prompt closes every finding in a `CHANGES_REQUESTED` review one
+of two ways: **fixed** in a commit pushed to the PR branch, or **rebutted** as a
+false positive with the reason recorded in `.pr_response_message`. Recording a
+finding in the PR summary as a "known limitation", "follow-up" or "open
+violation" is not a resolution — the next review raises it again. The only
+other exit is the existing escape hatch above: a filed follow-up issue named in
+`.pr_response_message`. When a finding is fixed, the PR summary text that
+recorded it as a limitation is deleted in the same push, so the summary stays
+true to the head (per the existing "keep the PR summary true to the head"
+rule).
+
+Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
+<branch>`, and confirms `origin/<branch>` contains every cited fix commit
+(`git merge-base --is-ancestor`). A fix that exists only in the local worktree
+is never reported as "addressed"; if the push fails, the reply says so and
+names the finding as still open rather than claiming a fix origin does not
+have. This complements the worker's own final-mile push verification described
+next, which re-checks the push at the git level after the agent runs.
+
 #### The final mile — did the push actually land?
 
 Every Claude-driven phase ends with a commit-and-push, and the worker only
