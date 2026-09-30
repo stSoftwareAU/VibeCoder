@@ -212,6 +212,15 @@ every surface that mentions it — README, `docs/`, operator manuals, prompt
 templates, and agent instructions — in the same change. Do it before the commit,
 not after a reviewer finds it weeks later.
 
+- Changing the **behaviour or meaning** of an existing function, field,
+  setting or endpoint while keeping its name also owes a docs change — the
+  rename rule alone misses it, because there is no old name to grep for.
+- Grep for the **unchanged name**, then re-read every hit — including the doc
+  comment directly above the changed code and the prose beside any example you
+  updated — and fix any that still describe the old behaviour.
+- Updating an example alone is not enough: if the surrounding prose still
+  describes the old contract, the doc is still stale.
+
 ## Visual Documentation
 
 A picture tells a thousand words — favour diagrams over long prose where they
