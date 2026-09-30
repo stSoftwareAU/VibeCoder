@@ -27,7 +27,11 @@
  * The merge-conflict pass has since gone one step further (Issue #1772): a
  * `milestone/**` head is the milestone branch sync's to resolve, gated or not,
  * so that pass calls {@link standDownMilestoneHead} and never reads the rules.
- * The spelling and CI-fix passes still ask {@link guardGatedHead}.
+ * The spelling and CI-nudge passes still ask {@link guardGatedHead} and stand
+ * down. The CI-fix and review-feedback passes no longer do (Issue #2907):
+ * they ask {@link assessGatedHead} directly and, when the head is gated, do
+ * their fix work on a `milestone-fix/**` side branch and deliver it through
+ * a pull request into the gated branch instead of giving up.
  *
  * Scope is deliberately narrow — only `milestone/**` heads are assessed. An
  * ordinary feature head under a repo-wide ruleset is left exactly as it was:
@@ -158,11 +162,12 @@ export function buildGatedHeadComment(
     "",
     `${capitalise(assessment.detail)}.`,
     "",
-    "The automated spelling, CI-fix, merge-conflict and CI-nudge passes " +
-    "therefore leave this PR alone rather than retrying a push that can " +
-    "never land. Changes " +
-    "for this branch have to arrive through a pull request into it, or an " +
-    "operator has to add the fleet account as a bypass actor on the rule.",
+    "The automated spelling, merge-conflict and CI-nudge passes therefore " +
+    "leave this PR alone rather than retrying a push that can never land. " +
+    "The CI-fix and review-feedback passes still deliver their fixes: each " +
+    "does the work on a `milestone-fix/**` branch and opens a pull request " +
+    "into this branch instead (Issue #2907). An operator can also add the " +
+    "fleet account as a bypass actor on the rule.",
     "",
     "This comment is posted once per branch, not once per run.",
   ].join("\n");

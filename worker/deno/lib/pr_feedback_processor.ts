@@ -15,7 +15,7 @@
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import type { CommentType } from "./pr_comments.ts";
+import { type CommentType, removeProcessedMark } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import {
   buildPrFeedbackPrompt,
@@ -43,6 +43,11 @@ import {
   preparePrBranch,
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
+import { assessGatedHead } from "./gated_head_guard.ts";
+import {
+  milestoneFixBranchFor,
+  raiseMilestoneFixPr,
+} from "./milestone_fix_pr.ts";
 import {
   type HeartbeatHandle,
   startHeartbeat,
@@ -583,11 +588,133 @@ async function _processFeedbackWithHeartbeat(
   // Checkout the PR branch before running Claude (Issue #1458).
   // Shell work_on_pr_feedback did this; the Deno migration missed it,
   // leaving milestone-branch PRs running on the wrong branch.
-  await preparePrBranch(input.branchName, {
+  const prepared = await preparePrBranch(input.branchName, {
     logger,
     git: deps.git,
     cwd: processorDeps.workDir,
   });
+  if (!prepared.ok) {
+    // Mirrors the CI path (pr_ci_processor.ts): never run the agent — or cut
+    // a gated-head fix branch — from an unverified HEAD. Without this check,
+    // a `branch_held` worktree (Issue #1677) stays on the previous task's
+    // branch, `checkout -B <fixBranch>` cuts the fix branch from that wrong
+    // HEAD, and a gated head turns what used to be a GH013-refused push into
+    // a raised, auto-merge-armed PR carrying an unrelated branch's commits.
+    logger.warn(
+      `PR feedback skipped for PR #${prNumber}: PR branch '${input.branchName}' ${
+        prepared.reason === "branch_missing"
+          ? "no longer exists on origin (merged or closed?)"
+          : prepared.reason === "branch_held"
+          ? "is checked out in another worktree on this host — not the PR's " +
+            "fault (Issue #1677)"
+          : "could not be checked out"
+      } — ${prepared.detail}`,
+    );
+    // Issue #2909 review: `claimPrComment` already won the claim and left
+    // the eyes reaction before this point runs, and `findActionableComment`
+    // skips eyes-reacted comments — so returning here with only a log line
+    // left a `branch_held`/`checkout_failed` refusal answered by nobody,
+    // forever (Issue #2269 exists to stop exactly that). `branch_missing`
+    // is different: the PR merged or closed, so there is nothing left to
+    // answer and the mark is moot. For the other two, take the mark back so
+    // the next scan rediscovers and retries the comment once the
+    // contention clears — mirroring how the CI path (pr_ci_processor.ts)
+    // relies on the failing check run being rediscovered next cycle.
+    if (prepared.reason !== "branch_missing") {
+      const markError = await removeProcessedMark(
+        repo,
+        commentType,
+        commentId,
+        (args: string[]) => deps.github.runGhCommand(args),
+        (message: string) => logger.warn(message, { repo, prNumber }),
+      );
+      if (markError) {
+        // Issue #2909 review (round 2): a `pr_review` mark is a dismissed
+        // review — GitHub offers no un-dismissal, so `removeProcessedMark`
+        // always errors here — and a failed reaction DELETE errors too. In
+        // both cases the next scan will never rediscover this comment, so
+        // the only way to answer it is a direct reply now.
+        logger.warn(
+          "Could not release the eyes reaction after a branch-prepare " +
+            "failure — replying directly since the comment will not be " +
+            "rediscovered",
+          { repo, prNumber, commentId, error: markError.message },
+        );
+        await replyBranchPrepareFailed(
+          repo,
+          prNumber,
+          deps,
+          input.branchName,
+          prepared.detail,
+        );
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        summary:
+          `PR branch '${input.branchName}' unavailable (${prepared.reason})`,
+      },
+    };
+  }
+
+  // Issue #2907: a milestone PR's head can itself be a ruleset-gated
+  // `milestone/**` branch — the fleet account cannot push to it directly
+  // (GH013), so a fix pass that commits and pushes straight to it always
+  // fails after Claude has already run. Detect that *before* running Claude,
+  // and move the work to a side branch this fix lands via a PR into the
+  // gated head instead (mirrors the milestone sync PR, Issue #589).
+  const gatedHeadAssessment = await assessGatedHead(
+    repo,
+    input.branchName,
+    (args: string[]) => deps.github.runGhCommand(args),
+  );
+  let fixBranch: string | undefined;
+  if (gatedHeadAssessment.gated) {
+    logger.info(
+      "PR feedback: head is gated, working on a fix branch instead",
+      { repo, prNumber, branchName: input.branchName },
+    );
+    fixBranch = milestoneFixBranchFor(
+      input.branchName,
+      prNumber,
+      `feedback-${commentId}`,
+    );
+    const checkoutResult = await deps.git.runGitCommand(
+      ["checkout", "-B", fixBranch],
+      { cwd: processorDeps.workDir },
+    );
+    if (!checkoutResult.ok || checkoutResult.value.code !== 0) {
+      const detail = checkoutResult.ok
+        ? checkoutResult.value.stderr.trim()
+        : checkoutResult.error.message;
+      logger.error(
+        "PR feedback: could not check out the fix branch for a gated head — " +
+          "standing down rather than running Claude on it",
+        { repo, prNumber, fixBranch, error: detail },
+      );
+      await replyGatedCheckoutFailed(
+        repo,
+        prNumber,
+        deps,
+        fixBranch,
+        input.branchName,
+        detail,
+      );
+      return {
+        ok: true,
+        value: {
+          processed: false,
+          changesPushed: false,
+          summary:
+            `PR #${prNumber} feedback: could not check out fix branch '${fixBranch}' for gated head '${input.branchName}'`,
+        },
+      };
+    }
+  }
+  const pushBranch = fixBranch ?? input.branchName;
 
   // Capture HEAD SHA before Claude runs (Issue #1862, part of #1855).
   // Claude may commit and push during its own run, leaving
@@ -595,13 +722,13 @@ async function _processFeedbackWithHeartbeat(
   // hasChanges from commitAndPushPending alone missed Claude's own pushes
   // and produced a misleading "could not identify a code change" reply.
   // We compare HEAD before vs after to recognise self-pushed commits.
-  const beforeHeadResult = await deps.git.captureBranchHead(input.branchName, {
+  const beforeHeadResult = await deps.git.captureBranchHead(pushBranch, {
     cwd: processorDeps.workDir,
   });
   const beforeSha = beforeHeadResult.ok ? beforeHeadResult.value : undefined;
   if (!beforeHeadResult.ok) {
     logger.warn("captureBranchHead failed before Claude run", {
-      branch: input.branchName,
+      branch: pushBranch,
       error: beforeHeadResult.error.message,
     });
   }
@@ -804,7 +931,7 @@ async function _processFeedbackWithHeartbeat(
   // both the commit and the push so a broken feedback fix is not pushed.
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
   const finaliseResult = await deps.git.commitAndPushPending(
-    input.branchName,
+    pushBranch,
     `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
     { cwd: processorDeps.workDir },
     false,
@@ -833,7 +960,7 @@ async function _processFeedbackWithHeartbeat(
         unpushed: finalUnpushedCount,
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
-        input.branchName,
+        pushBranch,
         { cwd: processorDeps.workDir },
       );
       // Issue #211: keep the reason the recovery failed — it names the step
@@ -845,7 +972,7 @@ async function _processFeedbackWithHeartbeat(
         : recoveryResult.error.message;
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
-          input.branchName,
+          pushBranch,
           `Address PR #${prNumber} feedback\n\nRetry after push recovery (Issue #1643).`,
           { cwd: processorDeps.workDir },
           false,
@@ -884,12 +1011,12 @@ async function _processFeedbackWithHeartbeat(
   if (beforeSha !== undefined) {
     const movedResult = await deps.git.branchHeadChanged(
       beforeSha,
-      input.branchName,
+      pushBranch,
       { cwd: processorDeps.workDir },
     );
     if (movedResult.ok && movedResult.value) {
       logger.info("Branch HEAD moved during Claude run", {
-        branch: input.branchName,
+        branch: pushBranch,
         beforeSha,
       });
       hasChanges = true;
@@ -908,7 +1035,7 @@ async function _processFeedbackWithHeartbeat(
   let pushVerification: PushVerification | undefined;
   if (localLooksPushed) {
     const verifyFn = processorDeps.verifyPushFn ?? verifyPushLanded;
-    pushVerification = await verifyFn(input.branchName, {
+    pushVerification = await verifyFn(pushBranch, {
       ...(processorDeps.workDir !== undefined
         ? { cwd: processorDeps.workDir }
         : {}),
@@ -920,7 +1047,7 @@ async function _processFeedbackWithHeartbeat(
         {
           repo,
           prNumber,
-          branch: input.branchName,
+          branch: pushBranch,
           reason: pushVerification.reason,
         },
       );
@@ -928,7 +1055,7 @@ async function _processFeedbackWithHeartbeat(
       logger.info("Push verified against the remote", {
         repo,
         prNumber,
-        branch: input.branchName,
+        branch: pushBranch,
         remoteSha: pushVerification.remoteSha,
       });
     }
@@ -938,7 +1065,7 @@ async function _processFeedbackWithHeartbeat(
       logger.warn("Changes exist but the push was not confirmed locally", {
         repo,
         prNumber,
-        branch: input.branchName,
+        branch: pushBranch,
         finalUnpushedCount: finalUnpushedCount ?? "not measured",
       });
     }
@@ -1046,14 +1173,57 @@ async function _processFeedbackWithHeartbeat(
     };
   }
 
+  // Issue #2907: a verified successful push on a fix branch is not the end
+  // of the job — the fix branch is not this PR's head, so the change is not
+  // yet visible on it. Raise (or reuse) a PR from the fix branch into the
+  // gated milestone head to deliver it.
+  let fixPr: { number: number; url: string } | undefined;
+  let fixPrError: string | undefined;
+  if (fixBranch && hasChanges && pushSucceeded) {
+    const fixPrResult = await raiseMilestoneFixPr({
+      repo,
+      milestoneBranch: input.branchName,
+      milestonePrNumber: prNumber,
+      fixBranch,
+      pass: "review feedback",
+    }, {
+      gh: (args: string[]) => deps.github.runGhCommand(args),
+      log: (m: string) => logger.info(m),
+      warn: (m: string) => logger.warn(m),
+    });
+    if (fixPrResult.ok) {
+      fixPr = fixPrResult.value;
+    } else {
+      fixPrError = fixPrResult.error.message;
+      logger.error(
+        "PR feedback: pushed to the fix branch but could not raise the fix PR " +
+          "into the gated head",
+        { repo, prNumber, fixBranch, error: fixPrError },
+      );
+    }
+  }
+
   // Reply to comment — only claim "pushed" if push actually succeeded
-  if (hasChanges && pushSucceeded) {
+  if (hasChanges && pushSucceeded && fixBranch && fixPrError) {
+    await replyFixPrRaiseFailed(
+      repo,
+      prNumber,
+      deps,
+      fixBranch,
+      input.branchName,
+      fixPrError,
+    );
+  } else if (hasChanges && pushSucceeded) {
     await replyWithResult(
       repo,
       prNumber,
       deps,
       customMessage,
       pushVerification,
+      fixPr
+        ? `The fix was delivered through PR #${fixPr.number} (${fixPr.url}) ` +
+          `into the gated branch '${input.branchName}'.`
+        : undefined,
     );
   } else if (hasChanges && !pushSucceeded) {
     await replyPushFailed(repo, prNumber, deps, pushVerification);
@@ -1068,7 +1238,10 @@ async function _processFeedbackWithHeartbeat(
     );
   }
 
-  const actuallyPushed = hasChanges && pushSucceeded;
+  // A fix-PR failure means the change never reached the gated head, so it
+  // must not be reported as pushed even though the fix branch itself is fine.
+  const actuallyPushed = hasChanges && pushSucceeded &&
+    !(fixBranch && fixPrError);
 
   logger.info("PR feedback processing complete", {
     repo,
@@ -1082,7 +1255,9 @@ async function _processFeedbackWithHeartbeat(
       processed: true,
       changesPushed: actuallyPushed,
       summary: actuallyPushed
-        ? `Pushed fixes for PR #${prNumber} feedback`
+        ? fixPr
+          ? `Pushed fixes for PR #${prNumber} feedback via fix PR #${fixPr.number}`
+          : `Pushed fixes for PR #${prNumber} feedback`
         : hasChanges
         ? `Fixed PR #${prNumber} feedback locally but failed to push`
         : `Reviewed PR #${prNumber} feedback — no changes needed`,
@@ -1100,13 +1275,20 @@ async function replyWithResult(
   deps: WorkerDeps,
   customMessage?: string,
   verification?: PushVerification,
+  /**
+   * Issue #2907: when the fix landed via a fix PR into a gated milestone
+   * head (rather than a direct push), say so — the reader otherwise has no
+   * way to know the change is not yet on this PR's branch.
+   */
+  extraNote?: string,
 ): Promise<void> {
   // Issue #579: the claim carries the SHA it was verified against, so a
   // stale claim is falsifiable at a glance instead of requiring a human to
   // compare the comment against `git log`.
   const body = (customMessage ??
     "I've pushed a fix for this feedback. Please review the changes.") +
-    (verification ? formatVerifiedPushSuffix(verification) : "");
+    (verification ? formatVerifiedPushSuffix(verification) : "") +
+    (extraNote ? `\n\n${extraNote}` : "");
   try {
     await deps.github.runGhCommand([
       "pr",
@@ -1143,6 +1325,99 @@ async function replyPushFailed(
       "I fixed the issues from this feedback locally but failed to push them — " +
       "the changes are NOT on the remote. I checked against origin rather than " +
       `assuming the push landed, so the work is still on the worker's local branch.${detail}`,
+    ]);
+  } catch {
+    // Comment failure is non-critical
+  }
+}
+
+/**
+ * Issue #2907: the gated head's fix branch could not even be checked out, so
+ * Claude never ran and nothing was changed. `replyPushFailed`'s wording
+ * ("I fixed the issues ... but failed to push them") would be false here —
+ * this reply says plainly that no fix was attempted.
+ */
+async function replyGatedCheckoutFailed(
+  repo: string,
+  prNumber: number,
+  deps: WorkerDeps,
+  fixBranch: string,
+  headBranch: string,
+  detail: string,
+): Promise<void> {
+  try {
+    await deps.github.runGhCommand([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      `The head branch '${headBranch}' is ruleset-gated, so this feedback ` +
+      `pass works on a fix branch instead. I could not create the fix ` +
+      `branch '${fixBranch}': ${detail}\n\nNo changes were made.`,
+    ]);
+  } catch {
+    // Comment failure is non-critical
+  }
+}
+
+/**
+ * Posts a direct reply when a branch-prepare failure's processed mark could
+ * not be taken back (Issue #2909 review, round 2). Without this, a
+ * `pr_review` claim — always unable to un-dismiss — or a failed reaction
+ * DELETE leaves the comment eyes-reacted forever with nothing posted, so the
+ * next scan never rediscovers it either.
+ */
+async function replyBranchPrepareFailed(
+  repo: string,
+  prNumber: number,
+  deps: WorkerDeps,
+  branchName: string,
+  detail: string,
+): Promise<void> {
+  try {
+    await deps.github.runGhCommand([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      `I could not check out '${branchName}' on this host (${detail}). ` +
+      `No changes were made.`,
+    ]);
+  } catch {
+    // Comment failure is non-critical
+  }
+}
+
+/**
+ * Issue #2907: the fix branch itself pushed successfully — it IS on origin —
+ * but the PR that would land it into the gated head could not be raised.
+ * `replyPushFailed`'s "the work is still on the worker's local branch"
+ * would be false here; say the fix is on origin and needs a human to open
+ * the PR.
+ */
+async function replyFixPrRaiseFailed(
+  repo: string,
+  prNumber: number,
+  deps: WorkerDeps,
+  fixBranch: string,
+  headBranch: string,
+  error: string,
+): Promise<void> {
+  try {
+    await deps.github.runGhCommand([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      `I pushed the fix to '${fixBranch}' on origin, but could not raise ` +
+      `the PR to land it into the gated head '${headBranch}': ${error}` +
+      "\n\nCould someone open that PR manually?",
     ]);
   } catch {
     // Comment failure is non-critical

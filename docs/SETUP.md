@@ -1663,7 +1663,8 @@ explained beneath the block, never inside it.
 - `authorized_commenters` — the **known** logins whose input the worker acts
   on: Copilot, Actions, and any other bot you name. A GitHub App is never a
   repository collaborator, so this cannot be derived. It never grants the
-  right to direct work. Note the key itself is spelt
+  right to direct work, except that a listed bot's `idle-task` label add is
+  honoured (Issue #2882). Note the key itself is spelt
   `authorized_commenters`. Defaults to
   `["github-copilot[bot]", "github-actions[bot]"]` when absent. See
   [Authorised Commenters](CONFIGURATION.md#authorised-commenters) and
