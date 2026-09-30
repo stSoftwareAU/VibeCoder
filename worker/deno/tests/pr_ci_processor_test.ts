@@ -2145,6 +2145,15 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
           ) {
             fixBranchCheckoutBeforeClaude = !claudeRan;
           }
+          if (args[0] === "ls-remote") {
+            // Exit 2 ("no matching refs") is the production-normal outcome:
+            // no stale branch, so proceed straight to checkout without
+            // deleting anything (PR #2909 review).
+            return Promise.resolve({
+              ok: true,
+              value: { code: 2, stdout: "", stderr: "" },
+            });
+          }
           return Promise.resolve({
             ok: true,
             value: { code: 0, stdout: "", stderr: "" },
@@ -2207,6 +2216,14 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
       commitAndPushCalls,
       [GATED_FIX_BRANCH],
       "the fix, not the PR's own head, receives the commit and push",
+    );
+    assertEquals(
+      gitCommands.some((args) =>
+        args[0] === "push" && args.includes("--delete")
+      ),
+      false,
+      "ls-remote exit 2 means the branch is absent — nothing to delete " +
+        "(PR #2909 review)",
     );
 
     const prCreateCall = ghCalls.find((args) =>
@@ -2366,6 +2383,14 @@ Deno.test("processCiFailure - two check runs on the same gated milestone PR neve
           runGitCommand: ((args: string[]) => {
             if (args[0] === "checkout" && args[1] === "-B") {
               checkoutBranches.push(args[2]!);
+            }
+            if (args[0] === "ls-remote") {
+              // Exit 2 ("no matching refs") — no stale branch either time
+              // (PR #2909 review).
+              return Promise.resolve({
+                ok: true,
+                value: { code: 2, stdout: "", stderr: "" },
+              });
             }
             return Promise.resolve({
               ok: true,
