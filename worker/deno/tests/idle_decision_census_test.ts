@@ -1401,6 +1401,136 @@ Deno.test("formatter - per-repo line carries the low_priority_suppressed count (
 });
 
 // ---------------------------------------------------------------------------
+// Work-on suppression by a PR-blocked top-priority issue (Issue #2922)
+// ---------------------------------------------------------------------------
+// `selectHighestPriority`'s Priority 2 rule drops every `work-on` candidate
+// whose repo+milestone matches a PR-blocked configured-label (`top-priority`)
+// issue (`collect_label_candidates.ts`'s `blocked` entries). The census did
+// not model it, so on stSoftwareAU/GRQ-AutoTrader it logged `work_on=14
+// top_priority=0 pr_blocked=2 inversion_signal=true` cycle after cycle for a
+// backlog the scan was already correctly refusing.
+
+Deno.test("census - work-on issues sharing a stream with a PR-blocked top-priority issue are suppressed (Issue #2922, GRQ-AutoTrader)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "stSoftwareAU/GRQ-AutoTrader",
+        issues: [
+          issue(1, ["top-priority"]),
+          issue(2, ["work-on"]),
+          issue(3, ["work-on"]),
+          issue(4, ["work-on"]),
+        ],
+        openPRs: [openPR(100, "Develop", "issue-1-fix")],
+        // A generous cap so only issue #1's *own* PR (referenced by number)
+        // blocks it — the work-on issues must not be pr_blocked themselves,
+        // matching the GRQ-AutoTrader repro where work_on=14 counted as
+        // claimable while only the 2 top-priority issues were pr_blocked.
+        fleetPrSlots: 5,
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.workOnSuppressed, 3);
+  assertEquals(entry.prBlocked, 1);
+  assert(!entry.inversionSignal);
+  assertEquals(census.inversionRepos, []);
+});
+
+Deno.test("census - a work-on issue in a different milestone than the PR-blocked top-priority issue stays claimable (Issue #2922)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["top-priority"], [], "M1"),
+          issue(2, ["work-on"], [], "M2"),
+        ],
+        openPRs: [openPR(100, "milestone/m1", "issue-1-fix")],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.workOnSuppressed, 0);
+});
+
+Deno.test("census - a PR-blocked top-priority issue carrying ignore-open-prs does not suppress work-on (Issue #2922)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["top-priority", "ignore-open-prs"]),
+          issue(2, ["work-on"]),
+        ],
+        openPRs: [openPR(100, "Develop", "issue-1-fix")],
+        // High cap so issue #2 is not separately pr_blocked by the fleet-PR
+        // cap check — isolating the work-on-suppression check being tested.
+        fleetPrSlots: 5,
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.workOnSuppressed, 0);
+});
+
+Deno.test("census - an issue carrying both top-priority and work-on labels is not counted as suppressed (Issue #2922)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["top-priority"]),
+          issue(2, ["top-priority", "work-on"]),
+        ],
+        openPRs: [openPR(100, "Develop", "issue-1-fix")],
+        // High cap so issue #2 (not itself named by the open PR) is not
+        // separately pr_blocked — isolating the work-on-suppression check.
+        fleetPrSlots: 5,
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.workOnSuppressed, 0);
+  assertEquals(entry.unblocked.topPriority, 1);
+});
+
+Deno.test("formatter - per-repo line carries the work_on_suppressed count (Issue #2922)", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          issue(1, ["top-priority"]),
+          issue(2, ["work-on"]),
+        ],
+        openPRs: [openPR(100, "Develop", "issue-1-fix")],
+        // High cap so issue #2 is not separately pr_blocked by the fleet-PR
+        // cap check — isolating the work-on-suppression count being tested.
+        fleetPrSlots: 5,
+      }),
+    ],
+  });
+  const line = formatIdleDecisionCensus(census).find((l) =>
+    l.includes("repo=org/a")
+  )!;
+  assert(line.includes("low_priority_suppressed=0 work_on_suppressed=1"));
+});
+
+// ---------------------------------------------------------------------------
 // Run-local holds (Issue #655)
 // ---------------------------------------------------------------------------
 // `find_oldest_issue.ts` drops every candidate `isIssueInCooldown` names —
