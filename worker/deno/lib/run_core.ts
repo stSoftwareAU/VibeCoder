@@ -333,6 +333,14 @@ export interface PriorityHandler {
    */
   maintenanceLane?: boolean;
   /**
+   * Skip this handler for the cycle while the host disk is low and reclaim
+   * did not heal it (Issue #2889). Set only on the shared-clone ref sweep:
+   * a ref write interrupted by low disk is what it exists to repair. Every
+   * other pass keeps running under low disk, because those are what land
+   * the PRs already open (Issue #226).
+   */
+  pausesOnHostDiskLow?: boolean;
+  /**
    * `deferrable` marks a **fixed-cost maintenance sweep** the cycle skips
    * while the GraphQL budget is inside its reserve (Issue #2449). These
    * sweeps spend their calls whether or not there is work for them, so once
@@ -729,6 +737,13 @@ export interface RunCoreDeps {
   syncMilestoneBranches: (
     opts?: HandlerExecuteOptions,
   ) => Promise<Result<void>>;
+
+  /**
+   * Priority 1.73: hourly sweep of shared clones for broken refs, also run
+   * straight after a HOST_DISK_LOW episode ends (Issue #2889). Optional so
+   * existing test deps need no change.
+   */
+  sweepSharedCloneRefs?: () => Promise<Result<void>>;
 
   // Priority 1.7: Milestone completions
   checkMilestoneCompletions: () => Promise<Result<void>>;
@@ -1990,6 +2005,24 @@ export function buildPriorityDispatchTable(
             ? { ok: true as const, value: { processed: false } }
             : { ok: false as const, error: r.error }
         ),
+    },
+    {
+      // Issue #2889: hourly sweep of the shared clones for broken refs, also
+      // run straight after a HOST_DISK_LOW episode — a fetch or ref write
+      // interrupted by low disk is what leaves NUL-filled refs behind. Runs
+      // in the maintenance lane, leasing each repository it touches, and
+      // never claims an issue.
+      priority: 1.73,
+      name: "Shared Clone Ref Sweep",
+      maintenanceLane: true,
+      pausesOnHostDiskLow: true,
+      execute: () =>
+        (deps.sweepSharedCloneRefs?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
     },
     {
       priority: 1.75,
@@ -6074,9 +6107,11 @@ export async function runCoreLoop(
           // --- Host disk (Issue #226) ---
           // A host short of room claims nothing new this iteration, but the
           // maintenance passes below still run — they are what lands the
-          // PRs already open and what reclaims space. Reported once per
-          // cycle; the pool's own pre-claim guard reports a mid-pool drop.
+          // PRs already open and what reclaims space. Only the shared-clone
+          // ref sweep pauses (Issue #2889). Reported once per cycle; the
+          // pool's own pre-claim guard reports a mid-pool drop.
           let skipScanForHostDisk = false;
+          let pauseSweepForHostDisk = false;
           if (deps.checkHostDisk) {
             const disk = await deps.checkHostDisk();
             if (disk.level === "low") {
@@ -6105,6 +6140,7 @@ export async function runCoreLoop(
                 hostDiskLowReported = false;
               } else {
                 skipScanForHostDisk = true;
+                pauseSweepForHostDisk = true;
                 if (!hostDiskLowReported) {
                   hostDiskLowReported = true;
                   // Degraded and continuing — maintenance still runs and the
@@ -6587,6 +6623,13 @@ export async function runCoreLoop(
             // the tier holds wherever the handler would have run.
             if (inReserveThisCycle && handler.budgetTier === "deferrable") {
               skippedDeferrable.push(handler.name);
+              continue;
+            }
+
+            // Issue #2889: the shared-clone ref sweep stands down while the
+            // host disk is low — a ref write interrupted by low disk is what
+            // it repairs. Every other pass keeps landing PRs (Issue #226).
+            if (handler.pausesOnHostDiskLow === true && pauseSweepForHostDisk) {
               continue;
             }
 

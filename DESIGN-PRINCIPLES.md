@@ -2768,7 +2768,12 @@ does not defer a second time — the gate plainly did not hold (the dependency
 closed and the work is still reported blocked, or the record was lost), and
 re-deferring would spend a full agent run on every scan. The repeat falls
 through to the analysis-only hand-off, so a human sees it; it is still never
-closed.
+closed. The marker is looked up in the issue's full comment thread (fetched via
+the GitHub client, every author), not the budgeted prompt comments (20
+comments / 12,000 characters): on a busy issue that budget could drop the
+marker, so the guard never fired and the same dependency was re-deferred on
+every scan (Issue #2936). The prompt comments are used only as a fallback,
+with a logged warning, if the full-thread fetch fails.
 
 Two supporting changes make the deferral hold. The dependency gate now resolves
 a **cross-repo** `Depends on owner/repo#N` against its own repo — previously

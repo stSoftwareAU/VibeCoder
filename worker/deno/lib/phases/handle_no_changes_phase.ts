@@ -33,7 +33,10 @@ import {
   detectBlockedOutcome,
   formatDependencyRef,
 } from "../blocked_outcome.ts";
-import { deferBlockedIssue, hasPriorDeferral } from "../blocked_deferral.ts";
+import {
+  deferBlockedIssue,
+  hasPriorDeferralOnThread,
+} from "../blocked_deferral.ts";
 import {
   buildDeferralExhaustedComment,
   countPriorTimeDeferrals,
@@ -180,12 +183,19 @@ export async function workOnIssueHandleNoChanges(
   // Loop guard: a deferral holds only while the dependency gate skips the
   // issue. Back here on the *same* dependency means it did not hold, and
   // deferring again would spin a fresh agent run on every scan — so the repeat
-  // falls through to the analysis-only hand-off and a human sees it.
+  // falls through to the analysis-only hand-off and a human sees it. Reads
+  // the full comment thread rather than the budgeted prompt blob, which drops
+  // the marker on a busy issue (Issue #2936).
+  const blockedClient = blocked ? deps.github.createClient(logger) : undefined;
   const repeatDeferral = blocked !== undefined &&
-    hasPriorDeferral(
-      ctx.issueComments,
-      formatDependencyRef(blocked.dependency),
-    );
+    await hasPriorDeferralOnThread({
+      ghClient: blockedClient!,
+      repo,
+      issueNumber,
+      ref: formatDependencyRef(blocked.dependency),
+      fallbackComments: ctx.issueComments,
+      logger,
+    });
   if (blocked && repeatDeferral) {
     logger.warn(
       "Blocked on a dependency already deferred once — handing off to a " +
@@ -198,9 +208,8 @@ export async function workOnIssueHandleNoChanges(
     );
   }
   if (blocked && !repeatDeferral) {
-    const ghClient = deps.github.createClient(logger);
     const result = await deferBlockedIssue({
-      ghClient,
+      ghClient: blockedClient!,
       repo,
       issueNumber,
       githubUser,
