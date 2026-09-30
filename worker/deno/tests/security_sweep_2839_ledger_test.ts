@@ -36,7 +36,9 @@ function sweptRows(text: string): Map<string, string> {
 
 Deno.test("security sweep #2839 - every swept slice points at the record and its merge-base", () => {
   const rows = sweptRows(recordText);
-  assertEquals(rows.size, 35);
+  // 35 originally, less top-up-2279 (conflict_rebase_rung.ts), retired under
+  // #2842 when the module it covered was deleted.
+  assertEquals(rows.size, 34);
   for (const [chunk, triage] of rows) {
     const slice = ledger.slices.find((s) => s.chunk === chunk);
     assert(slice, `${chunk} is not in the ledger`);

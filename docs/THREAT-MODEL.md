@@ -111,8 +111,9 @@ than a hand-edited allowlist.
 
 **Partially trusted:** the Vibe Coder logins and the `authorized_commenters`
 bots. Their test results, code reviews and PR comments are input the worker
-acts on, and they may **never** raise, label or schedule work. They do not
-widen the egress boundary.
+acts on, and they may **never** raise, label or schedule work — except that
+adding the lowest-priority `idle-task` label is honoured (Issue #2882). They
+do not widen the egress boundary.
 
 **Untrusted:** every byte that arrives from GitHub, and — by design — the agent
 subprocess itself. See

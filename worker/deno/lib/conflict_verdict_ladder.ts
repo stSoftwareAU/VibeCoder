@@ -5,8 +5,17 @@
  * `CONFLICTING` for days at a head whose base was already an ancestor, and the
  * resolver looped on it — merge, "already up to date", resolved marker, relabel,
  * repeat. The fix is a ladder of rungs that make GitHub recompute (nudge, then
- * rebase, then abandon-and-restart), and a ladder needs memory: **which rung
- * already ran at which head sha**.
+ * abandon-and-restart), and a ladder needs memory: **which rung already ran at
+ * which head sha**.
+ *
+ * The ladder once had a middle rung — rebase — between nudge and abandon
+ * (Issues #2279, #2806). It was dropped in Issue #2842: the ladder only ever
+ * runs after `git merge-base --is-ancestor origin/BASE HEAD` has already
+ * exited 0 and nothing re-fetches before the rebase rung would run, so that
+ * rung was a guaranteed no-op. `rung="rebase"` rung-failed markers and
+ * `CONFLICT_REBASE_MARKER`s already written to PR threads are still read
+ * here — they now decide `abandon` at that head, same as any other
+ * already-climbed rung would.
  *
  * That memory lives in the PR's own comment thread, like the attempt history
  * beside it, so it survives hosts and restarts — no host-local state, and two
@@ -55,7 +64,11 @@ const LADDER_RUNGS: readonly ConflictLadderRung[] = ["rebase", "abandon"];
 export interface LadderState {
   /** Head sha the nudge rung last pushed to, when one is recorded. */
   nudgedHead?: string;
-  /** Head sha the rebase rung last produced, when one is recorded. */
+  /**
+   * Head sha the retired rebase rung last produced, when one is recorded.
+   * Legacy only — nothing writes this any more (Issue #2842); a PR thread
+   * from before the rung's removal may still carry it.
+   */
   rebasedHead?: string;
   /** The rung that last failed, and the head it failed at. */
   rungFailedAtHead?: { rung: ConflictLadderRung; head: string };
@@ -67,8 +80,6 @@ export type LadderDecision =
   | { kind: "not-conflicting" }
   /** Push one empty commit so GitHub recomputes mergeability. */
   | { kind: "nudge" }
-  /** Rebase the PR's commits onto the base, tree-identity guarded. */
-  | { kind: "rebase" }
   /** Close the PR and re-queue its originating issue. */
   | { kind: "abandon" }
   /**
@@ -189,6 +200,10 @@ export interface LadderRungInput {
  * an abbreviation of it included — restarts the ladder at the nudge, which
  * repeats a harmless rung rather than skipping to the destructive one.
  *
+ * A nudge already recorded at the current head — or a legacy rebase marker
+ * or rung-failed("rebase") at this head, from before Issue #2842 dropped the
+ * rebase rung — decides `abandon`: nothing left to try but close and re-queue.
+ *
  * @throws when `currentHead` is not a usable sha. That is a caller fault, not
  *   a ladder state: returning `wait` for it would disguise a broken head
  *   lookup as "GitHub is still computing" and hold the PR for ever.
@@ -218,7 +233,7 @@ export function decideLadderRung(input: LadderRungInput): LadderDecision {
     return { kind: "abandon" };
   }
   if (state.rebasedHead === head) return { kind: "abandon" };
-  if (state.nudgedHead === head) return { kind: "rebase" };
+  if (state.nudgedHead === head) return { kind: "abandon" };
   // No marker names this head: either the ladder has not started, or somebody
   // pushed since it did — both start it over.
   return { kind: "nudge" };

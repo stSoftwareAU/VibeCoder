@@ -182,6 +182,17 @@ export async function collectIdleTaskCandidates(
     config.fleetPrAuthors,
   );
 
+  // Issue #2882: adder-only widening of the `idle-task` origin trust set. A
+  // known bot listed in `authorized_commenters` (e.g. the fleet PR-reviewer
+  // App filing improvement issues) may *add* the `idle-task` label — that is
+  // the only grant this set carries. The bot is never trusted as the issue
+  // author, and this set is never used for any other label.
+  const idleTaskTrustedAdders = resolveFleetAuthors(
+    options.githubUser,
+    [...idleTaskTrustedAuthors, ...config.authorisedCommenters],
+    [],
+  );
+
   // Issue #4133: only the fleet's own open PRs defer an issue — a human's
   // open PR is theirs to manage and never blocks issue pickup.
   const pushCapableAuthors = resolveFleetMaintenanceAuthorSet({
@@ -256,11 +267,16 @@ export async function collectIdleTaskCandidates(
     // the worker filed, labelled later by an operator running the backfill
     // from their own gh auth), while the attacker case — untrusted body AND
     // untrusted label add — is rejected.
+    //
+    // Issue #2882: the label-add check alone is widened to
+    // `idleTaskTrustedAdders`, so a bot in `authorized_commenters` may add
+    // the label; the author check below still uses the narrower
+    // `idleTaskTrustedAuthors` set.
     const labelAddedByTrusted = await wasLabelAddedByAllowedAuthor(
       repo,
       issue.number,
       IDLE_TASK_LABEL,
-      idleTaskTrustedAuthors,
+      idleTaskTrustedAdders,
       batchedGh,
       options.timelineCache,
       // No fleet exclusion: `idle-task` is the one label the worker may
