@@ -26,27 +26,31 @@
  * - **It never applies `needs-human`.** A mechanical stall is work, not a
  *   decision, and that label is a cross-subsystem veto (Issue #569) — the
  *   conflict scan skips any PR carrying it, so applying it here would remove
- *   the PR from the very lane that could clear it. The blockage is filed
- *   through `escalateAsWork` and the PR gets the non-vetoing `escalated`
- *   marker.
+ *   the PR from the very lane that could clear it. It files no issue and adds
+ *   no label either (Issue #2803): a stall is repaired, not reported.
  * - **It never starts an attempt.** Forcing one from a watchdog would race the
  *   ordinary pass and manufacture the disrupted-attempt state the workflow
- *   works hard to avoid. It observes and escalates; that is all.
+ *   works hard to avoid. The first trip clears the ladder's per-head wait so
+ *   the ordinary pass reruns the ladder once; a second trip closes the PR and
+ *   redoes its work through `abandonAndRestart`.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
-import type { Logger, Result } from "../types.ts";
+import type { Logger } from "../types.ts";
 import {
-  escalateAsWork,
-  ESCALATED_AS_WORK_LABEL,
-  type WorkEscalation,
-  workEscalationMarker,
-} from "./escalate_as_work.ts";
+  abandonAndRestart,
+  type AbandonRestartDeps,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { getLabelLastAddInfoComplete } from "./issue_query.ts";
-import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
+import {
+  acquireMaintenanceRepoLease,
+  type RepoLease,
+} from "./maintenance_lane.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -57,7 +61,10 @@ import {
   type ConflictSkipReason,
   MERGE_CONFLICT_LABEL,
 } from "./pr_merge_conflict_scan.ts";
-import { readParkedBase } from "./merge_conflict_markers.ts";
+import {
+  CONFLICT_RUNG_FAILED_MARKER,
+  readParkedBase,
+} from "./merge_conflict_markers.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 
 // ---------------------------------------------------------------------------
@@ -76,25 +83,15 @@ import type { TimelineCache } from "./timeline_cache.ts";
 export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 8;
 
 /**
- * Noun phrase for the escalation issue's title.
+ * Marker opening the first-trip comment (Issue #2803).
  *
- * Deliberately free of the label age: `escalateAsWork` deduplicates on the
- * exact title, so a summary that grew by an hour each pass would file a fresh
- * issue every pass. The age lives in the body, which is what the update
- * comment carries anyway.
+ * It records that the ladder was rerun once for this stall, so the next check
+ * that still finds the stall abandons rather than trips again. It shares no
+ * literal with the `vibe-merge-conflict-` vocabulary, so the ladder and the
+ * attempt budget never read it, and it is **not** progress: the stall clock
+ * keeps running through it, or the second trip could never fire (#2802).
  */
-export const CONFLICT_STALL_SUMMARY =
-  "the merge-conflict queue stalled with no attempt concluding";
-
-/** What clears this stall. */
-export const CONFLICT_STALL_NEXT_STEP =
-  "Find out why no resolution attempt ran: check that a host reached " +
-  "priority 1.61 for this repository, that the pass was not rate-limited or " +
-  "cut short, and that the PR is still `CONFLICTING` rather than merely " +
-  "carrying a stale label. Merging the base branch into the PR branch by " +
-  "hand — keeping both sides' changes — also clears it. No attempt budget " +
-  "has been spent, so the ordinary ladder resumes as soon as one attempt " +
-  "concludes.";
+export const CONFLICT_STALL_REPAIR_MARKER = "<!-- vibe-conflict-stall-repair";
 
 /** Label whose presence means a human already owns the PR. */
 const NEEDS_HUMAN_LABEL = "needs-human";
@@ -220,8 +217,11 @@ interface StallSignals {
   lastConclusionAtMs?: number;
   /** An attempt opened after the most recent conclusion. */
   openAttempt: boolean;
-  /** This stall has already been escalated. */
-  escalated: boolean;
+  /**
+   * Epoch milliseconds of the newest first-trip marker since the most recent
+   * conclusion, when the ladder has already been rerun for this stall.
+   */
+  tripAtMs?: number;
   /**
    * The base tip the newest park marker names, when the PR is parked
    * (Issue #2312). A park is the opposite of the silence this watchdog looks
@@ -244,8 +244,8 @@ interface StallSignals {
  * extra comment.)
  *
  * A conclusion restarts everything after it: an attempt that opened before it
- * is no longer open, and an escalation posted before it belonged to the stall
- * that conclusion ended.
+ * is no longer open, and a trip posted before it belonged to the stall that
+ * conclusion ended.
  *
  * @param comments - Raw REST comment objects, oldest first.
  * @param sinceMs - The label event; comments older than it belong to a
@@ -255,9 +255,8 @@ function readStallSignals(
   comments: readonly unknown[],
   sinceMs: number,
   isTrustedAuthor: (login: string) => boolean,
-  escalationMarker: string,
 ): StallSignals {
-  const signals: StallSignals = { openAttempt: false, escalated: false };
+  const signals: StallSignals = { openAttempt: false };
 
   for (const raw of comments) {
     const body = commentBody(raw);
@@ -281,12 +280,15 @@ function readStallSignals(
       }
       // Everything before this conclusion belongs to the stall it ended.
       signals.openAttempt = false;
-      signals.escalated = false;
+      delete signals.tripAtMs;
       delete signals.parkedBase;
       continue;
     }
     if (body.includes(CONFLICT_ATTEMPT_MARKER)) signals.openAttempt = true;
-    if (body.includes(escalationMarker)) signals.escalated = true;
+    // A trip is recorded but never counted as progress: it leaves the clock.
+    if (body.includes(CONFLICT_STALL_REPAIR_MARKER)) {
+      signals.tripAtMs = Math.max(signals.tripAtMs ?? createdAtMs, createdAtMs);
+    }
     // Read through the marker module rather than by substring: the base sha is
     // the whole signal, and a marker whose sha cannot be read must not park
     // the watchdog on a value nothing can ever match (Issue #2312).
@@ -302,8 +304,7 @@ function readStallSignals(
  *
  * Returns `null` for every PR that is legitimately not a stall: parked behind
  * `needs-human`, closed, not in the queue at all, of unknown label age, inside
- * the threshold, moved by a concluded attempt, already escalated for this same
- * stall, or parked on an unmoved base tip (Issue #2312).
+ * the threshold, moved by a concluded attempt, or parked on an unmoved base tip (Issue #2312).
  *
  * An attempt that opened and never concluded still counts as a stall — the
  * disruption bound has not fired either, so nothing is moving the PR. Keying
@@ -343,9 +344,7 @@ export function detectConflictQueueStall(
     observation.comments,
     labelledAtMs,
     isTrustedAuthor,
-    workEscalationMarker(observation.repo, observation.prNumber),
   );
-  if (signals.escalated) return null;
   // Issue #2312: a parked PR is not a stalled one. The park marker is what
   // *follows* the label — the fleet saying it has spent this issue's restarts
   // and is waiting on the base tip, not going quiet — so escalating it would
@@ -391,7 +390,7 @@ export function detectConflictQueueStall(
 }
 
 // ---------------------------------------------------------------------------
-// What the escalation says
+// What the repair says
 // ---------------------------------------------------------------------------
 
 /** Render a duration in whole hours, floored — never rounded up. */
@@ -408,6 +407,20 @@ function describeSkipReason(reason: ConflictSkipReason): string {
   return operands.length > 0
     ? `\`${reason.kind}\` (${operands})`
     : `\`${reason.kind}\``;
+}
+
+/**
+ * The stall as one clause completing "This PR …" — what the second trip's
+ * permanent comments quote. The first trip's full report is already on the PR.
+ */
+export function buildConflictStallDetail(stall: ConflictQueueStall): string {
+  const since = stall.lastConclusionAtMs === undefined
+    ? "with no resolution attempt concluding"
+    : `with nothing since its last attempt concluded ${
+      formatHours(stall.stalledMs)
+    } ago`;
+  return `has carried \`${MERGE_CONFLICT_LABEL}\` for ` +
+    `${formatHours(stall.labelAgeMs)} ${since}`;
 }
 
 /** Why this PR's queue is being reported as stalled. */
@@ -427,7 +440,7 @@ export function buildConflictStallReason(stall: ConflictQueueStall): string {
         new Date(stall.lastConclusionAtMs).toISOString()
       } and nothing has happened in the ${
         formatHours(stall.stalledMs)
-      } since — no further attempt, no conclusion, no escalation.`,
+      } since — no further attempt, no conclusion.`,
   );
 
   lines.push(
@@ -459,162 +472,252 @@ export function buildConflictStallReason(stall: ConflictQueueStall): string {
 }
 
 /**
- * The comment posted on the PR itself.
+ * The first-trip comment posted on the PR (Issue #2803).
  *
- * It opens with {@link workEscalationMarker}, which is what makes the
- * escalation once-per-stall across every host: the marker lives on the PR, so
- * a second host reads it rather than re-escalating, and a fresh label cycle
- * leaves it behind the new `labeled` event where it no longer suppresses.
+ * It opens with {@link CONFLICT_STALL_REPAIR_MARKER}, which is what makes the
+ * second check abandon rather than trip again: the marker lives on the PR, so
+ * every host reads it, and a conclusion after it clears it.
  */
 export function buildConflictStallComment(stall: ConflictQueueStall): string {
   return [
-    workEscalationMarker(stall.repo, stall.prNumber),
-    `⏳ **Merge-conflict queue stalled — ${
-      formatHours(stall.stalledMs)
-    } with nothing happening**`,
+    `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->`,
+    "⏳ **Merge-conflict queue stalled — rerunning the conflict ladder once**",
     "",
     buildConflictStallReason(stall),
     "",
-    "Filed as work rather than parked behind `needs-human` (Issue #569): a " +
-    "stalled queue is a mechanical failure the fleet can act on, and " +
-    "`needs-human` would remove this PR from the very lane that clears it.",
+    "The ladder's wait marker for this head has been cleared so the next " +
+    "conflict pass tries again. If the PR is still stalled at the next " +
+    "check, it is closed and its originating issue is redone.",
   ].join("\n");
 }
 
 // ---------------------------------------------------------------------------
-// Escalation
+// Repair (Issue #2803)
 // ---------------------------------------------------------------------------
 
-/** Injected seams for {@link escalateConflictQueueStall}. */
-export interface ConflictStallEscalationDeps {
+/** Injected seams for {@link repairConflictQueueStall}. */
+export interface ConflictStallRepairDeps {
   /** Injected `gh` CLI runner. */
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
-  /** Files the blockage into the fleet's own queue. Injected by tests. */
-  escalateWork?: (
-    escalation: WorkEscalation,
-  ) => Promise<Result<{ issueNumber: number; filed: boolean }>>;
-  /** Applies the non-vetoing marker label. Injected by tests. */
-  labelPr?: (
-    repo: string,
-    prNumber: number,
-    label: string,
-  ) => Promise<Result<void>>;
-  /** Marker label. Defaults to `escalated` — never `needs-human`. */
-  escalatedLabel?: string;
+  /**
+   * Fleet logins handed to `abandonAndRestart`, which declines on an empty
+   * list rather than trust a forged thread.
+   */
+  trustedAuthors?: readonly string[];
+  /** Maintenance-lane lease. Defaults to the reserving repo lease. */
+  acquireLease?: (repo: string, prNumber: number) => RepoLease | null;
+  /** The abandon-and-redo rung. Injected by tests. */
+  abandon?: (
+    request: AbandonRestartRequest,
+    deps: AbandonRestartDeps,
+  ) => Promise<AbandonRestartOutcome>;
+  /** Extra seams passed through to `abandonAndRestart`. */
+  abandonDeps?: Partial<AbandonRestartDeps>;
 }
 
-/** What {@link escalateConflictQueueStall} did. */
-export interface ConflictStallEscalationOutcome {
-  /** The escalation issue filed or updated. */
-  issueNumber: number;
-  /** True when this call filed a new issue rather than updating one. */
-  filed: boolean;
+/** What {@link repairConflictQueueStall} did. */
+export type ConflictStallRepairAction =
+  | "skipped-lease-held"
+  | "first-trip"
+  | "awaiting-second-check"
+  | "abandoned"
+  | "abandon-declined"
+  | "failed";
+
+/** Everything {@link repairConflictQueueStall} needs beyond its seams. */
+export interface ConflictStallRepairOptions extends ConflictStallRepairDeps {
+  /** Whether a comment author is one of the fleet's own. */
+  isTrustedAuthor: (login: string) => boolean;
+  /** Current time, epoch milliseconds. */
+  nowMs: number;
+  /** Hours between the first trip and the second check. */
+  thresholdHours?: number;
 }
 
-/** Apply the marker label through the guarded label helpers. */
-async function defaultLabelPr(
-  repo: string,
-  prNumber: number,
-  label: string,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<Result<void>> {
-  const ensured = await ensureLabelExists(
-    repo,
-    label,
-    "d4c5f9",
-    "The fleet filed this PR's blockage as work; it is not waiting on a " +
-      "human decision",
-    { ghCommandFn },
-  );
-  if (!ensured.ok) return ensured;
-  // Routed through the guarded helper, not a raw `gh pr edit --add-label`, so
-  // the Rule-of-Two worker-label allowlist gates this call site (Issue #2382).
-  return await addLabelToIssue(repo, prNumber, label, { ghCommandFn });
+/** The raw comment's numeric id, when it has one. */
+function commentId(raw: unknown): number | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const id = (raw as { id?: unknown }).id;
+  return typeof id === "number" && Number.isSafeInteger(id) && id > 0
+    ? id
+    : undefined;
+}
+
+/** True for a fleet-authored `rung="abandon"` failure marker — the wait. */
+function isAbandonWaitMarker(
+  raw: unknown,
+  isTrustedAuthor: (login: string) => boolean,
+): boolean {
+  const body = commentBody(raw);
+  if (body === undefined) return false;
+  const start = body.indexOf(CONFLICT_RUNG_FAILED_MARKER);
+  if (start < 0) return false;
+  const author = commentAuthor(raw);
+  if (author === undefined || !isTrustedAuthor(author)) return false;
+  const end = body.indexOf("-->", start);
+  const segment = body.slice(start, end < 0 ? undefined : end);
+  return /\brung="abandon"/.test(segment);
 }
 
 /**
- * File the stall as work, then say so on the PR.
+ * Repair a stalled queue in two trips (Issue #2803).
  *
- * The order matters and is the opposite of the reading order: the marker
- * comment is the cross-host dedup key, so posting it before the issue exists
- * would let a filing failure leave a marker that suppresses every later pass —
- * an escalation nobody ever hears about. Filing first means a failure between
- * the two steps re-runs both next pass, and `escalateAsWork` deduplicates the
- * issue on its (stable) title.
+ * The first trip records itself on the PR, then deletes the ladder's
+ * fleet-authored `rung="abandon"` failure markers — the per-head wait — so the
+ * ordinary conflict pass climbs the ladder once more. The second trip, when a
+ * later check still finds the stall a full threshold after the first, closes
+ * the PR and redoes its work through `abandonAndRestart`, whose re-queue label
+ * is the issue's own, else `idle-task` — never `work-on`.
+ *
+ * It files no issue, adds no label and never applies `needs-human` itself —
+ * only the rung does, on the originating issue, once its two redos are spent
+ * (Issue #2804). It never throws: every failure is logged and reported as
+ * `failed`, and the next pass retries.
  */
-export async function escalateConflictQueueStall(
+export async function repairConflictQueueStall(
   stall: ConflictQueueStall,
-  deps: ConflictStallEscalationDeps,
-): Promise<Result<ConflictStallEscalationOutcome>> {
-  const { ghCommandFn, logger } = deps;
-  const escalatedLabel = deps.escalatedLabel ?? ESCALATED_AS_WORK_LABEL;
-  const escalateWork = deps.escalateWork ??
-    ((escalation: WorkEscalation) => escalateAsWork(escalation, { logger }));
-  const labelPr = deps.labelPr ??
-    ((repo: string, prNumber: number, label: string) =>
-      defaultLabelPr(repo, prNumber, label, ghCommandFn));
-
-  const filed = await escalateWork({
-    repo: stall.repo,
-    prNumber: stall.prNumber,
-    summary: CONFLICT_STALL_SUMMARY,
-    reason: buildConflictStallReason(stall),
-    attempted: stall.openAttempt
-      ? "One attempt opened and never reached a conclusion."
-      : stall.lastConclusionAtMs !== undefined
-      ? "An earlier attempt concluded, and nothing has followed it."
-      : "Nothing — no attempt was ever opened.",
-    nextStep: CONFLICT_STALL_NEXT_STEP,
-  });
-  if (!filed.ok) return { ok: false, error: filed.error };
+  options: ConflictStallRepairOptions,
+): Promise<ConflictStallRepairAction> {
+  const { ghCommandFn, logger, isTrustedAuthor } = options;
+  const { repo, prNumber } = stall;
+  const acquire = options.acquireLease ??
+    ((r: string, n: number) =>
+      acquireMaintenanceRepoLease(r, n, { reserve: true }));
+  const lease = acquire(repo, prNumber);
+  if (lease === null) {
+    logger.warn(
+      "Merge-conflict stall repair: maintenance lease held — retrying next pass",
+      { repo, prNumber },
+    );
+    return "skipped-lease-held";
+  }
 
   try {
-    await ghCommandFn([
-      "pr",
-      "comment",
-      String(stall.prNumber),
-      "--repo",
-      stall.repo,
-      "--body",
-      buildConflictStallComment(stall),
-    ]);
+    // Re-read under the lease: another pass may have tripped since detection.
+    const comments = await fetchIssueCommentPages(repo, prNumber, ghCommandFn);
+    const { tripAtMs } = readStallSignals(
+      comments,
+      stall.labelledAtMs,
+      isTrustedAuthor,
+    );
+
+    if (tripAtMs === undefined) {
+      // The trip marker first: a failure after it still leaves the second
+      // check armed, whereas a cleared wait with no record would loop.
+      await ghCommandFn([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        buildConflictStallComment(stall),
+      ]);
+      for (const raw of comments) {
+        if (!isAbandonWaitMarker(raw, isTrustedAuthor)) continue;
+        const id = commentId(raw);
+        if (id === undefined) continue;
+        await ghCommandFn([
+          "api",
+          "-X",
+          "DELETE",
+          `repos/${repo}/issues/comments/${id}`,
+        ]);
+      }
+      logger.warn(
+        "Merge-conflict queue stalled — rerunning the conflict ladder once",
+        { repo, prNumber, stalledMs: stall.stalledMs },
+      );
+      return "first-trip";
+    }
+
+    const thresholdMs =
+      (options.thresholdHours ?? DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS) *
+      3600_000;
+    if (options.nowMs - tripAtMs < thresholdMs) {
+      logger.info(
+        "Merge-conflict stall repair: ladder rerun pending — awaiting the " +
+          "second check",
+        { repo, prNumber, tripAtMs },
+      );
+      return "awaiting-second-check";
+    }
+
+    const view = JSON.parse(
+      await ghCommandFn([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefName,baseRefName",
+      ]),
+    ) as { headRefName?: unknown; baseRefName?: unknown };
+    if (
+      typeof view.headRefName !== "string" ||
+      typeof view.baseRefName !== "string"
+    ) {
+      throw new Error("`gh pr view` returned no head or base branch name");
+    }
+
+    const abandon = options.abandon ?? abandonAndRestart;
+    const outcome = await abandon(
+      {
+        repo,
+        prNumber,
+        branchName: view.headRefName,
+        baseBranch: view.baseRefName,
+        prComments: comments,
+        reason: {
+          kind: "stalled",
+          detail: buildConflictStallDetail(stall),
+          tried: "ladder-rerun",
+        },
+      },
+      {
+        gh: ghCommandFn,
+        trustedAuthors: [...(options.trustedAuthors ?? [])],
+        logger,
+        ...options.abandonDeps,
+      },
+    );
+    switch (outcome.outcome) {
+      case "abandoned":
+      case "closed-without-issue":
+        logger.warn(
+          "Merge-conflict queue still stalled after the ladder rerun — " +
+            "abandoned and redone",
+          { repo, prNumber, outcome: outcome.outcome },
+        );
+        return "abandoned";
+      case "declined":
+        logger.warn("Merge-conflict stall repair: abandon declined", {
+          repo,
+          prNumber,
+          reason: outcome.reason,
+        });
+        return "abandon-declined";
+      case "failed":
+        logger.error("Merge-conflict stall repair: abandon failed", {
+          repo,
+          prNumber,
+          step: outcome.step,
+          error: outcome.message,
+        });
+        return "failed";
+    }
   } catch (error) {
-    return {
-      ok: false,
-      error: new Error(
-        `merge-conflict stall watchdog: filed issue #${filed.value.issueNumber} ` +
-          `but could not comment on ${stall.repo}#${stall.prNumber}: ${
-            errorMessage(error)
-          }`,
-      ),
-    };
-  }
-
-  // Issue #569: a non-vetoing marker, never `needs-human`. A failure here is
-  // said out loud but does not undo an escalation that has already landed.
-  const labelled = await labelPr(stall.repo, stall.prNumber, escalatedLabel);
-  if (!labelled.ok) {
-    logger.warn("Could not mark a stalled merge-conflict PR as escalated", {
-      repo: stall.repo,
-      prNumber: stall.prNumber,
-      label: escalatedLabel,
-      error: labelled.error.message,
+    logger.error("Merge-conflict stall repair failed", {
+      repo,
+      prNumber,
+      error: errorMessage(error),
     });
+    return "failed";
+  } finally {
+    lease.release();
   }
-
-  logger.warn("Merge-conflict queue stalled — filed as work", {
-    repo: stall.repo,
-    prNumber: stall.prNumber,
-    labelAgeMs: stall.labelAgeMs,
-    openAttempt: stall.openAttempt,
-    issueNumber: filed.value.issueNumber,
-  });
-
-  return {
-    ok: true,
-    value: { issueNumber: filed.value.issueNumber, filed: filed.value.filed },
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -622,7 +725,7 @@ export async function escalateConflictQueueStall(
 // ---------------------------------------------------------------------------
 
 /** Options for {@link scanConflictQueueStalls}. */
-export interface ConflictStallScanOptions extends ConflictStallEscalationDeps {
+export interface ConflictStallScanOptions extends ConflictStallRepairDeps {
   /** Monitored repos in `owner/repo` form. */
   repos: readonly string[];
   /** Whether a comment author is one of the fleet's own. */
@@ -865,14 +968,14 @@ async function resolveMergeableState(
 
 /**
  * One pass: every open PR carrying `merge-conflict`, checked for a stalled
- * queue and escalated once if it has one.
+ * queue and repaired in two trips if it has one.
  *
  * Best-effort per repository and per PR — a listing or a lookup that fails is
  * logged loudly and the pass continues, because a watchdog must never be the
  * reason the cycle stops. It reads only PRs that already carry the label, so
  * a fleet with an empty queue costs one listing per repository.
  *
- * @returns Every stall detected this pass, escalated or not.
+ * @returns Every stall detected this pass, repaired or not.
  */
 export async function scanConflictQueueStalls(
   options: ConflictStallScanOptions,
@@ -1022,14 +1125,20 @@ export async function scanConflictQueueStalls(
       if (stall === null) continue;
       stalls.push(stall);
 
-      const escalation = await escalateConflictQueueStall(stall, options);
-      if (!escalation.ok) {
-        logger.error("Merge-conflict stall escalation failed", {
-          repo,
-          prNumber: pr.number,
-          error: escalation.error.message,
-        });
-      }
+      // Never throws — it logs its own outcome, and the next pass retries.
+      await repairConflictQueueStall(stall, {
+        ghCommandFn,
+        logger,
+        isTrustedAuthor,
+        nowMs: now,
+        ...(thresholdHours !== undefined ? { thresholdHours } : {}),
+        ...(options.trustedAuthors !== undefined
+          ? { trustedAuthors: options.trustedAuthors }
+          : {}),
+        ...(options.acquireLease ? { acquireLease: options.acquireLease } : {}),
+        ...(options.abandon ? { abandon: options.abandon } : {}),
+        ...(options.abandonDeps ? { abandonDeps: options.abandonDeps } : {}),
+      });
     }
     quota.repoDone();
   }

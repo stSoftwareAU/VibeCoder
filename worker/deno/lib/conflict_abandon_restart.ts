@@ -32,8 +32,9 @@
  *    originating issue** (Issue #2312). One restart was too few: the first
  *    fresh PR is raised off a base that has often moved again by the time it
  *    conflicts, and a second redo settles a useful share of those. A *third*
- *    is declined, and the caller then parks that PR on `merge-conflict` rather
- *    than sending it round the loop again. A claim naming **this** PR declines
+ *    is declined: the PR stays open, the issue is not re-queued, and the issue
+ *    gains `needs-human` plus one comment saying what a human must decide
+ *    (Issue #2804). A claim naming **this** PR declines
  *    whatever the count: it means an earlier abandon of this very PR claimed
  *    the restart and did not finish, and closing it twice is not a retry. The
  *    claim counts only when a **fleet account** wrote it (Issue #1247): a
@@ -96,9 +97,12 @@ import { DISCOVERY_LABELS } from "./config_defaults.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { prTitleMatchesIssue } from "./pr_title_issue_ref.ts";
 import { sanitiseIssueText } from "./conflict_intent_context.ts";
-import { addLabelToIssue } from "./label_operations.ts";
+import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
+import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
+import { createGhEscalationClient } from "./gh_escalation_client.ts";
+import { createLogger } from "./logger.ts";
 
 // ---------------------------------------------------------------------------
 // Marker
@@ -125,8 +129,8 @@ export const CONFLICT_RESTART_MARKER = "<!-- vibe-merge-conflict-restart";
  * second covers the case where the base moved again while that fresh PR was
  * being written, which is the common shape on a busy default branch. Past
  * that, another redo of the same work against the same base is not a different
- * experiment — so the third exhaustion parks the PR instead of closing it, and
- * the base tip moving is what offers it again.
+ * experiment — so the third exhaustion leaves the PR open and hands the
+ * originating issue to a human (Issue #2804).
  */
 export const MAX_RESTARTS_PER_ISSUE = 2;
 
@@ -419,8 +423,9 @@ export type AbandonDeclineReason =
    * The issue has spent its restarts — {@link MAX_RESTARTS_PER_ISSUE} of them
    * (#1115, raised to two by #2312). `samePr` is true when a recorded claim
    * names *this* PR, i.e. an earlier abandon of it started and did not finish,
-   * which declines whatever `restartCount` says. The caller parks the PR on
-   * `merge-conflict` from here; nobody is asked.
+   * which declines whatever `restartCount` says. When `restartCount` reached
+   * the bound, the rung has already put `needs-human` and one comment on the
+   * issue (Issue #2804); a failure to do so is a `failed` outcome instead.
    */
   | {
     kind: "already-restarted";
@@ -486,6 +491,12 @@ export type AbandonRestartOutcome =
   }
   /** A precondition refused the abandon; nothing was changed. */
   | { outcome: "declined"; reason: AbandonDeclineReason }
+  /**
+   * A stalled PR naming no originating issue was closed, and — by design —
+   * no issue was filed or re-queued (Issue #2802). Only a `stalled`
+   * {@link AbandonReason} produces it.
+   */
+  | { outcome: "closed-without-issue"; reason: PrUnresolvedReason }
   /** A step failed; the caller must escalate naming {@link step}. */
   | {
     outcome: "failed";
@@ -508,12 +519,10 @@ export type AbandonRestartOutcome =
  * either. The stale-verdict ladder records it on the PR and asks nobody
  * (Issue #2280).
  *
- * There is no longer a `restart-exhausted` member (Issue #2312). A spent
- * restart budget was the one route here that ended at `needs-human`, and it no
- * longer ends anywhere a person is: the caller parks the PR on
- * `merge-conflict` and re-attempts it when the base tip moves. Callers detect
- * that outcome from the decline reason itself (`already-restarted`) before
- * they ever reach a route.
+ * There is no `restart-exhausted` member (Issue #2312). A spent restart budget
+ * is handed to a human by the rung itself, on the originating issue
+ * (Issue #2804), so every caller inherits it; callers detect the outcome from
+ * the decline reason (`already-restarted`) and need no route of their own.
  */
 export type ExhaustedEscalationRoute =
   /** A precondition refused the abandon; nothing was closed. */
@@ -531,6 +540,14 @@ export type ExhaustedEscalationRoute =
 export function exhaustedEscalationRoute(
   outcome: Exclude<AbandonRestartOutcome, { outcome: "abandoned" }>,
 ): ExhaustedEscalationRoute {
+  if (outcome.outcome === "closed-without-issue") {
+    // Only the stall route produces this (Issue #2802); recorded, not routed.
+    return {
+      kind: "abandon-declined",
+      detail: "This PR names no originating issue " +
+        `(${outcome.reason}), so it was closed with nothing re-queued.`,
+    };
+  }
   if (outcome.outcome === "failed") {
     return {
       kind: "abandon-failed",
@@ -551,9 +568,8 @@ export function exhaustedEscalationRoute(
           "outright, so it was left open.",
       };
     case "already-restarted":
-      // Issue #2312: no route of its own any more, because no caller escalates
-      // it. A caller that must act on this outcome reads the decline reason and
-      // parks the PR; one that only has to *record* it gets these words.
+      // Issue #2804: the rung has already handed a spent budget to a human on
+      // the issue, so a caller that only has to *record* it gets these words.
       return {
         kind: "abandon-declined",
         detail: reason.samePr
@@ -563,8 +579,10 @@ export function exhaustedEscalationRoute(
             "left open on `merge-conflict`."
           : `Issue #${reason.issueNumber} has spent its ` +
             `${MAX_RESTARTS_PER_ISSUE} restarts (${reason.restartCount} ` +
-            "recorded), so this PR is left open on `merge-conflict` rather " +
-            "than closed and re-raised again.",
+            "recorded), so there is no third redo: this PR is left open and " +
+            `the issue now carries \`${RESTARTS_SPENT_LABEL}\` and a comment ` +
+            "asking a human to fix the PR by hand, rescope the issue, or " +
+            "close it.",
       };
     case "restart-claim-unverifiable":
       return {
@@ -642,6 +660,40 @@ export function exhaustedEscalationDedupKey(
 // Request and seams
 // ---------------------------------------------------------------------------
 
+/**
+ * What a stall-repair first trip tried before the second trip abandoned
+ * (Issues #2802, #2803). The comments state it as fact, so each route names
+ * its own: the blocking-PR route synced the branch and reran its owning lane;
+ * the conflict-queue route only cleared the ladder's wait so it ran again.
+ */
+export type StallRepairTried = "sync-and-lane-rerun" | "ladder-rerun";
+
+/**
+ * Why a PR is being abandoned (Issue #2802). Omitted means a merge conflict,
+ * the reason this rung was written for; `stalled` is a stall repair's second
+ * trip, and changes only what the comments say — and that a PR naming no
+ * originating issue is closed without filing a flag issue.
+ */
+export type AbandonReason =
+  | { kind: "merge-conflict" }
+  | {
+    kind: "stalled";
+    /**
+     * What the stall watchdog saw, as one clause completing "This PR …"
+     * (e.g. "has stalled: …"). Quoted in the comments.
+     */
+    detail: string;
+    /** What the first trip tried — stated as fact in the comments. */
+    tried: StallRepairTried;
+  };
+
+/** The repair a first trip made, as a clause after "The stall-repair pass". */
+function describeStallRepair(tried: StallRepairTried, base: string): string {
+  return tried === "ladder-rerun"
+    ? "reran the merge-conflict ladder once"
+    : `synced it with \`${base}\` and reran its owning lane once`;
+}
+
 /** The exhausted PR to abandon. */
 export interface AbandonRestartRequest {
   /** Repository in `owner/repo` form. */
@@ -663,6 +715,8 @@ export interface AbandonRestartRequest {
    * outsider's text as the fleet's own record.
    */
   prComments?: readonly unknown[];
+  /** Why the PR is abandoned (Issue #2802). Defaults to a merge conflict. */
+  reason?: AbandonReason;
 }
 
 /** Injected seams so the whole path is testable without GitHub. */
@@ -1035,14 +1089,13 @@ export function buildRestartIssueComment(args: {
     "",
     restartNumber >= MAX_RESTARTS_PER_ISSUE
       ? `This is restart **${restartNumber} of ${MAX_RESTARTS_PER_ISSUE}** — ` +
-        "the last one for this issue. If the fresh PR spends its " +
-        "merge-conflict budget too, that PR is left open carrying " +
-        `\`${MERGE_CONFLICT_LABEL}\` and is re-attempted only when its base ` +
-        "branch moves. Nobody is asked for anything either way."
+        "the last one for this issue. If the fresh PR fails too, there is " +
+        "no third redo: that PR is left open and this issue is handed to a " +
+        "human to decide what happens next."
       : `This is restart **${restartNumber} of ${MAX_RESTARTS_PER_ISSUE}** ` +
         "for this issue: if the fresh PR also spends its merge-conflict " +
-        "budget, the work is redone once more, and after that the PR is left " +
-        "open until its base branch moves.",
+        "budget, the work is redone once more, and after that this issue is " +
+        "handed to a human.",
   ].join("\n");
 }
 
@@ -1087,6 +1140,250 @@ export function buildNoIssueAbandonPrComment(args: {
     "force-pushed: every commit on it stays exactly as its author pushed it, " +
     "so the abandoned work remains readable and linked from here.",
   ].join("\n");
+}
+
+/** Where a re-queued issue's pickup label came from, for a comment. */
+function describeRequeueLabel(label: RequeueLabel): string {
+  const name = requeueLabelName(label);
+  return "kept" in label
+    ? `\`${name}\`, the pickup label it already carries`
+    : `\`${name}\`, applied by the worker`;
+}
+
+/**
+ * The PR comment for a stalled PR abandoned with an originating issue
+ * (Issue #2802). Stands alone months later: what stalled, that one repair was
+ * tried, what happens now, and where the branch is.
+ */
+export function buildStalledAbandonPrComment(args: {
+  request: AbandonRestartRequest;
+  detail: string;
+  tried: StallRepairTried;
+  issueNumber: number;
+  label: RequeueLabel;
+}): string {
+  const branch = sanitiseIssueText(args.request.branchName);
+  const base = sanitiseIssueText(args.request.baseBranch);
+  return [
+    "♻️ **Abandoning this stalled PR and restarting the work**",
+    "",
+    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
+    `already ${describeStallRepair(args.tried, base)}, and it is still ` +
+    "stalled, so the work is redone rather than nursed further.",
+    "",
+    `This PR is being **closed** — not merged — and issue ` +
+    `#${args.issueNumber} is being re-queued ` +
+    `(${describeRequeueLabel(args.label)}) so the fleet raises a fresh PR ` +
+    `off \`${base}\`.`,
+    "",
+    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
+    "force-pushed, so the abandoned work remains readable and linked from here.",
+  ].join("\n");
+}
+
+/**
+ * The originating-issue comment for a stalled PR (Issue #2802). Carries the
+ * same restart marker as the merge-conflict route, so both share the issue's
+ * {@link MAX_RESTARTS_PER_ISSUE} restarts.
+ */
+export function buildStalledRestartIssueComment(args: {
+  request: AbandonRestartRequest;
+  detail: string;
+  tried: StallRepairTried;
+  label: RequeueLabel;
+  restartNumber: number;
+}): string {
+  const { request } = args;
+  return [
+    conflictRestartMarker(request.repo, request.prNumber),
+    "♻️ **Re-queued: the PR for this issue stalled**",
+    "",
+    `${request.repo}#${request.prNumber} ${sanitiseIssueText(args.detail)}. ` +
+    `The stall-repair pass ${
+      describeStallRepair(args.tried, sanitiseIssueText(request.baseBranch))
+    }, and it is still stalled.`,
+    "",
+    `That PR is being closed and this issue re-queued ` +
+    `(${describeRequeueLabel(args.label)}) so the work is redone. The ` +
+    `abandoned branch \`${sanitiseIssueText(request.branchName)}\` is kept, ` +
+    "not deleted.",
+    "",
+    `This is restart **${args.restartNumber} of ${MAX_RESTARTS_PER_ISSUE}** ` +
+    "for this issue.",
+  ].join("\n");
+}
+
+/**
+ * The PR comment for a stalled PR naming no originating issue (Issue #2802):
+ * closed, and no issue filed — the branch is the record.
+ */
+export function buildStalledNoIssueClosePrComment(args: {
+  request: AbandonRestartRequest;
+  detail: string;
+  tried: StallRepairTried;
+  reason: PrUnresolvedReason;
+}): string {
+  const branch = sanitiseIssueText(args.request.branchName);
+  return [
+    "♻️ **Closing this stalled PR**",
+    "",
+    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
+    `already ${
+      describeStallRepair(
+        args.tried,
+        sanitiseIssueText(args.request.baseBranch),
+      )
+    }, and it is still stalled.`,
+    "",
+    `It names **no originating issue** (${args.reason}), so there is nothing ` +
+    "to re-queue, and the stall watchdog files no issue of its own. It is " +
+    "closed so it stops blocking the queue.",
+    "",
+    `The branch \`${branch}\` is **not** deleted and has **not** been ` +
+    "force-pushed, so the work remains readable and linked from here.",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// A spent restart budget goes to a human (Issue #2804)
+// ---------------------------------------------------------------------------
+
+/** The label a spent restart budget puts on the originating issue. */
+export const RESTARTS_SPENT_LABEL = "needs-human";
+
+/**
+ * The `escalateToHuman` dedup key for the spent-budget comment. Keyed on the
+ * PR, so a human who re-queues the issue and sees it fail on a new PR gets a
+ * new comment, while a retry over the same PR does not post a second one.
+ */
+export function restartsSpentDedupKey(prNumber: number): string {
+  return `merge-conflict-restarts-spent-${prNumber}`;
+}
+
+/** The hand-off comment's parts: what failed, and what a human decides. */
+export function buildRestartsSpentHandOff(args: {
+  request: AbandonRestartRequest;
+  restartCount: number;
+}): { heading: string; reason: string; nextStep: string } {
+  const { request } = args;
+  const pr = `${request.repo}#${request.prNumber}`;
+  const branch = sanitiseIssueText(request.branchName);
+  const base = sanitiseIssueText(request.baseBranch);
+  const failure = request.reason?.kind === "stalled"
+    ? `${sanitiseIssueText(request.reason.detail)}, and ${
+      request.reason.tried === "ladder-rerun"
+        ? "one rerun of the merge-conflict ladder"
+        : `a sync with \`${base}\` plus one rerun of its owning lane`
+    } did not clear it`
+    : `spent its merge-conflict budget: GitHub still will not merge ` +
+      `\`${branch}\` into \`${base}\``;
+  return {
+    heading: "Both automatic redos are used — this issue needs a human",
+    reason: `${pr} (\`${branch}\`) ${failure}. This issue has already been ` +
+      `redone ${MAX_RESTARTS_PER_ISSUE} times (${args.restartCount} restarts ` +
+      "recorded above), so there is no third redo: the PR is left open and " +
+      "this issue is not re-queued.",
+    nextStep: `Decide one of: fix ${pr} by hand; rescope this issue so a ` +
+      "fresh attempt can land; or close this issue (and the PR) if the work " +
+      "is no longer wanted.",
+  };
+}
+
+/**
+ * Hand the originating issue to a human once its restarts are spent
+ * (Issue #2804): `needs-human` plus one comment, through the shared
+ * `escalateToHuman` chokepoint. Returns a `failed` outcome when either side
+ * effect did not land, and `undefined` when the hand-off is in place.
+ *
+ * Idempotent: an issue already carrying `needs-human` **and** the fleet's own
+ * hand-off comment for this PR is left alone. Both are checked, so a pass
+ * whose comment failed after the label landed is retried rather than read as
+ * done; the dedup key stops a label-only retry from commenting twice.
+ */
+async function handOffSpentRestarts(
+  request: AbandonRestartRequest,
+  deps: AbandonRestartDeps,
+  issueNumber: number,
+  restartCount: number,
+  issueComments: readonly unknown[],
+  failed: FailedReporter,
+): Promise<AbandonRestartOutcome | undefined> {
+  const { repo, prNumber } = request;
+  const gh = deps.gh;
+  const logger = deps.logger ?? createLogger();
+
+  let snapshot: IssueSnapshot;
+  try {
+    snapshot = await fetchIssueSnapshot(repo, issueNumber, gh);
+  } catch (error) {
+    return failed("issue-state", error, issueNumber);
+  }
+  const marker = buildDedupMarker(restartsSpentDedupKey(prNumber));
+  const commented = partitionConflictComments(
+    issueComments.filter((raw) => {
+      const body = (raw as { body?: unknown } | null)?.body;
+      return typeof body === "string" && body.includes(marker);
+    }),
+    deps.trustedAuthors,
+  ).trusted.length > 0;
+  if (commented && snapshot.labels.includes(RESTARTS_SPENT_LABEL)) {
+    logger.info(
+      `Issue #${issueNumber} has spent its restarts and already carries ` +
+        `\`${RESTARTS_SPENT_LABEL}\` — nothing more to say`,
+      { repo, prNumber, issueNumber },
+    );
+    return undefined;
+  }
+
+  const escalation = await escalateToHuman({
+    ghClient: createGhEscalationClient(gh, (message) => logger.warn(message)),
+    repo,
+    target: { kind: "issue", number: issueNumber },
+    needsHumanLabel: RESTARTS_SPENT_LABEL,
+    ...buildRestartsSpentHandOff({ request, restartCount }),
+    dedupKey: restartsSpentDedupKey(prNumber),
+    deps: {
+      github: {
+        ensureLabelExists: (labelRepo, name, colour, description) =>
+          ensureLabelExists(labelRepo, name, colour, description, {
+            ghCommandFn: gh,
+          }),
+      },
+      dedupAuthors: { fleetAuthors: deps.trustedAuthors },
+    },
+    logger,
+  });
+  // `escalateToHuman` is best-effort per side effect; here both must land.
+  if (!escalation.ok) {
+    return failed("issue-label", escalation.error, issueNumber);
+  }
+  if (!escalation.value.labelAdded) {
+    return failed(
+      "issue-label",
+      new Error(
+        `\`${RESTARTS_SPENT_LABEL}\` could not be applied to issue ` +
+          `#${issueNumber} after its restarts were spent`,
+      ),
+      issueNumber,
+    );
+  }
+  if (!escalation.value.commentPosted && !escalation.value.dedupSkipped) {
+    return failed(
+      "issue-comment",
+      new Error(
+        `The spent-restarts comment could not be posted on issue ` +
+          `#${issueNumber}`,
+      ),
+      issueNumber,
+    );
+  }
+  logger.warn(
+    `Issue #${issueNumber} has spent its ${MAX_RESTARTS_PER_ISSUE} restarts ` +
+      `and PR #${prNumber} failed again — handed to a human ` +
+      `(\`${RESTARTS_SPENT_LABEL}\`), no third redo`,
+    { repo, prNumber, issueNumber, restartCount },
+  );
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,6 +1462,40 @@ async function abandonWithoutOriginatingIssue(
   const { repo, prNumber } = request;
   const gh = deps.gh;
   const logger = deps.logger;
+
+  // Issue #2802: a stalled PR files no issue — comment, close, done.
+  if (request.reason?.kind === "stalled") {
+    try {
+      await gh([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        buildStalledNoIssueClosePrComment({
+          request,
+          detail: request.reason.detail,
+          tried: request.reason.tried,
+          reason,
+        }),
+      ]);
+    } catch (error) {
+      return failed("pr-comment", error);
+    }
+    try {
+      // No `--delete-branch`: the abandoned commits must stay readable.
+      await gh(["pr", "close", String(prNumber), "--repo", repo]);
+    } catch (error) {
+      return failed("pr-close", error);
+    }
+    logger?.warn?.(
+      `Stalled PR #${prNumber} named no originating issue (${reason}) — ` +
+        "closed it; no issue filed",
+      { repo, prNumber },
+    );
+    return { outcome: "closed-without-issue", reason };
+  }
 
   let comments: readonly unknown[];
   try {
@@ -1412,6 +1743,19 @@ export async function abandonAndRestart(
   // the same PR twice is not a retry, so it declines whatever the count says.
   const samePr = claimed.includes(prNumber);
   if (samePr || claimed.length >= MAX_RESTARTS_PER_ISSUE) {
+    // Issue #2804: a spent budget is a human's call — no third redo. A claim
+    // on this PR alone is an unfinished abandon, not a spent budget.
+    if (claimed.length >= MAX_RESTARTS_PER_ISSUE) {
+      const handOffFailed = await handOffSpentRestarts(
+        request,
+        deps,
+        issueNumber,
+        claimed.length,
+        issueComments,
+        failed,
+      );
+      if (handOffFailed !== undefined) return handOffFailed;
+    }
     return {
       outcome: "declined",
       reason: {
@@ -1485,14 +1829,22 @@ export async function abandonAndRestart(
       "--repo",
       repo,
       "--body",
-      buildRestartIssueComment({
-        request,
-        history,
-        label: requeueLabel,
-        // Read off the thread, never assumed: the comment is permanent, and
-        // "this is your last restart" must be true when it says so.
-        restartNumber: claimed.length + 1,
-      }),
+      request.reason?.kind === "stalled"
+        ? buildStalledRestartIssueComment({
+          request,
+          detail: request.reason.detail,
+          tried: request.reason.tried,
+          label: requeueLabel,
+          restartNumber: claimed.length + 1,
+        })
+        : buildRestartIssueComment({
+          request,
+          history,
+          label: requeueLabel,
+          // Read off the thread, never assumed: the comment is permanent, and
+          // "this is your last restart" must be true when it says so.
+          restartNumber: claimed.length + 1,
+        }),
     ]);
   } catch (error) {
     return failed("issue-comment", error, issueNumber);
@@ -1507,13 +1859,21 @@ export async function abandonAndRestart(
       "--repo",
       repo,
       "--body",
-      buildAbandonPrComment({
-        request,
-        history,
-        context,
-        issueNumber,
-        label: requeueLabel,
-      }),
+      request.reason?.kind === "stalled"
+        ? buildStalledAbandonPrComment({
+          request,
+          detail: request.reason.detail,
+          tried: request.reason.tried,
+          issueNumber,
+          label: requeueLabel,
+        })
+        : buildAbandonPrComment({
+          request,
+          history,
+          context,
+          issueNumber,
+          label: requeueLabel,
+        }),
     ]);
   } catch (error) {
     return failed("pr-comment", error, issueNumber);

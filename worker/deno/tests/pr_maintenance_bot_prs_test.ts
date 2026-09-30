@@ -465,3 +465,86 @@ Deno.test("ensureAutoMergeOnOpenPrs - skip_auto_merge still governs bot PRs (Iss
   if (result.ok) assertEquals(result.value.enabledCount, 0);
   assertEquals(enabled, []);
 });
+
+// ---------------------------------------------------------------------------
+// onlyPrNumber — the stall-repair lane scope (Issue #2802, PR #2866 review)
+// ---------------------------------------------------------------------------
+// The stall-repair first trip reruns one lane on one stalled PR. If the scope
+// stops narrowing, the rerun lands on whichever PR the scan picks first and
+// the stalled PR reaches its second trip having never been rerun.
+
+/** Two red bot PRs, each with an authorised comment; BOT_PR sorts first. */
+function twoActionableBotPrs(): FixturePr[] {
+  return [
+    redBotPr({
+      issueComments: [{ login: "reviewer", id: 981, body: "Fix the first" }],
+    }),
+    redBotPr({
+      number: BOT_PR_2,
+      author: BOT2,
+      headRefName: "renovate/deno-std",
+      failedChecks: [{ id: 9002, name: "Deno Audit" }],
+      failedStep: { 9002: "Run deno audit" },
+      issueComments: [{ login: "reviewer", id: 982, body: "Fix the second" }],
+    }),
+  ];
+}
+
+Deno.test("listActionablePrs - onlyPrNumber returns that PR alone; without it the listing is unchanged (Issue #2802)", async () => {
+  const gh = makeGh(twoActionableBotPrs());
+  const scoped = await listActionablePrs(
+    REPO,
+    [HOST],
+    "number,headRefName",
+    baseOptions({ ghCommandFn: gh, onlyPrNumber: BOT_PR_2 }),
+  );
+  assertEquals(scoped.map((pr) => pr.number), [BOT_PR_2]);
+
+  const unscoped = await listActionablePrs(
+    REPO,
+    [HOST],
+    "number,headRefName",
+    baseOptions({ ghCommandFn: gh }),
+  );
+  assertEquals(unscoped.map((pr) => pr.number), [BOT_PR, BOT_PR_2]);
+});
+
+Deno.test("findFailedCiChecks - onlyPrNumber skips the other red PR in the repo (Issue #2802)", async () => {
+  await withStateDir(async (stateDir) => {
+    const options = (only?: number): CiCheckScanOptions => ({
+      ...baseOptions({
+        ghCommandFn: makeGh(twoActionableBotPrs()),
+        ...(only !== undefined ? { onlyPrNumber: only } : {}),
+      }),
+      stateDir,
+      maxRetries: 3,
+    });
+
+    const unscoped = await findFailedCiChecks(options());
+    assertEquals(unscoped.ok && unscoped.value?.prNumber, BOT_PR);
+
+    const scoped = await findFailedCiChecks(options(BOT_PR_2));
+    assertEquals(scoped.ok, true);
+    if (!scoped.ok) return;
+    assertEquals(scoped.value?.prNumber, BOT_PR_2);
+    assertEquals(scoped.value?.checkId, "9002");
+  });
+});
+
+Deno.test("findPrCommentsToFix - onlyPrNumber skips the other commented PR in the repo (Issue #2802)", async () => {
+  const options = (only?: number) =>
+    baseOptions({
+      ghCommandFn: makeGh(twoActionableBotPrs()),
+      isAuthorisedCommenter: (author: string) => author === "reviewer",
+      ...(only !== undefined ? { onlyPrNumber: only } : {}),
+    });
+
+  const unscoped = await findPrCommentsToFix(options());
+  assertEquals(unscoped.ok && unscoped.value?.prNumber, BOT_PR);
+
+  const scoped = await findPrCommentsToFix(options(BOT_PR_2));
+  assertEquals(scoped.ok, true);
+  if (!scoped.ok) return;
+  assertEquals(scoped.value?.prNumber, BOT_PR_2);
+  assertEquals(scoped.value?.commentId, "982");
+});
