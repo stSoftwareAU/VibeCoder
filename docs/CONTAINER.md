@@ -299,23 +299,21 @@ flowchart TD
   gate still guards the pinned specifiers. Since Issue #1288 the same names are
   also blanked in the server's `env` block, because a permission flag binds the
   Deno runtime and not the children it spawns under `--allow-run`.
-- **The server is handed to the agent only on a run that needs a browser**
-  (Issue #192). Browser and outbound-network capability is granted on an
-  explicit need signal — `RunClaudeOptions.mcpConfig: true` — not by the mere
-  presence of a working directory, so a prompt-injected agent working a
-  backend issue has no browser tool to be steered into. Both issue-work paths
-  — the main fleet loop (`phases/execute_phase.ts`) and the standalone
-  `execute-claude-phase` command — set the signal from the same
-  `screenshotRequired` detection that injects the screenshot instructions (the
-  `needs-screenshot` label, or a repo configured with `requiresScreenshots`,
-  unless the repo sets `skip_screenshot_check`, which overrides both and keeps
-  Playwright out of the run entirely — Issue #1584);
-  planning, PR feedback, CI-fix and grill-me runs get no browser. A UI change
-  in a repo that declared neither still self-heals through the existing
-  round trip: the evidence gate blocks the PR, labels the issue
-  `needs-screenshot`, and the retry is granted the browser — set
-  `requires_screenshots: true` on a UI repo to skip that first round trip.
-  When the signal is set the worker generates this configuration per
+- **The server is handed to the agent on every run unless the repository
+  sets `skip_screenshot_check`** (Issue #2925). Issue #192 wired it only on an
+  explicit need signal (the `needs-screenshot` label or
+  `requires_screenshots`), but the evidence gate judges "UI change" from the
+  diff afterwards: a UI change with no label had no tool to take the
+  screenshot the gate then demanded, and failed. Starting the browser costs
+  seconds; a failed run and its retry cost an hour. The issue-work paths
+  (the main fleet loop in `phases/execute_phase.ts` and the standalone
+  `execute-claude-phase` command), PR-feedback runs and CI-fix runs all ask
+  `browserGranted` (`lib/browser_grant.ts`). A repo that sets
+  `skip_screenshot_check` gets neither the gate nor the browser (Issue #1584).
+  Planning, question and grill-me runs change no code and get no browser.
+  The guards above (metadata origins blocked, disposable profile, secrets
+  denied) are what contain a prompt-injected agent's use of it.
+  When the browser is granted the worker generates this configuration per
   clone into `${WORK_DIR}/.vibe-cache/mcp/` and passes it as `--mcp-config` on
   that Claude invocation — it does not depend on a `.mcp.json` in a directory
   the agent never runs from. The server is told `--browser chromium` (its

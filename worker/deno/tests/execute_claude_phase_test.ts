@@ -850,7 +850,7 @@ Deno.test("runExecuteClaudePhase - screenshot label triggers screenshot instruct
   assertEquals(promptOptions?.screenshotRequired, true);
 });
 
-Deno.test("runExecuteClaudePhase - the browser MCP server is requested only when the issue needs a screenshot (Issue #192)", async () => {
+Deno.test("runExecuteClaudePhase - the browser MCP server is requested on every run unless skip_screenshot_check (Issue #2925)", async () => {
   const captured: Array<RunClaudeOptions["mcpConfig"]> = [];
   const captureRun: Partial<ExecuteClaudePhaseDeps> = {
     runClaudeWithRetry: async (options) => {
@@ -862,27 +862,21 @@ Deno.test("runExecuteClaudePhase - the browser MCP server is requested only when
     },
   };
 
-  // A plain backend issue must not be handed browser/network capability.
+  // No screenshot label: the gate judges UI changes from the diff, so the
+  // browser must already be there.
   await runExecuteClaudePhase(
     createTestOptions({ issueLabels: "enhancement,work-on" }),
     createMockDeps(captureRun),
   );
-  assertEquals(captured[0], false);
+  assertEquals(captured[0], true);
 
-  // A needs-screenshot issue declares the need, so the browser is wired.
-  await runExecuteClaudePhase(
-    createTestOptions({ issueLabels: "enhancement,needs-screenshot" }),
-    createMockDeps(captureRun),
-  );
-  assertEquals(captured[1], true);
-
-  // A repo configured to require screenshots is the same need signal.
+  // skip_screenshot_check wins over the label (Issue #1584).
   await runExecuteClaudePhase(
     createTestOptions({
-      repo: "owner/ui-repo",
-      issueLabels: "enhancement",
+      repo: "owner/cli-repo",
+      issueLabels: "enhancement,needs-screenshot",
       repoConfigs: {
-        "owner/ui-repo": { requiresScreenshots: true } as Record<
+        "owner/cli-repo": { skipScreenshotCheck: true } as Record<
           string,
           unknown
         >,
@@ -890,7 +884,7 @@ Deno.test("runExecuteClaudePhase - the browser MCP server is requested only when
     }),
     createMockDeps(captureRun),
   );
-  assertEquals(captured[2], true);
+  assertEquals(captured[1], false);
 });
 
 Deno.test("runExecuteClaudePhase - heartbeat started and stopped", async () => {

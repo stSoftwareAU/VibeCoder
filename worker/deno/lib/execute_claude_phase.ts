@@ -18,6 +18,7 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { browserGranted } from "./browser_grant.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
@@ -1515,14 +1516,14 @@ async function executeClaudePhaseBody(
         // The rate/usage-limit signal belongs on the work volume, never in
         // the per-issue clone the `cwd` above now names (Issue #4315).
         workDir,
-        // Browser/network capability is granted on need, not by default
-        // (Issue #192): only an issue that must produce screenshot evidence
-        // gets the Playwright MCP server. A backend issue's agent has no
-        // browser tool to be steered into by prompt injection.
-        // Issue #2159 layers the `codegraph` server beside that grant on an
-        // enabled run whose index built; on every other status this is
-        // exactly `screenshotRequired`, as before.
-        mcpConfig: graft.mcpConfig(codegraph.mcpConfig(screenshotRequired)),
+        // The Playwright MCP browser is granted on every run unless the repo
+        // sets `skip_screenshot_check` (Issue #2925): the screenshot gate
+        // judges "UI change" from the diff afterwards, so the tool must be
+        // there up front. Issue #2159 layers the `codegraph` server beside
+        // that grant on an enabled run whose index built.
+        mcpConfig: graft.mcpConfig(
+          codegraph.mcpConfig(browserGranted(repoConfigs, repo)),
+        ),
         // Issue #2342: only a split run carries the executor definition, and
         // only a split run carries the guard that keeps every `Edit`/`Write`
         // inside one of them (Issue #2344). `claude_runner.ts` merges that

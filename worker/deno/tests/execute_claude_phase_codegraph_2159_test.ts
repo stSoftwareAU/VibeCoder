@@ -123,7 +123,7 @@ Deno.test("execute_claude_phase - the switch off leaves the prompt and MCP confi
   );
 
   assertEquals(observed.prepared[0]?.enabled, false);
-  assertEquals(observed.runOptions?.mcpConfig, false);
+  assertEquals(observed.runOptions?.mcpConfig, true);
   assertEquals(
     observed.runOptions?.prompt?.includes("CodeGraph index"),
     false,
@@ -168,7 +168,7 @@ Deno.test("execute_claude_phase - an indexed run gets the line and the server to
 
   const mcp = observed.runOptions?.mcpConfig;
   assert(typeof mcp === "object", "the codegraph server must be requested");
-  assertEquals(mcp.playwright, false);
+  assertEquals(mcp.playwright, true);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
   assertCodegraphRootedAt(
     mcp,
@@ -188,7 +188,7 @@ Deno.test("execute_claude_phase - a failed index adds neither half and never fai
       createDeps(observed, { status, enabled: true }, { Bash: 1 }),
     );
 
-    assertEquals(observed.runOptions?.mcpConfig, false);
+    assertEquals(observed.runOptions?.mcpConfig, true);
     assertEquals(
       observed.runOptions?.prompt?.includes("CodeGraph index"),
       false,
