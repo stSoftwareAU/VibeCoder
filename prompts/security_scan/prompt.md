@@ -398,7 +398,13 @@ Access Control, so SSRF is audited here.
   or with metadata-IP blocking missing.
 - **Path traversal** — `..` segments, absolute-path overrides, symlink
   follow into restricted areas, archive extraction without sanitisation
-  (Zip Slip).
+  (Zip Slip); also flag confinement guards that check a partly resolved
+  path — canonicalising only the existing prefix, then appending a
+  not-yet-existing tail that still contains `..`, or checking before
+  normalising `..`/`.` segments; a path-segment identifier (ref, name,
+  ID) validated with a validator built for another purpose that does
+  not reject `..`, `/`, or absolute paths; and any guard lacking a
+  negative test for `..` traversal or symlink escape.
 - **Open redirect** — redirect target derived from user input without
   an allowlist of destinations.
 - **CSRF** — state-changing endpoint authenticating via session cookie
