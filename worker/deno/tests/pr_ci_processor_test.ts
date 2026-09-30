@@ -2549,3 +2549,103 @@ Deno.test("processCiFailure - a stale remote fix branch (cross-host name collisi
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("processCiFailure - an ls-remote failure (non-2 exit) stands down instead of assuming the stale branch is absent (PR #2909 review)", async () => {
+  // Regression test for the review gap: `ls-remote --exit-code` only
+  // documents exit 2 as "no matching refs". A transient failure (network,
+  // auth — modelled here with exit 128) must not be read as "branch
+  // absent", or `checkout -B` would cut a fix branch that can silently
+  // diverge from a stale remote branch a closed-unmerged fix PR left behind.
+  const tmpDir = await Deno.makeTempDir({
+    prefix: "vibe-gated-ci-lsremote-fail-",
+  });
+  try {
+    const stateDir = `${tmpDir}/.ci_check_state`;
+    const ghCalls: string[][] = [];
+    const gitCommands: string[][] = [];
+    let claudeCalled = false;
+
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() => {
+          claudeCalled = true;
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () =>
+            Promise.resolve("https://github.com/org/repo/pull/9300"),
+        }),
+      },
+      git: {
+        runGitCommand: ((args: string[]) => {
+          gitCommands.push(args);
+          if (args[0] === "ls-remote") {
+            return Promise.resolve({
+              ok: true,
+              value: { code: 128, stdout: "", stderr: "fatal: could not read" },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const result = await processCiFailure(
+      makeInput({
+        repo: "org/repo",
+        prNumber: GATED_PR_NUMBER,
+        branchName: GATED_MILESTONE_HEAD,
+        checkRunId: "gated-lsremote-fail-1",
+      }),
+      {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      },
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, false);
+      assertEquals(result.value.retryCount, 0);
+    }
+    assertEquals(
+      claudeCalled,
+      false,
+      "Claude must not run when the stale-branch check itself failed",
+    );
+    assertEquals(
+      gitCommands.some((args) => args[0] === "checkout" && args[1] === "-B"),
+      false,
+      "no fix branch is cut when ls-remote's result could not be trusted",
+    );
+    assertEquals(
+      ghCalls.some((args) => args[0] === "pr" && args[1] === "create"),
+      false,
+      "no fix PR is raised when the stale-branch check failed",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

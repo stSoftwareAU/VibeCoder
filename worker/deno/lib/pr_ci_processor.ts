@@ -1173,7 +1173,42 @@ async function _processCiWithHeartbeat(
       ],
       { cwd: processorDeps.workDir },
     );
-    if (staleRemote.ok && staleRemote.value.code === 0) {
+    // `ls-remote --exit-code` documents exit 2 as "no matching refs" — the
+    // only outcome that means the branch is genuinely absent. Every other
+    // outcome (a transport error in `ok: false`, or a non-zero/non-2 exit
+    // such as 128 on a transient network/auth failure) must not be read as
+    // absence: silently falling through to `checkout -B` here is exactly the
+    // unattended merge-back path this guard exists to close (PR #2909
+    // review). Mirrors `findResumableIssueBranch`
+    // (git_issue_branch_resume.ts), which also fails loud on `!ok` and any
+    // non-zero exit rather than assuming absence.
+    if (
+      !staleRemote.ok ||
+      (staleRemote.value.code !== 0 && staleRemote.value.code !== 2)
+    ) {
+      const err = staleRemote.ok
+        ? staleRemote.value.stderr.trim()
+        : staleRemote.error.message;
+      logger.error(
+        "Could not determine whether a stale milestone-fix branch exists " +
+          "on origin — standing down rather than risk cutting a fix " +
+          "branch that diverges from history ls-remote failed to reveal " +
+          "(Issue #2909)",
+        { repo, prNumber, fixBranch, error: err },
+      );
+      return {
+        ok: true,
+        value: {
+          processed: false,
+          changesPushed: false,
+          annotationCount: 0,
+          retryCount: newRetryCount - 1,
+          summary:
+            `could not check for a stale milestone-fix branch '${fixBranch}' — ${err}`,
+        },
+      };
+    }
+    if (staleRemote.value.code === 0) {
       const deleted = await deps.git.runGitCommand(
         ["push", "--delete", "--end-of-options", "origin", fixBranch],
         { cwd: processorDeps.workDir },
