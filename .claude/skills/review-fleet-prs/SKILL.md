@@ -297,8 +297,11 @@ VibeCoder's own guidance:
    - the VibeCoder prompt/skill/guidance that should change, when identifiable;
    - the proposed guidance or guardrail and how future reviews can verify it
      worked.
-   Apply `work-on` when that label exists and the improvement can be handled
-   autonomously; otherwise leave assignment/triage unchanged.
+   Apply `idle-task` to the issue filed, and no reserved label (never
+   `work-on`, `top-priority`, `low-priority` or `planning`): the reviewer
+   App is in `authorized_commenters`, so the worker trusts only its
+   `idle-task` add, and reserved labels are for humans to set. Otherwise
+   leave assignment/triage unchanged.
 5. Keep the threshold evidence-based. Similar symptoms with different causes
    are not a recurrence. Never create an issue solely to make a review pass,
    and never relax safety, testing or correctness guidance as the cure.

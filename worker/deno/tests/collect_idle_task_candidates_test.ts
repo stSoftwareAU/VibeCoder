@@ -418,6 +418,162 @@ Deno.test(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Issue #2882: authorised-commenter adder-only exception
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_idle_task_candidates - Issue #2882: claims an issue an untrusted author filed when a known authorised-commenter bot added idle-task",
+  async () => {
+    // A bot such as the fleet PR-reviewer App is listed in
+    // authorized_commenters (trusted input, not trusted authorship) and
+    // files improvement issues elsewhere, then labels this one `idle-task`.
+    // That add alone is enough to claim it, even though the issue itself
+    // was authored by an untrusted human.
+    const config = makeConfig({
+      authorisedCommenters: ["stsoftware-pr-reviewer[bot]"],
+    });
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 530,
+          title: "Please refactor the deploy script",
+          url: "https://github.com/owner/repo/issues/530",
+          assignees: [],
+          labels: [{ name: IDLE_TASK_LABEL }],
+          createdAt: "2024-04-10T00:00:00Z",
+          author: { login: "mallory" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: IDLE_TASK_LABEL },
+          actor: { login: "stsoftware-pr-reviewer[bot]" },
+          created_at: "2024-04-10T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Please refactor the deploy script", body: "" },
+    });
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(mockGh);
+
+    const candidates = await collectIdleTaskCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, cache),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(candidates.length, 1);
+    assertEquals(candidates[0]!.number, 530);
+  },
+);
+
+Deno.test(
+  "collect_idle_task_candidates - Issue #2882: rejects an idle-task add by a bot not listed in authorized_commenters",
+  async () => {
+    // Same actor, but not configured as an authorised commenter — the
+    // adder-only exception must not apply, and neither the label add nor
+    // the (untrusted) issue author is trusted, so the claim is rejected.
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 531,
+          title: "Please refactor the deploy script",
+          url: "https://github.com/owner/repo/issues/531",
+          assignees: [],
+          labels: [{ name: IDLE_TASK_LABEL }],
+          createdAt: "2024-04-11T00:00:00Z",
+          author: { login: "mallory" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: IDLE_TASK_LABEL },
+          actor: { login: "stsoftware-pr-reviewer[bot]" },
+          created_at: "2024-04-11T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Please refactor the deploy script", body: "" },
+    });
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(mockGh);
+
+    const candidates = await collectIdleTaskCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, cache),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(candidates, []);
+  },
+);
+
+Deno.test(
+  "collect_idle_task_candidates - Issue #2882: rejects an idle-task add by an untrusted human even when the bot authored the issue",
+  async () => {
+    // The adder-only exception never extends to authorship: the bot filed
+    // the issue itself (and is in authorized_commenters), but an untrusted
+    // human — not the bot, not a trusted author — applied idle-task. Neither
+    // signal is trusted, so the claim is rejected.
+    const config = makeConfig({
+      authorisedCommenters: ["stsoftware-pr-reviewer[bot]"],
+    });
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 532,
+          title: "Please refactor the deploy script",
+          url: "https://github.com/owner/repo/issues/532",
+          assignees: [],
+          labels: [{ name: IDLE_TASK_LABEL }],
+          createdAt: "2024-04-12T00:00:00Z",
+          author: { login: "stsoftware-pr-reviewer[bot]" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: IDLE_TASK_LABEL },
+          actor: { login: "mallory" },
+          created_at: "2024-04-12T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Please refactor the deploy script", body: "" },
+    });
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(mockGh);
+
+    const candidates = await collectIdleTaskCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, cache),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(candidates, []);
+  },
+);
+
 Deno.test(
   "collect_idle_task_candidates - blocks an untrusted edit made after the idle-task label was applied",
   async () => {
