@@ -41,11 +41,11 @@ flowchart TD
 
 - **Purpose:** Automatically diagnose and fix CI check failures on PRs authored by the configured GitHub user, without operator intervention.
 - **Scope:** General CI failures — build errors, test failures, lint violations. Spelling failures are handled separately at priority 1.5 (see [pr-feedback.md](pr-feedback.md)).
-- **Not in scope:** Infrastructure failures (e.g. runner unavailability), flaky tests that pass on re-run, or failures on PRs authored by other users.
+- **Not in scope:** Infrastructure failures (e.g. runner unavailability), flaky tests that pass on re-run, or failures on PRs authored by other users. A `cancelled` check, or a `failure` whose job never started, is re-run once rather than handed to the CI-fix agent (see [Decision points and exceptions](#-decision-points-and-exceptions)).
 
 ## 🎭 Actors and triggers
 
-- **Trigger:** A CI check run with `conclusion == "failure"` is detected on an open PR authored by the configured GitHub user.
+- **Trigger:** A CI check run with `conclusion == "failure"` is detected on an open PR authored by the configured GitHub user; `conclusion == "cancelled"` is also read, but diverted to the infrastructure re-run path rather than the fix lane (Issue #2914).
 - **Actors:** The worker (via `findFailedCiChecks` in `worker/deno/lib/pr_ci_checks.ts`); Claude (via the `ci_fix` prompt); GitHub API (check runs, annotations).
 - **Priority:** 1.55 — runs after PR feedback (1) and spelling/quality fixes (1.5), before branch updates (1.6).
 
@@ -59,7 +59,7 @@ flowchart TD
 
 ## ✅ Happy path
 
-1. **Detect** — `find_failed_ci_checks()` scans all open PRs authored by the configured GitHub user. For each PR, it queries the GitHub API for check runs with `conclusion == "failure"`, filtering out only those whose failing step is a spelling tool.
+1. **Detect** — `find_failed_ci_checks()` scans all open PRs authored by the configured GitHub user. For each PR, it queries the GitHub API for check runs with `conclusion == "failure"` or `conclusion == "cancelled"`, filtering out only those whose failing step is a spelling tool; a `cancelled` run, or a `failure` whose job never started, is diverted to the infrastructure re-run rather than reaching Claude (Issue #2914).
 2. **Extract annotations** — Failure annotations (file path, line number, error message) are extracted from the check run and encoded as base64 JSON for safe transport through shell.
 3. **Checkout** — The worker checks out the PR branch, fetches the latest changes, and syncs with the base branch (rebase) to prevent merge conflicts.
 4. **Run pre-setup** — If the repository has a configured `pre_setup_command`, it is executed before Claude starts.
@@ -188,6 +188,7 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last 1
 - **Aggregator checks:** A job that exists only to gate on other jobs — the NEAT-AI-Backpropagation `ci-required` job (`name: CI Required Checks`, `needs: [validation, quality, …]`, `if: always()`) is the canonical shape — is red whenever a job it needs is red, so it has no failure of its own. The `needs:` topology is read from the checked-out workflow YAML ([`workflow_job_needs.ts`](../../worker/deno/lib/workflow_job_needs.ts)), and a failing check whose needed job is **also red on the same head** is skipped rather than diagnosed (Issue #1878). Job matching uses the job's `name:`, else its id, because that is what the check run is called; a check matching no job — a matrix leg such as `Build (ubuntu-latest)`, or a check from outside Actions — is never treated as an aggregator. The scan filters against the host's existing clone and never clones to do it, so a repo with no clone is not filtered; the processor repeats the decision against the branch it actually checked out, and on a skip it records the check-run retry, posts nothing and runs no agent.
 - **Base-branch failure (deferral):** When the agent finds the same check already failing on the PR's **base branch**, it ends its `.pr_response_message` with a line of its own — `Depends on owner/repo#N` — naming the issue that tracks it (searching that repository first with `gh issue list --search "<root cause> in:title,body" --state open`, and filing one issue per root cause only when none exists). The worker does not take that on trust: [`ci_base_branch_check.ts`](../../worker/deno/lib/ci_base_branch_check.ts) reads the base branch's own `check-runs` and the **latest completed run of the same check** must have concluded `failure`. When it has, the agent's diagnosis is posted **once** with a `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied and **no attempt is charged** — nothing on this branch could have fixed it (Issue #1880). A base branch that is green, a check the base never ran, a missing base ref, or a lookup that errored all fall through to the ordinary no-changes reply with one attempt charged. A failure already carrying a fleet-authored deferral marker posts nothing at all; if that marker's blocker has since **closed** and the agent names it again, the deferral is refused and the ordinary path runs, so the loop fails loud through the attempt cap rather than parking the PR for ever.
 - **Human gate (`human-gate`):** A repository's check declares that only a person can clear it by printing a line whose content starts `vibe-human-gate:` — for example `vibe-human-gate: apply infra/bootstrap.yaml with AWS SSO, then add the bootstrap-applied label`. The classifier ([`ci_failure_classifier.ts`](../../worker/deno/lib/ci_failure_classifier.ts), Issue #2726) checks for it ahead of every other category and lifts the text after the colon as the step, flattened, marker-neutralised and bounded. The CI-fix lane then posts **one comment per PR per gate check** naming the check and the step (rendered in a code span sized so the step cannot break out, open Markdown structure or `@`-mention anyone), carrying a `<!-- vibe-ci-human-gate check="…" head="…" -->` marker (Issue #2727). It spends **no attempt**, writes no `vibe-ci-fix-attempt` marker, runs **no agent** and adds **no `needs-human`**, so the merge-conflict scan keeps maintaining the PR. The marker is keyed by **check name**, not failure signature or head, so a later pass on any host — after a new push, or with a changed log — finds a fleet-authored gate marker and posts nothing. Its `head` names the commit the gate was last confirmed on (PR #2762): a pass that re-confirms the gate on a new head edits that one comment in place to name the new head, and the scanner parks the check only while the marker names the PR's current head — so after a push the check is re-classified from its log once, and a genuine failure reaches the fix path instead of staying parked. A re-stamp that fails is logged as an error with `processed: false`. A gate marker written outside the fleet is ignored. A marker read that fails stands the pass down without posting; a gate comment that cannot be posted (or an unresolved fleet identity, which makes the one-comment rule unenforceable) is logged as an error and the pass reports `processed: false`, so the next scan retries rather than recording a silent success. The gate path does not remove a `needs-human` label an earlier escalation already applied.
+- **Cancelled or never-started checks (Issue #2914):** A `cancelled` check, or a `failure` whose Actions job has **zero steps** (never started — e.g. "not started because an Actions budget is preventing further use"), is infrastructure, not code, and is never handed to the CI-fix agent. Instead [`ci_infrastructure_rerun.ts`](../../worker/deno/lib/ci_infrastructure_rerun.ts) re-runs the workflow run with `gh run rerun <run-id>` — **at most once per PR head commit**, recorded by a marker file `<repo>_pr<N>_<headSha>.infra-rerun` in the CI check state directory (a new push allows another rerun). The scan logs `skipReason` `ci-cancelled`. A run that also holds a genuinely failing job is left alone — that failure goes to the CI-fix lane, whose fix push starts fresh runs. A rerun GitHub refuses is logged at warn and retried on the next scan, since the marker is written only after a successful rerun; if the head was already re-run once and the checks are still cancelled or never started, the scan logs a warning and leaves it for a human. A cancelled check that is not an Actions job (no run id) cannot be re-run, is logged at warn, and is still not handed to the agent. The `review-fleet-prs` gate still reports such a PR as `ci-failed` until stSoftwareAU/VibeCoder#2916 lands, which will change it to report `ci-cancelled` instead (that gate lives under `.claude/`, outside the worker's write scope).
 - **Max retries exceeded:** Post a comment on the PR and skip the check on future runs. The operator should investigate manually.
 - **Rate limit exhaustion:** After `MAX_RATE_LIMIT_RETRIES` (default: 2) with exponential backoff, the worker exits with code 2 and posts a comment.
 - **Claude makes no changes:** The worker posts a classifier-aware comment explaining the most likely failure category (test, build, lint, infrastructure, transient) and recommended next step rather than a generic "transient or infrastructure" message.
@@ -217,6 +218,22 @@ flowchart TD
     G -->|yes, older head| E["edit that comment:<br/>marker head → this head"]
     G -->|no| P["post one comment:<br/>check + step + marker"]
     P -->|post failed| F["log error,<br/>processed: false → retry next scan"]
+```
+
+The cancelled-check re-run, end to end (Issue #2914):
+
+```mermaid
+flowchart TD
+    A["red check"] --> B{"cancelled or<br/>0 steps?"}
+    B -->|no| X["CI-fix lane"]
+    B -->|yes| C{"run also holds<br/>a real failure?"}
+    C -->|yes| X2["left to CI-fix<br/>fix-push"]
+    C -->|no| D{"already re-run<br/>on this head?"}
+    D -->|yes| W["warn,<br/>left for a human"]
+    D -->|no| G["gh run rerun"]
+    G --> E{"accepted?"}
+    E -->|yes| M["write marker"]
+    E -->|no| R["warn,<br/>retry next scan"]
 ```
 
 ## 🛠️ Common CI failure patterns

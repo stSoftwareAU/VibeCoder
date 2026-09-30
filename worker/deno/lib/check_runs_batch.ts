@@ -371,13 +371,20 @@ export function rollupToCombinedStatusResponse(
 /**
  * Convert a rollup to the legacy `CheckRunEntry[]` shape used by
  * `pr_maintenance.findFailedPrChecks` / `findFailedCiChecks`. Filters
- * to only check runs whose conclusion is `"failure"`, mirroring the
- * `--jq 'select(.conclusion == "failure")'` filter in the original
- * REST helper.
+ * to check runs whose conclusion is in `conclusions` (default
+ * `["failure"]`, mirroring the `--jq 'select(.conclusion == "failure")'`
+ * filter in the original REST helper). Issue #2914: the CI-fix scan
+ * additionally passes `"cancelled"` so an infrastructure-cancelled check
+ * is not invisible to it.
  */
-export function rollupToFailedCheckRuns(rollup: PrRollup): CheckRunEntry[] {
+export function rollupToFailedCheckRuns(
+  rollup: PrRollup,
+  conclusions: readonly string[] = ["failure"],
+): CheckRunEntry[] {
   return rollup.checkRuns
-    .filter((cr) => cr.conclusion === "failure")
+    .filter((cr) =>
+      cr.conclusion !== null && conclusions.includes(cr.conclusion)
+    )
     .map((cr) => ({
       id: cr.databaseId,
       name: cr.name,
@@ -394,25 +401,29 @@ export function rollupToFailedCheckRuns(rollup: PrRollup): CheckRunEntry[] {
  * Batched failed-check-runs fetcher for many PRs in a single repo.
  *
  * Returns a `Map<prNumber, CheckRunEntry[]>` containing only checks
- * whose conclusion is `"failure"`. Returns `null` on any GraphQL
- * failure so the caller can fall back to the per-PR REST helper.
+ * whose conclusion is in `conclusions` (default `["failure"]`; Issue
+ * #2914 passes `["failure", "cancelled"]` from the CI-fix scan). Returns
+ * `null` on any GraphQL failure so the caller can fall back to the
+ * per-PR REST helper.
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumbers - List of PR numbers to query
  * @param ghCommandFn - Injectable gh runner (defaults to runGhCommand)
+ * @param conclusions - Conclusions to keep (default `["failure"]`)
  * @returns Map of failed check runs per PR, or null on failure
  */
 export async function fetchFailedCheckRunsBatch(
   repo: string,
   prNumbers: number[],
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+  conclusions: readonly string[] = ["failure"],
 ): Promise<Map<number, CheckRunEntry[]> | null> {
   if (prNumbers.length === 0) return new Map();
   const result = await fetchCheckRunsBatch(repo, prNumbers, ghCommandFn);
   if (!result.ok) return null;
   const out = new Map<number, CheckRunEntry[]>();
   for (const [num, rollup] of result.rollups) {
-    out.set(num, rollupToFailedCheckRuns(rollup));
+    out.set(num, rollupToFailedCheckRuns(rollup, conclusions));
   }
   return out;
 }

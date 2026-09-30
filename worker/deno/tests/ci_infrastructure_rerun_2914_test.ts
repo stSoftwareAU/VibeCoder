@@ -1,0 +1,438 @@
+/**
+ * Tests for infrastructure-vs-code triage of red CI checks (Issue #2914).
+ *
+ * A PR whose only red checks are `cancelled` used to be invisible to the
+ * CI-fix scan — nothing re-ran them, and the PR sat stuck forever. These
+ * tests drive the real `findFailedCiChecks` against an injected `gh`
+ * stub — no network — to confirm cancelled and never-started checks are
+ * re-run directly (bounded once per head) and never handed to the
+ * CI-fix agent, while a real failure still is.
+ *
+ * Uses Australian English throughout (behaviour, organisation).
+ */
+
+import { assert, assertEquals } from "@std/assert";
+import {
+  type CiCheckScanOptions,
+  findFailedCiChecks,
+} from "../lib/pr_maintenance.ts";
+import {
+  classifyRedChecks,
+  rerunInfrastructureChecks,
+} from "../lib/ci_infrastructure_rerun.ts";
+import type { Logger } from "../types.ts";
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const REPO = "org/repo";
+const PR_NUMBER = 42;
+const HEAD_SHA = "a".repeat(40);
+const HEAD_SHA_2 = "b".repeat(40);
+
+/** A recording logger that also captures skipReasons and warn/info calls. */
+function makeRecordingLogger(): Logger & {
+  skips: string[];
+  warns: string[];
+  infos: string[];
+  errors: string[];
+} {
+  const skips: string[] = [];
+  const warns: string[] = [];
+  const infos: string[] = [];
+  const errors: string[] = [];
+  return {
+    skips,
+    warns,
+    infos,
+    errors,
+    info: (message: string) => void infos.push(message),
+    warn: (message: string) => void warns.push(message),
+    error: (message: string) => void errors.push(message),
+    debug: () => {},
+    security: () => {},
+    skipReason: (code: string, details: string) =>
+      void skips.push(`${code}: ${details}`),
+    timing: () => {},
+    scanSummary: () => {},
+    workerSummary: () => {},
+  };
+}
+
+/** A job table keyed by check-run/job id. */
+interface JobRow {
+  id: number;
+  run_id: number;
+  conclusion: string;
+  steps: Array<{ name: string; conclusion: string }>;
+}
+
+/**
+ * A `gh` stub modelling: `pr list` (one PR), `api graphql` failing (forces
+ * REST fallback), the REST check-runs endpoint (already jq-filtered, as
+ * the real jq would produce), `actions/jobs/<id>` from a job table,
+ * `run rerun` recording, and `annotations` returning `[]`.
+ */
+function ghStub(opts: {
+  redChecks: Array<{ id: number; name: string; conclusion: string }>;
+  jobs: JobRow[];
+  reruns: string[][];
+  headRefOid?: string;
+  rerunError?: (runId: string) => boolean;
+}): (args: string[]) => Promise<string> {
+  const { redChecks, jobs, reruns, headRefOid = HEAD_SHA, rerunError } = opts;
+  return (args: string[]) => {
+    const key = args.join(" ");
+    if (key.includes("pr list")) {
+      return Promise.resolve(JSON.stringify([
+        {
+          number: PR_NUMBER,
+          headRefName: "issue-1-fix",
+          headRefOid,
+          baseRefName: "main",
+        },
+      ]));
+    }
+    if (key.includes("api graphql")) {
+      // Force the REST fallback.
+      return Promise.resolve("[]");
+    }
+    if (key.includes("check-runs") && !key.includes("annotations")) {
+      // Models the REST fallback's jq output directly — the stub itself
+      // filters to the checks it wants returned.
+      return Promise.resolve(JSON.stringify(
+        redChecks.map((check) => ({
+          id: check.id,
+          name: check.name,
+          status: "completed",
+          conclusion: check.conclusion,
+        })),
+      ));
+    }
+    const jobMatch = key.match(/actions\/jobs\/(\d+)/);
+    if (jobMatch) {
+      const id = Number(jobMatch[1]);
+      const job = jobs.find((j) => j.id === id);
+      if (job === undefined) {
+        return Promise.reject(new Error(`no such job ${id}`));
+      }
+      return Promise.resolve(JSON.stringify(job));
+    }
+    if (key.startsWith("run rerun")) {
+      reruns.push(args);
+      const runId = args[2] ?? "";
+      if (rerunError && rerunError(runId)) {
+        return Promise.reject(new Error(`rerun refused for ${runId}`));
+      }
+      return Promise.resolve("");
+    }
+    if (key.includes("annotations")) return Promise.resolve("[]");
+    return Promise.resolve("[]");
+  };
+}
+
+/** Run the real scan against a throwaway state directory. */
+async function scan(
+  ghFn: (args: string[]) => Promise<string>,
+  logger: Logger,
+  stateDir: string,
+) {
+  const options: CiCheckScanOptions = {
+    githubUser: "testbot",
+    repos: [REPO],
+    logger,
+    isRepoAllowed: () => true,
+    isAuthorisedCommenter: () => true,
+    ghCommandFn: ghFn,
+    stateDir,
+  };
+  const result = await findFailedCiChecks(options);
+  assertEquals(result.ok, true);
+  return result.ok ? result.value : null;
+}
+
+// ---------------------------------------------------------------------------
+// findFailedCiChecks — scan-level tests
+// ---------------------------------------------------------------------------
+
+Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to CI-fix, bounded once per head", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const ghFn = ghStub({
+      redChecks: [
+        { id: 1, name: "Job A", conclusion: "cancelled" },
+        { id: 2, name: "Job B", conclusion: "cancelled" },
+        { id: 3, name: "Job C", conclusion: "cancelled" },
+      ],
+      jobs: [
+        { id: 1, run_id: 900, conclusion: "cancelled", steps: [] },
+        { id: 2, run_id: 900, conclusion: "cancelled", steps: [] },
+        { id: 3, run_id: 901, conclusion: "cancelled", steps: [] },
+      ],
+      reruns,
+    });
+
+    const found = await scan(ghFn, logger, stateDir);
+    assertEquals(found, null);
+    assertEquals(reruns.length, 2);
+    const rerunRunIds = reruns.map((r) => r[2]).sort();
+    assertEquals(rerunRunIds, ["900", "901"]);
+    for (const r of reruns) {
+      assertEquals(r, ["run", "rerun", r[2] as string, "--repo", REPO]);
+    }
+    assert(logger.skips.some((s) => s.startsWith("ci-cancelled: ")));
+
+    // Second scan, same stateDir and head — no further reruns.
+    const reruns2: string[][] = [];
+    const logger2 = makeRecordingLogger();
+    const ghFn2 = ghStub({
+      redChecks: [
+        { id: 1, name: "Job A", conclusion: "cancelled" },
+        { id: 2, name: "Job B", conclusion: "cancelled" },
+        { id: 3, name: "Job C", conclusion: "cancelled" },
+      ],
+      jobs: [
+        { id: 1, run_id: 900, conclusion: "cancelled", steps: [] },
+        { id: 2, run_id: 900, conclusion: "cancelled", steps: [] },
+        { id: 3, run_id: 901, conclusion: "cancelled", steps: [] },
+      ],
+      reruns: reruns2,
+    });
+    const found2 = await scan(ghFn2, logger2, stateDir);
+    assertEquals(found2, null);
+    assertEquals(reruns2.length, 0);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a never-started failure (zero steps) is re-run, not handed to CI-fix", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const ghFn = ghStub({
+      redChecks: [
+        { id: 10, name: "Never Started", conclusion: "failure" },
+      ],
+      jobs: [
+        { id: 10, run_id: 950, conclusion: "failure", steps: [] },
+      ],
+      reruns,
+    });
+
+    const found = await scan(ghFn, logger, stateDir);
+    assertEquals(found, null);
+    assertEquals(reruns.length, 1);
+    assertEquals(reruns[0], ["run", "rerun", "950", "--repo", REPO]);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a real failure is returned to the CI-fix lane and never re-run", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const ghFn = ghStub({
+      redChecks: [
+        { id: 20, name: "Real Failure", conclusion: "failure" },
+      ],
+      jobs: [
+        {
+          id: 20,
+          run_id: 960,
+          conclusion: "failure",
+          steps: [{ name: "run tests", conclusion: "failure" }],
+        },
+      ],
+      reruns,
+    });
+
+    const found = await scan(ghFn, logger, stateDir);
+    assertEquals(found?.checkName, "Real Failure");
+    assertEquals(found?.checkId, "20");
+    assertEquals(reruns.length, 0);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a real failure's run is not re-run even when a cancelled check shares it; a cancelled check in another run is", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const ghFn = ghStub({
+      redChecks: [
+        { id: 30, name: "Real Failure", conclusion: "failure" },
+        { id: 31, name: "Cancelled In Same Run", conclusion: "cancelled" },
+        { id: 32, name: "Cancelled Elsewhere", conclusion: "cancelled" },
+      ],
+      jobs: [
+        {
+          id: 30,
+          run_id: 900,
+          conclusion: "failure",
+          steps: [{ name: "run tests", conclusion: "failure" }],
+        },
+        { id: 31, run_id: 900, conclusion: "cancelled", steps: [] },
+        { id: 32, run_id: 901, conclusion: "cancelled", steps: [] },
+      ],
+      reruns,
+    });
+
+    const found = await scan(ghFn, logger, stateDir);
+    assertEquals(found?.checkName, "Real Failure");
+    assertEquals(reruns.length, 1);
+    assertEquals(reruns[0], ["run", "rerun", "901", "--repo", REPO]);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a new head sha re-runs again (bound is per head)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const ghFn = ghStub({
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns,
+      headRefOid: HEAD_SHA,
+    });
+    await scan(ghFn, logger, stateDir);
+    assertEquals(reruns.length, 1);
+
+    const reruns2: string[][] = [];
+    const logger2 = makeRecordingLogger();
+    const ghFn2 = ghStub({
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns: reruns2,
+      headRefOid: HEAD_SHA_2,
+    });
+    await scan(ghFn2, logger2, stateDir);
+    assertEquals(reruns2.length, 1);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a rerun that throws is logged at warn, and the next scan tries again", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const ghFn = ghStub({
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns,
+      rerunError: () => true,
+    });
+
+    const found = await scan(ghFn, logger, stateDir);
+    assertEquals(found, null);
+    assertEquals(reruns.length, 1);
+    assert(logger.warns.some((w) => w.includes("Could not re-run")));
+
+    // No marker was written on total failure — the next scan tries again.
+    const reruns2: string[][] = [];
+    const logger2 = makeRecordingLogger();
+    const ghFn2 = ghStub({
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns: reruns2,
+    });
+    const found2 = await scan(ghFn2, logger2, stateDir);
+    assertEquals(found2, null);
+    assertEquals(reruns2.length, 1);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// classifyRedChecks — direct unit tests
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyRedChecks - cancelled check whose job lookup throws is infrastructure with runId null, and warns", async () => {
+  const logger = makeRecordingLogger();
+  const ghFn = (_args: string[]) => Promise.reject(new Error("boom"));
+  const result = await classifyRedChecks({
+    repo: REPO,
+    checks: [{
+      id: 1,
+      name: "Job A",
+      status: "completed",
+      conclusion: "cancelled",
+    }],
+    ghCommandFn: ghFn,
+    logger,
+  });
+  assertEquals(result.code, []);
+  assertEquals(result.infrastructure.length, 1);
+  assertEquals(result.infrastructure[0]?.reason, "cancelled");
+  assertEquals(result.infrastructure[0]?.runId, null);
+  assert(logger.warns.some((w) => w.includes("Job A")));
+});
+
+Deno.test("classifyRedChecks - failing check whose job lookup throws stays on the code route", async () => {
+  const logger = makeRecordingLogger();
+  const ghFn = (_args: string[]) => Promise.reject(new Error("boom"));
+  const result = await classifyRedChecks({
+    repo: REPO,
+    checks: [{
+      id: 2,
+      name: "Job B",
+      status: "completed",
+      conclusion: "failure",
+    }],
+    ghCommandFn: ghFn,
+    logger,
+  });
+  assertEquals(result.infrastructure, []);
+  assertEquals(result.code.length, 1);
+  assertEquals(result.code[0]?.name, "Job B");
+});
+
+// ---------------------------------------------------------------------------
+// rerunInfrastructureChecks — direct unit test for the head-sha guard
+// ---------------------------------------------------------------------------
+
+Deno.test("rerunInfrastructureChecks - refuses an invalid head sha and reruns nothing", async () => {
+  const logger = makeRecordingLogger();
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-direct-" });
+  try {
+    const reruns: string[][] = [];
+    const ghFn = (args: string[]) => {
+      reruns.push(args);
+      return Promise.resolve("");
+    };
+    const result = await rerunInfrastructureChecks({
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      headSha: "not-a-sha",
+      infrastructure: [{
+        id: 1,
+        name: "Job A",
+        reason: "cancelled",
+        runId: 900,
+      }],
+      codeRunIds: new Set(),
+      stateDir,
+      ghCommandFn: ghFn,
+      logger,
+    });
+    assertEquals(result, []);
+    assertEquals(reruns.length, 0);
+    assert(logger.warns.length > 0);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
