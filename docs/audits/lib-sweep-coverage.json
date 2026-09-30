@@ -2305,6 +2305,18 @@
       "paths": [
         "worker/deno/lib/time_deferral.ts"
       ]
+    },
+    {
+      "issue": 2925,
+      "chunk": "top-up-2925",
+      "title": "top-up: the browser grant",
+      "ledger": "docs/audits/security-sweep-2925-browser-grant.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: browser_grant.ts (#2925)",
+      "status": "swept",
+      "sweptAt": "1c32005e710bb1d61c4f175a386d16816be1a4b4",
+      "paths": [
+        "worker/deno/lib/browser_grant.ts"
+      ]
     }
   ],
   "roots": [
