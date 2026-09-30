@@ -298,20 +298,31 @@ Deno.test("decideLadderRung - the ladder climbs one rung per head sha", () => {
 
   assertEquals(decide(), { kind: "nudge" });
   // The nudge records the head it produced — here the scan is reading that
-  // same head back, because GitHub's verdict is still stale at it.
+  // same head back, because GitHub's verdict is still stale at it. With the
+  // rebase rung dropped (Issue #2842), abandon is the only rung left above
+  // the nudge.
   thread.push(comment(conflictNudgeMarker(OLD_HEAD)));
-  assertEquals(decide(), { kind: "rebase" });
-  assertEquals(decide(), { kind: "rebase" }, "a re-scan is not a second rung");
-
-  thread.push(comment(conflictRebaseMarker(OLD_HEAD, OLD_HEAD)));
   assertEquals(decide(), { kind: "abandon" });
-  assertEquals(decide(), { kind: "abandon" });
+  assertEquals(decide(), { kind: "abandon" }, "a re-scan is not a second rung");
 
   thread.push(comment(conflictRungFailedMarker("abandon", OLD_HEAD)));
   assertEquals(decide(), { kind: "wait", reason: "ladder-exhausted" });
 });
 
-Deno.test("decideLadderRung - a failed rebase rung is not retried at the same head", () => {
+Deno.test("decideLadderRung - a legacy rebase marker at the head decides abandon (Issue #2842)", () => {
+  // Threads from before the rebase rung was dropped may still carry one of
+  // these at the current head; it climbs to abandon exactly as a nudge would.
+  assertEquals(
+    decideLadderRung({
+      state: { rebasedHead: OLD_HEAD },
+      currentHead: OLD_HEAD,
+      mergeable: "CONFLICTING",
+    }),
+    { kind: "abandon" },
+  );
+});
+
+Deno.test("decideLadderRung - a legacy failed-rebase marker at the head decides abandon (Issue #2842)", () => {
   assertEquals(
     decideLadderRung({
       state: {
