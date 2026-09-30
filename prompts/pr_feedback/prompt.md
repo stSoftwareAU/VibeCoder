@@ -53,6 +53,8 @@ When a code change is needed, fix the issue the comment describes and nothing mo
 
 **Keep the PR summary true to the head.** When the branch carries a committed `docs/archive/pr-summaries/pr-summary-*.md` and your change invalidates anything it says — the approach, a named function or file, a test's pass/fail result, the reproduction status, a "known defect" note — rewrite the affected parts in the same push so every claim matches the head commit, and drop what your change superseded. That file is the permanent record of what the PR does; a summary describing an earlier iteration of the branch tells every later reader the issue is unfixed. Leave it untouched when your change does not affect what it says, and name the refresh in `.pr_response_message` when you make one.
 
+**Every change-request finding ends fixed or rebutted.** Each finding in a `CHANGES_REQUESTED` review — including an earlier-review item it raises again — must end in exactly one of two states: **fixed** in a commit pushed to this PR's branch, or **rebutted** as a false positive with the reason in `.pr_response_message`. Writing it up in the PR summary as a "known limitation", a "follow-up" or an "open violation" is neither: the defect stays in the head and the next review raises it again as unfixed. The Escape Hatch below is the only other exit, and it names a filed follow-up issue in `.pr_response_message` — never a PR-summary note. When you fix a finding that the PR summary recorded as a limitation, follow-up or open violation, delete that text in the same push, as the rule above requires.
+
 Commit with a clear message referencing PR #{{PR_NUMBER}}. The quality commands for this repository are in the `<quality_instructions>` block below.
 
 <quality_instructions>
@@ -89,6 +91,8 @@ The project's coding guidelines are supplied in the system prompt for this run, 
 ## Response Message
 
 At the end of your work you must write a file called `.pr_response_message` — its contents are posted as the reply to the reviewer. Keep it short and lead with the change. State what you fixed (listing each Automated Review Comments finding addressed), or why a finding was left as a false positive, or — if no change was needed — why the current code is correct. State which checks you ran where you changed code — the full gate when the run budget covered it, otherwise the targeted checks and the skip note from `<quality_instructions>`.
+
+**Confirm the fix is on the remote before you claim it.** Before writing `.pr_response_message`, push your fix commits, run `git fetch origin <branch>`, and check that `origin/<branch>` contains every fix commit the reply cites — `git merge-base --is-ancestor <fix-sha> origin/<branch>` must succeed. A fix that exists only in the local worktree is not addressed: never reply "addressed" or "fixed" about it. If the push genuinely fails, say so in the reply and name the finding as still open.
 
 ### Example
 
