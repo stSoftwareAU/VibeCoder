@@ -513,6 +513,10 @@ Deno.test("deriveIdleReason - the dominant deferral names a scanned fleet's reas
     deriveIdleReason([{ skipReason: "scanned", lowPrioritySuppressed: 2 }]),
     "low_priority_suppressed",
   );
+  assertEquals(
+    deriveIdleReason([{ skipReason: "scanned", workOnSuppressed: 2 }]),
+    "work_on_suppressed",
+  );
 });
 
 Deno.test("deriveIdleReason - an inversion outranks a deferral count", () => {

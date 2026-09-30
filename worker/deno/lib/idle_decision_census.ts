@@ -97,6 +97,18 @@
  * excluded solely by tier-3 suppression are surfaced per repo as
  * `low_priority_suppressed=<n>`.
  *
+ * **Work-on suppression by a PR-blocked top-priority issue** is a sibling
+ * per-repo rule the census also has to apply, not just model per-issue
+ * (Issue #2922). `selectHighestPriority`'s Priority 2 rule drops every
+ * `work-on` candidate whose repo+milestone stream matches a PR-blocked
+ * configured-label (`top-priority`) issue — the `blocked` entries
+ * `collect_label_candidates.ts` pushes. The census modelled `pr_blocked`
+ * per-issue but never applied it to the other tier's candidates, so
+ * `stSoftwareAU/GRQ-AutoTrader` logged `work_on=14 top_priority=0
+ * pr_blocked=2 inversion_signal=true` cycle after cycle for a backlog the
+ * scan was already correctly refusing. Issues excluded solely by this rule
+ * are surfaced per repo as `work_on_suppressed=<n>`.
+ *
  * **Run-local holds** are the same hole one step later in the pipeline
  * (Issue #655). Every gate above lives in a `collect_*_candidates.ts`;
  * `find_oldest_issue.ts` then drops each surviving candidate that
@@ -308,6 +320,13 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "needs-human": "upstream",
     // Modelled gates — the ones that have bitten.
     "milestone-occupied": "modelled",
+    // Issue #2922: `pr-blocked` also feeds a second, cross-tier rule —
+    // `selectHighestPriority`'s Priority 2 — where a PR-blocked
+    // `top-priority` issue suppresses `work-on` candidates sharing its
+    // repo+milestone stream. `countUnblocked` applies the same per-issue
+    // `isPrBlocked` check to the other tier's candidates and reports the
+    // result separately as `workOnSuppressed`, so this one `SkipReason`
+    // covers both the direct and the derived refusal.
     "pr-blocked": "modelled",
     "merged-pr-permanent": "modelled",
     // Issue #460 modelled the open-dependency half; Issue #2455 added the
@@ -710,6 +729,19 @@ export interface RepoCensusEntry {
    */
   lowPrioritySuppressed: number;
   /**
+   * Count of `work-on` issues that passed every per-issue gate but are not
+   * claimable this cycle because a PR-blocked `top-priority` issue occupies
+   * the same repo+milestone stream — `selectHighestPriority`'s Priority 2
+   * rule (`lib/issue_priority.ts`), fed by `collect_label_candidates.ts`'s
+   * `blocked` entries. Unmodelled, this read as claimable work on
+   * stSoftwareAU/GRQ-AutoTrader (`work_on=14 top_priority=0 pr_blocked=2`)
+   * cycle after cycle, filing a false idle-inversion issue for a backlog the
+   * scan was already correctly refusing (Issue #2922). Kept separate from
+   * {@link unblocked} so the deferral stays observable in the
+   * `[idle-census]` line.
+   */
+  workOnSuppressed: number;
+  /**
    * The issue numbers behind {@link RepoCensusEntry.unblocked}'s priority
    * counts, in issue order (Issue #460). The escalation body names them, so
    * a reader can see *which* issues the census and the scan disagree about
@@ -1076,6 +1108,7 @@ function countUnblocked(
   runLocalHold: number;
   claimRefused: number;
   lowPrioritySuppressed: number;
+  workOnSuppressed: number;
   claimableIssues: number[];
 } {
   const counts: UnblockedCounts = {
@@ -1104,6 +1137,37 @@ function countUnblocked(
     openIssueNumbers,
     openMilestones,
   );
+  // Issue #2922: `selectHighestPriority`'s Priority 2 rule drops every
+  // `work-on` candidate whose repo+milestone stream matches a PR-blocked
+  // `top-priority` issue (the `blocked` entries `collect_label_candidates.ts`
+  // pushes). Resolved once before the per-issue pass, mirroring the
+  // pre-computed `occupiedStreams` / `tierThreeSuppressed` gates above and
+  // applying the same stream-occupied and PR-blocked gates the loop itself
+  // uses, so a `top-priority` issue this census would otherwise count as
+  // `pr_blocked` suppresses the same streams here that it does in the scan.
+  const workOnSuppressingStreams = new Set<string>();
+  for (const issue of issues) {
+    if (!isUnblockedFor(issue, LABEL_DEFAULTS.topPriorityLabel)) continue;
+    if (
+      (blankStreamHeld && issue.milestone.trim() === "") ||
+      (occupiedStreams.has(issue.milestone) &&
+        !isStreamSharingTier(issue.labels, DEFAULT_STREAM_SHARING_TIERS))
+    ) {
+      continue;
+    }
+    if (
+      isPrBlocked(
+        issue,
+        openPRs,
+        pushCapableAuthors.length > 0
+          ? [workerUser, ...pushCapableAuthors]
+          : [],
+        fleetPrSlots,
+      )
+    ) {
+      workOnSuppressingStreams.add(issue.milestone);
+    }
+  }
   let prBlocked = 0;
   let streamOccupied = 0;
   let mergedPrBlocked = 0;
@@ -1111,6 +1175,7 @@ function countUnblocked(
   let runLocalHold = 0;
   let claimRefused = 0;
   let lowPrioritySuppressed = 0;
+  let workOnSuppressed = 0;
   for (const issue of issues) {
     // Idle-task claiming is gated by repo busyness, not by
     // getBlockingPRForIssue, so its count ignores PR blocking. Issue #655:
@@ -1212,6 +1277,17 @@ function countUnblocked(
       lowPrioritySuppressed += 1;
       continue;
     }
+    // Issue #2922: mirrors `selectHighestPriority`'s Priority 2 rule — a
+    // PR-blocked `top-priority` issue suppresses `work-on` candidates in the
+    // same stream. An issue also carrying `top-priority` is a tier-1
+    // candidate in its own right and is unaffected.
+    if (
+      isWorkOn && !isTopPriority &&
+      workOnSuppressingStreams.has(issue.milestone)
+    ) {
+      workOnSuppressed += 1;
+      continue;
+    }
     claimableIssues.push(issue.number);
     if (isTopPriority) counts.topPriority += 1;
     if (isWorkOn) counts.workOn += 1;
@@ -1226,6 +1302,7 @@ function countUnblocked(
     runLocalHold,
     claimRefused,
     lowPrioritySuppressed,
+    workOnSuppressed,
     claimableIssues,
   };
 }
@@ -1312,6 +1389,7 @@ export function buildIdleDecisionCensus(opts: {
       runLocalHold,
       claimRefused,
       lowPrioritySuppressed,
+      workOnSuppressed,
       claimableIssues,
     } = countUnblocked(
       input.issues,
@@ -1351,6 +1429,7 @@ export function buildIdleDecisionCensus(opts: {
       runLocalHold,
       claimRefused,
       lowPrioritySuppressed,
+      workOnSuppressed,
       claimableIssues,
       inversionSignal,
     });
@@ -1458,6 +1537,7 @@ export function formatIdleDecisionCensus(
         `run_local_hold=${r.runLocalHold} ` +
         `claim_refused=${r.claimRefused} ` +
         `low_priority_suppressed=${r.lowPrioritySuppressed} ` +
+        `work_on_suppressed=${r.workOnSuppressed} ` +
         `inversion_signal=${r.inversionSignal}`,
     );
   }

@@ -900,7 +900,9 @@ flowchart LR
     RD -- "yes: claim_refused+1" --> T
     R -- no --> T{"low-priority, and the repo<br/>holds a suppressing work-on issue?"}
     T -- yes --> TS["low_priority_suppressed+1"]
-    T -- no --> U["unblocked+1<br/>→ inversion signal"]
+    T -- no --> W{"work-on, and a PR-blocked<br/>top-priority issue shares<br/>its stream?"}
+    W -- yes --> WS["work_on_suppressed+1"]
+    W -- no --> U["unblocked+1<br/>→ inversion signal"]
 ```
 
 Before Issue #3852 the census skipped the occupancy gate, so every sibling of an
@@ -1078,6 +1080,21 @@ suppression signal, and the census mirrors both carve-outs — a `work-on` issue
 blocked only by an open dependency (Issue #2610) or permanently by a merged PR
 (Issue #499) does not suppress, while every self-clearing blocker (open PR,
 occupied stream, closed-unmerged cooldown) still does.
+
+The **stream-level work-on suppression** gate (Issue #2922) closes a sibling
+hole in the same rule, running immediately after the tier-3 gate above.
+`selectHighestPriority`'s "Priority 2: PR-blocked configured-label issues
+suppress work-on in the same repo+milestone" rule (`issue_priority.ts`) drops
+every `work-on` candidate sharing a repo+milestone stream with a `top-priority`
+issue that is PR-blocked and carries no trusted `ignore-open-prs`. The census
+never modelled it, so `stSoftwareAU/GRQ-AutoTrader` logged
+`work_on=14 top_priority=0 pr_blocked=2 inversion_signal=true` on three cycles
+and filed a false idle-inversion issue (#2922): all 14 `work-on` issues and
+the 2 PR-blocked `top-priority` issues sat in the no-milestone stream. A
+`work-on` issue (not also `top-priority`) whose milestone stream holds a
+PR-blocked `top-priority` issue that passed the stream-occupied gate is now
+counted as `work_on_suppressed` instead of claimable; an issue carrying both
+labels is unaffected.
 
 Repeated misses are a pattern, not accidents, so the gate list is now checked
 by the compiler. `SKIP_REASONS` in `issue_finder_logger.ts` is a runtime tuple

@@ -71,6 +71,12 @@ export type FleetIdleReason =
   | "pr_blocked"
   /** Every candidate was a `low-priority` issue a `work-on` suppressed. */
   | "low_priority_suppressed"
+  /**
+   * Every candidate was a `work-on` issue `selectHighestPriority` parked
+   * because a PR-blocked top-priority issue held its repo+milestone stream
+   * (Issue #2922).
+   */
+  | "work_on_suppressed"
   /** Non-busy remainder of a cycle that did claim and serve work. */
   | "served"
   /** Paused on a GitHub rate limit. */
@@ -220,6 +226,11 @@ export interface CensusReasonInput {
   streamOccupied?: number;
   runLocalHold?: number;
   lowPrioritySuppressed?: number;
+  /**
+   * `work-on` issues `selectHighestPriority` parked because a PR-blocked
+   * top-priority issue held their repo+milestone stream (Issue #2922).
+   */
+  workOnSuppressed?: number;
 }
 
 /** Failure class recorded when the caller could not name one. */
@@ -655,6 +666,7 @@ const DEFERRAL_REASONS: ReadonlyArray<
   ["prBlocked", "pr_blocked"],
   ["runLocalHold", "cooldown_local"],
   ["lowPrioritySuppressed", "low_priority_suppressed"],
+  ["workOnSuppressed", "work_on_suppressed"],
 ];
 
 /**
