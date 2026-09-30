@@ -6,7 +6,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
 import {
   buildMilestoneSummaryBody,
   checkAndHandleMilestoneCompletions,
@@ -22,6 +22,8 @@ import {
   selectDuplicateTrackersToClose,
 } from "../lib/milestone_completion.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
+import { _resetBaseProtectionMemo } from "../lib/pr_auto_merge.ts";
+import { partialRollupMarker } from "../lib/milestone_partial_rollup.ts";
 
 /**
  * Issue #1246: a tracking-shaped title is only a candidate — the fleet's own
@@ -2610,4 +2612,358 @@ Deno.test("Issue #3908 - an unreadable authoritative count vetoes rather than pa
   assertEquals(result.ok, true);
   assertEquals(writes, []);
   assertStringIncludes(logs.join("\n"), "refusing to finalise");
+});
+
+// ============================================================================
+// Milestone deadlock: partial rollup wiring (Issue #2835)
+// ============================================================================
+
+const DEADLOCK_REPO = "owner/repo";
+
+/** A FilterableIssue-shaped open issue for the deadlock graph fixtures. */
+function deadlockOpenIssue(
+  number: number,
+  milestoneTitle: string,
+  body: string,
+) {
+  return {
+    number,
+    title: `Issue #${number}`,
+    assignees: [],
+    labels: [],
+    createdAt: "2024-01-01T00:00:00Z",
+    milestone: { title: milestoneTitle },
+    author: { login: "alice" },
+    url: `https://github.com/owner/repo/issues/${number}`,
+    body,
+  };
+}
+
+/**
+ * GRQ-AutoTrader-shaped deadlock: #1459 (milestone "Crates API") depends on
+ * closed #1456 (milestone "Web src"); #1460 and #1461 (both "Web src")
+ * transitively depend on #1459. "Web src" is deadlocked — it cannot close
+ * until #1459 lands, and #1459 is held behind #1456 in "Web src" itself.
+ */
+const DEADLOCK_OPEN_ISSUES = [
+  deadlockOpenIssue(1459, "Crates API", "Depends on #1456"),
+  deadlockOpenIssue(1460, "Web src", "Depends on #1459"),
+  deadlockOpenIssue(1461, "Web src", "Depends on #1460"),
+];
+const DEADLOCK_CLOSED_ISSUES = [
+  { number: 1456, title: "Closed dependency", milestone: { title: "Web src" } },
+];
+const DEADLOCK_SHA = "abcdef1234567890abcdef1234567890abcdef12";
+const DEADLOCK_SNAPSHOT_PREFIX = "partial-rollup/web-src-abcdef1";
+
+interface DeadlockScenarioOptions {
+  openPartialRollupPrs?: unknown[];
+  behindBy?: number;
+  aheadBy?: number;
+  /** Files the milestone tip changes against default (compare `.files`). */
+  filesChanged?: number;
+  mergedPartialRollupPrs?: unknown[];
+  gitRefThrows?: boolean;
+}
+
+/**
+ * Scripted `gh` for both open milestones "Crates API" (#1) and "Web src"
+ * (#2), incomplete (so the normal per-milestone path does nothing), plus the
+ * partial-rollup calls the deadlock scan drives afterwards.
+ */
+function scriptDeadlockGh(
+  options: DeadlockScenarioOptions = {},
+): { gh: (args: string[]) => Promise<string>; calls: string[][] } {
+  const calls: string[][] = [];
+  const behindBy = options.behindBy ?? 0;
+  const aheadBy = options.aheadBy ?? 3;
+  const filesChanged = options.filesChanged ?? 5;
+  const mergedPartialRollupPrs = options.mergedPartialRollupPrs ?? [];
+  const openPartialRollupPrs = options.openPartialRollupPrs ?? [];
+
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const key = args.join(" ");
+
+    if (key.includes("api") && /\/milestones$/.test(key)) {
+      return Promise.resolve(
+        JSON.stringify([
+          { title: "Crates API", number: 1 },
+          { title: "Web src", number: 2 },
+        ]),
+      );
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return Promise.resolve("main");
+    }
+    if (key.includes("issue list") && key.includes("--state open")) {
+      return Promise.resolve(JSON.stringify(DEADLOCK_OPEN_ISSUES));
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return Promise.resolve(JSON.stringify(DEADLOCK_CLOSED_ISSUES));
+    }
+    // Partial-rollup idempotency check.
+    if (
+      key.includes("pr list") && key.includes("--state open") &&
+      key.includes("vibe-partial-rollup")
+    ) {
+      return Promise.resolve(JSON.stringify(openPartialRollupPrs));
+    }
+    if (
+      key.includes("pr list") && key.includes("--state merged") &&
+      key.includes("vibe-partial-rollup")
+    ) {
+      return Promise.resolve(JSON.stringify(mergedPartialRollupPrs));
+    }
+    if (
+      key.includes("api") && key.includes("/git/ref/heads/milestone/web-src")
+    ) {
+      if (options.gitRefThrows) {
+        return Promise.reject(new Error("Not Found (HTTP 404)"));
+      }
+      return Promise.resolve(`${DEADLOCK_SHA}\n`);
+    }
+    if (key.includes("api") && key.includes("/compare/main...")) {
+      return Promise.resolve(
+        JSON.stringify({
+          behind_by: behindBy,
+          ahead_by: aheadBy,
+          files: filesChanged,
+        }),
+      );
+    }
+    if (
+      key.includes("-X") && key.includes("POST") && key.includes("/git/refs")
+    ) {
+      return Promise.resolve("{}");
+    }
+    if (key.includes("pr create")) {
+      return Promise.resolve(`https://github.com/${DEADLOCK_REPO}/pull/501`);
+    }
+    // Arming path (Issue #4375 base protection, then `pr merge --auto`).
+    if (key.includes("/rules/branches/")) {
+      return Promise.resolve("required_status_checks");
+    }
+    if (key.includes("pr merge")) {
+      return Promise.resolve("");
+    }
+    if (key.includes("pr comment")) return Promise.resolve("");
+    if (key.includes("/comments")) return Promise.resolve("[]");
+    return Promise.resolve("[]");
+  };
+  return { gh, calls };
+}
+
+function prCreateCalls(calls: string[][]): string[][] {
+  return calls.filter((a) => a[0] === "pr" && a[1] === "create");
+}
+function refPostCalls(calls: string[][]): string[][] {
+  return calls.filter((a) =>
+    a[0] === "api" && a[1] === "-X" && a[2] === "POST" &&
+    (a[3] ?? "").includes("/git/refs")
+  );
+}
+function mergeAutoCalls(calls: string[][]): string[][] {
+  return calls.filter((a) =>
+    a[0] === "pr" && a[1] === "merge" && a.includes("--auto")
+  );
+}
+
+Deno.test("milestone deadlock rollup - a deadlock raises a partial rollup and arms it", async () => {
+  _resetBaseProtectionMemo();
+  const { gh, calls } = scriptDeadlockGh();
+  const logs: string[] = [];
+  const deps = createMockDeps({ ghCommandFn: gh, log: (m) => logs.push(m) });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.summaryPrsCreated, 0);
+
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  const created = creates[0]!;
+  const head = created[created.indexOf("--head") + 1]!;
+  const base = created[created.indexOf("--base") + 1]!;
+  const body = created[created.indexOf("--body") + 1]!;
+  assertStringIncludes(head, "partial-rollup/web-src-");
+  assertEquals(base, "main");
+  assertFalse(/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*#\d/i.test(body));
+  assertStringIncludes(body, partialRollupMarker("Web src"));
+
+  const merges = mergeAutoCalls(calls);
+  assertEquals(merges.length, 1);
+  assertEquals(merges[0]!.includes("501"), true);
+
+  // No summary PR / tracking issue for either milestone — both remain
+  // incomplete, and this was a partial rollup, not a full one.
+  assertEquals(calls.some((a) => a[0] === "issue" && a[1] === "create"), false);
+});
+
+Deno.test("milestone deadlock rollup - an open partial rollup is reused, not recreated", async () => {
+  _resetBaseProtectionMemo();
+  const { gh, calls } = scriptDeadlockGh({
+    openPartialRollupPrs: [
+      {
+        number: 601,
+        headRefName: `${DEADLOCK_SNAPSHOT_PREFIX}`,
+        headRefOid: DEADLOCK_SHA,
+        body: partialRollupMarker("Web src"),
+        author: { login: "bot" },
+      },
+    ],
+  });
+  const deps = createMockDeps({ ghCommandFn: gh });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(refPostCalls(calls).length, 0);
+});
+
+Deno.test("milestone deadlock rollup - a milestone behind default is deferred, not rolled up", async () => {
+  _resetBaseProtectionMemo();
+  const { gh, calls } = scriptDeadlockGh({ behindBy: 3 });
+  const logs: string[] = [];
+  const deps = createMockDeps({ ghCommandFn: gh, log: (m) => logs.push(m) });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(refPostCalls(calls).length, 0);
+  assertStringIncludes(logs.join("\n"), "behind");
+});
+
+Deno.test("milestone deadlock rollup - a deadlock still present after its partial rollup merged and synced raises no empty rollup", async () => {
+  _resetBaseProtectionMemo();
+  // The earlier partial rollup squash-merged and the sync landed it back into
+  // the milestone: level with main, 4 commits ahead, no file changes.
+  const { gh, calls } = scriptDeadlockGh({
+    behindBy: 0,
+    aheadBy: 4,
+    filesChanged: 0,
+    mergedPartialRollupPrs: [
+      {
+        number: 601,
+        headRefName: "partial-rollup/web-src-1234567",
+        headRefOid: "1234567000000000000000000000000000000000",
+        body: partialRollupMarker("Web src"),
+        author: { login: "bot" },
+      },
+    ],
+  });
+  const deps = createMockDeps({ ghCommandFn: gh });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(refPostCalls(calls).length, 0);
+  assertEquals(prCreateCalls(calls).length, 0);
+  assertEquals(mergeAutoCalls(calls).length, 0);
+});
+
+Deno.test("milestone deadlock rollup - a failed partial rollup for one milestone does not abort the scan", async () => {
+  _resetBaseProtectionMemo();
+  const { gh } = scriptDeadlockGh({ gitRefThrows: true });
+  const logs: string[] = [];
+  const deps = createMockDeps({ ghCommandFn: gh, log: (m) => logs.push(m) });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+  assertStringIncludes(logs.join("\n"), "WARNING");
+});
+
+Deno.test("milestone deadlock rollup - the final rollup still fires after a merged partial rollup, with no new partial rollup", async () => {
+  _resetBaseProtectionMemo();
+  const MILESTONE = "Web src";
+  const BRANCH = "milestone/web-src";
+  const closedIssues = [
+    {
+      number: 1456,
+      title: "Closed dependency",
+      milestone: { title: MILESTONE },
+    },
+    { number: 1460, title: "Landed work", milestone: { title: MILESTONE } },
+    {
+      number: 1461,
+      title: "More landed work",
+      milestone: { title: MILESTONE },
+    },
+  ];
+  // The deadlock's earlier partial rollup, now merged.
+  const mergedPartialRollup = [{
+    number: 601,
+    headRefName: "partial-rollup/web-src-abcdef1",
+    headRefOid: DEADLOCK_SHA,
+    body: partialRollupMarker(MILESTONE),
+    author: { login: "bot" },
+  }];
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const key = args.join(" ");
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return Promise.resolve(authoritative);
+
+    if (key.includes("api") && /\/milestones$/.test(key)) {
+      return Promise.resolve(
+        JSON.stringify([{ title: MILESTONE, number: 2 }]),
+      );
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return Promise.resolve("main");
+    }
+    // No open issues remain anywhere — the milestone is complete, and the
+    // deadlock scan finds nothing to hold.
+    if (key.includes("issue list") && key.includes("--state open")) {
+      return Promise.resolve("[]");
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return Promise.resolve(JSON.stringify(closedIssues));
+    }
+    // The partial rollup's own idempotency search — merged, and no open one.
+    if (key.includes("pr list") && key.includes("vibe-partial-rollup")) {
+      return Promise.resolve(
+        key.includes("--state merged")
+          ? JSON.stringify(mergedPartialRollup)
+          : "[]",
+      );
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return Promise.resolve("[]");
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return Promise.resolve(JSON.stringify({ name: BRANCH }));
+    }
+    if (key.includes("api") && key.includes("/compare/")) {
+      return Promise.resolve(JSON.stringify({ ahead_by: 5, behind_by: 0 }));
+    }
+    if (key.includes("issue create")) {
+      return Promise.resolve(`https://github.com/owner/repo/issues/900`);
+    }
+    if (key.includes("pr create")) {
+      return Promise.resolve(`https://github.com/owner/repo/pull/501`);
+    }
+    if (key.includes("issue close")) return Promise.resolve("");
+    if (key.includes("/rules/branches/")) {
+      return Promise.resolve("required_status_checks");
+    }
+    if (key.includes("pr merge")) return Promise.resolve("");
+    if (key.includes("pr comment")) return Promise.resolve("");
+    if (key.includes("/comments")) return Promise.resolve("[]");
+    return Promise.resolve("[]");
+  };
+  const deps = createMockDeps({ ghCommandFn: gh });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.summaryPrsCreated, 1);
+
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  const created = creates[0]!;
+  assertEquals(created[created.indexOf("--head") + 1], BRANCH);
+  assertEquals(created[created.indexOf("--base") + 1], "main");
+  assertEquals(refPostCalls(calls).length, 0);
 });

@@ -355,10 +355,10 @@ bash `worker/run_core.sh` conductor. It sequences:
    rate-limit pre-flight per sweep, a stop at the first primary-quota
    refusal — reported as one skipped sweep that resumes next cycle, never as
    one failure per repository — the shared `.gh-scan-cache` and
-   `.gh-timeline-cache` on the work volume, and its own watermark
-   (`merged_issue_sweep_watermarks.json`) that advances only past PRs it
-   closed or ruled out for good, so what it left open is reconsidered next
-   cycle.
+   `.gh-timeline-cache` on the work volume, and its own processed set
+   (`merged_issue_sweep_watermarks.json`, Issue #2833) that records only the
+   PRs it closed or ruled out for good, so what it left open — or a PR merged
+   out of number order — is reconsidered next cycle.
 
 ```mermaid
 flowchart TD
@@ -4262,7 +4262,19 @@ consequences are worth naming:
   still merges — what is lost is the pacing, not the branch. The default tip is
   read **before** the count, because reading it is what fetches it: counting
   against a stale `origin/<default>` would answer "level" for a branch that is
-  behind, which is the very defect this gate exists to stop.
+  behind, which is the very defect this gate exists to stop. A count that
+  fails on git's `ignoring broken ref refs/remotes/origin/<branch>` warning is
+  repaired once — the named ref is deleted and re-fetched, one log line names
+  it, and the count is retried once — and still failing falls into the same
+  deferral. The PR comment then says how far behind the branch is "could not
+  be measured" and quotes git's reason, rather than claiming the branch is
+  still behind (Issue #2824). The longest-behind-first sweep
+  ([milestone_behind_count.ts](../worker/deno/lib/milestone_behind_count.ts))
+  fetches the milestone's own tracking ref before it counts, and a broken
+  `origin/<default>` fails that fetch first (`fatal: bad object
+  refs/remotes/origin/<default>`). A failed fetch therefore still runs the
+  repairing count; when it repairs a ref, the fetch is run again before the
+  branch is counted, and when it repairs nothing the fetch failure stands.
 - **Only a charged failure spends the budget.** A conflict every granted rung
   left undecided is charged; a ruleset-refused push, a merge-gate refusal or
   any other `not-charged` verdict is not — charging the branch for a fault that

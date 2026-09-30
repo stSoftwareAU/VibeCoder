@@ -449,6 +449,7 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "### How to open that PR — declare it; the worker opens it",
   "### Nor is your own pull request",
   "### Parallel Tool Calls",
+  "### Path Confinement",
   "### Playwright MCP (Container Headless Browser)",
   "### Release-gating after the dependency PR is open",
   "### Resolving action SHAs",

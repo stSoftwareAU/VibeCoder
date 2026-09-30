@@ -24,8 +24,11 @@ import type { Logger } from "../types.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildRollbackMarker } from "../lib/milestone_rollback_marker.ts";
 import {
-  loadSweepWatermarks,
+  emptyProcessedSweepState,
+  loadProcessedSweepState,
+  markProcessed,
   mergedIssueSweepWatermarkPath,
+  saveProcessedSweepState,
 } from "../lib/merged_sweep_watermark.ts";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +92,8 @@ interface GhWorld {
   failingIssueRepos?: string[];
   /** Repos whose issue list fetch is refused for want of GraphQL quota. */
   rateLimitedRepos?: string[];
+  /** Repos whose `issue close` is refused for want of quota (Issue #2833). */
+  rateLimitedCloseRepos?: string[];
 }
 
 interface GhCalls {
@@ -178,6 +183,9 @@ function makeGh(world: GhWorld, calls: GhCalls) {
     }
 
     if (args[0] === "issue" && args[1] === "close") {
+      if (world.rateLimitedCloseRepos?.includes(repo)) {
+        return Promise.reject(new Error(RATE_LIMIT_MESSAGE));
+      }
       const commentIndex = args.indexOf("--comment");
       calls.closes.push({
         issue: args[2] ?? "",
@@ -701,7 +709,19 @@ Deno.test("sweepMergedPrIssues - reads the issue and PR lists through the shared
   }
 });
 
-Deno.test("sweepMergedPrIssues - the watermark skips a PR already swept, without a call (Issue #1477)", async () => {
+/** Seed a processed-set file with `numbers` recorded for each repo. */
+async function seedProcessed(
+  path: string,
+  repos: Record<string, number[]>,
+): Promise<void> {
+  let state = emptyProcessedSweepState();
+  for (const [repo, numbers] of Object.entries(repos)) {
+    for (const n of numbers) state = markProcessed(state, repo, n);
+  }
+  await saveProcessedSweepState(path, state);
+}
+
+Deno.test("sweepMergedPrIssues - a processed PR is skipped without a call, and a re-sweep is idempotent (Issue #1477, #2833)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "merged-sweep-mark-" });
   try {
     const watermarkPath = mergedIssueSweepWatermarkPath(dir);
@@ -714,7 +734,11 @@ Deno.test("sweepMergedPrIssues - the watermark skips a PR already swept, without
       isQuotaLatchedFn: () => false,
     });
     assertEquals(one.closed, 1);
-    assertEquals(await loadSweepWatermarks(watermarkPath), { "org/repo": 49 });
+    assertEquals(await loadProcessedSweepState(watermarkPath), {
+      version: 2,
+      repos: { "org/repo": { processed: [49] } },
+    });
+    const bytes = await Deno.readTextFile(watermarkPath);
 
     // The stale list still shows #48 open; the sweep must not re-spend on it.
     const second: GhCalls = { closes: [], all: [] };
@@ -724,19 +748,68 @@ Deno.test("sweepMergedPrIssues - the watermark skips a PR already swept, without
       isQuotaLatchedFn: () => false,
     });
     assertEquals(two.candidates, 0);
-    assertEquals(two.belowWatermark, 1);
+    assertEquals(two.alreadyProcessed, 1);
     assertEquals(second.closes, []);
     assert(
       !second.all?.some((a) => a[0] === "pr" && a[1] === "view"),
-      "a PR below the watermark is not looked at again",
+      "a processed PR is not looked at again",
     );
-    assertStringIncludes(two.message, "1 below watermark");
+    assertStringIncludes(two.message, "1 already processed");
+    assertEquals(await Deno.readTextFile(watermarkPath), bytes);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("sweepMergedPrIssues - the watermark holds back on what the sweep left open (Issue #1477)", async () => {
+Deno.test("sweepMergedPrIssues - a PR merged out of number order is still swept (Issue #2833)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-order-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    // #200 was processed on an earlier cycle; #150 merged after it.
+    await seedProcessed(watermarkPath, { "org/repo": [200] });
+    const world = landedWorld({
+      issues: [{
+        number: 148,
+        title: "Late fix target",
+        labels: ["bug"],
+        createdAt: "2026-08-26T00:00:00Z",
+      }],
+      prs: [
+        {
+          number: 200,
+          title: "Earlier merge",
+          mergedAt: "2026-08-28T04:55:00Z",
+          closedAt: "2026-08-28T04:55:00Z",
+          mergeCommit: "0ddba11",
+        },
+        {
+          number: 150,
+          title: "Fix the late target (Issue #148)",
+          mergedAt: "2026-08-29T04:55:00Z",
+          closedAt: "2026-08-29T04:55:00Z",
+          mergeCommit: "f00dcafe",
+        },
+      ],
+    });
+
+    const calls: GhCalls = { closes: [], all: [] };
+    const result = await sweepMergedPrIssues(baseOptions({ watermarkPath }), {
+      ghCommandFn: makeGh(world, calls),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+    });
+    assertEquals(result.closed, 1);
+    assertEquals(calls.closes.map((c) => c.issue), ["148"]);
+    assertEquals(await loadProcessedSweepState(watermarkPath), {
+      version: 2,
+      repos: { "org/repo": { processed: [150, 200] } },
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - a PR the sweep left open stays unrecorded (Issue #1477, #2833)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "merged-sweep-hold-" });
   try {
     const watermarkPath = mergedIssueSweepWatermarkPath(dir);
@@ -774,14 +847,16 @@ Deno.test("sweepMergedPrIssues - the watermark holds back on what the sweep left
       isQuotaLatchedFn: () => false,
     });
     assertEquals(result.closed, 0);
-    // Window reaches #60, but #49 was left open, so the mark stops at 48.
-    assertEquals(await loadSweepWatermarks(watermarkPath), { "org/repo": 48 });
+    assertEquals(await loadProcessedSweepState(watermarkPath), {
+      version: 2,
+      repos: { "org/repo": { processed: [60] } },
+    });
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("sweepMergedPrIssues - a quota stop never advances the interrupted repo's watermark (Issue #1477)", async () => {
+Deno.test("sweepMergedPrIssues - a quota stop between repos records nothing for the refused repo (Issue #1477)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "merged-sweep-quota-mark-" });
   try {
     const watermarkPath = mergedIssueSweepWatermarkPath(dir);
@@ -795,8 +870,111 @@ Deno.test("sweepMergedPrIssues - a quota stop never advances the interrupted rep
         isQuotaLatchedFn: () => false,
       },
     );
-    // The swept repo's progress is kept; the refused one has no mark.
-    assertEquals(await loadSweepWatermarks(watermarkPath), { "org/repo": 49 });
+    // The swept repo's progress is kept; the refused one has no entry.
+    assertEquals(await loadProcessedSweepState(watermarkPath), {
+      version: 2,
+      repos: { "org/repo": { processed: [49] } },
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - a quota stop mid-repo leaves the unreached PRs unmarked (Issue #2833)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-quota-mid-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    // #7 is out of today's window: a completed repo would prune it.
+    await seedProcessed(watermarkPath, { "org/limited": [7] });
+    const world = landedWorld({
+      issues: [
+        { number: 48, labels: ["bug"], createdAt: "2026-08-26T00:00:00Z" },
+        { number: 50, labels: ["bug"], createdAt: "2026-08-26T00:00:00Z" },
+      ],
+      prs: [
+        {
+          number: 49,
+          title: "Fix (Issue #48)",
+          mergedAt: "2026-08-28T04:55:00Z",
+          closedAt: "2026-08-28T04:55:00Z",
+          mergeCommit: "f00dcafe",
+        },
+        {
+          number: 51,
+          title: "Fix (Issue #50)",
+          mergedAt: "2026-08-28T05:55:00Z",
+          closedAt: "2026-08-28T05:55:00Z",
+          mergeCommit: "0ddba11",
+        },
+      ],
+      rateLimitedCloseRepos: ["org/limited"],
+    });
+
+    const calls: GhCalls = { closes: [], all: [] };
+    const result = await sweepMergedPrIssues(
+      baseOptions({ repos: ["org/repo", "org/limited"], watermarkPath }),
+      {
+        ghCommandFn: makeGh(world, calls),
+        logger: makeLogger(),
+        isQuotaLatchedFn: () => false,
+      },
+    );
+    assertStringIncludes(result.quotaExhausted ?? "", "rate limit");
+    // org/repo completed; org/limited stopped at its first close, so neither
+    // of its PRs is recorded and its old entry is neither pruned nor grown.
+    assertEquals(await loadProcessedSweepState(watermarkPath), {
+      version: 2,
+      repos: {
+        "org/limited": { processed: [7] },
+        "org/repo": { processed: [49, 51] },
+      },
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - a failed fetch leaves the state file unchanged (Issue #2833)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-fetch-fail-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    // #7 is out of the window: a prune would drop it.
+    await seedProcessed(watermarkPath, { "org/repo": [7] });
+    const before = await Deno.readTextFile(watermarkPath);
+    const world = landedWorld({ failingIssueRepos: ["org/repo"] });
+
+    const calls: GhCalls = { closes: [], all: [] };
+    const result = await sweepMergedPrIssues(baseOptions({ watermarkPath }), {
+      ghCommandFn: makeGh(world, calls),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+    });
+    assertEquals(result.failures.length, 1);
+    assertEquals(await Deno.readTextFile(watermarkPath), before);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweepMergedPrIssues - a legacy v1 watermark file reads as empty and the window is caught up (Issue #2833)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "merged-sweep-v1-" });
+  try {
+    const watermarkPath = mergedIssueSweepWatermarkPath(dir);
+    // The v1 mark would have skipped #49; the v2 store ignores it.
+    await Deno.writeTextFile(watermarkPath, '{ "org/repo": 49 }\n');
+
+    const calls: GhCalls = { closes: [], all: [] };
+    const result = await sweepMergedPrIssues(baseOptions({ watermarkPath }), {
+      ghCommandFn: makeGh(landedWorld(), calls),
+      logger: makeLogger(),
+      isQuotaLatchedFn: () => false,
+    });
+    assertEquals(result.alreadyProcessed, 0);
+    assertEquals(calls.closes.map((c) => c.issue), ["48"]);
+    assertEquals(await loadProcessedSweepState(watermarkPath), {
+      version: 2,
+      repos: { "org/repo": { processed: [49] } },
+    });
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

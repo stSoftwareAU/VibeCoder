@@ -212,6 +212,21 @@ every surface that mentions it — README, `docs/`, operator manuals, prompt
 templates, and agent instructions — in the same change. Do it before the commit,
 not after a reviewer finds it weeks later.
 
+- Changing the **behaviour or meaning** of an existing function, field,
+  setting or endpoint while keeping its name also owes a docs change — the
+  rename rule alone misses it, because there is no old name to grep for.
+- Grep for the **unchanged name**, then re-read every hit — including the doc
+  comment directly above the changed code and the prose beside any example you
+  updated — and fix any that still describe the old behaviour.
+- Updating an example alone is not enough: if the surrounding prose still
+  describes the old contract, the doc is still stale.
+- When a change alters what an existing **state, enum variant, field or value**
+  means — even though its name stays — find every place that **renders or
+  explains** it: API response strings and labels, reason and stage sentences,
+  UI copy, and the docs prose for those fields. Make each one true for **every
+  case** the new behaviour produces, not only the common one. Grep for the
+  variant or field name **and** for the old wording.
+
 ## Visual Documentation
 
 A picture tells a thousand words — favour diagrams over long prose where they
@@ -278,6 +293,34 @@ is non-trivial):
       to user-facing responses.
 - [ ] **Dependencies**: Any new third-party dependency is pinned, came from a
       trusted source, and has been recently maintained.
+- [ ] **Path confinement**: Every new path guard resolves the path fully
+      before checking and has negative `..` and symlink tests.
+
+### Path Confinement
+
+Guards that confine a path to, or keep it out of, a directory keep missing
+`..` traversal because they check a partly resolved path.
+
+- **Resolve fully, then check — in this order.** (1) Join the path to the
+  working directory; (2) normalise or reject every `..` and `.` segment of the
+  whole joined path, including any tail that does not exist yet; (3)
+  canonicalise the longest existing prefix of the *normalised* path
+  (following symlinks); (4) only then compare it against the allowed or
+  forbidden directory, and act on the path you checked, not the original
+  string. Canonicalising first and normalising the tail afterwards lets
+  `<dir>/missing/../link/file` collapse to `<dir>/link/file` after the
+  symlink check has run, so a `link` pointing outside still escapes.
+- **Allow-list identifiers that become path segments.** Refs, names and IDs
+  joined into a path need their own allow-list validator that rejects `..`,
+  `/` and absolute paths, rather than reusing an existing validator written
+  for another purpose (e.g. a git-ref check).
+- **Negative tests are part of the guard.** Ship tests for `..` traversal —
+  including `..` after a not-yet-existing component — and, on Unix, a
+  symlink into the protected directory, plus the combined case: `..` after
+  a not-yet-existing component that lands on a symlink pointing out
+  (`<dir>/missing/../link/file`).
+- **Do not claim a traversal case is impossible** in a PR summary unless a
+  test proves it.
 
 <!-- /guidelines-layer -->
 

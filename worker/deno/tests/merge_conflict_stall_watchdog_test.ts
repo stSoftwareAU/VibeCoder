@@ -18,15 +18,15 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import type { Logger, Result } from "../types.ts";
+import type { Logger } from "../types.ts";
 import {
   buildConflictStallComment,
-  CONFLICT_STALL_SUMMARY,
+  CONFLICT_STALL_REPAIR_MARKER,
   type ConflictStallObservation,
   DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS,
   detectConflictQueueStall,
-  escalateConflictQueueStall,
   listedOpenPrs,
+  repairConflictQueueStall,
   scanConflictQueueStalls,
 } from "../lib/merge_conflict_stall_watchdog.ts";
 import {
@@ -35,12 +35,18 @@ import {
   CONFLICT_RESOLVED_MARKER,
   MERGE_CONFLICT_LABEL,
 } from "../lib/pr_merge_conflict_scan.ts";
-import { conflictParkedMarker } from "../lib/merge_conflict_markers.ts";
 import {
-  ESCALATED_AS_WORK_LABEL,
-  type WorkEscalation,
-  workEscalationMarker,
-} from "../lib/escalate_as_work.ts";
+  conflictParkedMarker,
+  conflictRungFailedMarker,
+} from "../lib/merge_conflict_markers.ts";
+import {
+  type AbandonRestartDeps,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+  conflictRestartMarker,
+} from "../lib/conflict_abandon_restart.ts";
+import type { ConflictIssueContext } from "../lib/conflict_issue_context.ts";
+import type { RepoLease } from "../lib/maintenance_lane.ts";
 
 const HOUR = 3600_000;
 const NOW = Date.parse("2026-09-05T09:00:00Z");
@@ -198,12 +204,12 @@ Deno.test("detectConflictQueueStall - a conclusion starts a fresh clock", () => 
   );
 });
 
-Deno.test("detectConflictQueueStall - an escalation before the last conclusion does not suppress", () => {
-  // The previous stall was escalated, an attempt then concluded, and the queue
-  // stopped again: that is a new stall, and it gets its own escalation.
+Deno.test("detectConflictQueueStall - a trip before the last conclusion does not suppress", () => {
+  // The previous stall was tripped, an attempt then concluded, and the queue
+  // stopped again: that is a new stall, and it gets its own repair.
   const stall = detect(
     observation(30, [
-      comment(`${workEscalationMarker(REPO, PR)}\nstalled`, 20),
+      comment(`${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->\nstalled`, 20),
       comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
     ]),
   );
@@ -248,12 +254,6 @@ Deno.test("detectConflictQueueStall - parked PRs are excluded", () => {
     ],
     ["not in the queue", observation(9, [], { labels: [] })],
     ["label age unknown", observation(9, [], { labelledAtMs: undefined })],
-    [
-      "already escalated for this stall",
-      observation(9, [
-        comment(`${workEscalationMarker(REPO, PR)}\nstalled`, 2),
-      ]),
-    ],
   ];
   for (const [name, obs] of parked) {
     assertEquals(detect(obs), null, name);
@@ -341,7 +341,7 @@ Deno.test("buildConflictStallComment - names the age, the silence and the skip r
   );
   assert(stall !== null);
   const body = buildConflictStallComment(stall);
-  assertStringIncludes(body, workEscalationMarker(REPO, PR));
+  assertStringIncludes(body, `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->`);
   assertStringIncludes(body, "9 hours");
   assertStringIncludes(body, "budget-spent");
   assertStringIncludes(body, "attemptsSpent");
@@ -350,8 +350,11 @@ Deno.test("buildConflictStallComment - names the age, the silence and the skip r
 });
 
 // ---------------------------------------------------------------------------
-// Escalation
+// Repair — rerun the ladder once, then abandon-and-redo (Issue #2803)
 // ---------------------------------------------------------------------------
+
+/** The head sha the ladder's wait markers name in these fixtures. */
+const HEAD = "abcdef1";
 
 /** A fake GitHub holding one PR's thread, shared by every simulated host. */
 function fakeGitHub(
@@ -359,7 +362,7 @@ function fakeGitHub(
   mergeableState = "CONFLICTING",
 ) {
   const calls: string[][] = [];
-  const labelled: string[] = [];
+  const deleted: number[] = [];
   const timeline = [{
     event: "labeled",
     label: { name: MERGE_CONFLICT_LABEL },
@@ -376,6 +379,16 @@ function fakeGitHub(
         labels: [{ name: MERGE_CONFLICT_LABEL }],
         mergeable: mergeableState,
       }]));
+    }
+    if (verb === "pr" && noun === "view") {
+      return Promise.resolve(
+        JSON.stringify({ headRefName: "issue-7-branch", baseRefName: "main" }),
+      );
+    }
+    if (verb === "api" && args[1] === "-X" && args[2] === "DELETE") {
+      const id = /\/comments\/(\d+)$/.exec(args[3] ?? "")?.[1];
+      if (id !== undefined) deleted.push(Number(id));
+      return Promise.resolve("");
     }
     if (verb === "api" && args[1]?.includes("/timeline")) {
       // Page 2 onwards is empty — one short page ends the pagination.
@@ -395,105 +408,388 @@ function fakeGitHub(
     return Promise.resolve("");
   };
 
+  return { calls, deleted, prComments, gh };
+}
+
+/** A recording `abandonAndRestart` seam and a lease that is always granted. */
+function fakeRepair(
+  outcome: AbandonRestartOutcome = {
+    outcome: "abandoned",
+    issueNumber: 7,
+    label: { kept: "low-priority" },
+  },
+) {
+  const abandoned: AbandonRestartRequest[] = [];
+  let released = 0;
   return {
-    calls,
-    labelled,
-    prComments,
-    gh,
-    labelPr: (_repo: string, _prNumber: number, label: string) => {
-      labelled.push(label);
-      return Promise.resolve({ ok: true, value: undefined } as Result<void>);
+    abandoned,
+    released: () => released,
+    abandon: (request: AbandonRestartRequest, _deps: AbandonRestartDeps) => {
+      abandoned.push(request);
+      return Promise.resolve(outcome);
     },
+    acquireLease: (): RepoLease => ({ release: () => void released++ }),
   };
 }
 
-/** A recording `escalateAsWork` seam. */
-function fakeEscalateWork(fail = false) {
-  const filed: WorkEscalation[] = [];
-  return {
-    filed,
-    escalateWork: (escalation: WorkEscalation) => {
-      filed.push(escalation);
+/** A trip marker comment, as the first trip posts it. */
+const tripComment = (agoHours: number, login = FLEET) =>
+  comment(
+    `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->\nrerunning`,
+    agoHours,
+    login,
+  );
+
+/**
+ * Neither trip files an issue, labels the PR `escalated`, or applies the
+ * `needs-human` veto (Issues #569, #2803). Comment bodies are exempt: they
+ * explain in prose, and are not mutations.
+ */
+function assertNoEscalation(calls: readonly string[][]): void {
+  const mutations = calls.map((call) => {
+    const body = call.indexOf("--body");
+    return body === -1
+      ? call
+      : [...call.slice(0, body), ...call.slice(body + 2)];
+  });
+  assertEquals(
+    mutations.filter((call) => call[0] === "issue" && call[1] === "create"),
+    [],
+    "a stall files no issue",
+  );
+  assert(
+    !mutations.some((call) =>
+      call.some((arg, i) =>
+        arg === "--add-label" && call[i + 1] === "escalated"
+      )
+    ),
+    `a stall adds no escalated label: ${JSON.stringify(mutations)}`,
+  );
+  assert(
+    !mutations.some((call) => call.some((arg) => arg.includes("needs-human"))),
+    `needs-human must never be applied by this path: ${
+      JSON.stringify(mutations)
+    }`,
+  );
+}
+
+async function repair(
+  github: ReturnType<typeof fakeGitHub>,
+  fake: ReturnType<typeof fakeRepair>,
+  stall = detect(observation(9)),
+) {
+  assert(stall !== null);
+  return await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    abandon: fake.abandon,
+    acquireLease: fake.acquireLease,
+  });
+}
+
+Deno.test("repairConflictQueueStall - the first trip reruns the ladder once and does not abandon", async () => {
+  const github = fakeGitHub([
+    { id: 501, ...comment(conflictRungFailedMarker("abandon", HEAD), 5) },
+    // An outsider's wait marker is not the ladder's, so it is left alone.
+    {
+      id: 502,
+      ...comment(conflictRungFailedMarker("abandon", HEAD), 4, "drive-by"),
+    },
+    // A rebase-rung failure is not the wait the rerun needs cleared.
+    { id: 503, ...comment(conflictRungFailedMarker("rebase", HEAD), 3) },
+  ]);
+  const fake = fakeRepair();
+
+  assertEquals(await repair(github, fake), "first-trip");
+
+  assertEquals(github.deleted, [501], "only the ladder's own wait is cleared");
+  const posted = postedComments(github.calls);
+  assertEquals(posted.length, 1);
+  assertStringIncludes(
+    posted[0] ?? "",
+    `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->`,
+  );
+  assertEquals(fake.abandoned, [], "the first trip never abandons");
+  assertNoEscalation(github.calls);
+  assertEquals(fake.released(), 1);
+});
+
+Deno.test("repairConflictQueueStall - inside the window after the first trip it waits", async () => {
+  const github = fakeGitHub([tripComment(2)]);
+  const fake = fakeRepair();
+
+  assertEquals(await repair(github, fake), "awaiting-second-check");
+
+  assertEquals(postedComments(github.calls), []);
+  assertEquals(fake.abandoned, []);
+  assertNoEscalation(github.calls);
+});
+
+Deno.test("repairConflictQueueStall - the second trip abandons and redoes exactly once", async () => {
+  const github = fakeGitHub([tripComment(8.5)]);
+  const fake = fakeRepair();
+
+  assertEquals(await repair(github, fake), "abandoned");
+
+  assertEquals(fake.abandoned.length, 1);
+  const request = fake.abandoned[0]!;
+  assertEquals(request.repo, REPO);
+  assertEquals(request.prNumber, PR);
+  assertEquals(request.branchName, "issue-7-branch");
+  assertEquals(request.baseBranch, "main");
+  assertEquals(request.reason?.kind, "stalled");
+  assertEquals(postedComments(github.calls), [], "no second trip comment");
+  assertNoEscalation(github.calls);
+  assertEquals(fake.released(), 1);
+});
+
+Deno.test("repairConflictQueueStall - a declined or failed abandon is reported, never swallowed", async () => {
+  const declined = fakeRepair({
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: 7,
+      samePr: true,
+      restartCount: 2,
+    },
+  });
+  assertEquals(
+    await repair(fakeGitHub([tripComment(8.5)]), declined),
+    "abandon-declined",
+  );
+
+  const failed = fakeRepair({
+    outcome: "failed",
+    step: "pr-close",
+    message: "gh pr close failed",
+  });
+  assertEquals(await repair(fakeGitHub([tripComment(8.5)]), failed), "failed");
+});
+
+Deno.test("repairConflictQueueStall - a second trip on an issue already redone twice adds needs-human and one comment (Issue #2804)", async () => {
+  const ISSUE = 7;
+  const github = fakeGitHub([tripComment(8.5)]);
+  const issue = {
+    labels: ["work-on"],
+    comments: [
+      comment(conflictRestartMarker(REPO, 61), 48),
+      comment(conflictRestartMarker(REPO, 62), 24),
+    ],
+  };
+  const issuePath = `/issues/${ISSUE}/`;
+  const gh = (args: string[]): Promise<string> => {
+    const path = args.find((arg) => arg.includes(issuePath)) ?? "";
+    if (args[0] === "issue" && args[1] === "view") {
+      github.calls.push(args);
+      return Promise.resolve(JSON.stringify({
+        state: "OPEN",
+        labels: issue.labels.map((name) => ({ name })),
+      }));
+    }
+    if (path === "") return github.gh(args);
+    github.calls.push(args);
+    if (args[1] !== "-X") {
       return Promise.resolve(
-        fail
-          ? { ok: false, error: new Error("gh issue create failed") } as Result<
-            { issueNumber: number; filed: boolean }
-          >
-          : { ok: true, value: { issueNumber: 900, filed: true } } as Result<
-            { issueNumber: number; filed: boolean }
-          >,
+        path.includes("page=1") ? JSON.stringify(issue.comments) : "[]",
       );
-    },
+    }
+    const field = args[5] ?? "";
+    if (path.endsWith("/labels")) {
+      issue.labels.push(field.replace(/^labels\[\]=/, ""));
+    } else if (path.endsWith("/comments")) {
+      issue.comments.push(comment(field.replace(/^body=/, ""), 0));
+    }
+    return Promise.resolve("");
   };
-}
-
-Deno.test("escalateConflictQueueStall - files the stall as work and marks the PR", async () => {
-  const github = fakeGitHub();
-  const work = fakeEscalateWork();
-  const stall = detect(observation(9));
+  const context: ConflictIssueContext = {
+    repo: REPO,
+    prNumber: PR,
+    prSide: {
+      resolved: true,
+      signal: "branch",
+      issue: {
+        number: ISSUE,
+        title: "Fix it",
+        state: "OPEN",
+        body: "",
+        bodyTruncated: false,
+      },
+    },
+    baseSide: [],
+    truncation: {
+      commitCapPaths: [],
+      issueCapHit: false,
+      textTruncatedIssues: [],
+      ghCallCapHit: false,
+    },
+    ghCallsUsed: 0,
+    warnings: [],
+  };
+  const stall = detect(observation(9, [tripComment(8.5)]));
   assert(stall !== null);
+  const run = () =>
+    repairConflictQueueStall(stall, {
+      ghCommandFn: gh,
+      logger,
+      isTrustedAuthor,
+      nowMs: NOW,
+      trustedAuthors: [FLEET],
+      acquireLease: () => ({ release: noop }),
+      abandonDeps: {
+        resolveContext: () => Promise.resolve(context),
+        findOtherPrs: () => Promise.resolve([]),
+      },
+    });
 
-  const result = await escalateConflictQueueStall(stall, {
-    ghCommandFn: github.gh,
-    labelPr: github.labelPr,
-    escalateWork: work.escalateWork,
-    logger,
-  });
+  assertEquals(await run(), "abandon-declined");
 
-  assert(result.ok);
-  assertEquals(result.value.issueNumber, 900);
-  assertEquals(work.filed.length, 1);
-  assertEquals(work.filed[0]?.summary, CONFLICT_STALL_SUMMARY);
-  assertStringIncludes(work.filed[0]?.reason ?? "", REPO);
-  assertStringIncludes(work.filed[0]?.reason ?? "", "9 hours");
-  // One comment on the PR, carrying the dedup marker.
-  const comments = postedComments(github.calls);
-  assertEquals(comments.length, 1);
-  assertStringIncludes(comments[0] ?? "", workEscalationMarker(REPO, PR));
-  assertEquals(github.labelled, [ESCALATED_AS_WORK_LABEL]);
+  assertEquals(issue.labels, ["work-on", "needs-human"]);
+  assertEquals(issue.comments.length, 3);
+  assertStringIncludes(String(issue.comments[2]?.body), `${REPO}#${PR}`);
+  assert(
+    !github.calls.some((call) => call[0] === "pr" && call[1] === "close"),
+    "no third redo closes the PR",
+  );
+
+  // A later check finds needs-human already there and says nothing more.
+  assertEquals(await run(), "abandon-declined");
+  assertEquals(issue.comments.length, 3);
 });
 
-Deno.test("escalateConflictQueueStall - a failed filing is reported, never swallowed", async () => {
-  const github = fakeGitHub();
-  const work = fakeEscalateWork(true);
-  const stall = detect(observation(9));
+Deno.test("repairConflictQueueStall - the real second-trip comments say the ladder was rerun, in one sentence, never a lane rerun or a sync", async () => {
+  const ISSUE = 7;
+  const github = fakeGitHub([tripComment(8.5)]);
+  const issueComments: string[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    if (args[0] === "issue" && args[1] === "view") {
+      github.calls.push(args);
+      return Promise.resolve(JSON.stringify({
+        state: "OPEN",
+        labels: [{ name: "work-on" }],
+      }));
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      github.calls.push(args);
+      issueComments.push(args[args.indexOf("--body") + 1] ?? "");
+      return Promise.resolve("");
+    }
+    return github.gh(args);
+  };
+  const context: ConflictIssueContext = {
+    repo: REPO,
+    prNumber: PR,
+    prSide: {
+      resolved: true,
+      signal: "branch",
+      issue: {
+        number: ISSUE,
+        title: "Fix it",
+        state: "OPEN",
+        body: "",
+        bodyTruncated: false,
+      },
+    },
+    baseSide: [],
+    truncation: {
+      commitCapPaths: [],
+      issueCapHit: false,
+      textTruncatedIssues: [],
+      ghCallCapHit: false,
+    },
+    ghCallsUsed: 0,
+    warnings: [],
+  };
+  const stall = detect(observation(9, [tripComment(8.5)]));
   assert(stall !== null);
 
-  const result = await escalateConflictQueueStall(stall, {
-    ghCommandFn: github.gh,
-    labelPr: github.labelPr,
-    escalateWork: work.escalateWork,
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: gh,
     logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    trustedAuthors: [FLEET],
+    acquireLease: () => ({ release: noop }),
+    abandonDeps: {
+      resolveContext: () => Promise.resolve(context),
+      findOtherPrs: () => Promise.resolve([]),
+    },
   });
 
-  assert(!result.ok);
-  assertStringIncludes(result.error.message, "gh issue create failed");
-  // No marker comment: the next pass must retry rather than find a dedup
-  // marker standing in for an escalation that never landed.
-  assertEquals(postedComments(github.calls).length, 0);
+  assertEquals(action, "abandoned");
+  const prComment = postedComments(github.calls).at(-1) ?? "";
+  assertEquals(issueComments.length, 1);
+  const issueComment = issueComments[0]!;
+  const bodies: [string, string][] = [
+    ["PR", prComment],
+    ["issue", issueComment],
+  ];
+  for (const [where, body] of bodies) {
+    assertStringIncludes(body, "merge-conflict ladder", where);
+    for (const untrue of ["owning lane", "synced", "Skip reason"]) {
+      assert(
+        !body.includes(untrue),
+        `the ${where} comment must not say "${untrue}": ${body}`,
+      );
+    }
+    // The stall detail reads as one sentence: its line carries the whole
+    // claim, not a multi-paragraph report spliced mid-sentence.
+    const line = body.split("\n").find((l) => l.includes("has carried"));
+    assert(line, `the ${where} comment names the stall: ${body}`);
+    assertStringIncludes(line, "for 9 hours", where);
+  }
+  assertStringIncludes(prComment, "This PR has carried `merge-conflict`");
+  assertStringIncludes(
+    issueComment,
+    `${REPO}#${PR} has carried \`merge-conflict\``,
+  );
 });
 
-Deno.test("escalateConflictQueueStall - a comment that fails after filing names both", async () => {
+Deno.test("repairConflictQueueStall - an untrusted or pre-label trip marker is not a trip", async () => {
+  // A forged marker must not skip straight to closing the PR, and a trip from
+  // an earlier stall — before the label last went on — belongs to that stall.
+  for (const trip of [tripComment(8.5, "drive-by"), tripComment(20)]) {
+    const github = fakeGitHub([trip]);
+    const fake = fakeRepair();
+    assertEquals(await repair(github, fake), "first-trip");
+    assertEquals(fake.abandoned, []);
+  }
+});
+
+Deno.test("repairConflictQueueStall - a conclusion after the trip starts the ladder over", async () => {
+  // The rerun concluded, then the queue stalled again: that is a fresh stall,
+  // and it gets its own first trip rather than an abandon.
+  const github = fakeGitHub([
+    tripComment(30),
+    comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
+  ]);
+  const fake = fakeRepair();
+  const stall = detect(
+    observation(40, [...github.prComments]),
+  );
+
+  assertEquals(await repair(github, fake, stall), "first-trip");
+  assertEquals(fake.abandoned, []);
+});
+
+Deno.test("repairConflictQueueStall - a held maintenance lease defers the repair", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
   const stall = detect(observation(9));
   assert(stall !== null);
 
-  const result = await escalateConflictQueueStall(stall, {
-    ghCommandFn: (args: string[]) =>
-      args[0] === "pr" && args[1] === "comment"
-        ? Promise.reject(new Error("comment rejected"))
-        : github.gh(args),
-    labelPr: github.labelPr,
-    escalateWork: work.escalateWork,
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
     logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    abandon: fake.abandon,
+    acquireLease: () => null,
   });
 
-  assert(!result.ok);
-  // The filed issue is named, so the failure is diagnosable rather than a bare
-  // "could not comment".
-  assertStringIncludes(result.error.message, "900");
-  assertStringIncludes(result.error.message, "comment rejected");
+  assertEquals(action, "skipped-lease-held");
+  assertEquals(github.calls, []);
 });
 
 // ---------------------------------------------------------------------------
@@ -502,79 +798,73 @@ Deno.test("escalateConflictQueueStall - a comment that fails after filing names 
 
 const scanOptions = (
   github: ReturnType<typeof fakeGitHub>,
-  work: ReturnType<typeof fakeEscalateWork>,
+  fake: ReturnType<typeof fakeRepair>,
 ) => ({
   repos: [REPO],
   ghCommandFn: github.gh,
-  labelPr: github.labelPr,
-  escalateWork: work.escalateWork,
+  abandon: fake.abandon,
+  acquireLease: fake.acquireLease,
   isTrustedAuthor,
   nowMs: () => NOW,
   logger,
 });
 
-Deno.test("scanConflictQueueStalls - two hosts in one window escalate once", async () => {
+Deno.test("scanConflictQueueStalls - two hosts in one window trip once", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
-  const hostA = await scanConflictQueueStalls(scanOptions(github, work));
-  const hostB = await scanConflictQueueStalls(scanOptions(github, work));
+  const hostA = await scanConflictQueueStalls(scanOptions(github, fake));
+  const hostB = await scanConflictQueueStalls(scanOptions(github, fake));
 
   assertEquals(hostA.length, 1);
-  // The second host reads the first host's marker off the PR itself, so it
-  // finds no stall to escalate.
-  assertEquals(hostB.length, 0);
-  assertEquals(work.filed.length, 1);
+  // The second host still sees the stall, but reads the first host's trip
+  // marker off the PR itself, so it neither trips again nor abandons.
+  assertEquals(hostB.length, 1);
   assertEquals(postedComments(github.calls).length, 1);
+  assertEquals(fake.abandoned, []);
 });
 
-Deno.test("scanConflictQueueStalls - applies escalated, never needs-human", async () => {
+Deno.test("scanConflictQueueStalls - files no issue and adds no label on either trip", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
-  const scan = await scanConflictQueueStalls(scanOptions(github, work));
-
-  assertEquals(scan.length, 1);
-  assertEquals(github.labelled, [ESCALATED_AS_WORK_LABEL]);
-  assert(!github.labelled.includes("needs-human"));
-  // No `gh` call asks for the veto label either. Comment *bodies* are exempt:
-  // the comment explains, in prose, that the stall deliberately does not get
-  // one. Issue #569: a mechanical stall is work, not a decision.
-  const mutations = github.calls.map((call) => {
-    const body = call.indexOf("--body");
-    return body === -1
-      ? call
-      : [...call.slice(0, body), ...call.slice(body + 2)];
+  // First trip, then the next check once the window has passed again.
+  await scanConflictQueueStalls(scanOptions(github, fake));
+  await scanConflictQueueStalls({
+    ...scanOptions(github, fake),
+    nowMs: () => NOW + 9 * HOUR,
   });
-  assert(
-    !mutations.some((call) => call.some((arg) => arg.includes("needs-human"))),
-    `needs-human must never be applied by this path: ${
-      JSON.stringify(mutations)
-    }`,
+
+  assertEquals(postedComments(github.calls).length, 1);
+  assertEquals(fake.abandoned.length, 1, "the second trip abandons once");
+  assertNoEscalation(github.calls);
+  assertEquals(
+    github.calls.filter((call) => call.includes("--add-label")),
+    [],
   );
 });
 
-Deno.test("scanConflictQueueStalls - a concluded attempt after an escalation is not re-escalated", async () => {
+Deno.test("scanConflictQueueStalls - a concluded attempt after a trip is not abandoned", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
-  await scanConflictQueueStalls(scanOptions(github, work));
-  // The stalled queue moves again: an attempt runs and concludes.
+  await scanConflictQueueStalls(scanOptions(github, fake));
+  // The rerun happens: an attempt runs and concludes.
   github.prComments.push(comment(`${CONFLICT_ATTEMPT_MARKER} n="1" -->`, 0));
   github.prComments.push(comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 0));
 
-  const next = await scanConflictQueueStalls(scanOptions(github, work));
+  const next = await scanConflictQueueStalls(scanOptions(github, fake));
 
   assertEquals(next.length, 0);
-  assertEquals(work.filed.length, 1);
+  assertEquals(fake.abandoned, []);
 });
 
 Deno.test("scanConflictQueueStalls - carries this cycle's skip reasons into the comment", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     decisions: [{
       repo: REPO,
       prNumber: PR,
@@ -589,14 +879,13 @@ Deno.test("scanConflictQueueStalls - carries this cycle's skip reasons into the 
   assertStringIncludes(body, "deferralStreak=6");
 });
 
-Deno.test("scanConflictQueueStalls - a stale label on a mergeable PR is not escalated", async () => {
+Deno.test("scanConflictQueueStalls - a stale label on a mergeable PR is not repaired", async () => {
   const github = fakeGitHub([], "MERGEABLE");
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
-  const scan = await scanConflictQueueStalls(scanOptions(github, work));
+  const scan = await scanConflictQueueStalls(scanOptions(github, fake));
 
   assertEquals(scan.length, 0);
-  assertEquals(work.filed.length, 0);
   // Not even read: the listing already said the queue is not real.
   assertEquals(postedComments(github.calls).length, 0);
   assertEquals(
@@ -610,7 +899,7 @@ Deno.test("scanConflictQueueStalls - an uncomputed mergeable state is re-read, n
   // a PR that genuinely conflicts. Dropping it there would be the silence this
   // watchdog exists to remove.
   const github = fakeGitHub([], "UNKNOWN");
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
   const withView = (args: string[]) => {
     if (args[0] === "pr" && args[1] === "view") {
       return Promise.resolve("CONFLICTING\n");
@@ -619,17 +908,17 @@ Deno.test("scanConflictQueueStalls - an uncomputed mergeable state is re-read, n
   };
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     ghCommandFn: withView,
   });
 
   assertEquals(scan.length, 1);
-  assertEquals(work.filed.length, 1);
+  assertEquals(postedComments(github.calls).length, 1);
 });
 
-Deno.test("scanConflictQueueStalls - a state that stays uncomputed escalates nothing", async () => {
+Deno.test("scanConflictQueueStalls - a state that stays uncomputed repairs nothing", async () => {
   const github = fakeGitHub([], "UNKNOWN");
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
   const warnings: string[] = [];
   const withView = (args: string[]) => {
     if (args[0] === "pr" && args[1] === "view") {
@@ -639,13 +928,13 @@ Deno.test("scanConflictQueueStalls - a state that stays uncomputed escalates not
   };
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     ghCommandFn: withView,
     logger: { ...logger, warn: (message: string) => warnings.push(message) },
   });
 
   assertEquals(scan.length, 0);
-  assertEquals(work.filed.length, 0);
+  assertEquals(postedComments(github.calls).length, 0);
   // Loud, not silent: an unestablished state is exactly what went unnoticed.
   assert(
     warnings.some((message) => message.includes("mergeable state")),
@@ -655,7 +944,7 @@ Deno.test("scanConflictQueueStalls - a state that stays uncomputed escalates not
 
 Deno.test("scanConflictQueueStalls - repeated identical skip reasons are collapsed", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
   const leased = {
     repo: REPO,
     prNumber: PR,
@@ -664,7 +953,7 @@ Deno.test("scanConflictQueueStalls - repeated identical skip reasons are collaps
   };
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     // The drain calls the scan once per PR it takes, so one held-back PR is
     // decided on several times in a cycle.
     decisions: [leased, leased, leased],
@@ -677,10 +966,10 @@ Deno.test("scanConflictQueueStalls - repeated identical skip reasons are collaps
 
 Deno.test("scanConflictQueueStalls - a repo outside the allowlist is not touched", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     isRepoAllowed: () => false,
   });
 
@@ -690,7 +979,7 @@ Deno.test("scanConflictQueueStalls - a repo outside the allowlist is not touched
 
 Deno.test("scanConflictQueueStalls - an unreadable PR does not stop the pass", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
   const failing = (args: string[]) => {
     if (args[0] === "api" && args[1]?.includes("/comments")) {
       return Promise.reject(new Error("comments unavailable"));
@@ -699,12 +988,12 @@ Deno.test("scanConflictQueueStalls - an unreadable PR does not stop the pass", a
   };
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     ghCommandFn: failing,
   });
 
   assertEquals(scan.length, 0);
-  assertEquals(work.filed.length, 0);
+  assertEquals(postedComments(github.calls).length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -740,9 +1029,6 @@ Deno.test("scanConflictQueueStalls - an exhausted quota costs one call and one l
       }
       return Promise.reject(new Error(QUOTA_REFUSED));
     },
-    labelPr: () => Promise.resolve({ ok: true, value: undefined }),
-    escalateWork: () =>
-      Promise.resolve({ ok: true, value: { issueNumber: 1, filed: true } }),
     isTrustedAuthor,
     nowMs: () => NOW,
     logger: captured.logger,
@@ -770,9 +1056,6 @@ Deno.test("scanConflictQueueStalls - an ordinary listing failure is still report
       }
       return Promise.reject(new Error("HTTP 404: Not Found"));
     },
-    labelPr: () => Promise.resolve({ ok: true, value: undefined }),
-    escalateWork: () =>
-      Promise.resolve({ ok: true, value: { issueNumber: 1, filed: true } }),
     isTrustedAuthor,
     nowMs: () => NOW,
     logger: captured.logger,
@@ -799,10 +1082,10 @@ const prListCalls = (calls: readonly string[][]) =>
 
 Deno.test("scanConflictQueueStalls - a complete cached listing with no labelled PR means no live listing (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     listOpenPrLabels: () =>
       Promise.resolve([
         { number: 1, labels: ["enhancement"] },
@@ -816,10 +1099,10 @@ Deno.test("scanConflictQueueStalls - a complete cached listing with no labelled 
 
 Deno.test("scanConflictQueueStalls - a cached listing that shows the label still takes the LIVE listing, for the live merge state (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     listOpenPrLabels: () =>
       Promise.resolve([{ number: PR, labels: [MERGE_CONFLICT_LABEL] }]),
   });
@@ -830,10 +1113,10 @@ Deno.test("scanConflictQueueStalls - a cached listing that shows the label still
 
 Deno.test("scanConflictQueueStalls - a full cached listing cannot prove absence, so the repository is asked (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     listOpenPrLabels: () =>
       Promise.resolve([{ number: 1, labels: [] }, { number: 2, labels: [] }]),
     // The listing came back full: a labelled PR may sit beyond it.
@@ -846,10 +1129,10 @@ Deno.test("scanConflictQueueStalls - a full cached listing cannot prove absence,
 
 Deno.test("scanConflictQueueStalls - a cached listing that cannot be read falls back to the live listing (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     listOpenPrLabels: () => Promise.reject(new Error("cache unreadable")),
   });
 
@@ -859,9 +1142,9 @@ Deno.test("scanConflictQueueStalls - a cached listing that cannot be read falls 
 
 Deno.test("scanConflictQueueStalls - without a cached listing it lists every repository, exactly as before (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
   await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     repos: [REPO, "org/other"],
   });
   assertEquals(prListCalls(github.calls), 2);
@@ -886,10 +1169,10 @@ Deno.test("listedOpenPrs - a row with no labels field is a listing that cannot a
 
 Deno.test("scanConflictQueueStalls - a pre-labels cache entry falls back to the live listing (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const work = fakeEscalateWork();
+  const fake = fakeRepair();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, work),
+    ...scanOptions(github, fake),
     // Exactly how production builds it: the mapper refuses the old row.
     listOpenPrLabels: () => Promise.resolve(listedOpenPrs([{ number: 1 }])),
   });

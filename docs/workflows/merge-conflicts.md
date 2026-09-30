@@ -36,12 +36,13 @@ of this rung is wired to the flag by the next sub-issue under #2298). A PR whose
 originating issue **cannot** be found is closed
 as well, and its flag issue carries `idle-task` and the PR's diff summary, so the
 flag is the re-do item. Two restarts per originating issue: the third
-exhaustion declines, and the PR is then left open on `merge-conflict` with a
-base-keyed park marker, re-attempted only when its base tip moves
-(Issue #2312). **The merge-conflict scan applies
-`needs-human` for no conflict outcome at all** (Issue #2310) — only for a
-*worker* fault, three attempts disrupted before any conclusion — and a
-hand-applied `needs-human` is still honoured as a veto.
+exhaustion declines — there is no third redo — and the **originating issue**
+gains `needs-human` plus one comment naming the PR and asking a human to fix it
+by hand, rescope the issue, or close it (Issue #2804). The PR itself stays
+open on `merge-conflict` with a base-keyed park marker (Issue #2312). **The
+merge-conflict scan applies `needs-human` to no conflicting PR** (Issue #2310)
+— only for a *worker* fault, three attempts disrupted before any conclusion —
+and a hand-applied `needs-human` is still honoured as a veto.
 
 Every attempt ends visibly: merged, failed, or escalated. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
@@ -409,18 +410,17 @@ flowchart TD
     V --> L{"decideLadderRung<br/>(thread markers, current head)"}
     L -- MERGEABLE --> C[Clear the label only]
     L -- "no marker at this head" --> N["Rung 1 — nudge:<br/>one empty commit, plain push"]
-    L -- "nudged at this head" --> R["Rung 2 — rebase:<br/>replay, tree guard, leased push"]
-    L -- "rebased at this head,<br/>or the rebase failed here" --> B["Rung 3 — abandon and restart:<br/>close the PR, re-queue its issue"]
+    L -- "nudged at this head" --> R["Rung 2 — merge:<br/>git merge --no-ff origin/BASE"]
+    L -- "merged at this head,<br/>or the merge rung failed here" --> B["Rung 3 — abandon and restart:<br/>close the PR, re-queue its issue"]
     L -- "nudged at this head,<br/>human author" --> B
     L -- "verdict unknown / exhausted" --> W[Wait — run nothing]
-    R -- "replay conflicts<br/>or the tree differs" --> S["Fallback: one commit<br/>carrying OLD's tree on the base"]
-    R -- "tree identical to OLD" --> P["Push --force-with-lease=BRANCH:OLD"]
-    S --> P
+    R -- "a merge commit on top of OLD" --> P["Plain git push —<br/>no force, no lease"]
+    R -- "conflicts (aborted),<br/>or nothing to merge" --> F
+    P -- "rejected: git's stderr,<br/>clone reset to OLD" --> F
     B -- "declined or failed" --> F["Record the rung as failed<br/>at this head — no label, no human"]
     F --> W
     style N fill:#2d6a4f,stroke:#1b4332,color:#fff
     style R fill:#2d6a4f,stroke:#1b4332,color:#fff
-    style S fill:#2d6a4f,stroke:#1b4332,color:#fff
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
     style B fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
@@ -428,8 +428,8 @@ flowchart TD
 **All three rungs are wired** (Issues #2278, #2279, #2280). Each runs **at most
 once per head sha**: the rung's own marker names the head it left behind, so the
 next scan reads that marker back and climbs rather than repeating it. A
-**human-authored** PR skips rung 2 and goes straight to rung 3 — the leased push
-destroys nothing, but a person's commit graph is theirs to reshape.
+**human-authored** PR skips rung 2 and goes straight to rung 3 — the plain push
+destroys nothing, but a person's branch is theirs to add commits to.
 
 - **Rung 1 — nudge.** One `git commit --allow-empty` whose message names the
   base sha the ancestry check found, pushed **without** `--force` or a lease, so
@@ -437,47 +437,45 @@ destroys nothing, but a person's commit graph is theirs to reshape.
   recompute. One comment records it, carrying
   `<!-- vibe-merge-conflict-nudge head="<new sha>" -->` — the **new** head, so
   the next scan reads the marker back and climbs rather than nudging twice.
-- **Rung 2 — rebase** (`conflict_rebase_rung.ts`, Issue #2279). The PR's
-  non-merge commits are replayed onto `origin/BASE`
-  (`git rebase --no-rebase-merges`) so the branch has a linear history off the
-  current base rather than a head that merged the base in — the shape GitHub is
-  stuck on. The rung runs only at the head GitHub judged: a clone that has moved
-  reports `head-moved` and touches nothing.
-- **The tree-identity guard is what makes the force-push admissible.** The
-  resolver's contract forbids a destructive force-push (Issues #1076, #4373)
-  because a rebase once destroyed a PR's own changes. Nothing is pushed until
-  `git diff --quiet OLD NEW` exits 0 — the new head's tree is **byte-identical**
-  to the head GitHub judged — so the push replaces a commit graph and no file
-  content at all. The lease is pinned (`--force-with-lease=BRANCH:OLD`), never a
-  bare `--force`, so a branch that moved on the remote refuses the push instead
-  of being overwritten. Both halves have to hold: the guard makes the push
-  non-destructive, the lease makes it non-racing.
-- **A replay that conflicts, or lands on a different tree, falls back to one
-  squash commit of the old tree** — `git commit-tree OLD^{tree} -p origin/BASE`.
-  It cannot conflict and cannot lose the base's changes: the ladder runs only
-  once `origin/BASE` is already an ancestor of `OLD`, so `OLD`'s tree already
-  contains everything the base carries. The identity therefore holds by
-  construction, and is asserted anyway before the push — "by construction" is a
-  claim about code, and the push is irreversible. There is no agent run on this
-  path: under the guard the only admissible resolution is a tree equal to `OLD`,
-  which the fallback produces outright.
-- **A replay that moves nothing takes the fallback too.** A branch already
-  linear off the base rebases to the same head; pushing it back would give
-  GitHub nothing new to judge while the comment claimed a linearisation that
-  never happened. The fallback always produces a new commit carrying the same
-  tree, so it is what moves the head in that case.
-- **Every rebase-rung outcome leaves the branch at `OLD` or at a head whose tree
-  equals `OLD`'s**, error paths included. A failure restores `OLD` and then
-  fails loud rather than leaving a half-replayed branch behind — including when
-  `git rebase --abort` itself fails, where the fallback is *not* built, because
-  a clone that may still be mid-rebase is not one to commit on. Every ending
-  short of a push posts the rung-failed marker, a worker fault included, so the
-  next scan climbs to the abandon rung instead of re-deciding `rebase` at the
-  same head for ever. Post-release the audit is
-  `git diff --stat <old> <new>` on the shas the rebase comment names — any
-  output is a regression.
+- **Rung 2 — merge** (`conflict_rebase_rung.ts`, Issues #2279, #2806).
+  `git merge --no-ff origin/BASE` puts a merge commit on top of the PR's
+  existing commits, and a **plain** `git push` publishes it — no `--force`, no
+  `--force-with-lease`, no `+` refspec. The rung used to rebase and force-push
+  with a pinned lease; that rewrote the history reviewers had anchored comments
+  to, so it now never rewrites a commit (Issue #2806). The rung runs only at the
+  head GitHub judged: a clone that has moved reports `head-moved` and touches
+  nothing.
+- **A conflicting merge is aborted, and the ladder climbs.** The unmerged paths
+  are read while the merge is still stopped, then `git merge --abort` puts the
+  branch back at `OLD` and the rung reports `merge-conflicted`. No agent runs on
+  this path.
+- **On the stale-verdict path the merge has nothing to merge — today, always.**
+  The ladder runs only once `git merge-base --is-ancestor origin/BASE HEAD`
+  exits 0, and nothing fetches `origin/BASE` again before the rung, so
+  `git merge` finds the base already merged. The rung reports
+  `nothing-to-merge` rather than pushing `OLD` back or synthesising a commit,
+  records itself as failed, and the next scan climbs to abandon. In practice
+  the stale-verdict ladder is therefore nudge → abandon, with one extra scan in
+  between: a rung that never rewrites history has nothing it may do to a head
+  that already contains its base. The push path below is reached only if
+  `origin/BASE` in the clone has moved past `OLD`.
+- **A rejected push fails loud and is never forced.** The merge commit is a
+  descendant of `OLD`, so the remote accepts it only as a fast-forward. When
+  somebody pushed since, the push is refused: the rung resets the clone to
+  `OLD` and reports `push-refused` carrying git's own stderr, which the
+  rung-failed comment quotes. There is no forced retry.
+- **Every merge-rung outcome but a push leaves the branch at `OLD`**, error
+  paths included. A merge that fails with no unmerged paths (a broken clone, not
+  a conflict) and an abort that fails both restore `OLD` and fail loud. Every
+  ending short of a push posts the rung-failed marker, a worker fault included,
+  so the next scan climbs to the abandon rung instead of re-deciding the rung at
+  the same head for ever. Post-release the audit is
+  `git merge-base --is-ancestor <old> <new>` on the shas the merge comment names
+  — a non-zero exit is a regression. The markers keep their original
+  `rebase` names (`vibe-merge-conflict-rebase`, `rung="rebase"`) so markers
+  already on PR threads still read back.
 - **Rung 3 — abandon and restart** (Issue #2280). Reached when GitHub still
-  says `CONFLICTING` at the head the rebase produced, when the rebase rung
+  says `CONFLICTING` at the head the merge produced, when the merge rung
   failed at this head, or when a human-authored PR sits at the nudged head. It
   is the same rung a spent attempt budget uses
   ([below](#-abandon-and-restart-before-a-human-is-asked)), called with this PR
@@ -514,14 +512,14 @@ destroys nothing, but a person's commit graph is theirs to reshape.
   that cannot read its own memory would nudge each new head for ever instead of
   climbing.
 - **A rung that cannot be recorded is a failure, not a rung.** The marker is the
-  bound, so if the comment cannot be posted after the nudge's or the rebase's
-  push — or after a declined or failed abandon — the pass fails loud rather than
+  bound, so if the comment cannot be posted after the nudge's or the merge
+  rung's push — or after a declined or failed abandon — the pass fails loud rather than
   reporting a rung the next scan cannot see.
 - **Nothing on this route spends or claims anything.** No resolved, attempt or
   failed marker is posted, no label is added, and the `merge-conflict` label
   stays on until GitHub itself reports the PR mergeable again. The rung markers
   share no literal with the attempt vocabulary, so the "attempt N of M" number
-  on the next real merge is unchanged by any number of nudges or rebases.
+  on the next real merge is unchanged by any number of nudges or rung merges.
 - **The no-op merge is now an invariant violation.** Past the ancestry check
   the base is known *not* to be an ancestor, so a `git merge` that exits 0
   without moving `HEAD` is impossible. If it happens the pass fails loud naming
@@ -535,10 +533,11 @@ A branch that has defeated two real merges is usually cheaper to **redo** than
 to reconcile, and redoing it needs nobody (Issue #1115,
 `worker/deno/lib/conflict_abandon_restart.ts`). So the rung a spent budget
 reaches closes the conflicting PR and re-queues its originating issue, and the
-pipeline raises a fresh PR off the current base. **No outcome of the scan's
-spent-budget branch ends at a person** (Issue #2310): it applies no
-`needs-human` label and posts no escalation comment, and every outcome it
-produces is recorded in the pass's own log instead.
+pipeline raises a fresh PR off the current base. **The scan's spent-budget
+branch puts no `needs-human` on the PR** (Issue #2310), and records every
+outcome in the pass's own log. The one route that reaches a person is an issue
+whose two redos are both spent (Issue #2804, below) — and that label goes on
+the originating issue, not the PR.
 
 - **"Start again" never means force-push.** The PR is *closed*, not merged; the
   branch is neither deleted nor rewritten, so every commit on it stays readable
@@ -581,12 +580,37 @@ produces is recorded in the pass's own log instead.
   useful share of those. A claim naming *this* PR declines whatever the count
   says: it means an earlier abandon of this very PR did not finish, and closing
   it twice is not a retry.
-- **After the second restart the PR is parked, not escalated** (Issue #2312).
-  The third exhaustion leaves the PR **open**, keeps `merge-conflict` on it,
-  appends the event to the PR's own `merge-fallback` flag, and posts one
-  comment carrying `<!-- vibe-merge-conflict-parked base="<sha>" -->`. It is
-  recorded as the `parked` skip reason and **no** `needs-human` label or
-  comment is applied anywhere on this path. The marker keys on the **base**
+- **After the second restart a human decides — there is no third redo**
+  (Issue #2804). When an issue already redone twice fails again, by any route
+  into the rung — the blocking-PR stall, the conflict-queue stall, or the
+  conflict ladder's own final rung — `abandonAndRestart` itself adds
+  `needs-human` to the **originating issue** and posts one comment through
+  `escalateToHuman`. The comment names the PR, says both redos are used, and
+  asks a human to decide: fix the PR by hand, rescope the issue, or close it.
+  The PR is not closed and the issue is not re-queued. It is idempotent: an
+  issue already carrying `needs-human` gets no second comment. A label or
+  comment that could not be applied is a `failed` outcome naming the
+  `issue-label` or `issue-comment` step (`abandon-failed`), never a quiet
+  decline. The outcome is still `declined` with `already-restarted`, so no
+  caller needed editing.
+
+  ```mermaid
+  flowchart TD
+      A["PR fails again<br/>(conflict budget or stall second trip)"] --> B{"Restarts recorded<br/>on the issue ≥ 2?"}
+      B -- no --> C["Close the PR, re-queue the issue<br/>(restart n of 2)"]
+      B -- yes --> D{"Issue already carries<br/>needs-human?"}
+      D -- yes --> E["Nothing more said<br/>(declined: already-restarted)"]
+      D -- no --> F["Add needs-human + one comment<br/>on the issue"]
+      F -- both landed --> E
+      F -- either failed --> G["failed: issue-label / issue-comment<br/>(abandon-failed)"]
+  ```
+
+- **The PR itself is parked, not escalated** (Issue #2312). The third
+  exhaustion leaves the PR **open**, keeps `merge-conflict` on it, appends the
+  event to the PR's own `merge-fallback` flag, and posts one comment carrying
+  `<!-- vibe-merge-conflict-parked base="<sha>" -->`. It is recorded as the
+  `parked` skip reason, and `needs-human` never reaches the PR on this path —
+  only its originating issue, as above. The marker keys on the **base**
   sha, unlike every other marker in this vocabulary, because nothing acts until
   the *base* tip moves: a base that has not moved cannot merge any better than
   it did an hour ago. Every later pass compares the PR's live `baseRefOid`
@@ -718,7 +742,7 @@ actually used.
   host cleaned the lock as stale and started a competing attempt on the same
   branch — racing the first one's push and leaving it looking disrupted.
 
-### ⏰ A label with nothing behind it escalates itself
+### ⏰ A label with nothing behind it repairs itself
 
 "Nothing stalls unowned" above covers a stall at the **end** of the ladder — a
 PR out of budget whose final escalation never landed. Nothing covered a stall
@@ -739,16 +763,16 @@ flowchart TD
     S -->|"No — stale label"| Q[Nothing to say]
     S -->|Yes| B{"Label older than 8 h?"}
     B -->|No| Q
-    B -->|Yes| C{"needs-human, closed,<br/>or already escalated?"}
+    B -->|Yes| C{"needs-human or closed?"}
     C -->|Yes| Q
     C -->|No| D{"Anything at all since<br/>the label or the last<br/>conclusion, within 8 h?"}
     D -->|"Yes — a conclusion moved it"| Q
-    D -->|"No — including an attempt<br/>that opened and went silent"| E["One comment on the PR:<br/>label age, the silence,<br/>the skip reasons"]
-    E --> F["escalateAsWork — an issue<br/>the fleet can claim"]
-    F --> G["Label the PR escalated<br/>(never needs-human)"]
+    D -->|"No — including an attempt<br/>that opened and went silent"| T{"Trip marker since<br/>the label and the<br/>last conclusion?"}
+    T -->|"No — first trip"| E["Clear the ladder's wait<br/>marker for this head;<br/>post the trip-1 comment"]
+    T -->|"Yes, under 8 h old"| Q
+    T -->|"Yes, 8 h or older —<br/>second trip"| G["abandonAndRestart<br/>(stalled reason)"]
     style A fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
     style E fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style F fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style Q fill:#707070,stroke:,color:#fff
 ```
@@ -771,15 +795,26 @@ Five details carry the weight:
   starts a fresh clock from itself — so one failed attempt in hour two does not
   buy permanent silence for a PR that then never gets its second, which nothing
   else watches either, because its budget is not spent.
-- **Dedupe lives on the PR.** One escalation per PR per stall, keyed on the
-  `<!-- vibe-work-escalation:owner/repo#N -->` marker comment. Every host runs
-  this scan every cycle, and the failure being detected is precisely the kind
-  that recurs every cycle, so host-local dedupe would turn a stalled PR into a
-  comment flood. Suppressing signals are trusted only from a fleet author: a
-  forged marker must never buy silence.
-- **It escalates, it never retries.** Forcing an attempt from a watchdog would
-  race the ordinary pass and manufacture the disrupted state the workflow works
-  hard to avoid.
+- **The trip lives on the PR.** The first trip posts one
+  `<!-- vibe-conflict-stall-repair trip="1" -->` comment, and every host reads
+  it back, so a stall trips once however many hosts see it. A conclusion after
+  the trip ends it: the next stall starts again at its own first trip. Trip
+  markers count only from a fleet author, so a forged one can never skip
+  straight to closing the PR.
+- **It repairs, it never starts an attempt** (Issue #2803). Forcing an attempt
+  from a watchdog would race the ordinary pass and manufacture the disrupted
+  state the workflow works hard to avoid. The first trip instead deletes the
+  ladder's `rung="abandon"` wait marker for the head, so the ordinary pass
+  reruns the ladder — its own merge-then-resolve attempt — once. If the PR is
+  still stalled 8 hours after the trip, the second trip closes it and redoes
+  its work through `abandonAndRestart` with a `stalled` reason whose comments
+  say the ladder was rerun once — never that the branch was synced or a lane
+  rerun, which is the blocking-PR route's repair; the re-queue label is the
+  issue's own pickup label, else `idle-task`, never `work-on`.
+  It files no issue and adds no label; both trips run under the maintenance
+  lease. When the issue has already been redone twice, the rung hands the
+  issue to a human instead of a third redo (Issue #2804,
+  [above](#-abandon-and-restart-before-a-human-is-asked)).
 
 ### 🤫 Why #116 went silent
 
@@ -881,18 +916,29 @@ that gap, and reading the queue means reading both:
   summary means no pass ran, which is a different problem from a pass that ran
   and waited.
 - **The stall watchdog**
-  ([above](#-a-label-with-nothing-behind-it-escalates-itself)). A PR that is
+  ([above](#-a-label-with-nothing-behind-it-repairs-itself)). A PR that is
   still `CONFLICTING`, has carried the label for **8 hours**, and has had no
   attempt *conclude* in that window is a stalled queue whatever caused it
-  (Issue #1112). It posts one comment on the PR — label age, the silence, the
-  skip reasons — and files the stall as work through `escalateAsWork`.
-- **The watchdog applies `escalated`, never `needs-human`.** A mechanical stall
-  is work the fleet can claim, and `needs-human` is a cross-subsystem veto that
-  would remove the PR from the very lane that clears it (Issue #569).
+  (Issue #1112). Its first trip posts one comment on the PR — label age, the
+  silence, the skip reasons — and reruns the ladder once; its second trip
+  abandons and redoes the PR through `abandonAndRestart` (Issue #2803).
+- **The watchdog files no issue and applies no label to the PR — never
+  `escalated`, never `needs-human`.** A mechanical stall is repaired, not
+  reported, and `needs-human` is a cross-subsystem veto that would remove the
+  PR from the very lane that clears it (Issue #569). The one `needs-human` on
+  this path is the abandon rung's own, on the *originating issue* once both its
+  redos are spent (Issue #2804).
 - **The blocking-PR stall watchdog defers to this lane.** A `CONFLICTING` PR —
   or one carrying `merge-conflict` — is never reported as "green but unmerged",
-  its escalation says the ladder owns the PR rather than offering "or close it",
-  and a live escalation is withdrawn when the PR enters the lane (Issue #1213).
+  is never synced or abandoned by stall repair, and a live escalation from
+  before Issue #2802 is withdrawn when the PR enters the lane (Issue #1213).
+- **The blocking-PR stall watchdog repairs, it does not escalate.** Since Issue
+  #2802 a red or unanswered blocking PR files no issue and gets no `escalated`
+  label. Its first trip syncs the branch and reruns the owning lane once; its
+  second trip abandons the PR through this ladder's own `abandonAndRestart`
+  rung, with a `stalled` reason, so the PR and issue comments say "stalled"
+  rather than "merge conflict" and the issue shares the same two restarts —
+  after which a further stall hands the issue to a human (Issue #2804).
   NEAT-AI-Ockham#119 was closed by hand thirteen minutes after that comment
   appeared, before rung 1 ran; see
   [Blocking-PR stall watchdog](../CONFIGURATION.md#-blocking-pr-stall-watchdog).
@@ -953,7 +999,7 @@ each carries the operands that make the decision checkable afterwards:
 | `needs-human` | `label` | A human already owns the conflict. Not emitted for a `needs-human` that came only from a CI-fix escalation — that PR is resolved (Issue #2728). |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
-| `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` label and no comment asking anybody for anything. |
+| `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` on the PR; its originating issue carries `needs-human` and one comment asking a human to decide (Issue #2804). |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
@@ -1134,11 +1180,14 @@ label now means — a human must decide — but it made the label a
 this lane's queue, for a reason this lane had no part in. VibeCoder #549 was
 stranded exactly that way (Issue #569).
 
-A PR that is behind, conflicting, red or unmergeable is **work**. Those
-blockages are now filed as issues the fleet can claim
-(`worker/deno/lib/escalate_as_work.ts`), and the PR carries the non-vetoing
-`escalated` marker instead. `needs-human` is reserved for what genuinely needs
-a person: a policy call, a credential, confirming intent.
+A PR that is behind, conflicting, red or unmergeable is **work**. Stall
+self-repair now handles those blockages directly — sync and rerun the owning
+lane once, then abandon and redo (Issues #2802, #2803) — rather than filing an
+issue or adding the `escalated` label. The stall-repair pass sweeps away the
+leftovers of the old escalation each cycle
+(`worker/deno/lib/escalated_cleanup.ts`, Issue #2805). `needs-human` is
+reserved for what genuinely needs a person: a policy call, a credential,
+confirming intent.
 
 **The merge-conflict scan applies it for no conflict outcome** (Issue #2310). A
 spent budget used to end here — `needs-human` plus a summary naming the route —
@@ -1206,10 +1255,10 @@ branch at the same time. A host that loses the race returns immediately.
   "Issues consulted" block on the attempt, the override block on the
   resolution, and `findUncorroboratedOverrides`, which is what makes an
   unevidenced claim decidable without trusting the model.
-- `worker/deno/lib/conflict_rebase_rung.ts` — the stale-verdict ladder's rebase
-  rung: the replay onto the base, the tree-identity guard that licenses the
-  leased force-push, and the squash-of-the-old-tree fallback. Every outcome
-  leaves the branch at `OLD` or at a head whose tree equals `OLD`'s.
+- `worker/deno/lib/conflict_rebase_rung.ts` — the stale-verdict ladder's merge
+  rung (`runMergeRung`): `git merge --no-ff origin/BASE` and a plain push, never
+  a rebase or a force of any kind (Issue #2806). Every outcome but a push leaves
+  the branch at `OLD`.
 - `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
   its four preconditions, the restart marker and the `MAX_RESTARTS_PER_ISSUE`
   bound it enforces, the comments it posts on the PR and the issue, and
@@ -1219,8 +1268,9 @@ branch at the same time. A host that loses the race returns immediately.
   exhausted stale-verdict ladder, which records the rung as failed and asks
   nobody (Issue #2280).
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
-  a label with no concluded attempt behind it. It files work and applies
-  `escalated`; it never applies `needs-human` and never retries.
+  a label with no concluded attempt behind it. It reruns the ladder once, then
+  abandons and redoes the PR; it files no issue and applies no label, never
+  `escalated` or `needs-human`.
 - `worker/deno/lib/merge_conflict_markers.ts` — the marker literals the scan,
   the processor, the deferral tracker and the abandon rung all read, in one
   place so they cannot drift apart.

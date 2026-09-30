@@ -69,6 +69,11 @@ import { findParkedChecks } from "./ci_fix_pr_markers.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import {
+  classifyRedChecks,
+  RED_CHECK_CONCLUSIONS,
+  rerunInfrastructureChecks,
+} from "./ci_infrastructure_rerun.ts";
+import {
   buildJobNeedsMap,
   isDownstreamOfRedJob,
   type JobNeedsMap,
@@ -161,6 +166,11 @@ export interface CheckRunEntry {
 export interface PrScanOptions {
   /** GitHub username to filter PRs by. */
   githubUser: string;
+  /**
+   * Restrict the scan to this one PR number (Issue #2802) — the stall-repair
+   * pass reruns a lane on the stalled PR, not on whichever PR is next.
+   */
+  onlyPrNumber?: number;
   /** Repositories to scan. */
   repos: string[];
   /** Logger for diagnostic output. */
@@ -524,7 +534,8 @@ export async function listActionablePrs(
     seen.add(pr.number);
     prs.push(pr);
   }
-  return prs;
+  const only = options.onlyPrNumber;
+  return only === undefined ? prs : prs.filter((pr) => pr.number === only);
 }
 
 /**
@@ -697,25 +708,43 @@ async function fetchPrReviews(
   }
 }
 
+/** Conclusion names are internal constants only — never interpolated raw into jq. */
+const JQ_CONCLUSION_PATTERN = /^[a-z_]+$/;
+
 /**
  * Fetch failed check runs for a branch.
  *
  * @param repo - Repository in "owner/repo" format
  * @param branchName - Branch to check
  * @param ghCommandFn - Function to run gh commands
+ * @param conclusions - Conclusions to keep (default `["failure"]`; Issue
+ *   #2914 passes `["failure", "cancelled"]` from the CI-fix scan so a
+ *   cancelled check is not invisible to it). Every entry must match
+ *   `/^[a-z_]+$/` — these are internal constants, never user input.
  * @returns Array of failed check run entries
  */
 export async function fetchFailedCheckRuns(
   repo: string,
   branchName: string,
   ghCommandFn: (args: string[]) => Promise<string>,
+  conclusions: readonly string[] = ["failure"],
 ): Promise<CheckRunEntry[]> {
+  for (const conclusion of conclusions) {
+    if (!JQ_CONCLUSION_PATTERN.test(conclusion)) {
+      throw new Error(
+        `Invalid check-run conclusion for jq filter: ${conclusion}`,
+      );
+    }
+  }
+  const select = conclusions
+    .map((conclusion) => `.conclusion == "${conclusion}"`)
+    .join(" or ");
   try {
     const output = await ghCommandFn([
       "api",
       `repos/${repo}/commits/${branchName}/check-runs`,
       "--jq",
-      '.check_runs | [.[] | select(.conclusion == "failure") | {id: .id, name: .name, status: .status, conclusion: .conclusion}]',
+      `.check_runs | [.[] | select(${select}) | {id: .id, name: .name, status: .status, conclusion: .conclusion}]`,
     ]);
     const parsed: unknown = JSON.parse(output);
     if (!Array.isArray(parsed)) return [];
@@ -735,19 +764,30 @@ export async function fetchFailedCheckRuns(
  *
  * Collapses N→ceil(N/25) GraphQL calls instead of 2N REST calls during
  * the PR maintenance scan.
+ *
+ * @param conclusions - Conclusions to keep (default `["failure"]`; Issue
+ *   #2914 passes `["failure", "cancelled"]` from the CI-fix scan), passed
+ *   through to both the batched and the REST-fallback path.
  */
 export async function buildFailedCheckRunsLookup(
   repo: string,
   prs: PrEntry[],
   ghCommandFn: (args: string[]) => Promise<string>,
+  conclusions: readonly string[] = ["failure"],
 ): Promise<(pr: PrEntry) => Promise<CheckRunEntry[]>> {
   const prNumbers = prs.map((p) => p.number);
-  const batch = await fetchFailedCheckRunsBatch(repo, prNumbers, ghCommandFn);
+  const batch = await fetchFailedCheckRunsBatch(
+    repo,
+    prNumbers,
+    ghCommandFn,
+    conclusions,
+  );
   if (batch !== null) {
     return (pr) => Promise.resolve(batch.get(pr.number) ?? []);
   }
   // GraphQL failed — fall back to per-PR REST path
-  return (pr) => fetchFailedCheckRuns(repo, pr.headRefName, ghCommandFn);
+  return (pr) =>
+    fetchFailedCheckRuns(repo, pr.headRefName, ghCommandFn, conclusions);
 }
 
 /**
@@ -1420,11 +1460,14 @@ export async function findFailedCiChecks(
     );
 
     // Batch all check-run lookups for this repo into a single GraphQL
-    // call (Issue #1806), with REST fallback handled internally.
-    const getFailedChecks = await buildFailedCheckRunsLookup(
+    // call (Issue #1806), with REST fallback handled internally. Reads
+    // both `failure` and `cancelled` (Issue #2914) so a PR whose only
+    // red checks are cancelled is not invisible to this scan.
+    const getRedChecks = await buildFailedCheckRunsLookup(
       repo,
       prs,
       ghCommandFn,
+      RED_CHECK_CONCLUSIONS,
     );
 
     // Issue #1878: the `needs:` topology from the host's existing clone,
@@ -1440,8 +1483,46 @@ export async function findFailedCiChecks(
         baseRefName: baseRef,
       } = pr;
 
-      const failedChecks = await getFailedChecks(pr);
-      const failedCheckNames = failedChecks.map((check) => check.name);
+      const redChecks = await getRedChecks(pr);
+
+      // Issue #2914: a cancelled check, or a failure whose Actions job
+      // never started (zero steps), is infrastructure, not code — it is
+      // re-run directly and never handed to the CI-fix agent.
+      const classified = await classifyRedChecks({
+        repo,
+        checks: redChecks,
+        ghCommandFn,
+        logger,
+        // Issue #2914 follow-up: lets an `if: always()` aggregator whose
+        // redness is explained only by an infrastructure job be treated
+        // as infrastructure too, instead of stranding both.
+        jobNeeds,
+      });
+      const failedChecks = classified.code;
+      // All red names, including infrastructure ones — so an aggregator
+      // red only because a needed job was cancelled is still dropped,
+      // and `siblingFailedCheckNames` carries the full picture.
+      const failedCheckNames = redChecks.map((check) => check.name);
+
+      if (classified.infrastructure.length > 0) {
+        logger.skipReason(
+          "ci-cancelled",
+          `${repo}#${prNumber}: ${
+            classified.infrastructure.map((c) => `${c.name} (${c.reason})`)
+              .join(", ")
+          } — infrastructure, not code; no CI-fix agent (Issue #2914)`,
+        );
+        await rerunInfrastructureChecks({
+          repo,
+          prNumber,
+          headSha: pr.headRefOid,
+          infrastructure: classified.infrastructure,
+          codeRunIds: classified.codeRunIds,
+          stateDir,
+          ghCommandFn,
+          logger,
+        });
+      }
 
       // Issue #1878: an aggregator such as `CI Required Checks` is red
       // only because a job it needs is red. Diagnosing it earns a failure

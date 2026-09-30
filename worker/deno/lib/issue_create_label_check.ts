@@ -58,16 +58,11 @@ export interface CreateLabelCheckResult {
  *     labels cannot pass a positive allowlist that enumerates worker
  *     content, so that path is guarded the other way round: by the
  *     reserved-label denylist in `filterReservedLabelsWithWarning`
- *     (Issue #2825);
- *   - `escalate_as_work.ts` — deliberately applies the configured pickup
- *     label (`work-on` by default) when the fleet files a stuck PR as work
- *     (Issue #569), which is a label the positive allowlist forbids by
- *     design.
+ *     (Issue #2825).
  */
 export const CREATE_LABEL_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "worker/deno/lib/guarded_issue_labels.ts",
   "worker/deno/lib/github.ts",
-  "worker/deno/lib/escalate_as_work.ts",
 ]);
 
 /**
