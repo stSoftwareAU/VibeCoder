@@ -111,6 +111,14 @@ const BAD_BRANCH_NAME_COMMENT =
   `## Automated Processing Failed (First Attempt)\n\n**Category:** \`unknown\`\n\n` +
   `### Error Output\n> fatal: 'feat..bad' is not a valid branch name\n`;
 
+/**
+ * A legacy (pre-marker) failure record with a corrupt clone's own
+ * `.git/config` (Issue #2953).
+ */
+const LEGACY_BAD_GIT_CONFIG_COMMENT =
+  `## Automated Processing Failed (First Attempt)\n\n**Category:** \`unknown\`\n\n` +
+  `### Error Output\n> fatal: bad config line 1 in file .git/config\n`;
+
 Deno.test("releaseHostFaultFailureLabels - a legacy unmarked clone-corrupt record is released (Issue #2890)", async () => {
   resetHostFaultReleaseSweepsForTest();
   const issues: FakeIssue[] = [
@@ -140,6 +148,33 @@ Deno.test("releaseHostFaultFailureLabels - a legacy unmarked clone-corrupt recor
   const comment = gh.calls.find((c) => c[1] === "comment" && c[2] === "100");
   assert(comment, "the release must be recorded in a comment");
   assertStringIncludes(comment![comment!.length - 1] ?? "", "clone-corrupt");
+});
+
+Deno.test("classifyFailureRecord (via releaseHostFaultFailureLabels) - a legacy unmarked bad .git/config record is released (Issue #2953)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const issues: FakeIssue[] = [
+    {
+      number: 200,
+      labels: ["failed-once"],
+      comments: [LEGACY_BAD_GIT_CONFIG_COMMENT],
+    },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  assertEquals(outcome.released, [200]);
+  assertEquals(gh.byNumber.get(200)?.labels, []);
+
+  const comment = gh.calls.find((c) => c[1] === "comment" && c[2] === "200");
+  assert(comment, "the release must be recorded in a comment");
+  assertStringIncludes(
+    comment![comment!.length - 1] ?? "",
+    "clone-corrupt",
+  );
 });
 
 Deno.test("releaseHostFaultFailureLabels - a marked record is released (Issue #2890)", async () => {

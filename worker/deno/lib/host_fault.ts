@@ -65,6 +65,21 @@ const CLONE_AUTH_OR_MISSING_PATTERN =
 const CONTAINER_BUILD_FAILED_PATTERN = /container image build failed/i;
 
 /**
+ * Further wordings git itself uses for a damaged clone on the worker host
+ * (Issue #2953) — none of these are a fault of the issue being worked:
+ *  - a bad line in the clone's own `.git/config` (never a user's
+ *    `~/.gitconfig` or any other config file git happens to mention);
+ *  - the clone's git directory has gone missing or been corrupted beyond
+ *    recognition, so git no longer believes it is inside one;
+ *  - a ref git is skipping over because it is unreadable.
+ */
+const CLONE_CORRUPT_PATTERNS: readonly RegExp[] = [
+  /bad config line \d+ in file (?:\S*\/)?\.git\/config\b/i,
+  /\bnot in a git directory\b/i,
+  /\bignoring broken ref\b/i,
+];
+
+/**
  * Classify a raw failure message; `null` when it is not a host fault.
  *
  * Checked in order, each narrow enough that an ambiguous git failure (an
@@ -72,7 +87,10 @@ const CONTAINER_BUILD_FAILED_PATTERN = /container image build failed/i;
  * guessed at.
  */
 export function detectHostFault(message: string): HostFaultKind | null {
-  if (brokenRefsIn(message).length > 0 || isObjectStoreCorruption(message)) {
+  if (
+    brokenRefsIn(message).length > 0 || isObjectStoreCorruption(message) ||
+    CLONE_CORRUPT_PATTERNS.some((re) => re.test(message))
+  ) {
     return "clone-corrupt";
   }
   if (DISK_FULL_PATTERN.test(message)) {
@@ -127,7 +145,7 @@ export function parseHostFaultMarker(body: string): HostFaultKind | null {
 export function describeHostFault(kind: HostFaultKind): string {
   switch (kind) {
     case "clone-corrupt":
-      return "a corrupt git clone on the worker host (broken ref or unreadable object)";
+      return "a corrupt git clone on the worker host (broken ref, unreadable object, corrupt .git/config or lost git directory)";
     case "clone-failed":
       return "the worker host could not clone the repository";
     case "disk-full":
