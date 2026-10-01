@@ -75,6 +75,22 @@ flowchart LR
 - `tests/coding_guidelines_layers_2574_test.ts`: the new issue-template
   heading has been added to the allowlist.
 
+## Acceptance Criteria
+
+| Criterion | Verdict |
+| --- | --- |
+| Measurement runs get a fleet-wide data source | MET |
+| Covers the credit/cost-log gap (archive carries token and cost telemetry) | MET |
+| No hardcoded private repo; operator-configured | MET |
+| Read-only access | MET (instruction + existing `gh` write guard) |
+| Source contents kept as untrusted data | PARTIAL — the slug is fenced; contents are fetched at runtime by `gh api`, so they are covered by an explicit untrusted-data instruction rather than a build-time fence |
+| Graceful single-host / partial verdict when unset | MET |
+
+## Standards Review
+
+No material departures. Optional: `fleet_run_archive` is trimmed in both
+`validation.ts` and `config.ts`, which follows the existing per-key pattern.
+
 ## Test Plan
 
 - `deno task test:unit` on the touched tests.
