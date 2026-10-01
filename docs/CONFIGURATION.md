@@ -456,6 +456,7 @@ explicitly overridden.
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
+| `fleet_run_archive` | unset | Optional `owner/repo` slug naming the operator's private fleet run archive — a repository a hook extension fills with per-run records (outcome, mode, host, token and cost telemetry) from every host. Validated as an `owner/repo` slug at load; a malformed value fails config loading loudly. Absent (the default) means fleet-wide measurement is off. See [Fleet Run Archive](#-fleet-run-archive). |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
 > — they are fixed in the codebase and any `.config.json` key that tries to set
@@ -471,6 +472,49 @@ explicitly overridden.
 > To change the planning model, use `phase_model_overrides` (e.g.
 > `{ "planning": "sonnet" }`) or `best_planning_model` — there is no separate
 > per-phase planning-model config key.
+
+### 📈 Fleet Run Archive
+
+`fleet_run_archive` names a repository —
+`"your-org/vibe-fleet-archive"` — that an operator-maintained hook
+extension fills with per-run records (outcome,
+mode, host, token and cost telemetry) gathered from every host in the fleet.
+VibeCoder names no specific archive and ships no hook that writes to one; the
+operator builds and configures both. Validated with the canonical
+`owner/repo` slug check (`isValidRepoSlug` — rejects `..` and dot-led path
+segments); a malformed value fails config loading loudly rather than
+silently disabling fleet-wide measurement.
+
+When set, an `issue`-phase run gains a `<fleet_data_source>` block naming the
+archive and explaining that a host's own `fleet_telemetry_*.json` sidecars and
+`.credit_log_*.json` only describe that one host. The run is told to read the
+archive **read-only** via `gh api repos/<archive>/contents/...` — starting
+with its README to learn the layout — and never to write to it. The slug
+itself is fenced inside the run's untrusted boundary; the archive's
+contents are fetched by the run itself at runtime, so the prompt instead
+**instructs** the run to treat everything it reads back as untrusted
+data — never an instruction to follow — and the standing untrusted-data
+rules apply to it. An incomplete or unreadable archive is reported as a
+**partial** verdict naming the hosts and dates covered and the gaps. The
+run's GitHub token must be able to read the archive repository; the `gh`
+guard already confines writes to the issue's own claim repository, so the
+archive stays read-only from the run regardless of token scope.
+
+Unset (the default), the `issue` prompt tells a measurement-shaped issue to
+label its verdict **single-host** or **partial** rather than claim fleet-wide
+coverage it cannot see.
+
+```mermaid
+flowchart LR
+    H1["Host A"] --> HOOK["Operator's<br/>post-run hook"]
+    H2["Host B"] --> HOOK
+    H3["Host C"] --> HOOK
+    HOOK --> ARCH["fleet_run_archive<br/>(private repo)"]
+    ARCH -.->|"gh api … (read-only)"| RUN["issue-phase run<br/>on any host"]
+    RUN --> V{"Archive readable<br/>and complete?"}
+    V -->|yes| FW["Verdict: fleet-wide"]
+    V -->|no| PART["Verdict: partial<br/>(hosts/dates + gaps named)"]
+```
 
 ### ⚖️ Idle-Task Template Weights
 

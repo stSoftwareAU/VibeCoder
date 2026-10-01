@@ -497,6 +497,8 @@ export interface WorkerConfig {
    * defined cheaper sub-agents (Issue #2575). Host-wide only. Default `false`.
    */
   issueReviewerAgents: boolean;
+  /** Fleet-wide run archive repo slug for measurement issues (Issue #2930). Unset = feature off. */
+  fleetRunArchive?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -1428,6 +1430,8 @@ export interface ConfigFile {
   issue_executor_split?: boolean;
   /** Whether `issue` runs use the defined reviewer sub-agents (Issue #2575) */
   issue_reviewer_agents?: boolean;
+  /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
+  fleet_run_archive?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */

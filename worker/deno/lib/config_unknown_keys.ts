@@ -78,6 +78,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "issue_executor_split",
   // Reviewer sub-agents (Issue #2575). Host-wide only.
   "issue_reviewer_agents",
+  // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
+  "fleet_run_archive",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both
