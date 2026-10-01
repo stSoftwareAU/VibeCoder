@@ -13,11 +13,9 @@
  * plain `config.allowedAuthors`.
  *
  * Deliberately **not** folded into `fleet_authors.ts`: `trust_snapshot.ts`
- * (for `trustedAuthorsFor`) already imports `fleet_authors.ts`, so importing
- * `fleet_authors.ts` back from a module `trust_snapshot.ts` also feeds would
- * create a cycle. This module sits above both instead.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * already imports `fleet_authors.ts`, so this helper lives in its own module
+ * above both to avoid feeding `fleet_authors.ts` back into `trust_snapshot.ts`
+ * and creating a cycle.
  */
 
 import type { WorkerConfig } from "../types.ts";
@@ -32,10 +30,8 @@ import { resolveFleetAuthors } from "./fleet_authors.ts";
  * authors (`trustedAuthorsFor`) and the fleet's own logins (this host plus
  * `fleet_pr_authors`) — the same set `collect_idle_task_candidates.ts`
  * resolves as `idleTaskTrustedAuthors`. `allowedAuthorsByRepo` is cleared so
- * the widened set is actually what gets read: the per-repo map, when
- * present, would otherwise take priority over the plain `allowedAuthors`
- * this function just set, and the per-repo trust is already folded into it
- * via `trustedAuthorsFor`.
+ * this widened set is what actually gets read, rather than the per-repo map
+ * (whose trust is already folded in via `trustedAuthorsFor`) taking priority.
  */
 export function idleTaskIntegrityConfig(
   config: WorkerConfig,

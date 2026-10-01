@@ -70,11 +70,12 @@ export type PickupContentIntegrityOutcome =
  * Pick the approval label that gated this issue.
  *
  * The snapshot is keyed by repo and issue number only, so the label is needed
- * purely to name (and strip) the right approval in the escalation. Priority
- * labels are checked first because they outrank `work-on` at pickup, and
- * `idle-task` is checked last (Issue #2944): it is the lowest work-trigger
- * tier, so any higher-priority label present on the issue takes precedence
- * when naming which approval gated this run.
+ * to name the approval in the escalation, to pick which label-add counts as a
+ * trusted re-approval, and (Issue #2944) to select the widened idle-task
+ * trust set. Priority labels are checked first because they outrank `work-on`
+ * at pickup, and `idle-task` is checked last (Issue #2944): it is the lowest
+ * work-trigger tier, so any higher-priority label present on the issue takes
+ * precedence when naming which approval gated this run.
  */
 export function resolveApprovalLabel(
   issueLabels: string[],

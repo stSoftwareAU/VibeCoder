@@ -469,10 +469,17 @@ Deno.test(
     };
     const { ghFn, postedBodies } = createGhStub(state);
 
+    // Issue #2944: the collector verifies idle-task issues against the
+    // widened config — mirrors what `idleTaskIntegrityConfig` produces.
+    const widenedConfig = {
+      ...config,
+      allowedAuthors: ["alice", "sibling-bot", "vibe-bot"],
+      allowedAuthorsByRepo: undefined,
+    };
     const scan = await verifyWorkOnContentIntegrity(
       "owner/repo",
       issue,
-      config,
+      widenedConfig,
       ghFn,
       undefined,
       contentDeps,
@@ -526,19 +533,32 @@ Deno.test(
       labelAddedBy: "sibling-bot",
       labelAddedAt: "2026-08-01T00:00:00Z",
       labelName: "idle-task",
+      // Issue #3715: the edit below must be attributed to someone, or the
+      // "changed" branch finds no recorded editor since the snapshot and
+      // treats the hash mismatch as a worker-side defect rather than a real
+      // edit — masking the very re-approval check under test.
+      editedBy: "attacker",
     };
     const { ghFn, actions } = createGhStub(state);
 
-    await verifyWorkOnContentIntegrity(
+    // Issue #2944: the collector verifies idle-task issues against the
+    // widened config — mirrors what `idleTaskIntegrityConfig` produces.
+    const widenedConfig = {
+      ...config,
+      allowedAuthors: ["sibling-bot", "vibe-bot"],
+      allowedAuthorsByRepo: undefined,
+    };
+    const scan = await verifyWorkOnContentIntegrity(
       "owner/repo",
       issue,
-      config,
+      widenedConfig,
       ghFn,
       undefined,
       contentDeps,
       undefined,
       "idle-task",
     );
+    assertEquals(scan, "proceed");
 
     // Re-approved by the fleet-only login after the snapshot was captured.
     state.body = "Refined body";
@@ -575,10 +595,15 @@ Deno.test(
       labelAddedBy: "sibling-bot",
       labelAddedAt: "2026-08-01T00:00:00Z",
       labelName: "work-on",
+      // Issue #3715: the edit below must be attributed to someone, or the
+      // "changed" branch finds no recorded editor since the snapshot and
+      // treats the hash mismatch as a worker-side defect rather than a real
+      // edit — masking the very re-approval check under test.
+      editedBy: "attacker",
     };
     const { ghFn } = createGhStub(state);
 
-    await verifyWorkOnContentIntegrity(
+    const scan = await verifyWorkOnContentIntegrity(
       "owner/repo",
       issue,
       config,
@@ -586,6 +611,7 @@ Deno.test(
       undefined,
       contentDeps,
     );
+    assertEquals(scan, "proceed");
 
     // The fleet-only login re-adds work-on after the snapshot was captured —
     // this must not count as a trusted re-approval for a plain work-on issue.
@@ -623,19 +649,32 @@ Deno.test(
       labelAddedBy: "sibling-bot",
       labelAddedAt: "2026-08-01T00:00:00Z",
       labelName: "idle-task",
+      // Issue #3715: the edit below must be attributed to someone, or the
+      // "changed" branch finds no recorded editor since the snapshot and
+      // treats the hash mismatch as a worker-side defect rather than a real
+      // edit — masking the very re-approval check under test.
+      editedBy: "attacker",
     };
     const { ghFn } = createGhStub(state);
 
-    await verifyWorkOnContentIntegrity(
+    // Issue #2944: the collector verifies idle-task issues against the
+    // widened config — mirrors what `idleTaskIntegrityConfig` produces.
+    const widenedConfig = {
+      ...config,
+      allowedAuthors: ["vibe-bot"],
+      allowedAuthorsByRepo: undefined,
+    };
+    const scan = await verifyWorkOnContentIntegrity(
       "owner/repo",
       issue,
-      config,
+      widenedConfig,
       ghFn,
       undefined,
       contentDeps,
       undefined,
       "idle-task",
     );
+    assertEquals(scan, "proceed");
 
     // An untrusted login re-adds idle-task after the snapshot was captured.
     state.body = "Refined body";
@@ -696,6 +735,8 @@ Deno.test(
     });
     // idle-task alone resolves to idle-task.
     assertEquals(resolveApprovalLabel(["idle-task"], config), "idle-task");
+    // No idle-task label at all still falls back to work-on.
+    assertEquals(resolveApprovalLabel(["bug"], config), "work-on");
     // Any higher-priority label present outranks idle-task.
     assertEquals(
       resolveApprovalLabel(["idle-task", "work-on"], config),
