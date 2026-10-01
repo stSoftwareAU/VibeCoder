@@ -36,6 +36,7 @@ import {
   saveProcessedSweepState,
 } from "./merged_sweep_watermark.ts";
 import { defaultLogger } from "./logger.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /** Build a canonical PR URL for the given repo and PR number. */
 function buildPrUrl(repo: string, prNumber: number): string {
@@ -1057,9 +1058,15 @@ export async function closeIssuesForMergedPrs(
           ]);
           closedCount++;
           mutated = true;
-        } catch {
+        } catch (err) {
           // Individual issue close failure is not fatal — but it must be
-          // retried next cycle rather than marked processed (Issue #4256).
+          // retried next cycle rather than marked processed (Issue #4256),
+          // and logged so a persistent failure is visible (Issue #2902).
+          logger.warn(
+            `[close-merged-pr] ${repo}#${issueNumber} (PR #${pr.number}): view/close failed; held back for retry: ${
+              redactSecrets(err instanceof Error ? err.message : String(err))
+            }`,
+          );
           heldBack = true;
         }
       }

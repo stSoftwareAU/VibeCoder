@@ -36,6 +36,7 @@ import {
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
+import { mergeWithUnshallowRetry } from "./git_merge_unshallow_retry.ts";
 import {
   createConflictStageTimer,
   currentHost,
@@ -467,6 +468,20 @@ async function readRef(
  * travels back with the outcome (Issue #1558): the files that collided, the
  * commit each side stood at, and the rung that settled each file.
  *
+ * Before any of that, the local default branch ref is both refreshed AND
+ * positively verified against `origin/<defaultBranch>` (Issue #2896):
+ * `ensureDefaultBranchCurrent()` ignores the result of its own `branch -f` /
+ * `reset --hard`, so its success does not prove the ref actually moved — a
+ * stale ref (e.g. because another worktree holds the branch, Issue #394)
+ * would otherwise be merged in silently. The shallow-clone deepen
+ * (`ensureHistoryDepth()`) is checked the same way: a deepen that could not
+ * reach the merge base is refused loudly rather than left to surface later as
+ * an opaque "unrelated histories" merge failure. Should the merge itself
+ * still refuse with "unrelated histories" on a shallow clone, it is
+ * unshallowed and retried exactly once — see
+ * {@link mergeWithUnshallowRetry} — before falling through to the ordinary
+ * conflict / non-conflict handling below.
+ *
  * @param milestoneBranch - The milestone branch name
  * @param defaultBranch - The default branch to sync from
  * @param options - Git command options
@@ -544,8 +559,49 @@ export async function syncMilestoneBranchWithDefault(
     }
   }
 
-  // Ensure the local default branch is current
-  await ensureDefaultBranchCurrent(defaultBranch, options);
+  // Ensure the local default branch is current (Issue #2896). A stale local
+  // ref merged into the milestone branch silently carries whatever commit
+  // happened to be sitting there — possibly days behind origin, and possibly
+  // even an ancestor the milestone branch cannot find a merge base for in a
+  // shallow clone, which git then refuses as "unrelated histories" further
+  // down. `ensureDefaultBranchCurrent` itself ignores the result of its own
+  // `git branch -f` / `reset --hard` (Issue #394: `branch -f` is refused when
+  // another worktree holds the branch), so its ok:true is not proof the ref
+  // actually moved — hence the positive check below, not just the `!ok` one.
+  const defaultCurrent = await ensureDefaultBranchCurrent(
+    defaultBranch,
+    options,
+  );
+  if (!defaultCurrent.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
+          `the local '${defaultBranch}' could not be made current with ` +
+          `origin, so the merge would carry a stale ref (Issue #2896): ${defaultCurrent.error.message}`,
+      ),
+    };
+  }
+  const localDefaultSha = await readRef(defaultBranch, options);
+  const originDefaultSha = await readRef(`origin/${defaultBranch}`, options);
+  if (
+    !localDefaultSha || !originDefaultSha ||
+    localDefaultSha !== originDefaultSha
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
+          `the local '${defaultBranch}' ref could not be moved to match ` +
+          `origin (local ${
+            localDefaultSha ? localDefaultSha.slice(0, 7) : "<unreadable>"
+          }` +
+          ` vs origin ${
+            originDefaultSha ? originDefaultSha.slice(0, 7) : "<unreadable>"
+          }), so the merge would carry a stale ref (Issue #2896)`,
+      ),
+    };
+  }
 
   // What the sync discarded on its way in, reported with its outcome
   // (Issue #568). Empty on the ordinary path.
@@ -694,10 +750,26 @@ export async function syncMilestoneBranchWithDefault(
     return formatStageTimings(stageTimings, host);
   };
 
-  // Ensure enough history for range/merge ops on a shallow clone (Issue #1502)
+  // Ensure enough history for range/merge ops on a shallow clone (Issue
+  // #1502). A failure here is NOT a free pass to merge anyway (Issue #2896):
+  // without a common ancestor locally, `git merge` refuses as "unrelated
+  // histories" even though a merge base exists on the remote, and that
+  // refusal used to be reported as the permanent non-conflict failure further
+  // down rather than named for what it is here.
   timer.start("deepen");
-  await ensureHistoryDepth(["HEAD", defaultBranch], options);
+  const deepened = await ensureHistoryDepth(["HEAD", defaultBranch], options);
   timer.stop();
+  if (!deepened.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
+          `the shallow clone could not be deepened to their merge base, so ` +
+          `git would refuse the merge as unrelated histories ` +
+          `(Issue #2896): ${deepened.error.message}`,
+      ),
+    };
+  }
 
   // Check if merge is needed
   const behindResult = await runGitCommand(
@@ -740,11 +812,13 @@ export async function syncMilestoneBranchWithDefault(
     };
   }
 
-  // Merge default into milestone (preserve commit history)
-  const mergeResult = await runGitCommand(
-    ["merge", defaultBranch, "--no-edit"],
-    options,
-  );
+  // Merge default into milestone (preserve commit history). A refusal naming
+  // "unrelated histories" is retried once after unshallowing when the clone
+  // is shallow (Issue #2896) — see {@link mergeWithUnshallowRetry} — because
+  // that refusal on a shallow clone usually means the merge base exists on
+  // the remote but was never fetched, not that the histories are genuinely
+  // unrelated.
+  const mergeResult = await mergeWithUnshallowRetry(defaultBranch, options);
 
   if (mergeResult.ok && mergeResult.value.code === 0) {
     if (await alreadySyncedElsewhere(milestoneBranch, defaultBranch, options)) {

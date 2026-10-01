@@ -919,6 +919,17 @@ to `git clone`.
   history in doubling steps (50, 100, 200, …) until a common ancestor is found,
   falling back to `git fetch --unshallow` as a last resort. On a full clone the
   helper is a no-op.
+- **Belt-and-braces unshallow retry on the milestone sync** — even with
+  `ensureHistoryDepth()` run first, `syncMilestoneBranchWithDefault()` in
+  `worker/deno/lib/git_pull.ts` can still meet a `git merge` that refuses with
+  "refusing to merge unrelated histories" when the doubling steps stopped
+  short of the real merge base (Issue #2896). `mergeWithUnshallowRetry()` in
+  `worker/deno/lib/git_merge_unshallow_retry.ts` treats that specific refusal
+  on a shallow clone as the shallow-history artefact it is: it runs
+  `git fetch --unshallow origin` and retries the merge exactly once before
+  falling through to the ordinary conflict/non-conflict handling. A refusal
+  on a clone that is already full is left alone — that is a genuinely
+  unrelated history, not a depth problem.
 
 **Implementation:** `buildShallowCloneArgs()` in
 `worker/deno/commands/git_operations.ts` produces the argument list for the
