@@ -65,6 +65,7 @@ import {
 import type { CloneCorruptRepeat } from "./corrupt_clone_recovery.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
+import type { RepoFastFailurePolicy } from "./repo_fast_failure_tracker.ts";
 import type { Logger } from "../types.ts";
 
 /** Marker prefix; the back-off body carries `<!-- VIBE_REPO_FAST_FAILURE:<repo> -->`. */
@@ -177,11 +178,7 @@ export function parseFastFailureCommentMarker(
 /** Tally issue body: marker first, then a short explanation of the design. */
 export function formatRepoFastFailureTallyBody(
   repo: string,
-  policy: {
-    threshold: number;
-    windowSeconds: number;
-    fastFailureSeconds: number;
-  },
+  policy: RepoFastFailurePolicy,
 ): string {
   const windowHours = Math.round(policy.windowSeconds / 3600);
   return [
@@ -225,11 +222,7 @@ export interface RecordRepoFastFailureTallyOptions
   reason: string;
   /** Host that recorded the fast failure. */
   machineId: string;
-  policy: {
-    threshold: number;
-    windowSeconds: number;
-    fastFailureSeconds: number;
-  };
+  policy: RepoFastFailurePolicy;
   /** gh runner: resolves stdout, rejects on failure. */
   ghFn: (args: string[]) => Promise<string>;
   /** Injected clock (epoch seconds). */
@@ -257,11 +250,7 @@ interface FindOrCreateTallyIssueOptions extends AlertDedupAuthorOptions {
   repo: string;
   /** Where the tally issue is (or will be) filed. */
   targetRepo: string;
-  policy: {
-    threshold: number;
-    windowSeconds: number;
-    fastFailureSeconds: number;
-  };
+  policy: RepoFastFailurePolicy;
   ghFn: (args: string[]) => Promise<string>;
   log: (message: string) => void;
   recordFault: (event: FaultEvent, context?: string) => void;
@@ -608,13 +597,7 @@ export interface EscalateRepeatCloneCorruptionOptions
   failedIssueNumber: number;
   /** The repeat-corruption event recorded by `corrupt_clone_recovery.ts`. */
   repeat: CloneCorruptRepeat;
-  /** Host raising the escalation. */
-  machineId: string;
-  policy: {
-    threshold: number;
-    windowSeconds: number;
-    fastFailureSeconds: number;
-  };
+  policy: RepoFastFailurePolicy;
   /** gh runner: resolves stdout, rejects on failure. */
   ghFn: (args: string[]) => Promise<string>;
   /** Injected clock (epoch seconds). */
@@ -623,6 +606,8 @@ export interface EscalateRepeatCloneCorruptionOptions
   targetRepo?: string;
   /** Sink for info-level decisions. */
   log?: (line: string) => void;
+  /** Sink for warnings; defaults to `log`. */
+  warn?: (line: string) => void;
   /** Sink for error-level failures. Defaults to `console.error`. */
   error?: (line: string) => void;
   /** Records the filing attestation (Issue #1277). Injected by tests. */
@@ -693,6 +678,7 @@ export async function escalateRepeatCloneCorruption(
   opts: EscalateRepeatCloneCorruptionOptions,
 ): Promise<EscalateRepeatCloneCorruptionResult> {
   const log = opts.log ?? (() => {});
+  const warn = opts.warn ?? log;
   const error = opts.error ?? ((line: string) => console.error(line));
   const recordFault = opts.recordFault ?? recordFaultEvent;
   const repo = opts.repo;
@@ -755,7 +741,7 @@ export async function escalateRepeatCloneCorruption(
         backedOff = true;
       }
     } catch (err) {
-      error(
+      warn(
         `repo fast-failure repeat-corruption: view/edit issue body failed ` +
           `(${repo}, #${issueNumber}): ${err}`,
       );
@@ -815,6 +801,10 @@ export async function escalateRepeatCloneCorruption(
       deps: {
         dedupAuthors: opts,
         github: {
+          // Issue #2958: `needs-human` is a fleet label that exists on
+          // every monitored repository (the ordinary escalation path
+          // relies on it), so this escalation never creates labels — a
+          // missing label reads as a failed label add, which is loud.
           ensureLabelExists: () =>
             Promise.resolve({ ok: true, value: undefined }),
         },
@@ -839,16 +829,20 @@ export async function escalateRepeatCloneCorruption(
       };
     }
 
-    const { commentPosted, labelAdded } = result.value;
-    if (!commentPosted) {
+    const { commentPosted, labelAdded, dedupSkipped } = result.value;
+    if (!labelAdded) {
+      // Issue #2958: the label is the alert. Whether the comment went up
+      // (and the label add failed) or a dedup match skipped it (and the
+      // label add failed), a missing label is an ERROR either way.
       error(
-        `repo fast-failure repeat-corruption: comment failed, ` +
-          `needs-human not added (${repo}, #${issueNumber})`,
+        `repo fast-failure repeat-corruption: comment ${
+          dedupSkipped ? "matched a prior escalation but" : "posted but"
+        } ${needsHumanLabel} label add failed (${repo}, #${issueNumber})`,
       );
-    } else if (!labelAdded) {
-      error(
-        `repo fast-failure repeat-corruption: comment posted but ` +
-          `${needsHumanLabel} label add failed (${repo}, #${issueNumber})`,
+    } else if (dedupSkipped && !commentPosted) {
+      log(
+        `repo fast-failure repeat-corruption: a prior escalation comment ` +
+          `already explains it; ${needsHumanLabel} ensured (${repo}, #${issueNumber})`,
       );
     }
 

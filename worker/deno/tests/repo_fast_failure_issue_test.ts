@@ -6,6 +6,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  escalateRepeatCloneCorruption,
   formatFastFailureCommentMarker,
   formatRepoFastFailureMarker,
   formatRepoFastFailureTallyBody,
@@ -21,6 +22,7 @@ import {
   lookupFleetDiagnosticBackOffs,
   resolveRepoFastFailurePolicy,
 } from "../lib/repo_fast_failure_tracker.ts";
+import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 
 const REPO = "acme/widgets";
 const FLEET = ["vibe-bot"];
@@ -541,4 +543,282 @@ Deno.test("a tally-only body does not back the repo off fleet-wide; the back-off
     error: () => {},
   });
   assertEquals(result2.backedOff.has(REPO), true);
+});
+
+// ---------------------------------------------------------------------------
+// Repeat clone corruption escalation (Issue #2958).
+// ---------------------------------------------------------------------------
+
+/** A repeat-corruption payload as `corrupt_clone_recovery.ts` formats it. */
+const REPEAT = {
+  repo: REPO,
+  host: "host-b",
+  previousAt: "2026-10-01T00:00:00.000Z",
+  previousGitMessage: "first corruption: bad config line",
+  aside: "/work/acme.corrupt-20261001T000000Z",
+  currentAt: "2026-10-01T01:00:00.000Z",
+  currentGitMessage: "second corruption: broken ref",
+};
+
+function escalationBaseOpts(
+  ghFn: (args: string[]) => Promise<string>,
+  log: string[] = [],
+  warn: string[] = [],
+  error: string[] = [],
+) {
+  return {
+    repo: REPO,
+    failedIssueNumber: 42,
+    repeat: REPEAT,
+    policy: POLICY,
+    fleetAuthors: FLEET,
+    ghFn,
+    nowSeconds: () => 1_700_000_000,
+    recordFiling: () => Promise.resolve(true),
+    recordFault: () => {},
+    log: (line: string) => log.push(line),
+    warn: (line: string) => warn.push(line),
+    error: (line: string) => error.push(line),
+  };
+}
+
+Deno.test("escalateRepeatCloneCorruption - creates the tally issue, backs off immediately, posts one comment and adds needs-human (Issue #2958)", async () => {
+  const stub = createGhStub();
+  const log: string[] = [];
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, log, [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 500,
+    created: true,
+    backedOff: true,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  const issue = stub.issues.get(500)!;
+  assert(
+    isRepoFastFailureIssue(issue.body, REPO),
+    "the back-off marker must be added to the tally issue straight away",
+  );
+  assertStringIncludes(issue.body, "corrupted twice within 24 h on host-b");
+  assertEquals(issue.labels, ["needs-human"]);
+  assertEquals(issue.comments.length, 1, "exactly one escalation comment");
+  const comment = issue.comments[0]!;
+  assertStringIncludes(comment.body, "Repeat clone corruption on host-b");
+  assertStringIncludes(comment.body, REPEAT.previousAt);
+  assertStringIncludes(comment.body, REPEAT.currentAt);
+  assertStringIncludes(comment.body, REPEAT.previousGitMessage!);
+  assertStringIncludes(comment.body, REPEAT.currentGitMessage);
+  assertStringIncludes(comment.body, REPEAT.aside!);
+  assertStringIncludes(comment.body, `${REPO}#42`);
+  assertStringIncludes(
+    comment.body,
+    "Close this issue to lift the fleet-wide back-off",
+  );
+  assertEquals(error, [], "a clean escalation logs no errors");
+});
+
+Deno.test("escalateRepeatCloneCorruption - finds the existing tally issue instead of creating a second (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(77, formatRepoFastFailureTallyMarker(REPO) + "\ntally body");
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: true,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  assert(
+    isRepoFastFailureIssue(stub.issues.get(77)!.body, REPO),
+    "the existing tally issue gains the back-off marker",
+  );
+  assertEquals(error, []);
+});
+
+Deno.test("escalateRepeatCloneCorruption - an already backed-off tally issue is not edited again (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(
+    77,
+    formatRepoFastFailureTallyMarker(REPO) + "\n" +
+      formatRepoFastFailureMarker(REPO) + "\nbacked off",
+  );
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: false,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  assertEquals(stub.issues.get(77)!.labels, ["needs-human"]);
+});
+
+Deno.test("escalateRepeatCloneCorruption - a failed label add still leaves the comment posted, logged at ERROR (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.failNextLabel("labels api down");
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 500,
+    created: true,
+    backedOff: true,
+    commentPosted: true,
+    labelAdded: false,
+  });
+  assertEquals(stub.issues.get(500)!.comments.length, 1);
+  assertEquals(stub.issues.get(500)!.labels, []);
+  assert(
+    error.some((line) => line.includes("label add failed")),
+    `label failure must be logged at ERROR, got: ${error.join(" | ")}`,
+  );
+});
+
+Deno.test("escalateRepeatCloneCorruption - a failed comment post never adds the label, logged at ERROR (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.failNextComment("comments api down");
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 500,
+    created: true,
+    backedOff: true,
+    commentPosted: false,
+    labelAdded: false,
+  });
+  assertEquals(stub.issues.get(500)!.comments.length, 0);
+  assertEquals(stub.issues.get(500)!.labels, []);
+  assert(
+    error.some((line) => line.includes("comment post failed")),
+    `comment failure must be logged at ERROR, got: ${error.join(" | ")}`,
+  );
+});
+
+Deno.test("escalateRepeatCloneCorruption - a deduped prior escalation skips the comment but ensures the label, without a false ERROR (Issue #2958)", async () => {
+  const stub = createGhStub();
+  const dedupKey =
+    `clone-corrupt-repeat:${REPO}:${REPEAT.host}:${REPEAT.previousAt}`;
+  stub.seedIssue(77, formatRepoFastFailureTallyMarker(REPO) + "\ntally body");
+  stub.issues.get(77)!.comments.push({
+    author: "vibe-bot",
+    body: buildDedupMarker(dedupKey),
+    createdAt: new Date().toISOString(),
+  });
+  const log: string[] = [];
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, log, [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: true,
+    commentPosted: false,
+    labelAdded: true,
+  });
+  assertEquals(
+    stub.issues.get(77)!.comments.length,
+    1,
+    "the deduped comment must not be posted twice",
+  );
+  assertEquals(stub.issues.get(77)!.labels, ["needs-human"]);
+  assertEquals(
+    error,
+    [],
+    "a dedup-skipped comment is a prior success, never an ERROR",
+  );
+  assert(
+    log.some((line) => line.includes("prior escalation comment")),
+    "the dedup path should say why no comment was posted",
+  );
+});
+
+Deno.test("escalateRepeatCloneCorruption - a GitHub outage on find-or-create suppresses the escalation as gh_failed (Issue #2958)", async () => {
+  const error: string[] = [];
+  const faults: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption({
+    ...escalationBaseOpts(
+      () => Promise.reject(new Error("gh is down")),
+      [],
+      [],
+      error,
+    ),
+    recordFault: (event) => faults.push(event),
+  });
+
+  assertEquals(decision, { action: "suppressed", reason: "gh_failed" });
+  assert(
+    error.some((line) => line.includes("find-or-create tally issue failed")),
+  );
+  assertEquals(faults, ["catch_block_warning"]);
+});
+
+Deno.test("escalateRepeatCloneCorruption - a failed back-off edit warns but still comments and labels (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(77, formatRepoFastFailureTallyMarker(REPO) + "\ntally body");
+  stub.failNextEdit("body edit api down");
+  const warn: string[] = [];
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], warn, error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: false,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  assert(
+    warn.some((line) => line.includes("view/edit issue body failed")),
+    `a back-off edit failure is a WARNING because the escalation carries on, got: ${
+      warn.join(" | ")
+    }`,
+  );
+  assertEquals(
+    error.filter((line) => line.includes("view/edit")),
+    [],
+    "the same failure must not also be logged at ERROR",
+  );
+  assertEquals(stub.issues.get(77)!.labels, ["needs-human"]);
+  assertEquals(stub.issues.get(77)!.comments.length, 1);
 });

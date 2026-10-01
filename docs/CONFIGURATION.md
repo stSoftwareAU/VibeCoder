@@ -2102,11 +2102,20 @@ itself, so a repository's failures are counted across every host, not just
 the one that hit them.
 
 A sibling file, `clone_recoveries_<host>.json`, records the last time each
-repo's corrupt clone was moved aside and re-cloned (`{ "<owner/repo>":
-"<ISO timestamp>" }`), written by `setupRepo`'s `clone-corrupt` recovery
-(Issue #2957). It caps that recovery at one re-clone per repo per 24 h;
+repo's corrupt clone was moved aside and re-cloned, written by `setupRepo`'s
+`clone-corrupt` recovery (Issue #2957). Entries written since Issue #2958
+also record the git output that triggered the recovery and the moved-aside
+path (`{ "<owner/repo>": { "at": "<ISO timestamp>", "gitMessage": "...",
+"aside": "..." } }`); older entries are bare ISO strings and still count as
+a valid cap record. It caps that recovery at one re-clone per repo per 24 h;
 deleting the file, or just a repo's entry, resets the cap and lets the
 worker recover the next corrupt clone it meets.
+
+A second corruption of the same repo on the same host inside that window is
+a different, worse signal: the run's setup failure carries a machine-readable
+`clone-corrupt-repeat` payload, and the release path backs the repository off
+fleet-wide at once and escalates the tally issue to a human (Issue #2958) —
+no waiting for the tally threshold.
 
 The repository's diagnostic issue carries two independent markers on the
 same body, and the two states they describe are distinct:

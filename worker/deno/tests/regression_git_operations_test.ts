@@ -403,6 +403,10 @@ Deno.test("setupRepo - a recovery already used within 24h is not retried (Issue 
     const reason = `Failed to set up repo owner/downstream: ${result.message}`;
     assertEquals(detectFailureCategory(reason), "clone_corrupt");
     assertEquals(classifyCodingFailure(reason).disposition, "transient");
+    // The release path parses the payload out of this exact wrapped message
+    // (`outcome.message`), so the wrapper must not break the parse (Issue
+    // #2958).
+    assertEquals(parseCloneCorruptRepeat(reason), repeat);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
@@ -489,6 +493,10 @@ Deno.test("setupRepo - a failed recovery re-clone names the repo path (Issue #29
         "Failed to clone owner/downstream: ",
       );
       assertStringIncludes(result.message, clonePath);
+      // A single corruption (this re-clone failed, but nothing repeated yet)
+      // carries no repeat payload, so the release path never escalates it
+      // (Issue #2958).
+      assertEquals(parseCloneCorruptRepeat(result.message), null);
     } finally {
       _resetGhSpawnRunner();
     }

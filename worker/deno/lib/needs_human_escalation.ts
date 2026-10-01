@@ -427,7 +427,10 @@ export async function escalateToHuman(
   return {
     ok: false,
     error: new Error(
-      `escalateToHuman: both label add and comment post failed for ${repo}#${target.number}`,
+      options.commentFirst
+        ? `escalateToHuman: the comment post failed for ${repo}#${target.number}, ` +
+          `so the label was never attempted`
+        : `escalateToHuman: both label add and comment post failed for ${repo}#${target.number}`,
     ),
   };
 }

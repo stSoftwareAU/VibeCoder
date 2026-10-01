@@ -299,7 +299,11 @@ import {
   type RepoFastFailureOptions,
   resolveRepoFastFailurePolicy,
 } from "./repo_fast_failure_tracker.ts";
-import { recordRepoFastFailureTally } from "./repo_fast_failure_issue.ts";
+import {
+  escalateRepeatCloneCorruption,
+  recordRepoFastFailureTally,
+} from "./repo_fast_failure_issue.ts";
+import { parseCloneCorruptRepeat } from "./corrupt_clone_recovery.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
@@ -4923,13 +4927,52 @@ export async function createProductionRunCoreDeps(
           }
         } catch { /* best-effort — never blocks the release */ }
       }
+      // Issue #2958: a clone that corrupted twice within 24 h means
+      // something keeps damaging the clone — the host, not the issue. Back
+      // the repository off fleet-wide and escalate to a human straight
+      // away, rather than counting towards the ordinary tally threshold
+      // below. The repeat payload rides in the setup error message, so the
+      // parse is what tells the two corruptions apart.
+      const repeatCorruption = outcome?.kind === "no_pr"
+        ? parseCloneCorruptRepeat(outcome.message)
+        : null;
+      if (repeatCorruption !== null) {
+        try {
+          const decision = await escalateRepeatCloneCorruption({
+            repo,
+            failedIssueNumber: issueNumber,
+            repeat: repeatCorruption,
+            policy: fastFailurePolicy,
+            ghFn: runGhCommandRaw,
+            log: (message) => logger.info(message),
+            warn: (message) => logger.warn(message),
+            error: (message) => logger.error(message),
+          });
+          if (decision.action === "suppressed") {
+            logger.warn(
+              `Repeat clone corruption escalation failed for ${repo} ` +
+                `(${decision.reason})`,
+            );
+          }
+        } catch (err) {
+          // Best-effort — never blocks the release, but never silent either.
+          logger.warn(
+            `Repeat clone corruption escalation failed for ${repo}#${issueNumber}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
       // Issue #1950: a run that died before the agent produced output, or
       // inside `fast_failure_seconds`, failed at claim or setup — the
       // repository's environment, not the issue. Counted durably so three
       // of them in a day back the repository off and file one diagnostic,
       // instead of the whole week of retries the fleet used to spend.
+      // A repeat clone corruption is skipped here: it was already escalated
+      // above, and posting a tally marker on the same issue would double up.
       if (
         outcome?.kind === "no_pr" &&
+        repeatCorruption === null &&
         isFastFailure(
           {
             category: outcome.category,
