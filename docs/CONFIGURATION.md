@@ -2096,24 +2096,31 @@ only surfaced in a hand-written weekly report.
 
 The fast-failure tracker is the durable half. It lives on the work volume as
 `repo_fast_failures_<host>.json` — the hostname rides in the filename, never
-the PID — so the counters survive a worker restart.
+the PID — so the counters survive a worker restart. Fleet-wide tallying
+(Issue #2956) adds a second, shared record in the monitored repository
+itself, so a repository's failures are counted across every host, not just
+the one that hit them.
+
+The repository's diagnostic issue carries two independent markers on the
+same body, and the two states they describe are distinct:
+
+- **tally** — `<!-- VIBE_REPO_FAST_FAILURE_TALLY:<owner/repo> -->`. Present
+  as soon as the first fast failure is recorded anywhere in the fleet. It
+  only counts failures; on its own it does **not** back the repository off.
+- **backed off** — `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, added to
+  the same body once the tally reaches threshold. This is the only marker
+  the fleet-wide lookup (below) honours.
 
 ```mermaid
 flowchart TD
-    R["Run released with no PR"] --> F{"Fast failure?<br/>zero_output, or<br/>under fast_failure_seconds"}
-    F -- "no" --> K["Nothing recorded"]
-    F -- "yes" --> C["Record the event:<br/>phase + the diagnostic error line"]
-    C --> T{"repo_fast_failure_threshold<br/>reached inside the window?"}
-    T -- "no" --> K
-    T -- "yes" --> B["Repository backed off —<br/>excluded from the claim scan"]
-    S["Open fleet-authored diagnostic<br/>found by any host (Issue #2955)"] --> B
-    B --> D["One deduplicated diagnostic issue<br/>(body marker, never the title)"]
-    D --> W{"Released?"}
-    W -- "diagnostic closed" --> G["Claimable again on every host"]
-    W -- "window lapses" --> G
-    W -- "a run succeeds" --> G
+    F["Fast failure on any host"] --> L{"Open tally issue for repo?"}
+    L -->|No| N["Create tally issue"] --> C
+    L -->|Yes| C["Add marker comment"]
+    C --> K{"Marker comments in window >= threshold?"}
+    K -->|No| E["Done — repo still claimable"]
+    K -->|Yes| B["Add back-off marker to body"] --> H["Every host skips repo (#2955)"]
     style B fill:#9d0208,stroke:#6a040f,color:#fff
-    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style H fill:#9d0208,stroke:#6a040f,color:#fff
 ```
 
 - **What counts as fast.** A run whose agent produced no output
@@ -2128,34 +2135,52 @@ flowchart TD
   where the retries Issue #1950 measured were spent. The label-driven lanes
   (refinement, grill-me, planning, question) are not filtered — each removes
   its own label and so stops itself.
-- **The back-off decays on its own.** It is the count of events still inside
-  `repo_fast_failure_window_hours`, not a stored expiry, so a repaired
-  repository recovers with no operator action. A single fast failure followed
-  by a success clears the history outright.
-- **Exactly one diagnostic per repository.** Deduplicated on the body marker
-  `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, and only when a fleet
-  account authored the match — a marker in a body is text anyone can write.
-  It carries the failing phase and the last error line that names a cause —
-  git's own summary lines (`error: failed to push some refs to '<url>'`,
-  `To <url>`, trailing `hint:` advice) are stepped over, so a run that died
-  on a refused push reports the refusal rather than the bare fact that a
-  push failed (Issue #2034). The markdown scaffolding the worker wraps the
-  agent's last output in — the `<details>` and `<summary>` tags and code
-  fences — is stepped over too, so the detail is never a bare `</details>`
-  (Issue #2590). Closing it releases the back-off on the next scan.
+- **The local back-off decays on its own.** It is the count of this host's
+  own events still dated inside `repo_fast_failure_window_hours`, not a
+  stored expiry, so a repaired repository recovers with no operator action.
+  A single fast failure followed by a success clears that host's history
+  outright. The fleet-wide back-off marker is different: once added to the
+  tally issue's body it stays — the worker never removes it, so it persists
+  until a human closes the issue. The window only governs whether the
+  threshold is reached in the first place, not how long the marker lasts
+  once it is there.
+- **On every fast failure, on any host.** The worker finds the open,
+  fleet-authored tally issue for the repository (lowest issue number wins
+  when more than one is somehow open); if none exists it creates one, labelled
+  `bug` (retried once without the label if the repository refuses it). It
+  then adds one comment of the form
+  `<!-- vibe-fast-failure host="<host>" at="<ISO time>" issue="<repo>#<n>" -->`
+  plus a one-line human-readable reason. Only fleet-authored marker comments
+  count — `service_accounts` ∪ `fleet_pr_authors` ∪ the host's own login — a
+  comment from any other account is ignored, and a tally issue authored by a
+  non-fleet account is ignored outright (a new one is filed instead). When
+  the count of fleet-authored marker comments dated inside
+  `repo_fast_failure_window_hours` reaches `repo_fast_failure_threshold` —
+  counted across the whole fleet, never per host — the body is edited to add
+  the back-off marker plus a short "backed off" line.
+- **Failures in the diagnostic path are non-fatal.** A `gh` failure while
+  finding, creating, commenting on, or editing the tally issue is logged at
+  WARN with the repository and the error; the claim release still completes
+  either way.
+- **What the local state file still does.** The per-host
+  `repo_fast_failures_<host>.json` sidecar is unchanged: it still drives this
+  host's own `backedOffUntil` and the `repo-fast-failures:` cycle-summary
+  line below. When this host's own count reaches threshold and backs the
+  repository off locally, the tally issue it found or created is recorded as
+  the local diagnostic.
 - **Where it is filed.** In the monitored repository the fault is about —
-  the diagnostic for `owner/repo` lands in `owner/repo`, never in
+  the tally issue for `owner/repo` lands in `owner/repo`, never in
   `stSoftwareAU/VibeCoder`, and there is no opt-out (Issue #2592). The fault
   is almost always repository-owned (a refused push, a missing branch), so
-  the report belongs beside the code its owners can fix. If the repository
-  refuses the `bug` label, the create is retried once without it; if that
-  fails too, a `catch_block_warning` fault is recorded and nothing is filed
-  anywhere else.
+  the report belongs beside the code its owners can fix. Filing happens on
+  the first fast failure recorded anywhere in the fleet, not only once
+  threshold is reached — a tally issue with too few comments inside the
+  window is evidence being gathered, not yet a back-off.
 
   ```mermaid
   flowchart LR
-      F["owner/repo backed off"] --> C["gh issue create<br/>--repo owner/repo --label bug"]
-      C -->|ok| D["Diagnostic in owner/repo"]
+      F["First fast failure<br/>for owner/repo"] --> C["gh issue create<br/>--repo owner/repo --label bug"]
+      C -->|ok| D["Tally issue in owner/repo"]
       C -->|refused| R["Retry once without --label"]
       R -->|ok| D
       R -->|refused| W["catch_block_warning fault<br/>suppressed:gh_failed"]
@@ -2163,16 +2188,32 @@ flowchart TD
       style W fill:#9d0208,stroke:#6a040f,color:#fff
   ```
 
+  The marker comments carry the failing phase and the last error line that
+  names a cause — git's own summary lines (`error: failed to push some refs
+  to '<url>'`, `To <url>`, trailing `hint:` advice) are stepped over, so a run
+  that died on a refused push reports the refusal rather than the bare fact
+  that a push failed (Issue #2034). The markdown scaffolding the worker wraps
+  the agent's last output in — the `<details>` and `<summary>` tags and code
+  fences — is stepped over too, so the detail is never a bare `</details>`
+  (Issue #2590). Closing the issue releases the fleet-wide back-off on every
+  host at its next lookup.
 - **What an operator sees.** One cycle-summary line naming every tracked
   repository:
   `repo-fast-failures: owner/repo: 5 fast failures, backed off until 2026-09-12T04:05Z (owner/repo#123)`.
 
 #### Fleet-wide back-off (Issue #2955)
 
-Per-host counters alone never reach the threshold when a repository's
-failures spread across many hosts — each host sees too few fast failures to
-file its own diagnostic, so the repository keeps being claimed everywhere.
-Every host therefore also treats an **open** diagnostic issue carrying the
+Per-host counters alone never reached the threshold when a repository's
+failures spread across many hosts — each host saw too few fast failures to
+back the repository off itself, so it kept being claimed everywhere. The
+fleet-wide tally Issue #2956 adds (above) is what now closes that gap: every
+fast failure, on every host, is recorded against the one shared tally issue, so
+the threshold is reached on the fleet's combined count rather than any single
+host's. The lookup below still only honours the back-off marker — a tally
+issue that has not yet reached threshold carries only the tally marker, and
+on its own does not back the repository off anywhere.
+
+Every host treats an **open** diagnostic issue carrying the
 `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->` marker as a back-off, provided
 it was authored by a fleet account: `service_accounts` ∪
 `fleet_pr_authors` ∪ the host's own login. This is on top of, not instead of,
