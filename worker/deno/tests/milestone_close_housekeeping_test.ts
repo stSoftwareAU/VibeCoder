@@ -442,6 +442,69 @@ Deno.test("sweepClosedMilestones - a gh listing failure is reported, not thrown"
   }
 });
 
+Deno.test("sweepClosedMilestones - a repository with no checkout directory is skipped quietly with no gh or git calls", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "milestone-close-" });
+  try {
+    const ghCalls: string[][] = [];
+    let gitCalls = 0;
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir, repoPath: `${workDir}/missing` },
+      {
+        gh: makeGh(ghCalls),
+        git: () => {
+          gitCalls++;
+          return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+        },
+        log: () => {},
+        now: () => 0,
+      },
+    );
+
+    assertEquals(result.errors, []);
+    assertEquals(result.failures, []);
+    assertEquals(result.considered, []);
+    assertEquals(ghCalls.length, 0, "no gh calls");
+    assertEquals(gitCalls, 0, "no git calls");
+    assertEquals(
+      await exists(milestoneCloseStatePath(workDir, REPO)),
+      false,
+      "no state file is created for a repository with no checkout",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("sweepClosedMilestones - a checkout whose branch listing fails still reports the error", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "milestone-close-" });
+  try {
+    await Deno.mkdir(`${workDir}/demo`);
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir, repoPath: `${workDir}/demo` },
+      {
+        gh: makeGh(),
+        git: () =>
+          Promise.resolve({
+            code: 128,
+            stdout: "",
+            stderr: "fatal: not a git repository",
+          }),
+        log: () => {},
+      },
+    );
+
+    assert(
+      result.errors.some((e) =>
+        e.includes("Could not list the local branches of")
+      ),
+      `the branch-listing failure is reported: ${result.errors.join(" | ")}`,
+    );
+    assertEquals(result.swept, []);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 /** The production git seam, used by the partial-failure test for every other command. */
 async function realGit(
   args: readonly string[],

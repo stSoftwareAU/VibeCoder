@@ -232,6 +232,8 @@ export function createDefaultSweepDeps(): ClosedMilestoneSweepDeps {
  *
  * Never throws: every fault is recorded in {@link ClosedMilestoneSweepResult}
  * and logged, and the milestone stays unswept so the next scan retries it.
+ * A repository with no checkout directory on this host is skipped with an
+ * empty, error-free result.
  */
 export async function sweepClosedMilestones(
   options: ClosedMilestoneSweepOptions,
@@ -261,6 +263,20 @@ export async function sweepClosedMilestones(
     return result;
   }
   const repoPath = options.repoPath ?? repoCheckoutPath(workDir, repo);
+
+  // No checkout on this host (never cloned here, or removed): nothing to
+  // sweep, so skip quietly before spending gh calls on its milestones (#2894).
+  try {
+    await Deno.stat(repoPath);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return result;
+    const message = err instanceof Error ? err.message : String(err);
+    result.errors.push(
+      `Could not inspect the checkout ${repoPath}: ${message}`,
+    );
+    return result;
+  }
+
   const ttlMs = options.listingTtlMs ??
     DEFAULT_CLOSED_MILESTONE_LISTING_TTL_MS;
 
