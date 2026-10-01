@@ -11,6 +11,7 @@ import {
   unnamedSmallSliceModules,
 } from "../lib/lib_sweep_coverage.ts";
 import { sweepGitRunnerFor } from "../commands/sweep_drift.ts";
+import { isShallowRepo } from "../lib/git_history.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 const RECORD = "docs/audits/security-sweep-2839-top-up-delta.md";
@@ -58,13 +59,16 @@ Deno.test("security sweep #2839 - the record names every module its slices claim
 });
 
 const gitRun = sweepGitRunnerFor(REPO_ROOT);
-// A shallow CI clone may not hold the merge-base; skip rather than fail there.
-const haveSweptAt =
+// `--is-ancestor` can only answer in a full clone holding the merge-base: a
+// shallow (grafted) clone may hold SWEPT_AT yet stop the walk at the graft.
+const shallow = await isShallowRepo({ cwd: REPO_ROOT });
+if (!shallow.ok) throw shallow.error;
+const canWalkToSweptAt = !shallow.value &&
   (await gitRun(["cat-file", "-e", `${SWEPT_AT}^{commit}`])).code === 0;
 
 Deno.test({
   name: "security sweep #2839 - the recorded sweptAt is an ancestor of HEAD",
-  ignore: !haveSweptAt,
+  ignore: !canWalkToSweptAt,
   async fn() {
     const result = await gitRun([
       "merge-base",
