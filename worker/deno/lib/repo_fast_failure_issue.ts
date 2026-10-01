@@ -457,7 +457,7 @@ export async function recordRepoFastFailureTally(
     if (!found.ok) {
       return decide({ action: "suppressed", reason: "gh_failed" });
     }
-    let issueNumber = found.issueNumber;
+    const issueNumber = found.issueNumber;
     const created = found.created;
 
     // 3. Post this host's marker comment.

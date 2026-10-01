@@ -6,7 +6,6 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  escalateRepeatCloneCorruption,
   formatFastFailureCommentMarker,
   formatRepoFastFailureMarker,
   formatRepoFastFailureTallyBody,
