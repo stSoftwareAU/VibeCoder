@@ -20,6 +20,10 @@ the whole fleet.
 - **Scan:** `findFailedCiChecks` in `lib/pr_maintenance.ts` now reads the PR's
   fleet markers whenever an infrastructure check is involved, and passes them
   to `rerunInfrastructureChecks`. Before, it passed the host-local `stateDir`.
+  The body of `rerunInfrastructureChecks` in `lib/ci_infrastructure_rerun.ts`
+  hasn't been converted yet: it still takes `stateDir` and writes the
+  host-local marker file. As of this commit, `deno check` fails with TS2304
+  (`sanitiseRepoName`) and TS2353 (`fleetMarkers`).
 - **Docs:** the "Cancelled or never-started checks" entry and flowchart in
   `docs/workflows/ci-fix.md` now describe the fleet-wide limit and the
   unreadable-comments error path.
