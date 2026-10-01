@@ -152,6 +152,7 @@ function emptyMarkers(): FleetCiFixMarkers {
     attempts: new Map(),
     deferrals: new Map(),
     humanGates: new Map(),
+    infraReruns: new Map(),
     fleetResolved: false,
     ignoredOutsideFleet: 0,
   };
@@ -328,7 +329,10 @@ export interface ParkedChecks {
   deferrals: OpenDeferral[];
   /**
    * The fleet-authored markers the thread carries — `humanGates` is what
-   * `findHumanGate` consults (Issue #2744). Empty when the read failed.
+   * `findHumanGate` consults (Issue #2744), and `infraReruns` is what
+   * `isInfraRerunRecordedAt` consults to bind the infrastructure-rerun
+   * once-per-head bound fleet-wide (Issue #2919). Empty when the read
+   * failed.
    */
   markers: FleetCiFixMarkers;
 }
@@ -344,7 +348,9 @@ export interface ParkedChecks {
  * scanner has no business re-diagnosing it — on this host or any other. Once
  * the blocker closes the check is returned as usual, and #1880's loop guard
  * refuses a silent second deferral on the same closed issue. A human gate
- * (#2727) is parked the same way until a person approves it.
+ * (#2727) is parked the same way until a person approves it, and the fleet's
+ * infrastructure-rerun markers (Issue #2919) are carried in the same read so
+ * `rerunInfrastructureChecks` can bind its once-per-head bound fleet-wide.
  *
  * **The fail direction is towards scanning.** A comment thread that cannot
  * be read, a marker from outside the fleet, an unresolved fleet identity, a

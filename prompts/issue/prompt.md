@@ -106,7 +106,11 @@ guessing — the analysis-only hand-off then routes it to a human.
    supported behaviour, invariant or contract, not merely increase coverage.
    Not every change needs a new test. When a new test is warranted, follow TDD:
    - Write a failing test first that defines the expected behaviour; for a bug,
-     reproduce the externally meaningful failure before fixing it where practical.
+     reproduce the externally meaningful failure before fixing it where
+     practical — against the unfixed base-branch production code, using the
+     base branch's own test doubles, not a double you have already changed;
+     see **What a red run proves** under
+     [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug).
    - Then implement the code to make the test pass.
    - Tests must call real functions with test data and check results (exit
      codes, output, side effects). Do NOT write tests that grep source code for
@@ -607,6 +611,29 @@ Bound the attempt — roughly three shapes of command — and if none goes red, 
 so. A loop that **never went red** is reported as `partial` or `not-run` with a
 one-line `reason:` naming **what you tried**, which is a legitimate outcome and
 the honest end of this ladder.
+
+**What a red run proves.** These rules apply to every defect fix, whether or
+not the issue carries the `bug` label:
+
+- **Red counts only against the base branch.** The regression test must fail
+  against the unfixed base-branch production code with the base branch's own
+  test doubles. If your change edits a fake, fixture or stub, run the new test
+  with the new double against the base-branch production code: if it passes
+  there, the red came only from the modified double, not the defect, and
+  proves nothing — it is not `verified`. A reviewer checks this by restoring
+  the base ref's production files (`git checkout origin/<base> --
+  <production paths>`), keeping the new test and any new double, and running
+  the test: it must go red.
+- **No speculative fix for an unreproduced fault.** When the status is
+  `partial` or `not-run`, do not change production behaviour or a durable
+  format (stored keys, schemas, wire or file formats) on an unverified
+  diagnosis. First confirm the premise against the base-branch code — for
+  example, what the production adapter actually accepts. If the premise does
+  not hold, say the fault is undiagnosed or already fixed, and only pin the
+  current behaviour with a test.
+- **Start from the logged error.** When the issue cites a logged error line (a
+  `store`, `scope` or `code` value, an exception message), the reproducing
+  test starts from that exact input, and the PR summary quotes the line.
 
 A reproduction that was not actually performed is reported as `partial` or
 `not-run`, **never** `verified`. A not-run reproduction is a legitimate,

@@ -1086,6 +1086,20 @@ command go green. The attempt is bounded, and a loop that never went red is
 reported as `partial` or `not-run` naming what was tried — the ladder has an
 honest bottom rung, which is why it does not become a licence to over-claim.
 
+**What a red run proves (Issue #2924).** A fleet run once claimed a bug fix
+whose regression test only went red against the PR's own modified fake, and
+passed on unmodified base-branch production code — proving nothing about the
+defect — while another changed production behaviour on an unreproduced
+diagnosis. The prompt now ties red to the base branch: the test must fail
+against the unfixed **base-branch** production code with the **base branch's**
+own test doubles, not a double the PR has already changed, and a reviewer can
+check this by running the PR's new test against the base ref's production
+code. While the status is `partial` or `not-run`, the run must not change
+production behaviour or a durable format on an unverified diagnosis — it
+either confirms the premise against the base branch or pins current behaviour
+with a test. Where the issue cites a logged error line, the reproducing test
+starts from that exact input, and the PR summary quotes it.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
