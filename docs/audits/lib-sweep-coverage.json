@@ -252,6 +252,7 @@
         "worker/deno/lib/idle_task_milestone.ts",
         "worker/deno/lib/idle_task_snapshot.ts",
         "worker/deno/lib/idle_task_templates/best_practices_template.ts",
+        "worker/deno/lib/idle_task_trust.ts",
         "worker/deno/lib/imgbb_upload.ts",
         "worker/deno/lib/issue_close_notifier.ts",
         "worker/deno/lib/issue_comment_pages.ts",
