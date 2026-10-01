@@ -35,6 +35,17 @@ function testConfig(workDir: string): StuckIssueConfig {
 }
 
 /**
+ * True for the per-issue `gh pr list --search "in:title ..."` lookup, not
+ * for the repo-wide closed-PR listing — which also carries `--search`, for
+ * update-recency ordering, since Issue #2901.
+ */
+function isTitleSearchCall(args: string[]): boolean {
+  const searchIdx = args.indexOf("--search");
+  return searchIdx !== -1 &&
+    (args[searchIdx + 1]?.includes("in:title") ?? false);
+}
+
+/**
  * Build a base issue payload matching the `issues_all` cache shape.
  */
 function buildIssue(num: number, updatedAt: string, opts?: {
@@ -263,22 +274,25 @@ Deno.test("stuck_recovery cache - detectAssignedWithClosedPr resolves merged + c
       }
       if (
         args[0] === "pr" && args[1] === "list" &&
-        args.includes("--search") && args.includes("open")
+        isTitleSearchCall(args) && args.includes("open")
       ) {
         return JSON.stringify([]);
       }
       if (
         args[0] === "pr" && args[1] === "list" &&
-        args.includes("--search") && args.includes("merged")
+        isTitleSearchCall(args) && args.includes("merged")
       ) {
         mergedSearchCalls++;
         return JSON.stringify([]);
       }
-      // Issue #1809: repo-wide closed-PR list (no --search), filtered
-      // locally by `prTitleMatchesIssue`.
+      // Issue #1809: repo-wide closed-PR list, filtered locally by
+      // `prTitleMatchesIssue`. Since Issue #2901 it also carries
+      // `--search` (ordered by update recency), so it is distinguished
+      // from the per-issue title searches above via `isTitleSearchCall`,
+      // not by the mere presence of `--search`.
       if (
         args[0] === "pr" && args[1] === "list" &&
-        !args.includes("--search") &&
+        !isTitleSearchCall(args) &&
         args.includes("--state") && args.includes("closed") &&
         args.includes("--author")
       ) {

@@ -60,9 +60,10 @@ AssertionError: Values are not equal: expected true, actual false
 
 GREEN (after the fix): 3 passed | 0 failed.
 
-`worker/deno/tests/stuck_recovery_closed_pr_cache_test.ts` previously told the
-repo-wide closed listing apart from the per-issue title search by the mere
-presence of `--search`; now that both calls carry `--search`, it uses a new
+`worker/deno/tests/stuck_recovery_closed_pr_cache_test.ts` and
+`worker/deno/tests/stuck_recovery_cache_test.ts` previously told the repo-wide
+closed listing apart from the per-issue title search by the mere presence of
+`--search`; now that both calls carry `--search`, each uses an
 `isTitleSearchCall` helper (checks for `in:title`) to tell them apart.
 
 Targeted run: 274 passed, 0 failed across the new test plus `issue_query`,
