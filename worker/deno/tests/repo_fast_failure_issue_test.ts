@@ -276,6 +276,26 @@ Deno.test("recordRepoFastFailureTally - a comment older than the window does not
   assert(!isRepoFastFailureIssue(issue.body, REPO));
 });
 
+Deno.test("recordRepoFastFailureTally - a marker dated more than an hour in the future is not counted", async () => {
+  const stub = createGhStub();
+  const currentNow = 1_700_200_000;
+  const futureNow = currentNow + 3_700; // more than an hour ahead, beyond clock-skew allowance
+
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-future",
+    nowSeconds: () => futureNow,
+  });
+  const r2 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-now",
+    nowSeconds: () => currentNow,
+  });
+
+  assertEquals((r2 as { count: number }).count, 1);
+  assertEquals((r2 as { backedOff: boolean }).backedOff, false);
+});
+
 Deno.test("recordRepoFastFailureTally - a non-fleet-authored tally issue is ignored and a fresh one is created", async () => {
   const stub = createGhStub();
   stub.seedIssue(

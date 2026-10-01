@@ -73,6 +73,9 @@ export const REPO_FAST_FAILURE_TALLY_MARKER_PREFIX =
 /** Self-diagnostic family id for issues this module files (Issue #1277). */
 export const REPO_FAST_FAILURE_FAMILY_ID = "repo-fast-failure";
 
+/** Tolerate a little clock skew on marker timestamps, not a whole window. */
+const CLOCK_SKEW_ALLOWANCE_SECONDS = 300;
+
 /** The back-off marker a diagnostic issue for `repo` carries once backed off. */
 export function formatRepoFastFailureMarker(repo: string): string {
   return `<!-- ${REPO_FAST_FAILURE_MARKER_PREFIX}:${repo} -->`;
@@ -439,7 +442,7 @@ export async function recordRepoFastFailureTally(
         if (!Number.isFinite(at)) return false;
         const atSeconds = at / 1000;
         return atSeconds >= now - opts.policy.windowSeconds &&
-          atSeconds <= now + opts.policy.windowSeconds;
+          atSeconds <= now + CLOCK_SKEW_ALLOWANCE_SECONDS;
       }).length;
     } catch (err) {
       warn(
