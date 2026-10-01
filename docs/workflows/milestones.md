@@ -270,13 +270,14 @@ milestone branch, not on the target branch. A dependency inside the same
 milestone is ignored, since it assembles in the same PR and an open one is
 already caught by the open-children gate above.
 
-`decideSummaryPrMerge()` runs this check immediately after finding no open
-children, so the summary PR's creation gains a
-`### ⏸️ Held: pending dependencies` section listing each pending dependency
-(or saying the check could not be verified), and the merge gate re-checks on
-every scan: a pending dependency blocks the merge with `reason:
-"pending-dependencies"`, logs a warning listing each `#sub → #dep` pair, and
-posts one idempotent comment carrying marker
+`createMilestoneSummaryPr()` runs this check when the summary PR is created,
+so the PR body gains a `### ⏸️ Held: pending dependencies` section listing
+each pending dependency (or a `### ⏸️ Declared dependencies not verified` note
+if the check could not be read), without ever blocking creation. `decideSummaryPrMerge()`
+re-checks declared dependencies independently on every merge attempt and scan,
+after finding no open children: a pending dependency blocks the merge with
+`reason: "pending-dependencies"`, logs a warning listing each "#A depends
+on #B" description, and posts one idempotent comment carrying marker
 `<!-- milestone-pending-dependencies-merge-block -->`. The PR merges, with no
 human action needed, once every pending dependency lands. A cross-milestone
 dependency cycle (milestone A's sub-issue depends on B's and vice versa) holds

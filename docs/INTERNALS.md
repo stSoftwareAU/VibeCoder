@@ -2343,7 +2343,7 @@ immediately before `gh pr merge`:
   target branch. A dependency in the same milestone is ignored (it assembles in
   the same PR, and an open one is already caught by the open-children gate). A
   pending dependency blocks with `reason: "pending-dependencies"`, logging a
-  warning listing each `#sub → #dep` pair and posting one idempotent comment
+  warning listing each "#A depends on #B" description and posting one idempotent comment
   marked `<!-- milestone-pending-dependencies-merge-block -->`. A failed
   dependency read is folded into the same `lookup-failed` block as the children
   read. A cross-milestone dependency cycle (A's sub-issue depends on B's and vice
