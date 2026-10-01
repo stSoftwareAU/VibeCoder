@@ -2369,6 +2369,18 @@
       "paths": [
         "worker/deno/lib/git_merge_unshallow_retry.ts"
       ]
+    },
+    {
+      "issue": 2960,
+      "chunk": "top-up-2960",
+      "title": "top-up: the screenshot-gate extra turn",
+      "ledger": "docs/audits/security-sweep-2960-screenshot-gate-retry.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: screenshot_gate_retry.ts (#2960)",
+      "status": "swept",
+      "sweptAt": "0a06cd2a0b62aefef8a6820fe2d0b0c5ce09cf99",
+      "paths": [
+        "worker/deno/lib/screenshot_gate_retry.ts"
+      ]
     }
   ],
   "roots": [

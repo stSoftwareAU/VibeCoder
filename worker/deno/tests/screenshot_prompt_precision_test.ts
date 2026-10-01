@@ -35,8 +35,7 @@ Deno.test("screenshot retry notice - names the explicit filename under docs/evid
 Deno.test("screenshot gate message - names the explicit filename and the summary update (Issue #4364)", () => {
   const result = validateScreenshotEvidence({
     prSummaryContent: "## Summary\nchart html css",
-    issueLabels: "needs-screenshot",
-    changedFiles: ["docs/app.js"],
+    changedFiles: ["docs/app.html"],
     repo: "o/r",
     issueNumber: 1,
   });

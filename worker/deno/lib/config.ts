@@ -647,6 +647,20 @@ export async function loadConfig(
         `spin the watchdog instead of sampling the working tree.`,
     );
   }
+  // Issue #2960: timeout for the screenshot gate's one extra in-run agent
+  // turn. Rejected loudly rather than silently hanging or firing instantly.
+  const screenshotRetryTimeoutSeconds = file.screenshot_retry_timeout_seconds ??
+    OPERATIONAL_DEFAULTS.screenshotRetryTimeoutSeconds;
+  if (
+    typeof screenshotRetryTimeoutSeconds !== "number" ||
+    !Number.isFinite(screenshotRetryTimeoutSeconds) ||
+    screenshotRetryTimeoutSeconds <= 0
+  ) {
+    throw new Error(
+      `screenshot_retry_timeout_seconds must be a positive finite number, ` +
+        `got ${JSON.stringify(file.screenshot_retry_timeout_seconds)}`,
+    );
+  }
   if (progressExtensionStallSeconds < progressExtensionCheckSeconds) {
     // The deadline decision reads tree evidence up to one check interval old,
     // so a shorter activity window kills runs that demonstrably progressed
@@ -1087,6 +1101,7 @@ export async function loadConfig(
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,
     progressExtensionCheckSeconds,
+    screenshotRetryTimeoutSeconds,
     callStormEnabled,
     callStormCalls,
     callStormWindowSeconds,

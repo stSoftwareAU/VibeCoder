@@ -2354,14 +2354,41 @@ creation:
   This prevents the confusing scenario of multiple open PRs for the same work.
 - **Screenshot processing** — `process_screenshot_evidence()` converts local
   screenshot paths to accessible URLs (via imgbb upload or GitHub raw URLs).
-- **Evidence validation** — `validate_pr_evidence()` blocks UI-related PRs
-  without screenshots and adds the `needs-screenshot` label. A changed UI file
-  whose patch is nothing but version stamps (`?v=1.1.28` → `?v=1.1.30`, the
-  cache-busting bump a release script writes into every page) is not a UI
-  change (Issue #2300): each changed UI file's own patch is read against the
-  branch's resolved base, and a bump-only file is set aside from the gate's
-  extension trigger and keyword fallback. Any other edit to the file counts
-  as before, and an explicit UI label still wins.
+- **Evidence validation** — the completion phase's `validateScreenshotEvidence()`
+  gate blocks UI-related PRs without screenshots. When it finds a genuine UI
+  change with no screenshot evidence, the run is not failed at once. The same
+  agent session is resumed for exactly one extra turn
+  (`worker/deno/lib/screenshot_gate_retry.ts`) — prompted with the gate's own
+  "Screenshot Evidence Required" message, given the browser MCP, and bounded
+  by `screenshot_retry_timeout_seconds` (default `600`) — then anything the
+  turn left uncommitted is committed and completion
+  re-runs once, re-reading the changed files and PR summary and re-checking
+  the gate (Issue #2960). If evidence now exists, the PR is raised with no
+  `needs-screenshot` label or comment. If the gate still fails, or the extra
+  turn errors or times out, the original path runs unchanged: the
+  `needs-screenshot` label, the instructions comment and run failure — with a
+  log line stating that the extra turn was tried and why it did not help.
+  Never more than one extra turn per run, and a `skip_screenshot_check`
+  repository never reaches this path. A changed UI file whose patch is nothing
+  but version stamps (`?v=1.1.28` → `?v=1.1.30`, the cache-busting bump a
+  release script writes into every page) is not a UI change (Issue #2300):
+  each changed UI file's own patch is read against the branch's resolved
+  base, and a bump-only file is set aside from the gate's extension trigger.
+  Any other edit to the file counts as before. A change is a UI change only
+  when at least one substantive changed file has a UI extension (`.css`,
+  `.scss`, `.sass`, `.less`, `.html`, `.htm`, `.jsx`, `.tsx`, `.vue`,
+  `.svelte`); issue labels, PR-summary wording and an empty changed-file list
+  no longer count (Issue #2959).
+
+  ```mermaid
+  flowchart TD
+      A[Gate fails: UI change,<br/>no screenshot evidence] --> B[Resume session<br/>one extra turn]
+      B --> C[Commit anything left<br/>uncommitted]
+      C --> D[Re-run completion<br/>re-run the gate]
+      D -->|pass| E[Raise PR — no label,<br/>no comment]
+      D -->|fail| F[needs-screenshot label<br/>+ comment, run fails]
+      B -->|error or timeout| F
+  ```
 - **Issue linking** — `ensure_pr_references_issue()` appends `Closes #N` if the
   PR body lacks a closing keyword, preventing issues from staying open after
   merge.

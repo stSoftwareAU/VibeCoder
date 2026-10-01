@@ -148,6 +148,11 @@ import {
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
+  applyScreenshotGateFailure,
+  recoverFromScreenshotGateBlock,
+  SCREENSHOT_EVIDENCE_MISSING_REASON,
+} from "../screenshot_gate_retry.ts";
+import {
   assessDegradedDelivery,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
@@ -737,10 +742,10 @@ export async function workOnIssueCompletion(
 /**
  * One completion-phase attempt, with the #1550 infrastructure retry.
  *
- * A security-fix or summary-rule gate block is a verdict, not an infrastructure
- * blip: re-running the same body against the same summary reproduces it, so the
- * retry is skipped and the in-run recovery (Issues #1575 and #2189) handles it
- * instead.
+ * A security-fix, summary-rule or screenshot gate block is a verdict, not an
+ * infrastructure blip: re-running the same body against the same branch
+ * reproduces it, so the retry is skipped and the in-run recovery (Issues
+ * #1575, #2189 and #2960) handles it instead.
  */
 async function runCompletionAttempt(
   ctx: IssueContext,
@@ -750,6 +755,18 @@ async function runCompletionAttempt(
   const blocksBefore = state.securityGateBlocks?.length ?? 0;
   const summaryBlocksBefore = state.summaryRuleBlocks?.length ?? 0;
   const result = await completionBody(ctx, state, deps);
+
+  // Issue #2960: a screenshot block gets one extra agent turn and one re-run
+  // before it fails the run.
+  if (state.screenshotGateBlock) {
+    return await recoverFromScreenshotGateBlock(
+      ctx,
+      state,
+      deps,
+      () => runCompletionAttempt(ctx, state, deps),
+    );
+  }
+
   const gateBlocked = (state.securityGateBlocks?.length ?? 0) > blocksBefore;
   const summaryRuleBlocked =
     (state.summaryRuleBlocks?.length ?? 0) > summaryBlocksBefore;
@@ -1686,7 +1703,6 @@ async function completionBody(
 
   const screenshotResult = validateScreenshotEvidence({
     prSummaryContent: prBody,
-    issueLabels: ctx.issueLabels.join(","),
     changedFiles,
     repo,
     issueNumber,
@@ -1696,27 +1712,22 @@ async function completionBody(
 
   const needsScreenshotLabel = LABEL_DEFAULTS.needsScreenshotLabel;
   if (!screenshotResult.valid) {
-    logger.info("Screenshot validation failed — UI change without evidence");
-
-    await deps.github.ensureLabelExists(
-      repo,
-      needsScreenshotLabel,
-      "d93f0b",
-      "Previous attempt was blocked for missing screenshot evidence",
+    const failureMessage = screenshotResult.failureMessage!;
+    if (!state.screenshotRetryAttempted) {
+      // Issue #2960: no label or comment yet — runCompletionAttempt gives the
+      // agent one extra turn first.
+      logger.info(
+        "Screenshot validation failed — UI change without evidence; " +
+          "deferring to one extra agent turn (Issue #2960)",
+      );
+      state.screenshotGateBlock = { failureMessage };
+      return { status: "failure", reason: SCREENSHOT_EVIDENCE_MISSING_REASON };
+    }
+    logger.error(
+      "Screenshot validation still fails after the one extra agent turn " +
+        "— it did not capture and commit evidence (Issue #2960)",
     );
-
-    const client = deps.github.createClient(logger);
-    await client.addLabel(repo, issueNumber, needsScreenshotLabel);
-    await client.postComment(
-      repo,
-      issueNumber,
-      screenshotResult.failureMessage!,
-    );
-
-    return {
-      status: "failure",
-      reason: "Screenshot evidence missing for UI-related change",
-    };
+    return await applyScreenshotGateFailure(ctx, deps, failureMessage);
   }
 
   // Remove needs-screenshot label if validation passed and label was present
