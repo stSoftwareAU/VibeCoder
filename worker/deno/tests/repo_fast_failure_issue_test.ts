@@ -72,8 +72,8 @@ Deno.test("formatFastFailureCommentMarker - sanitises host and issue so neither 
   });
   // Exactly one marker opener/closer: nothing in the forged input could add
   // a second attribute or close early.
-  assertEquals(marker.split('<!--').length - 1, 1);
-  assertEquals(marker.split('-->').length - 1, 1);
+  assertEquals(marker.split("<!--").length - 1, 1);
+  assertEquals(marker.split("-->").length - 1, 1);
   const parsed = parseFastFailureCommentMarker(marker);
   assert(parsed);
   assert(!parsed!.host.includes('"'));
@@ -345,7 +345,11 @@ Deno.test("recordRepoFastFailureTally - a gh failure on the comment is reported 
     warn: (message) => warnings.push(message),
   });
   assertEquals(r2, { action: "suppressed", reason: "gh_failed" });
-  assert(warnings.some((w) => w.includes(REPO) && w.includes("comment service unavailable")));
+  assert(
+    warnings.some((w) =>
+      w.includes(REPO) && w.includes("comment service unavailable")
+    ),
+  );
 });
 
 Deno.test("recordRepoFastFailureTally - a gh failure on the back-off edit is reported, never thrown", async () => {
@@ -372,7 +376,11 @@ Deno.test("recordRepoFastFailureTally - a gh failure on the back-off edit is rep
   });
   assertEquals((r3 as { action: string }).action, "recorded");
   assertEquals((r3 as { backedOff: boolean }).backedOff, false);
-  assert(warnings.some((w) => w.includes(REPO) && w.includes("edit service unavailable")));
+  assert(
+    warnings.some((w) =>
+      w.includes(REPO) && w.includes("edit service unavailable")
+    ),
+  );
 });
 
 Deno.test("recordRepoFastFailureTally - a refused label is retried once without --label", async () => {
