@@ -578,9 +578,7 @@ export async function syncMilestoneBranchWithDefault(
       error: new Error(
         `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
           `the local '${defaultBranch}' could not be made current with ` +
-          `origin, so the merge would carry a stale ref (Issue #2896): ${
-            defaultCurrent.error.message
-          }`,
+          `origin, so the merge would carry a stale ref (Issue #2896): ${defaultCurrent.error.message}`,
       ),
     };
   }
@@ -595,7 +593,9 @@ export async function syncMilestoneBranchWithDefault(
       error: new Error(
         `Refusing to merge '${defaultBranch}' into '${milestoneBranch}': ` +
           `the local '${defaultBranch}' ref could not be moved to match ` +
-          `origin (local ${localDefaultSha ? localDefaultSha.slice(0, 7) : "<unreadable>"}` +
+          `origin (local ${
+            localDefaultSha ? localDefaultSha.slice(0, 7) : "<unreadable>"
+          }` +
           ` vs origin ${
             originDefaultSha ? originDefaultSha.slice(0, 7) : "<unreadable>"
           }), so the merge would carry a stale ref (Issue #2896)`,

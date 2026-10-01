@@ -45,10 +45,10 @@ async function git(
 }
 
 /** A gate that passes without running any real quality script. */
-async function fakePassingGate(): Promise<
-  { ok: true; value: string } | { ok: false; error: Error }
-> {
-  return { ok: true, value: "skipped (test gate)" };
+async function fakePassingGate(
+  _repoDir: string,
+): Promise<{ status: "skipped"; detail: string; output: string }> {
+  return { status: "skipped", detail: "skipped (test gate)", output: "" };
 }
 
 /**
@@ -120,7 +120,13 @@ Deno.test(
       const clonePath = `${tmp}/shallow`;
       assertEquals(
         (await git(
-          ["clone", "--depth=1", "--no-single-branch", originPath, clonePath],
+          [
+            "clone",
+            "--depth=1",
+            "--no-single-branch",
+            `file://${originPath}`,
+            clonePath,
+          ],
           tmp,
         )).code,
         0,
@@ -237,7 +243,13 @@ Deno.test(
       const clonePath = `${tmp}/shallow`;
       assertEquals(
         (await git(
-          ["clone", "--depth=1", "--no-single-branch", originPath, clonePath],
+          [
+            "clone",
+            "--depth=1",
+            "--no-single-branch",
+            `file://${originPath}`,
+            clonePath,
+          ],
           tmp,
         )).code,
         0,
@@ -311,7 +323,13 @@ Deno.test(
       const clonePath = `${tmp}/shallow`;
       assertEquals(
         (await git(
-          ["clone", "--depth=1", "--no-single-branch", originPath, clonePath],
+          [
+            "clone",
+            "--depth=1",
+            "--no-single-branch",
+            `file://${originPath}`,
+            clonePath,
+          ],
           tmp,
         )).code,
         0,
