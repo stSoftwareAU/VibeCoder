@@ -28,7 +28,10 @@ removes that label on a later approve or send-back only when its own
       label was absent (or the skill's own earlier record already said so).
       `gh pr edit --add-label` is idempotent, so without this check the skill
       would otherwise claim ownership of a label it never added, and a later
-      approve/send-back would strip it.
+      approve/send-back would strip it. The comparison is case-insensitive
+      (matching `label_security.ts` and `stall_repair.ts`), since
+      `gh pr edit` resolves label names case-insensitively and a canonical
+      label such as `Needs-Human` must still be recognised.
 
 The label logic lives in a new `needs_human.ts` (`needsHumanAction`,
 `syncNeedsHumanLabel`) with an injected `gh` runner so it is unit-testable.
@@ -84,10 +87,11 @@ functions; docs updated alongside the code.
 
 - `worker/deno/tests/review_fleet_prs_needs_human_2927_test.ts` — held adds
   once (after confirming the label is absent); an already-present label is
-  never claimed as added and is never later removed; approved/sent-back make
-  no call without the log flag; remove only with the flag; failed add/remove
-  report `labelError` with a single edit call; `postedResult` includes
-  `labelError` only when given; only the held body mentions `needs-human`.
+  never claimed as added and is never later removed, including when the
+  canonical label is spelled `Needs-Human`; approved/sent-back make no call
+  without the log flag; remove only with the flag; failed add/remove report
+  `labelError` with a single edit call; `postedResult` includes `labelError`
+  only when given; only the held body mentions `needs-human`.
 - `deno test tests/review_fleet_prs_*_test.ts` — all passed.
 - `./quality.sh` — PASSED (config integration skipped).
 
