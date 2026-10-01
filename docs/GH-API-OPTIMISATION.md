@@ -202,6 +202,9 @@ mergedAt,closedAt,body`) needed no new cache: it is already a *settled
 listing* (Issue #2409), served for up to 3,600 s while every open PR seen
 since it was cached is still open. It learns that open set from
 `prs_<login>`, so it is kept warm by the prefetch — including a reused one.
+The listing is also sorted by update recency (`--search sort:updated-desc`,
+Issue #2901), so a recently closed or merged PR is never pushed out of the
+100-PR window by newer-created ones.
 
 Measured on the three-repo, two-author fixture in
 `worker/deno/tests/iteration_call_budget_test.ts`: `pr list` falls from 12 to

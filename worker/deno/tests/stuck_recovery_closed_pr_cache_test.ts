@@ -38,6 +38,17 @@ function testConfig(workDir: string, repos = ["org/repo"]): StuckIssueConfig {
   };
 }
 
+/**
+ * True for the per-issue `gh pr list --search "in:title ..."` lookup, not
+ * for the repo-wide closed-PR listing — which also carries `--search`, for
+ * update-recency ordering, since Issue #2901.
+ */
+function isTitleSearchCall(args: string[]): boolean {
+  const searchIdx = args.indexOf("--search");
+  return searchIdx !== -1 &&
+    (args[searchIdx + 1]?.includes("in:title") ?? false);
+}
+
 function buildIssue(
   num: number,
   title = `Issue ${num}`,
@@ -74,7 +85,8 @@ Deno.test("fetchClosedPRsByUser - cold cache issues one gh call", async () => {
       calls++;
       assertEquals(args.includes("closed"), true);
       assertEquals(args.includes("--author"), true);
-      assertEquals(args.includes("--search"), false);
+      // Issue #2901: ordered by update recency, not a per-issue title search.
+      assertEquals(isTitleSearchCall(args), false);
       return JSON.stringify([
         {
           number: 1,
@@ -197,14 +209,15 @@ Deno.test("detectAssignedWithClosedPr - N stuck issues issue one closed-PR list 
       }
       // Per-issue title-search (open / merged) returns nothing.
       if (
-        args[0] === "pr" && args[1] === "list" && args.includes("--search")
+        args[0] === "pr" && args[1] === "list" && isTitleSearchCall(args)
       ) {
         return JSON.stringify([]);
       }
-      // Repo-wide closed-PR list call (no --search).
+      // Repo-wide closed-PR list call (ordered by update recency, not a
+      // per-issue title search).
       if (
         args[0] === "pr" && args[1] === "list" &&
-        !args.includes("--search") &&
+        !isTitleSearchCall(args) &&
         args.includes("--state") && args.includes("closed") &&
         args.includes("--author")
       ) {
@@ -270,12 +283,12 @@ Deno.test("detectAssignedWithClosedPr - matches both (#N) and (Issue #N) title p
       if (args[0] === "issue" && args[1] === "list") {
         return JSON.stringify([buildIssue(50), buildIssue(60)]);
       }
-      if (args[0] === "pr" && args[1] === "list" && args.includes("--search")) {
+      if (args[0] === "pr" && args[1] === "list" && isTitleSearchCall(args)) {
         return JSON.stringify([]);
       }
       if (
         args[0] === "pr" && args[1] === "list" &&
-        !args.includes("--search") &&
+        !isTitleSearchCall(args) &&
         args.includes("--state") && args.includes("closed") &&
         args.includes("--author")
       ) {
@@ -329,12 +342,12 @@ Deno.test("detectAssignedWithClosedPr - excludes merged PRs from closed-not-merg
       }
       // Open and merged title-searches return nothing — the closed-PR
       // path must not be re-entered for a PR with a non-null mergedAt.
-      if (args[0] === "pr" && args[1] === "list" && args.includes("--search")) {
+      if (args[0] === "pr" && args[1] === "list" && isTitleSearchCall(args)) {
         return JSON.stringify([]);
       }
       if (
         args[0] === "pr" && args[1] === "list" &&
-        !args.includes("--search") &&
+        !isTitleSearchCall(args) &&
         args.includes("--state") && args.includes("closed") &&
         args.includes("--author")
       ) {
@@ -388,12 +401,12 @@ Deno.test("detectAssignedWithClosedPr - invalidates prs_closed_${user} after mut
       if (args[0] === "issue" && args[1] === "list") {
         return JSON.stringify([buildIssue(80)]);
       }
-      if (args[0] === "pr" && args[1] === "list" && args.includes("--search")) {
+      if (args[0] === "pr" && args[1] === "list" && isTitleSearchCall(args)) {
         return JSON.stringify([]);
       }
       if (
         args[0] === "pr" && args[1] === "list" &&
-        !args.includes("--search") &&
+        !isTitleSearchCall(args) &&
         args.includes("--state") && args.includes("closed") &&
         args.includes("--author")
       ) {
@@ -446,12 +459,12 @@ Deno.test("detectAssignedWithClosedPr - second scan in same iteration hits close
       if (args[0] === "issue" && args[1] === "list") {
         return JSON.stringify([buildIssue(90)]);
       }
-      if (args[0] === "pr" && args[1] === "list" && args.includes("--search")) {
+      if (args[0] === "pr" && args[1] === "list" && isTitleSearchCall(args)) {
         return JSON.stringify([]);
       }
       if (
         args[0] === "pr" && args[1] === "list" &&
-        !args.includes("--search") &&
+        !isTitleSearchCall(args) &&
         args.includes("--state") && args.includes("closed") &&
         args.includes("--author")
       ) {
