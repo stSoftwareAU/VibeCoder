@@ -229,6 +229,70 @@ Deno.test("refusalIsMostRecentFailure - the escalation comment counts as the ref
 });
 
 // ===========================================================================
+// A newer non-refusal failure record must not be shadowed by an older
+// refusal (Issue #2943)
+// ===========================================================================
+
+/** Real churn wording — mirrors `claim_issue.ts`'s own comment body. */
+const CHURN_COMMENT = `## Claim Churn Detected\n\nThis issue has been ` +
+  `claimed and released 5 times (threshold: 5). Marking as failed — a ` +
+  `human should review whether this issue needs to be broken down into ` +
+  `smaller tasks.`;
+
+const QUESTION_FAILURE_COMMENT = `## Question Answering Failed\n\n` +
+  `### Failure Details\nThe worker could not answer this issue's question.`;
+
+const QUESTION_FAILURE_SECOND_ATTEMPT_COMMENT =
+  `## Question Answering Failed (Second Attempt)\n\n` +
+  `### Failure Details\nThe worker could not answer this issue's question.`;
+
+const PLANNING_ESCALATION_COMMENT =
+  `## Automatic Escalation to Planning Mode\n\n` +
+  `### What happens next?\nThis issue has been escalated to planning mode.`;
+
+Deno.test("refusalIsMostRecentFailure - a newer churn record keeps the labels, an older one does not stop the refusal (Issue #2943)", () => {
+  // The refusal is not the newest failure record — a churn happened since.
+  assertEquals(
+    refusalIsMostRecentFailure([REFUSAL_COMMENT, CHURN_COMMENT]),
+    false,
+  );
+  // The churn happened BEFORE the refusal, so the refusal is still newest.
+  assertEquals(
+    refusalIsMostRecentFailure([CHURN_COMMENT, REFUSAL_COMMENT]),
+    true,
+  );
+});
+
+Deno.test("refusalIsMostRecentFailure - a newer question-answering failure keeps the labels (Issue #2943)", () => {
+  assertEquals(
+    refusalIsMostRecentFailure([REFUSAL_COMMENT, QUESTION_FAILURE_COMMENT]),
+    false,
+  );
+  assertEquals(
+    refusalIsMostRecentFailure([
+      REFUSAL_COMMENT,
+      QUESTION_FAILURE_SECOND_ATTEMPT_COMMENT,
+    ]),
+    false,
+  );
+});
+
+Deno.test("refusalIsMostRecentFailure - a newer planning escalation keeps the labels (Issue #2943)", () => {
+  assertEquals(
+    refusalIsMostRecentFailure([REFUSAL_COMMENT, PLANNING_ESCALATION_COMMENT]),
+    false,
+  );
+});
+
+Deno.test("refusalIsMostRecentFailure - a churn record quoting the GH013 refusal text is still not a refusal candidate (Issue #2943)", () => {
+  const churnQuotingRefusal = `## Claim Churn Detected\n\nThis issue has ` +
+    `been claimed and released 5 times (threshold: 5). Marking as failed ` +
+    `— a human should review whether this issue needs to be broken down ` +
+    `into smaller tasks.\n\n> ${GH013}`;
+  assertEquals(refusalIsMostRecentFailure([churnQuotingRefusal]), false);
+});
+
+// ===========================================================================
 // releaseMilestoneBranchRefusalLabels
 // ===========================================================================
 
@@ -323,6 +387,34 @@ Deno.test("releaseMilestoneBranchRefusalLabels - releases the refusal's issues a
   assertStringIncludes(
     comments[0]?.[comments[0].length - 1] ?? "",
     "Milestone branch restored",
+  );
+});
+
+Deno.test("releaseMilestoneBranchRefusalLabels - a churn record newer than the refusal keeps the label (Issue #2943)", async () => {
+  resetMilestoneBranchRefusalSweepsForTest();
+  const issues: FakeIssue[] = [
+    {
+      number: 220,
+      labels: ["failed"],
+      comments: [REFUSAL_COMMENT, CHURN_COMMENT],
+    },
+  ];
+  const gh = fakeGh(issues);
+
+  const outcome = await releaseMilestoneBranchRefusalLabels({
+    repo: REPO,
+    milestoneTitle: MILESTONE,
+    milestoneBranch: BRANCH,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained, [220]);
+  assertEquals(gh.byNumber.get(220)?.labels, ["failed"]);
+  assert(
+    !gh.calls.some((c) => c[1] === "edit"),
+    "the churn record must stop the sweep before any label is removed",
   );
 });
 
