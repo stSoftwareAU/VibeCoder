@@ -1,9 +1,9 @@
 /**
  * Screenshot evidence validation for PR completion (Issue #1185).
  *
- * Detects UI-related changes from file extensions, issue labels, and
- * PR summary content. When UI changes are detected, validates that
- * screenshot evidence is present in the PR summary.
+ * Detects UI-related changes from changed file extensions only (Issue
+ * #2959). When UI changes are detected, validates that screenshot evidence
+ * is present in the PR summary.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -13,58 +13,8 @@ import { findScreenshotReferences } from "./pr_evidence.ts";
 const UI_FILE_EXTENSIONS =
   /\.(css|scss|sass|less|html|htm|jsx|tsx|vue|svelte)$/i;
 
-const UI_LABEL_PATTERN = /\b(ui|frontend|css|visual|design|layout|style)\b/i;
-
-/**
- * Files that cannot carry a browser surface (Issue #1909): systems and
- * scripting languages, documents, configuration and lock files. When every
- * changed file is one of these, the summary's vocabulary alone must not make
- * the change a UI change — NEAT-AI-Ockham#198 was a Rust pruning change whose
- * write-up said `color` (graph colouring) and `visual` (visual inspection),
- * and the completion phase demanded a browser screenshot of a repository
- * that has no browser surface, failing a 48-minute run.
- */
-const NON_UI_FILE_EXTENSIONS =
-  /\.(rs|go|py|rb|java|kt|swift|c|cc|cpp|h|hpp|cs|sh|bash|zsh|ps1|md|txt|toml|ya?ml|json|jsonc|lock|sql|csv|ini|cfg|proto)$/i;
-
-/**
- * Whether the keyword fallback may apply: it is meaningless when the changed
- * files are known and none of them could hold a UI. An empty or unknown list
- * keeps the fallback, as before.
- */
-export function keywordFallbackApplies(changedFiles: string[]): boolean {
-  if (changedFiles.length === 0) return true;
-  return !changedFiles.every((f) => NON_UI_FILE_EXTENSIONS.test(f));
-}
-
-/**
- * Individual UI keywords for content analysis.
- *
- * A single keyword match in PR summary content is insufficient — common words
- * like "visual", "color", or "chart" appear in non-UI contexts (e.g.,
- * "No visual changes", "benchmark chart"). We require at least two distinct
- * keyword matches to reduce false positives (Issue #1296).
- */
-const UI_KEYWORDS = [
-  "html",
-  "chart",
-  "css",
-  "visual",
-  "font",
-  "colour",
-  "color",
-  "button",
-  "modal",
-  "dialog",
-  "responsive",
-  "stylesheet",
-  "animation",
-  "svg",
-];
-
 export interface ScreenshotValidationOptions {
   prSummaryContent: string;
-  issueLabels: string;
   changedFiles: string[];
   repo: string;
   issueNumber: number;
@@ -165,54 +115,22 @@ export function isVersionBumpOnly(patch: string): boolean {
 /**
  * Detect whether a set of changes is UI-related.
  *
- * Checks three signals:
- * 1. Changed file extensions (CSS, HTML, JSX, TSX, Vue, Svelte, etc.)
- * 2. Issue labels containing UI-related keywords
- * 3. PR summary content containing UI-specific terms
+ * One signal only (Issue #2959): a changed file whose extension is a UI
+ * file extension (CSS, HTML, JSX, TSX, Vue, Svelte, etc.). Issue labels and
+ * PR summary wording are deliberately ignored — a `lang:design` label or a
+ * summary using UI-flavoured words such as "colour" or "modal" used to
+ * demand a screenshot of a change with no browser surface at all.
  *
  * A changed file named in `versionBumpOnlyFiles` — one whose patch
- * {@link isVersionBumpOnly} accepted — is set aside from the first and
- * third signals (Issue #2300): it changed, but not in any way a screenshot
- * could show.
+ * {@link isVersionBumpOnly} accepted — is set aside first (Issue #2300): it
+ * changed, but not in any way a screenshot could show.
  */
 export function detectUiChanges(
-  prSummaryContent: string,
-  issueLabels: string,
   changedFiles: string[],
   versionBumpOnlyFiles: ReadonlySet<string> = new Set(),
 ): boolean {
   const substantive = changedFiles.filter((f) => !versionBumpOnlyFiles.has(f));
-
-  if (substantive.some((f) => UI_FILE_EXTENSIONS.test(f))) {
-    return true;
-  }
-
-  if (UI_LABEL_PATTERN.test(issueLabels)) {
-    return true;
-  }
-
-  // Issue #2300: a change that is nothing but version stamps has no UI to
-  // show, whatever the summary says about the release.
-  if (changedFiles.length > 0 && substantive.length === 0) return false;
-
-  // Issue #1909: the keyword fallback only means something when a changed
-  // file could carry a UI. A Rust/Go/Python/docs-only change is not one,
-  // whatever its summary says.
-  if (!keywordFallbackApplies(substantive)) return false;
-
-  // Require at least 2 distinct UI keyword matches in PR summary content
-  // to reduce false positives from common words in non-UI contexts (Issue #1296).
-  let uiKeywordMatchCount = 0;
-  for (const keyword of UI_KEYWORDS) {
-    if (new RegExp(`\\b${keyword}\\b`, "i").test(prSummaryContent)) {
-      uiKeywordMatchCount++;
-      if (uiKeywordMatchCount >= 2) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+  return substantive.some((f) => UI_FILE_EXTENSIONS.test(f));
 }
 
 const SCREENSHOT_FAILURE_MESSAGE = `## Screenshot Evidence Required
@@ -238,7 +156,6 @@ export function validateScreenshotEvidence(
 ): ScreenshotValidationResult {
   const {
     prSummaryContent,
-    issueLabels,
     changedFiles,
     skipScreenshotCheck,
     versionBumpOnlyFiles,
@@ -249,8 +166,6 @@ export function validateScreenshotEvidence(
   }
 
   const isUiChange = detectUiChanges(
-    prSummaryContent,
-    issueLabels,
     changedFiles,
     new Set(versionBumpOnlyFiles ?? []),
   );

@@ -456,6 +456,7 @@ explicitly overridden.
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
+| `fleet_run_archive` | unset | Optional `owner/repo` slug naming the operator's private fleet run archive — a repository a hook extension fills with per-run records (outcome, mode, host, token and cost telemetry) from every host. Validated as an `owner/repo` slug at load; a malformed value fails config loading loudly. Absent (the default) means fleet-wide measurement is off. See [Fleet Run Archive](#-fleet-run-archive). |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
 > — they are fixed in the codebase and any `.config.json` key that tries to set
@@ -471,6 +472,49 @@ explicitly overridden.
 > To change the planning model, use `phase_model_overrides` (e.g.
 > `{ "planning": "sonnet" }`) or `best_planning_model` — there is no separate
 > per-phase planning-model config key.
+
+### 📈 Fleet Run Archive
+
+`fleet_run_archive` names a repository —
+`"your-org/vibe-fleet-archive"` — that an operator-maintained hook
+extension fills with per-run records (outcome,
+mode, host, token and cost telemetry) gathered from every host in the fleet.
+VibeCoder names no specific archive and ships no hook that writes to one; the
+operator builds and configures both. Validated with the canonical
+`owner/repo` slug check (`isValidRepoSlug` — rejects `..` and dot-led path
+segments); a malformed value fails config loading loudly rather than
+silently disabling fleet-wide measurement.
+
+When set, an `issue`-phase run gains a `<fleet_data_source>` block naming the
+archive and explaining that a host's own `fleet_telemetry_*.json` sidecars and
+`.credit_log_*.json` only describe that one host. The run is told to read the
+archive **read-only** via `gh api repos/<archive>/contents/...` — starting
+with its README to learn the layout — and never to write to it. The slug
+itself is fenced inside the run's untrusted boundary; the archive's
+contents are fetched by the run itself at runtime, so the prompt instead
+**instructs** the run to treat everything it reads back as untrusted
+data — never an instruction to follow — and the standing untrusted-data
+rules apply to it. An incomplete or unreadable archive is reported as a
+**partial** verdict naming the hosts and dates covered and the gaps. The
+run's GitHub token must be able to read the archive repository; the `gh`
+guard already confines writes to the issue's own claim repository, so the
+archive stays read-only from the run regardless of token scope.
+
+Unset (the default), the `issue` prompt tells a measurement-shaped issue to
+label its verdict **single-host** or **partial** rather than claim fleet-wide
+coverage it cannot see.
+
+```mermaid
+flowchart LR
+    H1["Host A"] --> HOOK["Operator's<br/>post-run hook"]
+    H2["Host B"] --> HOOK
+    H3["Host C"] --> HOOK
+    HOOK --> ARCH["fleet_run_archive<br/>(private repo)"]
+    ARCH -.->|"gh api … (read-only)"| RUN["issue-phase run<br/>on any host"]
+    RUN --> V{"Archive readable<br/>and complete?"}
+    V -->|yes| FW["Verdict: fleet-wide"]
+    V -->|no| PART["Verdict: partial<br/>(hosts/dates + gaps named)"]
+```
 
 ### ⚖️ Idle-Task Template Weights
 
@@ -1719,6 +1763,7 @@ unless explicitly overridden.
 | Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped. |
 | Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
 | Call-storm novel share | `call_storm_novel_share` | `0.25` | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped. |
+| Screenshot retry timeout | `screenshot_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -1884,7 +1929,7 @@ calls the agent made are counted from the run's per-tool tally — both the
 as `queries` in the run-stats line, the log line and the callback block.
 
 **When Graft is unavailable.** An enabled host that cannot run Graft — the
-clone's `info/exclude` cannot be resolved or appended to, the binary is
+graph directory inside the clone's git dir cannot be resolved, the binary is
 missing, the build or the query fails, the query succeeds but returns an empty
 bundle, the build produces a graph with 0 nodes (no file matched a language
 Graft parses, or the build matched no files), or the graph index cannot be
@@ -1922,25 +1967,30 @@ records a `failed` Graft status — the bundle is an accelerator, so losing it
 never fails the run, and the loss is recorded rather than passed off as a
 clean run.
 
-**Where the graph lives.** Graft writes its graph to `graft/` at the root of
-the repository checkout, which is persistent between runs, so an unchanged
-file replays from Graft's own cache on the next build instead of being
-re-parsed. The worker never deletes `graft/`. Two entries keep it that way
-(Issue #2099): `/graft/` is added to the clone's own `.git/info/exclude`
-before each build — per-clone, unstageable, and unlike a `.gitignore` edit it
-survives the `git reset --hard` + `git clean -fd` every run starts with — and
-`/graft/` is in the canonical `.gitignore` pattern set the worker enforces, so
-a checkout whose `.gitignore` carries that set cannot stage the graph either.
-The two differ in reach, and it is worth being exact about which does the
-work: the `.gitignore` entry is written by `gitignore-sync` at `setup.sh` time
-and that edit is uncommitted, so the per-run `git reset --hard` reverts it —
-during a run it is the `info/exclude` entry that is actually in force, and the
-`.gitignore` pattern is the belt to its braces once the line reaches a
-repository's committed `.gitignore`. Graft itself is run with `--no-gitignore
---no-ignore`, which #2060 records as the flags that stop it editing
-`.gitignore`; that is an assumption from Graft's documentation rather than one
-observed here, because Graft is not installed on the image this was written
-against. The `info/exclude` entry holds either way.
+**Where the graph lives.** Graft writes its graph inside the clone's git
+directory, not the working tree: the worker resolves
+`git rev-parse --git-path graft` — ordinarily `<checkout>/.git/graft`, and for
+a lane worktree the `graft` directory inside that worktree's own git dir — and
+passes it as `graft --dir <path> build|ask|mcp` (Issue #2915). That directory
+is persistent between runs, so an unchanged file still replays from Graft's
+own cache on the next build instead of being re-parsed, but because it sits
+outside the working tree a repository's lint and format tools never glob it,
+nothing there can ever be staged, and `git reset --hard` plus `git clean -fd`
+— the per-run reset every run starts with — leaves it untouched, the same
+survival property the old `info/exclude` entry gave the in-tree `graft/` it
+replaces. The worker no longer appends `/graft/` to the clone's
+`.git/info/exclude`. Before each build the worker removes a **legacy in-tree
+`graft/`** left over from a checkout built before this change — recognised as
+a real directory (not a symlink) carrying `.graph/wiring.json` with nothing
+under it tracked by git — logging a `warn` line when it does; a `graft/` the
+repository itself tracks is never touched. `/graft/` stays in the canonical
+`.gitignore` pattern set the worker enforces (`gitignore-sync` at `setup.sh`
+time) as belt and braces for any lingering in-tree copy or a repository that
+still references the old path, even though the graph the worker builds today
+never lands there. Graft itself is run with `--no-gitignore --no-ignore`,
+which Issue #2060 records as the flags that stop it editing `.gitignore`;
+that is an assumption from Graft's documentation rather than one observed
+here, because Graft is not installed on the image this was written against.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
@@ -2096,24 +2146,47 @@ only surfaced in a hand-written weekly report.
 
 The fast-failure tracker is the durable half. It lives on the work volume as
 `repo_fast_failures_<host>.json` — the hostname rides in the filename, never
-the PID — so the counters survive a worker restart.
+the PID — so the counters survive a worker restart. Fleet-wide tallying
+(Issue #2956) adds a second, shared record in the monitored repository
+itself, so a repository's failures are counted across every host, not just
+the one that hit them.
+
+A sibling file, `clone_recoveries_<host>.json`, records the last time each
+repo's corrupt clone was moved aside and re-cloned, written by `setupRepo`'s
+`clone-corrupt` recovery (Issue #2957). Entries written since Issue #2958
+also record the git output that triggered the recovery and the moved-aside
+path (`{ "<owner/repo>": { "at": "<ISO timestamp>", "gitMessage": "...",
+"aside": "..." } }`); older entries are bare ISO strings and still count as
+a valid cap record. It caps that recovery at one re-clone per repo per 24 h;
+deleting the file, or just a repo's entry, resets the cap and lets the
+worker recover the next corrupt clone it meets.
+
+A second corruption of the same repo on the same host inside that window is
+a different, worse signal: the run's setup failure carries a machine-readable
+`clone-corrupt-repeat` payload, and the release path backs the repository off
+fleet-wide at once and escalates the tally issue to a human (Issue #2958) —
+no waiting for the tally threshold.
+
+The repository's diagnostic issue carries two independent markers on the
+same body, and the two states they describe are distinct:
+
+- **tally** — `<!-- VIBE_REPO_FAST_FAILURE_TALLY:<owner/repo> -->`. Present
+  as soon as the first fast failure is recorded anywhere in the fleet. It
+  only counts failures; on its own it does **not** back the repository off.
+- **backed off** — `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, added to
+  the same body once the tally reaches threshold. This is the only marker
+  the fleet-wide lookup (below) honours.
 
 ```mermaid
 flowchart TD
-    R["Run released with no PR"] --> F{"Fast failure?<br/>zero_output, setup fault, or<br/>under fast_failure_seconds"}
-    F -- "no" --> K["Nothing recorded"]
-    F -- "yes" --> C["Record the event:<br/>phase + the diagnostic error line"]
-    C --> T{"repo_fast_failure_threshold<br/>reached inside the window?"}
-    T -- "no" --> K
-    T -- "yes" --> B["Repository backed off —<br/>excluded from the claim scan"]
-    S["Open fleet-authored diagnostic<br/>found by any host (Issue #2955)"] --> B
-    B --> D["One deduplicated diagnostic issue<br/>(body marker, never the title)"]
-    D --> W{"Released?"}
-    W -- "diagnostic closed" --> G["Claimable again on every host"]
-    W -- "window lapses" --> G
-    W -- "a run succeeds" --> G
+    F["Fast failure on any host<br/>(zero_output, setup fault, or<br/>under fast_failure_seconds)"] --> L{"Open tally issue for repo?"}
+    L -->|No| N["Create tally issue"] --> C
+    L -->|Yes| C["Add marker comment"]
+    C --> K{"Marker comments in window >= threshold?"}
+    K -->|No| E["Done — repo still claimable"]
+    K -->|Yes| B["Add back-off marker to body"] --> H["Every host skips repo (#2955)"]
     style B fill:#9d0208,stroke:#6a040f,color:#fff
-    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style H fill:#9d0208,stroke:#6a040f,color:#fff
 ```
 
 - **What counts as fast.** A run whose agent produced no output
@@ -2131,34 +2204,52 @@ flowchart TD
   where the retries Issue #1950 measured were spent. The label-driven lanes
   (refinement, grill-me, planning, question) are not filtered — each removes
   its own label and so stops itself.
-- **The back-off decays on its own.** It is the count of events still inside
-  `repo_fast_failure_window_hours`, not a stored expiry, so a repaired
-  repository recovers with no operator action. A single fast failure followed
-  by a success clears the history outright.
-- **Exactly one diagnostic per repository.** Deduplicated on the body marker
-  `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->`, and only when a fleet
-  account authored the match — a marker in a body is text anyone can write.
-  It carries the failing phase and the last error line that names a cause —
-  git's own summary lines (`error: failed to push some refs to '<url>'`,
-  `To <url>`, trailing `hint:` advice) are stepped over, so a run that died
-  on a refused push reports the refusal rather than the bare fact that a
-  push failed (Issue #2034). The markdown scaffolding the worker wraps the
-  agent's last output in — the `<details>` and `<summary>` tags and code
-  fences — is stepped over too, so the detail is never a bare `</details>`
-  (Issue #2590). Closing it releases the back-off on the next scan.
+- **The local back-off decays on its own.** It is the count of this host's
+  own events still dated inside `repo_fast_failure_window_hours`, not a
+  stored expiry, so a repaired repository recovers with no operator action.
+  A single fast failure followed by a success clears that host's history
+  outright. The fleet-wide back-off marker is different: once added to the
+  tally issue's body it stays — the worker never removes it, so it persists
+  until a human closes the issue. The window only governs whether the
+  threshold is reached in the first place, not how long the marker lasts
+  once it is there.
+- **On every fast failure, on any host.** The worker finds the open,
+  fleet-authored tally issue for the repository (lowest issue number wins
+  when more than one is somehow open); if none exists it creates one, labelled
+  `bug` (retried once without the label if the repository refuses it). It
+  then adds one comment of the form
+  `<!-- vibe-fast-failure host="<host>" at="<ISO time>" issue="<repo>#<n>" -->`
+  plus a one-line human-readable reason. Only fleet-authored marker comments
+  count — `service_accounts` ∪ `fleet_pr_authors` ∪ the host's own login — a
+  comment from any other account is ignored, and a tally issue authored by a
+  non-fleet account is ignored outright (a new one is filed instead). When
+  the count of fleet-authored marker comments dated inside
+  `repo_fast_failure_window_hours` reaches `repo_fast_failure_threshold` —
+  counted across the whole fleet, never per host — the body is edited to add
+  the back-off marker plus a short "backed off" line.
+- **Failures in the diagnostic path are non-fatal.** A `gh` failure while
+  finding, creating, commenting on, or editing the tally issue is logged at
+  WARN with the repository and the error; the claim release still completes
+  either way.
+- **What the local state file still does.** The per-host
+  `repo_fast_failures_<host>.json` sidecar is unchanged: it still drives this
+  host's own `backedOffUntil` and the `repo-fast-failures:` cycle-summary
+  line below. When this host's own count reaches threshold and backs the
+  repository off locally, the tally issue it found or created is recorded as
+  the local diagnostic.
 - **Where it is filed.** In the monitored repository the fault is about —
-  the diagnostic for `owner/repo` lands in `owner/repo`, never in
+  the tally issue for `owner/repo` lands in `owner/repo`, never in
   `stSoftwareAU/VibeCoder`, and there is no opt-out (Issue #2592). The fault
   is almost always repository-owned (a refused push, a missing branch), so
-  the report belongs beside the code its owners can fix. If the repository
-  refuses the `bug` label, the create is retried once without it; if that
-  fails too, a `catch_block_warning` fault is recorded and nothing is filed
-  anywhere else.
+  the report belongs beside the code its owners can fix. Filing happens on
+  the first fast failure recorded anywhere in the fleet, not only once
+  threshold is reached — a tally issue with too few comments inside the
+  window is evidence being gathered, not yet a back-off.
 
   ```mermaid
   flowchart LR
-      F["owner/repo backed off"] --> C["gh issue create<br/>--repo owner/repo --label bug"]
-      C -->|ok| D["Diagnostic in owner/repo"]
+      F["First fast failure<br/>for owner/repo"] --> C["gh issue create<br/>--repo owner/repo --label bug"]
+      C -->|ok| D["Tally issue in owner/repo"]
       C -->|refused| R["Retry once without --label"]
       R -->|ok| D
       R -->|refused| W["catch_block_warning fault<br/>suppressed:gh_failed"]
@@ -2166,16 +2257,32 @@ flowchart TD
       style W fill:#9d0208,stroke:#6a040f,color:#fff
   ```
 
+  The marker comments carry the failing phase and the last error line that
+  names a cause — git's own summary lines (`error: failed to push some refs
+  to '<url>'`, `To <url>`, trailing `hint:` advice) are stepped over, so a run
+  that died on a refused push reports the refusal rather than the bare fact
+  that a push failed (Issue #2034). The markdown scaffolding the worker wraps
+  the agent's last output in — the `<details>` and `<summary>` tags and code
+  fences — is stepped over too, so the detail is never a bare `</details>`
+  (Issue #2590). Closing the issue releases the fleet-wide back-off on every
+  host at its next lookup.
 - **What an operator sees.** One cycle-summary line naming every tracked
   repository:
   `repo-fast-failures: owner/repo: 5 fast failures, backed off until 2026-09-12T04:05Z (owner/repo#123)`.
 
 #### Fleet-wide back-off (Issue #2955)
 
-Per-host counters alone never reach the threshold when a repository's
-failures spread across many hosts — each host sees too few fast failures to
-file its own diagnostic, so the repository keeps being claimed everywhere.
-Every host therefore also treats an **open** diagnostic issue carrying the
+Per-host counters alone never reached the threshold when a repository's
+failures spread across many hosts — each host saw too few fast failures to
+back the repository off itself, so it kept being claimed everywhere. The
+fleet-wide tally Issue #2956 adds (above) is what now closes that gap: every
+fast failure, on every host, is recorded against the one shared tally issue, so
+the threshold is reached on the fleet's combined count rather than any single
+host's. The lookup below still only honours the back-off marker — a tally
+issue that has not yet reached threshold carries only the tally marker, and
+on its own does not back the repository off anywhere.
+
+Every host treats an **open** diagnostic issue carrying the
 `<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->` marker as a back-off, provided
 it was authored by a fleet account: `service_accounts` ∪
 `fleet_pr_authors` ∪ the host's own login. This is on top of, not instead of,
@@ -4391,8 +4498,9 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
   always captures Playwright screenshots on the first attempt (avoids a
   round-trip failure)
 - **Non-UI repositories**: Set `skip_screenshot_check: true` to skip screenshot
-  validation entirely, preventing false positives from keyword detection, and
-  to keep Playwright out of the run — it beats `requires_screenshots` and the
+  validation entirely, so a repository whose UI-extension files (for example
+  generated `.html` reports) need no screenshot never meets the gate, and to
+  keep Playwright out of the run — it beats `requires_screenshots` and the
   `needs-screenshot` label
 - **Disable auto-merge**: Set `skip_auto_merge: true` if you prefer to manually
   merge PRs

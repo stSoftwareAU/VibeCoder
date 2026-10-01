@@ -71,7 +71,7 @@ Deno.test("reviewBody: every body ends with the marker; change requests list eac
   );
   assert(sentBack.includes("`a.ts:3`"));
   assert(sentBack.includes("use <="));
-  assert(sentBack.trimEnd().endsWith(`_${REVIEW_MARKER} (Fable)._`));
+  assert(sentBack.trimEnd().endsWith(`_${REVIEW_MARKER}._`));
 
   const held = reviewBody(
     "held",
@@ -143,7 +143,7 @@ Deno.test("reviewBody lists the issues filed for problems outside the PR's scope
   );
   assert(body.includes("outside this PR's scope"));
   assert(body.includes("#42"));
-  assert(body.trimEnd().endsWith(`_${REVIEW_MARKER} (Fable)._`));
+  assert(body.trimEnd().endsWith(`_${REVIEW_MARKER}._`));
   assert(
     !reviewBody("approved", review(), []).includes("outside this PR's scope"),
   );

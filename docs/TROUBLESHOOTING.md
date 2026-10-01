@@ -960,12 +960,31 @@ once the host recovers — no action needed. A failure comment caused by a broke
 worker clone or environment, rather than the issue's own code, carries a **Host
 fault:** line naming the kind:
 
-| Kind                     | Meaning                                                            |
-| ------------------------ | ------------------------------------------------------------------ |
-| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the worker's clone |
-| `clone-failed`           | The clone itself could not be created                              |
-| `disk-full`              | The host ran out of disk space                                     |
-| `container-build-failed` | The issue's container image failed to build                        |
+| Kind                     | Meaning                                                                                                              |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the worker's clone, or a corrupt `.git/config` or lost git directory |
+| `clone-failed`           | The clone itself could not be created                                                                                |
+| `disk-full`              | The host ran out of disk space                                                                                       |
+| `container-build-failed` | The issue's container image failed to build                                                                          |
+
+A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
+clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not
+deleted — any older `.corrupt-*` sibling for that repo is removed first) and
+re-clones automatically (Issue #2957). This recovery is capped at one
+re-clone per repo per 24 h, tracked in `clone_recoveries_<host>.json` on the
+work volume. Once the cap is used, setup fails with the original git error
+until the 24 h window elapses; after fixing the underlying corruption, an
+operator can delete that repo's entry (or the whole file) to allow another
+re-clone immediately.
+
+A second corruption of the same repo on the same host inside the window is
+not an ordinary setup fault: something keeps damaging the clone. The run's
+failure carries a `clone-corrupt-repeat` payload, and the worker backs the
+repository off fleet-wide at once and escalates its tally diagnostic issue
+with a `needs-human` label and one comment carrying both corruption times,
+both git messages and the moved-aside path (Issue #2958). The comment's
+checklist names what to check — disk health, the volume, a manual re-clone —
+and closing the diagnostic issue lifts the back-off.
 
 The next time that repository's setup phase successfully creates a feature
 branch — proof the host's clone is healthy again — a sweep checks every open

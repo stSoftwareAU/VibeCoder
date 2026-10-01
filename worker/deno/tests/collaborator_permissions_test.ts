@@ -210,6 +210,38 @@ Deno.test("fetchRepoCollaborators - concatenates two paginated JSON pages", asyn
   }
 });
 
+Deno.test("fetchRepoCollaborators - a string field containing ][ does not break page splitting", async () => {
+  // Issue #2895: a naive `][`-shaped split would cut this page's name field
+  // in two and corrupt the JSON. `name` is not validated, so it is a safe
+  // place to carry the adversarial shape.
+  const page1 = [
+    {
+      ...rawCollaborator("alice", {
+        admin: true,
+        maintain: true,
+        push: true,
+      }),
+      name: "x][y",
+    },
+  ];
+  const page2 = [
+    rawCollaborator("bob", { push: true, triage: true, pull: true }),
+  ];
+  const concatenated = `${JSON.stringify(page1)}\n${JSON.stringify(page2)}`;
+  const { calls } = installRunner(() => okResult(0, concatenated));
+  try {
+    const set = assertSuccess(await fetchRepoCollaborators(REPO, {}));
+    assertEquals(set.collaborators.map((c) => c.login), ["alice", "bob"]);
+    assertEquals(set.collaborators.map((c) => c.permission), [
+      "admin",
+      "write",
+    ]);
+    assertSpawnedCollaboratorsQuery(calls);
+  } finally {
+    restore();
+  }
+});
+
 Deno.test("fetchRepoCollaborators - non-zero gh exit is an error, not an empty set", async () => {
   const { calls } = installRunner(() =>
     okResult(1, "", "connection reset by peer")

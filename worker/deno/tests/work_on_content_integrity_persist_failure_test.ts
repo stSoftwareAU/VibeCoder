@@ -195,6 +195,7 @@ Deno.test(
         issueLabels: ["work-on"],
         issueAuthor: "mallory",
         config,
+        githubUser: "worker-bot",
       }, { ghFn: gh, contentDeps });
     });
 

@@ -69,6 +69,29 @@ the fault immediately rather than swallowing it into a green result.
 - **Prefer loud, early failure** over continuing in a degraded or partial state
   that hides the problem downstream.
 
+## Automation and Shared GitHub State
+
+**Remove only what you can prove you added.** Before automation removes or
+releases a label (or similar shared GitHub state), it must have recorded
+provenance at add time: the label was absent before the add, or a marker
+comment or log entry this code path wrote. An idempotent add succeeding is not
+provenance — `gh issue edit --add-label` and `gh pr edit --add-label` succeed
+whether or not the label was already there. Labels such as `needs-human`,
+`failed` and `failed-once` can come from several actors (a human, another
+worker lane, claim churn); when ownership cannot be proven, leave the label
+alone.
+
+- **Record provenance at add time** — read the labels before the add and
+  remember only a label that was absent, or match a marker this code path wrote
+  under its own heading, not every heading that applies the same label.
+- **Test the pre-existing case** — add a test where the label already exists
+  before the add, and assert that it is not removed later.
+
+Past regressions: a release sweep that counted only one comment heading while
+another path applied the same labels (#2938), a `needs-human` flag set after an
+idempotent `gh pr edit --add-label` (#2949), and stall repair ignoring a
+hand-applied `needs-human` (#2866).
+
 ## Log Levels Are a Promise About What the Reader Must Do
 
 A log level tells the person scanning a fleet log what to do next. Use them
@@ -264,6 +287,19 @@ validation/error and relevant edge cases; existing direct or indirect coverage
 counts. Do not add a test per function or assertion merely to increase coverage.
 For a real defect, where practical first reproduce the externally meaningful
 failure in a test, then fix it and state the linkage in the PR summary.
+
+**A red run counts only against the base branch.** The regression test must
+fail against the unfixed base-branch production code with the base branch's
+own test doubles; if the change edits a fake, fixture or stub, run the new
+test with the new double against the base-branch production code — if it
+passes there, the red came only from the modified double and proves nothing.
+When the fault is not reproduced, do not change production behaviour or a
+durable format (stored keys, schemas, wire or file formats) on an unverified
+diagnosis: first confirm the premise against the base-branch code (for
+example, what the production adapter actually accepts), or say the fault is
+undiagnosed or already fixed and only pin the current behaviour. When the
+issue cites a logged error line, start the reproducing test from that exact
+input and quote the line in the PR summary.
 
 ### Choosing assertions
 
@@ -570,6 +606,15 @@ build commands on unattended machines (`./quality.sh < /dev/null`,
 `npm test < /dev/null`) so a tool that unexpectedly reads stdin fails fast
 instead of hanging.
 
+**Never add worker-local paths to a target repository's lint/format config.**
+`graft/`, `.codegraph/`, or anything else listed in a checkout's
+`.git/info/exclude` are worker-internal state, not repository content — a PR
+must never add them to that repository's `.markdownlint*`, `.markdownlintignore`,
+`.prettierignore`, `deno.json` excludes, `.gitignore`, or any other lint, format
+or ignore config, however red the gate runs. A target repo's quality gate
+tripping over one of these paths is a worker environment fault: report it so it
+is fixed in the worker, rather than committing a workaround into that repo.
+
 ## Prompt Templates
 
 Each prompt type has exactly one editable template — `prompts/<type>/prompt.md`
@@ -797,10 +842,18 @@ At the end of your work, after all commits are complete, create
 for every PR summary — containing:
 
 1. **Summary** — What was changed and why, including the `Closes #<n>` keyword.
-2. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
+2. **Spec** — The after-run record of what the diff alone cannot tell a
+   reviewer, under `### Intent and Rationale`, `### Essential Design
+   Decisions` and `### Undiscoverable Facts` (decisions from issue comments,
+   behaviour seen only at run time, constraints from outside the repo) — at
+   most four bullets each, `None.` when empty.
+3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
-3. **Test Plan** — Tests added or modified.
+   Always add a one-line **Docs sweep** — the grep terms searched and the
+   doc files updated, or `no hits` (see
+   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)).
+4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests

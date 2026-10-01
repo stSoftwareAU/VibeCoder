@@ -61,8 +61,11 @@ No screenshot: the Playwright MCP browser is not available in this container.
 }
 
 Deno.test("screenshot_validation - evidence images committed on the branch satisfy the gate when the summary carries no reference (Issue #4355)", () => {
+  // A UI file is needed here since #2959 — changed files alone decide
+  // whether the change is a UI change, so the fixture needs a genuine
+  // UI file rather than a keyword-laden summary over a .js file.
   const changed = [
-    "docs/projection.js",
+    "docs/projection.html",
     "docs/evidence/issue-831-mvis-before.png",
     "docs/evidence/issue-831-mvis-after.png",
     "docs/evidence/notes.txt",
@@ -75,7 +78,6 @@ Deno.test("screenshot_validation - evidence images committed on the branch satis
   const result = validateScreenshotEvidence({
     prSummaryContent:
       "## Summary\nchart html css visual change, no image reference",
-    issueLabels: "needs-screenshot",
     changedFiles: changed,
     repo: "o/r",
     issueNumber: 831,
@@ -86,8 +88,7 @@ Deno.test("screenshot_validation - evidence images committed on the branch satis
   // Without branch evidence the gate still fails as before.
   const failing = validateScreenshotEvidence({
     prSummaryContent: "## Summary\nchart html css visual change",
-    issueLabels: "needs-screenshot",
-    changedFiles: ["docs/projection.js"],
+    changedFiles: ["docs/projection.html"],
     repo: "o/r",
     issueNumber: 831,
   });
@@ -151,7 +152,9 @@ Deno.test("completion - screenshots on the branch are referenced in the PR body 
             value: {
               code: 0,
               stdout:
-                "docs/projection.js\ndocs/evidence/issue-831-mvis-before.png\ndocs/evidence/issue-831-mvis-after.png\n",
+                // A UI file is needed here since #2959 — changed files
+                // alone decide the UI-change gate.
+                "docs/projection.html\ndocs/evidence/issue-831-mvis-before.png\ndocs/evidence/issue-831-mvis-after.png\n",
               stderr: "",
             },
           });

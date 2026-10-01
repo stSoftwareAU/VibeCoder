@@ -647,6 +647,20 @@ export async function loadConfig(
         `spin the watchdog instead of sampling the working tree.`,
     );
   }
+  // Issue #2960: timeout for the screenshot gate's one extra in-run agent
+  // turn. Rejected loudly rather than silently hanging or firing instantly.
+  const screenshotRetryTimeoutSeconds = file.screenshot_retry_timeout_seconds ??
+    OPERATIONAL_DEFAULTS.screenshotRetryTimeoutSeconds;
+  if (
+    typeof screenshotRetryTimeoutSeconds !== "number" ||
+    !Number.isFinite(screenshotRetryTimeoutSeconds) ||
+    screenshotRetryTimeoutSeconds <= 0
+  ) {
+    throw new Error(
+      `screenshot_retry_timeout_seconds must be a positive finite number, ` +
+        `got ${JSON.stringify(file.screenshot_retry_timeout_seconds)}`,
+    );
+  }
   if (progressExtensionStallSeconds < progressExtensionCheckSeconds) {
     // The deadline decision reads tree evidence up to one check interval old,
     // so a shorter activity window kills runs that demonstrably progressed
@@ -903,6 +917,14 @@ export async function loadConfig(
   const issueReviewerAgents = file.issue_reviewer_agents ??
     OPERATIONAL_DEFAULTS.issueReviewerAgents;
 
+  // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
+  // Unset (or blank) leaves the feature off.
+  const fleetRunArchiveTrimmed = file.fleet_run_archive?.trim();
+  const fleetRunArchive = fleetRunArchiveTrimmed === "" ||
+      fleetRunArchiveTrimmed === undefined
+    ? undefined
+    : fleetRunArchiveTrimmed;
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -1087,6 +1109,7 @@ export async function loadConfig(
     progressExtensionGrantSeconds,
     progressExtensionStallSeconds,
     progressExtensionCheckSeconds,
+    screenshotRetryTimeoutSeconds,
     callStormEnabled,
     callStormCalls,
     callStormWindowSeconds,
@@ -1148,6 +1171,7 @@ export async function loadConfig(
     deepseekPhaseModelOverrides,
     issueExecutorSplit,
     issueReviewerAgents,
+    fleetRunArchive,
     includeRecentActivity,
     includeCodebaseMap,
     codegraphContext,

@@ -20,6 +20,7 @@ import {
   classifyRedChecks,
   rerunInfrastructureChecks,
 } from "../lib/ci_infrastructure_rerun.ts";
+import type { FleetCiFixMarkers } from "../lib/ci_fix_attempt_markers.ts";
 import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import { fakeGithubGraphQL } from "./support/github_graphql_fake.ts";
 import type { Logger } from "../types.ts";
@@ -32,6 +33,18 @@ const REPO = "org/repo";
 const PR_NUMBER = 42;
 const HEAD_SHA = "a".repeat(40);
 const HEAD_SHA_2 = "b".repeat(40);
+
+/** An empty marker tally, as a fresh comment read yields (Issue #2919). */
+function emptyFleetMarkers(): FleetCiFixMarkers {
+  return {
+    attempts: new Map(),
+    deferrals: new Map(),
+    humanGates: new Map(),
+    infraReruns: new Map(),
+    fleetResolved: true,
+    ignoredOutsideFleet: 0,
+  };
+}
 
 /**
  * The NEAT-AI-Backpropagation `ci-required` shape: an `if: always()`
@@ -116,7 +129,9 @@ function jqConclusions(args: string[]): Set<string> | null {
  * A `gh` stub modelling: `pr list` (one PR), `api graphql` failing (forces
  * REST fallback), the REST check-runs endpoint filtered by the `--jq`
  * clause the caller actually passed, `actions/jobs/<id>` from a job table,
- * `run rerun` recording, and `annotations` returning `[]`.
+ * `run rerun` recording, the PR-comment read/write the fleet-wide
+ * infra-rerun marker lives on (Issue #2919), and `annotations` returning
+ * `[]`.
  */
 function ghStub(opts: {
   redChecks: Array<{ id: number; name: string; conclusion: string }>;
@@ -124,10 +139,39 @@ function ghStub(opts: {
   reruns: string[][];
   headRefOid?: string;
   rerunError?: (runId: string) => boolean;
+  /** Shared across stubs so a second scan sees the first scan's marker post. */
+  postedComments?: Array<{ id: number; body: string }>;
+  /** When set, `pr comment` posts fail with this message. */
+  commentError?: string;
 }): (args: string[]) => Promise<string> {
-  const { redChecks, jobs, reruns, headRefOid = HEAD_SHA, rerunError } = opts;
+  const {
+    redChecks,
+    jobs,
+    reruns,
+    headRefOid = HEAD_SHA,
+    rerunError,
+    commentError,
+  } = opts;
+  const postedComments = opts.postedComments ?? [];
+  let nextCommentId = 1000;
   return (args: string[]) => {
     const key = args.join(" ");
+    if (key.includes("issues/42/comments")) {
+      return Promise.resolve(JSON.stringify(
+        postedComments.map((c) => ({
+          id: c.id,
+          body: c.body,
+          created_at: new Date().toISOString(),
+          user: { login: "testbot" },
+        })),
+      ));
+    }
+    if (key.includes("pr comment")) {
+      if (commentError) return Promise.reject(new Error(commentError));
+      const body = args[args.indexOf("--body") + 1] ?? "";
+      postedComments.push({ id: nextCommentId++, body });
+      return Promise.resolve("");
+    }
     if (key.includes("pr list")) {
       return Promise.resolve(JSON.stringify([
         {
@@ -204,11 +248,12 @@ async function scan(
 // findFailedCiChecks — scan-level tests
 // ---------------------------------------------------------------------------
 
-Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to CI-fix, bounded once per head", async () => {
+Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to CI-fix, bounded once per head fleet-wide", async () => {
   const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
   try {
     const reruns: string[][] = [];
     const logger = makeRecordingLogger();
+    const posted: Array<{ id: number; body: string }> = [];
     const ghFn = ghStub({
       redChecks: [
         { id: 1, name: "Job A", conclusion: "cancelled" },
@@ -221,6 +266,7 @@ Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to C
         { id: 3, run_id: 901, conclusion: "cancelled", steps: [] },
       ],
       reruns,
+      postedComments: posted,
     });
 
     const found = await scan(ghFn, logger, stateDir);
@@ -232,26 +278,44 @@ Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to C
       assertEquals(r, ["run", "rerun", r[2] as string, "--repo", REPO]);
     }
     assert(logger.skips.some((s) => s.startsWith("ci-cancelled: ")));
+    // The once-per-head record is a fleet-authored marker comment on the
+    // pull request, not a file in this host's state directory (Issue #2919).
+    assertEquals(posted.length, 1);
+    assert(
+      posted[0]!.body.includes("vibe-ci-infra-rerun"),
+      "the marker must ride in a PR comment",
+    );
 
-    // Second scan, same stateDir and head — no further reruns.
-    const reruns2: string[][] = [];
-    const logger2 = makeRecordingLogger();
-    const ghFn2 = ghStub({
-      redChecks: [
-        { id: 1, name: "Job A", conclusion: "cancelled" },
-        { id: 2, name: "Job B", conclusion: "cancelled" },
-        { id: 3, name: "Job C", conclusion: "cancelled" },
-      ],
-      jobs: [
-        { id: 1, run_id: 900, conclusion: "cancelled", steps: [] },
-        { id: 2, run_id: 900, conclusion: "cancelled", steps: [] },
-        { id: 3, run_id: 901, conclusion: "cancelled", steps: [] },
-      ],
-      reruns: reruns2,
-    });
-    const found2 = await scan(ghFn2, logger2, stateDir);
-    assertEquals(found2, null);
-    assertEquals(reruns2.length, 0);
+    // Second scan, a different host (fresh state directory), same head —
+    // the bound still holds, because the record lives on the PR.
+    const stateDir2 = await Deno.makeTempDir({ prefix: "ci-infra-host2-" });
+    try {
+      const reruns2: string[][] = [];
+      const logger2 = makeRecordingLogger();
+      const ghFn2 = ghStub({
+        redChecks: [
+          { id: 1, name: "Job A", conclusion: "cancelled" },
+          { id: 2, name: "Job B", conclusion: "cancelled" },
+          { id: 3, name: "Job C", conclusion: "cancelled" },
+        ],
+        jobs: [
+          { id: 1, run_id: 900, conclusion: "cancelled", steps: [] },
+          { id: 2, run_id: 900, conclusion: "cancelled", steps: [] },
+          { id: 3, run_id: 901, conclusion: "cancelled", steps: [] },
+        ],
+        reruns: reruns2,
+        postedComments: posted,
+      });
+      const found2 = await scan(ghFn2, logger2, stateDir2);
+      assertEquals(found2, null);
+      assertEquals(reruns2.length, 0);
+      assert(
+        logger2.warns.some((w) => w.includes("already re-run once")),
+        "the second host must say why it skipped",
+      );
+    } finally {
+      await Deno.remove(stateDir2, { recursive: true });
+    }
   } finally {
     await Deno.remove(stateDir, { recursive: true });
   }
@@ -348,15 +412,19 @@ Deno.test("findFailedCiChecks - a new head sha re-runs again (bound is per head)
   try {
     const reruns: string[][] = [];
     const logger = makeRecordingLogger();
+    const posted: Array<{ id: number; body: string }> = [];
     const ghFn = ghStub({
       redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
       jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
       reruns,
       headRefOid: HEAD_SHA,
+      postedComments: posted,
     });
     await scan(ghFn, logger, stateDir);
     assertEquals(reruns.length, 1);
 
+    // The marker the first scan posted names the old head, so a new head
+    // must re-run again.
     const reruns2: string[][] = [];
     const logger2 = makeRecordingLogger();
     const ghFn2 = ghStub({
@@ -364,6 +432,7 @@ Deno.test("findFailedCiChecks - a new head sha re-runs again (bound is per head)
       jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
       reruns: reruns2,
       headRefOid: HEAD_SHA_2,
+      postedComments: posted,
     });
     await scan(ghFn2, logger2, stateDir);
     assertEquals(reruns2.length, 1);
@@ -377,11 +446,13 @@ Deno.test("findFailedCiChecks - a rerun that throws is logged at warn, and the n
   try {
     const reruns: string[][] = [];
     const logger = makeRecordingLogger();
+    const posted: Array<{ id: number; body: string }> = [];
     const ghFn = ghStub({
       redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
       jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
       reruns,
       rerunError: () => true,
+      postedComments: posted,
     });
 
     const found = await scan(ghFn, logger, stateDir);
@@ -389,13 +460,58 @@ Deno.test("findFailedCiChecks - a rerun that throws is logged at warn, and the n
     assertEquals(reruns.length, 1);
     assert(logger.warns.some((w) => w.includes("Could not re-run")));
 
-    // No marker was written on total failure — the next scan tries again.
+    // No marker comment was posted on total failure — the next scan tries
+    // again.
+    assertEquals(posted.length, 0);
     const reruns2: string[][] = [];
     const logger2 = makeRecordingLogger();
     const ghFn2 = ghStub({
       redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
       jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
       reruns: reruns2,
+      postedComments: posted,
+    });
+    const found2 = await scan(ghFn2, logger2, stateDir);
+    assertEquals(found2, null);
+    assertEquals(reruns2.length, 1);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a marker post that fails is logged at error, and the next scan re-runs the head", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
+  try {
+    const reruns: string[][] = [];
+    const logger = makeRecordingLogger();
+    const posted: Array<{ id: number; body: string }> = [];
+    const ghFn = ghStub({
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns,
+      postedComments: posted,
+      commentError: "comments api down",
+    });
+
+    const found = await scan(ghFn, logger, stateDir);
+    assertEquals(found, null);
+    assertEquals(reruns.length, 1, "the rerun itself must still happen");
+    assert(
+      logger.errors.some((e) => e.includes("Could not post the infra-rerun")),
+      `a failed marker post must be logged at error, got: ${
+        logger.errors.join(" | ")
+      }`,
+    );
+
+    // The marker never landed on the PR, so the next scan re-runs the head.
+    assertEquals(posted.length, 0);
+    const reruns2: string[][] = [];
+    const logger2 = makeRecordingLogger();
+    const ghFn2 = ghStub({
+      redChecks: [{ id: 1, name: "Job A", conclusion: "cancelled" }],
+      jobs: [{ id: 1, run_id: 900, conclusion: "cancelled", steps: [] }],
+      reruns: reruns2,
+      postedComments: posted,
     });
     const found2 = await scan(ghFn2, logger2, stateDir);
     assertEquals(found2, null);
@@ -653,32 +769,59 @@ Deno.test("classifyRedChecks - failing check whose job lookup throws stays on th
 
 Deno.test("rerunInfrastructureChecks - refuses an invalid head sha and reruns nothing", async () => {
   const logger = makeRecordingLogger();
-  const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-direct-" });
-  try {
-    const reruns: string[][] = [];
-    const ghFn = (args: string[]) => {
-      reruns.push(args);
-      return Promise.resolve("");
-    };
-    const result = await rerunInfrastructureChecks({
-      repo: REPO,
-      prNumber: PR_NUMBER,
-      headSha: "not-a-sha",
-      infrastructure: [{
-        id: 1,
-        name: "Job A",
-        reason: "cancelled",
-        runId: 900,
-      }],
-      codeRunIds: new Set(),
-      stateDir,
-      ghCommandFn: ghFn,
-      logger,
-    });
-    assertEquals(result, []);
-    assertEquals(reruns.length, 0);
-    assert(logger.warns.length > 0);
-  } finally {
-    await Deno.remove(stateDir, { recursive: true });
-  }
+  const reruns: string[][] = [];
+  const ghFn = (args: string[]) => {
+    reruns.push(args);
+    return Promise.resolve("");
+  };
+  const result = await rerunInfrastructureChecks({
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    headSha: "not-a-sha",
+    infrastructure: [{
+      id: 1,
+      name: "Job A",
+      reason: "cancelled",
+      runId: 900,
+    }],
+    codeRunIds: new Set(),
+    fleetMarkers: emptyFleetMarkers(),
+    ghCommandFn: ghFn,
+    logger,
+  });
+  assertEquals(result, []);
+  assertEquals(reruns.length, 0);
+  assert(logger.warns.length > 0);
+});
+
+Deno.test("rerunInfrastructureChecks - an unevaluable fleet bound stands the rerun down, logged at error (Issue #2919)", async () => {
+  const logger = makeRecordingLogger();
+  const reruns: string[][] = [];
+  const ghFn = (args: string[]) => {
+    reruns.push(args);
+    return Promise.resolve("");
+  };
+  const result = await rerunInfrastructureChecks({
+    repo: REPO,
+    prNumber: PR_NUMBER,
+    headSha: HEAD_SHA,
+    infrastructure: [{
+      id: 1,
+      name: "Job A",
+      reason: "cancelled",
+      runId: 900,
+    }],
+    codeRunIds: new Set(),
+    fleetMarkers: { ...emptyFleetMarkers(), fleetResolved: false },
+    ghCommandFn: ghFn,
+    logger,
+  });
+  assertEquals(result, []);
+  assertEquals(reruns.length, 0);
+  assert(
+    logger.errors.some((e) => e.includes("bound cannot be evaluated")),
+    `an unevaluable bound must be logged at error, got: ${
+      logger.errors.join(" | ")
+    }`,
+  );
 });

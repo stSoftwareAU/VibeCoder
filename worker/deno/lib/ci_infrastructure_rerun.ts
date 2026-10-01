@@ -15,11 +15,24 @@
  * head commit, so a rerun that keeps coming back cancelled escalates to a
  * human instead of looping forever.
  *
+ * The once-per-head bound is recorded fleet-wide, not per host (Issue
+ * #2919): it used to live in a marker file in each host's own state
+ * volume, invisible to any other host, so two accounts each re-ran the
+ * same cancelled run once — the bound Issue #2914 added held only
+ * per-host. The record now lives on the pull request itself, as a
+ * `vibe-ci-infra-rerun` marker (`lib/ci_fix_attempt_markers.ts`), the same
+ * move Issue #1879 made for the CI-fix attempt cap.
+ *
  * Uses Australian English throughout (behaviour, organisation).
  */
 
 import type { CheckRunEntry } from "./pr_maintenance.ts";
-import { sanitiseRepoName } from "./pr_ci_checks.ts";
+import {
+  buildCiInfraRerunMarker,
+  type FleetCiFixMarkers,
+  isInfraRerunRecordedAt,
+} from "./ci_fix_attempt_markers.ts";
+import { replyToComment } from "./pr_comments.ts";
 import {
   isDownstreamOfRedJob,
   type JobNeedsMap,
@@ -226,10 +239,11 @@ const FORTY_HEX = /^[0-9a-f]{40}$/i;
  *
  * A run that also carries a real code failure (its id is in
  * `codeRunIds`) is left alone — the CI-fix agent's fix-push re-triggers
- * it, and re-running it here would race that push. Bounded by a marker
- * file per repo/PR/head, written only after at least one rerun succeeds,
- * so a rerun GitHub itself refused is retried on the next scan rather
- * than silently given up on.
+ * it, and re-running it here would race that push. Bounded fleet-wide by a
+ * `vibe-ci-infra-rerun` marker comment on the pull request itself (Issue
+ * #2919), posted only after at least one rerun succeeds, so a rerun GitHub
+ * itself refused is retried on the next scan rather than silently given up
+ * on.
  *
  * @returns The workflow run ids that were re-run.
  */
@@ -239,7 +253,7 @@ export async function rerunInfrastructureChecks(opts: {
   headSha: string | undefined;
   infrastructure: InfrastructureCheck[];
   codeRunIds: ReadonlySet<number>;
-  stateDir: string;
+  fleetMarkers: FleetCiFixMarkers;
   ghCommandFn: (args: string[]) => Promise<string>;
   logger: Logger;
 }): Promise<number[]> {
@@ -249,7 +263,7 @@ export async function rerunInfrastructureChecks(opts: {
     headSha,
     infrastructure,
     codeRunIds,
-    stateDir,
+    fleetMarkers,
     ghCommandFn,
     logger,
   } = opts;
@@ -273,21 +287,26 @@ export async function rerunInfrastructureChecks(opts: {
     return [];
   }
 
-  const markerPath = `${stateDir}/${
-    sanitiseRepoName(repo)
-  }_pr${prNumber}_${headSha.toLowerCase()}.infra-rerun`;
-
-  let alreadyRerun = true;
-  try {
-    await Deno.stat(markerPath);
-  } catch {
-    alreadyRerun = false;
+  // Issue #2919: the once-per-head bound binds on the PR's fleet-authored
+  // markers. When they could not be read — the comment thread failed, or
+  // the fleet identity is unresolved — re-running anyway would defeat the
+  // bound, so this scan stands down and the next one retries.
+  if (!fleetMarkers.fleetResolved) {
+    logger.error(
+      `Cannot re-run infrastructure checks on ${repo}#${prNumber} — the ` +
+        `fleet-wide infra-rerun bound cannot be evaluated (unreadable ` +
+        `comments or unresolved fleet identity); retrying on the next scan ` +
+        `(Issue #2919)`,
+      { repo, prNumber, headSha },
+    );
+    return [];
   }
-  if (alreadyRerun) {
+
+  if (isInfraRerunRecordedAt(fleetMarkers, headSha)) {
     logger.warn(
       `${repo}#${prNumber} head ${headSha} was already re-run once for ` +
         `cancelled/never-started checks and is still red — a human needs ` +
-        `to look (Issue #2914)`,
+        `to look (Issue #2914, Issue #2919)`,
       { repo, prNumber, headSha },
     );
     return [];
@@ -340,16 +359,21 @@ export async function rerunInfrastructureChecks(opts: {
   }
 
   if (rerun.length > 0) {
-    try {
-      await Deno.mkdir(stateDir, { recursive: true });
-      await Deno.writeTextFile(markerPath, new Date().toISOString());
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+    // Issue #2919: the record lives on the pull request, not in this
+    // host's state volume, so every fleet host reads the same bound.
+    const marker = buildCiInfraRerunMarker({ head: headSha.toLowerCase() });
+    const posted = await replyToComment(
+      repo,
+      prNumber,
+      marker,
+      ghCommandFn,
+    );
+    if (!posted.ok) {
       logger.error(
-        `Could not write the infra-rerun marker for ${repo}#${prNumber} ` +
-          `at '${markerPath}': ${message} — a repeat scan may re-run this ` +
-          `head again (Issue #2914)`,
-        { repo, prNumber, markerPath },
+        `Could not post the infra-rerun marker for ${repo}#${prNumber} ` +
+          `head ${headSha}: ${posted.error.message} — a repeat scan may ` +
+          `re-run this head again (Issue #2919)`,
+        { repo, prNumber, headSha },
       );
     }
   }

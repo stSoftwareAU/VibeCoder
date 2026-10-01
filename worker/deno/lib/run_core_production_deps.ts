@@ -300,7 +300,11 @@ import {
   type RepoFastFailureOptions,
   resolveRepoFastFailurePolicy,
 } from "./repo_fast_failure_tracker.ts";
-import { fileRepoFastFailureIssue } from "./repo_fast_failure_issue.ts";
+import {
+  escalateRepeatCloneCorruption,
+  recordRepoFastFailureTally,
+} from "./repo_fast_failure_issue.ts";
+import { parseCloneCorruptRepeat } from "./corrupt_clone_recovery.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
@@ -1021,9 +1025,10 @@ export async function createProductionRunCoreDeps(
   };
 
   /**
-   * Record one fast failure for `repo` and, when it tips the repository
-   * over the threshold, file the single deduplicated diagnostic issue that
-   * names the failing phase and the last error line (Issue #1950).
+   * Record one fast failure for `repo` locally, then tally it as a marker
+   * comment on the repo's one fleet-wide fast-failure diagnostic issue. The
+   * diagnostic issue gains the back-off marker once the fleet count within
+   * the window reaches the threshold (Issue #2956).
    *
    * Every failure path is reported rather than swallowed: a tracker that
    * quietly stops counting is the fault this module exists to remove.
@@ -1056,23 +1061,30 @@ export async function createProductionRunCoreDeps(
         `(phase ${outcome.phase}, ${outcome.elapsedSeconds}s)` +
         (state.backedOff ? " — backed off" : ""),
     );
-    // One diagnostic per repository: a back-off that already carries one
-    // never files again.
-    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
-    const decision = await fileRepoFastFailureIssue({
-      state,
-      policy: fastFailurePolicy,
+    // Every recorded fast failure is tallied on the repo's one fleet-wide
+    // diagnostic issue (Issue #2956).
+    const decision = await recordRepoFastFailureTally({
+      repo,
+      failedIssueNumber: issueNumber,
+      reason: `${outcome.phase} after ${outcome.elapsedSeconds}s: ${
+        state.lastDetail ?? outcome.message
+      }`,
       machineId,
+      policy: fastFailurePolicy,
       ghFn: runGhCommandRaw,
       log: (message: string) => logger.info(message),
+      warn: (message: string) => logger.warn(message),
     });
     if (decision.action === "suppressed") {
       logger.warn(
-        `repo-fast-failures: ${repo} is backed off but no diagnostic could ` +
-          `be filed (${decision.reason})`,
+        `repo-fast-failures: could not tally the fast failure for ${repo} ` +
+          `on its diagnostic issue (${decision.reason})`,
       );
       return;
     }
+    // Link the tally issue as this host's diagnostic once, when the local
+    // count backs the repo off.
+    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
     const attached = await recordRepoFastFailureDiagnostic({
       ...fastFailureOptions,
       repo,
@@ -4236,6 +4248,7 @@ export async function createProductionRunCoreDeps(
         issueLabels: issueData.labels ?? [],
         issueAuthor: issueData.author,
         config,
+        githubUser,
       }, { ghFn: runGhCommand, timelineCache });
       if (integrity.blocked) {
         logger.warn(
@@ -4920,6 +4933,42 @@ export async function createProductionRunCoreDeps(
           }
         } catch { /* best-effort — never blocks the release */ }
       }
+      // Issue #2958: a clone that corrupted twice within 24 h means
+      // something keeps damaging the clone — the host, not the issue. Back
+      // the repository off fleet-wide and escalate to a human straight
+      // away, rather than counting towards the ordinary tally threshold
+      // below. The repeat payload rides in the setup error message, so the
+      // parse is what tells the two corruptions apart.
+      const repeatCorruption = outcome?.kind === "no_pr"
+        ? parseCloneCorruptRepeat(outcome.message)
+        : null;
+      if (repeatCorruption !== null) {
+        try {
+          const decision = await escalateRepeatCloneCorruption({
+            repo,
+            failedIssueNumber: issueNumber,
+            repeat: repeatCorruption,
+            policy: fastFailurePolicy,
+            ghFn: runGhCommandRaw,
+            log: (message) => logger.info(message),
+            warn: (message) => logger.warn(message),
+            error: (message) => logger.error(message),
+          });
+          if (decision.action === "suppressed") {
+            logger.warn(
+              `Repeat clone corruption escalation failed for ${repo} ` +
+                `(${decision.reason})`,
+            );
+          }
+        } catch (err) {
+          // Best-effort — never blocks the release, but never silent either.
+          logger.warn(
+            `Repeat clone corruption escalation failed for ${repo}#${issueNumber}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
       // Issue #1950: a run that died before the agent produced output, or
       // inside `fast_failure_seconds`, failed at claim or setup — the
       // repository's environment, not the issue. Counted durably so three
@@ -4927,8 +4976,11 @@ export async function createProductionRunCoreDeps(
       // instead of the whole week of retries the fleet used to spend.
       // A setup fault (Issue #2954) always counts, regardless of how long it
       // took to surface.
+      // A repeat clone corruption is skipped here: it was already escalated
+      // above, and posting a tally marker on the same issue would double up.
       if (
         outcome?.kind === "no_pr" &&
+        repeatCorruption === null &&
         isFastFailure(
           {
             category: outcome.category,

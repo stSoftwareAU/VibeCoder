@@ -112,6 +112,28 @@ Deno.test("fetchOpenMilestoneChildren - reads concatenated --paginate pages", as
   if (result.ok) assertEquals(result.value.map((c) => c.number), [1, 2]);
 });
 
+Deno.test("fetchOpenMilestoneChildren - a child body containing bracket-like text across pages does not break the boundary scan", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("/issues?milestone=")) {
+      // Two concatenated pages with no separator; the first child's body
+      // contains `[text][ref]`, the second's contains a JSON-escaped
+      // `]\n[` — both used to be mistaken for a page boundary.
+      return `[{"number":1,"title":"a","body":"see [docs][ref]"}]` +
+        `[{"number":2,"title":"b","body":"x]\\n[y"}]`;
+    }
+    return "[]";
+  };
+
+  const result = await fetchOpenMilestoneChildren({
+    repo: "owner/repo",
+    milestoneNumber: 53,
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertEquals(result.value.map((c) => c.number), [1, 2]);
+});
+
 Deno.test("fetchOpenMilestoneChildren - fails loud on an unreadable response", async () => {
   const ghFn = async (): Promise<string> => "not json";
   const result = await fetchOpenMilestoneChildren({

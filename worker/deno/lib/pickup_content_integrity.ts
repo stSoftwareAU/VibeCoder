@@ -21,6 +21,8 @@ import type { ContentApprovalDeps } from "./content_approval_tracker.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import { resolveContentIntegrity } from "./work_on_content_integrity.ts";
 import { runGhCommand } from "./github.ts";
+import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+import { idleTaskIntegrityConfig } from "./idle_task_trust.ts";
 
 /** The issue content about to be handed to the prompt builder. */
 export interface PickupContentIntegrityInput {
@@ -35,6 +37,15 @@ export interface PickupContentIntegrityInput {
   /** Issue author login, if known. */
   issueAuthor?: string;
   config: WorkerConfig;
+  /**
+   * This host's GitHub login (Issue #2944).
+   *
+   * Used to widen the trust set to the fleet's own logins when the approval
+   * label resolves to `idle-task` — the one work-trigger label the worker
+   * (and its fleet siblings) may self-apply, so its content-integrity check
+   * must trust the same widened set the idle-task scan trusts.
+   */
+  githubUser: string;
 }
 
 /** Injectable seams. Defaults wire the production implementations. */
@@ -59,8 +70,12 @@ export type PickupContentIntegrityOutcome =
  * Pick the approval label that gated this issue.
  *
  * The snapshot is keyed by repo and issue number only, so the label is needed
- * purely to name (and strip) the right approval in the escalation. Priority
- * labels are checked first because they outrank `work-on` at pickup.
+ * to name the approval in the escalation, to pick which label-add counts as a
+ * trusted re-approval, and (Issue #2944) to select the widened idle-task
+ * trust set. Priority labels are checked first because they outrank `work-on`
+ * at pickup, and `idle-task` is checked last (Issue #2944): it is the lowest
+ * work-trigger tier, so any higher-priority label present on the issue takes
+ * precedence when naming which approval gated this run.
  */
 export function resolveApprovalLabel(
   issueLabels: string[],
@@ -71,6 +86,7 @@ export function resolveApprovalLabel(
     ...(config.issueLabels ?? []),
     config.workOnLabel,
     config.lowPriorityLabel,
+    IDLE_TASK_LABEL,
   ];
   return candidates.find((label) => label && present.has(label)) ??
     config.workOnLabel;
@@ -90,15 +106,23 @@ export async function verifyPickupContentIntegrity(
   input: PickupContentIntegrityInput,
   deps: PickupContentIntegrityDeps = {},
 ): Promise<PickupContentIntegrityOutcome> {
+  const approvalLabel = resolveApprovalLabel(input.issueLabels, input.config);
+  // Issue #2944: an idle-task issue is verified against the same widened
+  // trust set the idle-task scan itself uses — plain `allowedAuthors` would
+  // reject content the scan trusted purely because this check never widened.
+  const config = approvalLabel === IDLE_TASK_LABEL
+    ? idleTaskIntegrityConfig(input.config, input.repo, input.githubUser)
+    : input.config;
+
   const verdict = await resolveContentIntegrity({
     repo: input.repo,
     issueNumber: input.issueNumber,
     issueAuthor: input.issueAuthor ?? "",
     currentTitle: input.issueTitle,
     currentBody: input.issueBody,
-    config: input.config,
+    config,
     ghFn: deps.ghFn ?? runGhCommand,
-    approvalLabel: resolveApprovalLabel(input.issueLabels, input.config),
+    approvalLabel,
     captureWhenMissing: false,
     contentDeps: deps.contentDeps,
     timelineCache: deps.timelineCache,

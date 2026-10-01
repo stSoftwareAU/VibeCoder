@@ -543,7 +543,7 @@ async function executeClaudeBody(
   // `failed` collection is reported on the phase state and the run proceeds
   // unbundled: the bundle is an accelerator, never a precondition.
   // The #1550 infra retry re-enters this body, so an enabled host collects
-  // again on a retried run — the graph persists in `graft/`, so the second
+  // again on a retried run — the graph persists under `<git-dir>/graft`, so the second
   // build replays Graft's own cache rather than re-parsing the checkout.
   const graftContext = await deps.infrastructure.collectGraftContext({
     repoDir: state.repoPath,
@@ -621,6 +621,10 @@ async function executeClaudeBody(
     promptOverrides: promptOverrideMappings(config),
     // Issue #2343: a split run's prompt carries the advisor/executor block.
     issueExecutorSplit,
+    // Issue #2930: name this host's configured fleet run archive, when any.
+    ...(config.fleetRunArchive
+      ? { fleetRunArchive: config.fleetRunArchive }
+      : {}),
   });
   if (!promptResult.ok) {
     return {
