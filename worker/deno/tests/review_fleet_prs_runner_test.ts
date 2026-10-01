@@ -17,12 +17,14 @@ const READY = JSON.stringify({
 });
 
 // The App token stub prints `tokenOutput` (empty = no pr_reviewer_app) and
-// exits `tokenExit`; the gate stub records its token and arguments.
+// exits `tokenExit`; the gate stub records its token and arguments; the
+// escalate stub records its arguments and GH_TOKEN, and exits `escalateExit`.
 async function fixture(
   gateOutput: string,
   gateExit = 0,
   tokenOutput = "",
   tokenExit = 0,
+  escalateExit = 0,
 ) {
   const home = await Deno.makeTempDir();
   const bin = `${home}/bin`;
@@ -38,7 +40,12 @@ async function fixture(
   *app_token.ts*) printf '%s' '${tokenOutput}'
     [ ${tokenExit} = 0 ] || echo "reviewer App token: Bad credentials" >&2
     exit ${tokenExit} ;;
+  *escalate.ts*) echo "$*" >> "$HOME/escalate-args"
+    echo "GH_TOKEN=\${GH_TOKEN:-unset}" >> "$HOME/escalate-env"
+    [ ${escalateExit} = 0 ] || echo "escalate: boom" >&2
+    exit ${escalateExit} ;;
 esac
+[ ${gateExit} = 0 ] || echo "gate: boom" >&2
 echo "GH_TOKEN=\${GH_TOKEN:-} $*" > "$HOME/gate-args"
 echo '${gateOutput}'; exit ${gateExit}`,
   );
@@ -51,8 +58,17 @@ printf '%s\\n' "$@" >> "$HOME/claude-args"`,
 }
 
 async function run(home: string, ...args: string[]) {
+  return runBash(home, [RUNNER, ...args]);
+}
+
+// Runs under `bash -x`, to check the minted token is never traced.
+async function runTraced(home: string, ...args: string[]) {
+  return runBash(home, ["-x", RUNNER, ...args]);
+}
+
+async function runBash(home: string, bashArgs: string[]) {
   const out = await new Deno.Command("bash", {
-    args: [RUNNER, ...args],
+    args: bashArgs,
     env: { HOME: home, PATH: `${home}/bin:/usr/bin:/bin` },
     clearEnv: true,
     stdout: "piped",
@@ -160,4 +176,72 @@ Deno.test("run.sh never falls back to the gh user when the App token fails", asy
   assertStringIncludes(output, "reviewer App token: Bad credentials");
   assertEquals(await recorded(home, "gate-args"), null);
   assertEquals(await claudeArgs(home), null);
+});
+
+Deno.test("run.sh --once also runs housekeep, pruning old round directories", async () => {
+  const home = await fixture(READY);
+  const roundsDir = `${home}/logs/review-fleet-prs/rounds`;
+  await Deno.mkdir(roundsDir, { recursive: true });
+  const oldRound = `${roundsDir}/20200101-000000`;
+  await Deno.mkdir(oldRound);
+  const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+  await Deno.utime(oldRound, old, old);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  let pruned = false;
+  try {
+    await Deno.stat(oldRound);
+  } catch {
+    pruned = true;
+  }
+  assert(pruned, "a round older than 30 days was not pruned");
+});
+
+Deno.test("run.sh never traces the minted App token, even under bash -x", async () => {
+  const home = await fixture(READY, 0, APP_TOKEN);
+  const { code, output } = await runTraced(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(output.includes("ghs_test"), false);
+  // The token was still used, just never printed to the trace.
+  const gate = await recorded(home, "gate-args");
+  assertStringIncludes(gate!, "GH_TOKEN=ghs_test");
+  assertStringIncludes((await claudeArgs(home))!, "GH_TOKEN=ghs_test");
+});
+
+Deno.test("run.sh escalates a failing gate pass with its error and no App token", async () => {
+  const home = await fixture("", 1);
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  const args = await recorded(home, "escalate-args");
+  assertStringIncludes(args!, "--result=fail");
+  assertStringIncludes(args!, "--error=");
+  assertStringIncludes(args!, "gate: boom");
+  assertStringIncludes(
+    (await recorded(home, "escalate-env"))!,
+    "GH_TOKEN=unset",
+  );
+});
+
+Deno.test("run.sh escalates a successful pass as ok", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = await recorded(home, "escalate-args");
+  assertStringIncludes(args!, "--result=ok");
+});
+
+Deno.test("run.sh logs, but does not fail on, an escalate.ts failure", async () => {
+  const home = await fixture(
+    JSON.stringify({ ready: [], skipped: {} }),
+    0,
+    "",
+    0,
+    1,
+  );
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertStringIncludes(
+    await Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`),
+    "escalation failed",
+  );
 });

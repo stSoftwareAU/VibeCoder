@@ -32,6 +32,105 @@ export interface ReviewerApp {
 export interface Installation {
   id: number;
   account: { login: string } | null;
+  /** Permissions GitHub has granted the App on this installation. */
+  permissions?: Record<string, string>;
+  /** Installation settings page — where an owner accepts new permissions. */
+  html_url?: string;
+}
+
+/**
+ * Permissions the review-fleet-prs skill needs on the reviewer App's token.
+ *
+ * Issue #2892: a token minted without one of these fails some later API call
+ * in a way that is easy to mistake for a flaky run rather than a missing
+ * grant, so the permissions are checked — and reported together — right when
+ * the token is minted.
+ */
+export const REQUIRED_PERMISSIONS = {
+  pull_requests: "write",
+  issues: "write",
+  contents: "write",
+  workflows: "write",
+  checks: "read",
+  statuses: "read",
+} as const;
+
+/** Permission levels ordered from least to most access. */
+const LEVEL_RANK: Record<string, number> = { read: 1, write: 2, admin: 3 };
+
+/** Whether a granted level satisfies a required level ("write" covers "read"). */
+function satisfies(granted: string | undefined, required: string): boolean {
+  if (granted === undefined) return false;
+  const grantedRank = LEVEL_RANK[granted] ?? 0;
+  const requiredRank = LEVEL_RANK[required] ?? 0;
+  return grantedRank >= requiredRank;
+}
+
+/**
+ * Names, in order, of required permissions that `granted` does not meet —
+ * either absent, or scoped lower than required (e.g. "read" where "write" is
+ * needed).
+ */
+export function missingPermissions(
+  granted: Record<string, string> | undefined,
+  required: Record<string, string> = REQUIRED_PERMISSIONS,
+): string[] {
+  const missing: string[] = [];
+  for (const [name, level] of Object.entries(required)) {
+    if (!satisfies(granted?.[name], level)) missing.push(name);
+  }
+  return missing;
+}
+
+/** Build the one message naming every missing permission and where to fix it. */
+export function permissionError(opts: {
+  missing: string[];
+  appPermissions?: Record<string, string>;
+  slug: string;
+  ownerLogin?: string;
+  ownerType?: string;
+  installationUrl?: string;
+}): string {
+  const { missing, appPermissions, slug, ownerLogin, ownerType } = opts;
+  const required: Record<string, string> = {};
+  for (const name of missing) {
+    required[name] =
+      REQUIRED_PERMISSIONS[name as keyof typeof REQUIRED_PERMISSIONS] ??
+        "read";
+  }
+  const list = missing.map((name) => `${name}: ${required[name]}`).join(", ");
+
+  // Split the missing permissions: the App itself may lack the grant, or the
+  // App may have it but this installation has not accepted it yet. Each needs
+  // a different fix, so each gets its own clause.
+  const appMissing = missingPermissions(appPermissions, required);
+  const appMissingSet = new Set(appMissing);
+  const installationMissing = missing.filter((name) =>
+    !appMissingSet.has(name)
+  );
+
+  const parts: string[] = [
+    `the reviewer App token lacks ${list}.`,
+  ];
+
+  if (appMissing.length > 0) {
+    const settingsUrl = ownerType === "Organization"
+      ? `https://github.com/organizations/${ownerLogin}/settings/apps/${slug}/permissions`
+      : `https://github.com/settings/apps/${slug}/permissions`;
+    parts.push(`Grant ${appMissing.join(", ")} at ${settingsUrl}`);
+  }
+
+  if (installationMissing.length > 0) {
+    parts.push(
+      `the App has ${
+        installationMissing.join(", ")
+      } but the installation has not accepted them: accept the new permissions at ${
+        opts.installationUrl ?? "the installation settings page"
+      }`,
+    );
+  }
+
+  return parts.join(" ");
 }
 
 export function reviewerApp(
@@ -96,13 +195,31 @@ export async function mintReviewerToken(
     if (!res.ok) throw new Error(`GitHub returned ${res.status} for ${path}`);
     return await res.json();
   };
-  const { slug } = await get("/app");
-  const installation = pickInstallation(
-    await get("/app/installations"),
-    owners,
+  const appInfo = await get("/app") as {
+    slug: string;
+    owner?: { login?: string; type?: string };
+    permissions?: Record<string, string>;
+  };
+  const installations = await get("/app/installations") as Installation[];
+  const installationId = pickInstallation(installations, owners);
+  const installation = installations.find((i) =>
+    String(i.id) === installationId
   );
-  const { token } = await getInstallationToken(jwt, installation, fetchFn);
-  return { token, login: `${slug}[bot]` };
+  const token = await getInstallationToken(jwt, installationId, fetchFn);
+  const missing = missingPermissions(token.permissions);
+  if (missing.length > 0) {
+    throw new Error(
+      permissionError({
+        missing,
+        appPermissions: appInfo.permissions,
+        slug: appInfo.slug,
+        ownerLogin: appInfo.owner?.login,
+        ownerType: appInfo.owner?.type,
+        installationUrl: installation?.html_url,
+      }),
+    );
+  }
+  return { token: token.token, login: `${appInfo.slug}[bot]` };
 }
 
 async function main() {

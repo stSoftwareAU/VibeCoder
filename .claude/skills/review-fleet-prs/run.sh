@@ -29,6 +29,8 @@ LABEL="au.com.stsoftware.review-fleet-prs"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 # A step's stderr goes to the log and the terminal, so its reason is seen.
 errors() { tee -a "$LOG" >&2; }
+# The last non-blank line of a captured stderr file: a one-line failure gist.
+last_error_line() { grep -v '^$' "$1" 2>/dev/null | tail -n1; }
 
 # Running for ever means the log and round files must not grow for ever.
 housekeep() {
@@ -99,16 +101,25 @@ EOF
 }
 
 # One pass: a gate check, then a Claude round if anything is ready.
-# Returns non-zero when the App token or the gate failed.
+# Returns non-zero when the App token or the gate failed; sets $LAST_ERROR to
+# a one-line gist of why, for escalate_result to report.
 pass() {
-  local reviewer=() ready dir prompt minted
+  local reviewer=() ready dir prompt minted errfile
+  LAST_ERROR=""
+  errfile="$STATE_DIR/last-error"
   # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
   # Its token lasts an hour, so every pass mints a fresh one; a failure skips
   # the pass rather than post as the gh user instead.
   unset GH_TOKEN
+  # The minted token must never appear under `bash -x`: xtrace is suspended
+  # from here until the App's login has been extracted from it.
+  { local xtrace=$-; set +x; } 2>/dev/null
   if ! minted=$(cd "$SKILL_DIR" && deno run --allow-read \
-    --allow-net=api.github.com --allow-env app_token.ts 2> >(errors)); then
+    --allow-net=api.github.com --allow-env app_token.ts 2>"$errfile"); then
+    errors <"$errfile"
+    LAST_ERROR="reviewer App token failed: $(last_error_line "$errfile")"
     log "reviewer App token failed; skipping this pass"
+    [[ $xtrace == *x* ]] && set -x
     return 1
   fi
   if [[ -n "$minted" ]]; then
@@ -116,11 +127,14 @@ pass() {
     export GH_TOKEN
     reviewer=("--reviewer=$(jq -r .login <<<"$minted")")
   fi
+  [[ $xtrace == *x* ]] && set -x
 
   if ! ready=$(cd "$SKILL_DIR" && deno run --allow-run=gh --allow-read \
     --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts \
     ${reviewer[@]+"${reviewer[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
-    2> >(errors)); then
+    2>"$errfile"); then
+    errors <"$errfile"
+    LAST_ERROR="gate failed: $(last_error_line "$errfile")"
     log "gate failed; skipping this pass"
     return 1
   fi
@@ -152,6 +166,29 @@ round report."
     "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
     2>&1) | tee -a "$LOG" "$dir/claude.log"
   log "round done: $dir"
+}
+
+# Reports one pass's outcome (ok, or fail with its reason) to escalate.ts, so
+# a persistent run of failures is noticed even with nobody watching the logs.
+# Runs as the gh user, not the reviewer App: the App has no issue-comment scope.
+escalate_result() {
+  local rc=$1 err=$2 out erc host
+  host=$(hostname -s 2>/dev/null || hostname)
+  if [[ $rc -eq 0 ]]; then
+    out=$(cd "$SKILL_DIR" && env -u GH_TOKEN deno run --allow-run=gh \
+      --allow-read --allow-write escalate.ts --state-dir="$STATE_DIR" \
+      --host="$host" --result=ok 2>"$STATE_DIR/escalate-error")
+  else
+    out=$(cd "$SKILL_DIR" && env -u GH_TOKEN deno run --allow-run=gh \
+      --allow-read --allow-write escalate.ts --state-dir="$STATE_DIR" \
+      --host="$host" --result=fail --error="$err" \
+      2>"$STATE_DIR/escalate-error")
+  fi
+  erc=$?
+  [[ -n "$out" ]] && log "$out"
+  if [[ $erc -ne 0 ]]; then
+    { echo "escalation failed:"; cat "$STATE_DIR/escalate-error"; } | errors
+  fi
 }
 
 main() {
@@ -193,8 +230,11 @@ main() {
   trap 'rm -rf "$LOCK"' EXIT
 
   if [[ $once == true ]]; then
+    housekeep
     pass
-    return
+    local rc=$?
+    escalate_result "$rc" "$LAST_ERROR"
+    return $rc
   fi
   log "runner started"
   # A failed pass (GitHub unreachable, a bad token) is retried next interval
@@ -202,6 +242,8 @@ main() {
   while true; do
     housekeep
     pass
+    local rc=$?
+    escalate_result "$rc" "$LAST_ERROR"
     sleep "$INTERVAL"
   done
 }

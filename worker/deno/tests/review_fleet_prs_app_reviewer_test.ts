@@ -5,10 +5,18 @@
  * gate must treat both as the reviewer, or it would review every PR again on
  * every pass.
  */
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   mintReviewerToken,
+  missingPermissions,
+  permissionError,
   pickInstallation,
+  REQUIRED_PERMISSIONS,
   reviewerApp,
 } from "../../../.claude/skills/review-fleet-prs/app_token.ts";
 import { dependabotAction } from "../../../.claude/skills/review-fleet-prs/dependabot.ts";
@@ -117,7 +125,18 @@ Deno.test("mintReviewerToken returns the installation token and the App's bot lo
       return json(200, [{ id: 42, account: { login: "stSoftwareAU" } }]);
     }
     if (url.endsWith("/app/installations/42/access_tokens")) {
-      return json(201, { token: "ghs_x", expires_at: "2099-01-01T00:00:00Z" });
+      return json(201, {
+        token: "ghs_x",
+        expires_at: "2099-01-01T00:00:00Z",
+        permissions: {
+          pull_requests: "write",
+          issues: "write",
+          contents: "write",
+          workflows: "write",
+          checks: "read",
+          statuses: "read",
+        },
+      });
     }
     return json(404, {});
   };
@@ -147,4 +166,151 @@ Deno.test("mintReviewerToken fails rather than falling back when GitHub refuses 
       fetchFn,
     )
   );
+});
+
+Deno.test("missingPermissions reports absent and under-scoped permissions", () => {
+  const required = { contents: "write", checks: "read" } as const;
+  assertEquals(
+    missingPermissions({ contents: "write", checks: "read" }, required),
+    [],
+  );
+  assertEquals(
+    missingPermissions({ contents: "read", checks: "read" }, required),
+    ["contents"],
+  );
+  assertEquals(
+    missingPermissions({ checks: "read" }, required),
+    ["contents"],
+  );
+  assertEquals(
+    missingPermissions({ contents: "admin", checks: "write" }, required),
+    [],
+  );
+  assertEquals(missingPermissions(undefined, required), [
+    "contents",
+    "checks",
+  ]);
+});
+
+Deno.test("permissionError names every missing permission in one message", () => {
+  const msg = permissionError({
+    missing: ["contents", "checks"],
+    appPermissions: { contents: "write", checks: "read" },
+    slug: "stsoftware-pr-reviewer",
+  });
+  assertStringIncludes(msg, "contents: write");
+  assertStringIncludes(msg, "checks: read");
+});
+
+Deno.test("mintReviewerToken rejects naming a missing permission the installation has not accepted", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/k.pem`, await testKeyPem());
+  const fetchFn = (input: string | URL) => {
+    const url = String(input);
+    const json = (status: number, body: unknown) =>
+      Promise.resolve(new Response(JSON.stringify(body), { status }));
+    if (url.endsWith("/app")) {
+      return json(200, {
+        slug: "stsoftware-pr-reviewer",
+        owner: { login: "stSoftwareAU", type: "Organization" },
+        permissions: { ...REQUIRED_PERMISSIONS },
+      });
+    }
+    if (url.endsWith("/app/installations")) {
+      return json(200, [{
+        id: 42,
+        account: { login: "stSoftwareAU" },
+        html_url:
+          "https://github.com/organizations/stSoftwareAU/settings/installations/42",
+      }]);
+    }
+    if (url.endsWith("/app/installations/42/access_tokens")) {
+      return json(201, {
+        token: "ghs_x",
+        expires_at: "2099-01-01T00:00:00Z",
+        permissions: { ...REQUIRED_PERMISSIONS, contents: "read" },
+      });
+    }
+    return json(404, {});
+  };
+  const err = await assertRejects(() =>
+    mintReviewerToken(
+      { app_id: "5119297", private_key_path: `${dir}/k.pem` },
+      ["stSoftwareAU"],
+      fetchFn,
+    )
+  );
+  assertStringIncludes((err as Error).message, "contents");
+  assertStringIncludes((err as Error).message, "accept the new permissions");
+  assertStringIncludes(
+    (err as Error).message,
+    "https://github.com/organizations/stSoftwareAU/settings/installations/42",
+  );
+});
+
+Deno.test("mintReviewerToken rejects naming a permission the App itself lacks, with the settings URL", async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${dir}/k.pem`, await testKeyPem());
+  const appPermissions = { ...REQUIRED_PERMISSIONS } as Record<string, string>;
+  delete appPermissions.contents;
+  const fetchFn = (input: string | URL) => {
+    const url = String(input);
+    const json = (status: number, body: unknown) =>
+      Promise.resolve(new Response(JSON.stringify(body), { status }));
+    if (url.endsWith("/app")) {
+      return json(200, {
+        slug: "stsoftware-pr-reviewer",
+        owner: { login: "stSoftwareAU", type: "Organization" },
+        permissions: appPermissions,
+      });
+    }
+    if (url.endsWith("/app/installations")) {
+      return json(200, [{ id: 42, account: { login: "stSoftwareAU" } }]);
+    }
+    if (url.endsWith("/app/installations/42/access_tokens")) {
+      const tokenPermissions = { ...appPermissions };
+      return json(201, {
+        token: "ghs_x",
+        expires_at: "2099-01-01T00:00:00Z",
+        permissions: tokenPermissions,
+      });
+    }
+    return json(404, {});
+  };
+  const err = await assertRejects(() =>
+    mintReviewerToken(
+      { app_id: "5119297", private_key_path: `${dir}/k.pem` },
+      ["stSoftwareAU"],
+      fetchFn,
+    )
+  );
+  assertStringIncludes((err as Error).message, "contents");
+  assertStringIncludes(
+    (err as Error).message,
+    "https://github.com/organizations/stSoftwareAU/settings/apps/stsoftware-pr-reviewer/permissions",
+  );
+  const msg = (err as Error).message;
+  if (msg.includes("accept the new permissions")) {
+    throw new Error(
+      `expected no "accept the new permissions" clause when the App itself lacks the permission, got: ${msg}`,
+    );
+  }
+});
+
+Deno.test("permissionError lists several missing permissions in one message", () => {
+  const msg = permissionError({
+    missing: ["contents", "workflows", "checks"],
+    appPermissions: {
+      pull_requests: "write",
+      issues: "write",
+      contents: "read",
+      workflows: "read",
+      checks: "read",
+      statuses: "read",
+    },
+    slug: "stsoftware-pr-reviewer",
+  });
+  assertStringIncludes(msg, "contents");
+  assertStringIncludes(msg, "workflows");
+  assertStringIncludes(msg, "checks");
 });
