@@ -1005,7 +1005,11 @@ each given the finished diff and nothing from the author's context:
 - **Standards reviewer** — inputs the same diff and `CODING-STANDARDS.md`. Its
   findings go under a separate `## Standards Review` heading as `violation`
   entries (with `file:line` and whether the violation was fixed) and the `clean`
-  areas it checked.
+  areas it checked. Two departures are always a `violation` (Issue #3011): a
+  named-but-absent test — a comment, anchor or PR claim naming a test file
+  that is not in the repository — and a test stub for another repository's
+  binary that is more permissive than the real callee, with no named contract
+  source.
 
 **The reviewer challenges; it does not silently win.** A reviewer that saw only
 the diff is sometimes wrong about a criterion satisfied by code it could not
