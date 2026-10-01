@@ -874,9 +874,13 @@ The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
 (reproduction status, test results, "known defect" notes, named functions and
-files) matches the head. Any later commit on the branch — a review fix, a PR
-feedback or CI-fix run — refreshes the summary in the same push when it changes
-what the summary says.
+files) matches the head. Every file or behaviour the summary says the PR changes
+must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
+from the base branch can supersede the change — and an abandoned iteration's
+description is replaced by the one that shipped. A summary that contradicts the
+diff is a blocking self-review finding. Any later commit on the branch — a
+review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
+in the same push when it changes what the summary says.
 
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
