@@ -1699,6 +1699,30 @@ Deno.test("pr_issue_linking - a PR whose issue close failed is not marked and is
   }
 });
 
+Deno.test("pr_issue_linking - a failed per-issue close is logged once naming the repo, issue and PR (Issue #2902)", async () => {
+  const prs = JSON.stringify([mergedPr(40, 44)]);
+  const good = createRecordingGh({ prs });
+  const failingClose = (args: string[]): Promise<string> =>
+    args[0] === "issue" && args[1] === "close" && args[2] === "44"
+      ? Promise.reject(new Error("HTTP 502"))
+      : good.fn(args);
+  const { warnings, logger } = recordingWarn();
+  const closed = await closeIssuesForMergedPrs(
+    ["owner/repo"],
+    "bot-user",
+    failingClose,
+    "planning",
+    undefined,
+    { verifyMergeLandedFn: alwaysLanded, logger },
+  );
+  assertEquals(closed, 0);
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]!.includes("owner/repo"), true);
+  assertEquals(warnings[0]!.includes("#44"), true);
+  assertEquals(warnings[0]!.includes("#40"), true);
+  assertEquals(warnings[0]!.includes("HTTP 502"), true);
+});
+
 Deno.test("pr_issue_linking - prTitleMatchesIssue accepts paren and bracket styles, rejects prefixes (Issue #106)", () => {
   // Accepted delimiter styles.
   for (
