@@ -2101,6 +2101,13 @@ the PID — so the counters survive a worker restart. Fleet-wide tallying
 itself, so a repository's failures are counted across every host, not just
 the one that hit them.
 
+A sibling file, `clone_recoveries_<host>.json`, records the last time each
+repo's corrupt clone was moved aside and re-cloned (`{ "<owner/repo>":
+"<ISO timestamp>" }`), written by `setupRepo`'s `clone-corrupt` recovery
+(Issue #2957). It caps that recovery at one re-clone per repo per 24 h;
+deleting the file, or just a repo's entry, resets the cap and lets the
+worker recover the next corrupt clone it meets.
+
 The repository's diagnostic issue carries two independent markers on the
 same body, and the two states they describe are distinct:
 
