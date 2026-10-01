@@ -209,7 +209,9 @@ export async function generateAppJWT(
  * @param fetchFn - Optional fetch function (injectable for testing)
  * @param repositories - `owner/repo` slugs the token may reach (Issue #1391).
  *   Omitted or `null` mints the installation's full, unscoped reach.
- * @returns Token string and expiry timestamp
+ * @returns Token string, expiry timestamp, and the permissions GitHub granted
+ *   the token (Issue #2892: callers that need specific scopes check these
+ *   rather than discovering a gap only when a later API call is refused)
  * @throws Error when the scope is present but empty, or holds a malformed slug
  */
 export async function getInstallationToken(
@@ -217,7 +219,9 @@ export async function getInstallationToken(
   installationId: string,
   fetchFn: FetchFn = globalThis.fetch,
   repositories: RepositoryScope = undefined,
-): Promise<{ token: string; expiresAt: Date }> {
+): Promise<
+  { token: string; expiresAt: Date; permissions?: Record<string, string> }
+> {
   if (!installationId || installationId.trim() === "") {
     throw new Error("installationId must not be empty");
   }
@@ -280,6 +284,9 @@ export async function getInstallationToken(
   return {
     token: data.token,
     expiresAt: new Date(data.expires_at),
+    permissions: data.permissions && typeof data.permissions === "object"
+      ? data.permissions
+      : undefined,
   };
 }
 
