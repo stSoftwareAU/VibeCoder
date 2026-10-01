@@ -31,8 +31,13 @@
  */
 
 import type { Result } from "../types.ts";
+import {
+  type AlertDedupAuthorOptions,
+  selectFleetAuthoredMatches,
+} from "./alert_dedup_authors.ts";
 import type { FailureCategory } from "./failure_diagnosis.ts";
 import { atomicWrite } from "./file_utils.ts";
+import { REPO_FAST_FAILURE_MARKER_PREFIX } from "./repo_fast_failure_issue.ts";
 import { redactedLineTail, redactedTail } from "./redacted_text.ts";
 import { withStateLock } from "./state_mutex.ts";
 import { getHostname } from "./worker_identity.ts";
@@ -199,6 +204,11 @@ export interface FastFailureCandidate {
   category: FailureCategory;
   /** Wall-clock seconds from claim to release. */
   elapsedSeconds?: number;
+  /**
+   * The run died in setup, before the agent started, or on a recognised
+   * host fault (Issue #2954) — fast whatever the category or the clock.
+   */
+  setupFault?: boolean;
 }
 
 /**
@@ -206,7 +216,9 @@ export interface FastFailureCandidate {
  *
  * `zero_output` is fast whatever the clock says — the run ended before the
  * agent produced any output, which is the setup fault this tracker exists
- * to catch. Host-wide causes ({@link NOT_REPO_FAULT}) never count.
+ * to catch. A run flagged `setupFault` (Issue #2954) is likewise fast
+ * regardless of category or elapsed time. Host-wide causes
+ * ({@link NOT_REPO_FAULT}) never count, whichever of those applies.
  */
 export function isFastFailure(
   candidate: FastFailureCandidate,
@@ -214,6 +226,7 @@ export function isFastFailure(
 ): boolean {
   if (NOT_REPO_FAULT.has(candidate.category)) return false;
   if (candidate.category === "zero_output") return true;
+  if (candidate.setupFault === true) return true;
   const elapsed = candidate.elapsedSeconds;
   if (typeof elapsed !== "number" || !Number.isFinite(elapsed)) return false;
   return elapsed < policy.fastFailureSeconds;
@@ -462,6 +475,14 @@ export interface RepoFastFailureOptions {
    * silent.
    */
   warn?: (message: string) => void;
+  /**
+   * Optional fleet-wide signal (Issue #2955): when set, `backedOffRepos`
+   * also honours any open, fleet-authored diagnostic issue found by
+   * {@link lookupFleetDiagnosticBackOffs}, so every host in the fleet backs
+   * off a repository another host has already diagnosed — not only the
+   * host whose own sidecar recorded the failures.
+   */
+  fleetDiagnostics?: FleetDiagnosticLookupOptions;
 }
 
 /** Read the sidecar's repo map, reporting an unusable file rather than hiding it. */
@@ -617,18 +638,274 @@ export async function loadRepoFastFailureStates(
     .sort((a, b) => b.count - a.count || a.repo.localeCompare(b.repo));
 }
 
+/** A repository backed off fleet-wide by an open, fleet-authored diagnostic issue. */
+export interface FleetDiagnosticRef {
+  repo: string;
+  diagnosticRepo: string;
+  diagnosticIssue: number;
+}
+
+/** One owner's cached fleet-wide lookup. */
+export interface FleetDiagnosticCacheEntry {
+  /** Epoch seconds of the last `gh` call, successful or not. */
+  attemptedAt: number;
+  /** Last good result; absent until a lookup has succeeded. */
+  good?: FleetDiagnosticRef[];
+  goodAt?: number;
+  lastError?: string;
+}
+
+/** In-process cache, keyed by owner. */
+export type FleetDiagnosticCache = Map<string, FleetDiagnosticCacheEntry>;
+
+/** A fresh, empty fleet-diagnostic lookup cache. */
+export function createFleetDiagnosticCache(): FleetDiagnosticCache {
+  return new Map();
+}
+
+/** Unique owners of `owner/repo` slugs (malformed slugs skipped), sorted. */
+export function ownersOfRepos(repos: readonly string[]): string[] {
+  const owners = new Set<string>();
+  for (const repo of repos) {
+    const slash = repo.indexOf("/");
+    if (slash <= 0 || slash !== repo.lastIndexOf("/")) continue;
+    const owner = repo.slice(0, slash);
+    const name = repo.slice(slash + 1);
+    if (owner.length === 0 || name.length === 0) continue;
+    owners.add(owner);
+  }
+  return [...owners].sort();
+}
+
+/** The marker regex, built from the imported prefix — an allowlist, not a free-form match. */
+const FLEET_DIAGNOSTIC_MARKER_RE = new RegExp(
+  `<!-- ${REPO_FAST_FAILURE_MARKER_PREFIX}:([A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+) -->`,
+);
+
+export interface FleetDiagnosticLookupOptions extends AlertDedupAuthorOptions {
+  /** Owners to search, read at call time (the monitored repo list can change). */
+  owners: () => readonly string[];
+  ghCommandFn: (args: string[]) => Promise<string>;
+  cache: FleetDiagnosticCache;
+  /** Minimum seconds between searches of one owner; default REPO_FAST_FAILURE_DIAGNOSTIC_RECHECK_SECONDS. */
+  recheckSeconds?: number;
+  warn: (message: string) => void;
+  error: (message: string) => void;
+}
+
+export interface FleetDiagnosticLookupResult {
+  /** Repositories backed off fleet-wide, keyed by `owner/repo`. */
+  backedOff: Map<string, FleetDiagnosticRef>;
+  /** Owners whose lookup has never succeeded — their fleet state is unknown. */
+  failedOwners: string[];
+}
+
+interface FleetSearchRow {
+  number: number;
+  body: string;
+  author?: { login?: string | null } | null;
+  diagnosticRepo: string;
+  backedOffRepo: string;
+}
+
+/** One owner's fleet-wide diagnostic search, parsed into candidate rows. */
+function parseFleetSearchRows(raw: string): FleetSearchRow[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const rows: FleetSearchRow[] = [];
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.number !== "number" || typeof record.body !== "string") {
+      continue;
+    }
+    const state = typeof record.state === "string" ? record.state : "";
+    if (state.toLowerCase() !== "open") continue;
+    const match = FLEET_DIAGNOSTIC_MARKER_RE.exec(record.body);
+    if (!match) continue;
+    const markerRepo = match[1]!;
+    const repository = record.repository;
+    const diagnosticRepo =
+      repository !== null && typeof repository === "object" &&
+        typeof (repository as Record<string, unknown>).nameWithOwner ===
+          "string"
+        ? (repository as Record<string, unknown>).nameWithOwner as string
+        : markerRepo;
+    const author = record.author;
+    rows.push({
+      number: record.number,
+      body: record.body,
+      author: author !== null && typeof author === "object"
+        ? author as { login?: string | null }
+        : null,
+      diagnosticRepo,
+      backedOffRepo: markerRepo,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Fleet-wide back-off lookup (Issue #2955): search each monitored owner for
+ * an open, fleet-authored fast-failure diagnostic issue, so every host in
+ * the fleet honours a diagnostic any host has filed — not only the host
+ * whose own sidecar recorded the failures.
+ *
+ * One `gh` call per owner per `recheckSeconds`, cached across calls within a
+ * process. A failed lookup never throws: it falls back to the last good
+ * result when one exists, or reports the owner's fleet state as unknown.
+ */
+export async function lookupFleetDiagnosticBackOffs(
+  options: FleetDiagnosticLookupOptions & { nowSeconds?: () => number },
+): Promise<FleetDiagnosticLookupResult> {
+  const now = (options.nowSeconds ?? (() => Math.floor(Date.now() / 1000)))();
+  const recheck = positiveInt(
+    options.recheckSeconds,
+    REPO_FAST_FAILURE_DIAGNOSTIC_RECHECK_SECONDS,
+  );
+  const backedOff = new Map<string, FleetDiagnosticRef>();
+  const failedOwners: string[] = [];
+
+  for (const owner of options.owners()) {
+    const cached = options.cache.get(owner);
+    if (cached && now - cached.attemptedAt < recheck) {
+      if (cached.good === undefined) {
+        failedOwners.push(owner);
+        options.error(
+          `repo-fast-failure fleet lookup ${owner}: last attempt failed (${
+            cached.lastError ?? "unknown error"
+          }) — fleet back-offs for this owner are unknown, so only this ` +
+            `host's own back-offs apply.`,
+        );
+        continue;
+      }
+      for (const ref of cached.good) {
+        backedOff.set(ref.repo, ref);
+      }
+      continue;
+    }
+
+    let good: FleetDiagnosticRef[] | undefined;
+    let failureMessage: string | undefined;
+    try {
+      // SIMPLE-ON-PURPOSE: one page of 100 results per owner — upgrade when
+      // an owner has more than 100 open fast-failure diagnostics
+      const raw = await options.ghCommandFn([
+        "search",
+        "issues",
+        REPO_FAST_FAILURE_MARKER_PREFIX,
+        "--owner",
+        owner,
+        "--state",
+        "open",
+        "--match",
+        "body",
+        "--json",
+        "number,body,author,repository,state",
+        "--limit",
+        "100",
+      ]);
+      const rows = parseFleetSearchRows(raw);
+      if (rows === null) {
+        failureMessage =
+          `unparsable response from gh search issues for ${owner}`;
+      } else {
+        const verified = await selectFleetAuthoredMatches(
+          rows,
+          `repo-fast-failure fleet lookup ${owner}`,
+          options,
+          options.warn,
+          "none is treated as a fleet-wide back-off and only this host's " +
+            "own back-offs apply",
+        );
+        const byRepo = new Map<string, FleetDiagnosticRef>();
+        for (const row of verified) {
+          const existing = byRepo.get(row.backedOffRepo);
+          if (existing && existing.diagnosticIssue <= row.number) continue;
+          byRepo.set(row.backedOffRepo, {
+            repo: row.backedOffRepo,
+            diagnosticRepo: row.diagnosticRepo,
+            diagnosticIssue: row.number,
+          });
+        }
+        good = [...byRepo.values()];
+      }
+    } catch (err) {
+      failureMessage = err instanceof Error ? err.message : String(err);
+    }
+
+    if (good !== undefined) {
+      options.cache.set(owner, { attemptedAt: now, good, goodAt: now });
+      for (const ref of good) {
+        backedOff.set(ref.repo, ref);
+      }
+      continue;
+    }
+
+    options.cache.set(owner, {
+      ...cached,
+      attemptedAt: now,
+      lastError: failureMessage,
+    });
+    if (cached?.good !== undefined) {
+      options.warn(
+        `repo-fast-failure fleet lookup ${owner}: ${failureMessage} — ` +
+          `keeping the last good result from ${
+            cached.goodAt !== undefined
+              ? new Date(cached.goodAt * 1000).toISOString()
+              : "earlier"
+          }.`,
+      );
+      for (const ref of cached.good) {
+        backedOff.set(ref.repo, ref);
+      }
+    } else {
+      failedOwners.push(owner);
+      options.error(
+        `repo-fast-failure fleet lookup ${owner}: ${failureMessage} — ` +
+          `fleet back-offs for this owner are unknown, so only this host's ` +
+          `own back-offs apply.`,
+      );
+    }
+  }
+
+  return { backedOff, failedOwners };
+}
+
 /**
  * The repositories the implementation claim scan must not offer this cycle.
  *
  * Unioned into `findOldestIssue`'s `excludeRepos`; the label-driven lanes
  * are deliberately not filtered, because each removes its own label and so
  * stops itself.
+ *
+ * When `options.fleetDiagnostics` is set, also unions in every repository
+ * backed off fleet-wide by an open, fleet-authored diagnostic issue
+ * ({@link lookupFleetDiagnosticBackOffs}) — the fleet-wide back-off
+ * (Issue #2955), honoured on top of this host's own sidecar.
  */
 export async function backedOffRepos(
   options: RepoFastFailureOptions,
 ): Promise<Set<string>> {
   const states = await loadRepoFastFailureStates(options);
-  return new Set(states.filter((s) => s.backedOff).map((s) => s.repo));
+  const result = new Set(
+    states.filter((s) => s.backedOff).map((s) => s.repo),
+  );
+  if (options.fleetDiagnostics) {
+    const fleet = await lookupFleetDiagnosticBackOffs({
+      ...options.fleetDiagnostics,
+      nowSeconds: options.nowSeconds,
+    });
+    for (const repo of fleet.backedOff.keys()) {
+      result.add(repo);
+    }
+  }
+  return result;
 }
 
 /** `2026-09-11T04:05Z` — minute precision is enough for a back-off. */
@@ -644,13 +921,22 @@ function formatUntil(epochSeconds: number): string {
  * operator sees "repo X: 5 fast failures, backed off until …" rather than
  * discovering the pattern in a hand-written weekly report.
  *
- * Returns `null` when no repository has a live fast failure, so a healthy
- * fleet adds no noise to the cycle summary.
+ * `fleet`, when given, names every repository backed off fleet-wide by an
+ * open, fleet-authored diagnostic issue (Issue #2955): a repository already
+ * named with its own fast failures gets the fleet-wide diagnostic appended
+ * (unless it already names the very same one), and a repository that is
+ * backed off fleet-wide but has no fast failures of its own on this host
+ * gets its own part, sorted in with the rest.
+ *
+ * Returns `null` when neither `states` nor `fleet` has anything to say, so a
+ * healthy fleet adds no noise to the cycle summary.
  */
 export function formatRepoFastFailureSummary(
   states: readonly RepoFastFailureState[],
+  fleet?: ReadonlyMap<string, FleetDiagnosticRef>,
 ): string | null {
-  if (states.length === 0) return null;
+  if (states.length === 0 && (!fleet || fleet.size === 0)) return null;
+  const named = new Set(states.map((state) => state.repo));
   const parts = states.map((state) => {
     const plural = state.count === 1 ? "" : "s";
     const backOff = state.backedOff && state.backedOffUntil !== undefined
@@ -659,9 +945,41 @@ export function formatRepoFastFailureSummary(
     const diagnostic = state.diagnosticIssue !== undefined
       ? ` (${state.diagnosticRepo ?? "?"}#${state.diagnosticIssue})`
       : "";
-    return `${state.repo}: ${state.count} fast failure${plural}${backOff}${diagnostic}`;
+    const fleetRef = fleet?.get(state.repo);
+    const alreadyShown = state.diagnosticIssue !== undefined &&
+      state.diagnosticRepo === fleetRef?.diagnosticRepo &&
+      state.diagnosticIssue === fleetRef?.diagnosticIssue;
+    const fleetPart = fleetRef && !state.backedOff && !alreadyShown
+      ? `, backed off fleet-wide (${fleetRef.diagnosticRepo}#${fleetRef.diagnosticIssue})`
+      : "";
+    return `${state.repo}: ${state.count} fast failure${plural}${backOff}${diagnostic}${fleetPart}`;
   });
-  return `repo-fast-failures: ${parts.join("; ")}`;
+  const fleetOnly = [...(fleet?.values() ?? [])]
+    .filter((ref) => !named.has(ref.repo))
+    .sort((a, b) => a.repo.localeCompare(b.repo))
+    .map((ref) =>
+      `${ref.repo}: backed off fleet-wide (${ref.diagnosticRepo}#${ref.diagnosticIssue})`
+    );
+  return `repo-fast-failures: ${[...parts, ...fleetOnly].join("; ")}`;
+}
+
+/**
+ * The cycle-summary line, including the fleet-wide signal when
+ * `options.fleetDiagnostics` is set (Issue #2955). Thin composition of
+ * {@link loadRepoFastFailureStates}, {@link lookupFleetDiagnosticBackOffs}
+ * and {@link formatRepoFastFailureSummary}.
+ */
+export async function describeRepoFastFailureBackOffs(
+  options: RepoFastFailureOptions,
+): Promise<string | null> {
+  const states = await loadRepoFastFailureStates(options);
+  const fleet = options.fleetDiagnostics
+    ? (await lookupFleetDiagnosticBackOffs({
+      ...options.fleetDiagnostics,
+      nowSeconds: options.nowSeconds,
+    })).backedOff
+    : undefined;
+  return formatRepoFastFailureSummary(states, fleet);
 }
 
 /**

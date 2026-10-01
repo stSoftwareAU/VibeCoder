@@ -56,7 +56,11 @@ import {
   updatePrBranch,
 } from "../lib/git_pull.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
-import { discardBrokenClone } from "../lib/broken_clone.ts";
+import { discardBrokenClone, probeCorruptClone } from "../lib/broken_clone.ts";
+import {
+  isCloneCorruption,
+  recoverCorruptClone,
+} from "../lib/corrupt_clone_recovery.ts";
 import { cleanWorkingTree } from "../lib/ignored_path_clean.ts";
 import {
   assertSafeRefComponent,
@@ -590,6 +594,24 @@ async function writeDefaultBranchCache(
 }
 
 /**
+ * Classify a `runGitCommand` outcome as clone corruption (Issue #2957).
+ *
+ * A failed reset/checkout/fetch during the reuse path can mean many things;
+ * only the subset `isCloneCorruption` recognises (e.g. a bad object/ref) is
+ * worth moving the clone aside for, so every other failure keeps today's
+ * behaviour of being logged/ignored by its caller.
+ *
+ * @returns the combined git output when it is clone corruption, else `null`.
+ */
+function classifyGitCorruption(
+  result: Result<{ code: number; stdout: string; stderr: string }>,
+): string | null {
+  if (!result.ok || result.value.code === 0) return null;
+  const combined = `${result.value.stdout}\n${result.value.stderr}`;
+  return isCloneCorruption(combined) ? combined : null;
+}
+
+/**
  * Setup a repository for work (clone or update).
  *
  * This operation orchestrates multiple git commands and side effects.
@@ -628,6 +650,25 @@ export async function setupRepo(
   const discarded = await discardBrokenClone(repoPath);
   if (!discarded.ok) {
     return { success: false, message: discarded.error.message };
+  }
+
+  // A clone whose `.git` directory is present but corrupt (e.g. a garbage
+  // `.git/config` line) fails every git call before setup ever reaches the
+  // reuse logic below. Move it aside and re-clone, at most once per repo per
+  // 24 h per host (Issue #2957) — a healthy clone is never touched.
+  let recoveryAside: string | null = null;
+  const preProbe = await probeCorruptClone(repoPath);
+  if (preProbe !== null) {
+    const recovered = await recoverCorruptClone(
+      repo,
+      repoPath,
+      workDir,
+      preProbe,
+    );
+    if (!recovered.ok) {
+      return { success: false, message: recovered.error.message };
+    }
+    recoveryAside = recovered.value;
   }
 
   // Check if repo directory exists
@@ -672,7 +713,9 @@ export async function setupRepo(
       // Recover from broken git states (Issue #467)
       await recoverGitState(defaultBranch, { cwd: repoPath });
 
-      await runGitCommand(["reset", "--hard", "HEAD"], { cwd: repoPath });
+      const resetHeadResult = await runGitCommand(["reset", "--hard", "HEAD"], {
+        cwd: repoPath,
+      });
       // Issue #1443: the clean also erases the ignored directories that carry
       // executable content (`node_modules/`, `.venv/`, `target/`, …), so a
       // previous run cannot leave something behind for this one to execute.
@@ -701,7 +744,10 @@ export async function setupRepo(
       // Restore per-repo Claude session state (Issue #1321, replaces Issue #384 blanket deletion)
       await restoreSession(repoPath, workDir, repo);
 
-      await runGitCommand(buildCheckoutArgs(defaultBranch), { cwd: repoPath });
+      const checkoutResult = await runGitCommand(
+        buildCheckoutArgs(defaultBranch),
+        { cwd: repoPath },
+      );
 
       // Repair a legacy single-branch clone (Issue #211). A clone made with a
       // bare `--depth=1` only ever tracks the default branch, so every
@@ -734,6 +780,11 @@ export async function setupRepo(
         repoPath,
         defaultBranch,
       );
+      let fetchResult:
+        | Result<
+          { code: number; stdout: string; stderr: string }
+        >
+        | null = null;
       if (freshness.upToDate && !refspecWasRepaired) {
         console.log(
           `[setup-repo] fast-path skip (Issue #1810): ${repo} ${freshness.reason} (remote-sha source: ${freshness.remoteShaSource})`,
@@ -755,26 +806,55 @@ export async function setupRepo(
           return { success: false, message: fetchSpaceCheck.error.message };
         }
 
-        await runGitCommand(["fetch", "origin"], { cwd: repoPath });
+        fetchResult = await runGitCommand(["fetch", "origin"], {
+          cwd: repoPath,
+        });
       }
 
       // Always reset hard to origin/<defaultBranch> — purely local cleanup
       // that discards any uncommitted state from the previous iteration.
-      await runGitCommand(["reset", "--hard", `origin/${defaultBranch}`], {
-        cwd: repoPath,
-      });
+      const resetOriginResult = await runGitCommand(
+        ["reset", "--hard", `origin/${defaultBranch}`],
+        { cwd: repoPath },
+      );
 
-      // Store the default branch in the git directory (Issue #1652).
-      const stored = await writeDefaultBranchCache(repoPath, defaultBranch);
-      if (!stored.ok) {
-        return { success: false, message: stored.error.message };
+      // Clone corruption (Issue #2957): a bad object/ref surfaces as a
+      // non-zero exit from one of the commands above rather than from the
+      // `git rev-parse --git-dir` probe run before this branch, since the
+      // git directory itself still resolves. Only the subset of failures
+      // `isCloneCorruption` recognises is treated this way — every other
+      // failure keeps today's behaviour of being silently carried forward.
+      const corruption = classifyGitCorruption(resetHeadResult) ??
+        classifyGitCorruption(checkoutResult) ??
+        (fetchResult ? classifyGitCorruption(fetchResult) : null) ??
+        classifyGitCorruption(resetOriginResult);
+
+      if (corruption !== null) {
+        const recovered = await recoverCorruptClone(
+          repo,
+          repoPath,
+          workDir,
+          corruption,
+        );
+        if (!recovered.ok) {
+          return { success: false, message: recovered.error.message };
+        }
+        recoveryAside = recovered.value;
+        // The corrupt clone has been moved aside; fall through to the fresh
+        // clone path below, which now finds repoPath absent.
+      } else {
+        // Store the default branch in the git directory (Issue #1652).
+        const stored = await writeDefaultBranchCache(repoPath, defaultBranch);
+        if (!stored.ok) {
+          return { success: false, message: stored.error.message };
+        }
+
+        return {
+          success: true,
+          message: repoPath,
+          data: { repoPath, defaultBranch },
+        };
       }
-
-      return {
-        success: true,
-        message: repoPath,
-        data: { repoPath, defaultBranch },
-      };
     }
   } catch {
     // Directory doesn't exist — will clone below
@@ -796,10 +876,13 @@ export async function setupRepo(
   // ensureHistoryDepth() for commit-range/merge operations (Issue #1503).
   const cloneResult = await spawnGh(buildShallowCloneArgs(repo, repoPath));
   if (cloneResult.code !== 0) {
-    return {
-      success: false,
-      message: `Failed to clone ${repo}: ${cloneResult.stderr}`,
-    };
+    // Issue #2957: name the aside path so a failed recovery re-clone is
+    // distinguishable from an ordinary first clone, while keeping the
+    // `CLONE_FAILED_PATTERN` prefix host-fault detection matches on.
+    const message = recoveryAside !== null
+      ? `Failed to clone ${repo}: ${cloneResult.stderr} (re-clone into ${repoPath} after moving the corrupt clone aside to ${recoveryAside})`
+      : `Failed to clone ${repo}: ${cloneResult.stderr}`;
+    return { success: false, message };
   }
 
   // Sanity check: confirm remote refs are reachable after the shallow clone.
