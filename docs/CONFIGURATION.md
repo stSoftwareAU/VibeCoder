@@ -4363,8 +4363,9 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
   always captures Playwright screenshots on the first attempt (avoids a
   round-trip failure)
 - **Non-UI repositories**: Set `skip_screenshot_check: true` to skip screenshot
-  validation entirely, preventing false positives from keyword detection, and
-  to keep Playwright out of the run — it beats `requires_screenshots` and the
+  validation entirely, so a repository whose UI-extension files (for example
+  generated `.html` reports) need no screenshot never meets the gate, and to
+  keep Playwright out of the run — it beats `requires_screenshots` and the
   `needs-screenshot` label
 - **Disable auto-merge**: Set `skip_auto_merge: true` if you prefer to manually
   merge PRs
