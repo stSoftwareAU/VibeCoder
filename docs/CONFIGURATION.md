@@ -1884,7 +1884,7 @@ calls the agent made are counted from the run's per-tool tally — both the
 as `queries` in the run-stats line, the log line and the callback block.
 
 **When Graft is unavailable.** An enabled host that cannot run Graft — the
-clone's `info/exclude` cannot be resolved or appended to, the binary is
+graph directory inside the clone's git dir cannot be resolved, the binary is
 missing, the build or the query fails, the query succeeds but returns an empty
 bundle, the build produces a graph with 0 nodes (no file matched a language
 Graft parses, or the build matched no files), or the graph index cannot be
@@ -1922,25 +1922,30 @@ records a `failed` Graft status — the bundle is an accelerator, so losing it
 never fails the run, and the loss is recorded rather than passed off as a
 clean run.
 
-**Where the graph lives.** Graft writes its graph to `graft/` at the root of
-the repository checkout, which is persistent between runs, so an unchanged
-file replays from Graft's own cache on the next build instead of being
-re-parsed. The worker never deletes `graft/`. Two entries keep it that way
-(Issue #2099): `/graft/` is added to the clone's own `.git/info/exclude`
-before each build — per-clone, unstageable, and unlike a `.gitignore` edit it
-survives the `git reset --hard` + `git clean -fd` every run starts with — and
-`/graft/` is in the canonical `.gitignore` pattern set the worker enforces, so
-a checkout whose `.gitignore` carries that set cannot stage the graph either.
-The two differ in reach, and it is worth being exact about which does the
-work: the `.gitignore` entry is written by `gitignore-sync` at `setup.sh` time
-and that edit is uncommitted, so the per-run `git reset --hard` reverts it —
-during a run it is the `info/exclude` entry that is actually in force, and the
-`.gitignore` pattern is the belt to its braces once the line reaches a
-repository's committed `.gitignore`. Graft itself is run with `--no-gitignore
---no-ignore`, which #2060 records as the flags that stop it editing
-`.gitignore`; that is an assumption from Graft's documentation rather than one
-observed here, because Graft is not installed on the image this was written
-against. The `info/exclude` entry holds either way.
+**Where the graph lives.** Graft writes its graph inside the clone's git
+directory, not the working tree: the worker resolves
+`git rev-parse --git-path graft` — ordinarily `<checkout>/.git/graft`, and for
+a lane worktree the `graft` directory inside that worktree's own git dir — and
+passes it as `graft --dir <path> build|ask|mcp` (Issue #2915). That directory
+is persistent between runs, so an unchanged file still replays from Graft's
+own cache on the next build instead of being re-parsed, but because it sits
+outside the working tree a repository's lint and format tools never glob it,
+nothing there can ever be staged, and `git reset --hard` plus `git clean -fd`
+— the per-run reset every run starts with — leaves it untouched, the same
+survival property the old `info/exclude` entry gave the in-tree `graft/` it
+replaces. The worker no longer appends `/graft/` to the clone's
+`.git/info/exclude`. Before each build the worker removes a **legacy in-tree
+`graft/`** left over from a checkout built before this change — recognised as
+a real directory (not a symlink) carrying `.graph/wiring.json` with nothing
+under it tracked by git — logging a `warn` line when it does; a `graft/` the
+repository itself tracks is never touched. `/graft/` stays in the canonical
+`.gitignore` pattern set the worker enforces (`gitignore-sync` at `setup.sh`
+time) as belt and braces for any lingering in-tree copy or a repository that
+still references the old path, even though the graph the worker builds today
+never lands there. Graft itself is run with `--no-gitignore --no-ignore`,
+which Issue #2060 records as the flags that stop it editing `.gitignore`;
+that is an assumption from Graft's documentation rather than one observed
+here, because Graft is not installed on the image this was written against.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a

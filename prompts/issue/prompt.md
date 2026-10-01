@@ -346,6 +346,15 @@ Good scoping examples:
 - Issue says "add retry logic to API client" → add retry logic and tests. Do not
   also restructure the API client's error types.
 
+**Never add worker-local paths to the repository's lint/format config.** `graft/`,
+`.codegraph/`, or anything else listed in the checkout's `.git/info/exclude` are
+worker-internal state, not repository content — do not add them to
+`.markdownlint*`, `.markdownlintignore`, `.prettierignore`, `deno.json` excludes,
+`.gitignore`, or any other target-repository lint, format or ignore config. If
+the repository's quality gate trips over one of these paths, that is a worker
+environment fault, not something this repository should carry a workaround for:
+do not commit a fix, report it in the PR summary or response message instead.
+
 ## Workflow Files — `.github/workflows/`
 
 Any file this run adds or changes under `.github/workflows/` is held to the
