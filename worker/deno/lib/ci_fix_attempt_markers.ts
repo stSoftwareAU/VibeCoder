@@ -583,7 +583,8 @@ function append<T>(target: Map<string, T[]>, key: string, value: T): void {
 function mentionsCiFixMarker(body: string): boolean {
   return body.includes(CI_FIX_ATTEMPT_MARKER_NAME) ||
     body.includes(CI_FIX_DEFERRAL_MARKER_NAME) ||
-    body.includes(CI_HUMAN_GATE_MARKER_NAME);
+    body.includes(CI_HUMAN_GATE_MARKER_NAME) ||
+    body.includes(CI_INFRA_RERUN_MARKER_NAME);
 }
 
 /**
@@ -615,6 +616,7 @@ export function collectFleetCiFixMarkers(
   const attempts = new Map<string, CiFixAttemptRecord[]>();
   const deferrals = new Map<string, CiFixDeferralRecord[]>();
   const humanGates = new Map<string, CiHumanGateRecord[]>();
+  const infraReruns = new Map<string, CiInfraRerunRecord[]>();
   const fleet = [...fleetLogins];
 
   if (fleet.length === 0) {
@@ -631,6 +633,7 @@ export function collectFleetCiFixMarkers(
       attempts,
       deferrals,
       humanGates,
+      infraReruns,
       fleetResolved: false,
       ignoredOutsideFleet: 0,
     };
@@ -660,6 +663,9 @@ export function collectFleetCiFixMarkers(
     for (const marker of parseCiHumanGateMarkers(body)) {
       append(humanGates, marker.checkName, { ...marker, ...context });
     }
+    for (const marker of parseCiInfraRerunMarkers(body)) {
+      append(infraReruns, marker.head, { ...marker, ...context });
+    }
   }
 
   if (ignoredOutsideFleet > 0) {
@@ -674,6 +680,7 @@ export function collectFleetCiFixMarkers(
     attempts,
     deferrals,
     humanGates,
+    infraReruns,
     fleetResolved: true,
     ignoredOutsideFleet,
   };
@@ -770,4 +777,28 @@ export function isHumanGateParkedAt(
   if (head === undefined || !HEAD_SHA_PATTERN.test(head)) return false;
   return (markers.humanGates.get(sanitiseCheckName(checkName)) ?? [])
     .some((record) => record.head === head);
+}
+
+/**
+ * Whether some fleet host has already re-run a head's cancelled/never-started
+ * checks once (Issue #2919).
+ *
+ * This is the fleet-wide bound {@link rerunInfrastructureChecks} binds on:
+ * every host reads it off the same pull request, so "once per head" holds
+ * fleet-wide rather than once per host. The input is lowercased before it is
+ * checked against the 40-character SHA pattern, so an uppercase-hex head
+ * still matches the lowercase heads markers are built with.
+ *
+ * @param markers - Collected markers.
+ * @param head - The pull request's current head SHA, when known.
+ * @returns True only when a fleet infra-rerun marker names this head.
+ */
+export function isInfraRerunRecordedAt(
+  markers: FleetCiFixMarkers,
+  head: string | undefined,
+): boolean {
+  if (head === undefined) return false;
+  const lowered = head.toLowerCase();
+  if (!HEAD_SHA_PATTERN.test(lowered)) return false;
+  return (markers.infraReruns.get(lowered) ?? []).length > 0;
 }

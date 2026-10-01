@@ -15,11 +15,24 @@
  * head commit, so a rerun that keeps coming back cancelled escalates to a
  * human instead of looping forever.
  *
+ * The once-per-head bound is recorded fleet-wide, not per host (Issue
+ * #2919): it used to live in a marker file in each host's own state
+ * volume, invisible to any other host, so two accounts each re-ran the
+ * same cancelled run once — the bound Issue #2914 added held only
+ * per-host. The record now lives on the pull request itself, as a
+ * `vibe-ci-infra-rerun` marker (`lib/ci_fix_attempt_markers.ts`), the same
+ * move Issue #1879 made for the CI-fix attempt cap.
+ *
  * Uses Australian English throughout (behaviour, organisation).
  */
 
 import type { CheckRunEntry } from "./pr_maintenance.ts";
-import { sanitiseRepoName } from "./pr_ci_checks.ts";
+import {
+  buildCiInfraRerunMarker,
+  type FleetCiFixMarkers,
+  isInfraRerunRecordedAt,
+} from "./ci_fix_attempt_markers.ts";
+import { replyToComment } from "./pr_comments.ts";
 import {
   isDownstreamOfRedJob,
   type JobNeedsMap,
