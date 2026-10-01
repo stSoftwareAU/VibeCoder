@@ -292,6 +292,28 @@ Deno.test("fetchTeamMembers - pagination concatenates every page", async () => {
   }
 });
 
+Deno.test("fetchTeamMembers - a string field containing ][ does not break page splitting", async () => {
+  // Issue #2895: a naive `][`-shaped split would cut this page's name field
+  // in two and corrupt the JSON. `name` is not validated, so it is a safe
+  // place to carry the adversarial shape.
+  const page1 = [{ ...member("user-1"), name: "a][b" }];
+  const page2 = [member("user-2")];
+  const concatenated = `${JSON.stringify(page1)}\n${JSON.stringify(page2)}`;
+  stubGh(ok(concatenated));
+  try {
+    const result = await fetchTeamMembers(TEAM_SLUG, {});
+    assertEquals(result.ok, true);
+    if (result.ok && result.value.kind === "members") {
+      assertEquals(
+        result.value.members,
+        new Set(["user-1", "user-2"]),
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
 Deno.test("fetchTeamMembers - empty membership is a successful empty set", async () => {
   stubGh(ok("[]"));
   try {
