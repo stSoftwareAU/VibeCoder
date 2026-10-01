@@ -11,6 +11,7 @@
 
 import { spawnGh } from "./gh_spawn.ts";
 import { normaliseLogin } from "./identity_guard.ts";
+import { parseJsonArrayPages } from "./json_array_pages.ts";
 
 /** The only shape GitHub itself guarantees is a bot: the `[bot]` suffix. */
 const BOT_SUFFIX = /\[bot\]$/;
@@ -199,44 +200,22 @@ function errorResult(
 /**
  * Parse a `gh api --paginate` team-members payload into normalised logins.
  *
- * Accepts one JSON array or concatenated page arrays (`][`). Throws on
- * malformed JSON or a payload that is not an array of objects.
+ * Delegates page-boundary scanning to the shared
+ * {@link parseJsonArrayPages}, which tracks JSON string state so a page
+ * containing `][` inside a string value is not mistaken for a page
+ * boundary. Throws {@link TeamMembersParseError} on malformed JSON or a
+ * payload that is not an array of objects.
  */
 function parseTeamMembers(raw: string): Set<string> {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return new Set();
 
-  const chunks: unknown[] = [];
+  let chunks: unknown[];
   try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) {
-      chunks.push(...parsed);
-    } else {
-      throw new Error("team members payload is not a JSON array");
-    }
-  } catch (first) {
-    // Concatenated pages: `[{...}][{...}]` is not valid JSON as a whole.
-    if (!/\]\s*\[/.test(trimmed)) {
-      const message = first instanceof Error ? first.message : String(first);
-      throw new TeamMembersParseError(`malformed-json:${message}`);
-    }
-    for (const piece of trimmed.split(/\]\s*\[/)) {
-      const text = piece.startsWith("[") ? piece : `[${piece}`;
-      const json = text.endsWith("]") ? text : `${text}]`;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(json);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new TeamMembersParseError(`malformed-json:${message}`);
-      }
-      if (!Array.isArray(parsed)) {
-        throw new TeamMembersParseError(
-          "malformed-json:team members page is not a JSON array",
-        );
-      }
-      chunks.push(...parsed);
-    }
+    chunks = parseJsonArrayPages(trimmed);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new TeamMembersParseError(`malformed-json:${message}`);
   }
 
   const members = new Set<string>();
