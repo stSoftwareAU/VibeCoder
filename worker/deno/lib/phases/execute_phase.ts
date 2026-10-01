@@ -621,6 +621,10 @@ async function executeClaudeBody(
     promptOverrides: promptOverrideMappings(config),
     // Issue #2343: a split run's prompt carries the advisor/executor block.
     issueExecutorSplit,
+    // Issue #2930: name this host's configured fleet run archive, when any.
+    ...(config.fleetRunArchive
+      ? { fleetRunArchive: config.fleetRunArchive }
+      : {}),
   });
   if (!promptResult.ok) {
     return {

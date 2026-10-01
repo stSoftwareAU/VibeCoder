@@ -1017,6 +1017,9 @@ after every cycle and again when the run ends, including the abnormal exits
 runs whose idle and blocked seconds an operator needs. A sidecar that exists but
 cannot be read or parsed, or that carries a newer schema, is reported in the log
 before the cumulative totals restart from zero — it is never dropped silently.
+This sidecar only ever describes one host; an operator who wants an `issue`-phase
+run to measure or compare behaviour across the whole fleet configures
+`fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
 ### 🎚️ Per-slot idle accounting — utilisation against capacity (Issue #925)
 
