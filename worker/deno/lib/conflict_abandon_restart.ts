@@ -458,7 +458,9 @@ function attemptTimeCell(atMs: number | undefined): string {
 }
 
 /** One attempt's outcome, as a table cell. */
-function attemptOutcomeCell(outcome: ConflictResolutionAttempt["outcome"]): string {
+function attemptOutcomeCell(
+  outcome: ConflictResolutionAttempt["outcome"],
+): string {
   return outcome === "open" ? "open (never concluded)" : outcome;
 }
 
@@ -1560,7 +1562,15 @@ async function handOffSpentRestarts(
     dedupKey: restartsSpentDedupKey(prNumber),
   });
   try {
-    await gh(["issue", "comment", String(issueNumber), "--repo", repo, "--body", body]);
+    await gh([
+      "issue",
+      "comment",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--body",
+      body,
+    ]);
   } catch (error) {
     // Issue #2951: roll the label back only when this flow can prove it
     // applied it — a human who labelled the issue beforehand keeps their
@@ -1731,7 +1741,7 @@ async function abandonWithoutOriginatingIssue(
   } catch (error) {
     return failed("pr-thread", error);
   }
-  const history = summariseFailedAttempts(comments);
+  const history = summariseFailedAttempts(comments, deps.trustedAuthors);
 
   // Best-effort context: a read that failed renders as `not recorded` in the
   // flag body rather than as a guess, and never stops the fallback.
@@ -2017,6 +2027,8 @@ export async function abandonAndRestart(
         issueNumber,
         claimed.length,
         issueComments,
+        attribution.trusted,
+        attempts,
         failed,
       );
       if (handOffFailed !== undefined) return handOffFailed;
@@ -2064,26 +2076,8 @@ export async function abandonAndRestart(
   // waiting on a label a person must apply is not re-queued at all.
   const requeueLabel = planRequeueLabel(snapshot.labels);
 
-  let history: FailedAttemptHistory;
-  try {
-    // Attributed here too (Issue #1247), whichever side supplied the thread:
-    // this comment is permanent and public, so quoting an outsider's text
-    // back as "what the attempts recorded" would publish a fabricated
-    // record — and the consulted-issue numbers it lists come from the same
-    // bodies. Idempotent when the caller already filtered.
-    history = summariseFailedAttempts(
-      partitionConflictComments(
-        request.prComments ??
-          await fetchIssueCommentPages(repo, prNumber, gh),
-        deps.trustedAuthors,
-      ).trusted,
-    );
-  } catch (error) {
-    // The abandon comment quotes this thread. Publishing "no failure comment
-    // survives" because the read failed would be a fabricated fact on a
-    // permanent comment, so the rung stops and the caller escalates.
-    return failed("pr-thread", error, issueNumber);
-  }
+  // Read once, at the top of this call (Issue #3000) — not re-fetched here.
+  const history = summariseFailedAttempts(trustedThread, deps.trustedAuthors);
 
   // --- Step 1: claim the restart on the issue, marker first. --------------
   try {
