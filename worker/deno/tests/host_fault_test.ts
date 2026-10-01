@@ -120,6 +120,70 @@ Deno.test("host fault - empty string is not a host fault", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Corrupt .git/config and lost git directory (Issue #2953)
+// ---------------------------------------------------------------------------
+
+Deno.test("host fault - detects clone-corrupt from a bad .git/config line (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault("fatal: bad config line 1 in file .git/config"),
+    "clone-corrupt",
+  );
+});
+
+Deno.test("host fault - detects clone-corrupt from a lost git directory (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault("fatal: not in a git directory"),
+    "clone-corrupt",
+  );
+});
+
+Deno.test("host fault - detects clone-corrupt from a bad object ref ellipsis (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault("fatal: bad object refs/heads/…"),
+    "clone-corrupt",
+  );
+});
+
+Deno.test("host fault - detects clone-corrupt from an ignoring-broken-ref ellipsis (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault("warning: ignoring broken ref …"),
+    "clone-corrupt",
+  );
+});
+
+Deno.test("host fault - a bad .git/config line still matches with a different line number (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault("fatal: bad config line 42 in file .git/config"),
+    "clone-corrupt",
+  );
+});
+
+Deno.test("host fault - an ordinary failing deno test line is not a host fault (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault("error: AssertionError: Values are not equal."),
+    null,
+  );
+  assertEquals(detectHostFault("FAILED | 0 passed | 1 failed"), null);
+});
+
+Deno.test("host fault - a merge conflict is not a host fault (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault(
+      "CONFLICT (content): Merge conflict in src/app.ts\n" +
+        "Automatic merge failed; fix conflicts and then commit the result.",
+    ),
+    null,
+  );
+});
+
+Deno.test("host fault - a bad config line in a non-git file is not a host fault (Issue #2953)", () => {
+  assertEquals(
+    detectHostFault("fatal: bad config line 3 in file /home/u/.gitconfig"),
+    null,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Marker round trip
 // ---------------------------------------------------------------------------
 
