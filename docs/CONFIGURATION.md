@@ -2106,9 +2106,10 @@ flowchart TD
     C --> T{"repo_fast_failure_threshold<br/>reached inside the window?"}
     T -- "no" --> K
     T -- "yes" --> B["Repository backed off —<br/>excluded from the claim scan"]
+    S["Open fleet-authored diagnostic<br/>found by any host (Issue #2955)"] --> B
     B --> D["One deduplicated diagnostic issue<br/>(body marker, never the title)"]
     D --> W{"Released?"}
-    W -- "diagnostic closed" --> G["Claimable again"]
+    W -- "diagnostic closed" --> G["Claimable again on every host"]
     W -- "window lapses" --> G
     W -- "a run succeeds" --> G
     style B fill:#9d0208,stroke:#6a040f,color:#fff
@@ -2165,6 +2166,30 @@ flowchart TD
 - **What an operator sees.** One cycle-summary line naming every tracked
   repository:
   `repo-fast-failures: owner/repo: 5 fast failures, backed off until 2026-09-12T04:05Z (owner/repo#123)`.
+
+#### Fleet-wide back-off (Issue #2955)
+
+Per-host counters alone never reach the threshold when a repository's
+failures spread across many hosts — each host sees too few fast failures to
+file its own diagnostic, so the repository keeps being claimed everywhere.
+Every host therefore also treats an **open** diagnostic issue carrying the
+`<!-- VIBE_REPO_FAST_FAILURE:<owner/repo> -->` marker as a back-off, provided
+it was authored by a fleet account: `service_accounts` ∪
+`fleet_pr_authors` ∪ the host's own login. This is on top of, not instead of,
+the host's own sidecar count.
+
+The lookup costs at most one `gh search issues` per owner of the monitored
+repositories, every 600 seconds, cached in process — a cycle's several reads
+of the back-off set share the one cached result. A failed or unparsable
+lookup keeps the last good result and logs a WARN; with no good result yet it
+logs an ERROR and the fleet-wide back-offs are treated as unknown for that
+lookup (the host's own local back-offs still apply). Closing the diagnostic
+lifts the back-off on every host at its next lookup, not only on the host
+that filed it.
+
+The `repo-fast-failures:` summary line names a repository backed off only by
+a fleet diagnostic — one this host never recorded a fast failure for itself —
+as `owner/repo: backed off fleet-wide (owner/repo#123)`.
 
 ### 🕰️ The cycle-deadline model
 
