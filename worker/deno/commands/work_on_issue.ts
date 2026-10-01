@@ -171,6 +171,7 @@ export async function runWorkOnIssueCommand(
     issueLabels: issueData.labels,
     issueAuthor: issueData.author,
     config,
+    githubUser,
   });
   if (integrity.blocked) {
     const blockedResult: WorkOnIssueResult = {
