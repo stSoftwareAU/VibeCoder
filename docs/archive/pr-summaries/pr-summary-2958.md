@@ -41,8 +41,8 @@ escalation is not live. See the acceptance criteria below.
 
 - **violation** — Dead code / scope: the new escalation has no production caller — evidence: `worker/deno/lib/repo_fast_failure_issue.ts:694`, `worker/deno/lib/corrupt_clone_recovery.ts:74` — reason: stands. The release-path wiring in `run_core_production_deps.ts` is not done.
 - **violation** — TDD: `escalateRepeatCloneCorruption` is imported but no test calls it, and the test stub (`failNextLabel`, `gh api` branch) is unused scaffolding — evidence: `worker/deno/tests/repo_fast_failure_issue_test.ts:9` — reason: stands.
-- **violation** — Quality gates: `deno lint` reports `no-unused-vars` (test import) and `prefer-const` — evidence: `worker/deno/tests/repo_fast_failure_issue_test.ts:9`, `worker/deno/lib/repo_fast_failure_issue.ts:460` — reason: stands.
-- **violation** — Quality gates: `deno fmt --check` fails — evidence: `worker/deno/lib/needs_human_escalation.ts:407`, `worker/deno/lib/repo_fast_failure_issue.ts:657`, `:820`, `worker/deno/tests/repo_fast_failure_issue_test.ts:146` — reason: stands.
+- **fixed** — Quality gates: `deno lint` reported `no-unused-vars` (test import) and `prefer-const` — evidence: `worker/deno/tests/repo_fast_failure_issue_test.ts:9`, `worker/deno/lib/repo_fast_failure_issue.ts:460` — the unused import was removed and the `let` changed to `const`; `deno lint` is clean.
+- **fixed** — Quality gates: `deno fmt --check` failed — evidence: `worker/deno/lib/needs_human_escalation.ts:407`, `worker/deno/lib/repo_fast_failure_issue.ts:657`, `:820`, `worker/deno/tests/repo_fast_failure_issue_test.ts:146` — `deno fmt` applied; `deno fmt --check` is clean.
 - **violation** — Log levels and accurate errors: a dedup-skipped comment logs a false ERROR. With `commentFirst`, the combined failure message says the label add was attempted when it was not — evidence: `worker/deno/lib/repo_fast_failure_issue.ts:845-849`, `worker/deno/lib/needs_human_escalation.ts` (final `ok: false` error) — reason: stands.
 - **violation** — Fail loud: `ensureLabelExists` is stubbed to always succeed, with no comment saying why — evidence: `worker/deno/lib/repo_fast_failure_issue.ts:818-820` — reason: stands.
 - **violation** — Docs owe a change: the `clone_recoveries_<host>.json` shape and the repeat-corruption behaviour are not updated — evidence: `docs/CONFIGURATION.md:2104-2107`, `docs/TROUBLESHOOTING.md:973-977` — reason: stands.
@@ -54,6 +54,6 @@ escalation is not live. See the acceptance criteria below.
 
 - [x] `deno test` on the four touched test files: 86 passed, 0 failed (reviewer run).
 - [ ] Release-path tests for the four acceptance criteria — not written.
-- [ ] `deno lint` / `deno fmt --check` clean on the changed files — not yet.
+- [x] `deno lint` / `deno fmt --check` clean on the changed files.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
