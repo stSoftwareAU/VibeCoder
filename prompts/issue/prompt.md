@@ -681,27 +681,37 @@ The file MUST contain:
 
 1. **Summary**: A brief description of what was changed and why, **including
    `Closes #{{ISSUE_NUMBER}}`**
-2. **Evidence** (based on change type):
+2. **Spec**: the after-run record of what the diff alone cannot tell a
+   reviewer, placed directly after Summary under three sub-headings — at most
+   four bullets each, and `None.` when a sub-heading has nothing to say:
+   - `### Intent and Rationale` — the problem being solved and why this
+     approach was chosen over the alternatives
+   - `### Essential Design Decisions` — the choices a later change must
+     preserve, and the trade-offs they accept
+   - `### Undiscoverable Facts` — what a reviewer cannot recover from the diff
+     or the repo: decisions made in issue comments, behaviour observed only at
+     run time, and constraints from outside the repo
+3. **Evidence** (based on change type):
    - For UI changes: Include a screenshot (as Markdown image) captured via
      Playwright MCP
    - For performance changes: Include benchmark results or document why they
      cannot be provided
    - For bug fixes/CLI changes: Reference the tests that verify the fix
-3. **Reproduction** (only when the issue carries the `bug` label): the block
+4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
    regression test
-4. **Acceptance Criteria** (only when the issue states criteria): the closure
+5. **Acceptance Criteria** (only when the issue states criteria): the closure
    block described in [Acceptance-Criteria Closure](#acceptance-criteria-closure--answer-the-criteria-before-the-pr)
    — the Spec reviewer's provenance marker, then one `met` / `partial` /
    `missing` entry per criterion with its `reviewer:` verdict, plus any
    `unrequested` change, which carries `reviewer: unrequested` and a `reason:`
-5. **Standards Review** (only when the issue states criteria): the Standards
+6. **Standards Review** (only when the issue states criteria): the Standards
    reviewer's block described in [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
    merged or reranked
-6. **Test Plan**: List the tests added or modified
+7. **Test Plan**: List the tests added or modified
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
@@ -724,6 +734,20 @@ blocks only when the issue states criteria):
 
 Fixed the button alignment issue by updating CSS flexbox properties. Closes
 #{{ISSUE_NUMBER}}.
+
+## Spec
+
+### Intent and Rationale
+
+- The buttons wrapped below 480px because the container allowed wrapping; fixing the container leaves every button rule untouched
+
+### Essential Design Decisions
+
+- Alignment lives on the container, not on each button, so new buttons inherit it
+
+### Undiscoverable Facts
+
+- The issue comments agreed that 480px is the narrowest supported viewport
 
 ## Evidence
 

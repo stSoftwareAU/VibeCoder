@@ -797,10 +797,15 @@ At the end of your work, after all commits are complete, create
 for every PR summary — containing:
 
 1. **Summary** — What was changed and why, including the `Closes #<n>` keyword.
-2. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
+2. **Spec** — The after-run record of what the diff alone cannot tell a
+   reviewer, under `### Intent and Rationale`, `### Essential Design
+   Decisions` and `### Undiscoverable Facts` (decisions from issue comments,
+   behaviour seen only at run time, constraints from outside the repo) — at
+   most four bullets each, `None.` when empty.
+3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
-3. **Test Plan** — Tests added or modified.
+4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
