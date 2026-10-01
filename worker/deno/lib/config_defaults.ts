@@ -240,6 +240,11 @@ export const OPERATIONAL_DEFAULTS = {
   agentTranscriptEnabled: false,
   /** Seconds each grant adds to the deadline, measured from now (#4296). */
   progressExtensionGrantSeconds: 900,
+  /**
+   * Timeout for the screenshot gate's one extra in-run agent turn
+   * (Issue #2960) — long enough to navigate, screenshot and commit.
+   */
+  screenshotRetryTimeoutSeconds: 600,
   /** A tool call older than this is no longer evidence of activity (#4296). */
   progressExtensionStallSeconds: 300,
   /**

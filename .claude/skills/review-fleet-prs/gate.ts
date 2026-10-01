@@ -58,6 +58,7 @@ const MAX_CONSECUTIVE_FAILURES = 12;
 type Skip =
   | "waiting-ci" // checks still running (or none reported yet)
   | "ci-failed" // the fleet fixes it; no review
+  | "ci-cancelled" // every red check is a cancelled run (Issue #2916): the fleet's CI-fix scan re-runs it once per head; no review
   | "conflicting" // the fleet resolves it; no review
   | "draft"
   | "not-default-branch" // e.g. into a milestone branch: the merge to the default branch gets the review
@@ -90,6 +91,15 @@ export interface Review {
   commit: { oid: string } | null;
 }
 
+/** One check the rollup folded in; unknown `__typename`s are ignored. */
+export interface RollupContextNode {
+  __typename: string;
+  /** Present on `CheckRun` nodes. */
+  conclusion?: string | null;
+  /** Present on `StatusContext` nodes. */
+  state?: string | null;
+}
+
 export interface SearchPr {
   number: number;
   title: string;
@@ -110,7 +120,16 @@ export interface SearchPr {
   };
   author: { login: string } | null;
   commits: {
-    nodes: { commit: { statusCheckRollup: { state: string } | null } }[];
+    nodes: {
+      commit: {
+        statusCheckRollup: {
+          state: string;
+          // Optional: absent when the query did not ask for it (or the
+          // rollup carries no contexts).
+          contexts?: { nodes: RollupContextNode[] };
+        } | null;
+      };
+    }[];
   };
   reviews: { nodes: Review[] };
 }
@@ -199,13 +218,59 @@ export function skipReason(pr: SearchPr, reviewer: string): Skip | null {
   }
   if (pr.isDraft) return "draft";
   if (pr.mergeable === "CONFLICTING") return "conflicting";
-  const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state;
-  if (rollup === "FAILURE" || rollup === "ERROR") return "ci-failed";
-  if (rollup !== "SUCCESS") return "waiting-ci";
+  const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup;
+  if (rollup?.state === "FAILURE" || rollup?.state === "ERROR") {
+    // GitHub rolls a CANCELLED check up as FAILURE, so the contexts tell
+    // the two apart (Issue #2916): when every red context is a cancelled
+    // CheckRun, the PR is stuck on infrastructure the fleet's CI-fix scan
+    // re-runs once per head — same treatment as ci-failed, but named so
+    // the pass can say what it saw.
+    return everyRedCheckCancelled(rollup.contexts?.nodes ?? [])
+      ? "ci-cancelled"
+      : "ci-failed";
+  }
+  if (rollup?.state !== "SUCCESS") return "waiting-ci";
   if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
     return "already-reviewed";
   }
   return null;
+}
+
+// A red context is one the rollup counts against the PR. CheckRun
+// conclusions GitHub reports for a failed check run; StatusContext states
+// are the older commit-status values (Issue #2916).
+const RED_CHECKRUN_CONCLUSIONS = new Set([
+  "FAILURE",
+  "CANCELLED",
+  "TIMED_OUT",
+  "ACTION_REQUIRED",
+  "STARTUP_FAILURE",
+]);
+const RED_STATUS_STATES = new Set(["FAILURE", "ERROR"]);
+
+function isRedContext(node: RollupContextNode): boolean {
+  if (node.__typename === "CheckRun") {
+    return node.conclusion !== undefined && node.conclusion !== null &&
+      RED_CHECKRUN_CONCLUSIONS.has(node.conclusion);
+  }
+  if (node.__typename === "StatusContext") {
+    return node.state !== undefined && node.state !== null &&
+      RED_STATUS_STATES.has(node.state);
+  }
+  return false;
+}
+
+/** True when at least one context is red and every red one is CANCELLED. */
+function everyRedCheckCancelled(nodes: RollupContextNode[]): boolean {
+  let sawRed = false;
+  for (const node of nodes) {
+    if (!isRedContext(node)) continue;
+    sawRed = true;
+    if (node.__typename !== "CheckRun" || node.conclusion !== "CANCELLED") {
+      return false;
+    }
+  }
+  return sawRed;
 }
 
 export function authorKind(
@@ -272,7 +337,9 @@ query($q: String!, $after: String) {
         autoMergeAllowed squashMergeAllowed mergeCommitAllowed
       }
       author { login }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state
+        contexts(first: 100) { nodes { __typename ... on CheckRun { conclusion } ... on StatusContext { state } } }
+      } } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
     } }
   }
