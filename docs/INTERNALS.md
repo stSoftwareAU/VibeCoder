@@ -2353,8 +2353,11 @@ creation:
   cache-busting bump a release script writes into every page) is not a UI
   change (Issue #2300): each changed UI file's own patch is read against the
   branch's resolved base, and a bump-only file is set aside from the gate's
-  extension trigger and keyword fallback. Any other edit to the file counts
-  as before, and an explicit UI label still wins.
+  extension trigger. Any other edit to the file counts as before. A change is
+  a UI change only when at least one substantive changed file has a UI
+  extension (`.css`, `.scss`, `.sass`, `.less`, `.html`, `.htm`, `.jsx`,
+  `.tsx`, `.vue`, `.svelte`); issue labels, PR-summary wording and an empty
+  changed-file list no longer count (Issue #2959).
 - **Issue linking** — `ensure_pr_references_issue()` appends `Closes #N` if the
   PR body lacks a closing keyword, preventing issues from staying open after
   merge.
