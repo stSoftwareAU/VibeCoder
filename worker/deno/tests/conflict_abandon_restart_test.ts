@@ -46,8 +46,8 @@ import {
   planRequeueLabel,
   renderAttemptTable,
   requeueLabelName,
-  restartMarkerPrNumbers,
   type RestartChainLink,
+  restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
 import type { ConflictIssueContext } from "../lib/conflict_issue_context.ts";
@@ -56,7 +56,7 @@ import type {
   MergeFallbackOutcome,
 } from "../lib/merge_fallback_issue.ts";
 import { formatStageTimings } from "../lib/conflict_stage_timer.ts";
-import type { Logger, LogContext, Result } from "../types.ts";
+import type { LogContext, Logger, Result } from "../types.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -581,7 +581,12 @@ Deno.test("renderAttemptTable - rows, unknown time, and a zero-attempt PR", () =
     {
       prNumber: 31,
       attempts: [
-        { pass: "ladder", atMs: Date.parse("2026-08-19T11:00:00Z"), headSha: undefined, outcome: "failed" },
+        {
+          pass: "ladder",
+          atMs: Date.parse("2026-08-19T11:00:00Z"),
+          headSha: undefined,
+          outcome: "failed",
+        },
         { pass: "sync", atMs: undefined, headSha: undefined, outcome: "open" },
       ],
     },
@@ -590,7 +595,10 @@ Deno.test("renderAttemptTable - rows, unknown time, and a zero-attempt PR", () =
 
   const rows = renderAttemptTable(REPO, chain);
 
-  assertStringIncludes(rows.join("\n"), "| PR | Attempt | Pass | Time (UTC) | Outcome |");
+  assertStringIncludes(
+    rows.join("\n"),
+    "| PR | Attempt | Pass | Time (UTC) | Outcome |",
+  );
   assertStringIncludes(
     rows.join("\n"),
     `| ${REPO}#31 | 1 | ladder | 2026-08-19 11:00 UTC | failed |`,
@@ -1249,7 +1257,11 @@ function prThreadWithFailure(
 ): Array<{ body: string; created_at: string; user: { login: string } }> {
   return [{
     user: { login: FLEET },
-    body: conflictFailedMarker(1, pass, "cafecafecafecafecafecafecafecafecafecafe"),
+    body: conflictFailedMarker(
+      1,
+      pass,
+      "cafecafecafecafecafecafecafecafecafecafe",
+    ),
     created_at: atIso,
   }];
 }
@@ -1266,9 +1278,21 @@ Deno.test("abandonAndRestart - a spent restart budget adds needs-human and one c
   const outcome = await abandonAndRestart(
     makeRequest({
       prComments: [
-        conflictFailedMarker(1, "takeover", "cafecafecafecafecafecafecafecafecafecafe"),
-        conflictFailedMarker(2, "takeover", "cafecafecafecafecafecafecafecafecafecafe"),
-        conflictFailedMarker(3, "takeover", "cafecafecafecafecafecafecafecafecafecafe"),
+        conflictFailedMarker(
+          1,
+          "takeover",
+          "cafecafecafecafecafecafecafecafecafecafe",
+        ),
+        conflictFailedMarker(
+          2,
+          "takeover",
+          "cafecafecafecafecafecafecafecafecafecafe",
+        ),
+        conflictFailedMarker(
+          3,
+          "takeover",
+          "cafecafecafecafecafecafecafecafecafecafe",
+        ),
       ].map((body, i) => comment(body, FLEET, `2026-08-19T1${i + 1}:00:00Z`)),
     }),
     { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
