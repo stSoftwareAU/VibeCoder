@@ -114,6 +114,22 @@ Deno.test("syncNeedsHumanLabel: an already-present label is never claimed as add
   assertEquals(later.addedNeedsHuman, false);
 });
 
+Deno.test("syncNeedsHumanLabel: a non-lower-case canonical label (e.g. Needs-Human) is matched case-insensitively and never later removed", async () => {
+  const { calls, run } = fakeGh({ labels: ["Needs-Human"] });
+  const result = await syncNeedsHumanLabel("held", undefined, pr, run);
+  assertEquals(calls.length, 1);
+  assert(calls[0]?.includes("view"));
+  assertEquals(result.addedNeedsHuman, false);
+
+  const laterRecord = logRecord({
+    outcome: "held",
+    addedNeedsHuman: result.addedNeedsHuman,
+  });
+  const { calls: laterCalls, run: laterRun } = fakeGh();
+  await syncNeedsHumanLabel("approved", laterRecord, pr, laterRun);
+  assertEquals(laterCalls.length, 0);
+});
+
 Deno.test("syncNeedsHumanLabel: approved/changes_requested with no skill-added label makes no call", async () => {
   for (const outcome of ["approved", "changes_requested"] as const) {
     for (

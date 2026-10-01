@@ -40,7 +40,13 @@ async function hasNeedsHumanLabel(
     "labels",
   ]);
   const parsed = JSON.parse(out) as { labels?: { name: string }[] };
-  return (parsed.labels ?? []).some((l) => l.name === NEEDS_HUMAN);
+  // Case-insensitive: `gh pr edit` resolves label names case-insensitively
+  // (GitHub label names are case-insensitively unique), so a canonical label
+  // spelled e.g. `Needs-Human` must still match (same convention as
+  // label_security.ts and stall_repair.ts).
+  return (parsed.labels ?? []).some(
+    (l) => l.name.trim().toLowerCase() === NEEDS_HUMAN,
+  );
 }
 
 // Best effort, never throws: a failed label call never stops the review
