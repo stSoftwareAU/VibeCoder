@@ -2357,6 +2357,18 @@
       "paths": [
         "worker/deno/lib/json_array_pages.ts"
       ]
+    },
+    {
+      "issue": 2896,
+      "chunk": "top-up-2896",
+      "title": "top-up: the milestone sync unshallow merge retry",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2896",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: git_merge_unshallow_retry.ts (#2896)",
+      "status": "claimed",
+      "sweptAt": "0a06cd2a0b62aefef8a6820fe2d0b0c5ce09cf99",
+      "paths": [
+        "worker/deno/lib/git_merge_unshallow_retry.ts"
+      ]
     }
   ],
   "roots": [
