@@ -233,11 +233,43 @@ export function conflictRungFailedMarker(
  */
 export const CONFLICT_PARKED_MARKER = "<!-- vibe-merge-conflict-parked";
 
-/** The marker line for one parked PR, naming the base tip it is waiting on. */
-export function conflictParkedMarker(base: string): string {
+/**
+ * The `at="…"` attribute every stand-down marker carries, naming the moment
+ * the stand-down was posted (Issue #2997) — shared by this module's
+ * {@link conflictParkedMarker} and `gated_head_guard.ts`'s own markers so the
+ * grammar cannot drift between them.
+ *
+ * Throws on a non-finite `standDownAtMs`: a marker nobody can read back is a
+ * stand-down that never ends.
+ */
+export function standDownAtAttribute(standDownAtMs: number): string {
+  if (!Number.isFinite(standDownAtMs)) {
+    throw new Error(
+      `Refusing to write a stand-down marker with at="${standDownAtMs}" — ` +
+        "the stand-down time must be finite",
+    );
+  }
+  return `at="${new Date(standDownAtMs).toISOString()}"`;
+}
+
+/**
+ * The marker line for one parked PR, naming the base tip it is waiting on
+ * and, when `standDownAtMs` is given, the moment the park started (Issue
+ * #2997) — the stall watchdog's `at="…"` reads back by
+ * {@link readLatestStandDownAtMs} in `gated_head_guard.ts`.
+ */
+export function conflictParkedMarker(
+  base: string,
+  standDownAtMs?: number,
+): string {
   // `headAttribute` validates a git object name, whichever end it names: a
   // marker the reader would discard is a park that never ends.
-  return `${CONFLICT_PARKED_MARKER} ${headAttribute("base", base)} -->`;
+  const atAttribute = standDownAtMs === undefined
+    ? ""
+    : ` ${standDownAtAttribute(standDownAtMs)}`;
+  return `${CONFLICT_PARKED_MARKER} ${
+    headAttribute("base", base)
+  }${atAttribute} -->`;
 }
 
 /** Where a park marker sits in a thread, and which base tip it named. */
