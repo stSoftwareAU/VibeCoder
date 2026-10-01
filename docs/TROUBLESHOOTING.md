@@ -960,12 +960,12 @@ once the host recovers — no action needed. A failure comment caused by a broke
 worker clone or environment, rather than the issue's own code, carries a **Host
 fault:** line naming the kind:
 
-| Kind                     | Meaning                                                            |
-| ------------------------ | ------------------------------------------------------------------ |
-| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the worker's clone |
-| `clone-failed`           | The clone itself could not be created                              |
-| `disk-full`              | The host ran out of disk space                                     |
-| `container-build-failed` | The issue's container image failed to build                        |
+| Kind                     | Meaning                                                                                                              |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the worker's clone, or a corrupt `.git/config` or lost git directory |
+| `clone-failed`           | The clone itself could not be created                                                                                |
+| `disk-full`              | The host ran out of disk space                                                                                       |
+| `container-build-failed` | The issue's container image failed to build                                                                          |
 
 The next time that repository's setup phase successfully creates a feature
 branch — proof the host's clone is healthy again — a sweep checks every open
