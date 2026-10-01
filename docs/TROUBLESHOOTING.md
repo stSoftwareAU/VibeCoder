@@ -953,12 +953,18 @@ interrupted before it finished, a scheduled release, a timeout bound by the
 cycle deadline — and host state: an out-of-memory kill, a full disk, a worker
 crash, a missing tool, an unexplained external kill. All keep the flat cooldown
 and are retried as before, and the host-state ones are filed against the worker
-rather than the issue.
+rather than the issue. A coding run that dies in the `setup` phase, or on a
+recognised host fault (`clone-corrupt`, `clone-failed`, `disk-full`,
+`container-build-failed`), is also exempt: it is released unlabelled, with no
+`failed-once`/`failed`, no escalating cooldown, and no attempt consumed
+(Issue #2954).
 
 **An issue labelled `failed-once` or `failed` for a host fault releases itself**
-once the host recovers — no action needed. A failure comment caused by a broken
-worker clone or environment, rather than the issue's own code, carries a **Host
-fault:** line naming the kind:
+once the host recovers — no action needed. Since Issue #2954 a coding run is
+no longer labelled for a host fault in the first place, so this self-release
+now covers labels left by earlier runs or by other run types. A failure
+comment caused by a broken worker clone or environment, rather than the
+issue's own code, carries a **Host fault:** line naming the kind:
 
 | Kind                     | Meaning                                                                                                              |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
@@ -966,6 +972,25 @@ fault:** line naming the kind:
 | `clone-failed`           | The clone itself could not be created                                                                                |
 | `disk-full`              | The host ran out of disk space                                                                                       |
 | `container-build-failed` | The issue's container image failed to build                                                                          |
+
+A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
+clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not
+deleted — any older `.corrupt-*` sibling for that repo is removed first) and
+re-clones automatically (Issue #2957). This recovery is capped at one
+re-clone per repo per 24 h, tracked in `clone_recoveries_<host>.json` on the
+work volume. Once the cap is used, setup fails with the original git error
+until the 24 h window elapses; after fixing the underlying corruption, an
+operator can delete that repo's entry (or the whole file) to allow another
+re-clone immediately.
+
+A second corruption of the same repo on the same host inside the window is
+not an ordinary setup fault: something keeps damaging the clone. The run's
+failure carries a `clone-corrupt-repeat` payload, and the worker backs the
+repository off fleet-wide at once and escalates its tally diagnostic issue
+with a `needs-human` label and one comment carrying both corruption times,
+both git messages and the moved-aside path (Issue #2958). The comment's
+checklist names what to check — disk health, the volume, a manual re-clone —
+and closing the diagnostic issue lifts the back-off.
 
 The next time that repository's setup phase successfully creates a feature
 branch — proof the host's clone is healthy again — a sweep checks every open
