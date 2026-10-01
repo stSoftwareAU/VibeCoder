@@ -38,6 +38,13 @@ import {
   hasPriorDeferralOnThread,
 } from "../blocked_deferral.ts";
 import {
+  buildDeferralExhaustedComment,
+  countPriorTimeDeferrals,
+  deferIssueUntil,
+  detectTimeDeferral,
+  MAX_TIME_DEFERRALS,
+} from "../time_deferral.ts";
+import {
   detectPlanningHandoff,
   handOffToPlanning,
   hasPriorPlanningHandoffOnThread,
@@ -223,6 +230,99 @@ export async function workOnIssueHandleNoChanges(
       expectedSkip: true,
       outcome: result.outcome,
     };
+  }
+
+  // Issue #2873 — a run that reports the data it needs to analyse does not
+  // exist *yet* (rather than the issue being blocked on another issue, or
+  // genuinely needing a human decision) asks to be parked until a future
+  // time via a `vibe-defer-until` marker. This is checked here, after the
+  // blocked-dependency deferral above (which takes priority when both
+  // appear) and before the #2834 analysis-only hand-off below, which a
+  // missing/invalid/exhausted marker falls through to.
+  const timeDeferral = blocked ? undefined : detectTimeDeferral(
+    claudeOutput,
+    Date.now(),
+  );
+  if (timeDeferral?.kind === "invalid") {
+    logger.warn(
+      "Time-deferral marker present but invalid — falling through to " +
+        "normal handling",
+      { repo, issueNumber, why: timeDeferral.why },
+    );
+  } else if (timeDeferral?.kind === "valid") {
+    const ghClient = deps.github.createClient(logger);
+    const history = await countPriorTimeDeferrals({
+      ghClient,
+      repo,
+      issueNumber,
+      // Fleet-wide, not this host alone (Issue #2933 review): a sibling
+      // host's park comments must count too, or the bound becomes
+      // MAX_TIME_DEFERRALS per login rather than per issue.
+      fleetAuthors: resolveFleetMaintenanceAuthorSet({
+        githubUser,
+        fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
+        serviceAccounts: ctx.config.serviceAccounts ?? [],
+      }),
+      fallbackComments: ctx.issueComments,
+      logger,
+    });
+    if (history.length < MAX_TIME_DEFERRALS) {
+      const result = await deferIssueUntil({
+        ghClient,
+        repo,
+        issueNumber,
+        githubUser,
+        request: timeDeferral.request,
+        priorCount: history.length,
+        logger,
+      });
+      logger.info(
+        "Data not there yet — deferred until the requested time instead of " +
+          "escalating",
+        {
+          repo,
+          issueNumber,
+          until: timeDeferral.request.until,
+          recorded: result.recorded,
+        },
+      );
+      return {
+        status: "early_exit",
+        reason: `deferred: until ${timeDeferral.request.until}`,
+        expectedSkip: true,
+        outcome: result.outcome,
+      };
+    }
+
+    logger.warn(
+      "Time-deferral limit reached — handing off to a human instead of " +
+        "deferring again",
+      { repo, issueNumber, priorCount: history.length },
+    );
+    try {
+      await ghClient.postComment(
+        repo,
+        issueNumber,
+        buildDeferralExhaustedComment(history, timeDeferral.request),
+      );
+    } catch (err) {
+      logger.error("Failed to post the deferral-exhausted comment", {
+        repo,
+        issueNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    await handOffAnalysisOnly({
+      ghClient,
+      repo,
+      issueNumber,
+      needsHumanLabel: config.needsHumanLabel,
+      githubUser,
+      trigger: "no_changes",
+      logger,
+      deps: { ensureLabelExists: deps.github.ensureLabelExists },
+    });
+    return { status: "early_exit", reason: "analysis_only_handed_off" };
   }
 
   // Issue #2688 — a run that judged the issue too large for one PR asks for

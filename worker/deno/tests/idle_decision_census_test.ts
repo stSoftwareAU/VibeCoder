@@ -38,6 +38,8 @@ import {
   MILESTONE_TRACKING_MARKER,
 } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
+import { buildTimeDeferralLine } from "../lib/time_deferral.ts";
+import { upsertWorkerRecordLine } from "../lib/worker_record_block.ts";
 
 function issue(
   number: number,
@@ -969,6 +971,52 @@ Deno.test("#460 - a more fundamental gate keeps its reason", () => {
   assert(entry);
   assertEquals(entry.prBlocked, 1);
   assertEquals(entry.dependencyBlocked, 0);
+});
+
+Deno.test("#2873 - an issue both dependency-blocked and time-deferred counts as time-deferred, matching the scan", () => {
+  // The scan checks time-deferred before isDependencyBlocked, so an issue
+  // that is both must be attributed to `time-deferred`, not
+  // `dependency-blocked`, in every mirror — census and diagnostics alike.
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    .replace(/\.\d{3}Z$/, "Z");
+  const body = upsertWorkerRecordLine(
+    "Depends on #11",
+    buildTimeDeferralLine(future),
+  );
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [depIssue(10, ["work-on"], body), issue(11, [])],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.timeDeferred, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+  assertEquals(entry.unblocked.workOn, 0);
+});
+
+Deno.test("#2873 - a plain time-deferred issue counts in timeDeferred, not unblocked", () => {
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    .replace(/\.\d{3}Z$/, "Z");
+  const body = upsertWorkerRecordLine(
+    "Plain body.",
+    buildTimeDeferralLine(future),
+  );
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [depIssue(10, ["work-on"], body)],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.timeDeferred, 1);
+  assertEquals(entry.unblocked.workOn, 0);
 });
 
 Deno.test("#460 - the census line reports dependency_blocked", () => {

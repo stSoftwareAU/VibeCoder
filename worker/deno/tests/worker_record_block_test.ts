@@ -14,6 +14,7 @@ import { assertEquals } from "@std/assert";
 import {
   buildWorkerRecordBlock,
   isMachineOwnedContent,
+  readWorkerRecordLines,
   stripWorkerRecordBlocks,
   upsertWorkerRecordLine,
   WORKER_RECORD_END,
@@ -101,4 +102,68 @@ Deno.test("worker record block - CRLF bodies strip cleanly", () => {
 Deno.test("worker record block - a body with no block is returned untouched", () => {
   const body = "## What\n\nNothing machine-owned here.\n";
   assertEquals(stripWorkerRecordBlocks(body), body);
+});
+
+// --- Issue #2873: the `Deferred until <ISO>` line ---------------------------
+
+Deno.test("worker record block - accepts a Deferred until line", () => {
+  assertEquals(
+    isMachineOwnedContent("Deferred until 2026-10-07T00:00:00Z"),
+    true,
+  );
+  const written = upsertWorkerRecordLine(
+    "Body.",
+    "Deferred until 2026-10-07T00:00:00Z",
+  );
+  assertEquals(stripWorkerRecordBlocks(written), "Body.");
+  assertEquals(readWorkerRecordLines(written), [
+    "Deferred until 2026-10-07T00:00:00Z",
+  ]);
+});
+
+Deno.test("worker record block - rejects malformed Deferred until variants", () => {
+  for (
+    const bad of [
+      "Deferred until 2026-10-07T00:00:00", // no Z
+      "Deferred until 2026-10-07T00:00:00.000Z", // fractional seconds
+      "Deferred until 2026-10-07T00:00:00Z trailing text",
+      "deferred until 2026-10-07T00:00:00Z", // lowercase
+      "Deferred until 2026-10-07",
+    ]
+  ) {
+    assertEquals(isMachineOwnedContent(bad), false, bad);
+  }
+});
+
+Deno.test("worker record block - replaces an earlier Deferred until line", () => {
+  const first = upsertWorkerRecordLine(
+    "Body.",
+    "Deferred until 2026-10-07T00:00:00Z",
+  );
+  const second = upsertWorkerRecordLine(
+    first,
+    "Deferred until 2026-11-01T00:00:00Z",
+    { replaces: /^Deferred until / },
+  );
+  assertEquals(readWorkerRecordLines(second), [
+    "Deferred until 2026-11-01T00:00:00Z",
+  ]);
+  assertEquals(stripWorkerRecordBlocks(second), "Body.");
+});
+
+Deno.test("worker record block - replaces Deferred until while keeping Depends on lines", () => {
+  const withDep = upsertWorkerRecordLine("Body.", "Depends on #1");
+  const withBoth = upsertWorkerRecordLine(
+    withDep,
+    "Deferred until 2026-10-07T00:00:00Z",
+  );
+  const replaced = upsertWorkerRecordLine(
+    withBoth,
+    "Deferred until 2026-11-01T00:00:00Z",
+    { replaces: /^Deferred until / },
+  );
+  assertEquals(readWorkerRecordLines(replaced), [
+    "Depends on #1",
+    "Deferred until 2026-11-01T00:00:00Z",
+  ]);
 });
