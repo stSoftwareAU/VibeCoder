@@ -299,7 +299,7 @@ import {
   type RepoFastFailureOptions,
   resolveRepoFastFailurePolicy,
 } from "./repo_fast_failure_tracker.ts";
-import { fileRepoFastFailureIssue } from "./repo_fast_failure_issue.ts";
+import { recordRepoFastFailureTally } from "./repo_fast_failure_issue.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
@@ -1020,9 +1020,10 @@ export async function createProductionRunCoreDeps(
   };
 
   /**
-   * Record one fast failure for `repo` and, when it tips the repository
-   * over the threshold, file the single deduplicated diagnostic issue that
-   * names the failing phase and the last error line (Issue #1950).
+   * Record one fast failure for `repo` locally, then tally it as a marker
+   * comment on the repo's one fleet-wide fast-failure diagnostic issue. The
+   * diagnostic issue gains the back-off marker once the fleet count within
+   * the window reaches the threshold (Issue #2956).
    *
    * Every failure path is reported rather than swallowed: a tracker that
    * quietly stops counting is the fault this module exists to remove.
@@ -1055,23 +1056,30 @@ export async function createProductionRunCoreDeps(
         `(phase ${outcome.phase}, ${outcome.elapsedSeconds}s)` +
         (state.backedOff ? " — backed off" : ""),
     );
-    // One diagnostic per repository: a back-off that already carries one
-    // never files again.
-    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
-    const decision = await fileRepoFastFailureIssue({
-      state,
-      policy: fastFailurePolicy,
+    // Every recorded fast failure is tallied on the repo's one fleet-wide
+    // diagnostic issue (Issue #2956).
+    const decision = await recordRepoFastFailureTally({
+      repo,
+      failedIssueNumber: issueNumber,
+      reason: `${outcome.phase} after ${outcome.elapsedSeconds}s: ${
+        state.lastDetail ?? outcome.message
+      }`,
       machineId,
+      policy: fastFailurePolicy,
       ghFn: runGhCommandRaw,
       log: (message: string) => logger.info(message),
+      warn: (message: string) => logger.warn(message),
     });
     if (decision.action === "suppressed") {
       logger.warn(
-        `repo-fast-failures: ${repo} is backed off but no diagnostic could ` +
-          `be filed (${decision.reason})`,
+        `repo-fast-failures: could not tally the fast failure for ${repo} ` +
+          `on its diagnostic issue (${decision.reason})`,
       );
       return;
     }
+    // Link the tally issue as this host's diagnostic once, when the local
+    // count backs the repo off.
+    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
     const attached = await recordRepoFastFailureDiagnostic({
       ...fastFailureOptions,
       repo,
