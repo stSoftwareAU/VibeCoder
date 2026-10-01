@@ -2333,15 +2333,33 @@ immediately before `gh pr merge`:
   once per cycle. The maintenance scan treats the block as a deferral
   (`await_checks`), not an escalation. Either block reports whether the PR
   carries its explanation as `blockCommented` on the auto-merge result.
+- **No open children is not quite done** — once the open-children gate is clear,
+  `decideSummaryPrMerge()` runs
+  [`findPendingMilestoneDependencies()`](../worker/deno/lib/milestone_dependency_hold.ts)
+  (Issue #3014): every issue in the milestone (open and closed) has its sub-issues'
+  declared `Depends on #N` references read, and a dependency is **pending** when
+  it is still open, or when it is closed but assigned to a different milestone
+  that is still open — that work sits on an unmerged milestone branch, not on the
+  target branch. A dependency in the same milestone is ignored (it assembles in
+  the same PR, and an open one is already caught by the open-children gate). A
+  pending dependency blocks with `reason: "pending-dependencies"`, logging a
+  warning listing each `#sub → #dep` pair and posting one idempotent comment
+  marked `<!-- milestone-pending-dependencies-merge-block -->`. A failed
+  dependency read is folded into the same `lookup-failed` block as the children
+  read. A cross-milestone dependency cycle (A's sub-issue depends on B's and vice
+  versa) holds both summary PRs; a human can still merge one by hand.
 
 ```mermaid
 flowchart TD
     A[enableAutoMerge] --> B{head is milestone/*?}
     B -- No --> M[gh pr merge --auto]
     B -- Yes --> C[Re-read open children<br/>issues + PRs based on branch]
-    C -- none --> M
+    C -- none --> N[Re-read declared<br/>dependencies]
     C -- some --> D[Warn + one gate comment<br/>marker de-duplicated<br/>PR left open]
     C -- read failed --> E[Warn + one lookup comment<br/>registry de-duplicated<br/>PR left open]
+    N -- none pending --> M
+    N -- some pending --> F[Warn + one pending-dependencies<br/>comment, PR left open]
+    N -- read failed --> E
 ```
 
 ### 📝 PR creation
@@ -5214,6 +5232,7 @@ All business logic lives here. Shell tooling invokes them directly with
 | **Milestone management**    |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [milestone_completion.ts](../worker/deno/lib/milestone_completion.ts)                                             | Milestone completion detection and consolidation PR                                                                                                                                  |
 |                             | [milestone_open_children.ts](../worker/deno/lib/milestone_open_children.ts)                                       | Authoritative (fresh, uncached) open-children count that vetoes milestone finalisation                                                                                               |
+|                             | [milestone_dependency_hold.ts](../worker/deno/lib/milestone_dependency_hold.ts)                                   | Flags each sub-issue's declared `Depends on #N` references still pending (open, or closed into a different still-open milestone), so the summary PR merge waits for them (Issue #3014) |
 |                             | [milestone_progress.ts](../worker/deno/lib/milestone_progress.ts)                                                 | Milestone progress notifications                                                                                                                                                     |
 |                             | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones                                                                                                                                        |
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |

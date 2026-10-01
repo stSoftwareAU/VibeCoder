@@ -257,6 +257,31 @@ The milestone summary PR (final PR from `milestone/<name>` to default) is monito
 
 If a CI failure cannot be fixed after the maximum number of retries, a comment is posted on the PR and the failure is left for manual investigation.
 
+### ⏸️ Pending dependencies hold the summary PR (Issue #3014)
+
+A green summary PR can still be merging too early: a sub-issue's declared
+`Depends on #N` reference may point at work that has not actually reached the
+default branch yet. `findPendingMilestoneDependencies()`
+([milestone_dependency_hold.ts](../../worker/deno/lib/milestone_dependency_hold.ts))
+reads every issue in the milestone (open and closed) and flags a dependency as
+**pending** when it is still open, or when it is closed but assigned to a
+different milestone that is still open — that work sits on an unmerged
+milestone branch, not on the target branch. A dependency inside the same
+milestone is ignored, since it assembles in the same PR and an open one is
+already caught by the open-children gate above.
+
+`decideSummaryPrMerge()` runs this check immediately after finding no open
+children, so the summary PR's creation gains a
+`### ⏸️ Held: pending dependencies` section listing each pending dependency
+(or saying the check could not be verified), and the merge gate re-checks on
+every scan: a pending dependency blocks the merge with `reason:
+"pending-dependencies"`, logs a warning listing each `#sub → #dep` pair, and
+posts one idempotent comment carrying marker
+`<!-- milestone-pending-dependencies-merge-block -->`. The PR merges, with no
+human action needed, once every pending dependency lands. A cross-milestone
+dependency cycle (milestone A's sub-issue depends on B's and vice versa) holds
+both summary PRs; a human can still merge one by hand.
+
 ## 🔄 Periodic milestone branch sync
 
 Long-running milestones can drift significantly from the default branch, causing merge conflicts when the final summary PR is created. To prevent this, the worker periodically merges the default branch into active milestone branches at **priority 1.72** in the main event loop — after milestone completion checks (1.7) but before issue refinement (1.75).
