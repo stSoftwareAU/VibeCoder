@@ -21,6 +21,14 @@ removes that label on a later approve or send-back only when its own
       JSON line; step 4 names the PR and the failure.
 - [x] `SKILL.md` rule 4, step 2 and step 4 updated.
 - [x] No back-fill of PRs held before this change.
+- [x] Before an add, `syncNeedsHumanLabel` reads the PR's current labels
+      (`gh pr view --json labels`) so an already-present `needs-human` —
+      added by the owner or a worker lane's own escalation — is never
+      attributed to the skill; `addedNeedsHuman` is only `true` when the
+      label was absent (or the skill's own earlier record already said so).
+      `gh pr edit --add-label` is idempotent, so without this check the skill
+      would otherwise claim ownership of a label it never added, and a later
+      approve/send-back would strip it.
 
 The label logic lives in a new `needs_human.ts` (`needsHumanAction`,
 `syncNeedsHumanLabel`) with an injected `gh` runner so it is unit-testable.
@@ -30,7 +38,9 @@ The label logic lives in a new `needs_human.ts` (`needsHumanAction`,
 ```mermaid
 flowchart TD
     P["post.ts posts review"] --> O{outcome}
-    O -->|held| A["gh pr edit --add-label needs-human"]
+    O -->|held| C{"needs-human<br/>already on PR?"}
+    C -->|yes| K["no add call<br/>addedNeedsHuman = prior record"]
+    C -->|no| A["gh pr edit --add-label needs-human"]
     O -->|approved / changes_requested| L{"latest log record<br/>addedNeedsHuman?"}
     L -->|true| R["gh pr edit --remove-label needs-human"]
     L -->|false / none| N["no label call"]
@@ -73,11 +83,12 @@ functions; docs updated alongside the code.
 ## Test Plan
 
 - `worker/deno/tests/review_fleet_prs_needs_human_2927_test.ts` — held adds
-  once; approved/sent-back make no call without the log flag; remove only with
-  the flag; failed add/remove report `labelError` with a single call;
-  `postedResult` includes `labelError` only when given; only the held body
-  mentions `needs-human`.
-- `deno test tests/review_fleet_prs_*_test.ts` — 50 passed.
+  once (after confirming the label is absent); an already-present label is
+  never claimed as added and is never later removed; approved/sent-back make
+  no call without the log flag; remove only with the flag; failed add/remove
+  report `labelError` with a single edit call; `postedResult` includes
+  `labelError` only when given; only the held body mentions `needs-human`.
+- `deno test tests/review_fleet_prs_*_test.ts` — all passed.
 - `./quality.sh` — PASSED (config integration skipped).
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

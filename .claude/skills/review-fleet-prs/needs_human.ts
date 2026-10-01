@@ -22,6 +22,27 @@ export function needsHumanAction(
   return previous?.addedNeedsHuman === true ? "remove" : undefined;
 }
 
+// `gh pr edit --add-label` is idempotent, so without this check an add would
+// report addedNeedsHuman: true even when a human or a worker lane's own
+// escalation (see stall_repair.ts) had already put the label on — and a later
+// approve/send-back would then strip a label this skill never added.
+async function hasNeedsHumanLabel(
+  pr: { repo: string; number: number },
+  runGh: RunGh,
+): Promise<boolean> {
+  const out = await runGh([
+    "pr",
+    "view",
+    String(pr.number),
+    "-R",
+    pr.repo,
+    "--json",
+    "labels",
+  ]);
+  const parsed = JSON.parse(out) as { labels?: { name: string }[] };
+  return (parsed.labels ?? []).some((l) => l.name === NEEDS_HUMAN);
+}
+
 // Best effort, never throws: a failed label call never stops the review
 // being posted, and is reported via labelError so the caller can log it.
 export async function syncNeedsHumanLabel(
@@ -32,6 +53,19 @@ export async function syncNeedsHumanLabel(
 ): Promise<{ addedNeedsHuman: boolean; labelError?: LabelError }> {
   const action = needsHumanAction(outcome, previous);
   if (!action) return { addedNeedsHuman: false };
+
+  if (action === "add") {
+    // Best-effort ownership check: a failed read falls through to the add
+    // attempt below, same as before this check existed.
+    const alreadyPresent = await hasNeedsHumanLabel(pr, runGh).catch(() =>
+      false
+    );
+    if (alreadyPresent) {
+      // Someone else already holds this PR — never claim it as added by us.
+      return { addedNeedsHuman: previous?.addedNeedsHuman === true };
+    }
+  }
+
   try {
     await runGh([
       "pr",

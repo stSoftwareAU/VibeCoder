@@ -31,10 +31,19 @@ const logRecord = (over: Partial<LogRecord> = {}): LogRecord => ({
   ...over,
 });
 
-function fakeGh(opts: { throwOn?: "add" | "remove" } = {}) {
+function fakeGh(
+  opts: { throwOn?: "add" | "remove"; labels?: string[] } = {},
+) {
   const calls: string[][] = [];
   const run = (args: string[]): Promise<string> => {
     calls.push(args);
+    if (args.includes("view")) {
+      return Promise.resolve(
+        JSON.stringify({
+          labels: (opts.labels ?? []).map((name) => ({ name })),
+        }),
+      );
+    }
     if (
       opts.throwOn &&
       args.includes(
@@ -69,8 +78,9 @@ Deno.test("needsHumanAction: held always adds; otherwise removes only if the ski
 Deno.test("syncNeedsHumanLabel: held adds the label once", async () => {
   const { calls, run } = fakeGh();
   const result = await syncNeedsHumanLabel("held", undefined, pr, run);
-  assertEquals(calls.length, 1);
-  const args = calls[0] ?? [];
+  assertEquals(calls.length, 2);
+  assert(calls[0]?.includes("view"));
+  const args = calls[1] ?? [];
   assert(args.includes("--add-label"));
   assert(args.includes(NEEDS_HUMAN));
   assert(args.includes(String(pr.number)));
@@ -78,6 +88,30 @@ Deno.test("syncNeedsHumanLabel: held adds the label once", async () => {
   assert(args.includes(pr.repo));
   assertEquals(result.addedNeedsHuman, true);
   assertEquals(result.labelError, undefined);
+});
+
+Deno.test("syncNeedsHumanLabel: an already-present label is never claimed as added, and is never later removed", async () => {
+  const { calls, run } = fakeGh({ labels: [NEEDS_HUMAN] });
+  const result = await syncNeedsHumanLabel("held", undefined, pr, run);
+  assertEquals(calls.length, 1);
+  assert(calls[0]?.includes("view"));
+  assertEquals(result.addedNeedsHuman, false);
+  assertEquals(result.labelError, undefined);
+
+  // A later approve must not strip a label this skill never added.
+  const laterRecord = logRecord({
+    outcome: "held",
+    addedNeedsHuman: result.addedNeedsHuman,
+  });
+  const { calls: laterCalls, run: laterRun } = fakeGh();
+  const later = await syncNeedsHumanLabel(
+    "approved",
+    laterRecord,
+    pr,
+    laterRun,
+  );
+  assertEquals(laterCalls.length, 0);
+  assertEquals(later.addedNeedsHuman, false);
 });
 
 Deno.test("syncNeedsHumanLabel: approved/changes_requested with no skill-added label makes no call", async () => {
@@ -115,7 +149,7 @@ Deno.test("syncNeedsHumanLabel: approved/changes_requested removes a skill-added
 Deno.test("syncNeedsHumanLabel: a failing add reports labelError without a retry", async () => {
   const { calls, run } = fakeGh({ throwOn: "add" });
   const result = await syncNeedsHumanLabel("held", undefined, pr, run);
-  assertEquals(calls.length, 1);
+  assertEquals(calls.length, 2);
   assertEquals(result.labelError?.action, "add");
   assert(result.labelError?.error.includes("gh failed"));
   assertEquals(result.addedNeedsHuman, false);
