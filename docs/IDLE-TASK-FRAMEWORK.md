@@ -158,7 +158,10 @@ Key points:
   wrapper, which reuses the setup phase's `setupRepo()` **only when the clone is
   missing**; an existing clone is left untouched (no fetch, no `reset --hard`).
   A directory holding no git repository — an interrupted clone — is not a
-  clone: it is discarded and cloned afresh (Issue #2848).
+  clone: it is discarded and cloned afresh (Issue #2848). A directory that is
+  a git repository but corrupt — a bad `.git/config`, broken refs or
+  objects — is moved aside and re-cloned instead, capped at one recovery per
+  repo per 24 h (Issue #2957).
   Adding a repo to `.config.json` and raising its wrappers is therefore enough
   to bring it up — no manual clone.
 - **A claimed idle task always runs to completion.** The throttle

@@ -141,6 +141,12 @@ export interface EscalateToHumanOptions {
   deps?: EscalateToHumanDeps;
   /** Logger. */
   logger: Logger;
+  /**
+   * Post the comment first and add the label only once the comment is on the
+   * issue (posted, or already present by dedup), so a label never appears
+   * without its explanation (Issue #2958). Default false keeps label-first.
+   */
+  commentFirst?: boolean;
 }
 
 const DEFAULT_HEADING = "Needs human attention";
@@ -181,12 +187,22 @@ export function buildEscalationCommentBody(opts: {
 /**
  * Atomically post an escalation comment and add the `needs-human` label.
  *
- * Behaviour ordering:
+ * Default behaviour ordering (`commentFirst` unset or false):
  *   1. ensure label exists (best-effort, warning on failure)
  *   2. add label (best-effort, warning on failure)
  *   3. if `dedupKey` set, scan recent comments for a prior marker
  *      within 24h — skip the comment when found
  *   4. post comment (best-effort, warning on failure)
+ *
+ * With `commentFirst: true` (Issue #2958) the order is reversed so the
+ * label never appears without its explanation already on the issue:
+ *   1. worker label allowlist guard
+ *   2. if `dedupKey` set, scan recent comments for a prior marker
+ *      within 24h — skip the comment when found
+ *   3. post comment (best-effort, warning on failure)
+ *   4. only when the comment was posted on this call, or skipped because
+ *      an earlier one already carries the explanation (dedup), ensure the
+ *      label exists and add it (both best-effort, warning on failure)
  *
  * Each step is independently fault-tolerant. The helper returns success
  * when at least one of the two visible side effects (label add or
@@ -243,9 +259,11 @@ export async function escalateToHuman(
   }
 
   // ---------------------------------------------------------------------
-  // Step 1: ensure label exists (best-effort)
+  // Ensure label exists + add label (best-effort, skipped when the guard
+  // refused). Shared by both orderings below.
   // ---------------------------------------------------------------------
-  if (labelAllowed) {
+  const ensureAndAddLabel = async (): Promise<boolean> => {
+    if (!labelAllowed) return false;
     try {
       const ensureResult = await ensureLabel(
         repo,
@@ -269,16 +287,10 @@ export async function escalateToHuman(
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  }
 
-  // ---------------------------------------------------------------------
-  // Step 2: add label (best-effort, skipped when the guard refused)
-  // ---------------------------------------------------------------------
-  let labelAdded = false;
-  if (labelAllowed) {
     try {
       await ghClient.addLabel(repo, target.number, needsHumanLabel);
-      labelAdded = true;
+      return true;
     } catch (err) {
       logger.warn("escalateToHuman: addLabel failed", {
         repo,
@@ -286,92 +298,120 @@ export async function escalateToHuman(
         label: needsHumanLabel,
         error: err instanceof Error ? err.message : String(err),
       });
+      return false;
     }
-  }
+  };
 
   // ---------------------------------------------------------------------
-  // Step 3: dedup check (only when dedupKey or additionalDedupMarkers set)
+  // Dedup check (only when dedupKey or additionalDedupMarkers set), then
+  // post comment (best-effort, skipped if dedup found a prior marker).
+  // Shared by both orderings below.
   // ---------------------------------------------------------------------
-  let dedupSkipped = false;
-  const dedupActive = Boolean(dedupKey) ||
-    (additionalDedupMarkers !== undefined &&
-      additionalDedupMarkers.length > 0);
-  if (dedupActive) {
-    const markers: string[] = [];
-    if (dedupKey) markers.push(buildDedupMarker(dedupKey));
-    if (additionalDedupMarkers) markers.push(...additionalDedupMarkers);
-    try {
-      const comments = prefetchedComments
-        ? prefetchedComments
-        : await ghClient.getIssueComments(repo, target.number);
-      // Scan the newest 50 comments. Newer comments come last in the REST
-      // ordering — which GitHub does not let `direction` reverse — so the
-      // tail is the newest, and the client pages to reach it (Issue #1619).
-      const recent = comments.slice(-COMMENT_SCAN_LIMIT);
-      const cutoff = now() - DEDUP_WINDOW_MS;
-      const matched = recent.filter((comment) => {
-        if (!markers.some((marker) => comment.body.includes(marker))) {
-          return false;
-        }
-        const createdMs = Date.parse(comment.createdAt);
-        return !Number.isNaN(createdMs) && createdMs >= cutoff;
-      });
-      // Issue #1216: the marker lives in a comment body anybody may write and
-      // every dedup key is derivable from public numbers, so a match on the
-      // body alone let one planted `<!-- needs-human-escalation: … -->`
-      // suppress the hand-off's "why / next step" comment for 24 hours. The
-      // author is the only authenticated part of the match.
-      //
-      // `githubUser` is this worker's own login — the `GITHUB_USER` half of
-      // the fleet identity, and worker configuration rather than anything a
-      // pull request can influence — so a marker it wrote is evidence without
-      // reading a config. Everything else goes to the shared fleet check,
-      // which discards every row when the fleet cannot be resolved, so the
-      // escalation is posted.
-      const ownMarker = githubUser !== undefined &&
-        matched.some((comment) => comment.author === githubUser);
-      dedupSkipped = ownMarker ||
-        (await selectFleetAuthoredComments(
-            matched,
-            `needs-human escalation dedup on ${repo}#${target.number}`,
-            deps?.dedupAuthors ?? {},
-            (message) => logger.warn(message),
-            "the escalation comment is posted — a marker anyone can write " +
-              "must not silence a hand-off to a human",
-          )).length > 0;
-    } catch (err) {
-      // Dedup is an optimisation. If the lookup fails, post the comment
-      // anyway rather than silently drop the escalation.
-      logger.warn("escalateToHuman: dedup comment lookup failed", {
-        repo,
-        target: `#${target.number}`,
-        error: err instanceof Error ? err.message : String(err),
-      });
+  const dedupAndPostComment = async (): Promise<
+    { dedupSkipped: boolean; commentPosted: boolean }
+  > => {
+    let dedupSkipped = false;
+    const dedupActive = Boolean(dedupKey) ||
+      (additionalDedupMarkers !== undefined &&
+        additionalDedupMarkers.length > 0);
+    if (dedupActive) {
+      const markers: string[] = [];
+      if (dedupKey) markers.push(buildDedupMarker(dedupKey));
+      if (additionalDedupMarkers) markers.push(...additionalDedupMarkers);
+      try {
+        const comments = prefetchedComments
+          ? prefetchedComments
+          : await ghClient.getIssueComments(repo, target.number);
+        // Scan the newest 50 comments. Newer comments come last in the REST
+        // ordering — which GitHub does not let `direction` reverse — so the
+        // tail is the newest, and the client pages to reach it (Issue #1619).
+        const recent = comments.slice(-COMMENT_SCAN_LIMIT);
+        const cutoff = now() - DEDUP_WINDOW_MS;
+        const matched = recent.filter((comment) => {
+          if (!markers.some((marker) => comment.body.includes(marker))) {
+            return false;
+          }
+          const createdMs = Date.parse(comment.createdAt);
+          return !Number.isNaN(createdMs) && createdMs >= cutoff;
+        });
+        // Issue #1216: the marker lives in a comment body anybody may write
+        // and every dedup key is derivable from public numbers, so a match
+        // on the body alone let one planted
+        // `<!-- needs-human-escalation: … -->` suppress the hand-off's
+        // "why / next step" comment for 24 hours. The author is the only
+        // authenticated part of the match.
+        //
+        // `githubUser` is this worker's own login — the `GITHUB_USER` half
+        // of the fleet identity, and worker configuration rather than
+        // anything a pull request can influence — so a marker it wrote is
+        // evidence without reading a config. Everything else goes to the
+        // shared fleet check, which discards every row when the fleet
+        // cannot be resolved, so the escalation is posted.
+        const ownMarker = githubUser !== undefined &&
+          matched.some((comment) => comment.author === githubUser);
+        dedupSkipped = ownMarker ||
+          (await selectFleetAuthoredComments(
+              matched,
+              `needs-human escalation dedup on ${repo}#${target.number}`,
+              deps?.dedupAuthors ?? {},
+              (message) => logger.warn(message),
+              "the escalation comment is posted — a marker anyone can write " +
+                "must not silence a hand-off to a human",
+            )).length > 0;
+      } catch (err) {
+        // Dedup is an optimisation. If the lookup fails, post the comment
+        // anyway rather than silently drop the escalation.
+        logger.warn("escalateToHuman: dedup comment lookup failed", {
+          repo,
+          target: `#${target.number}`,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
-  }
 
-  // ---------------------------------------------------------------------
-  // Step 4: post comment (best-effort, skipped if dedupSkipped)
-  // ---------------------------------------------------------------------
-  let commentPosted = false;
-  if (!dedupSkipped) {
-    const body = buildEscalationCommentBody({
-      heading,
-      reason,
-      nextStep,
-      dedupKey,
-      githubUser,
-    });
-    try {
-      await ghClient.postComment(repo, target.number, body);
-      commentPosted = true;
-    } catch (err) {
-      logger.warn("escalateToHuman: postComment failed", {
-        repo,
-        target: `#${target.number}`,
-        error: err instanceof Error ? err.message : String(err),
+    let commentPosted = false;
+    if (!dedupSkipped) {
+      const body = buildEscalationCommentBody({
+        heading,
+        reason,
+        nextStep,
+        dedupKey,
+        githubUser,
       });
+      try {
+        await ghClient.postComment(repo, target.number, body);
+        commentPosted = true;
+      } catch (err) {
+        logger.warn("escalateToHuman: postComment failed", {
+          repo,
+          target: `#${target.number}`,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
+
+    return { dedupSkipped, commentPosted };
+  };
+
+  let labelAdded: boolean;
+  let dedupSkipped: boolean;
+  let commentPosted: boolean;
+
+  if (options.commentFirst) {
+    // Issue #2958: post the comment first — the label is only added once
+    // the explanation is on the issue (posted, or already present via
+    // dedup), so a label never appears without its accompanying comment.
+    const posted = await dedupAndPostComment();
+    dedupSkipped = posted.dedupSkipped;
+    commentPosted = posted.commentPosted;
+    labelAdded = (commentPosted || dedupSkipped)
+      ? await ensureAndAddLabel()
+      : false;
+  } else {
+    labelAdded = await ensureAndAddLabel();
+    const posted = await dedupAndPostComment();
+    dedupSkipped = posted.dedupSkipped;
+    commentPosted = posted.commentPosted;
   }
 
   // ---------------------------------------------------------------------
@@ -387,7 +427,10 @@ export async function escalateToHuman(
   return {
     ok: false,
     error: new Error(
-      `escalateToHuman: both label add and comment post failed for ${repo}#${target.number}`,
+      options.commentFirst
+        ? `escalateToHuman: the comment post failed for ${repo}#${target.number}, ` +
+          `so the label was never attempted`
+        : `escalateToHuman: both label add and comment post failed for ${repo}#${target.number}`,
     ),
   };
 }

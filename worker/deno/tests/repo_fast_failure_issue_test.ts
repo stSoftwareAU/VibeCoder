@@ -1,288 +1,824 @@
 /**
- * Tests for the backed-off-repository diagnostic issue (Issue #1950).
+ * Tests for the fleet-wide fast-failure tally and back-off (Issue #2956).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  fileRepoFastFailureIssue,
-  formatRepoFastFailureBody,
+  escalateRepeatCloneCorruption,
+  formatFastFailureCommentMarker,
   formatRepoFastFailureMarker,
+  formatRepoFastFailureTallyBody,
+  formatRepoFastFailureTallyMarker,
   isRepoFastFailureIssue,
+  isRepoFastFailureTallyIssue,
+  parseFastFailureCommentMarker,
+  recordRepoFastFailureTally,
   resolveRepoFastFailureTarget,
 } from "../lib/repo_fast_failure_issue.ts";
-import type { RepoFastFailureState } from "../lib/repo_fast_failure_tracker.ts";
-import { resolveRepoFastFailurePolicy } from "../lib/repo_fast_failure_tracker.ts";
+import {
+  createFleetDiagnosticCache,
+  lookupFleetDiagnosticBackOffs,
+  resolveRepoFastFailurePolicy,
+} from "../lib/repo_fast_failure_tracker.ts";
+import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 
-const REPO = "stSoftwareAU/example";
+const REPO = "acme/widgets";
 const FLEET = ["vibe-bot"];
 const POLICY = resolveRepoFastFailurePolicy();
 
-function backedOffState(
-  overrides: Partial<RepoFastFailureState> = {},
-): RepoFastFailureState {
-  return {
-    repo: REPO,
-    count: 3,
-    backedOff: true,
-    backedOffUntil: 1_700_000_000,
-    lastPhase: "setup",
-    lastDetail: "quality.sh: line 3: deno: command not found",
-    lastAt: 1_699_900_000,
-    ...overrides,
-  };
-}
+// ---------------------------------------------------------------------------
+// Marker / target helpers.
+// ---------------------------------------------------------------------------
 
-Deno.test("formatRepoFastFailureBody - carries the phase and the last error line", () => {
-  const body = formatRepoFastFailureBody(backedOffState(), POLICY, "host-a");
-  assertStringIncludes(body, formatRepoFastFailureMarker(REPO));
-  assertStringIncludes(body, "`setup`");
-  assertStringIncludes(body, "deno: command not found");
-  assertStringIncludes(body, "3 fast failures in the last 24 h");
-  assert(isRepoFastFailureIssue(body, REPO));
+Deno.test("formatRepoFastFailureTallyMarker / isRepoFastFailureTallyIssue - round trip", () => {
+  const body = formatRepoFastFailureTallyMarker(REPO) + "\nsome text";
+  assert(isRepoFastFailureTallyIssue(body, REPO));
+  assert(!isRepoFastFailureTallyIssue(body, "other/repo"));
 });
 
-Deno.test("formatRepoFastFailureBody - an error line cannot forge a marker or close the fence", () => {
-  // Every known comment form — the standard closer, the HTML5 alternate
-  // closer `--!>`, and the forms the old fixed-pattern filter mangled —
-  // must all be neutralised (Issue #2057). The invariant is total: no angle
-  // bracket survives, so no markup can ever form.
-  for (
-    const detail of [
-      "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo --> done",
-      "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo --!> done",
-      "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo -- > done",
-      "``` <!- - VIBE_REPO_FAST_FAILURE:evil/repo - -> done",
-    ]
-  ) {
-    const body = formatRepoFastFailureBody(
-      backedOffState({ lastDetail: detail }),
-      POLICY,
-      "host-a",
-    );
-    assert(!isRepoFastFailureIssue(body, "evil/repo"));
-    assert(!body.includes("``` <!--"));
-    // The only HTML comment in the body is the worker's own marker: an
-    // error line contributes no second opener and no second closer.
-    assertEquals(
-      body.split("<!--").length - 1,
-      1,
-      "exactly the worker's marker opener may exist",
-    );
-    assertEquals(
-      body.split("-->").length - 1,
-      1,
-      "exactly the worker's marker closer may exist",
-    );
-  }
+Deno.test("formatRepoFastFailureTallyBody - names the policy and marker", () => {
+  const body = formatRepoFastFailureTallyBody(REPO, POLICY);
+  assertStringIncludes(body, formatRepoFastFailureTallyMarker(REPO));
+  assertStringIncludes(body, `${POLICY.threshold}`);
+  assertStringIncludes(body, "24 h");
+  assert(isRepoFastFailureTallyIssue(body, REPO));
 });
 
-// Issue #2592 replaced "defaults to the worker repository" and "repo_config
-// can file it in the affected repo": the diagnostic always lands in the
-// monitored repository, and `fast_failure_diagnostics_here` is gone.
 Deno.test("resolveRepoFastFailureTarget - is always the monitored repository (Issue #2592)", () => {
   assertEquals(resolveRepoFastFailureTarget(REPO), REPO);
-  assertEquals(
-    resolveRepoFastFailureTarget("acme/widgets"),
-    "acme/widgets",
-  );
+  assertEquals(resolveRepoFastFailureTarget("acme/other"), "acme/other");
 });
 
-Deno.test("fileRepoFastFailureIssue - files exactly one diagnostic when none exists", async () => {
+Deno.test("formatFastFailureCommentMarker / parseFastFailureCommentMarker - round trip", () => {
+  const marker = formatFastFailureCommentMarker({
+    host: "host-a",
+    at: "2026-01-01T00:00:00.000Z",
+    issue: `${REPO}#7`,
+  });
+  const parsed = parseFastFailureCommentMarker(`${marker}\nreason text`);
+  assertEquals(parsed, {
+    host: "host-a",
+    at: "2026-01-01T00:00:00.000Z",
+    issue: `${REPO}#7`,
+  });
+  assertEquals(parseFastFailureCommentMarker("no marker here"), undefined);
+});
+
+Deno.test("formatFastFailureCommentMarker - sanitises host and issue so neither can break the attribute", () => {
+  const marker = formatFastFailureCommentMarker({
+    host: 'evil" host="forged',
+    at: "2026-01-01T00:00:00.000Z",
+    issue: 'acme/widgets#1" issue="forged',
+  });
+  // Exactly one marker opener/closer: nothing in the forged input could add
+  // a second attribute or close early.
+  assertEquals(marker.split("<!--").length - 1, 1);
+  assertEquals(marker.split("-->").length - 1, 1);
+  const parsed = parseFastFailureCommentMarker(marker);
+  assert(parsed);
+  assert(!parsed!.host.includes('"'));
+  assert(!parsed!.issue.includes('"'));
+});
+
+// ---------------------------------------------------------------------------
+// In-memory gh stub simulating one repository's issues.
+// ---------------------------------------------------------------------------
+
+interface FakeComment {
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
+interface FakeIssue {
+  number: number;
+  body: string;
+  author: string;
+  comments: FakeComment[];
+  labels: string[];
+}
+
+function arg(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+function createGhStub(start = 500) {
+  let next = start;
+  const issues = new Map<number, FakeIssue>();
   const calls: string[][] = [];
-  const filings: unknown[] = [];
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState(),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    recordFiling: (filing) => {
-      filings.push(filing);
-      return Promise.resolve(true);
-    },
-    ghFn: (args) => {
-      calls.push(args);
-      if (args[0] === "issue" && args[1] === "list") {
-        return Promise.resolve("[]");
+  let failComment: string | undefined;
+  let failEdit: string | undefined;
+  let failLabel: string | undefined;
+  let commentAuthor = "vibe-bot";
+
+  const ghFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const [cmd, sub] = args;
+    if (cmd === "api") {
+      // `createGhEscalationClient`'s REST attempts — always rejected here so
+      // every test exercises its documented CLI fallback (Issue #2958).
+      if (sub === "-X" && args[2] === "POST") {
+        return Promise.reject(new Error("REST API not available in stub"));
       }
-      return Promise.resolve(
-        "https://github.com/stSoftwareAU/example/issues/8123\n",
+      // GET repos/{repo}/issues/{n}/comments?per_page=100&page={page}
+      const m = /issues\/(\d+)\/comments\?per_page=\d+&page=(\d+)/.exec(
+        args[1] ?? "",
       );
-    },
-  });
-  assertEquals(decision, {
-    action: "filed",
-    issueNumber: 8123,
-    targetRepo: REPO,
-  });
-  assertEquals(calls.length, 2);
-  assertEquals(calls[1]?.[1], "create");
-  assertEquals(filings.length, 1);
-});
-
-Deno.test("fileRepoFastFailureIssue - an existing fleet-authored diagnostic is reused, not duplicated", async () => {
-  const calls: string[][] = [];
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState(),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    ghFn: (args) => {
-      calls.push(args);
-      if (args[0] === "issue" && args[1] === "list") {
-        return Promise.resolve(JSON.stringify([{
-          number: 4242,
-          body: formatRepoFastFailureMarker(REPO) + "\nalready filed",
-          author: { login: "vibe-bot" },
-        }]));
+      if (m) {
+        const number = parseInt(m[1]!, 10);
+        const page = parseInt(m[2]!, 10);
+        const issue = issues.get(number);
+        if (!issue) {
+          return Promise.reject(new Error(`no such issue #${number}`));
+        }
+        if (page !== 1) return Promise.resolve("[]");
+        return Promise.resolve(JSON.stringify(
+          issue.comments.map((c, i) => ({
+            id: i + 1,
+            body: c.body,
+            created_at: c.createdAt,
+            user: { login: c.author },
+          })),
+        ));
       }
-      throw new Error("must not write");
-    },
-  });
-  assertEquals(decision, {
-    action: "exists",
-    issueNumber: 4242,
-    targetRepo: REPO,
-  });
-  assertEquals(calls.length, 1);
-});
-
-Deno.test("fileRepoFastFailureIssue - a stranger's marker does not stand in for the diagnostic", async () => {
-  let created = false;
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState(),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    recordFiling: () => Promise.resolve(true),
-    ghFn: (args) => {
-      if (args[0] === "issue" && args[1] === "list") {
-        return Promise.resolve(JSON.stringify([{
-          number: 9,
-          body: formatRepoFastFailureMarker(REPO),
-          author: { login: "stranger" },
-        }]));
-      }
-      created = true;
-      return Promise.resolve(
-        "https://github.com/stSoftwareAU/example/issues/8124\n",
+      return Promise.reject(
+        new Error(`unexpected gh api args: ${args.join(" ")}`),
       );
-    },
-  });
-  assertEquals(decision.action, "filed");
-  assertEquals(created, true);
-});
-
-Deno.test("fileRepoFastFailureIssue - a repository that is not backed off files nothing", async () => {
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState({ count: 1, backedOff: false }),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    ghFn: () => {
-      throw new Error("must not call gh");
-    },
-  });
-  assertEquals(decision, { action: "suppressed", reason: "not_backed_off" });
-});
-
-Deno.test("fileRepoFastFailureIssue - a gh failure is reported, never thrown at the release path", async () => {
-  const logs: string[] = [];
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState(),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    log: (message) => logs.push(message),
-    ghFn: () => Promise.reject(new Error("gh exploded")),
-  });
-  assertEquals(decision, { action: "suppressed", reason: "gh_failed" });
-  assert(logs.some((line) => line.includes("suppressed:gh_failed")));
-});
-
-// Issue #2592 replaced "repo_config targets the affected repository": there
-// is no opt-in any more, so every gh call targets the monitored repository.
-Deno.test("fileRepoFastFailureIssue - searches and files in the monitored repository, never VibeCoder (Issue #2592)", async () => {
-  const targets: string[] = [];
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState(),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    recordFiling: () => Promise.resolve(true),
-    ghFn: (args) => {
-      targets.push(args[args.indexOf("--repo") + 1] ?? "");
-      if (args[1] === "list") return Promise.resolve("[]");
-      return Promise.resolve(`https://github.com/${REPO}/issues/12\n`);
-    },
-  });
-  assertEquals(decision, {
-    action: "filed",
-    issueNumber: 12,
-    targetRepo: REPO,
-  });
-  assertEquals(targets, [REPO, REPO]);
-});
-
-Deno.test("fileRepoFastFailureIssue - a refused label is retried once without --label (Issue #2592)", async () => {
-  const creates: string[][] = [];
-  const faults: string[] = [];
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState(),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    recordFiling: () => Promise.resolve(true),
-    recordFault: (kind, detail) => {
-      faults.push(`${kind}: ${detail ?? ""}`);
-    },
-    ghFn: (args) => {
-      if (args[1] === "list") return Promise.resolve("[]");
-      creates.push(args);
+    }
+    if (cmd === "issue" && sub === "list") {
+      const rows = [...issues.values()].map((i) => ({
+        number: i.number,
+        body: i.body,
+        author: { login: i.author },
+      }));
+      return Promise.resolve(JSON.stringify(rows));
+    }
+    if (cmd === "issue" && sub === "create") {
       if (args.includes("--label")) {
         return Promise.reject(
           new Error("could not add label: 'bug' not found"),
         );
       }
-      return Promise.resolve(`https://github.com/${REPO}/issues/77\n`);
+      const body = arg(args, "--body") ?? "";
+      const number = next++;
+      issues.set(number, {
+        number,
+        body,
+        author: "vibe-bot",
+        comments: [],
+        labels: [],
+      });
+      return Promise.resolve(
+        `https://github.com/${REPO}/issues/${number}\n`,
+      );
+    }
+    if (cmd === "issue" && sub === "comment") {
+      if (failComment) return Promise.reject(new Error(failComment));
+      const number = parseInt(args[2]!, 10);
+      const body = arg(args, "--body") ?? "";
+      const issue = issues.get(number);
+      if (!issue) {
+        return Promise.reject(new Error(`no such issue #${number}`));
+      }
+      issue.comments.push({
+        author: commentAuthor,
+        body,
+        createdAt: new Date().toISOString(),
+      });
+      return Promise.resolve("");
+    }
+    if (cmd === "issue" && sub === "view") {
+      const number = parseInt(args[2]!, 10);
+      const issue = issues.get(number);
+      if (!issue) {
+        return Promise.reject(new Error(`no such issue #${number}`));
+      }
+      return Promise.resolve(JSON.stringify({
+        body: issue.body,
+        comments: issue.comments.map((c) => ({
+          author: c.author,
+          body: c.body,
+        })),
+      }));
+    }
+    if (cmd === "issue" && sub === "edit") {
+      if (args.includes("--add-label")) {
+        if (failLabel) return Promise.reject(new Error(failLabel));
+        const number = parseInt(args[2]!, 10);
+        const label = arg(args, "--add-label") ?? "";
+        const issue = issues.get(number);
+        if (!issue) {
+          return Promise.reject(new Error(`no such issue #${number}`));
+        }
+        issue.labels.push(label);
+        return Promise.resolve("");
+      }
+      if (failEdit) return Promise.reject(new Error(failEdit));
+      const number = parseInt(args[2]!, 10);
+      const body = arg(args, "--body") ?? "";
+      const issue = issues.get(number);
+      if (!issue) {
+        return Promise.reject(new Error(`no such issue #${number}`));
+      }
+      issue.body = body;
+      return Promise.resolve("");
+    }
+    return Promise.reject(new Error(`unexpected gh args: ${args.join(" ")}`));
+  };
+
+  return {
+    ghFn,
+    issues,
+    calls,
+    seedIssue(number: number, body: string, author = "vibe-bot") {
+      issues.set(number, { number, body, author, comments: [], labels: [] });
+      next = Math.max(next, number + 1);
     },
+    setCommentAuthor(author: string) {
+      commentAuthor = author;
+    },
+    failNextComment(message: string) {
+      failComment = message;
+    },
+    failNextEdit(message: string) {
+      failEdit = message;
+    },
+    failNextLabel(message: string) {
+      failLabel = message;
+    },
+  };
+}
+
+function baseOpts(ghFn: (args: string[]) => Promise<string>) {
+  return {
+    repo: REPO,
+    failedIssueNumber: 42,
+    reason: "quality.sh: line 3: deno: command not found",
+    policy: POLICY,
+    fleetAuthors: FLEET,
+    ghFn,
+    recordFiling: () => Promise.resolve(true),
+    recordFault: () => {},
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tally and back-off behaviour.
+// ---------------------------------------------------------------------------
+
+Deno.test("recordRepoFastFailureTally - three fast failures from three hosts within 24h backs off on the third", async () => {
+  const stub = createGhStub();
+  const base = 1_700_000_000;
+  let now = base;
+
+  const r1 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => now,
   });
-  assertEquals(decision, {
-    action: "filed",
-    issueNumber: 77,
-    targetRepo: REPO,
+  assertEquals(r1.action, "recorded");
+  assert(r1.action === "recorded" && r1.created === true);
+  assertEquals((r1 as { backedOff: boolean }).backedOff, false);
+  const issueNumber = (r1 as { issueNumber: number }).issueNumber;
+
+  now = base + 60;
+  const r2 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-b",
+    nowSeconds: () => now,
   });
-  assertEquals(creates.length, 2);
-  assert(creates[0]!.includes("--label"));
-  assert(!creates[1]!.includes("--label"));
-  assertEquals(creates[1]![creates[1]!.indexOf("--repo") + 1], REPO);
-  assertEquals(faults, []);
+  assertEquals((r2 as { backedOff: boolean }).backedOff, false);
+  assertEquals((r2 as { created: boolean }).created, false);
+  assertEquals((r2 as { issueNumber: number }).issueNumber, issueNumber);
+
+  now = base + 120;
+  const r3 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-c",
+    nowSeconds: () => now,
+  });
+  assertEquals((r3 as { backedOff: boolean }).backedOff, true);
+  assertEquals((r3 as { count: number }).count, 3);
+
+  const issue = stub.issues.get(issueNumber)!;
+  assertEquals(issue.comments.length, 3);
+  assert(isRepoFastFailureIssue(issue.body, REPO));
 });
 
-Deno.test("fileRepoFastFailureIssue - both create attempts failing is suppressed, with no VibeCoder fallback (Issue #2592)", async () => {
-  const targets: string[] = [];
-  const faults: string[] = [];
-  const decision = await fileRepoFastFailureIssue({
-    state: backedOffState(),
-    policy: POLICY,
-    machineId: "host-a",
-    fleetAuthors: FLEET,
-    recordFiling: () => Promise.resolve(true),
-    recordFault: (kind, detail) => {
-      faults.push(`${kind}: ${detail ?? ""}`);
-    },
-    ghFn: (args) => {
-      targets.push(args[args.indexOf("--repo") + 1] ?? "");
-      if (args[1] === "list") return Promise.resolve("[]");
-      return Promise.reject(new Error("issues are disabled"));
-    },
+Deno.test("recordRepoFastFailureTally - a comment older than the window does not count towards back-off", async () => {
+  const stub = createGhStub();
+  const windowSeconds = POLICY.windowSeconds;
+  const finalNow = 1_700_100_000;
+
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-old",
+    nowSeconds: () => finalNow - windowSeconds - 1_000,
   });
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-b",
+    nowSeconds: () => finalNow - 50,
+  });
+  const r3 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-c",
+    nowSeconds: () => finalNow,
+  });
+
+  assertEquals((r3 as { count: number }).count, 2);
+  assertEquals((r3 as { backedOff: boolean }).backedOff, false);
+  const issueNumber = (r3 as { issueNumber: number }).issueNumber;
+  const issue = stub.issues.get(issueNumber)!;
+  assert(!isRepoFastFailureIssue(issue.body, REPO));
+});
+
+Deno.test("recordRepoFastFailureTally - a marker dated more than an hour in the future is not counted", async () => {
+  const stub = createGhStub();
+  const currentNow = 1_700_200_000;
+  const futureNow = currentNow + 3_700; // more than an hour ahead, beyond clock-skew allowance
+
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-future",
+    nowSeconds: () => futureNow,
+  });
+  const r2 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-now",
+    nowSeconds: () => currentNow,
+  });
+
+  assertEquals((r2 as { count: number }).count, 1);
+  assertEquals((r2 as { backedOff: boolean }).backedOff, false);
+});
+
+Deno.test("recordRepoFastFailureTally - a non-fleet-authored tally issue is ignored and a fresh one is created", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(
+    999,
+    formatRepoFastFailureTallyMarker(REPO) + "\nstranger's tally",
+    "stranger",
+  );
+  const r = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => 1_700_000_000,
+  });
+  assertEquals(r.action, "recorded");
+  assert(r.action === "recorded");
+  assert(r.issueNumber !== 999);
+  assertEquals(r.created, true);
+});
+
+Deno.test("recordRepoFastFailureTally - a non-fleet comment carrying the marker is not counted", async () => {
+  const stub = createGhStub();
+  const now = 1_700_000_000;
+
+  const r1 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => now,
+  });
+  assert(r1.action === "recorded");
+  const issueNumber = r1.issueNumber;
+
+  stub.setCommentAuthor("stranger");
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-b",
+    nowSeconds: () => now + 10,
+  });
+
+  stub.setCommentAuthor("vibe-bot");
+  const r3 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-c",
+    nowSeconds: () => now + 20,
+  });
+
+  // Three comments were posted, but only two are fleet-authored.
+  const issue = stub.issues.get(issueNumber)!;
+  assertEquals(issue.comments.length, 3);
+  assertEquals((r3 as { count: number }).count, 2);
+  assertEquals((r3 as { backedOff: boolean }).backedOff, false);
+});
+
+Deno.test("recordRepoFastFailureTally - a gh failure on the comment is reported and suppressed, never thrown", async () => {
+  const stub = createGhStub();
+  const r1 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => 1_700_000_000,
+  });
+  assert(r1.action === "recorded");
+
+  const warnings: string[] = [];
+  stub.failNextComment("comment service unavailable");
+  const r2 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-b",
+    nowSeconds: () => 1_700_000_100,
+    warn: (message) => warnings.push(message),
+  });
+  assertEquals(r2, { action: "suppressed", reason: "gh_failed" });
+  assert(
+    warnings.some((w) =>
+      w.includes(REPO) && w.includes("comment service unavailable")
+    ),
+  );
+});
+
+Deno.test("recordRepoFastFailureTally - a gh failure on the back-off edit is reported, never thrown", async () => {
+  const stub = createGhStub();
+  const base = 1_700_000_000;
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => base,
+  });
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-b",
+    nowSeconds: () => base + 10,
+  });
+
+  const warnings: string[] = [];
+  stub.failNextEdit("edit service unavailable");
+  const r3 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-c",
+    nowSeconds: () => base + 20,
+    warn: (message) => warnings.push(message),
+  });
+  assertEquals((r3 as { action: string }).action, "recorded");
+  assertEquals((r3 as { backedOff: boolean }).backedOff, false);
+  assert(
+    warnings.some((w) =>
+      w.includes(REPO) && w.includes("edit service unavailable")
+    ),
+  );
+});
+
+Deno.test("recordRepoFastFailureTally - a refused label is retried once without --label", async () => {
+  const stub = createGhStub();
+  const r = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => 1_700_000_000,
+  });
+  assert(r.action === "recorded");
+  assertEquals(r.created, true);
+  const createCalls = stub.calls.filter(
+    (c) => c[0] === "issue" && c[1] === "create",
+  );
+  assertEquals(createCalls.length, 2);
+  assert(createCalls[0]!.includes("--label"));
+  assert(!createCalls[1]!.includes("--label"));
+});
+
+Deno.test("recordRepoFastFailureTally - a reason cannot forge a marker or close the fence", async () => {
+  const stub = createGhStub();
+  const r1 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => 1_700_000_000,
+  });
+  assert(r1.action === "recorded");
+  const issueNumber = r1.issueNumber;
+
+  const r2 = await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    reason: "``` <!-- VIBE_REPO_FAST_FAILURE:evil/repo --> done",
+    machineId: "host-b",
+    nowSeconds: () => 1_700_000_100,
+  });
+  assert(r2.action === "recorded");
+
+  const issue = stub.issues.get(issueNumber)!;
+  const lastComment = issue.comments[issue.comments.length - 1]!;
+  assert(!lastComment.body.includes("``` <!--"));
+  assert(!isRepoFastFailureIssue(lastComment.body, "evil/repo"));
+  // The comment carries only this module's own marker opener/closer.
+  assertEquals(lastComment.body.split("<!--").length - 1, 1);
+  assertEquals(lastComment.body.split("-->").length - 1, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Interaction with the fleet-wide back-off set (Issue #2955).
+// ---------------------------------------------------------------------------
+
+Deno.test("a tally-only body does not back the repo off fleet-wide; the back-off marker does", async () => {
+  const tallyOnlyBody = formatRepoFastFailureTallyBody(REPO, POLICY);
+  const search = (body: string) => (_args: string[]) =>
+    Promise.resolve(JSON.stringify([{
+      number: 1,
+      body,
+      author: { login: "vibe-bot" },
+      repository: { nameWithOwner: REPO },
+      state: "open",
+    }]));
+
+  const result1 = await lookupFleetDiagnosticBackOffs({
+    owners: () => ["acme"],
+    ghCommandFn: search(tallyOnlyBody),
+    cache: createFleetDiagnosticCache(),
+    fleetAuthors: FLEET,
+    warn: () => {},
+    error: () => {},
+  });
+  assertEquals(result1.backedOff.has(REPO), false);
+
+  const backedOffBody = formatRepoFastFailureMarker(REPO) + "\n\n" +
+    tallyOnlyBody;
+  const result2 = await lookupFleetDiagnosticBackOffs({
+    owners: () => ["acme"],
+    ghCommandFn: search(backedOffBody),
+    cache: createFleetDiagnosticCache(),
+    fleetAuthors: FLEET,
+    warn: () => {},
+    error: () => {},
+  });
+  assertEquals(result2.backedOff.has(REPO), true);
+});
+
+// ---------------------------------------------------------------------------
+// Repeat clone corruption escalation (Issue #2958).
+// ---------------------------------------------------------------------------
+
+/** A repeat-corruption payload as `corrupt_clone_recovery.ts` formats it. */
+const REPEAT = {
+  repo: REPO,
+  host: "host-b",
+  previousAt: "2026-10-01T00:00:00.000Z",
+  previousGitMessage: "first corruption: bad config line",
+  aside: "/work/acme.corrupt-20261001T000000Z",
+  currentAt: "2026-10-01T01:00:00.000Z",
+  currentGitMessage: "second corruption: broken ref",
+};
+
+function escalationBaseOpts(
+  ghFn: (args: string[]) => Promise<string>,
+  log: string[] = [],
+  warn: string[] = [],
+  error: string[] = [],
+) {
+  return {
+    repo: REPO,
+    failedIssueNumber: 42,
+    repeat: REPEAT,
+    policy: POLICY,
+    fleetAuthors: FLEET,
+    ghFn,
+    nowSeconds: () => 1_700_000_000,
+    recordFiling: () => Promise.resolve(true),
+    recordFault: () => {},
+    log: (line: string) => log.push(line),
+    warn: (line: string) => warn.push(line),
+    error: (line: string) => error.push(line),
+  };
+}
+
+Deno.test("escalateRepeatCloneCorruption - creates the tally issue, backs off immediately, posts one comment and adds needs-human (Issue #2958)", async () => {
+  const stub = createGhStub();
+  const log: string[] = [];
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, log, [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 500,
+    created: true,
+    backedOff: true,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  const issue = stub.issues.get(500)!;
+  assert(
+    isRepoFastFailureIssue(issue.body, REPO),
+    "the back-off marker must be added to the tally issue straight away",
+  );
+  assertStringIncludes(issue.body, "corrupted twice within 24 h on host-b");
+  assertEquals(issue.labels, ["needs-human"]);
+  assertEquals(issue.comments.length, 1, "exactly one escalation comment");
+  const comment = issue.comments[0]!;
+  assertStringIncludes(comment.body, "Repeat clone corruption on host-b");
+  assertStringIncludes(comment.body, REPEAT.previousAt);
+  assertStringIncludes(comment.body, REPEAT.currentAt);
+  assertStringIncludes(comment.body, REPEAT.previousGitMessage!);
+  assertStringIncludes(comment.body, REPEAT.currentGitMessage);
+  assertStringIncludes(comment.body, REPEAT.aside!);
+  assertStringIncludes(comment.body, `${REPO}#42`);
+  assertStringIncludes(
+    comment.body,
+    "Close this issue to lift the fleet-wide back-off",
+  );
+  assertEquals(error, [], "a clean escalation logs no errors");
+});
+
+Deno.test("escalateRepeatCloneCorruption - finds the existing tally issue instead of creating a second (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(77, formatRepoFastFailureTallyMarker(REPO) + "\ntally body");
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: true,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  assert(
+    isRepoFastFailureIssue(stub.issues.get(77)!.body, REPO),
+    "the existing tally issue gains the back-off marker",
+  );
+  assertEquals(error, []);
+});
+
+Deno.test("escalateRepeatCloneCorruption - an already backed-off tally issue is not edited again (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(
+    77,
+    formatRepoFastFailureTallyMarker(REPO) + "\n" +
+      formatRepoFastFailureMarker(REPO) + "\nbacked off",
+  );
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: false,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  assertEquals(stub.issues.get(77)!.labels, ["needs-human"]);
+});
+
+Deno.test("escalateRepeatCloneCorruption - a failed label add still leaves the comment posted, logged at ERROR (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.failNextLabel("labels api down");
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 500,
+    created: true,
+    backedOff: true,
+    commentPosted: true,
+    labelAdded: false,
+  });
+  assertEquals(stub.issues.get(500)!.comments.length, 1);
+  assertEquals(stub.issues.get(500)!.labels, []);
+  assert(
+    error.some((line) => line.includes("label add failed")),
+    `label failure must be logged at ERROR, got: ${error.join(" | ")}`,
+  );
+});
+
+Deno.test("escalateRepeatCloneCorruption - a failed comment post never adds the label, logged at ERROR (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.failNextComment("comments api down");
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 500,
+    created: true,
+    backedOff: true,
+    commentPosted: false,
+    labelAdded: false,
+  });
+  assertEquals(stub.issues.get(500)!.comments.length, 0);
+  assertEquals(stub.issues.get(500)!.labels, []);
+  assert(
+    error.some((line) => line.includes("comment post failed")),
+    `comment failure must be logged at ERROR, got: ${error.join(" | ")}`,
+  );
+});
+
+Deno.test("escalateRepeatCloneCorruption - a deduped prior escalation skips the comment but ensures the label, without a false ERROR (Issue #2958)", async () => {
+  const stub = createGhStub();
+  const dedupKey =
+    `clone-corrupt-repeat:${REPO}:${REPEAT.host}:${REPEAT.previousAt}`;
+  stub.seedIssue(77, formatRepoFastFailureTallyMarker(REPO) + "\ntally body");
+  stub.issues.get(77)!.comments.push({
+    author: "vibe-bot",
+    body: buildDedupMarker(dedupKey),
+    createdAt: new Date().toISOString(),
+  });
+  const log: string[] = [];
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, log, [], error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: true,
+    commentPosted: false,
+    labelAdded: true,
+  });
+  assertEquals(
+    stub.issues.get(77)!.comments.length,
+    1,
+    "the deduped comment must not be posted twice",
+  );
+  assertEquals(stub.issues.get(77)!.labels, ["needs-human"]);
+  assertEquals(
+    error,
+    [],
+    "a dedup-skipped comment is a prior success, never an ERROR",
+  );
+  assert(
+    log.some((line) => line.includes("prior escalation comment")),
+    "the dedup path should say why no comment was posted",
+  );
+});
+
+Deno.test("escalateRepeatCloneCorruption - a GitHub outage on find-or-create suppresses the escalation as gh_failed (Issue #2958)", async () => {
+  const error: string[] = [];
+  const faults: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption({
+    ...escalationBaseOpts(
+      () => Promise.reject(new Error("gh is down")),
+      [],
+      [],
+      error,
+    ),
+    recordFault: (event) => faults.push(event),
+  });
+
   assertEquals(decision, { action: "suppressed", reason: "gh_failed" });
-  // One search plus exactly two creates, all against the monitored repo.
-  assertEquals(targets, [REPO, REPO, REPO]);
-  assert(!targets.includes("stSoftwareAU/VibeCoder"));
-  assertEquals(faults.length, 1);
-  assertStringIncludes(faults[0]!, "catch_block_warning");
-  assertStringIncludes(faults[0]!, "issues are disabled");
+  assert(
+    error.some((line) => line.includes("find-or-create tally issue failed")),
+  );
+  assertEquals(faults, ["catch_block_warning"]);
+});
+
+Deno.test("escalateRepeatCloneCorruption - a failed back-off edit warns but still comments and labels (Issue #2958)", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(77, formatRepoFastFailureTallyMarker(REPO) + "\ntally body");
+  stub.failNextEdit("body edit api down");
+  const warn: string[] = [];
+  const error: string[] = [];
+
+  const decision = await escalateRepeatCloneCorruption(
+    escalationBaseOpts(stub.ghFn, [], warn, error),
+  );
+
+  assertEquals(decision, {
+    action: "escalated",
+    targetRepo: REPO,
+    issueNumber: 77,
+    created: false,
+    backedOff: false,
+    commentPosted: true,
+    labelAdded: true,
+  });
+  assert(
+    warn.some((line) => line.includes("view/edit issue body failed")),
+    `a back-off edit failure is a WARNING because the escalation carries on, got: ${
+      warn.join(" | ")
+    }`,
+  );
+  assertEquals(
+    error.filter((line) => line.includes("view/edit")),
+    [],
+    "the same failure must not also be logged at ERROR",
+  );
+  assertEquals(stub.issues.get(77)!.labels, ["needs-human"]);
+  assertEquals(stub.issues.get(77)!.comments.length, 1);
 });
