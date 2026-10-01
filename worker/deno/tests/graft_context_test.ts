@@ -2,9 +2,11 @@
  * Tests for the Graft runner module (Issue #2099, part of #2060).
  *
  * Every test injects the subprocess seams — `run` and `git` — so nothing here
- * spawns `graft` or `git`. The filesystem side (the `info/exclude` append and
- * the `wiring.json` read) is exercised against a real temporary directory,
- * because that is the behaviour being asserted.
+ * spawns `graft`. A handful of tests do spawn `git` against a real temporary
+ * repository, because Issue #2915's regression — the graph must land under
+ * the git directory, never the working tree — is only convincing against a
+ * real checkout. The `wiring.json` read is exercised against a real temporary
+ * directory throughout, because that is the behaviour being asserted.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -17,7 +19,6 @@ import {
   formatGraftContextSection,
   GRAFT_ASK_TIMEOUT_MS,
   GRAFT_BUILD_TIMEOUT_MS,
-  GRAFT_EXCLUDE_PATTERN,
   GRAFT_LAYOUT_DIRS,
   GRAFT_MCP_TOOLS,
   GRAFT_PROMPT_LINE,
@@ -109,9 +110,9 @@ function fakeRunner(
   return { calls, run };
 }
 
-/** A fake `git` that answers `rev-parse --git-path info/exclude`. */
+/** A fake `git` that answers `rev-parse --git-path graft`. */
 function fakeGit(
-  stdout = ".git/info/exclude\n",
+  stdout = ".git/graft\n",
   code = 0,
 ): { calls: string[][]; git: GraftGitRunner } {
   const calls: string[][] = [];
@@ -145,20 +146,20 @@ async function withRepo(
 ): Promise<void> {
   const repoDir = await Deno.makeTempDir({ prefix: "graft_context_test_" });
   try {
-    await Deno.mkdir(`${repoDir}/.git/info`, { recursive: true });
+    await Deno.mkdir(`${repoDir}/.git`, { recursive: true });
     const wiring = options.wiring === undefined ? WIRING : options.wiring;
     if (wiring !== null) {
-      await Deno.mkdir(`${repoDir}/graft/.graph`, { recursive: true });
-      await Deno.writeTextFile(`${repoDir}/graft/.graph/wiring.json`, wiring);
+      // Matches the default `fakeGit()` answer of `.git/graft`.
+      await Deno.mkdir(`${repoDir}/.git/graft/.graph`, { recursive: true });
+      await Deno.writeTextFile(
+        `${repoDir}/.git/graft/.graph/wiring.json`,
+        wiring,
+      );
     }
     await fn(repoDir);
   } finally {
     await Deno.remove(repoDir, { recursive: true });
   }
-}
-
-function excludeText(repoDir: string): Promise<string> {
-  return Deno.readTextFile(`${repoDir}/.git/info/exclude`);
 }
 
 // ---------------------------------------------------------------------------
@@ -237,9 +238,16 @@ Deno.test("collectGraftContext - invokes graft with the documented argv, env and
     });
 
     assertEquals(runner.calls.length, 2);
+    const graftDir = `${repoDir}/.git/graft`;
     const build = runner.calls[0]!;
     assertEquals(build.executable, "graft");
-    assertEquals(build.args, ["build", "--no-gitignore", "--no-ignore"]);
+    assertEquals(build.args, [
+      "--dir",
+      graftDir,
+      "build",
+      "--no-gitignore",
+      "--no-ignore",
+    ]);
     assertEquals(build.cwd, repoDir);
     assertEquals(build.env?.DO_NOT_TRACK, "1");
     // The literal is asserted on what the runner was handed, so the chain the
@@ -250,7 +258,13 @@ Deno.test("collectGraftContext - invokes graft with the documented argv, env and
 
     const ask = runner.calls[1]!;
     assertEquals(ask.executable, "graft");
-    assertEquals(ask.args, ["ask", "--source", "find the retry policy"]);
+    assertEquals(ask.args, [
+      "--dir",
+      graftDir,
+      "ask",
+      "--source",
+      "find the retry policy",
+    ]);
     assertEquals(ask.cwd, repoDir);
     assertEquals(ask.env?.DO_NOT_TRACK, "1");
     assertEquals(ask.timeoutMs, 30_000);
@@ -261,7 +275,7 @@ Deno.test("collectGraftContext - invokes graft with the documented argv, env and
       assertEquals(call.args.includes("--lsp"), false);
     }
 
-    assertEquals(git.calls[0], ["rev-parse", "--git-path", "info/exclude"]);
+    assertEquals(git.calls[0], ["rev-parse", "--git-path", "graft"]);
   });
 });
 
@@ -643,44 +657,13 @@ Deno.test("collectGraftContext - counts an id-keyed wiring.json as well as a lis
   }, { wiring: keyed });
 });
 
-Deno.test("collectGraftContext - refuses a symlinked exclude file rather than writing through it", async () => {
-  await withRepo(async (repoDir) => {
-    // A planted link is how an agent-writable, run-persistent clone attacks a
-    // read-modify-write (Issue #1234/#1239).
-    const outside = await Deno.makeTempFile({ prefix: "graft_exclude_link_" });
-    try {
-      await Deno.symlink(outside, `${repoDir}/.git/info/exclude`);
-      const runner = fakeRunner([]);
-      const { warns, logger } = recordingLogger();
-
-      const result = await collectGraftContext({
-        repoDir,
-        query: "q",
-        enabled: true,
-        logger,
-        run: runner.run,
-        git: fakeGit().git,
-      });
-
-      assertEquals(result.status, "failed");
-      assertEquals(runner.calls.length, 0);
-      assertEquals(warns.length, 1);
-      assertStringIncludes(warns[0]!, "[GRAFT_UNAVAILABLE]");
-      // The link target is left untouched.
-      assertEquals(await Deno.readTextFile(outside), "");
-    } finally {
-      await Deno.remove(outside);
-    }
-  });
-});
-
 Deno.test("collectGraftContext - refuses a symlinked wiring.json", async () => {
   await withRepo(async (repoDir) => {
     const outside = await Deno.makeTempFile({ prefix: "graft_wiring_link_" });
     await Deno.writeTextFile(outside, WIRING);
     try {
-      await Deno.mkdir(`${repoDir}/graft/.graph`, { recursive: true });
-      await Deno.symlink(outside, `${repoDir}/graft/.graph/wiring.json`);
+      await Deno.mkdir(`${repoDir}/.git/graft/.graph`, { recursive: true });
+      await Deno.symlink(outside, `${repoDir}/.git/graft/.graph/wiring.json`);
       const { warns, logger } = recordingLogger();
 
       const result = await collectGraftContext({

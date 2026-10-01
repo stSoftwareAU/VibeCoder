@@ -93,7 +93,7 @@ import {
   runGitCommand,
 } from "./git_timeout.ts";
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
-import { appendNoFollow, readTextFileNoFollow } from "./file_utils.ts";
+import { readTextFileNoFollow } from "./file_utils.ts";
 import {
   codeFenceFor,
   createPromptDelimiters,
@@ -348,7 +348,7 @@ export async function collectGraftContext(
     bundleChars: bundle.length,
     ...figures.value,
     bundle,
-    graphDir,
+    graphDir: graftDir,
   };
 }
 
@@ -553,22 +553,22 @@ async function cleanUpLegacyInTreeGraft(
  * marker" must never read as success.
  */
 async function readGraphFigures(
-  repoDir: string,
+  graftDir: string,
 ): Promise<Result<GraphFigures>> {
-  const path = `${repoDir}/${GRAFT_WIRING_PATH}`;
+  const path = `${graftDir}/.graph/wiring.json`;
   const read = await readTextFileNoFollow(path);
   if (!read.ok) {
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} could not be read: ${detail(read.error.message)}`,
+        `${path} could not be read: ${detail(read.error.message)}`,
       ),
     };
   }
   if (read.value === null) {
     return {
       ok: false,
-      error: new Error(`${GRAFT_WIRING_PATH} is missing after graft build`),
+      error: new Error(`${path} is missing after graft build`),
     };
   }
 
@@ -579,7 +579,7 @@ async function readGraphFigures(
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} could not be parsed: ${detail(message(err))}`,
+        `${path} could not be parsed: ${detail(message(err))}`,
       ),
     };
   }
@@ -587,7 +587,7 @@ async function readGraphFigures(
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} is not a JSON object`,
+        `${path} is not a JSON object`,
       ),
     };
   }
@@ -599,7 +599,7 @@ async function readGraphFigures(
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} carries no readable "nodes" and "edges"`,
+        `${path} carries no readable "nodes" and "edges"`,
       ),
     };
   }
@@ -659,7 +659,7 @@ export type GraftContextCollector = (
 export function graftContextFacts(
   result: GraftContextResult,
 ): GraftContextResult {
-  const { bundle: _bundle, ...facts } = result;
+  const { bundle: _bundle, graphDir: _graphDir, ...facts } = result;
   return facts;
 }
 
@@ -942,11 +942,15 @@ export const GRAFT_PROMPT_LINE = [
  * answer from the wrong tree.
  *
  * @param repoDir - Absolute path of the built checkout the server must serve
+ * @param graphDir - Absolute path of the directory the graph was built into,
+ *   outside the working tree (Issue #2915) — the same value Graft's global
+ *   `--dir` was given for the build that produced it
  * @returns The server specification, fresh on each call so a caller may mutate it
- * @throws If `repoDir` is empty — a server rooted nowhere would silently
- *   resolve the working directory, which is the fault this argument removes
+ * @throws If `repoDir` or `graphDir` is empty — a server rooted nowhere, or
+ *   pointed at no graph, would silently resolve the working directory, which
+ *   is the fault these arguments remove
  */
-export function graftMcpServer(repoDir: string): {
+export function graftMcpServer(repoDir: string, graphDir: string): {
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -958,9 +962,15 @@ export function graftMcpServer(repoDir: string): {
         "(Issue #2314)",
     );
   }
+  if (graphDir.trim() === "") {
+    throw new Error(
+      "graftMcpServer needs the graph directory to point the MCP server at " +
+        "(Issue #2915)",
+    );
+  }
   return {
     command: "graft",
-    args: ["mcp", repoDir],
+    args: ["--dir", graphDir, "mcp", repoDir],
     env: { ...GRAFT_ENV },
     // Issue #2435: in context from the first turn, not behind a tool search.
     alwaysLoad: true,

@@ -38,6 +38,7 @@ function okCollection(): GraftContextResult {
     nodeCount: 820,
     callEdgeCount: 1204,
     bundle: "export function parseIsoDate(raw: string): number {}",
+    graphDir: "/tmp/graft-2314-work/repo/.git/graft",
   };
 }
 
@@ -183,7 +184,12 @@ Deno.test("execute_claude_phase - an ok collection gets the line and the server 
     "the browser rides every run (Issue #2925)",
   );
   assertEquals(mcp.servers?.graft?.command, "graft");
-  assertEquals(mcp.servers?.graft?.args, ["mcp", "/tmp/graft-2314-work/repo"]);
+  assertEquals(mcp.servers?.graft?.args, [
+    "--dir",
+    "/tmp/graft-2314-work/repo/.git/graft",
+    "mcp",
+    "/tmp/graft-2314-work/repo",
+  ]);
 
   assertEquals(result.graftContext?.status, "ok");
   assertEquals(result.graftContext?.queries, 6);
