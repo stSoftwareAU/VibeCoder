@@ -12,9 +12,11 @@
  * This module folds such duplicates back into one declaration *before* the
  * result is checked. It only ever merges `use` declarations whose item sets
  * overlap; anything it cannot parse with confidence — a nested brace, a glob
- * import, an attribute-gated import, an import with no path — is left
- * untouched, because a wrong fold here would silently drop an import rather
- * than merely fail to clean one up.
+ * import, an attribute-gated import, an import with no path, a `use`-like
+ * line that is not actually at brace depth 0 (e.g. inside a `mod`/`fn` body
+ * written at column 0) or not actually code (inside a raw string, quoted
+ * string, or block comment) — is left untouched, because a wrong fold here
+ * would silently drop an import rather than merely fail to clean one up.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -127,13 +129,98 @@ function gatedByAttribute(lines: string[], start: number): boolean {
   return false;
 }
 
+/**
+ * For each line, whether its column 0 sits at brace depth 0 and outside any
+ * string or comment — the only position a top-level `use` can start.
+ *
+ * A column-0 line matching USE_START is not necessarily top-level: it may be
+ * inside a `mod`/`fn` body written without rustfmt's indentation (a different
+ * scope, where a duplicate import is not an error), or inside a raw string,
+ * quoted string, or block comment (not code at all). Folding either case
+ * risks dropping a legal import or rewriting literal text, so both must be
+ * excluded before a candidate is even considered.
+ */
+function scanTopLevelLines(lines: string[]): boolean[] {
+  const topLevel: boolean[] = [];
+  let depth = 0;
+  let blockCommentDepth = 0;
+  let rawStringHashes = -1; // -1 = not inside a raw string
+  let inString = false; // inside a normal "..." or b"..." string
+
+  for (const line of lines) {
+    topLevel.push(
+      depth === 0 && blockCommentDepth === 0 && rawStringHashes === -1 &&
+        !inString,
+    );
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i]!;
+      if (blockCommentDepth > 0) {
+        if (ch === "/" && line[i + 1] === "*") {
+          blockCommentDepth++;
+          i += 2;
+        } else if (ch === "*" && line[i + 1] === "/") {
+          blockCommentDepth--;
+          i += 2;
+        } else {
+          i++;
+        }
+        continue;
+      }
+      if (rawStringHashes !== -1) {
+        const hashes = "#".repeat(rawStringHashes);
+        if (
+          ch === '"' && line.slice(i + 1, i + 1 + rawStringHashes) === hashes
+        ) {
+          i += 1 + rawStringHashes;
+          rawStringHashes = -1;
+        } else {
+          i++;
+        }
+        continue;
+      }
+      if (inString) {
+        if (ch === "\\") {
+          i += 2;
+        } else {
+          if (ch === '"') inString = false;
+          i++;
+        }
+        continue;
+      }
+      if (ch === "/" && line[i + 1] === "/") break; // line comment: rest is not code
+      if (ch === "/" && line[i + 1] === "*") {
+        blockCommentDepth = 1;
+        i += 2;
+        continue;
+      }
+      const rawMatch = /^(?:b)?r(#*)"/.exec(line.slice(i));
+      if (rawMatch) {
+        rawStringHashes = rawMatch[1]!.length;
+        i += rawMatch[0].length;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        i++;
+        continue;
+      }
+      if (ch === "{") depth++;
+      else if (ch === "}") depth = Math.max(0, depth - 1);
+      i++;
+    }
+  }
+  return topLevel;
+}
+
 /** Scan `lines` for top-level `use` declarations, parsed where possible. */
 function findCandidates(lines: string[]): Candidate[] {
   const candidates: Candidate[] = [];
+  const topLevel = scanTopLevelLines(lines);
   let i = 0;
   while (i < lines.length) {
     const line = lines[i]!;
-    if (!USE_START.test(line)) {
+    if (!topLevel[i] || !USE_START.test(line)) {
       i++;
       continue;
     }

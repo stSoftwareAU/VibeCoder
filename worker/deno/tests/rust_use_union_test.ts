@@ -100,6 +100,37 @@ Deno.test(
 );
 
 Deno.test(
+  "mergeDuplicateRustUses - same-prefix uses in different column-0 mod bodies are left alone",
+  () => {
+    // Legal, non-rustfmt'd Rust: each `use` is scoped to its own `mod`, so
+    // the duplicate is not an E0252 error and folding would delete a real
+    // import from whichever module is not the anchor.
+    const input = "mod a {\nuse grq_policy::{AccountId, TradingDate};\n}\n" +
+      "mod b {\nuse grq_policy::{AccountId, TradingDate};\n}\n";
+    assertEquals(mergeDuplicateRustUses(input), input);
+  },
+);
+
+Deno.test(
+  "mergeDuplicateRustUses - use-like lines inside a raw string are left alone",
+  () => {
+    const input =
+      'const SNIPPET: &str = r#"\nuse serde::{Deserialize, Serialize};\n' +
+      'use serde::{Deserialize, Serialize};\n"#;\n';
+    assertEquals(mergeDuplicateRustUses(input), input);
+  },
+);
+
+Deno.test(
+  "mergeDuplicateRustUses - use-like lines inside a block comment are left alone",
+  () => {
+    const input = "/*\nuse serde::{Deserialize, Serialize};\n" +
+      "use serde::{Deserialize, Serialize};\n*/\n";
+    assertEquals(mergeDuplicateRustUses(input), input);
+  },
+);
+
+Deno.test(
   "mergeDuplicateRustUses - non-overlapping same-prefix groups are left alone",
   () => {
     const input = "use a::b::{C};\nuse a::b::{D};\n";
