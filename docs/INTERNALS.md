@@ -3659,8 +3659,13 @@ What it sweeps for a closed milestone: the lane worktrees holding its
 and the stream session record (`stream-<streamKey>.json`) for **every**
 provider.
 
-Three boundaries make it safe to run on every scan:
+Four boundaries make it safe to run on every scan:
 
+- **No checkout, nothing to sweep.** A monitored repository with no checkout
+  directory on this host is skipped quietly before the closed-milestone
+  listing — no warning, and no `gh` calls spent on its milestones. A checkout
+  that exists but whose branches cannot be listed is still reported and
+  retried.
 - **Swept once, then never revisited.** The listing is cached under the work
   root with a 15-minute TTL, and every fully-swept title is persisted forever,
   so a closed milestone costs one `gh` call in its lifetime rather than one per

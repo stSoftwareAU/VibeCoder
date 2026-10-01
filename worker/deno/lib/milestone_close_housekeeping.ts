@@ -45,6 +45,7 @@ import {
   streamSessionPath,
 } from "./resume_state_store.ts";
 import { parseWorktreeList } from "./worktree_cleanup.ts";
+import { parseJsonArrayPages } from "./json_array_pages.ts";
 
 /** How a `gh` invocation is made — args in, stdout out, throws on failure. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -146,10 +147,11 @@ export function childIssueBranchNumber(branch: string): number | null {
 /**
  * Parse a `gh api --paginate` response into closed milestones.
  *
- * `--paginate` concatenates one top-level array per page, so the pages are
- * split on the `][` boundary before parsing. **Throws** on unreadable output:
- * reporting a malformed response as "no closed milestones" would cache that
- * emptiness for the TTL and quietly stop the sweep.
+ * `--paginate` concatenates one top-level array per page with no guaranteed
+ * separator, so the pages are parsed with a string-aware scan rather than a
+ * boundary regex (Issue #2895). **Throws** on unreadable output: reporting a
+ * malformed response as "no closed milestones" would cache that emptiness
+ * for the TTL and quietly stop the sweep.
  */
 export function parseClosedMilestones(raw: string): ClosedMilestone[] {
   return parseJsonArrayPages(raw).flatMap((item) => {
@@ -171,41 +173,6 @@ function parseIssueNumbers(raw: string): number[] {
       ? [number]
       : [];
   });
-}
-
-/**
- * Split concatenated `--paginate` pages and parse each as a JSON array.
- *
- * Throws when a page is not a JSON array — an unreadable response must not be
- * indistinguishable from an empty one.
- */
-function parseJsonArrayPages(raw: string): unknown[] {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return [];
-  const out: unknown[] = [];
-  const chunks = trimmed.split(/\]\s*\[/);
-  for (let index = 0; index < chunks.length; index++) {
-    // Only the split itself may restore a bracket: a first chunk that does not
-    // already open an array, or a last one that does not close it, is not a
-    // page this parser lost a bracket from — it is not an array at all.
-    const opened = index === 0 ? chunks[index]! : `[${chunks[index]}`;
-    const closed = index === chunks.length - 1 ? opened : `${opened}]`;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(closed);
-    } catch (err) {
-      throw new Error(
-        `gh returned output that is not a JSON array: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-    if (!Array.isArray(parsed)) {
-      throw new Error("gh returned JSON that is not an array");
-    }
-    out.push(...parsed);
-  }
-  return out;
 }
 
 /** The production dependency set. */
@@ -232,6 +199,8 @@ export function createDefaultSweepDeps(): ClosedMilestoneSweepDeps {
  *
  * Never throws: every fault is recorded in {@link ClosedMilestoneSweepResult}
  * and logged, and the milestone stays unswept so the next scan retries it.
+ * A repository with no checkout directory on this host is skipped with an
+ * empty, error-free result.
  */
 export async function sweepClosedMilestones(
   options: ClosedMilestoneSweepOptions,
@@ -261,6 +230,20 @@ export async function sweepClosedMilestones(
     return result;
   }
   const repoPath = options.repoPath ?? repoCheckoutPath(workDir, repo);
+
+  // No checkout on this host (never cloned here, or removed): nothing to
+  // sweep, so skip quietly before spending gh calls on its milestones (#2894).
+  try {
+    await Deno.stat(repoPath);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return result;
+    const message = err instanceof Error ? err.message : String(err);
+    result.errors.push(
+      `Could not inspect the checkout ${repoPath}: ${message}`,
+    );
+    return result;
+  }
+
   const ttlMs = options.listingTtlMs ??
     DEFAULT_CLOSED_MILESTONE_LISTING_TTL_MS;
 
