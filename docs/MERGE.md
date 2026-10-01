@@ -955,17 +955,33 @@ local HEAD did.
 
 A PR that conflicts with its base cannot run CI, so the merge-conflict pass
 merges the base branch in for real rather than side-picking. That pass is
-bounded by **two concluded attempts, with no wait between them** —
-`DEFAULT_MAX_CONFLICT_ATTEMPTS`
-([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
-the first attempt and one retry against whatever the base has become since
-(Issue #2305). The second judged failure runs the abandon-and-restart rung, and
-no outcome of the *scan's* spent-budget route asks a person at all (Issue #2310);
-the resolution processor's own last escalation goes with the next sub-issue under
- #2298. A PR one concluded failure in is due
-again on the very next pass: the four-hour cooldown that used to sit between
-the attempts bought nothing a moved base does not, and two hosts are kept off
-one PR by the cross-host lock rather than by a wait.
+bounded by **three concluded attempts, shared across every pass that works the
+PR** — `CONFLICT_RESOLUTION_BUDGET`
+([`merge_conflict_markers.ts`](../worker/deno/lib/merge_conflict_markers.ts),
+Issue #2996) — one budget, tallied from marker comments on the PR itself
+(`pass="ladder"` for the stale-verdict ladder, `pass="sync"` for the milestone
+sync and `pass="takeover"` for the takeover rung; a legacy marker carrying no
+`pass=` reads as `ladder`), so the same PR cannot be given extra attempts just
+by being worked through more than one pass. The third judged failure runs the
+abandon-and-restart rung, and no outcome of the *scan's* spent-budget route
+asks a person at all (Issue #2310); the resolution processor's own last
+escalation goes with the next sub-issue under #2298.
+
+**A failed attempt leaves the PR to its owner for a bounded window, rather
+than no wait at all** (Issue #2996, superseding the "no wait between them"
+stance of Issue #2305 on this point). The next attempt is due once
+`CONFLICT_OWNER_CHECK_HOURS` (2 hours) have passed with the PR's head SHA
+unchanged since the failed attempt — or at once if the head has already moved,
+since a moved head is a different merge the owner cannot have been still
+reviewing. A legacy failure marker with no recorded head, or a current head
+that cannot be read, cannot prove the head moved, so the 2-hour spacing
+applies; a failure with no readable timestamp is due at once (the three-attempt
+budget still bounds it regardless). While the PR waits out that window it is
+recorded with the `owner-check-pending` skip reason and stays labelled and
+queued — see
+[the merge-conflict workflow](workflows/merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)
+for the full decision and its flowchart. Two hosts are still kept off one PR by
+the cross-host lock, never by this spacing.
 
 That rung closes the PR — never force-pushes it — and re-queues its originating
 issue. A pickup label the issue already carries is kept as it is, so a restart

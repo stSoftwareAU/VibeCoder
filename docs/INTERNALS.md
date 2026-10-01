@@ -3845,7 +3845,7 @@ side is taken from.
 Only a file **every** rung leaves undecided aborts the merge; since
 Issue #1778 that abortion reaches nobody while the branch's conflict budget
 still has an attempt in it — it is charged to the ledger, named in one log line
-`conflict attempt n of 2 failed at rung <rung>`, and the exhausted budget is
+`conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
 what reaches for the roll-back. An
 agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
 or leaves a conflict marker behind is a failed rung: the merge is aborted and
@@ -4195,13 +4195,18 @@ flowchart TD
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same
-**budget of two concluded attempts, with no wait between them** (Issue #2305)
-that a conflicting PR gets:
+**budget of three concluded attempts, with no wait between them** (Issue
+#2305; the budget moved from two to three, and the shared tally, under Issue
+#2996) that a conflicting PR gets:
 [milestone_sync_streak.ts](../worker/deno/lib/milestone_sync_streak.ts) exports
 `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as
-[`DEFAULT_MAX_CONFLICT_ATTEMPTS`](../worker/deno/lib/pr_merge_conflict_scan.ts)
+[`CONFLICT_RESOLUTION_BUDGET`](../worker/deno/lib/merge_conflict_markers.ts)
 itself — one constant, two consumers, so the two ladders cannot drift apart
-(Issue #1766).
+(Issue #1766). The milestone ledger's own pacing is unchanged by Issue #2996:
+it is host-local and still has no wait between its concluded attempts; the
+2-hour owner-check spacing described in
+[the merge-conflict workflow](workflows/merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)
+applies only to the PR scan's shared, PR-side tally.
 
 A PR carries its attempt history in marker comments on the PR; a milestone
 branch has nowhere to write one, so the ledger is persisted per branch in
@@ -4232,9 +4237,9 @@ Three rules decide what the ledger does, and each is a pure helper:
   `not-charged`. An attempt left open reads as disrupted on the next cycle —
   the run died before the conflict was judged, so the conflict was never
   actually tried (the PR ladder's marker rule from #395 and #1693).
-- **A failure paces nothing.** A `failed` conclusion charges one of the two
+- **A failure paces nothing.** A `failed` conclusion charges one of the three
   attempts and writes no deferral (Issue #2305): the branch is due again on the
-  very next cycle, and the budget itself — two runs, then the roll-back — is
+  very next cycle, and the budget itself — three runs, then the roll-back — is
   what bounds the retrying. `isConflictAttemptDue` is therefore "no attempt is
   open on this host"; a sibling host's live attempt is refused by the sync
   claim (`milestone_sync_claim.ts`), which is cross-host as the ledger is not.
@@ -4244,7 +4249,7 @@ Three rules decide what the ledger does, and each is a pure helper:
   is a branch whose roll-back **could not merge** (Issue #2311), which is the
   end of the automatic ladder and no longer asks a human to release it. That
   fallback records the tip it answered for in `fallbackDefaultSha`, and a
-  default tip that has moved past it re-arms the two runs — new commits are a
+  default tip that has moved past it re-arms the three runs — new commits are a
   different merge, and the same `merge-fallback` flag collects what they find.
   The alternative was a branch that sat out every remaining cycle for ever with
   nobody asked to look at it; the cost is bounded by the default branch's own
@@ -4261,7 +4266,7 @@ stateDiagram-v2
     Idle --> Open: openConflictAttempt
     Open --> Idle: conclude disrupted / not-charged<br/>(budget untouched)
     Open --> Idle: conclude failed<br/>(+1 attempt, due again at once)
-    Idle --> Exhausted: conflictAttempts == budget (2)
+    Idle --> Exhausted: conflictAttempts == budget (3)
     Open --> Idle: resetConflictLedgerOnSuccess
     Exhausted --> Idle: resetConflictLedgerOnSuccess
 ```
@@ -4291,7 +4296,7 @@ is the branch's to answer for:
 | Merged                                                          | `resetConflictLedgerOnSuccess`             |
 
 **Nothing is posted while an attempt remains.** A conflict failure produces one
-log line — `conflict attempt n of 2 failed at rung <rung>` — and no comment, no
+log line — `conflict attempt n of 3 failed at rung <rung>` — and no comment, no
 label and no issue. The per-conflict analysis escalation Issue #1559 posted on
 the first conflicting commit is gone: it fired before any of the automatic
 attempts had been spent, which is exactly the "needs-human while a rung
@@ -4303,7 +4308,7 @@ notice that follows. On `merged: true` the ledger is reset, `rollbacks` is
 incremented and the reverted SHAs are recorded; on `merged: false` the notice
 goes out with **no** `needs-human` label, the budget stays spent, and
 `fallbackDefaultSha` records the tip answered for so a moved default branch
-re-arms the two runs. Without a clone git
+re-arms the three runs. Without a clone git
 runner the default still logs `budget exhausted: roll-back not yet available`.
 
 **Every behind branch is offered the agent rung; the budget decides**

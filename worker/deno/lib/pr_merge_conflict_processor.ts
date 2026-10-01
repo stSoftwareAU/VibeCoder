@@ -74,7 +74,11 @@ import {
 } from "./conflict_verdict_ladder.ts";
 import {
   type ConflictLadderRung,
+  conflictAttemptMarker,
+  CONFLICT_RESOLUTION_BUDGET,
+  conflictFailedMarker,
   conflictNudgeMarker,
+  conflictResolvedMarker,
   conflictRungFailedMarker,
   isConflictHeadSha,
 } from "./merge_conflict_markers.ts";
@@ -115,10 +119,6 @@ import {
 } from "./conflict_abandon_restart.ts";
 import {
   clearMergeConflictLabel,
-  CONFLICT_ATTEMPT_MARKER,
-  CONFLICT_FAILED_MARKER,
-  CONFLICT_RESOLVED_MARKER,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
   recordConflictDecision,
 } from "./pr_merge_conflict_scan.ts";
@@ -213,7 +213,7 @@ export interface MergeConflictProcessorDeps {
   maxRateLimitRetries?: number;
   /** Unique worker identity for the cross-host PR lock. */
   workerId?: string;
-  /** Attempts allowed before escalating (default 2). */
+  /** Attempts allowed before escalating (default {@link CONFLICT_RESOLUTION_BUDGET}). */
   maxAttempts?: number;
   /** Label applied on escalation. Defaults to `needs-human`. */
   needsHumanLabel?: string;
@@ -438,10 +438,11 @@ export function buildAttemptComment(
   attemptNumber: number,
   maxAttempts: number,
   baseBranch: string,
+  headSha: string,
   disruptedCount: number = 0,
 ): string {
   const lines = [
-    `${CONFLICT_ATTEMPT_MARKER} n="${attemptNumber}" -->`,
+    conflictAttemptMarker(attemptNumber, "ladder", headSha),
     `🔀 **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts}**`,
     "",
     `This PR conflicts with \`${baseBranch}\`, so no CI can run on it. The ` +
@@ -584,6 +585,7 @@ export function buildRuleResolutionSection(
 export function buildResolvedComment(
   baseBranch: string,
   branchName: string,
+  headSha: string,
   detail?: string,
   ruleResolved: readonly ResolvedConflictFile[] = [],
   issueContext?: ConflictIssueContext | null,
@@ -593,7 +595,7 @@ export function buildResolvedComment(
     ? detail.trim()
     : `Merged \`${baseBranch}\` into \`${branchName}\` and pushed the result.`;
   return [
-    `${CONFLICT_RESOLVED_MARKER}\n✅ **Merge conflict resolved**`,
+    `${conflictResolvedMarker("ladder", headSha)}\n✅ **Merge conflict resolved**`,
     "",
     body,
     ...buildIntentOverrideSection(parseIntentOverrides(detail), issueContext),
@@ -626,6 +628,7 @@ export function buildFailedComment(
   attemptNumber: number,
   maxAttempts: number,
   baseBranch: string,
+  headSha: string,
   failureDetail: string,
   conflictedFiles: readonly string[],
   timings?: string,
@@ -634,7 +637,7 @@ export function buildFailedComment(
     ? ["", "Conflicted files:", ...conflictedFiles.map((f) => `- \`${f}\``)]
     : [];
   return [
-    `${CONFLICT_FAILED_MARKER} n="${attemptNumber}" -->`,
+    conflictFailedMarker(attemptNumber, "ladder", headSha),
     `❌ **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts} failed**`,
     "",
     `Merging \`${baseBranch}\` in did not produce a mergeable branch: ` +
@@ -1030,7 +1033,7 @@ async function resolveConflict(
     logger,
     deps,
     workDir,
-    maxAttempts = DEFAULT_MAX_CONFLICT_ATTEMPTS,
+    maxAttempts = CONFLICT_RESOLUTION_BUDGET,
   } = processorDeps;
   const run = deps.git.runGitCommand;
   const attemptNumber = input.attemptCount + 1;
@@ -1132,6 +1135,7 @@ async function resolveConflict(
     attemptNumber,
     maxAttempts,
     baseBranch,
+    headBeforeMerge,
     input.disruptedCount ?? 0,
   );
   let attemptCommentId: number | null = null;
@@ -1237,6 +1241,7 @@ async function resolveConflict(
         }`,
         attemptNumber,
         timer,
+        headBeforeMerge,
       );
     }
 
@@ -1324,6 +1329,7 @@ async function resolveConflict(
           agentOutcome.error.message,
           attemptNumber,
           timer,
+          headBeforeMerge,
         );
       }
       const { terminated, providerUnavailable } = agentOutcome.value;
@@ -1371,6 +1377,7 @@ async function resolveConflict(
         }`,
         attemptNumber,
         timer,
+        headBeforeMerge,
       );
     }
     if (await hasConflictMarkers(run, workDir, conflictedFiles)) {
@@ -1382,6 +1389,7 @@ async function resolveConflict(
         "the working tree still contains conflict markers",
         attemptNumber,
         timer,
+        headBeforeMerge,
       );
     }
   }
@@ -1418,6 +1426,7 @@ async function resolveConflict(
       `commit/push failed: ${finalise.error.message}`,
       attemptNumber,
       timer,
+      headBeforeMerge,
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
@@ -1451,6 +1460,7 @@ async function resolveConflict(
       }`,
       attemptNumber,
       timer,
+      headBeforeMerge,
     );
   }
 
@@ -1473,6 +1483,7 @@ async function resolveConflict(
         : `'${baseBranch}' is still not merged into '${branchName}'`,
       attemptNumber,
       timer,
+      headBeforeMerge,
     );
   }
 
@@ -1485,6 +1496,7 @@ async function resolveConflict(
       buildResolvedComment(
         baseBranch,
         branchName,
+        headBeforeMerge,
         detail,
         ruleResolved,
         issueContext,
@@ -1951,8 +1963,9 @@ function runAbandonRestart(
  *
  * **No route here applies `needs-human`**, to the PR or to its issue. The
  * budget-spent caller still escalates on a declined abandon, because there the
- * PR has failed two real merges and has nowhere left to go. Here nothing has
- * been spent and nothing is broken — the verdict is merely stale — so a
+ * PR has failed every real merge the shared budget allows and has nowhere
+ * left to go. Here nothing has been spent and nothing is broken — the
+ * verdict is merely stale — so a
  * declined or failed rung records itself and stops at this head. The stall
  * watchdog (`merge_conflict_stall_watchdog.ts`, Issue #569) is the backstop,
  * and a later head or base move restarts the ladder at a real merge attempt.
@@ -2215,7 +2228,7 @@ async function escalateNoCommonAncestor(
  *
  * GH013 is not a resolution the agent got wrong — the merge itself succeeded,
  * and the same refusal arrives on every run for as long as the rule stands.
- * Charging it spent the PR's two-attempt budget on a push that could never
+ * Charging it spent the PR's shared resolution budget on a push that could never
  * land and escalated a conflict nobody had failed to resolve. So this posts no
  * `CONFLICT_FAILED_MARKER` and deletes the attempt marker instead: the next
  * scan counts neither a concluded attempt nor an open one.
@@ -2376,10 +2389,11 @@ async function failAttempt(
   failureDetail: string,
   attemptNumber: number,
   timer: ConflictStageTimer,
+  headSha: string,
 ): Promise<Result<MergeConflictResult>> {
   const { logger, deps } = processorDeps;
   const maxAttempts = processorDeps.maxAttempts ??
-    DEFAULT_MAX_CONFLICT_ATTEMPTS;
+    CONFLICT_RESOLUTION_BUDGET;
   const { repo, prNumber } = input;
 
   logger.warn("Merge-conflict attempt failed", {
@@ -2399,6 +2413,7 @@ async function failAttempt(
         attemptNumber,
         maxAttempts,
         input.baseBranch,
+        headSha,
         failureDetail,
         conflictedFiles,
         recordStageTimings(input, processorDeps, timer),
