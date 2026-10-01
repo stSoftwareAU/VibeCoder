@@ -78,6 +78,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "issue_executor_split",
   // Reviewer sub-agents (Issue #2575). Host-wide only.
   "issue_reviewer_agents",
+  // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
+  "fleet_run_archive",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both
@@ -105,6 +107,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "progress_extension_stall_seconds",
   // Working-tree sampling interval (Issue #4295)
   "progress_extension_check_seconds",
+  // Screenshot gate's one extra in-run agent turn (Issue #2960)
+  "screenshot_retry_timeout_seconds",
   // Call-storm stall guard (Issue #2230)
   "call_storm_enabled",
   "call_storm_calls",

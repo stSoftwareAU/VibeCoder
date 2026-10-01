@@ -134,6 +134,7 @@ account, worldwide, with no relationship to the operator.
 | **Cloned repository contents** | Anyone who can land a commit, or open a PR whose head branch a run checks out | `CLAUDE.md` / `AGENTS.md` agent instructions, `quality.sh` and everything it runs, test names and assertion messages quoted back into remediation prompts, workflow files, symlinks, and committed images |
 | **Attachments and images** | Any user, on any of the above | Text, QR codes or low-contrast overlays aimed at the agent — a channel no text delimiter can fence |
 | **Upstream packages and toolchains** | Whoever compromises a registry or release | Code that runs on the host with the worker's own privileges, outside every GitHub-facing control |
+| **Fleet run archive** (optional `fleet_run_archive`) | Whoever can write to the operator-configured archive repository | The archive name is fenced into the prompt; its contents are fetched by the run itself at runtime (`gh api repos/<archive>/contents/...`), so the prompt instructs the run to treat everything it reads back as untrusted data, never instruction, under the standing untrusted-data rules. The run reads read-only, and the `gh` guard confines writes to the issue's own claim repository |
 
 ## 💥 Attack paths
 

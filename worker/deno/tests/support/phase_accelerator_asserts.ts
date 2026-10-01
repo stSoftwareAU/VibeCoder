@@ -27,6 +27,9 @@ import {
 /** The bundle text an `ok` collection returns. */
 export const GRAFT_BUNDLE = "export function parseDate() {}";
 
+/** The graph directory an `ok` collection names (Issue #2915). */
+export const GRAFT_GRAPH_DIR = "/tmp/repo/.git/graft";
+
 /** An `ok` Graft collection. */
 export function okGraftOutcome(): GraftContextResult {
   return {
@@ -37,6 +40,7 @@ export function okGraftOutcome(): GraftContextResult {
     nodeCount: 820,
     callEdgeCount: 1204,
     bundle: GRAFT_BUNDLE,
+    graphDir: GRAFT_GRAPH_DIR,
   };
 }
 

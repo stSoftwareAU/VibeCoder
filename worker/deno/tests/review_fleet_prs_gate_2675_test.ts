@@ -11,6 +11,7 @@ import {
   noTestAdded,
   REVIEW_MARKER,
   reviewedAtHead,
+  type RollupContextNode,
   runWithTimeout,
   type SearchPr,
   skipReason,
@@ -93,6 +94,7 @@ Deno.test("authorKind: Dependabot and the fleet accounts only", () => {
 const searchPr = (
   overrides: Partial<SearchPr> = {},
   rollup: string | null = "SUCCESS",
+  contexts?: RollupContextNode[],
 ): SearchPr => ({
   number: 1,
   title: "t",
@@ -105,7 +107,12 @@ const searchPr = (
   author: { login: "stservice" },
   commits: {
     nodes: [{
-      commit: { statusCheckRollup: rollup === null ? null : { state: rollup } },
+      commit: {
+        statusCheckRollup: rollup === null ? null : {
+          state: rollup,
+          ...(contexts ? { contexts: { nodes: contexts } } : {}),
+        },
+      },
     }],
   },
   reviews: { nodes: [] },
@@ -140,6 +147,50 @@ Deno.test("skipReason: only a green, mergeable, unreviewed, non-draft PR is read
     skipReason(searchPr({ reviews: approved }), "nleck"),
     "already-reviewed",
   );
+});
+
+Deno.test("skipReason: a red rollup whose every red check is cancelled is ci-cancelled (Issue #2916)", () => {
+  const cancelled: RollupContextNode[] = [
+    { __typename: "CheckRun", conclusion: "CANCELLED" },
+    { __typename: "CheckRun", conclusion: "CANCELLED" },
+    // A green check beside them does not matter.
+    { __typename: "CheckRun", conclusion: "SUCCESS" },
+  ];
+  assertEquals(
+    skipReason(searchPr({}, "FAILURE", cancelled), "nleck"),
+    "ci-cancelled",
+  );
+  assertEquals(
+    skipReason(searchPr({}, "ERROR", cancelled), "nleck"),
+    "ci-cancelled",
+  );
+});
+
+Deno.test("skipReason: a real failure anywhere keeps the PR ci-failed (Issue #2916)", () => {
+  const cancelledPlusFailure: RollupContextNode[] = [
+    { __typename: "CheckRun", conclusion: "CANCELLED" },
+    { __typename: "CheckRun", conclusion: "FAILURE" },
+  ];
+  assertEquals(
+    skipReason(searchPr({}, "FAILURE", cancelledPlusFailure), "nleck"),
+    "ci-failed",
+  );
+  // A red commit-status context is a real failure too, whatever the
+  // cancelled CheckRuns beside it say.
+  const cancelledPlusStatus: RollupContextNode[] = [
+    { __typename: "CheckRun", conclusion: "CANCELLED" },
+    { __typename: "StatusContext", state: "ERROR" },
+  ];
+  assertEquals(
+    skipReason(searchPr({}, "FAILURE", cancelledPlusStatus), "nleck"),
+    "ci-failed",
+  );
+});
+
+Deno.test("skipReason: a red rollup with no contexts is ci-failed (Issue #2916)", () => {
+  // `contexts` is optional on the query result, and a FAILURE rollup from
+  // an older query shape carried none.
+  assertEquals(skipReason(searchPr({}, "FAILURE"), "nleck"), "ci-failed");
 });
 
 Deno.test("reviewedAtHead: approvals, change requests and the skill's own comment reviews count at the head commit only", () => {

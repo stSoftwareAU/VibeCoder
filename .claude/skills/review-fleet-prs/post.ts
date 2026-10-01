@@ -253,7 +253,7 @@ async function main() {
 
   if (outcome === "changes_requested") {
     await notify(
-      "Fable sent a PR back",
+      "Reviewer sent a PR back",
       `${pr.repo}#${pr.number}: ${review.findings.length} finding(s)`,
     );
   } else if (outcome === "held") {

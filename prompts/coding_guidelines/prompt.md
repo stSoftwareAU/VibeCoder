@@ -719,6 +719,16 @@ unintended question-answering run or — more commonly — is silently stripped 
 
 That exception is about labelling an **existing** issue. On an issue you file yourself it does not apply: every reserved label you put on a follow-up you just created, `needs-human` included, is removed after creation. Say `needs-human` in the hand-off message instead.
 
+**Remove only what you can prove you added.** Code you write that removes or
+releases a label (or similar shared GitHub state) must have recorded provenance
+at add time: the label was absent before the add, or a marker comment or log
+entry that code path wrote. An idempotent `--add-label` succeeding is not
+provenance. `needs-human`, `failed` and `failed-once` can come from several
+actors; when ownership cannot be proven, leave the label alone, and add a test
+where the label already exists before the add and assert it is not removed
+later. `CODING-STANDARDS.md` → **Automation and Shared GitHub State** holds the
+full rule.
+
 <!-- guidelines-layer: code -->
 
 ## Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo
@@ -1038,6 +1048,19 @@ the externally meaningful failure against the unfixed code and passes after
 the fix. State this linkage in the PR summary. Existing direct or indirect
 behavioural coverage may already be sufficient for a refactor or presentation
 change; explain the verification rather than manufacturing a brittle test.
+
+**A red run counts only against the base branch.** The regression test must
+fail against the unfixed base-branch production code with the base branch's
+own test doubles; if the change edits a fake, fixture or stub, run the new
+test with the new double against the base-branch production code — if it
+passes there, the red came only from the modified double and proves nothing.
+When the fault is not reproduced, do not change production behaviour or a
+durable format (stored keys, schemas, wire or file formats) on an unverified
+diagnosis: first confirm the premise against the base-branch code (for
+example, what the production adapter actually accepts), or say the fault is
+undiagnosed or already fixed and only pin the current behaviour. When the
+issue cites a logged error line, start the reproducing test from that exact
+input and quote the line in the PR summary.
 
 **Do not hardcode to the tests.** Write the implementation to solve the general
 problem, not the specific inputs the tests happen to use. Special-casing a

@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, a Fable reviewer checks each PR; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review.
 ---
 
 # Review fleet PRs
@@ -9,7 +9,7 @@ Reviews the open PRs that Dependabot and the fleet accounts raise across the
 repos in this checkout's `.config.json`, as the signed-in `gh` user. The aim
 is that most PRs are approved without the owner: CI is clean, new
 functionality is tested where appropriate, no existing test is meaningfully
-changed, and a Fable review is happy.
+changed, and the review is happy.
 
 Start it once, in a Claude Code session opened in the VibeCoder checkout, and
 leave the session running:
@@ -89,7 +89,9 @@ print the minted token, since tracing is suspended around the mint.
    gets the review.
 2. **Nothing is reviewed until CI is green.** Pending checks wait; failing
    checks, merge conflicts and drafts belong to the fleet, so leave them
-   alone and post nothing.
+   alone and post nothing. A PR whose only red checks are cancelled runs is
+   infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
+   once per head, and it is left alone exactly like `ci-failed`.
 3. **Judge the safety net, not test count.** Read the target repository's
    canonical testing standard. New behaviour or a real bug fix usually needs
    a test that would fail on the regression, unless existing tests already
@@ -114,8 +116,8 @@ print the minted token, since tracing is suspended around the mint.
 7. **A pre-existing problem the PR did not cause gets its own issue.** If
    a dark-theme PR passes by a cross-site scripting bug that was already on
    the default branch, it would be unfair to hold the PR up over it, but
-   now that it has been found it must not be forgotten: Fable reports it
-   separately, and it is filed as a new issue in the PR's repo (linked from
+   now that it has been found it must not be forgotten: the reviewer
+   reports it separately, and it is filed as a new issue in the PR's repo (linked from
    the review) without affecting the outcome. **If the PR caused the
    problem, it is never an unrelated issue:** had the dark-theme change
    itself introduced the cross-site scripting bug, it is a blocking finding
@@ -153,7 +155,7 @@ with no model involved (`dependabot.ts`):
 - **Approved at its head and not yet armed:** arms auto-merge (squash where
   the repo allows it), so it merges as soon as every required check passes.
 
-Dependabot PRs are still reviewed by Fable like any other; this upkeep only
+Dependabot PRs are still reviewed like any other; this upkeep only
 gets an approved one merged. The pass reports what it did in `upkeep`. A
 failed upkeep action is reported there as `<repo>#<n> auto-merge failed:
 <first line of the error>` (or `rebase failed: ...`), logged, and does not
@@ -189,12 +191,14 @@ the ready PRs (possibly none) and exits.
 
 ## Reviewing the ready PRs
 
-### 1. Fable review
+### 1. Review
 
 Take at most **5** PRs per round, so a backlog cannot burn a night's quota in
 one go; the rest come back on the next gate run. Launch one Agent per PR in a
-single message so they run in parallel, each with `model: "fable"` and
-`subagent_type: "general-purpose"`, and this prompt (fill in the fields):
+single message so they run in parallel, each with
+`subagent_type: "fleet-pr-reviewer"` — the agent definition in
+`.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-opus-5-5`
+at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
 
 > You are reviewing PR #{number} in {repo} ("{title}"), authored by {author}
 > ({kind}), head commit {headSha}, base {baseRef}. CI has passed. You are a
@@ -278,8 +282,8 @@ that PR; the next gate run reports it again.
 
 ### 2. Post
 
-For each reply, write `{"pr": <the gate's ready entry>, "review": <Fable's
-reply>}` to a file in the scratchpad and run, from this skill's base
+For each reply, write `{"pr": <the gate's ready entry>, "review": <the
+reviewer's reply>}` to a file in the scratchpad and run, from this skill's base
 directory:
 
 ```bash
@@ -288,12 +292,12 @@ deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XD
 
 The script does the rest, so do not post anything yourself:
 
-- It files each of Fable's `unrelatedIssues` first: they are already on
+- It files each of the reviewer's `unrelatedIssues` first: they are already on
   the base branch, so they are filed even if the PR has since moved or
   merged.
 - It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
-- It decides the outcome: Fable findings mean **request changes** (the
+- It decides the outcome: reviewer findings mean **request changes** (the
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
   worker ignores; otherwise **approve**.
@@ -312,7 +316,7 @@ The script does the rest, so do not post anything yourself:
 It prints `{ posted, outcome?, filedIssues?, labelError?, reason? }`.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
-code 2 means Fable's reply was malformed: nothing was posted, and the PR
+code 2 means the reviewer's reply was malformed: nothing was posted, and the PR
 comes back on the next gate pass.
 
 ### 3. Learn from recurring findings

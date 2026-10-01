@@ -297,6 +297,12 @@ export interface WorkerConfig {
    */
   progressExtensionCheckSeconds?: number;
   /**
+   * Timeout in seconds for the screenshot gate's one extra in-run agent turn
+   * (Issue #2960). Optional; `loadConfig` always populates it from
+   * `OPERATIONAL_DEFAULTS`.
+   */
+  screenshotRetryTimeoutSeconds?: number;
+  /**
    * Stop a run making dozens of tool calls a minute with no working-tree
    * change (`.config.json` `call_storm_enabled`, Issue #2230; default: true).
    *
@@ -491,6 +497,8 @@ export interface WorkerConfig {
    * defined cheaper sub-agents (Issue #2575). Host-wide only. Default `false`.
    */
   issueReviewerAgents: boolean;
+  /** Fleet-wide run archive repo slug for measurement issues (Issue #2930). Unset = feature off. */
+  fleetRunArchive?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -1284,6 +1292,8 @@ export interface ConfigFile {
   progress_extension_stall_seconds?: number;
   /** Seconds between working-tree progress checks (Issue #4295) */
   progress_extension_check_seconds?: number;
+  /** Timeout for the screenshot gate's one extra agent turn (Issue #2960) */
+  screenshot_retry_timeout_seconds?: number;
   /** Stop a run that polls instead of working (Issue #2230) */
   call_storm_enabled?: boolean;
   /** Tool calls in the window at which a run is a call storm (Issue #2230) */
@@ -1420,6 +1430,8 @@ export interface ConfigFile {
   issue_executor_split?: boolean;
   /** Whether `issue` runs use the defined reviewer sub-agents (Issue #2575) */
   issue_reviewer_agents?: boolean;
+  /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
+  fleet_run_archive?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */

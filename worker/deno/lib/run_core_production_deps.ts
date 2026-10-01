@@ -4247,6 +4247,7 @@ export async function createProductionRunCoreDeps(
         issueLabels: issueData.labels ?? [],
         issueAuthor: issueData.author,
         config,
+        githubUser,
       }, { ghFn: runGhCommand, timelineCache });
       if (integrity.blocked) {
         logger.warn(

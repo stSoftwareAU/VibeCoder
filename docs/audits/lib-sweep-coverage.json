@@ -252,6 +252,7 @@
         "worker/deno/lib/idle_task_milestone.ts",
         "worker/deno/lib/idle_task_snapshot.ts",
         "worker/deno/lib/idle_task_templates/best_practices_template.ts",
+        "worker/deno/lib/idle_task_trust.ts",
         "worker/deno/lib/imgbb_upload.ts",
         "worker/deno/lib/issue_close_notifier.ts",
         "worker/deno/lib/issue_comment_pages.ts",
@@ -2357,6 +2358,42 @@
       "sweptAt": "0a06cd2a0b62aefef8a6820fe2d0b0c5ce09cf99",
       "paths": [
         "worker/deno/lib/json_array_pages.ts"
+      ]
+    },
+    {
+      "issue": 2896,
+      "chunk": "top-up-2896",
+      "title": "top-up: the milestone sync unshallow merge retry",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2896",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: git_merge_unshallow_retry.ts (#2896)",
+      "status": "claimed",
+      "sweptAt": "0a06cd2a0b62aefef8a6820fe2d0b0c5ce09cf99",
+      "paths": [
+        "worker/deno/lib/git_merge_unshallow_retry.ts"
+      ]
+    },
+    {
+      "issue": 2960,
+      "chunk": "top-up-2960",
+      "title": "top-up: the screenshot-gate extra turn",
+      "ledger": "docs/audits/security-sweep-2960-screenshot-gate-retry.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: screenshot_gate_retry.ts (#2960)",
+      "status": "swept",
+      "sweptAt": "0a06cd2a0b62aefef8a6820fe2d0b0c5ce09cf99",
+      "paths": [
+        "worker/deno/lib/screenshot_gate_retry.ts"
+      ]
+    },
+    {
+      "issue": 2967,
+      "chunk": "top-up-2967",
+      "title": "top-up: repository formatters",
+      "ledger": "docs/audits/security-sweep-2967-repo-formatters.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: repo_formatters.ts (#2967)",
+      "status": "swept",
+      "sweptAt": "61810c45c1be79c395965d928a29ee8f38243e0b",
+      "paths": [
+        "worker/deno/lib/repo_formatters.ts"
       ]
     }
   ],

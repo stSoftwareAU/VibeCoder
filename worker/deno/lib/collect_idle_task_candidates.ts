@@ -77,6 +77,7 @@ import {
 import { verifyWorkOnContentIntegrity } from "./work_on_content_integrity.ts";
 import { buildBatchedGh } from "./timeline_batch.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+import { idleTaskIntegrityConfig } from "./idle_task_trust.ts";
 import { isIssueTimeDeferred } from "./time_deferral.ts";
 
 /**
@@ -176,11 +177,14 @@ export async function collectIdleTaskCandidates(
   // reserved discovery labels, `idle-task` is deliberately worker-appliable
   // (Issue #2022), so fleet logins are *included* here rather than excluded —
   // the worker must stay able to claim wrappers it (or a sibling host) filed.
-  const idleTaskTrustedAuthors = resolveFleetAuthors(
+  // Issue #2944: computed via the same helper pickup-time content integrity
+  // uses, so the scan and the later re-verification trust identical logins.
+  const idleTaskConfig = idleTaskIntegrityConfig(
+    config,
+    repo,
     options.githubUser,
-    repoAllowedAuthors,
-    config.fleetPrAuthors,
   );
+  const idleTaskTrustedAuthors = idleTaskConfig.allowedAuthors;
 
   // Issue #2882: adder-only widening of the `idle-task` origin trust set. A
   // known bot listed in `authorized_commenters` (e.g. the fleet PR-reviewer
@@ -305,11 +309,7 @@ export async function collectIdleTaskCandidates(
       issue,
       // Issue #2734: the per-repo map is dropped so the integrity check
       // reads this widened set, not the narrower per-repo one it holds.
-      {
-        ...config,
-        allowedAuthors: idleTaskTrustedAuthors,
-        allowedAuthorsByRepo: undefined,
-      },
+      idleTaskConfig,
       ghFn,
       diag,
       options.contentApprovalDeps,
