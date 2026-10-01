@@ -4682,9 +4682,12 @@ seam (Issue #2954).** A run that dies in the `setup` phase, or whose reason
 `detectHostFault` recognises, is the host's fault or the repository's, never
 the issue's, so `planCodingFailure` returns `applyLadder: false`: no
 `failed-once` / `failed`, and no escalating cooldown. The issue is released
-unlabelled with the release comment carrying the diagnosis, exactly as the
-`repo_config` case above. The same `isSetupFault` check also makes the run
-count towards the fast-failure repository back-off (`repo_fast_failure_tracker.ts`),
+unlabelled with the release comment carrying the diagnosis. This only
+short-circuits a failure that would otherwise step the ladder: a `repo_config`
+refusal that happens to fail in `setup` keeps the `record-only` handling of
+the case above — its one Paused comment, and still no label. The same
+`isSetupFault` check also makes the run count towards the fast-failure
+repository back-off (`repo_fast_failure_tracker.ts`),
 since a setup fault is exactly the kind of failure that back-off exists to
 catch regardless of how long the run took to die.
 

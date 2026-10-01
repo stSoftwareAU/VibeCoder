@@ -332,8 +332,13 @@ export function planCodingFailure(
   // A setup fault (Issue #2954) is the host's or the repository's, not the
   // issue's: no cooldownKind, so no `failed-once`, no `failed`, no
   // escalating cooldown — the issue is released unlabelled and the release
-  // comment carries the diagnosis.
-  if (isSetupFault({ phase: run.phase, reason: run.reason })) {
+  // comment carries the diagnosis. A `record-only` refusal (e.g. Issue
+  // #2220's milestone-branch refusal) keeps its own comment instead — it
+  // writes no label either way, so it falls through unchanged.
+  if (
+    decision.disposition === "ladder" &&
+    isSetupFault({ phase: run.phase, reason: run.reason })
+  ) {
     return { applyLadder: false, decision };
   }
 

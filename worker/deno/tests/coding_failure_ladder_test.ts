@@ -376,15 +376,29 @@ Deno.test("planCodingFailure - a host-fault reason is a setup fault even at the 
   assertEquals(plan.cooldownKind, undefined);
 });
 
-Deno.test("planCodingFailure - an ordinary execute-phase failure still steps the ladder (Issue #2954)", () => {
+Deno.test("planCodingFailure - a record-only milestone-branch refusal in setup keeps its comment (Issue #2220)", () => {
+  // The exact reason the setup phase returns for a milestone-branch
+  // refusal (Issue #2220) — copied literally from `SETUP_REASON` in
+  // tests/milestone_branch_refusal_release_test.ts.
+  const GH013 = [
+    "remote: error: GH013: Repository rule violations found for refs/heads/milestone/scan-20260910.",
+    "remote: - 5 of 6 required status checks are expected.",
+    "! [remote rejected] origin/Develop -> milestone/scan-20260910",
+  ].join("\n");
+  const SETUP_REASON =
+    "Failed to ensure milestone branch 'milestone/scan-20260910' for " +
+    `milestone 'Scan 20260910': Failed to push milestone branch ` +
+    `milestone/scan-20260910 to origin from Develop: ${GH013}`;
+
   const plan = planCodingFailure({
     success: false,
     expectedSkip: false,
-    phase: "execute",
-    reason: "No code changes and no useful output from Claude",
+    phase: "setup",
+    reason: SETUP_REASON,
   });
-  assertEquals(plan.applyLadder, true);
-  assertEquals(plan.cooldownKind, "non_transient");
+  assertEquals(plan.applyLadder, true, "the comment is written from there");
+  assertEquals(plan.cooldownKind, undefined, "no escalating cooldown");
+  assertEquals(plan.decision?.disposition, "record-only");
 });
 
 // ---------------------------------------------------------------------------
