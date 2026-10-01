@@ -104,7 +104,7 @@ EOF
 # Returns non-zero when the App token or the gate failed; sets $LAST_ERROR to
 # a one-line gist of why, for escalate_result to report.
 pass() {
-  local reviewer=() ready dir prompt minted errfile
+  local reviewer=() ready dir prompt minted errfile token_rc gate_rc
   LAST_ERROR=""
   errfile="$STATE_DIR/last-error"
   # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
@@ -114,9 +114,13 @@ pass() {
   # The minted token must never appear under `bash -x`: xtrace is suspended
   # from here until the App's login has been extracted from it.
   { local xtrace=$-; set +x; } 2>/dev/null
-  if ! minted=$(cd "$SKILL_DIR" && deno run --allow-read \
-    --allow-net=api.github.com --allow-env app_token.ts 2>"$errfile"); then
-    errors <"$errfile"
+  minted=$(cd "$SKILL_DIR" && deno run --allow-read \
+    --allow-net=api.github.com --allow-env app_token.ts 2>"$errfile")
+  token_rc=$?
+  # Replayed regardless of exit code: non-fatal diagnostics on the success
+  # path must still reach the log and the terminal.
+  [[ -s "$errfile" ]] && errors <"$errfile"
+  if [[ $token_rc -ne 0 ]]; then
     LAST_ERROR="reviewer App token failed: $(last_error_line "$errfile")"
     log "reviewer App token failed; skipping this pass"
     [[ $xtrace == *x* ]] && set -x
@@ -129,11 +133,15 @@ pass() {
   fi
   [[ $xtrace == *x* ]] && set -x
 
-  if ! ready=$(cd "$SKILL_DIR" && deno run --allow-run=gh --allow-read \
+  ready=$(cd "$SKILL_DIR" && deno run --allow-run=gh --allow-read \
     --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts \
     ${reviewer[@]+"${reviewer[@]}"} ${repo_arg[@]+"${repo_arg[@]}"} \
-    2>"$errfile"); then
-    errors <"$errfile"
+    2>"$errfile")
+  gate_rc=$?
+  # Same reasoning as the App token call above: gate.ts logs non-fatal
+  # upkeep failures (rebase/auto-merge) to stderr on its success path too.
+  [[ -s "$errfile" ]] && errors <"$errfile"
+  if [[ $gate_rc -ne 0 ]]; then
     LAST_ERROR="gate failed: $(last_error_line "$errfile")"
     log "gate failed; skipping this pass"
     return 1

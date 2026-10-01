@@ -25,6 +25,7 @@ async function fixture(
   tokenOutput = "",
   tokenExit = 0,
   escalateExit = 0,
+  gateStderr = "",
 ) {
   const home = await Deno.makeTempDir();
   const bin = `${home}/bin`;
@@ -46,6 +47,7 @@ async function fixture(
     exit ${escalateExit} ;;
 esac
 [ ${gateExit} = 0 ] || echo "gate: boom" >&2
+[ -n '${gateStderr}' ] && echo '${gateStderr}' >&2
 echo "GH_TOKEN=\${GH_TOKEN:-} $*" > "$HOME/gate-args"
 echo '${gateOutput}'; exit ${gateExit}`,
   );
@@ -208,8 +210,12 @@ Deno.test("run.sh never traces the minted App token, even under bash -x", async 
   assertStringIncludes((await claudeArgs(home))!, "GH_TOKEN=ghs_test");
 });
 
-Deno.test("run.sh escalates a failing gate pass with its error and no App token", async () => {
-  const home = await fixture("", 1);
+Deno.test("run.sh escalates a failing gate pass without leaking the App token to escalate.ts", async () => {
+  // A token is minted (and exported for gate.ts and Claude) before the gate
+  // fails, so this actually exercises escalate_result's `env -u GH_TOKEN`:
+  // with no token minted, GH_TOKEN was never set and the assertion below
+  // would pass even if `env -u GH_TOKEN` were dropped.
+  const home = await fixture("", 1, APP_TOKEN);
   const { code } = await run(home, "--once");
   assertEquals(code, 1);
   const args = await recorded(home, "escalate-args");
@@ -219,6 +225,25 @@ Deno.test("run.sh escalates a failing gate pass with its error and no App token"
   assertStringIncludes(
     (await recorded(home, "escalate-env"))!,
     "GH_TOKEN=unset",
+  );
+});
+
+Deno.test("run.sh logs gate.ts's non-fatal stderr even when the gate pass succeeds", async () => {
+  // gate.ts reports refused Dependabot upkeep (rebase/auto-merge failures)
+  // on stderr while still exiting 0 (#2950); that must still reach the log.
+  const home = await fixture(
+    JSON.stringify({ ready: [], skipped: {} }),
+    0,
+    "",
+    0,
+    0,
+    "owner/repo#7 auto-merge failed: review required",
+  );
+  const { code } = await run(home, "--once");
+  assertEquals(code, 0);
+  assertStringIncludes(
+    await Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`),
+    "owner/repo#7 auto-merge failed: review required",
   );
 });
 

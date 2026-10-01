@@ -71,7 +71,8 @@ New tests:
 - `worker/deno/tests/review_fleet_prs_runner_test.ts`:
   - `run.sh --once also runs housekeep, pruning old round directories`
   - `run.sh never traces the minted App token, even under bash -x`
-  - `run.sh escalates a failing gate pass with its error and no App token`
+  - `run.sh escalates a failing gate pass without leaking the App token to escalate.ts`
+  - `run.sh logs gate.ts's non-fatal stderr even when the gate pass succeeds`
   - `run.sh escalates a successful pass as ok`
   - `run.sh logs, but does not fail on, an escalate.ts failure`
 
