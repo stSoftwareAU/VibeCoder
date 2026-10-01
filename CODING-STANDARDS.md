@@ -301,6 +301,21 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A named test must exist.** Every test the PR summary names under Evidence or
+Test Plan, and every code comment or anchor that points at a test, must be a
+file in the PR's diff or already tracked at the head. Before raising the PR,
+check each named path with `git ls-files <path>`; a named-but-absent test is a
+blocking self-review finding — add the test or drop the claim, and never commit
+an anchor that references a test that does not exist.
+
+**A stub mirrors the real callee's contract.** When code shells out to another
+repository's binary or script, the test stub must reproduce that callee's
+documented contract: the inputs it actually reads (an index file, say, rather
+than a tree scan) and its exit codes on failure. A stub more permissive than the
+real callee masks the contract it stands in for and is a finding. Run the test
+against a real checkout of the callee, or name the contract the stub mirrors in
+the PR summary with a source link to the callee's code or docs.
+
 ### Choosing assertions
 
 - **UI / PWA:** Prefer real/headless-browser user journeys and visible states
