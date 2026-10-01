@@ -174,6 +174,12 @@ export function bindGraftRun(options: BindGraftRunOptions): GraftRun {
         `Graft tools: not handed to the agent — provider '${providerId}' ` +
           `has no MCP transport (Issue #2314)`,
       );
+    } else if (!result.graphDir) {
+      logger.warn(
+        `${GRAFT_TOOLS_UNAVAILABLE_MARKER} the collection reported ok but ` +
+          `named no graph directory, so there is nothing to point the ` +
+          `graft server at (Issue #2915)`,
+      );
     } else {
       wired = true;
       logger.info(
@@ -186,7 +192,7 @@ export function bindGraftRun(options: BindGraftRunOptions): GraftRun {
 
   const mcpConfig = (prior?: McpConfigRequest): McpConfigRequest => {
     if (!wired) return prior;
-    const graft = graftMcpServer(repoDir);
+    const graft = graftMcpServer(repoDir, result.graphDir ?? "");
     if (typeof prior === "object") {
       return {
         ...prior,

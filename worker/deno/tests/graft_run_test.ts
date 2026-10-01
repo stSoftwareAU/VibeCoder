@@ -43,6 +43,7 @@ function okCollection(): GraftContextResult {
     nodeCount: 820,
     callEdgeCount: 1204,
     bundle: "export function parseIsoDate(raw: string): number {}",
+    graphDir: "/tmp/checkout/.git/graft",
   };
 }
 
@@ -79,7 +80,12 @@ Deno.test("bindGraftRun - an ok collection on Claude gains the line and the serv
   assert(typeof mcp === "object", "the graft server must be requested");
   assertEquals(mcp.playwright, false, "no request means no browser grant");
   assertEquals(mcp.servers?.graft?.command, "graft");
-  assertEquals(mcp.servers?.graft?.args, ["mcp", "/tmp/checkout"]);
+  assertEquals(mcp.servers?.graft?.args, [
+    "--dir",
+    "/tmp/checkout/.git/graft",
+    "mcp",
+    "/tmp/checkout",
+  ]);
   assertEquals(mcp.servers?.graft?.env?.DO_NOT_TRACK, "1");
 
   assert(
@@ -153,6 +159,30 @@ Deno.test("bindGraftRun - every status short of ok adds neither half", () => {
     run.record({ toolCallCounts: { graft_find_code: 3 } });
     assertEquals(run.result.queries, undefined, "nothing was handed over");
   }
+});
+
+Deno.test("bindGraftRun - an ok collection with no graph directory withholds the tools loudly (Issue #2915)", () => {
+  const logger = recordingLogger();
+  const { graphDir: _graphDir, ...withoutGraphDir } = okCollection();
+  const run = bindGraftRun({
+    result: withoutGraphDir,
+    repoDir: "/tmp/checkout",
+    ...CLAUDE,
+    logger,
+  });
+  assertEquals(run.wired, false);
+  assertEquals(run.applyPrompt("p"), "p");
+  assertEquals(run.mcpConfig(undefined), undefined);
+  assert(
+    logger.lines.some((l) =>
+      l.level === "warn" &&
+      l.message.includes(GRAFT_TOOLS_UNAVAILABLE_MARKER) &&
+      l.message.includes("named no graph directory")
+    ),
+    `the fault must carry the marker, got: ${
+      logger.lines.map((l) => l.message).join(" | ")
+    }`,
+  );
 });
 
 Deno.test("bindGraftRun - a Gemini-routed run keeps the bundle and gets no tools", () => {

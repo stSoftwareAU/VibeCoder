@@ -570,6 +570,15 @@ build commands on unattended machines (`./quality.sh < /dev/null`,
 `npm test < /dev/null`) so a tool that unexpectedly reads stdin fails fast
 instead of hanging.
 
+**Never add worker-local paths to a target repository's lint/format config.**
+`graft/`, `.codegraph/`, or anything else listed in a checkout's
+`.git/info/exclude` are worker-internal state, not repository content — a PR
+must never add them to that repository's `.markdownlint*`, `.markdownlintignore`,
+`.prettierignore`, `deno.json` excludes, `.gitignore`, or any other lint, format
+or ignore config, however red the gate runs. A target repo's quality gate
+tripping over one of these paths is a worker environment fault: report it so it
+is fixed in the worker, rather than committing a workaround into that repo.
+
 ## Prompt Templates
 
 Each prompt type has exactly one editable template — `prompts/<type>/prompt.md`

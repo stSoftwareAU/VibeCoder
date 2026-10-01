@@ -1,18 +1,19 @@
 /**
- * Graft repo-context runner — build, ask, figures and `graft/` persistence
- * (Issue #2099, part of #2060).
+ * Graft repo-context runner — build, ask, figures and where the graph lives
+ * (Issue #2099, part of #2060; relocated out of the working tree by #2915).
  *
  * On a host whose `.config.json` sets `graft_context.enabled` (Issue #2098),
  * each run builds a [Graft](https://github.com/trailhq/Graft) tree-sitter code
  * graph of the checkout and asks it for a source bundle to inject beside the
  * repo-context docs. This module is the one place that does it:
  *
- *  1. resolve the clone's `info/exclude` and append `/graft/` to it, so the
- *     graph survives the next run's `git reset --hard` + `git clean -fd`;
- *  2. `graft build --no-gitignore --no-ignore` (300 s), timed;
- *  3. `graft ask --source <query>` (30 s), whose stdout is the bundle;
- *  4. read `graft/.graph/wiring.json` for the node count and the number of
- *     `calls` edges — the figures the run-stats comment reports.
+ *  1. resolve the clone's git directory and point Graft's global `--dir` at
+ *     `<git-dir>/graft`, so the graph never touches the working tree at all;
+ *  2. `graft --dir <graft-dir> build --no-gitignore --no-ignore` (300 s), timed;
+ *  3. `graft --dir <graft-dir> ask --source <query>` (30 s), whose stdout is
+ *     the bundle;
+ *  4. read `<graft-dir>/.graph/wiring.json` for the node count and the number
+ *     of `calls` edges — the figures the run-stats comment reports.
  *
  * ## The bundle is an accelerator, so nothing here fails a run
  *
@@ -31,34 +32,50 @@
  * `[GRAFT_QUERY_TRUNCATED]` line, so a thin bundle is never mistaken for a
  * full one.
  *
- * ## Why `info/exclude` and not `.gitignore`
+ * ## Why the git directory, and not the working tree
  *
- * `worker/deno/setup/gitignore_sync.ts` writes `.gitignore` once, at
- * `setup.sh` time, and that edit is uncommitted — `checkout_update.ts` runs
- * `git reset --hard` then `git clean -fd` on every run and reverts it, after
- * which an untracked, unignored `graft/` is deleted. The exclude file is
- * per-clone, survives reset/clean, and can never be staged, so it is the entry
- * that actually keeps the graph. `/graft/` is also added to
- * `REQUIRED_GITIGNORE_PATTERNS` (`gitignore_enforcer.ts`) so the graph can never be committed.
+ * The graph used to be written to a `graft/` directory at the checkout root,
+ * kept across runs by an `info/exclude` entry. That worked for
+ * `checkout_update.ts`'s `git reset --hard` + `git clean -fd`, but a repo's
+ * own quality gate runs *inside* that same working tree, and tools such as
+ * `markdownlint-cli2` walk every file they find regardless of a git exclude —
+ * they do not ask git what is ignored. An in-tree `graft/*.md` card therefore
+ * failed the target repo's own lint (Issue #2915).
+ *
+ * `git rev-parse --git-path graft` resolves a path inside the *actual* git
+ * directory — `.git/graft` in a normal clone, an absolute path elsewhere in a
+ * linked worktree, where `.git` is a file rather than a directory. That
+ * location survives `git reset --hard` and `git clean -fd` exactly as
+ * `info/exclude` did (git clean never descends into `.git`), is never staged
+ * (nothing outside the working tree can be), and no repo-local linter or
+ * globber ever walks into it, because none of them have a reason to look
+ * inside `.git`. {@link resolveGraftDir} does the resolution; nothing is
+ * appended to `info/exclude` any more. `/graft/` remains in
+ * `REQUIRED_GITIGNORE_PATTERNS` (`gitignore_enforcer.ts`) purely as
+ * belt-and-braces cover for a stale in-tree `graft/` an older worker build
+ * left behind (Issue #2099); {@link cleanUpLegacyInTreeGraft} removes such a
+ * directory once it is confirmed untracked, real and Graft's own.
  *
  * ## `graft/` layout, and the scoped ignored clean
  *
- * Graft writes a single directory at the checkout root:
+ * Graft writes a single directory, now under the git directory rather than
+ * the checkout root:
  *
  * ```text
- * graft/
+ * <git-dir>/graft/
  * └── .graph/
  *     └── wiring.json   ← the node/edge index this module reads
  * ```
  *
  * That matters because `ignored_path_clean.ts` erases
  * `EXECUTABLE_IGNORED_DIRS` (`node_modules`, `build`, `dist`, `out`, `target`,
- * `vendor`, …) **at any depth** on every run — an ignored path is exactly what
- * that control is scoped to. No component of the layout above is named in that
- * list, so `graft/` is kept rather than erased; {@link GRAFT_LAYOUT_DIRS} pins
- * the invariant and a test asserts it. (Graft is not installed on the image
- * this module was written on, so the layout is the one #2060 documents rather
- * than one observed from a build.)
+ * `vendor`, …) **at any depth**, but only within the working tree it is
+ * scoped to — it never reaches into the git directory, so the relocation
+ * above is also what keeps that scoped clean from ever being a threat to the
+ * graph. {@link GRAFT_LAYOUT_DIRS} still pins the directory names, for the
+ * legacy in-tree cleanup and the invariant test that covers it. (Graft is not
+ * installed on the image this module was written on, so the layout is the one
+ * #2060 documents rather than one observed from a build.)
  *
  * ## Injectable seams
  *
@@ -76,7 +93,7 @@ import {
   runGitCommand,
 } from "./git_timeout.ts";
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
-import { appendNoFollow, readTextFileNoFollow } from "./file_utils.ts";
+import { readTextFileNoFollow } from "./file_utils.ts";
 import {
   codeFenceFor,
   createPromptDelimiters,
@@ -99,12 +116,6 @@ export const GRAFT_ASK_TIMEOUT_MS = 30_000;
  */
 export const MAX_GRAFT_QUERY_BYTES = 65_536;
 
-/** The line written to the clone's `info/exclude`. */
-export const GRAFT_EXCLUDE_PATTERN = "/graft/";
-
-/** Repo-relative path of the graph index the figures are read from. */
-export const GRAFT_WIRING_PATH = "graft/.graph/wiring.json";
-
 /**
  * Directory names appearing in the `graft/` layout.
  *
@@ -120,9 +131,6 @@ export const GRAFT_LAYOUT_DIRS: readonly string[] = ["graft", ".graph"];
  * repositories, and nothing about them leaves the host.
  */
 const GRAFT_ENV: Record<string, string> = { DO_NOT_TRACK: "1" };
-
-/** Mode for the exclude file — git's own is world-readable. */
-const EXCLUDE_FILE_MODE = 0o644;
 
 /** Longest failure detail carried into the `[GRAFT_UNAVAILABLE]` line. */
 const MAX_REASON_DETAIL_CHARS = 300;
@@ -180,6 +188,15 @@ export interface GraftContextResult {
   queries?: number;
   /** The bundle text itself, present only on `ok`. */
   bundle?: string;
+  /**
+   * Absolute path of the directory Graft's `--dir` flag was pointed at for
+   * this run — inside the git directory, never the working tree (Issue
+   * #2915). Present only on `ok`, since that is the only outcome
+   * {@link graftMcpServer} is wired from; never serialised into facts or
+   * telemetry ({@link graftContextFacts} strips it, and `CallbackGraftContext`
+   * in `run_callbacks.ts` never names it).
+   */
+  graphDir?: string;
 }
 
 /** Options for {@link collectGraftContext}. */
@@ -242,16 +259,19 @@ export async function collectGraftContext(
     return { status: "failed", enabled: true, ...figures };
   };
 
-  // 1. Keep `graft/` across runs. Done before the build, because a graph the
-  //    next `git clean` deletes is 300 s spent for nothing.
-  const excluded = await ensureGraftExcluded(repoDir, git);
-  if (!excluded.ok) return fail(excluded.error.message);
+  // 1. Resolve where the graph lives — inside the git directory, never the
+  //    working tree (Issue #2915) — and clear out any stale in-tree layout a
+  //    pre-#2915 worker build left behind.
+  const resolved = await resolveGraftDir(repoDir, git);
+  if (!resolved.ok) return fail(resolved.error.message);
+  const graftDir = resolved.value;
+  await cleanUpLegacyInTreeGraft(repoDir, git, logger);
 
   // 2. Build the graph, timed.
   const startedAt = performance.now();
   const build = await runGraft(
     run,
-    ["build", "--no-gitignore", "--no-ignore"],
+    ["--dir", graftDir, "build", "--no-gitignore", "--no-ignore"],
     repoDir,
     buildTimeoutMs,
   );
@@ -274,14 +294,14 @@ export async function collectGraftContext(
   }
   const ask = await runGraft(
     run,
-    ["ask", "--source", truncated],
+    ["--dir", graftDir, "ask", "--source", truncated],
     repoDir,
     askTimeoutMs,
   );
 
   // 4. Read the figures either way: a failed ask still leaves a built graph,
   //    and reporting its size is what makes a `failed` status diagnosable.
-  const figures = await readGraphFigures(repoDir);
+  const figures = await readGraphFigures(graftDir);
 
   if (!ask.ok) {
     // Both faults are reported: a failed ask whose graph is also unreadable is
@@ -328,6 +348,7 @@ export async function collectGraftContext(
     bundleChars: bundle.length,
     ...figures.value,
     bundle,
+    graphDir: graftDir,
   };
 }
 
@@ -388,31 +409,37 @@ async function runGraft(
 }
 
 // ---------------------------------------------------------------------------
-// `graft/` persistence
+// Where the graph lives
 // ---------------------------------------------------------------------------
 
 /**
- * Append `/graft/` to the clone's `info/exclude`, once.
+ * Resolve the directory Graft's `--dir` is pointed at: `graft` inside the
+ * clone's actual git directory, never the working tree (Issue #2915).
  *
- * The path comes from `git rev-parse --git-path info/exclude` rather than a
- * hardcoded `.git/info/exclude`, because a lane worktree's `.git` is a *file*
- * pointing at the common directory — only git knows where the exclude file
- * actually lives.
+ * The path comes from `git rev-parse --git-path graft` rather than a
+ * hardcoded `.git/graft`, because a lane worktree's `.git` is a *file*
+ * pointing at the common directory — only git knows where the git directory
+ * actually lives. The answer is relative to the working directory the command
+ * ran in, so a relative answer (the common case: `.git/graft`) is resolved
+ * against `repoDir`; an absolute answer (a linked worktree, whose git
+ * directory sits elsewhere entirely) is used exactly as git gave it.
  */
-async function ensureGraftExcluded(
+async function resolveGraftDir(
   repoDir: string,
   git: GraftGitRunner,
-): Promise<Result<void>> {
+): Promise<Result<string>> {
   let resolved: Result<GitCommandOutput>;
   try {
-    resolved = await git(["rev-parse", "--git-path", "info/exclude"], {
+    resolved = await git(["rev-parse", "--git-path", "graft"], {
       cwd: repoDir,
     });
   } catch (err) {
     return {
       ok: false,
       error: new Error(
-        `could not resolve info/exclude in ${repoDir}: ${detail(message(err))}`,
+        `could not resolve the Graft directory in ${repoDir}: ${
+          detail(message(err))
+        }`,
       ),
     };
   }
@@ -420,7 +447,7 @@ async function ensureGraftExcluded(
     return {
       ok: false,
       error: new Error(
-        `could not resolve info/exclude in ${repoDir}: ${
+        `could not resolve the Graft directory in ${repoDir}: ${
           detail(resolved.error.message)
         }`,
       ),
@@ -430,7 +457,7 @@ async function ensureGraftExcluded(
     return {
       ok: false,
       error: new Error(
-        `could not resolve info/exclude in ${repoDir} (git exited ${resolved.value.code}): ${
+        `could not resolve the Graft directory in ${repoDir} (git exited ${resolved.value.code}): ${
           detail(resolved.value.stderr)
         }`,
       ),
@@ -442,64 +469,76 @@ async function ensureGraftExcluded(
     return {
       ok: false,
       error: new Error(
-        `could not resolve info/exclude in ${repoDir}: git printed nothing`,
+        `could not resolve the Graft directory in ${repoDir}: git printed nothing`,
       ),
     };
   }
   // `--git-path` answers relative to the working directory it ran in.
-  const excludePath = answer.startsWith("/") ? answer : `${repoDir}/${answer}`;
+  const graftDir = answer.startsWith("/") ? answer : `${repoDir}/${answer}`;
 
-  // Link-free read: the clone is agent-writable and persists between runs, so
-  // a planted symlink must be refused rather than followed (Issue #1234).
-  const read = await readTextFileNoFollow(excludePath);
-  if (!read.ok) {
+  try {
+    await Deno.mkdir(graftDir, { recursive: true });
+  } catch (err) {
     return {
       ok: false,
       error: new Error(
-        `could not read ${excludePath}: ${detail(read.error.message)}`,
+        `could not create ${graftDir}: ${detail(message(err))}`,
       ),
     };
   }
-  const existing = read.value ?? "";
-  const present = existing
-    .split("\n")
-    .some((line) => line.trim() === GRAFT_EXCLUDE_PATTERN);
-  if (present) return { ok: true, value: undefined };
+  return { ok: true, value: graftDir };
+}
 
-  // A fresh clone may not carry `info/` at all.
-  const parent = excludePath.slice(0, excludePath.lastIndexOf("/"));
-  if (parent !== "") {
-    try {
-      await Deno.mkdir(parent, { recursive: true });
-    } catch (err) {
-      if (!(err instanceof Deno.errors.AlreadyExists)) {
-        return {
-          ok: false,
-          error: new Error(
-            `could not create ${parent}: ${detail(message(err))}`,
-          ),
-        };
-      }
-    }
-  }
+/**
+ * Remove a stale in-tree `graft/` directory a pre-#2915 worker build left
+ * behind, so it does not sit in the working tree failing the target repo's
+ * own lint forever.
+ *
+ * Every check below must hold before anything is removed, and a failure
+ * anywhere along the way is a logged warning, not a fault this function
+ * returns: this is housekeeping for a directory the *old* code wrote, not a
+ * step the current build's `ok` outcome depends on.
+ *
+ *  - `<repoDir>/graft` must exist and, read without following a symlink, be a
+ *    real directory — a symlink is never touched, planted or not (Issue
+ *    #1234's concern applies here too).
+ *  - `<repoDir>/graft/.graph/wiring.json` must exist — the shape the old code
+ *    actually wrote, so an unrelated `graft/` a repo happens to have of its
+ *    own is never swept up.
+ *  - `git ls-files -- graft` must print nothing — a tracked `graft/` is left
+ *    alone unconditionally, however it got there.
+ */
+async function cleanUpLegacyInTreeGraft(
+  repoDir: string,
+  git: GraftGitRunner,
+  logger: GraftContextLogger,
+): Promise<void> {
+  const legacyDir = `${repoDir}/graft`;
+  try {
+    const stat = await Deno.lstat(legacyDir);
+    if (!stat.isDirectory) return; // A symlink or a file: never touched.
 
-  const needsNewline = existing.length > 0 && !existing.endsWith("\n");
-  const appended = await appendNoFollow({
-    targetFile: excludePath,
-    content: `${needsNewline ? "\n" : ""}${GRAFT_EXCLUDE_PATTERN}\n`,
-    mode: EXCLUDE_FILE_MODE,
-  });
-  if (!appended.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `could not add ${GRAFT_EXCLUDE_PATTERN} to ${excludePath}: ${
-          detail(appended.error.message)
-        }`,
-      ),
-    };
+    const wiringStat = await Deno.lstat(`${legacyDir}/.graph/wiring.json`)
+      .catch(() => null);
+    if (wiringStat === null) return;
+
+    const tracked = await git(["ls-files", "--", "graft"], { cwd: repoDir });
+    if (!tracked.ok || tracked.value.stdout.trim() !== "") return;
+
+    await Deno.remove(legacyDir, { recursive: true });
+    logger.warn(
+      `[GRAFT_LEGACY_CLEANUP] removed a stale in-tree ${legacyDir} left by ` +
+        `an older worker build — the graph now lives outside the working ` +
+        `tree (Issue #2915)`,
+    );
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return;
+    logger.warn(
+      `[GRAFT_LEGACY_CLEANUP] could not check or remove ${legacyDir}: ${
+        detail(message(err))
+      }`,
+    );
   }
-  return { ok: true, value: undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -514,22 +553,22 @@ async function ensureGraftExcluded(
  * marker" must never read as success.
  */
 async function readGraphFigures(
-  repoDir: string,
+  graftDir: string,
 ): Promise<Result<GraphFigures>> {
-  const path = `${repoDir}/${GRAFT_WIRING_PATH}`;
+  const path = `${graftDir}/.graph/wiring.json`;
   const read = await readTextFileNoFollow(path);
   if (!read.ok) {
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} could not be read: ${detail(read.error.message)}`,
+        `${path} could not be read: ${detail(read.error.message)}`,
       ),
     };
   }
   if (read.value === null) {
     return {
       ok: false,
-      error: new Error(`${GRAFT_WIRING_PATH} is missing after graft build`),
+      error: new Error(`${path} is missing after graft build`),
     };
   }
 
@@ -540,7 +579,7 @@ async function readGraphFigures(
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} could not be parsed: ${detail(message(err))}`,
+        `${path} could not be parsed: ${detail(message(err))}`,
       ),
     };
   }
@@ -548,7 +587,7 @@ async function readGraphFigures(
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} is not a JSON object`,
+        `${path} is not a JSON object`,
       ),
     };
   }
@@ -560,7 +599,7 @@ async function readGraphFigures(
     return {
       ok: false,
       error: new Error(
-        `${GRAFT_WIRING_PATH} carries no readable "nodes" and "edges"`,
+        `${path} carries no readable "nodes" and "edges"`,
       ),
     };
   }
@@ -620,7 +659,7 @@ export type GraftContextCollector = (
 export function graftContextFacts(
   result: GraftContextResult,
 ): GraftContextResult {
-  const { bundle: _bundle, ...facts } = result;
+  const { bundle: _bundle, graphDir: _graphDir, ...facts } = result;
   return facts;
 }
 
@@ -903,11 +942,15 @@ export const GRAFT_PROMPT_LINE = [
  * answer from the wrong tree.
  *
  * @param repoDir - Absolute path of the built checkout the server must serve
+ * @param graphDir - Absolute path of the directory the graph was built into,
+ *   outside the working tree (Issue #2915) — the same value Graft's global
+ *   `--dir` was given for the build that produced it
  * @returns The server specification, fresh on each call so a caller may mutate it
- * @throws If `repoDir` is empty — a server rooted nowhere would silently
- *   resolve the working directory, which is the fault this argument removes
+ * @throws If `repoDir` or `graphDir` is empty — a server rooted nowhere, or
+ *   pointed at no graph, would silently resolve the working directory, which
+ *   is the fault these arguments remove
  */
-export function graftMcpServer(repoDir: string): {
+export function graftMcpServer(repoDir: string, graphDir: string): {
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -919,9 +962,15 @@ export function graftMcpServer(repoDir: string): {
         "(Issue #2314)",
     );
   }
+  if (graphDir.trim() === "") {
+    throw new Error(
+      "graftMcpServer needs the graph directory to point the MCP server at " +
+        "(Issue #2915)",
+    );
+  }
   return {
     command: "graft",
-    args: ["mcp", repoDir],
+    args: ["--dir", graphDir, "mcp", repoDir],
     env: { ...GRAFT_ENV },
     // Issue #2435: in context from the first turn, not behind a tool search.
     alwaysLoad: true,

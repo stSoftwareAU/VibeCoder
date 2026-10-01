@@ -121,6 +121,8 @@ When the failing check is **supply-chain-gate** with any OTHER finding — an un
 
 This is someone else's pull request. You may edit files, commit, and push to the PR branch. You may not force-push, amend, rebase, or otherwise rewrite commits you did not author; you may not close, merge, reopen, or retarget the PR; you may not delete branches or re-run destructive workflows. If a fix genuinely requires one of those, stop and say so in `.pr_response_message` instead.
 
+**Never add worker-local paths to the repository's lint/format config.** `graft/`, `.codegraph/`, or anything else listed in the checkout's `.git/info/exclude` are worker-internal state, not repository content — do not add them to `.markdownlint*`, `.markdownlintignore`, `.prettierignore`, `deno.json` excludes, `.gitignore`, or any other lint, format or ignore config to clear a red check. A quality gate tripping over one of these paths is a worker environment fault: do not commit a workaround, report it in `.pr_response_message` so it is fixed in the worker.
+
 ### Files you create
 
 `.pr_response_message` is the only file you create outside the fix itself, and it is never staged — it is a hidden path, and the commit-safety allowlist forbids staging hidden paths. If reproducing the failure needs a scratch script, fixture, or log, delete it before you commit: run `git status` and confirm only the fix and its tests are staged. Instrumentation is the half that hides inside source files rather than beside them, which is why every temporary debug log carries the run's `[DEBUG-…]` tag — `grep -rn "\[DEBUG-" .` before the commit, and delete whatever it finds.

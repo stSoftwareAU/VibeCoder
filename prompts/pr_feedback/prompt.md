@@ -74,6 +74,8 @@ A batch of ten or more findings across many files can outlast one context window
 
 Restrict edits to the files the comment or the Automated Review Comments section references, plus what is needed to resolve them. Do not refactor adjacent code, rename variables, reformat, or update unrelated documentation. For example: "validate input in `parse_date`" means update `parse_date` and its tests, not the date formatter; a bot flagging a useless conditional at `runner.ts:42` means remove that condition, not rename the surrounding loop variable.
 
+**Never add worker-local paths to the repository's lint/format config.** `graft/`, `.codegraph/`, or anything else listed in the checkout's `.git/info/exclude` are worker-internal state, not repository content — do not add them to `.markdownlint*`, `.markdownlintignore`, `.prettierignore`, `deno.json` excludes, `.gitignore`, or any other lint, format or ignore config, even if a reviewer's comment asks for it. If a quality gate trips over one of these paths, that is a worker environment fault, not a repository defect: do not commit a workaround, name it in `.pr_response_message` instead.
+
 ## Conflict Resolution
 
 If the feedback conflicts with the original issue requirements, the issue requirements win. Project conventions (coding standards, Australian English, TDD) always apply regardless of feedback. If genuinely unsure, describe the trade-off in your reply rather than silently choosing.

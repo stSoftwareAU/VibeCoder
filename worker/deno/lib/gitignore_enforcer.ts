@@ -10,10 +10,13 @@
  * `.env.*`, plus the non-hidden private-key and credential filenames the
  * `.*` rule cannot reach (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`,
  * `credentials.json`, `service-account*.json` — Issue #3660), plus `/graft/`,
- * the root-anchored Graft code graph a Graft-enabled host builds in each
- * checkout (Issue #2099 — `graft_context.ts` also excludes it per-clone so the
- * per-run `git clean` keeps it), and the CodeGraph index directory
- * `/.codegraph/` (Issue #2155).
+ * belt-and-braces cover for a *legacy* in-tree Graft code graph left behind
+ * by an older worker build (Issue #2099). `graft_context.ts` now builds the
+ * Graft index outside the working tree, under the git directory, precisely
+ * so that repo-local lint/format tools which ignore git excludes (such as
+ * `markdownlint-cli2`) never see it (Issue #2915); this pattern just keeps
+ * any stale `graft/` directory a prior run left in place from being staged.
+ * Also covers the CodeGraph index directory `/.codegraph/` (Issue #2155).
  *
  * `setup.sh` invokes `ensureGitignorePatterns()` once via the
  * `gitignore-sync` subcommand (Issue #1774) so that secret-bearing files
