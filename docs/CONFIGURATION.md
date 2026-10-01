@@ -397,6 +397,14 @@ key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
 mounted into the container. Use a different App from the worker's own
 `github_app_*` identity, since GitHub refuses an approval from a PR's author.
 
+The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
+read and write, plus **Checks** and **Commit statuses** read. Contents write
+lets the gate's Dependabot upkeep merge an already-clean PR with
+`gh pr merge --auto` and arm auto-merge; Workflows write lets it merge
+Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
+[the skill doc](../.claude/skills/review-fleet-prs/SKILL.md#as-a-github-app)
+for details.
+
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
 the worker acts on its change requests. Keep `github-copilot[bot]` and
 `github-actions[bot]` in the list: setting the key replaces those defaults.
