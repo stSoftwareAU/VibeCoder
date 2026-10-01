@@ -286,6 +286,11 @@ export interface ExecuteClaudePhaseOptions {
   promptCacheDir?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true). */
   includeRecentActivity?: boolean;
+  /**
+   * Operator-configured fleet run-archive slug (Issue #2930). See
+   * `IssuePromptOptions.fleetRunArchive` in prompt_builder.ts.
+   */
+  fleetRunArchive?: string;
   /** Maximum merged PRs in activity summary (Issue #1326, default: 10). */
   recentActivityMergedPrLimit?: number;
   /** Maximum commits in activity summary (Issue #1326, default: 20). */
@@ -1299,6 +1304,10 @@ async function executeClaudePhaseBody(
     ...(promptOverrides ? { promptOverrides } : {}),
     // Issue #2343: a split run's prompt carries the advisor/executor block.
     issueExecutorSplit,
+    // Issue #2930: name this host's configured fleet run archive, when any.
+    ...(options.fleetRunArchive
+      ? { fleetRunArchive: options.fleetRunArchive }
+      : {}),
   });
 
   if (!promptResult.ok) {

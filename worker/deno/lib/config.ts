@@ -917,6 +917,14 @@ export async function loadConfig(
   const issueReviewerAgents = file.issue_reviewer_agents ??
     OPERATIONAL_DEFAULTS.issueReviewerAgents;
 
+  // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
+  // Unset (or blank) leaves the feature off.
+  const fleetRunArchiveTrimmed = file.fleet_run_archive?.trim();
+  const fleetRunArchive = fleetRunArchiveTrimmed === "" ||
+      fleetRunArchiveTrimmed === undefined
+    ? undefined
+    : fleetRunArchiveTrimmed;
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -1163,6 +1171,7 @@ export async function loadConfig(
     deepseekPhaseModelOverrides,
     issueExecutorSplit,
     issueReviewerAgents,
+    fleetRunArchive,
     includeRecentActivity,
     includeCodebaseMap,
     codegraphContext,

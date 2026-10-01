@@ -13,6 +13,7 @@ import {
 } from "./run_mode.ts";
 import { isAbsolutePath, pathStyleFor } from "./host_path_style.ts";
 import { LOG_DIR_CONFIG_KEY } from "./log_dir.ts";
+import { isValidRepoSlug, renderInertRepoSlug } from "./repo_slug.ts";
 
 /**
  * GitHub org team slug in `org/slug` form (Issue #252).
@@ -209,6 +210,8 @@ export interface ConfigFileJson {
   issue_executor_split?: boolean;
   /** Host-wide reviewer sub-agents (Issue #2575) */
   issue_reviewer_agents?: boolean;
+  /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
+  fleet_run_archive?: string;
   enable_session_resume?: boolean;
   /** Global verbosity level override (Issue #1330) */
   verbosity?: string;
@@ -674,6 +677,20 @@ export function validateConfigFileJson(
         `Expected org/slug (e.g. stSoftwareAU/vibe-workers), got ${
           JSON.stringify(data.exclusion_team)
         }`,
+      );
+    }
+  }
+
+  // fleet_run_archive must be an owner/repo slug when present (Issue #2930):
+  // measurement issues treat it as a repository to read, so a typo or a
+  // hostile value must fail loudly rather than be used as-is.
+  if (data.fleet_run_archive !== undefined) {
+    const raw = data.fleet_run_archive;
+    const trimmed = typeof raw === "string" ? raw.trim() : raw;
+    if (!isValidRepoSlug(trimmed)) {
+      return fail(
+        "fleet_run_archive",
+        `Expected an owner/repo slug, got ${renderInertRepoSlug(raw)}`,
       );
     }
   }

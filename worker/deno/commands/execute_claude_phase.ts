@@ -173,6 +173,8 @@ export const executeClaudePhaseCommand: Command = {
       issueExecutorSplit: config.issueExecutorSplit,
       // The reviewer sub-agent switch (Issue #2575); off by default.
       issueReviewerAgents: config.issueReviewerAgents,
+      // Issue #2930: this host's operator-configured fleet run archive.
+      fleetRunArchive: config.fleetRunArchive,
       // Context budget thresholds, including the hard ceiling (Issue #3713)
       contextBudgetWarningPercent: config.contextBudgetWarningPercent,
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,

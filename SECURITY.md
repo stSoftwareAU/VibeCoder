@@ -415,7 +415,8 @@ influence behaviour or be echoed through a path no sink covers
 is the ingestion chokepoint every prompt builder already routes untrusted text
 through — issue titles, bodies and labels, comment bodies, repository guidance
 documents, the generated codebase map, recent-activity summaries, PR review
-comments — so it **redacts before it scrubs**. Redaction first, because the
+comments, the optional `fleet_run_archive` repository name — so it **redacts
+before it scrubs**. Redaction first, because the
 scrub substitutes fullwidth characters mid-string and could otherwise split a
 secret across a signature-rule boundary; and it is idempotent, so a call site
 that already redacted its own text (`fenceQualityOutput`,

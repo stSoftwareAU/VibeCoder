@@ -719,6 +719,16 @@ unintended question-answering run or — more commonly — is silently stripped 
 
 That exception is about labelling an **existing** issue. On an issue you file yourself it does not apply: every reserved label you put on a follow-up you just created, `needs-human` included, is removed after creation. Say `needs-human` in the hand-off message instead.
 
+**Remove only what you can prove you added.** Code you write that removes or
+releases a label (or similar shared GitHub state) must have recorded provenance
+at add time: the label was absent before the add, or a marker comment or log
+entry that code path wrote. An idempotent `--add-label` succeeding is not
+provenance. `needs-human`, `failed` and `failed-once` can come from several
+actors; when ownership cannot be proven, leave the label alone, and add a test
+where the label already exists before the add and assert it is not removed
+later. `CODING-STANDARDS.md` → **Automation and Shared GitHub State** holds the
+full rule.
+
 <!-- guidelines-layer: code -->
 
 ## Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo
