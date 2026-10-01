@@ -2,7 +2,7 @@
  * The screenshot gate's one extra in-run agent turn before it fails the run
  * (Issue #2960).
  *
- * Mirrors `completion_phase_summary_rule_retry_test.ts`'s style: a temp repo
+ * Mirrors `completion_phase_branch_evidence_test.ts`'s style: a temp repo
  * with a PR summary carrying no screenshot reference and a UI file changed, a
  * stubbed git/gh layer, and a stub `runClaudeWithRetry` that either "captures"
  * the missing evidence (appends a file to the mutable changed-files list and
@@ -16,9 +16,10 @@ import { assert, assertEquals } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import type { ClaudeRunResult, GitHubClient, Result } from "../types.ts";
+import type { GitHubClient } from "../types.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { WorkerConfig } from "../types.ts";
 
 const SHA = "deadbeef00deadbeef00deadbeef00deadbeef0";
 
@@ -47,16 +48,13 @@ function stubClient(
   };
 }
 
-async function makeRepo(
-  issueNumber: number,
-  extraSummary = "",
-): Promise<string> {
+async function makeRepo(issueNumber: number): Promise<string> {
   const root = await Deno.makeTempDir();
   await Deno.mkdir(`${root}/docs/evidence`, { recursive: true });
   await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
   await Deno.writeTextFile(
     `${root}/docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
-    `## Summary\nA UI change with no screenshot reference.${extraSummary}\n`,
+    `## Summary\nA UI change with no screenshot reference.\n`,
   );
   return root;
 }
@@ -65,27 +63,27 @@ interface Harness {
   repoPath: string;
   ctx: IssueContext;
   state: PhaseState;
+  deps: ReturnType<typeof createMockDeps>;
   posted: string[];
   labelsAdded: string[];
   capturedPrCreates: string[][];
   agentCalls: RunClaudeOptions[];
-  changedFiles: string[];
 }
 
+type RunClaudeFn = (
+  options: RunClaudeOptions,
+) => ReturnType<
+  ReturnType<typeof createMockDeps>["claude"]["runClaudeWithRetry"]
+>;
+
 /** Build a harness whose completion run reaches the screenshot gate. */
-function makeHarness(
-  options: {
-    issueNumber?: number;
-    changedFiles: string[];
-    repoPath: string;
-    runClaudeWithRetry: (
-      options: RunClaudeOptions,
-    ) => Promise<Result<ClaudeRunResult>>;
-    config?: Partial<ReturnType<typeof buildDefaultWorkerConfig>>;
-    loggerOverrides?: Parameters<typeof createMockDeps>[0] extends
-      { logger?: infer L } ? L : never;
-  },
-): Harness {
+function makeHarness(options: {
+  issueNumber?: number;
+  changedFiles: string[];
+  repoPath: string;
+  runClaudeWithRetry: RunClaudeFn;
+  config?: Partial<WorkerConfig>;
+}): Harness {
   const issueNumber = options.issueNumber ?? 2960;
   const posted: string[] = [];
   const labelsAdded: string[] = [];
@@ -112,11 +110,10 @@ function makeHarness(
     executeStartTime: 0,
     baselineQualityPassed: true,
     baselineQualityOutput: "",
-    sessionResumeState: { sessionId: "resume-session-2960" },
+    sessionResumeState: { sessionId: "resume-session-2960", phaseCount: 1 },
   };
 
   const deps = createMockDeps({
-    ...(options.loggerOverrides ? { logger: options.loggerOverrides } : {}),
     github: {
       createClient: () => stubClient(posted, labelsAdded),
       runGhCommand: (args: string[]) => {
@@ -170,11 +167,11 @@ function makeHarness(
     repoPath: options.repoPath,
     ctx,
     state,
+    deps,
     posted,
     labelsAdded,
     capturedPrCreates,
     agentCalls,
-    changedFiles: options.changedFiles,
   };
 }
 
@@ -194,7 +191,6 @@ Deno.test("completion - screenshot gate: extra turn captures the evidence and th
     runClaudeWithRetry: async () => {
       // Simulate the agent capturing and committing the screenshot.
       changedFiles.push("docs/evidence/after.png");
-      await Deno.mkdir(`${repoPath}/docs/evidence`, { recursive: true });
       await Deno.writeTextFile(`${repoPath}/docs/evidence/after.png`, "png");
       return {
         ok: true,
@@ -203,21 +199,240 @@ Deno.test("completion - screenshot gate: extra turn captures the evidence and th
     },
   });
 
-  const result = await workOnIssueCompletion(h.ctx, h.state, {
-    ...((h as unknown) as never),
-  } as never);
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
   await cleanup(h);
-  void result;
+
+  assertEquals(result.status, "continue", JSON.stringify(result));
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(h.capturedPrCreates.length, 1, "PR should be created");
+  assert(
+    !h.labelsAdded.includes("needs-screenshot"),
+    "needs-screenshot must not be added",
+  );
+  assert(
+    !h.posted.some((p) => p.includes("Screenshot Evidence Required")),
+    "gate must not fail",
+  );
+
+  const call = h.agentCalls[0]!;
+  assertStringIncludesPrompt(call.prompt, "Screenshot Evidence Required");
+  assertEquals(call.mcpConfig, true);
+  assertEquals(call.sessionResumeState, h.state.sessionResumeState);
+  assertEquals(call.timeoutSeconds, 600);
 });
 
-/** Shared deps builder — invokes `workOnIssueCompletion` against a harness. */
-async function run(h: Harness): Promise<
-  Awaited<ReturnType<typeof workOnIssueCompletion>>
-> {
-  // The deps object is rebuilt inside makeHarness and discarded; capture a
-  // fresh one here isn't possible, so makeHarness returns everything needed
-  // except deps itself. Re-derive by calling createMockDeps again would lose
-  // the stubs, so instead workOnIssueCompletion is invoked from makeHarness's
-  // caller directly — see the per-test bodies below, which build deps inline.
-  throw new Error("unused");
+function assertStringIncludesPrompt(prompt: string, needle: string): void {
+  assert(
+    prompt.includes(needle),
+    `expected prompt to include "${needle}": ${prompt}`,
+  );
 }
+
+Deno.test("completion - screenshot gate: configured timeout is honoured (Issue #2960)", async () => {
+  const issueNumber = 2961;
+  const repoPath = await makeRepo(issueNumber);
+  const changedFiles = ["web/index.html"];
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    config: { screenshotRetryTimeoutSeconds: 120 },
+    runClaudeWithRetry: async () => {
+      changedFiles.push("docs/evidence/after.png");
+      await Deno.writeTextFile(`${repoPath}/docs/evidence/after.png`, "png");
+      return {
+        ok: true,
+        value: { exitCode: 0, output: "captured", timedOut: false },
+      };
+    },
+  });
+
+  await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(h.agentCalls[0]!.timeoutSeconds, 120);
+});
+
+Deno.test("completion - screenshot gate: extra turn does nothing, run fails as before (Issue #2960)", async () => {
+  const issueNumber = 2962;
+  const repoPath = await makeRepo(issueNumber);
+  const changedFiles = ["web/index.html"];
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    runClaudeWithRetry: () =>
+      Promise.resolve({
+        ok: true,
+        value: { exitCode: 0, output: "did nothing", timedOut: false },
+      }),
+  });
+
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
+  assertEquals(
+    h.posted.filter((p) => p.includes("Screenshot Evidence Required")).length,
+    1,
+  );
+  assertEquals(result.status, "failure");
+  assertEquals(
+    (result as { reason: string }).reason,
+    "Screenshot evidence missing for UI-related change",
+  );
+  assertEquals(h.capturedPrCreates.length, 0);
+});
+
+Deno.test("completion - screenshot gate: extra turn throws, run fails as before (Issue #2960)", async () => {
+  const issueNumber = 2963;
+  const repoPath = await makeRepo(issueNumber);
+  const changedFiles = ["web/index.html"];
+  let diffCalls = 0;
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    runClaudeWithRetry: () => {
+      throw new Error("agent crashed");
+    },
+  });
+  // Track diff calls to assert no re-run of completion happens.
+  const originalRunGit = h.deps.git.runGitCommand;
+  h.deps.git.runGitCommand = ((args: string[]) => {
+    if (args[0] === "diff" && args.includes("--name-only")) diffCalls++;
+    return originalRunGit(args);
+  }) as typeof originalRunGit;
+
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(result.status, "failure");
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
+  assertEquals(
+    h.posted.filter((p) => p.includes("Screenshot Evidence Required")).length,
+    1,
+  );
+  // One diff call for the original attempt only — no re-run of completion.
+  assertEquals(diffCalls, 1);
+});
+
+Deno.test("completion - screenshot gate: extra turn errors (ok:false), run fails as before (Issue #2960)", async () => {
+  const issueNumber = 2964;
+  const repoPath = await makeRepo(issueNumber);
+  const changedFiles = ["web/index.html"];
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    runClaudeWithRetry: () =>
+      Promise.resolve({ ok: false, error: new Error("spawn failed") }),
+  });
+
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(result.status, "failure");
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
+});
+
+Deno.test("completion - screenshot gate: extra turn times out, run fails as before and no re-run (Issue #2960)", async () => {
+  const issueNumber = 2965;
+  const repoPath = await makeRepo(issueNumber);
+  const changedFiles = ["web/index.html"];
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    runClaudeWithRetry: () =>
+      Promise.resolve({
+        ok: true,
+        value: { exitCode: 124, output: "", timedOut: true },
+      }),
+  });
+
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(result.status, "failure");
+  assertEquals(h.capturedPrCreates.length, 0);
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
+});
+
+Deno.test("completion - screenshot gate: not needed for a non-UI change (Issue #2960)", async () => {
+  const issueNumber = 2966;
+  const repoPath = await makeRepo(issueNumber);
+  const changedFiles = ["src/foo.ts"];
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    runClaudeWithRetry: () => {
+      throw new Error("must not be called");
+    },
+  });
+
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 0);
+  assertEquals(result.status, "continue", JSON.stringify(result));
+});
+
+Deno.test("completion - screenshot gate: not needed when evidence is already on the branch (Issue #2960)", async () => {
+  const issueNumber = 2967;
+  const repoPath = await makeRepo(issueNumber);
+  await Deno.writeTextFile(`${repoPath}/docs/evidence/x.png`, "png");
+  const changedFiles = ["web/index.html", "docs/evidence/x.png"];
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    runClaudeWithRetry: () => {
+      throw new Error("must not be called");
+    },
+  });
+
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 0);
+  assertEquals(result.status, "continue", JSON.stringify(result));
+});
+
+Deno.test("completion - screenshot gate: not needed when the repo opts out via skip_screenshot_check (Issue #2960)", async () => {
+  const issueNumber = 2968;
+  const repoPath = await makeRepo(issueNumber);
+  const changedFiles = ["web/index.html"];
+  const repo = "stSoftwareAU/VibeCoder";
+
+  const h = makeHarness({
+    issueNumber,
+    changedFiles,
+    repoPath,
+    config: {
+      repoConfig: { [repo]: { skipScreenshotCheck: true } },
+    },
+    runClaudeWithRetry: () => {
+      throw new Error("must not be called");
+    },
+  });
+
+  const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+  await cleanup(h);
+
+  assertEquals(h.agentCalls.length, 0);
+  assertEquals(result.status, "continue", JSON.stringify(result));
+});
