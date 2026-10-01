@@ -1,0 +1,383 @@
+/**
+ * The conflict takeover pass (Issue #2999, part of #2965).
+ *
+ * A stalled, conflicted PR today sits labelled `merge-conflict` waiting for
+ * the stale-verdict ladder or the owner to act. This pass is the rung that
+ * takes the stall back off the owner's plate and resolves the conflict
+ * itself, once the stand-down watchdog (a sibling sub-issue of #2965) decides
+ * the PR has sat long enough.
+ *
+ * **The gated route.** A PR whose head is a ruleset-gated `milestone/**`
+ * branch refuses a direct push (GH013), so the ordinary resolve-and-push
+ * shape cannot land there at all. This pass asks {@link assessGatedHead}
+ * and, when the head is gated, resolves on a side `milestone-fix/**` branch
+ * and delivers the fix through a pull request into the gated head, using the
+ * {@link findOpenMilestoneFixPr}/{@link raiseMilestoneFixPr} helpers Issue
+ * #2907 built for exactly this shape. A fix PR already open for this
+ * milestone PR is reused rather than duplicated.
+ *
+ * **The shared budget (Issue #2996).** This pass spends from the same
+ * {@link CONFLICT_RESOLUTION_BUDGET} every other conflict-resolution pass
+ * spends from, tallied as `pass="…"` markers on the PR itself — never
+ * host-local state — so routing a PR through more than one pass cannot
+ * multiply its budget. A PR whose budget is already spent is declined before
+ * anything is posted.
+ *
+ * **Label provenance (Issue #2951).** The `merge-conflict` label is only
+ * removed by this pass when this pass's own call is what added it — a label
+ * a human or an earlier pass already applied is never cleared out from under
+ * them.
+ *
+ * **The marker-free seam contract.** {@link ConflictTakeoverDeps.resolveViaLadder}
+ * and {@link ConflictTakeoverDeps.resolveOnFixBranch} are the two resolvers
+ * this pass calls, and neither posts its own attempt/conclusion markers —
+ * this pass owns that pair, so a resolver that posted its own would spend two
+ * units of the shared budget for one takeover. Their bindings land with the
+ * stall-watchdog sub-issue that calls this pass.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import type { Logger } from "../types.ts";
+import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
+import {
+  CONFLICT_RESOLUTION_BUDGET,
+  conflictAttemptMarker,
+  conflictFailedMarker,
+  conflictResolvedMarker,
+  isConflictHeadSha,
+  readResolutionAttempts,
+} from "./merge_conflict_markers.ts";
+import {
+  clearMergeConflictLabel,
+  ensureMergeConflictLabel,
+  fetchPrLabels,
+  spentConflictAttempts,
+} from "./pr_merge_conflict_scan.ts";
+import { assessGatedHead } from "./gated_head_guard.ts";
+import {
+  findOpenMilestoneFixPr,
+  milestoneFixBranchFor,
+  type MilestoneFixPr,
+  type MilestoneFixPrDeps,
+  raiseMilestoneFixPr,
+} from "./milestone_fix_pr.ts";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/** A conflicted PR this pass may resolve. */
+export interface ConflictTakeoverPr {
+  /** Repository in `owner/repo` form. */
+  repo: string;
+  /** PR number. */
+  number: number;
+  /** Head branch name. */
+  headRefName: string;
+  /** Base branch the PR targets. */
+  baseRefName: string;
+  /** The PR's live head sha. */
+  headSha: string;
+}
+
+/** What one resolver attempt did. */
+export interface TakeoverResolution {
+  /** True when the merge landed. */
+  resolved: boolean;
+  /** One line naming what happened — carried into the conclusion comment. */
+  detail: string;
+}
+
+/** Injected seams for {@link runConflictTakeover}. */
+export interface ConflictTakeoverDeps {
+  /** Every GitHub read/write this pass makes. Throws on failure. */
+  gh: (args: string[]) => Promise<string>;
+  /** Fleet logins whose marker comments count towards the shared budget. */
+  trustedAuthors: readonly string[];
+  /**
+   * The ordinary (ladder) resolve path for a non-gated head: merges the base
+   * into the PR head and pushes the head.
+   *
+   * Marker-free by contract — this pass owns the attempt/conclusion markers,
+   * so the binding must not post its own (a second marker pair would spend
+   * two units of the shared budget for one takeover).
+   */
+  resolveViaLadder: (pr: ConflictTakeoverPr) => Promise<TakeoverResolution>;
+  /**
+   * Resolve on a side branch: create `fixBranch` from the PR head, merge the
+   * base in, resolve, and push ONLY `fixBranch` — never the gated head.
+   *
+   * Same marker-free contract as {@link resolveViaLadder}.
+   */
+  resolveOnFixBranch: (
+    pr: ConflictTakeoverPr,
+    fixBranch: string,
+  ) => Promise<TakeoverResolution>;
+  logger: Logger;
+}
+
+/** What one takeover run did. */
+export type ConflictTakeoverOutcome =
+  /** The shared budget was already spent; nothing was posted. */
+  | { kind: "declined-budget"; attemptsSpent: number }
+  /** A fix PR for this milestone PR is already open; nothing was attempted. */
+  | { kind: "fix-pr-reused"; fixPr: MilestoneFixPr }
+  /** The gated route resolved and a fix PR now carries it into the head. */
+  | { kind: "fix-pr-raised"; fixPr: MilestoneFixPr; fixBranch: string }
+  /** The ordinary (non-gated) route resolved the conflict directly. */
+  | { kind: "resolved" }
+  /** Either route ran and did not resolve the conflict. */
+  | {
+    kind: "failed";
+    route: "milestone-fix" | "ladder";
+    detail: string;
+  };
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
+
+/** The sha's first 12 hex characters, for a human-readable branch/comment suffix. */
+function shortSha(headSha: string): string {
+  return headSha.trim().toLowerCase().slice(0, 12);
+}
+
+/** The attempt comment body. */
+function buildAttemptComment(
+  attemptNumber: number,
+  headSha: string,
+  route: "milestone-fix PR" | "ordinary resolve",
+): string {
+  return [
+    `🔀 **Conflict takeover** — attempt ${attemptNumber} of ` +
+    `${CONFLICT_RESOLUTION_BUDGET} on head \`${shortSha(headSha)}\`, route: ` +
+    `${route}.`,
+    "",
+    conflictAttemptMarker(attemptNumber, "takeover", headSha),
+  ].join("\n");
+}
+
+/** The conclusion comment body for a resolved outcome. */
+function buildResolvedComment(headSha: string, detail: string): string {
+  return [
+    `✅ **Conflict takeover resolved** — ${detail}`,
+    "",
+    conflictResolvedMarker("takeover", headSha),
+  ].join("\n");
+}
+
+/** The conclusion comment body for a failed outcome. */
+function buildFailedComment(
+  attemptNumber: number,
+  headSha: string,
+  detail: string,
+): string {
+  return [
+    `❌ **Conflict takeover failed** — ${detail}`,
+    "",
+    conflictFailedMarker(attemptNumber, "takeover", headSha),
+  ].join("\n");
+}
+
+/** Post one PR comment. */
+function postComment(
+  pr: ConflictTakeoverPr,
+  body: string,
+  gh: ConflictTakeoverDeps["gh"],
+): Promise<string> {
+  return gh([
+    "pr",
+    "comment",
+    String(pr.number),
+    "--repo",
+    pr.repo,
+    "--body",
+    body,
+  ]);
+}
+
+/**
+ * Resolve a stalled conflicted PR (Issue #2999).
+ *
+ * Validates the head sha and the trusted-author set, reads the shared tally
+ * (Issue #2996) and declines before posting anything once it is spent,
+ * checks whether the head is gated (Issue #2907) and reuses or raises a fix
+ * PR when it is, posts the attempt marker, runs the appropriate resolver,
+ * and posts the conclusion. The `merge-conflict` label is removed only on an
+ * ordinary resolved outcome and only when this call is the one that added it
+ * (Issue #2951).
+ */
+export async function runConflictTakeover(
+  pr: ConflictTakeoverPr,
+  deps: ConflictTakeoverDeps,
+): Promise<ConflictTakeoverOutcome> {
+  const { gh, logger } = deps;
+  const context = { repo: pr.repo, prNumber: pr.number };
+
+  const headSha = pr.headSha.trim().toLowerCase();
+  if (!isConflictHeadSha(headSha)) {
+    throw new Error(
+      `runConflictTakeover: '${pr.headSha}' is not a usable head sha for ` +
+        `${pr.repo}#${pr.number}`,
+    );
+  }
+  if (deps.trustedAuthors.length === 0) {
+    throw new Error(
+      `runConflictTakeover: trustedAuthors is empty for ${pr.repo}#${pr.number} ` +
+        "— an unattributable tally would never spend, so the shared budget " +
+        "would not bound this pass",
+    );
+  }
+  const trustedAuthors = [...deps.trustedAuthors];
+  const isTrustedAuthor = (login: string) =>
+    isFleetAuthor(login, trustedAuthors);
+
+  const comments = await fetchIssueCommentPages(pr.repo, pr.number, gh);
+  const attempts = readResolutionAttempts(comments, isTrustedAuthor);
+  const spent = spentConflictAttempts(attempts);
+
+  if (spent >= CONFLICT_RESOLUTION_BUDGET) {
+    logger.info(
+      `Conflict takeover declined for PR #${pr.number}: the shared budget ` +
+        `is already spent (${spent}/${CONFLICT_RESOLUTION_BUDGET})`,
+      { ...context, attemptsSpent: spent },
+    );
+    return { kind: "declined-budget", attemptsSpent: spent };
+  }
+
+  const assessment = await assessGatedHead(pr.repo, pr.headRefName, gh);
+
+  const milestoneDeps: MilestoneFixPrDeps = {
+    gh,
+    log: (m) => logger.info(m),
+    warn: (m) => logger.warn(m),
+  };
+
+  if (assessment.gated) {
+    const existing = await findOpenMilestoneFixPr(
+      pr.repo,
+      pr.headRefName,
+      pr.number,
+      milestoneDeps,
+    );
+    if (!existing.ok) throw existing.error;
+    if (existing.value !== null) {
+      logger.info(
+        `Conflict takeover for PR #${pr.number}: an open fix PR already ` +
+          `resolves this gated head (#${existing.value.number}) — nothing ` +
+          "further to do",
+        { ...context, fixPrNumber: existing.value.number },
+      );
+      return { kind: "fix-pr-reused", fixPr: existing.value };
+    }
+  }
+
+  const attemptNumber = spent + 1;
+  const route = assessment.gated ? "milestone-fix PR" : "ordinary resolve";
+  await postComment(pr, buildAttemptComment(attemptNumber, headSha, route), gh);
+
+  let appliedLabel = false;
+  let outcome: ConflictTakeoverOutcome;
+  try {
+    const labels = await fetchPrLabels(pr.repo, pr.number, gh);
+    appliedLabel = await ensureMergeConflictLabel(
+      pr.repo,
+      pr.number,
+      labels,
+      gh,
+    );
+
+    if (assessment.gated) {
+      const fixBranch = milestoneFixBranchFor(
+        pr.headRefName,
+        pr.number,
+        `takeover-${shortSha(headSha)}`,
+      );
+      const resolution = await deps.resolveOnFixBranch(pr, fixBranch);
+      if (!resolution.resolved) {
+        outcome = {
+          kind: "failed",
+          route: "milestone-fix",
+          detail: resolution.detail,
+        };
+      } else {
+        const raised = await raiseMilestoneFixPr({
+          repo: pr.repo,
+          milestoneBranch: pr.headRefName,
+          milestonePrNumber: pr.number,
+          fixBranch,
+          pass: "merge-conflict resolution",
+        }, milestoneDeps);
+        if (!raised.ok) throw raised.error;
+        outcome = {
+          kind: "fix-pr-raised",
+          fixPr: raised.value,
+          fixBranch,
+        };
+      }
+    } else {
+      const resolution = await deps.resolveViaLadder(pr);
+      outcome = resolution.resolved
+        ? { kind: "resolved" }
+        : { kind: "failed", route: "ladder", detail: resolution.detail };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const failedBody = [
+      `❌ **Conflict takeover threw** — the takeover raised an error: ${message}`,
+      "",
+      conflictFailedMarker(attemptNumber, "takeover", headSha),
+    ].join("\n");
+    try {
+      await postComment(pr, failedBody, gh);
+    } catch (postError) {
+      const postMessage = postError instanceof Error
+        ? postError.message
+        : String(postError);
+      throw new Error(
+        `runConflictTakeover(${pr.repo}#${pr.number}): the takeover threw ` +
+          `(${message}) and its failed conclusion could not be posted ` +
+          `(${postMessage})`,
+        { cause: error },
+      );
+    }
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+
+  if (outcome.kind === "resolved" || outcome.kind === "fix-pr-raised") {
+    const detail = outcome.kind === "resolved"
+      ? "the base merged into the head cleanly and the head was pushed"
+      : `delivered into the gated head through fix PR ${outcome.fixPr.url}`;
+    await postComment(pr, buildResolvedComment(headSha, detail), gh);
+  } else {
+    await postComment(
+      pr,
+      buildFailedComment(attemptNumber, headSha, outcome.detail),
+      gh,
+    );
+  }
+
+  logger.info(
+    `Conflict takeover for PR #${pr.number} concluded: ${outcome.kind}`,
+    { ...context, outcome: outcome.kind },
+  );
+
+  if (outcome.kind === "resolved" && appliedLabel) {
+    try {
+      await clearMergeConflictLabel(pr.repo, pr.number, gh);
+    } catch (error) {
+      logger.warn(
+        `Conflict takeover: could not clear the 'merge-conflict' label it ` +
+          `applied on PR #${pr.number} — the next scan is the backstop`,
+        {
+          ...context,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
+
+  return outcome;
+}

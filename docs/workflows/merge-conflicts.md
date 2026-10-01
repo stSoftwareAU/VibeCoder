@@ -400,9 +400,10 @@ private budget of two. It is gone: the single source of truth is now
 [`merge_conflict_markers.ts`](../../worker/deno/lib/merge_conflict_markers.ts),
 and it is spent by **every** pass that resolves a conflict on a PR — the
 stale-verdict ladder (`pass="ladder"`), the milestone sync (`pass="sync"`) and
-the takeover rung (`pass="takeover"`). Only the ladder writes attempt markers
-today; the sync and takeover passes start writing them in later sub-issues of
-Issue #2965. A legacy marker with no `pass=` at all — every marker written
+the takeover rung (`pass="takeover"`). The ladder and the takeover pass
+(`conflict_takeover.ts`, Issue #2999) write attempt markers; the milestone sync
+starts writing them in a later sub-issue of Issue #2965. A legacy marker with
+no `pass=` at all — every marker written
 before this issue — reads as `ladder`, so history already on a PR thread is
 not lost.
 
@@ -440,6 +441,60 @@ flowchart TD
     D -- "No" --> E["Skip: owner-check-pending<br/>(dueAt, attemptsSpent)"]
     style C fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style E fill:#707070,stroke:,color:#fff
+```
+
+### 🛟 The conflict takeover pass (Issue #2999)
+
+- `runConflictTakeover(pr, deps)` in
+  [`conflict_takeover.ts`](../../worker/deno/lib/conflict_takeover.ts) resolves
+  a stalled conflicted PR itself instead of waiting for another owner. The
+  stall watchdog sub-issue of #2965 calls it; every GitHub call and both
+  resolvers are injected.
+- Read-only checks first: reads the shared tally from trusted markers
+  (`readResolutionAttempts`); declines with no marker at all when
+  `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
+  with `assessGatedHead`; on a gated head looks for an open fix PR
+  (`findOpenMilestoneFixPr`) and, when one is open, reuses it — no marker, no
+  second PR. An unreadable fix-PR listing fails loud rather than reading as
+  "none".
+- Then posts an attempt marker `pass="takeover"` with the head sha, e.g.
+  `<!-- vibe-coder:merge-conflict-attempt n="2" pass="takeover" head="abc1234" -->`,
+  before any work.
+- Gated milestone head (the worker must not push to it, GH013): names a side
+  branch with `milestoneFixBranchFor`
+  (`milestone-fix/<leaf>/pr-<N>-takeover-<sha12>`), resolves and pushes only
+  that branch, and opens a PR into the milestone branch with
+  `raiseMilestoneFixPr` (Issue #2907). Nothing is pushed to the head branch.
+- Any other head: the ordinary ladder resolve path (`resolveViaLadder`). Both
+  resolver seams are marker-free by contract — the takeover owns the attempt
+  and conclusion markers, so one takeover spends at most one unit of the
+  shared budget.
+- Every exit after the attempt marker posts a conclusion marker: `resolved`
+  (`pass="takeover"`) when the merge was pushed or the fix PR was raised,
+  `failed` when the resolver could not resolve, and `failed` when anything
+  threw — then the error is re-raised, never swallowed.
+- Labels (Issue #2951): the pass adds `merge-conflict` only when it is absent,
+  and removes it only when it added it in that run and the ordinary route
+  resolved the conflict. A label a human or another pass applied is never
+  removed; on the gated route the label stays until the fix PR lands.
+
+```mermaid
+flowchart TD
+    A[Takeover invoked] --> B{"Budget spent?"}
+    B -- "Yes" --> C["Decline<br/>(no marker)"]
+    B -- "No" --> D{"Gated head?"}
+    D -- "No" --> E[Post attempt marker]
+    E --> F[Ordinary resolve<br/>via ladder]
+    F --> G[Conclusion marker]
+    D -- "Yes" --> H{"Open fix PR<br/>already exists?"}
+    H -- "Yes" --> I["Reuse it<br/>(no marker)"]
+    H -- "No" --> J[Post attempt marker]
+    J --> K[Resolve on<br/>milestone-fix branch]
+    K --> L["Raise fix PR<br/>(Issue #2907)"]
+    L --> M[Conclusion marker]
+    E -. "throw" .-> N["Failed conclusion"]
+    N -. "re-raise" .-> O[Error propagates]
+    J -. "throw" .-> N
 ```
 
 ### 🔁 Stale verdict — the base is already in

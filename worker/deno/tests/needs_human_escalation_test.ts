@@ -42,6 +42,9 @@ interface StubClientOptions {
   addLabelThrows?: boolean;
   getIssueCommentsThrows?: boolean;
   existingComments?: GitHubComment[];
+  /** When set, every addLabel/postComment call pushes its kind here, so
+   * tests can assert call order across both call sites (Issue #2958). */
+  callOrder?: Array<"label" | "comment">;
 }
 
 function makeStubClient(opts: StubClientOptions = {}): {
@@ -69,6 +72,7 @@ function makeStubClient(opts: StubClientOptions = {}): {
         return Promise.reject(new Error("stub: addLabel failed"));
       }
       labels.push({ repo, issueNumber: n, label });
+      opts.callOrder?.push("label");
       return Promise.resolve();
     },
     removeLabel: (repo: string, n: number, label: string) => {
@@ -80,6 +84,7 @@ function makeStubClient(opts: StubClientOptions = {}): {
         return Promise.reject(new Error("stub: postComment failed"));
       }
       comments.push({ repo, issueNumber: n, body });
+      opts.callOrder?.push("comment");
       return Promise.resolve(undefined);
     },
     editIssue: () => Promise.resolve(),
@@ -718,4 +723,136 @@ Deno.test("escalateToHuman - default footer when githubUser omitted", async () =
 
   assert(result.ok);
   assertStringIncludes(comments[0]!.body, "🤖 Processed by: the worker");
+});
+
+// ---------------------------------------------------------------------------
+// commentFirst (Issue #2958)
+// ---------------------------------------------------------------------------
+
+Deno.test("escalateToHuman - commentFirst posts the comment before adding the label", async () => {
+  const callOrder: Array<"label" | "comment"> = [];
+  const { client, comments, labels } = makeStubClient({ callOrder });
+  const ensureLabel = makeEnsureLabelStub();
+  const { logger } = makeSilentLogger();
+
+  const result = await escalateToHuman({
+    ghClient: client,
+    repo: "org/repo",
+    target: { kind: "issue", number: 7 },
+    needsHumanLabel: "needs-human",
+    reason: "repeat clone corruption",
+    nextStep: "inspect the host",
+    githubUser: "vibe-coder[bot]",
+    commentFirst: true,
+    deps: { github: { ensureLabelExists: ensureLabel.fn } },
+    logger,
+  });
+
+  assert(result.ok, "expected success");
+  assertEquals(result.value, {
+    commentPosted: true,
+    labelAdded: true,
+    dedupSkipped: false,
+  });
+  assertEquals(comments.length, 1);
+  assertEquals(labels.length, 1);
+  assertEquals(callOrder, ["comment", "label"]);
+});
+
+Deno.test("escalateToHuman - commentFirst: comment failure means the label is never added", async () => {
+  const callOrder: Array<"label" | "comment"> = [];
+  const { client, comments, labels } = makeStubClient({
+    postCommentThrows: true,
+    callOrder,
+  });
+  const ensureLabel = makeEnsureLabelStub();
+  const { logger } = makeSilentLogger();
+
+  const result = await escalateToHuman({
+    ghClient: client,
+    repo: "org/repo",
+    target: { kind: "issue", number: 7 },
+    needsHumanLabel: "needs-human",
+    reason: "repeat clone corruption",
+    nextStep: "inspect the host",
+    commentFirst: true,
+    deps: { github: { ensureLabelExists: ensureLabel.fn } },
+    logger,
+  });
+
+  assert(!result.ok, "expected failure when both comment and label are absent");
+  assertEquals(comments.length, 0);
+  assertEquals(labels.length, 0);
+  assertEquals(callOrder, []);
+});
+
+Deno.test("escalateToHuman - commentFirst: label failure still leaves the comment posted", async () => {
+  const callOrder: Array<"label" | "comment"> = [];
+  const { client, comments, labels } = makeStubClient({
+    addLabelThrows: true,
+    callOrder,
+  });
+  const ensureLabel = makeEnsureLabelStub();
+  const { logger } = makeSilentLogger();
+
+  const result = await escalateToHuman({
+    ghClient: client,
+    repo: "org/repo",
+    target: { kind: "issue", number: 7 },
+    needsHumanLabel: "needs-human",
+    reason: "repeat clone corruption",
+    nextStep: "inspect the host",
+    commentFirst: true,
+    deps: { github: { ensureLabelExists: ensureLabel.fn } },
+    logger,
+  });
+
+  assert(result.ok, "comment alone is a successful hand-off");
+  assertEquals(result.value, {
+    commentPosted: true,
+    labelAdded: false,
+    dedupSkipped: false,
+  });
+  assertEquals(comments.length, 1);
+  assertEquals(labels.length, 0);
+  assertEquals(callOrder, ["comment"]);
+});
+
+Deno.test("escalateToHuman - commentFirst: dedup-skipped comment still labels", async () => {
+  const fixedNow = Date.parse("2024-01-01T12:00:00Z");
+  const dedupKey = "clone-corrupt-repeat:org/repo:host-1:2023-12-31T00:00:00Z";
+  const marker = buildDedupMarker(dedupKey);
+  const { client, comments, labels } = makeStubClient({
+    existingComments: [
+      makeComment(`Already escalated.\n\n${marker}`, "2024-01-01T11:00:00Z"),
+    ],
+  });
+  const ensureLabel = makeEnsureLabelStub();
+  const { logger } = makeSilentLogger();
+
+  const result = await escalateToHuman({
+    ghClient: client,
+    repo: "org/repo",
+    target: { kind: "issue", number: 7 },
+    needsHumanLabel: "needs-human",
+    reason: "repeat clone corruption",
+    nextStep: "inspect the host",
+    dedupKey,
+    commentFirst: true,
+    deps: {
+      github: { ensureLabelExists: ensureLabel.fn },
+      now: () => fixedNow,
+      dedupAuthors: FLEET,
+    },
+    logger,
+  });
+
+  assert(result.ok, "dedup-skipped comment is still a successful hand-off");
+  assertEquals(result.value, {
+    commentPosted: false,
+    labelAdded: true,
+    dedupSkipped: true,
+  });
+  assertEquals(comments.length, 0);
+  assertEquals(labels.length, 1);
 });

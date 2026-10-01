@@ -894,7 +894,7 @@ export function isConflictAttemptDue(
 // ---------------------------------------------------------------------------
 
 /** Read a PR's label names. Throws so callers can fail loud. */
-async function fetchPrLabels(
+export async function fetchPrLabels(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,

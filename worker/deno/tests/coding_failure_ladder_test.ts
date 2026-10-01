@@ -13,6 +13,7 @@ import {
   applyCodingFailureLadder,
   buildRepeatedFailureEscalation,
   classifyCodingFailure,
+  isSetupFault,
   planCodingFailure,
 } from "../lib/coding_failure_ladder.ts";
 import {
@@ -332,6 +333,100 @@ Deno.test("planCodingFailure - an applied ladder counts the attempt even when th
   });
   assertEquals(plan.applyLadder, false);
   assertEquals(plan.cooldownKind, "non_transient");
+});
+
+Deno.test("planCodingFailure - a setup-phase failure is released unlabelled, no attempt consumed (Issue #2954)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "setup",
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+});
+
+Deno.test("planCodingFailure - the same reason without a setup phase steps the ladder", () => {
+  const withoutPhase = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(withoutPhase.applyLadder, true);
+  assertEquals(withoutPhase.cooldownKind, "non_transient");
+
+  const executePhase = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "execute",
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(executePhase.applyLadder, true);
+  assertEquals(executePhase.cooldownKind, "non_transient");
+});
+
+Deno.test("planCodingFailure - a host-fault reason is a setup fault even at the execute phase (Issue #2954)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "execute",
+    reason: "fatal: bad object refs/heads/main",
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+});
+
+Deno.test("planCodingFailure - a record-only milestone-branch refusal in setup keeps its comment (Issue #2220)", () => {
+  // The exact reason the setup phase returns for a milestone-branch
+  // refusal (Issue #2220) — copied literally from `SETUP_REASON` in
+  // tests/milestone_branch_refusal_release_test.ts.
+  const GH013 = [
+    "remote: error: GH013: Repository rule violations found for refs/heads/milestone/scan-20260910.",
+    "remote: - 5 of 6 required status checks are expected.",
+    "! [remote rejected] origin/Develop -> milestone/scan-20260910",
+  ].join("\n");
+  const SETUP_REASON =
+    "Failed to ensure milestone branch 'milestone/scan-20260910' for " +
+    `milestone 'Scan 20260910': Failed to push milestone branch ` +
+    `milestone/scan-20260910 to origin from Develop: ${GH013}`;
+
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "setup",
+    reason: SETUP_REASON,
+  });
+  assertEquals(plan.applyLadder, true, "the comment is written from there");
+  assertEquals(plan.cooldownKind, undefined, "no escalating cooldown");
+  assertEquals(plan.decision?.disposition, "record-only");
+});
+
+// ---------------------------------------------------------------------------
+// isSetupFault
+// ---------------------------------------------------------------------------
+
+Deno.test("isSetupFault - a setup-phase run is a setup fault", () => {
+  assertEquals(isSetupFault({ phase: "setup", reason: "anything" }), true);
+});
+
+Deno.test("isSetupFault - a host-fault reason is a setup fault regardless of phase", () => {
+  assertEquals(
+    isSetupFault({
+      phase: "execute",
+      reason: "fatal: bad object refs/heads/main",
+    }),
+    true,
+  );
+});
+
+Deno.test("isSetupFault - an ordinary execute failure is not a setup fault", () => {
+  assertEquals(
+    isSetupFault({
+      phase: "execute",
+      reason: "No code changes and no useful output from Claude",
+    }),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------
