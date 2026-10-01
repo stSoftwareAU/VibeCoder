@@ -26,7 +26,11 @@ import {
   type HostFaultKind,
   parseHostFaultMarker,
 } from "./host_fault.ts";
-import { parseCommentRows, parseLabelledIssues } from "./issue_sweep_parse.ts";
+import {
+  FAILURE_RECORD_HEADING_PATTERN,
+  parseCommentRows,
+  parseLabelledIssues,
+} from "./issue_sweep_parse.ts";
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
 
 /** Function signature for running gh CLI commands. */
@@ -98,16 +102,8 @@ export function resetHostFaultReleaseSweepsForTest(): void {
   swept.clear();
 }
 
-/**
- * Every heading a fleet path writes when it applies `failed-once` or
- * `failed` (#2890 review). Any of them makes the comment a failure record,
- * so a label another path applied is never mistaken for a host fault's:
- * `label_failure.ts` (Failed / Paused), the milestone-branch refusal,
- * `claim_issue.ts` (Claim Churn Detected), `label_question_failure.ts` and
- * `label_planning_escalation.ts`.
- */
-const FAILURE_RECORD_RE =
-  /^##\s+(?:Automated Processing (?:Failed|Paused)|Milestone branch unavailable|Claim Churn Detected|Question Answering Failed|Automatic Escalation to Planning Mode)/;
+/** The shared failure-record heading list — see `issue_sweep_parse.ts`. */
+const FAILURE_RECORD_RE = new RegExp(FAILURE_RECORD_HEADING_PATTERN);
 
 /** Only an `Automated Processing Failed` record can be a host fault. */
 const HOST_FAULT_CANDIDATE_RE = /^##\s+Automated Processing Failed\b/;

@@ -1,12 +1,27 @@
 /**
  * Shared `gh issue list` / `gh issue view` JSON parsing for the label-release
- * sweeps.
+ * sweeps, plus the shared failure-record heading pattern both sweeps judge a
+ * comment against.
  *
  * `lib/milestone_branch_refusal_release.ts` (Issue #2220) and
  * `lib/host_fault_release.ts` (Issue #2890) both list labelled issues and
  * then read each issue's comments the same way, so the parsing lives here
  * once rather than twice.
  */
+
+/**
+ * Every heading a fleet path writes when it applies a failure-flavoured
+ * label. Any of them makes a comment a failure record, so a label another
+ * path applied is never mistaken for — or shadowed by — a different sweep's
+ * record: `label_failure.ts` (Automated Processing Failed / Paused), the
+ * milestone-branch refusal (Milestone branch unavailable), `claim_issue.ts`
+ * (Claim Churn Detected), `label_question_failure.ts` (Question Answering
+ * Failed) and `label_planning_escalation.ts` (Automatic Escalation to
+ * Planning Mode). Single source of truth for both sweeps (Issues #2890,
+ * #2943).
+ */
+export const FAILURE_RECORD_HEADING_PATTERN = String
+  .raw`^##\s+(?:Automated Processing (?:Failed|Paused)|Milestone branch unavailable|Claim Churn Detected|Question Answering Failed|Automatic Escalation to Planning Mode)`;
 
 /** One labelled issue as read from `gh issue list`. */
 export interface LabelledIssue {
