@@ -627,7 +627,11 @@ the originating issue, not the PR.
 - **The PR itself is parked, not escalated** (Issue #2312). The third
   exhaustion leaves the PR **open**, keeps `merge-conflict` on it, appends the
   event to the PR's own `merge-fallback` flag, and posts one comment carrying
-  `<!-- vibe-merge-conflict-parked base="<sha>" -->`. It is recorded as the
+  `<!-- vibe-merge-conflict-parked base="<sha>" at="<ISO>" -->` plus an
+  `**Owner:** \`conflict takeover\`` line and a `**Takeover at <ISO>**` line —
+  the park time plus `CONFLICT_OWNER_CHECK_HOURS` (Issue #2997) — so the
+  merge-conflict pass takes the PR back and fixes it forward if the PR head
+  has not moved by then. It is recorded as the
   `parked` skip reason, and `needs-human` never reaches the PR on this path —
   only its originating issue, as above. The marker keys on the **base**
   sha, unlike every other marker in this vocabulary, because nothing acts until

@@ -15,7 +15,9 @@ import {
   CONFLICT_RESOLVED_MARKER,
   conflictAttemptMarker,
   conflictFailedMarker,
+  conflictParkedMarker,
   conflictResolvedMarker,
+  readParkedBase,
   readResolutionAttempts,
 } from "../lib/merge_conflict_markers.ts";
 
@@ -194,6 +196,43 @@ Deno.test("readResolutionAttempts reads an unrecognised pass as ladder", () => {
   assertEquals(attempts.length, 1);
   assertEquals(attempts[0]!.pass, "ladder");
   assertEquals(attempts[0]!.outcome, "open");
+});
+
+// ---------------------------------------------------------------------------
+// conflictParkedMarker / readParkedBase (Issue #2997)
+// ---------------------------------------------------------------------------
+
+Deno.test("conflictParkedMarker - unchanged with no stand-down time", () => {
+  assertEquals(
+    conflictParkedMarker(HEAD),
+    `<!-- vibe-merge-conflict-parked base="${HEAD}" -->`,
+  );
+});
+
+Deno.test("conflictParkedMarker - carries at= when a stand-down time is given", () => {
+  const standDownAtMs = Date.parse("2026-01-02T03:04:05.006Z");
+  const line = conflictParkedMarker(HEAD, standDownAtMs);
+  assertEquals(
+    line,
+    `<!-- vibe-merge-conflict-parked base="${HEAD}" at="2026-01-02T03:04:05.006Z" -->`,
+  );
+});
+
+Deno.test("conflictParkedMarker - throws on a non-finite stand-down time", () => {
+  assertThrows(() => conflictParkedMarker(HEAD, NaN));
+});
+
+Deno.test("readParkedBase - still reads base back when the marker carries at=", () => {
+  const standDownAtMs = Date.parse("2026-01-02T03:04:05.006Z");
+  const comments = [
+    comment(
+      conflictParkedMarker(HEAD, standDownAtMs),
+      "vibe-coder-bot",
+      "2026-01-02T03:04:05Z",
+    ),
+  ];
+  const record = readParkedBase(comments);
+  assertEquals(record?.base, HEAD);
 });
 
 Deno.test("readResolutionAttempts leaves a still-open attempt open and resolves a later one", () => {

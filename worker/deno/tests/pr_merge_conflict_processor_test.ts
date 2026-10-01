@@ -2058,7 +2058,7 @@ Deno.test("processMergeConflict - a milestone head is left to the milestone sync
   assertStringIncludes(captured.comments[0] ?? "", "milestone branch sync");
   assertStringIncludes(
     captured.comments[0] ?? "",
-    '<!-- vibe-milestone-head branch="milestone/1730-resolve-merge-conflicts" -->',
+    '<!-- vibe-milestone-head branch="milestone/1730-resolve-merge-conflicts"',
   );
   assertEquals(
     lines.filter((line) =>

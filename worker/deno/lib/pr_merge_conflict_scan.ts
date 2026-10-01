@@ -48,6 +48,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
+import { standDownNextStepLines } from "./gated_head_guard.ts";
 import { isCiFixEscalationOnly } from "./conflict_needs_human_gate.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import {
@@ -1320,13 +1321,20 @@ export function buildFallbackFlagLinkComment(
  * @param flagIssueNumber - The `merge-fallback` flag this event was appended
  *   to, or `undefined` when the filing failed — said out loud rather than
  *   quietly omitted.
+ * @param standDownAtMs - When the park started, named on the marker and in
+ *   the owner/takeover lines (Issue #2997). Throws on a non-finite value.
  */
 export function buildParkedPrComment(args: {
   base: string;
   baseBranch: string;
   issueNumber: number;
   flagIssueNumber?: number;
+  standDownAtMs: number;
 }): string {
+  const nextStepLines = standDownNextStepLines(
+    "conflict takeover",
+    args.standDownAtMs,
+  );
   const flagLine = args.flagIssueNumber !== undefined &&
       args.flagIssueNumber > 0
     ? `This event is recorded in #${args.flagIssueNumber}, the ` +
@@ -1335,7 +1343,7 @@ export function buildParkedPrComment(args: {
       "so this comment is the only record of the park — the park itself " +
       "stands.";
   return [
-    conflictParkedMarker(args.base),
+    conflictParkedMarker(args.base, args.standDownAtMs),
     "⏸️ **Parked on `merge-conflict` until the base moves**",
     "",
     `Issue #${args.issueNumber} has had its ` +
@@ -1351,6 +1359,8 @@ export function buildParkedPrComment(args: {
     `${CONFLICT_RESOLUTION_BUDGET}-attempt budget counted from here.`,
     "",
     flagLine,
+    "",
+    ...nextStepLines,
     "",
     "**Nobody is being asked for anything.** No human-owned label is applied " +
     "and no decision is waited on — merging the base branch in by hand, " +
@@ -1377,7 +1387,11 @@ type ParkOutcome =
  * pass tries again, rather than reporting a wait nothing recorded.
  */
 async function parkConflictingPr(
-  args: ConflictFlagFilingArgs & { base: string; issueNumber: number },
+  args: ConflictFlagFilingArgs & {
+    base: string;
+    issueNumber: number;
+    standDownAtMs: number;
+  },
 ): Promise<ParkOutcome> {
   const { repo, prNumber, ghCommandFn, logger } = args;
 
@@ -1385,6 +1399,17 @@ async function parkConflictingPr(
   const flagIssueNumber = filed !== undefined && filed.issueNumber > 0
     ? filed.issueNumber
     : undefined;
+
+  // Built before the try/catch: a non-finite `standDownAtMs` is a caller
+  // bug, not a recoverable `gh` failure, so it throws out rather than being
+  // swallowed into the warn path below.
+  const body = buildParkedPrComment({
+    base: args.base,
+    baseBranch: args.baseBranch,
+    issueNumber: args.issueNumber,
+    standDownAtMs: args.standDownAtMs,
+    ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
+  });
 
   try {
     await ghCommandFn([
@@ -1394,12 +1419,7 @@ async function parkConflictingPr(
       "--repo",
       repo,
       "--body",
-      buildParkedPrComment({
-        base: args.base,
-        baseBranch: args.baseBranch,
-        issueNumber: args.issueNumber,
-        ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
-      }),
+      body,
     ]);
   } catch (error) {
     // WARN, not ERROR: the pass handles this and the next one decides the PR
@@ -1899,6 +1919,7 @@ export async function findConflictingPr(
             prComments,
             base,
             issueNumber: abandon.reason.issueNumber,
+            standDownAtMs: nowMs(),
             fallbackAction: `Left ${repo}#${pr.number} ` +
               `(\`${pr.headRefName}\`) open on \`${MERGE_CONFLICT_LABEL}\`. ` +
               `Issue #${abandon.reason.issueNumber} has spent its ` +

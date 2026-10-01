@@ -9,7 +9,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   buildFallbackFlagLinkComment,
   buildParkedPrComment,
@@ -2090,11 +2095,13 @@ Deno.test("findConflictingPr - a half-done abandon is not parked away (Issue #23
 Deno.test("buildParkedPrComment - says so when the flag could not be filed (Issue #2312)", () => {
   // The park stands either way, but a record that does not exist must not be
   // referenced as though it does.
+  const standDownAtMs = Date.parse("2026-08-20T09:00:00.000Z");
   const filed = buildParkedPrComment({
     base: BASE_TIP,
     baseBranch: "main",
     issueNumber: 16,
     flagIssueNumber: 900,
+    standDownAtMs,
   });
   assertStringIncludes(filed, "recorded in #900");
 
@@ -2102,11 +2109,42 @@ Deno.test("buildParkedPrComment - says so when the flag could not be filed (Issu
     base: BASE_TIP,
     baseBranch: "main",
     issueNumber: 16,
+    standDownAtMs,
   });
   assertStringIncludes(unfiled, "could **not** be filed");
   assertStringIncludes(unfiled, "the park itself");
   // Both carry the marker the next pass reads back.
   assertStringIncludes(unfiled, `base="${BASE_TIP}"`);
+});
+
+Deno.test("buildParkedPrComment - names the owner and the UTC takeover time (Issue #2997)", () => {
+  const standDownAtMs = Date.parse("2026-08-20T09:00:00.000Z");
+  const body = buildParkedPrComment({
+    base: BASE_TIP,
+    baseBranch: "main",
+    issueNumber: 16,
+    standDownAtMs,
+  });
+  assertStringIncludes(body, "**Owner:** `conflict takeover`");
+
+  const match = /Takeover at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/
+    .exec(body);
+  assert(match !== null, "a takeover line with an ISO timestamp is posted");
+  const expected = new Date(
+    standDownAtMs + CONFLICT_OWNER_CHECK_HOURS * 3_600_000,
+  ).toISOString();
+  assertEquals(match![1], expected);
+});
+
+Deno.test("buildParkedPrComment - throws on a non-finite stand-down time", () => {
+  assertThrows(() =>
+    buildParkedPrComment({
+      base: BASE_TIP,
+      baseBranch: "main",
+      issueNumber: 16,
+      standDownAtMs: NaN,
+    })
+  );
 });
 
 Deno.test("findConflictingPr - an outsider's park marker cannot silence a PR (Issue #2312)", async () => {
