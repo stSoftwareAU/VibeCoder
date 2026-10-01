@@ -75,7 +75,9 @@ session still reviews as the `gh` user.
    restore it. A deliberate change the issue does require (an expected value
    or behaviour the issue changes, or deleting a test that only pinned the
    old implementation) is the owner's call: the PR is held with a
-   comment-only review, neither approved nor sent back. Trivial edits
+   comment-only review, neither approved nor sent back, and labelled
+   `needs-human`; the skill removes that label on a later approve or
+   send-back only when it was the one that added it. Trivial edits
    (formatting, renames, imports, added cases, fixture paths) are not, and
    neither are edits that only **tighten** a meaningful behavioural or
    contractual test (it now asserts more or allows less, as the issue asks):
@@ -269,6 +271,11 @@ The script does the rest, so do not post anything yourself:
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
   worker ignores; otherwise **approve**.
+- After a held review posts, it labels the PR `needs-human`. When it later
+  posts an approved or sent-back review for a PR whose latest `log.jsonl`
+  record shows this skill added that label, it removes it; it never
+  removes a label it did not add. A failed add or remove leaves the
+  review posted and is not retried.
 - It links an open issue with the same title instead of filing an
   unrelated issue twice. A failure to file one never stops the review.
 - It writes and posts the review body (listing any issues filed), appends
@@ -276,9 +283,11 @@ The script does the rest, so do not post anything yourself:
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
-It prints `{ posted, outcome?, filedIssues?, reason? }`. Exit code 2 means
-Fable's reply was malformed: nothing was posted, and the PR comes back on the
-next gate pass.
+It prints `{ posted, outcome?, filedIssues?, labelError?, reason? }`.
+`labelError` names the label action (`add` or `remove`) and the `gh` error
+when the label call failed; the exit code is unchanged either way. Exit
+code 2 means Fable's reply was malformed: nothing was posted, and the PR
+comes back on the next gate pass.
 
 ### 3. Learn from recurring findings
 
@@ -319,7 +328,8 @@ search or file an improvement issue must not change the PR review outcome.
 ### 4. Report
 
 One short line per round: approved, sent back, and held for the owner, each
-with PR links, plus any issues filed. Then go back to the loop.
+with PR links, plus any issues filed. When post.ts printed a `labelError`
+for a PR, name that PR and the failure. Then go back to the loop.
 
 When the round held a PR for the owner or sent one back to the fleet, also
 send one PushNotification (status `proactive`) naming those PRs and why,
