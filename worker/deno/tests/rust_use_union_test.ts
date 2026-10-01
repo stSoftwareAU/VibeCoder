@@ -100,6 +100,33 @@ Deno.test(
 );
 
 Deno.test(
+  "mergeDuplicateRustUses - a char literal brace inside a mod does not fake top-level depth",
+  () => {
+    // `'}'` must not decrement the brace-depth counter: if it did, the
+    // in-mod `use` below would be misclassified as top-level, become the
+    // fold anchor, and the fold would delete the real top-level duplicate.
+    const input = "mod a {\n" +
+      "let c = '}';\n" +
+      "use grq_policy::{AccountId, TradingDate};\n" +
+      "}\n" +
+      "use grq_policy::{AccountId, TradingDate};\n";
+    assertEquals(mergeDuplicateRustUses(input), input);
+  },
+);
+
+Deno.test(
+  "mergeDuplicateRustUses - a trailing line comment on an interior line is stripped before folding",
+  () => {
+    // The `//` comment must not be parsed as an item, nor left in the
+    // rendered output where it would comment out the rest of the line.
+    const input = "use a::{B, // keep\n C,};\n" +
+      "use a::{B, C, D};\n";
+    const merged = mergeDuplicateRustUses(input);
+    assertEquals(merged, "use a::{B, C, D};\n");
+  },
+);
+
+Deno.test(
   "mergeDuplicateRustUses - same-prefix uses in different column-0 mod bodies are left alone",
   () => {
     // Legal, non-rustfmt'd Rust: each `use` is scoped to its own `mod`, so

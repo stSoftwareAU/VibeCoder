@@ -119,6 +119,15 @@ function parseUseDeclaration(text: string): ParsedUse | null {
   return { vis, prefix, items: [item] };
 }
 
+/**
+ * Strip a trailing `//` line comment. A `use` declaration's own text never
+ * contains a string literal, so cutting at the first `//` is unambiguous.
+ */
+function stripLineComment(line: string): string {
+  const index = line.indexOf("//");
+  return index === -1 ? line : line.slice(0, index);
+}
+
 /** Whether the nearest non-blank line before `start` is an attribute. */
 function gatedByAttribute(lines: string[], start: number): boolean {
   for (let i = start - 1; i >= 0; i--) {
@@ -205,6 +214,31 @@ function scanTopLevelLines(lines: string[]): boolean[] {
         i++;
         continue;
       }
+      if (ch === "'") {
+        const next = line[i + 1];
+        if (next !== undefined && /[A-Za-z_]/.test(next)) {
+          // A lifetime (`'a`, `'static`) — skip the quote and one identifier
+          // character only, so a longer name's remaining letters are scanned
+          // normally rather than being swallowed as part of a fake literal.
+          i += 2;
+        } else {
+          // A char/byte literal (`'}'`, `'\n'`, `b'x'`) — skip to the closing
+          // unescaped `'` without counting any brace or quote inside it.
+          i++;
+          while (i < line.length) {
+            if (line[i] === "\\") {
+              i += 2;
+              continue;
+            }
+            if (line[i] === "'") {
+              i++;
+              break;
+            }
+            i++;
+          }
+        }
+        continue;
+      }
       if (ch === "{") depth++;
       else if (ch === "}") depth = Math.max(0, depth - 1);
       i++;
@@ -228,8 +262,9 @@ function findCandidates(lines: string[]): Candidate[] {
     let end = -1;
     let joined = "";
     for (let j = i; j < lines.length; j++) {
-      joined += (j > i ? " " : "") + lines[j]!.trim();
-      if (lines[j]!.includes(";")) {
+      const codePart = stripLineComment(lines[j]!).trim();
+      joined += (j > i ? " " : "") + codePart;
+      if (codePart.includes(";")) {
         end = j;
         break;
       }
