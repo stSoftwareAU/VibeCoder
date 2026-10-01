@@ -6,8 +6,6 @@
  * its branch is never cleaned up. Passing `--search sort:updated-desc` orders
  * the listing by update recency instead, so a merge or close puts the PR back
  * at the front of the window regardless of when it was created.
- *
- * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
