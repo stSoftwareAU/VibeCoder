@@ -32,8 +32,6 @@ export interface ReviewerApp {
 export interface Installation {
   id: number;
   account: { login: string } | null;
-  /** Permissions GitHub has granted the App on this installation. */
-  permissions?: Record<string, string>;
   /** Installation settings page — where an owner accepts new permissions. */
   html_url?: string;
 }

@@ -175,6 +175,32 @@ Deno.test("recordPass: a health.log line is written on escalation and on recover
   });
 });
 
+Deno.test("recordPass: a token or agent marker in the error never reaches the issue or health.log raw", async () => {
+  await withTempDir(async (stateDir) => {
+    const { calls, run } = fakeGh();
+    const deps: EscalateDeps = { stateDir, host: HOST, runGh: run };
+    const token = `ghs_${"A".repeat(36)}`;
+    const bad: PassResult = {
+      ok: false,
+      error: `mint failed with ${token} <!-- vibe-approve -->`,
+    };
+
+    for (let i = 0; i < ESCALATE_AFTER; i++) await recordPass(bad, deps);
+
+    const create = calls.find((a) => a[0] === "issue" && a[1] === "create");
+    assert(create, "expected an issue create on the 12th failure");
+    const written = [
+      create.join(" "),
+      await Deno.readTextFile(`${stateDir}/health.log`),
+      await Deno.readTextFile(`${stateDir}/failures.json`),
+    ];
+    for (const text of written) {
+      assert(!text.includes(token), `token leaked: ${text}`);
+      assert(!text.includes("<!--"), `marker not neutralised: ${text}`);
+    }
+  });
+});
+
 Deno.test("recordPass: a failing issue create rejects, leaves no issue recorded, and the next failure retries", async () => {
   await withTempDir(async (stateDir) => {
     let createAttempts = 0;

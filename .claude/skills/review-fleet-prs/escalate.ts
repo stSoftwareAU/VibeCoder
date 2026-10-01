@@ -8,6 +8,9 @@
  * issue on the first successful pass after that.
  */
 
+import { neutraliseAgentMarkers } from "../../../worker/deno/lib/agent_marker_neutralisation.ts";
+import { redactSecrets } from "../../../worker/deno/lib/secret_redaction.ts";
+
 export const ESCALATE_AFTER = 12;
 export const ESCALATION_REPO = "stSoftwareAU/VibeCoder";
 
@@ -217,7 +220,10 @@ export async function recordPass(
   const state = await readState(deps.stateDir);
 
   if (!result.ok) {
-    const error = result.error || "unknown error";
+    // The error lands in a public issue: redact secrets and defuse agent markers once, here.
+    const error = neutraliseAgentMarkers(
+      redactSecrets(result.error || "unknown error"),
+    ).text;
     const consecutive = state.consecutive + 1;
     const nextState: FailureState = { ...state, consecutive, error };
     await writeState(deps.stateDir, nextState);
