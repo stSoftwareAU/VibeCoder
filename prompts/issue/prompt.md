@@ -110,12 +110,20 @@ The worker parks the issue: it posts one comment, keeps the discovery label
    may require changing or deleting a test; document why and what still protects
    the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
-3. Update README.md or other documentation if your changes affect usage or add
-   new features. When the change involves architecture, data flow, state
-   transitions, or sequence of events, include a **Mermaid** diagram (e.g.
-   `flowchart`, `sequenceDiagram`, `stateDiagram`, `classDiagram`, `gitGraph`)
-   in a fenced `` ```mermaid `` block where it aids understanding — Mermaid
-   renders natively on GitHub.
+3. Update the documentation in the same change. A change that **adds, changes
+   or removes** behaviour, a field, a UI element or a setting owes a docs
+   change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
+   (restated in the `<coding_guidelines>`). Before you commit, grep
+   `README.md`, `docs/` (excluding `docs/archive/`) and every `*/README.md`
+   for each name you removed or changed **and** for the user-visible wording
+   you removed — a label, a status sentence, a setting's description — then
+   fix every hit, so no manual still describes what the code no longer does.
+   Record the sweep as the **Docs sweep** line in the PR summary (see
+   **PR Summary File** below). When the change involves architecture, data
+   flow, state transitions, or sequence of events, include a **Mermaid**
+   diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
+   `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
+   aids understanding — Mermaid renders natively on GitHub.
 4. IMPORTANT: Use Australian English spelling throughout — code, comments, and
    documentation (e.g., colour, behaviour, organisation, favour, metre, centre).
    This applies to all files you create or modify.
@@ -733,6 +741,9 @@ The file MUST contain:
    - For performance changes: Include benchmark results or document why they
      cannot be provided
    - For bug fixes/CLI changes: Reference the tests that verify the fix
+   - Always: a one-line **Docs sweep** — the grep terms you searched and the
+     doc files you updated, or `no hits` — e.g. **Docs sweep** — grep:
+     `retryLimit`, "Retrying in"; updated: `docs/workflows/retries.md`
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
@@ -788,6 +799,8 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Evidence
 
 ![Screenshot of fixed buttons](docs/evidence/button-fix.png)
+
+**Docs sweep** — grep: `flex-wrap`, "stacked buttons"; no hits
 
 ## Reproduction
 

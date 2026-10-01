@@ -827,6 +827,9 @@ for every PR summary — containing:
 3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
+   Always add a one-line **Docs sweep** — the grep terms searched and the
+   doc files updated, or `no hits` (see
+   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)).
 4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
