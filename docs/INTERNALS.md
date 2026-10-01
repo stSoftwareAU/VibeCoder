@@ -337,6 +337,13 @@ bash `worker/run_core.sh` conductor. It sequences:
    trusted-re-label escape hatch all still apply. An issue carrying
    `needs-human` is never closed by it.
 
+   Both merged-PR closers and the merged-branch cleanup take their window
+   from `gh pr list` listings ordered by update recency
+   (`RECENCY_ORDER_SEARCH`, `--search sort:updated-desc`, Issue #2901), not
+   gh's default creation order: a merge updates a PR, so a long-lived PR
+   (e.g. a milestone child) merged after 30 newer PRs had already merged
+   still lands inside the window instead of being pushed out of it.
+
    Beside that re-label hatch sits the **roll-back marker** (Issue #1770,
    [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)).
    When a milestone roll-back reverts a child's merged PR, the child is
@@ -3686,8 +3693,13 @@ What it sweeps for a closed milestone: the lane worktrees holding its
 and the stream session record (`stream-<streamKey>.json`) for **every**
 provider.
 
-Three boundaries make it safe to run on every scan:
+Four boundaries make it safe to run on every scan:
 
+- **No checkout, nothing to sweep.** A monitored repository with no checkout
+  directory on this host is skipped quietly before the closed-milestone
+  listing — no warning, and no `gh` calls spent on its milestones. A checkout
+  that exists but whose branches cannot be listed is still reported and
+  retried.
 - **Swept once, then never revisited.** The listing is cached under the work
   root with a 15-minute TTL, and every fully-swept title is persisted forever,
   so a closed milestone costs one `gh` call in its lifetime rather than one per
