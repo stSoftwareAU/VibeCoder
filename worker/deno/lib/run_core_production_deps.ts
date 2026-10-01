@@ -289,9 +289,10 @@ import {
 import {
   backedOffRepos,
   clearRepoFastFailures,
-  formatRepoFastFailureSummary,
+  createFleetDiagnosticCache,
+  describeRepoFastFailureBackOffs,
   isFastFailure,
-  loadRepoFastFailureStates,
+  ownersOfRepos,
   recordRepoFastFailure,
   recordRepoFastFailureDiagnostic,
   refreshRepoFastFailureBackOffs,
@@ -1007,6 +1008,15 @@ export async function createProductionRunCoreDeps(
     workDir,
     policy: fastFailurePolicyInput,
     warn: (message: string) => logger.warn(message),
+    // Issue #2955: an open, fleet-authored diagnostic issue backs the
+    // repository off on every host, not only the one that filed it.
+    fleetDiagnostics: {
+      owners: () => ownersOfRepos(config.repos ?? []),
+      ghCommandFn: runGhCommandRaw,
+      cache: createFleetDiagnosticCache(),
+      warn: (message: string) => logger.warn(message),
+      error: (message: string) => logger.error(message),
+    },
   };
 
   /**
@@ -3886,6 +3896,9 @@ export async function createProductionRunCoreDeps(
       // closed. The probe runs first so a repaired repository is released
       // promptly, and it only touches repositories that are actually backed
       // off and carry a diagnostic — bounded by how many are broken.
+      // Issue #2955: the back-off this returns is this host's sidecar plus
+      // any open, fleet-authored diagnostic for the repository, so a
+      // repository another host already backed off is excluded here too.
       await refreshRepoFastFailureBackOffs({
         ...fastFailureOptions,
         isIssueClosed: isDiagnosticIssueClosed,
@@ -4801,11 +4814,11 @@ export async function createProductionRunCoreDeps(
     },
 
     // Issue #1950: the cycle-summary line naming every repository with a
-    // live fast failure and how long each is backed off for.
+    // live fast failure and how long each is backed off for. Issue #2955:
+    // also names a repository backed off fleet-wide by an open diagnostic
+    // this host never filed.
     async describeRepoFastFailures() {
-      return formatRepoFastFailureSummary(
-        await loadRepoFastFailureStates(fastFailureOptions),
-      );
+      return await describeRepoFastFailureBackOffs(fastFailureOptions);
     },
 
     // -- Crash handling --
@@ -5325,12 +5338,14 @@ export async function createProductionRunCoreDeps(
             repo,
             issueNumber,
           );
-        // Issue #2085: the repositories this host has backed off for fast
-        // failures (Issue #1950), which `findNextIssue` unions into the
-        // scan's `excludeRepos`. The scan was never shown them, so it cannot
-        // have disagreed with the audit about them — the same reasoning
+        // Issue #2085: the repositories backed off for fast failures (Issue
+        // #1950), which `findNextIssue` unions into the scan's
+        // `excludeRepos`. The scan was never shown them, so it cannot have
+        // disagreed with the audit about them — the same reasoning
         // `heldRepos` already applies to a maintenance-lane lease. Read from
-        // the same durable sidecar the scan reads: a local file, no API call.
+        // the same durable sidecar the scan reads, unioned with any open
+        // fleet-wide diagnostic (Issue #2955) — the latter cached per owner
+        // for 600 s, so this costs at most one `gh search issues` per owner.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
         const result = await auditClaimableState({
           repos,
@@ -5468,8 +5483,9 @@ export async function createProductionRunCoreDeps(
         // reading it as "scanned and refused" is what escalated
         // stSoftwareAU/GRQ-FX-validation's eight-issue backlog on three
         // consecutive cycles while VibeCoder#2079 already named the real
-        // fault. Read from the same durable sidecar the scan reads, exactly
-        // as the run-local holds above are.
+        // fault. Read from the same durable sidecar the scan reads, unioned
+        // with any open fleet-wide diagnostic (Issue #2955), exactly as the
+        // run-local holds above are.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
         const perRepo = await Promise.all(
           repos.map(async (repo) => {

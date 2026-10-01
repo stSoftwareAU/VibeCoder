@@ -8,11 +8,15 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   backedOffRepos,
   clearRepoFastFailures,
+  createFleetDiagnosticCache,
   DEFAULT_FAST_FAILURE_SECONDS,
   diagnosticErrorLine,
+  type FleetDiagnosticCache,
   formatRepoFastFailureSummary,
   isFastFailure,
   loadRepoFastFailureStates,
+  lookupFleetDiagnosticBackOffs,
+  ownersOfRepos,
   readRepoFastFailureFile,
   recordRepoFastFailure,
   recordRepoFastFailureDiagnostic,
@@ -20,6 +24,7 @@ import {
   repoFastFailurePath,
   resolveRepoFastFailurePolicy,
 } from "../lib/repo_fast_failure_tracker.ts";
+import { formatRepoFastFailureMarker } from "../lib/repo_fast_failure_issue.ts";
 import { isRepoLevelBranchRejection } from "../lib/milestone_branch_rejection.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 
@@ -645,4 +650,265 @@ Deno.test("diagnosticErrorLine - git's discovery-boundary trailer does not displ
   ].join("\n"));
   assertStringIncludes(detail, "fatal: not a git repository");
   assertEquals(detail.includes("GIT_DISCOVERY_ACROSS_FILESYSTEM"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Fleet-wide diagnostic back-offs (Issue #2955)
+// ---------------------------------------------------------------------------
+
+const FLEET_OWNER = "stSoftwareAU";
+const GH_SEARCH_ARGS = (owner: string) => [
+  "search",
+  "issues",
+  "VIBE_REPO_FAST_FAILURE",
+  "--owner",
+  owner,
+  "--state",
+  "open",
+  "--match",
+  "body",
+  "--json",
+  "number,body,author,repository,state",
+  "--limit",
+  "100",
+];
+
+function fleetSearchRow(overrides: {
+  number?: number;
+  repo?: string;
+  author?: string | null;
+  state?: string;
+  repository?: string;
+} = {}) {
+  return {
+    number: overrides.number ?? 99,
+    body: formatRepoFastFailureMarker(overrides.repo ?? REPO),
+    author: overrides.author === null
+      ? null
+      : { login: overrides.author ?? "vibe-bot" },
+    state: overrides.state ?? "open",
+    repository: {
+      nameWithOwner: overrides.repository ?? (overrides.repo ?? REPO),
+    },
+  };
+}
+
+function fleetLogs() {
+  const warn: string[] = [];
+  const error: string[] = [];
+  return {
+    warn: (message: string) => warn.push(message),
+    error: (message: string) => error.push(message),
+    warnings: warn,
+    errors: error,
+  };
+}
+
+Deno.test("backedOffRepos - an open fleet-authored diagnostic backs off a repo with no local failures", async () => {
+  await withWorkDir(async (workDir) => {
+    const logs = fleetLogs();
+    const cache = createFleetDiagnosticCache();
+    let calls = 0;
+    const blocked = await backedOffRepos({
+      workDir,
+      hostname: HOST,
+      nowSeconds: clockAt(1_000),
+      fleetDiagnostics: {
+        owners: () => [FLEET_OWNER],
+        fleetAuthors: ["vibe-bot"],
+        cache,
+        warn: logs.warn,
+        error: logs.error,
+        ghCommandFn: (args) => {
+          calls += 1;
+          assertEquals(args, GH_SEARCH_ARGS(FLEET_OWNER));
+          return Promise.resolve(JSON.stringify([fleetSearchRow()]));
+        },
+      },
+    });
+    assertEquals([...blocked], [REPO]);
+    assertEquals(calls, 1);
+  });
+});
+
+Deno.test("lookupFleetDiagnosticBackOffs - a non-fleet author's marker is ignored", async () => {
+  await withWorkDir(async () => {
+    const logs = fleetLogs();
+    const cache = createFleetDiagnosticCache();
+    const result = await lookupFleetDiagnosticBackOffs({
+      owners: () => [FLEET_OWNER],
+      fleetAuthors: ["vibe-bot"],
+      cache,
+      warn: logs.warn,
+      error: logs.error,
+      nowSeconds: clockAt(1_000),
+      ghCommandFn: () =>
+        Promise.resolve(
+          JSON.stringify([fleetSearchRow({ author: "random-human" })]),
+        ),
+    });
+    assertEquals(result.backedOff.size, 0);
+  });
+});
+
+Deno.test("lookupFleetDiagnosticBackOffs - a closed marker issue does not back off the repo", async () => {
+  await withWorkDir(async () => {
+    const logs = fleetLogs();
+    const cache = createFleetDiagnosticCache();
+    const result = await lookupFleetDiagnosticBackOffs({
+      owners: () => [FLEET_OWNER],
+      fleetAuthors: ["vibe-bot"],
+      cache,
+      warn: logs.warn,
+      error: logs.error,
+      nowSeconds: clockAt(1_000),
+      ghCommandFn: () =>
+        Promise.resolve(
+          JSON.stringify([fleetSearchRow({ state: "closed" })]),
+        ),
+    });
+    assertEquals(result.backedOff.size, 0);
+  });
+});
+
+Deno.test("backedOffRepos - fleet lookups are cached for 600s, then re-checked; closing lifts the back-off", async () => {
+  await withWorkDir(async (workDir) => {
+    const logs = fleetLogs();
+    const cache: FleetDiagnosticCache = createFleetDiagnosticCache();
+    let calls = 0;
+    let response = JSON.stringify([fleetSearchRow()]);
+    const fleetDiagnostics = {
+      owners: () => [FLEET_OWNER],
+      fleetAuthors: ["vibe-bot"],
+      cache,
+      warn: logs.warn,
+      error: logs.error,
+      ghCommandFn: (_args: string[]) => {
+        calls += 1;
+        return Promise.resolve(response);
+      },
+    };
+
+    const first = await backedOffRepos({
+      workDir,
+      hostname: HOST,
+      nowSeconds: clockAt(1_000),
+      fleetDiagnostics,
+    });
+    assertEquals([...first], [REPO]);
+    assertEquals(calls, 1);
+
+    const second = await backedOffRepos({
+      workDir,
+      hostname: HOST,
+      nowSeconds: clockAt(1_300),
+      fleetDiagnostics,
+    });
+    assertEquals([...second], [REPO]);
+    assertEquals(calls, 1, "within 600s, no second gh call");
+
+    response = JSON.stringify([]);
+    const third = await backedOffRepos({
+      workDir,
+      hostname: HOST,
+      nowSeconds: clockAt(1_000 + 600 + 1),
+      fleetDiagnostics,
+    });
+    assertEquals(calls, 2, "past 600s, a second gh call is made");
+    assertEquals(third.size, 0, "closing the diagnostic lifts the back-off");
+  });
+});
+
+Deno.test("lookupFleetDiagnosticBackOffs - a gh failure after a good lookup keeps the cached set and warns", async () => {
+  await withWorkDir(async () => {
+    const logs = fleetLogs();
+    const cache = createFleetDiagnosticCache();
+    const options = {
+      owners: () => [FLEET_OWNER],
+      fleetAuthors: ["vibe-bot"],
+      cache,
+      warn: logs.warn,
+      error: logs.error,
+    };
+
+    const good = await lookupFleetDiagnosticBackOffs({
+      ...options,
+      nowSeconds: clockAt(1_000),
+      ghCommandFn: () => Promise.resolve(JSON.stringify([fleetSearchRow()])),
+    });
+    assertEquals([...good.backedOff.keys()], [REPO]);
+
+    const failed = await lookupFleetDiagnosticBackOffs({
+      ...options,
+      nowSeconds: clockAt(1_000 + 600 + 1),
+      ghCommandFn: () => Promise.reject(new Error("gh exploded")),
+    });
+    assertEquals([...failed.backedOff.keys()], [REPO]);
+    assertEquals(failed.failedOwners, []);
+    assert(logs.warnings.some((line) => line.includes("gh exploded")));
+  });
+});
+
+Deno.test("lookupFleetDiagnosticBackOffs - a gh failure with no cached set reports the owner as failed", async () => {
+  await withWorkDir(async () => {
+    const logs = fleetLogs();
+    const cache = createFleetDiagnosticCache();
+    const result = await lookupFleetDiagnosticBackOffs({
+      owners: () => [FLEET_OWNER],
+      fleetAuthors: ["vibe-bot"],
+      cache,
+      warn: logs.warn,
+      error: logs.error,
+      nowSeconds: clockAt(1_000),
+      ghCommandFn: () => Promise.reject(new Error("gh exploded")),
+    });
+    assertEquals(result.backedOff.size, 0);
+    assertEquals(result.failedOwners, [FLEET_OWNER]);
+    assert(logs.errors.some((line) => line.includes("gh exploded")));
+  });
+});
+
+Deno.test("lookupFleetDiagnosticBackOffs - unparsable output is treated as a failure", async () => {
+  await withWorkDir(async () => {
+    for (const bad of ["not json", "{}"]) {
+      const logs = fleetLogs();
+      const cache = createFleetDiagnosticCache();
+      const result = await lookupFleetDiagnosticBackOffs({
+        owners: () => [FLEET_OWNER],
+        fleetAuthors: ["vibe-bot"],
+        cache,
+        warn: logs.warn,
+        error: logs.error,
+        nowSeconds: clockAt(1_000),
+        ghCommandFn: () => Promise.resolve(bad),
+      });
+      assertEquals(result.backedOff.size, 0);
+      assertEquals(result.failedOwners, [FLEET_OWNER]);
+      assert(logs.errors.length === 1, `expected one error for ${bad}`);
+    }
+  });
+});
+
+Deno.test("ownersOfRepos - dedupes and skips malformed slugs", () => {
+  assertEquals(
+    ownersOfRepos([
+      "stSoftwareAU/VibeCoder",
+      "stSoftwareAU/example",
+      "other/repo",
+      "malformed",
+      "too/many/slashes",
+      "",
+    ]),
+    ["other", "stSoftwareAU"],
+  );
+});
+
+Deno.test("formatRepoFastFailureSummary - names a fleet-only repo and returns null for empty input", () => {
+  assertEquals(formatRepoFastFailureSummary([], new Map()), null);
+  const fleet = new Map([
+    [REPO, { repo: REPO, diagnosticRepo: REPO, diagnosticIssue: 42 }],
+  ]);
+  const line = formatRepoFastFailureSummary([], fleet);
+  assert(line !== null);
+  assertStringIncludes(line, `${REPO}: backed off fleet-wide (${REPO}#42)`);
 });
