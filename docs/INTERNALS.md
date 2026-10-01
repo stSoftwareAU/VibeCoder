@@ -337,6 +337,13 @@ bash `worker/run_core.sh` conductor. It sequences:
    trusted-re-label escape hatch all still apply. An issue carrying
    `needs-human` is never closed by it.
 
+   Both merged-PR closers and the merged-branch cleanup take their window
+   from `gh pr list` listings ordered by update recency
+   (`RECENCY_ORDER_SEARCH`, `--search sort:updated-desc`, Issue #2901), not
+   gh's default creation order: a merge updates a PR, so a long-lived PR
+   (e.g. a milestone child) merged after 30 newer PRs had already merged
+   still lands inside the window instead of being pushed out of it.
+
    Beside that re-label hatch sits the **roll-back marker** (Issue #1770,
    [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)).
    When a milestone roll-back reverts a child's merged PR, the child is
