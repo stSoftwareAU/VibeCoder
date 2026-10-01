@@ -112,6 +112,14 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
    * cannot deadlock against itself.
    */
   "dependency-blocked": "human",
+  /**
+   * Issue #2873: the clock eventually passes, but a multi-day data wait must
+   * not park the repo's lower-tier work in the meantime — same rationale as
+   * `dependency-blocked` (#2610/#2563). Classified `human` rather than `self`
+   * so this gate never raises the suppression signal, even though nothing
+   * outside the fleet actually has to act.
+   */
+  "time-deferred": "human",
   // Content integrity. A transient fault retries next cycle; a real
   // modification, a missing baseline and an unconfigured store all need a
   // person (a trusted re-approval, or operator configuration).

@@ -2309,6 +2309,18 @@
       ]
     },
     {
+      "issue": 2873,
+      "chunk": "top-up-2873",
+      "title": "top-up: the time-deferral marker",
+      "ledger": "docs/audits/security-sweep-2873-time-deferral.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: time_deferral.ts (#2873)",
+      "status": "swept",
+      "sweptAt": "19665578fb85960646427c9faf391d53ec5a6a67",
+      "paths": [
+        "worker/deno/lib/time_deferral.ts"
+      ]
+    },
+    {
       "issue": 2925,
       "chunk": "top-up-2925",
       "title": "top-up: the browser grant",

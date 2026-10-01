@@ -367,7 +367,7 @@ A `top-priority` issue is **not** automatically picked just because the label is
 
 Even when tier 1 yields no *selectable* candidate, [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not blindly fall through to tier 2. If a configured-label candidate was found but held by the open-PR gate on its work stream, every `work-on` candidate in the same `repo + milestone` is dropped before the tier 2 pool is considered. The intent is to keep a full work stream from being over-filled — the stream is already at its PR limit (its slot cap on the default branch, or its one PR on a milestone branch), and the worker should wait rather than race ahead with a lower-priority issue on the same branch. Surviving `work-on` candidates from other repos / milestones remain eligible. If suppression empties tier 2 entirely, selection falls through to tier 3 (`low-priority`) under the same global gate. The idle-decision census models this gate too (Issue #2922) and reports the suppressed candidates as `work_on_suppressed=<n>` rather than counting them towards an inversion signal.
 
-A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream — so the `work-on` issues beside it stay eligible: top priority starves nothing, and a tier that is truly blocked means working elsewhere. Until #2563 the dependency wait parked the stream whenever the repo had any open fleet PR, even a milestone rollup PR that blocks nothing in the stream. On stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed for hours with no skip reason recorded, while the idle-decision census rightly counted them as claimable and filed an idle-inversion issue.
+A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream — so the `work-on` issues beside it stay eligible: top priority starves nothing, and a tier that is truly blocked means working elsewhere. Until #2563 the dependency wait parked the stream whenever the repo had any open fleet PR, even a milestone rollup PR that blocks nothing in the stream. On stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed for hours with no skip reason recorded, while the idle-decision census rightly counted them as claimable and filed an idle-inversion issue. A `time-deferred` skip (Issue #2873, below) is the same shape and follows the same rule: the `until` wait belongs to the one issue parked on it, never to its repo, milestone or tier, so a multi-day defer on a `top-priority` issue does not starve the `work-on` and `low-priority` candidates sitting beside it.
 
 ```mermaid
 flowchart TD
@@ -431,7 +431,7 @@ Issue #898 is the same disagreement one level up: not a gate the census missed, 
 Two diagnostics answer the "why was this issue selected and not that one?" question without reading TypeScript:
 
 - **`selection-reasoning` log line** — emitted unconditionally by [`logSelectionReasoning`](../../worker/deno/lib/issue_finder_logger.ts) whenever the worker selects a `work-on` (or lower-tier) candidate while configured-label candidates were considered or blocked. The line includes the selected issue, how many configured-label candidates were considered, and which were blocked (`repo#N(reason)`), making the bypass auditable from the worker log alone.
-- **`ISSUE_FINDER_DEBUG=true`** — set this environment variable to enable the per-issue trace from [`createDiagnostics`](../../worker/deno/lib/issue_finder_logger.ts). Every candidate considered, eligible, or skipped is emitted to stderr with its skip reason (`milestone-occupied`, `pr-blocked`, `closed-pr-cooldown`, `dependency-blocked`, `content-modified-after-approval`, `cooldown`, `needs-human`, …). Use this when the unconditional `selection-reasoning` line is not enough — for example when no candidate at all was selected.
+- **`ISSUE_FINDER_DEBUG=true`** — set this environment variable to enable the per-issue trace from [`createDiagnostics`](../../worker/deno/lib/issue_finder_logger.ts). Every candidate considered, eligible, or skipped is emitted to stderr with its skip reason (`milestone-occupied`, `pr-blocked`, `closed-pr-cooldown`, `dependency-blocked`, `time-deferred`, `content-modified-after-approval`, `cooldown`, `needs-human`, …). Use this when the unconditional `selection-reasoning` line is not enough — for example when no candidate at all was selected.
 
 ### How to use `low-priority`
 
@@ -836,6 +836,80 @@ because a blocked answer routinely contains phrases such as "no changes needed"
 and closing a live task is the one outcome the next scan cannot undo. The agent
 cannot make that call itself either: the `gh` guard refuses
 `gh issue close|reopen|delete|transfer|lock` on the claimed repo.
+
+### Time-gated deferral (Issue #2873)
+
+An analysis-only run can be correct about the issue and still have nothing to
+report, because the data it needs to answer does not exist yet — "measure X
+over the last 7 days" when that window has not elapsed, for example. That is
+not "blocked on another issue" (the `## Blocked:` shape above) and it is not
+"analysis-only with no deliverable" — it is a wait for the calendar. The agent
+declares it by ending its final message with a marker on its own line:
+
+```text
+<!-- vibe-defer-until until="<ISO-8601 time with Z or ±HH:MM offset>" reason="<why the data is not there yet>" -->
+```
+
+The no-changes handler checks for this marker **immediately after** the
+`## Blocked:` dependency deferral and before the already-resolved / analysis-only
+checks, so a time-gated wait is never mis-read as either of those. `until` must
+be in the future and at most 30 days away; a marker that is unparseable, in the
+past, or further out than that bound is ignored and the run falls through to
+the ordinary no-changes handling as if no marker had been emitted.
+
+When the marker is honoured, the worker **parks** the issue rather than
+escalating it:
+
+- posts exactly one comment, `## Deferred until <time>`, carrying a hidden
+  `<!-- vibe-time-deferral until="…" -->` record so a later scan can recognise
+  the same wait and count it;
+- writes a `Deferred until YYYY-MM-DDTHH:MM:SSZ` line into the same
+  machine-owned worker-record block that carries `Depends on owner/repo#N`
+  (`<!-- vibe-worker-record-start -->` … `<!-- vibe-worker-record-end -->`) —
+  the line is denial-only (it can only ever make discovery skip the issue
+  later, never process unapproved content), so the content-approval gate
+  strips it before hashing exactly as it already does for the dependency line
+  (Issue #1631);
+- keeps the discovery label and adds **no** `needs-human`;
+- releases the claim with the outcome `deferred: until <time>`.
+
+Discovery then skips the issue with the skip reason `time-deferred` until
+`until` passes, and re-runs it automatically on the first scan after — no
+human involvement, no extra attempt charged. This skip reason suppresses only
+the one issue it is recorded against, the same as `dependency-blocked`: a
+multi-day wait on a `top-priority` issue must not park the repo's
+`work-on` / `low-priority` work sitting beside it.
+
+**Deferral has a budget.** After three time-deferrals on the same issue
+(`MAX_TIME_DEFERRALS`), the next `vibe-defer-until` marker is not honoured: the
+worker posts a `## Deferral limit reached` comment listing the prior deferral
+history and instead applies the existing analysis-only `needs-human` hand-off
+described above (Issue #2834). An analysis-only run that emits no defer marker
+at all is unaffected by any of this — it still gets the ordinary #2834
+hand-off.
+
+**Only a time is supported.** There is no "wait N runs" variant; the marker's
+sole parameter is `until`.
+
+```mermaid
+flowchart TD
+  Run["No-changes run"] --> Blocked{"## Blocked: /<br/>Depends on section?"}
+  Blocked -- yes --> Defer1["Dependency deferral<br/>(above)"]
+  Blocked -- no --> Marker{"vibe-defer-until<br/>marker, until valid<br/>(future, ≤30 days)?"}
+  Marker -- no --> Resolved["Already-resolved /<br/>analysis-only checks<br/>(unchanged)"]
+  Marker -- yes --> Budget{"Prior time-deferrals<br/>on this issue < 3?"}
+  Budget -- yes --> Park["Park: post '## Deferred until …',<br/>write Deferred until … into the<br/>worker-record block, keep label,<br/>no needs-human, release claim"]
+  Budget -- no --> Limit["## Deferral limit reached<br/>+ analysis-only needs-human hand-off (#2834)"]
+  Park --> Skip["Discovery skips with<br/>skip reason time-deferred<br/>until the time passes"]
+  Skip --> Reissue["Time passes →<br/>issue re-enters discovery,<br/>run repeats"]
+  Reissue --> Run
+  style Park fill:#5a86b0,stroke:#1d3a5a,color:#fff
+  style Skip fill:#707070,stroke:,color:#fff
+  style Limit fill:#c45858,stroke:#6b2020,color:#fff
+```
+
+**Implementation:** [`worker_record_block.ts`](../../worker/deno/lib/worker_record_block.ts)
+(shared grammar for the `Depends on` and `Deferred until` lines).
 
 **Fallback loop guard.** When neither clean signal fires — Claude produces no
 changes **and** no useful output — the run returns a failure and the existing

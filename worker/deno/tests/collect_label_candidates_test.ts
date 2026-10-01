@@ -26,6 +26,7 @@ import {
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 import type { IssueFetcher } from "../lib/issue_dependencies.ts";
+import { buildWorkerRecordBlock } from "../lib/worker_record_block.ts";
 import type { WorkerConfig } from "../types.ts";
 
 interface MockGhData {
@@ -679,6 +680,186 @@ Deno.test(
     assertEquals(entry?.blockers, [
       { repo: "owner/repo", number: 7, kind: "child" },
     ]);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// A time-deferred issue is skipped until its `Deferred until` clock passes
+// (Issue #2873)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - a future `Deferred until` line skips the issue as time-deferred",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 80,
+          title: "Waiting on data that does not exist yet",
+          url: "https://github.com/owner/repo/issues/80",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-12T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-12T00:00:00Z",
+        },
+      ],
+      issueView: { title: "Waiting on data that does not exist yet", body: "" },
+    });
+
+    const deferredBody = buildWorkerRecordBlock([
+      "Deferred until 2999-01-01T00:00:00Z",
+    ]);
+    const fetcher: IssueFetcher = {
+      getSubIssues: () => Promise.resolve([]),
+      getIssueBody: (_repo: string, issueNumber: number) =>
+        Promise.resolve(issueNumber === 80 ? deferredBody : ""),
+      getIssueState: (_repo: string, issueNumber: number) =>
+        Promise.resolve({
+          number: issueNumber,
+          state: "OPEN" as const,
+          title: `#${issueNumber}`,
+        }),
+    };
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(result.candidates.length, 0);
+    const entry = result.blockedDetails.find((b) => b.issueNumber === 80);
+    assertEquals(entry?.reason, "time-deferred");
+  },
+);
+
+Deno.test(
+  "collect_label_candidates - a past `Deferred until` line is a candidate again",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 81,
+          title: "The deferral has expired",
+          url: "https://github.com/owner/repo/issues/81",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-13T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-13T00:00:00Z",
+        },
+      ],
+      issueView: { title: "The deferral has expired", body: "" },
+    });
+
+    const expiredBody = buildWorkerRecordBlock([
+      "Deferred until 2000-01-01T00:00:00Z",
+    ]);
+    const fetcher: IssueFetcher = {
+      getSubIssues: () => Promise.resolve([]),
+      getIssueBody: (_repo: string, issueNumber: number) =>
+        Promise.resolve(issueNumber === 81 ? expiredBody : ""),
+      getIssueState: (_repo: string, issueNumber: number) =>
+        Promise.resolve({
+          number: issueNumber,
+          state: "OPEN" as const,
+          title: `#${issueNumber}`,
+        }),
+    };
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(result.candidates.length, 1);
+    assertEquals(result.candidates[0]?.number, 81);
+  },
+);
+
+Deno.test(
+  "collect_label_candidates - a `Deferred until` line outside the worker record block does not skip",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 82,
+          title: "A human typed a look-alike line",
+          url: "https://github.com/owner/repo/issues/82",
+          assignees: [],
+          labels: [{ name: "top-priority" }],
+          createdAt: "2024-03-14T00:00:00Z",
+          author: { login: "alice" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: "top-priority" },
+          actor: { login: "alice" },
+          created_at: "2024-03-14T00:00:00Z",
+        },
+      ],
+      issueView: { title: "A human typed a look-alike line", body: "" },
+    });
+
+    // No worker-record delimiters — an author-typed line that merely looks
+    // like the machine-owned bookkeeping line must never be read as one.
+    const lookAlikeBody = "Deferred until 2999-01-01T00:00:00Z";
+    const fetcher: IssueFetcher = {
+      getSubIssues: () => Promise.resolve([]),
+      getIssueBody: (_repo: string, issueNumber: number) =>
+        Promise.resolve(issueNumber === 82 ? lookAlikeBody : ""),
+      getIssueState: (_repo: string, issueNumber: number) =>
+        Promise.resolve({
+          number: issueNumber,
+          state: "OPEN" as const,
+          title: `#${issueNumber}`,
+        }),
+    };
+
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, createTestCache()),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(result.candidates.length, 1);
+    assertEquals(result.candidates[0]?.number, 82);
   },
 );
 

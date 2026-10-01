@@ -45,9 +45,13 @@ With `pr_reviewer_app` in `.config.json` (see
 `run.sh` reviews as that App's bot instead of the `gh` user. `app_token.ts`
 mints a fresh installation token for every pass, since one lasts an hour.
 When minting fails, the pass is skipped; it never falls back to posting as the
-`gh` user. The App needs **Pull requests** and **Issues** read and write,
-**Contents**, **Checks** and **Commit statuses** read, and installation on
-every monitored repo and on `stSoftwareAU/VibeCoder` (for improvement issues).
+`gh` user. The App needs **Pull requests**, **Issues**, **Contents** and
+**Workflows** read and write, plus **Checks** and **Commit statuses** read:
+Contents write lets the Dependabot upkeep merge an already-clean PR with
+`gh pr merge --auto` and arm auto-merge, and Workflows write lets it merge
+Dependabot's GitHub Actions bumps, which change `.github/workflows/*`.
+Installation is needed on every monitored repo and on
+`stSoftwareAU/VibeCoder` (for improvement issues).
 Add `<app-slug>[bot]` to `authorized_commenters` (not `pr_reviewers`,
 which would make PR creation fail). An interactive `/review-fleet-prs`
 session still reviews as the `gh` user.
@@ -124,7 +128,10 @@ with no model involved (`dependabot.ts`):
   the repo allows it), so it merges as soon as every required check passes.
 
 Dependabot PRs are still reviewed by Fable like any other; this upkeep only
-gets an approved one merged. The pass reports what it did in `upkeep`.
+gets an approved one merged. The pass reports what it did in `upkeep`. A
+failed upkeep action is reported there as `<repo>#<n> auto-merge failed:
+<first line of the error>` (or `rebase failed: ...`), logged, and does not
+stop the pass; that action is not retried until the PR's head commit changes.
 
 ## The loop
 
