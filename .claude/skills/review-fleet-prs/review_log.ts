@@ -72,6 +72,7 @@ export interface LogRecord {
   testChangeNotes: TestChangeNote[];
   removedTests: string[];
   filedIssues?: FiledIssue[];
+  addedNeedsHuman?: boolean; // the skill's own needs-human label is on the PR after this review (Issue #2927)
 }
 
 export const LOG_FILE = "log.jsonl";
@@ -263,6 +264,8 @@ export function reviewBody(
       ...testNotes(review, removedTests),
       "",
       review.summary,
+      "",
+      "Approve to merge or request changes; then remove `needs-human`.",
     );
   } else {
     lines.push(review.summary);

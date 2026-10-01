@@ -4,12 +4,16 @@
 // Fable reply, as text or an object> }. The script decides the outcome,
 // re-checks the head commit, posts the review, appends it to the review log,
 // refreshes the summary, files an issue for each problem Fable noticed outside
-// the PR's scope (skipping one an open issue already covers), and raises a desktop notification when a PR is
-// sent back or held for the owner.
+// the PR's scope (skipping one an open issue already covers), labels a held
+// PR `needs-human` and removes that label on a later approve/send-back only
+// when its log shows it added it, and raises a desktop notification when a PR
+// is sent back or held for the owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
 //          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
-// Output: one line of JSON, { posted, outcome?, reason? }.
+// Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?, reason? }.
+// A failed label call leaves the review posted, is not retried, and is
+// reported in `labelError`.
 // Exit 2 when the review is malformed; nothing is posted and the PR comes
 // back on the next gate pass.
 
@@ -17,15 +21,20 @@ import {
   decideOutcome,
   type FableReview,
   type FiledIssue,
+  latestByPr,
   LOG_FILE,
   type LogRecord,
+  type Outcome,
   parseFableReview,
+  prKey,
+  readLog,
   reviewBody,
   sameIssueTitle,
   stateDir,
   unrelatedIssueBody,
   writeSummary,
 } from "./review_log.ts";
+import { type LabelError, syncNeedsHumanLabel } from "./needs_human.ts";
 
 interface Input {
   pr: {
@@ -120,6 +129,19 @@ async function fileUnrelatedIssues(
   return filed;
 }
 
+export function postedResult(
+  outcome: Outcome,
+  filedIssues: readonly FiledIssue[],
+  labelError?: LabelError,
+) {
+  return {
+    posted: true,
+    outcome,
+    filedIssues: filedIssues.map((i) => i.url),
+    ...(labelError ? { labelError } : {}),
+  };
+}
+
 async function main() {
   const inputPath = Deno.args.find((a) => a.startsWith("--input="))?.slice(8);
   if (!inputPath) throw new Error("--input=<file> is required");
@@ -166,6 +188,10 @@ async function main() {
 
   const removed = pr.testChanges.removed;
   const outcome = decideOutcome(review, removed);
+  const dir = stateDir();
+  const previous = latestByPr(await readLog(dir)).get(
+    prKey(pr.repo, pr.number),
+  );
   const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
   await Deno.writeTextFile(
     bodyFile,
@@ -188,6 +214,18 @@ async function main() {
   ]);
   await Deno.remove(bodyFile).catch(() => {});
 
+  const label = await syncNeedsHumanLabel(
+    outcome,
+    previous,
+    pr,
+    (args) => run("gh", args),
+  );
+  if (label.labelError) {
+    console.error(
+      `could not ${label.labelError.action} needs-human on ${pr.repo}#${pr.number}: ${label.labelError.error}`,
+    );
+  }
+
   const record: LogRecord = {
     at: new Date().toISOString(),
     repo: pr.repo,
@@ -201,8 +239,8 @@ async function main() {
     testChangeNotes: review.testChangeNotes,
     removedTests: removed,
     filedIssues,
+    addedNeedsHuman: label.addedNeedsHuman,
   };
-  const dir = stateDir();
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(
     `${dir}/${LOG_FILE}`,
@@ -225,11 +263,7 @@ async function main() {
     );
   }
   console.log(
-    JSON.stringify({
-      posted: true,
-      outcome,
-      filedIssues: filedIssues.map((i) => i.url),
-    }),
+    JSON.stringify(postedResult(outcome, filedIssues, label.labelError)),
   );
 }
 
