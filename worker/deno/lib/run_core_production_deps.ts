@@ -3896,14 +3896,14 @@ export async function createProductionRunCoreDeps(
       // closed. The probe runs first so a repaired repository is released
       // promptly, and it only touches repositories that are actually backed
       // off and carry a diagnostic — bounded by how many are broken.
-      // Issue #2955: the back-off this returns is this host's sidecar plus
-      // any open, fleet-authored diagnostic for the repository, so a
-      // repository another host already backed off is excluded here too.
       await refreshRepoFastFailureBackOffs({
         ...fastFailureOptions,
         isIssueClosed: isDiagnosticIssueClosed,
         log: (message: string) => logger.info(message),
       });
+      // Issue #2955: `backedOffRepos` returns this host's sidecar plus
+      // any open, fleet-authored diagnostic for the repository, so a
+      // repository another host already backed off is excluded here too.
       const fastFailureBackOff = await backedOffRepos(fastFailureOptions);
       const excludedRepos = fastFailureBackOff.size > 0
         ? new Set([...(options?.excludeRepos ?? []), ...fastFailureBackOff])
