@@ -2326,8 +2326,10 @@ immediately before `gh pr merge`:
   merge it deliberately.
 - **Unverifiable state blocks too** — once the PR is known to be a summary PR, a
   failed children read blocks the merge rather than being read as "no children".
-  That block also posts one comment naming the unreadable lookup and saying the
-  sweep retries, so an unarmed PR is never silent (Issue #2479); it is
+  That block also posts one comment naming the unreadable lookup — the
+  open-children count or the declared dependencies, whichever read actually
+  failed — and saying the sweep retries, so an unarmed PR is never silent
+  (Issue #2479; the comment's per-lookup wording is Issue #3024's review fix); it is
   de-duplicated by an in-memory per-PR registry that deliberately survives the
   per-iteration cache reset, so a lookup that stays broken is explained once, not
   once per cycle. The maintenance scan treats the block as a deferral
@@ -2346,8 +2348,11 @@ immediately before `gh pr merge`:
   warning listing each "#A depends on #B" description and posting one idempotent comment
   marked `<!-- milestone-pending-dependencies-merge-block -->`. A failed
   dependency read is folded into the same `lookup-failed` block as the children
-  read. A cross-milestone dependency cycle (A's sub-issue depends on B's and vice
-  versa) holds both summary PRs; a human can still merge one by hand.
+  read, but the decision carries a `stage` of `"open-children"` or
+  `"declared-dependencies"` so the posted comment names the lookup that
+  actually failed, not the other one. A cross-milestone dependency cycle (A's
+  sub-issue depends on B's and vice versa) holds both summary PRs; a human can
+  still merge one by hand.
 
 ```mermaid
 flowchart TD

@@ -282,8 +282,10 @@ Deno.test("decideSummaryPrMerge - blocks on lookup-failed when the dependency lo
   });
 
   assertEquals(decision.decision, "block");
-  if (decision.decision === "block") {
-    assertEquals(decision.reason, "lookup-failed");
+  if (decision.decision === "block" && decision.reason === "lookup-failed") {
+    // Issue #3024 review: the stage must name the dependency read, not the
+    // open-children read, so the PR comment blames the right lookup.
+    assertEquals(decision.stage, "declared-dependencies");
   }
 });
 

@@ -373,10 +373,13 @@ export function resetOpenChildrenLookupComments(): void {
 }
 
 /**
- * Tell a PR its open-children count could not be read, at most once.
+ * Tell a PR that its merge-block state could not be read, at most once.
  *
  * The key is recorded only after a successful post, so a post that failed is
- * retried on the next sweep rather than latched as "explained".
+ * retried on the next sweep rather than latched as "explained". `stage` names
+ * which read actually failed — the open-children count or the declared
+ * dependencies — so the comment never blames the wrong lookup (Issue #3024
+ * review).
  *
  * @returns true when the PR carries the explanation, false when the post failed
  */
@@ -385,6 +388,7 @@ async function postOpenChildrenLookupReason(
   prNumber: number,
   milestoneNumber: number,
   milestoneTitle: string,
+  stage: "open-children" | "declared-dependencies",
   detail: string,
   commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
   log: (message: string) => void,
@@ -396,14 +400,21 @@ async function postOpenChildrenLookupReason(
   // so neither can forge a fleet marker in this body (Issues #1249, #2479).
   const safeTitle = scrubUntrustedText(milestoneTitle);
   const safeDetail = scrubUntrustedText(redactSecrets(detail));
+  const subject = stage === "open-children"
+    ? "the open-children count"
+    : "the declared dependencies";
+  const risk = stage === "open-children"
+    ? "Merging a summary PR over unread children could close a milestone " +
+      "that still has open work"
+    : "Merging a summary PR over unread declared dependencies could land " +
+      "it before a dependency it declares has actually merged";
   const body = [
     OPEN_CHILDREN_LOOKUP_MARKER,
-    `Auto-merge is not armed: the open-children count for milestone ` +
+    `Auto-merge is not armed: ${subject} for milestone ` +
     `#${milestoneNumber} '${safeTitle}' could not be read — ${safeDetail}`,
     "",
-    "Merging a summary PR over unread children could close a milestone that " +
-    "still has open work, so the gate refuses (Issue #3909). The Auto-Merge " +
-    "sweep retries every cycle and arms the PR once the count reads.",
+    `${risk}, so the gate refuses (Issue #3909). The Auto-Merge sweep ` +
+    "retries every cycle and arms the PR once the failed read succeeds.",
   ].join("\n");
   try {
     await commentFn(repo, prNumber, body);
@@ -1216,16 +1227,20 @@ async function refuseMilestoneMerge(
   authorOptions?: AlertDedupAuthorOptions,
 ): Promise<EnableAutoMergeResult> {
   if (gate.reason === "lookup-failed") {
+    const subject = gate.stage === "open-children"
+      ? "open-children count"
+      : "declared dependencies";
     const message =
       `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
       `for milestone #${gate.milestoneNumber} '${gate.milestoneTitle}' — its ` +
-      `open-children or declared-dependency state could not be read: ${gate.message} (Issue #3909)`;
+      `${subject} could not be read: ${gate.message} (Issue #3909)`;
     log(message);
     const blockCommented = await postOpenChildrenLookupReason(
       repo,
       prNumber,
       gate.milestoneNumber,
       gate.milestoneTitle,
+      gate.stage,
       gate.message,
       commentFn,
       log,

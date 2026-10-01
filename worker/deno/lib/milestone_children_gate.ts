@@ -299,6 +299,8 @@ export type SummaryPrMergeDecision =
   | {
     decision: "block";
     reason: "lookup-failed";
+    /** Which read failed, so the PR comment names the right unreadable state. */
+    stage: "open-children" | "declared-dependencies";
     milestoneNumber: number;
     milestoneTitle: string;
     milestoneBranch: string;
@@ -387,6 +389,7 @@ export async function decideSummaryPrMerge(
     return {
       decision: "block",
       reason: "lookup-failed",
+      stage: "open-children",
       milestoneNumber: milestone.number,
       milestoneTitle: milestone.title,
       milestoneBranch: headRefName,
@@ -415,6 +418,7 @@ export async function decideSummaryPrMerge(
     return {
       decision: "block",
       reason: "lookup-failed",
+      stage: "declared-dependencies",
       milestoneNumber: milestone.number,
       milestoneTitle: milestone.title,
       milestoneBranch: headRefName,

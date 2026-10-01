@@ -426,6 +426,34 @@ Deno.test("pr_auto_merge - blocks summary-PR auto-merge on a pending declared de
   assertStringIncludes(logs[0]!, "#3866 depends on #50");
 });
 
+Deno.test("pr_auto_merge - a failed dependency lookup names the dependencies, not the open-children count", async () => {
+  resetOpenChildrenLookupComments();
+  const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
+  const base = createDependencyStub(state);
+  // The open-children read succeeds (empty); only the declared-dependency
+  // read (the `/issues/50` lookup) fails (Issue #3024 review).
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("/issues/50")) {
+      throw new Error("HTTP 502 Bad Gateway");
+    }
+    return await base(args);
+  };
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  assertStringIncludes(state.posted[0]!, "the declared dependencies");
+  assertEquals(state.posted[0]!.includes("open-children count"), false);
+  assertStringIncludes(state.posted[0]!, "HTTP 502 Bad Gateway");
+});
+
 Deno.test("pr_auto_merge - does not repost the pending-dependencies comment when the marker is already present", async () => {
   const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
   const ghFn = createDependencyStub(state);
