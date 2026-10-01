@@ -13,9 +13,20 @@ import { workOnIssueHandleNoChanges } from "../lib/phases/handle_no_changes_phas
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
-import type { GitHubClient } from "../types.ts";
+import type { GitHubClient, GitHubComment } from "../types.ts";
 import { buildPlanningHandoffMarker } from "../lib/planning_handoff.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
+
+/** A minimal `GitHubComment`, for feeding `getIssueComments` stubs. */
+function comment(id: number, author: string, body: string): GitHubComment {
+  return {
+    id,
+    author,
+    body,
+    createdAt: "",
+    reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+  };
+}
 
 const REPO = "stSoftwareAU/Example";
 const ISSUE = 2688;
@@ -39,7 +50,10 @@ function makeCalls(): StubCalls {
   return { addLabel: [], postComment: [], unassignIssue: 0, closeIssue: 0 };
 }
 
-function makeClient(calls: StubCalls): GitHubClient {
+function makeClient(
+  calls: StubCalls,
+  comments: GitHubComment[] = [],
+): GitHubClient {
   return {
     getIssue: () =>
       Promise.resolve({
@@ -52,7 +66,7 @@ function makeClient(calls: StubCalls): GitHubClient {
         createdAt: "",
         updatedAt: "",
       }),
-    getIssueComments: () => Promise.resolve([]),
+    getIssueComments: () => Promise.resolve(comments),
     addLabel: (_r, _i, label) => {
       calls.addLabel.push(label);
       return Promise.resolve();
@@ -130,12 +144,17 @@ Deno.test("handle_no_changes_phase - an oversized issue is handed off to plannin
 
 Deno.test("handle_no_changes_phase - a repeat planning request goes to a human", async () => {
   const calls = makeCalls();
+  const priorComment = comment(
+    1,
+    "testbot",
+    `earlier\n${buildPlanningHandoffMarker()}`,
+  );
   const deps = createMockDeps({
-    github: { createClient: () => makeClient(calls) },
+    github: { createClient: () => makeClient(calls, [priorComment]) },
   });
 
   const result = await workOnIssueHandleNoChanges(
-    makeContext({ issueComments: `earlier\n${buildPlanningHandoffMarker()}` }),
+    makeContext(),
     makeState(PLANNING_OUTPUT),
     deps,
   );
@@ -146,6 +165,111 @@ Deno.test("handle_no_changes_phase - a repeat planning request goes to a human",
   assert(!calls.addLabel.includes("planning"));
   assert(calls.addLabel.includes("needs-human"));
 });
+
+Deno.test(
+  "handle_no_changes_phase - Issue #2942: a prior hand-off dropped by the " +
+    "prompt budget is still found on the full thread",
+  async () => {
+    // Thread: one worker hand-off comment amid a flood of human traffic that
+    // would blow the implementation prompt's comment budget and drop the
+    // marker from the blob the phase used to check.
+    const priorComment = comment(
+      1,
+      "testbot",
+      `## Handed off to planning\n\n…\n\n${buildPlanningHandoffMarker()}`,
+    );
+    const humanComments: string[] = [];
+    for (let i = 0; i < 25; i++) {
+      humanComments.push(`Just checking in, #${i}`);
+    }
+    const thread = [
+      priorComment,
+      ...humanComments.map((b, i) => comment(100 + i, "human", b)),
+    ];
+    // The budgeted blob the prompt saw never carried the marker.
+    const budgetedComments = humanComments.join("\n");
+
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls, thread) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: budgetedComments }),
+      makeState(PLANNING_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    if (result.status !== "early_exit") return;
+    assertEquals(result.reason, "analysis_only_handed_off");
+    assert(!calls.addLabel.includes("planning"));
+    assert(calls.addLabel.includes("needs-human"));
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - a prior hand-off hidden by a failed thread " +
+    "read falls back to the budgeted comments",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => {
+          const client = makeClient(calls);
+          return {
+            ...client,
+            getIssueComments: () => Promise.reject(new Error("boom")),
+          };
+        },
+      },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({
+        issueComments: `earlier\n${buildPlanningHandoffMarker()}`,
+      }),
+      makeState(PLANNING_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    if (result.status !== "early_exit") return;
+    assertEquals(result.reason, "analysis_only_handed_off");
+    assert(!calls.addLabel.includes("planning"));
+    assert(calls.addLabel.includes("needs-human"));
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - a failed thread read with an empty fallback " +
+    "blob still hands off to planning",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => {
+          const client = makeClient(calls);
+          return {
+            ...client,
+            getIssueComments: () => Promise.reject(new Error("boom")),
+          };
+        },
+      },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: "" }),
+      makeState(PLANNING_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    if (result.status !== "early_exit") return;
+    assertEquals(result.reason, "handed off to planning");
+    assertEquals(calls.addLabel, ["planning"]);
+  },
+);
 
 Deno.test("handle_no_changes_phase - a blocked run defers rather than planning", async () => {
   const calls = makeCalls();
