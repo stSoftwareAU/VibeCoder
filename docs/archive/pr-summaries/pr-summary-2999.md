@@ -76,59 +76,27 @@ the module in `docs/audits/lib-sweep-coverage.json`.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met**: A test with a gated milestone head opens exactly one
-  `milestone-fix/**` PR into the milestone branch and pushes nothing to the
-  head branch. Evidence:
-  `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - gated milestone head raises a fix PR, never touches the head`.
-  Reviewer: met.
-- **met**: A test where an open fix PR already exists reuses it and opens no
-  second PR. Evidence:
-  `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - an already-open fix PR is reused, nothing attempted`.
-  Reviewer: met.
-- **met**: A test with a non-gated head uses the ordinary resolve path.
-  Evidence:
-  `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - non-gated head resolves via the ladder`.
-  Reviewer: partial. Reason for departing from the reviewer: the criterion
-  asks for a test on the routing, and that test exists. The reviewer's concern
-  is that `resolveViaLadder` is a seam rather than a direct call to
-  `processMergeConflict`. That is deliberate: the processor posts its own
-  `pass="ladder"` attempt and conclusion markers, so calling it directly would
-  charge the shared budget twice per takeover. The binding lands with the
-  stall-watchdog sub-issue that calls this pass.
-- **met**: With 3 failed markers on the PR, the takeover declines and posts no
-  new attempt marker. Evidence:
-  `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - three trusted failed attempts decline the budget, posting nothing`.
-  Reviewer: met.
-- **met**: When the resolver throws, a failed conclusion marker is posted and
-  the error propagates. Evidence:
-  `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - resolver throwing propagates, failed conclusion posted after the attempt marker`.
-  Reviewer: met.
-- **met**: A label this pass did not apply is left in place. Evidence:
-  `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - label already present before is never removed after a resolve`.
-  Reviewer: met.
-- **met**: Tests and quality checks pass. Evidence: `./quality.sh` was run
-  after the final code change and returned `Result: PASSED (with skipped
-  checks)`. Reviewer: missing. Reason: the reviewer had no shell and could not
-  run the gate; it was run here and passed.
+- **met** — A test with a gated milestone head opens exactly one `milestone-fix/**` PR into the milestone branch and pushes nothing to the head branch — evidence: `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - gated milestone head raises a fix PR, never touches the head` — reviewer: met — reason: exactly one `pr create` with `--base` the milestone branch and a `milestone-fix/` head; the "no push to head" guarantee rests on the `resolveOnFixBranch` contract rather than that test's gh-call filter
+- **met** — A test where an open fix PR already exists reuses it and opens no second PR — evidence: `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - an already-open fix PR is reused, nothing attempted` — reviewer: met
+- **partial** — A test with a non-gated head uses the ordinary resolve path — evidence: `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - non-gated head resolves via the ladder` — reviewer: partial — reason: the test proves routing to the injected `resolveViaLadder` seam, but nothing binds that seam (or `resolveOnFixBranch`) to production code yet; a direct `processMergeConflict` call would post its own `pass="ladder"` markers and charge the shared budget twice, so the binding is left to the stall-watchdog sub-issue that calls this pass
+- **met** — With 3 failed markers on the PR, the takeover declines and posts no new attempt marker — evidence: `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - three trusted failed attempts decline the budget, posting nothing` — reviewer: met
+- **met** — When the resolver throws, a failed conclusion marker is posted and the error propagates — evidence: `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - resolver throwing propagates, failed conclusion posted after the attempt marker` — reviewer: met — reason: only the ordinary route's throw is tested; the gated route shares the same catch block
+- **met** — A label this pass did not apply is left in place — evidence: `worker/deno/tests/conflict_takeover_test.ts::runConflictTakeover - label already present before is never removed after a resolve` — reviewer: met
+- **met** — Tests and quality checks pass — evidence: `worker/deno/tests/conflict_takeover_test.ts` (10 passed) and `./quality.sh` returning `Result: PASSED (with skipped checks)` — reviewer: partial — reason: departing from the reviewer, who ran nothing and marked it "partial (cannot verify)"; the test file and `./quality.sh` were run locally on this branch and pass
+- **unrequested** — `fetchPrLabels` exported from `worker/deno/lib/pr_merge_conflict_scan.ts` — reviewer: unrequested — reason: the takeover reads the PR's labels to track label provenance (#2951) and reuses this reader rather than duplicating it
+- **unrequested** — The pass adds the `merge-conflict` label itself when absent — reviewer: unrequested — reason: adding it is what lets the pass prove it applied the label, so it may remove only what it added (#2951)
+- **unrequested** — Input validation: an empty `trustedAuthors` or unusable head SHA throws before anything is posted — reviewer: unrequested — reason: fail-loud guard so the trusted-marker budget tally can never be read with no trusted authors
+- **unrequested** — `docs/workflows/merge-conflicts.md` takeover section and `docs/audits/lib-sweep-coverage.json` registration — reviewer: unrequested — reason: the docs-change and lib-sweep-coverage rules require both for a new lib module
+- **unrequested** — Test that three failed markers from an untrusted login do not decline — reviewer: unrequested — reason: guards the "trusted marker" rule the issue relies on
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean**: The reviewer checked these areas and found them compliant:
-  - Fail-loud handling: the failed conclusion is posted before the error is
-    re-raised.
-  - Label provenance (#2951), tested both when the label was already present
-    and when it was absent.
-  - The shared-budget tally is read from trusted markers before anything is
-    posted.
-  - The tests call the real function against a fake `gh`.
-  - Australian English is used throughout.
-  - The docs were updated in the same change.
-  - The `Result` values from `findOpenMilestoneFixPr` and
-    `raiseMilestoneFixPr` are unwrapped and re-thrown.
-  - Optional only: the nested try/catch could be factored out, and the
-    `fetchPrLabels` export widens that function's surface.
+- **violation** — Secret redaction on every outbound sink — evidence: `worker/deno/lib/conflict_takeover.ts:329` (also `:165`, `:178`, `:185`) — reason: stands in this PR; the conclusion comments carry error and resolver `detail` text without an explicit `redactSecrets()` pass in this module, and this run is limited to the summary, so it is raised as a follow-up rather than fixed here
+- **violation** — Fake the external service, do not assert the request — evidence: `worker/deno/tests/conflict_takeover_test.ts:209` (also `:147`, `:211`) — reason: stands; the gated-route test asserts the `--base`/`--head` it built and the fake `gh` returns `""` for unrecognised calls, left for follow-up
+- **violation** — Test coverage of error paths (borderline) — evidence: `worker/deno/lib/conflict_takeover.ts:265` — reason: stands; an unreadable fix-PR listing, `raiseMilestoneFixPr` returning `!ok`, a gated resolver reporting unresolved and a failing failed-conclusion post are untested, left for follow-up
+- **clean** — fail-loud handling (failed conclusion posted before re-raise; empty `trustedAuthors` and bad head SHA throw), label provenance (#2951) tested both ways, log levels, `Result` unwrapping, Australian English, tests calling real code with no greps or sleeps, docs updated in the same change, PR summary structure; optional only: the "never touches the head" filter cannot fail, the catch block's failed body repeats `buildFailedComment`, `as unknown as Logger` in the test, `new Date()` in the test fake, and the resolver seams have only test implementations so far
 
 ## Test Plan
 
