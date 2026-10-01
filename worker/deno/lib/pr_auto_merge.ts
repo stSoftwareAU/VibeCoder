@@ -18,7 +18,10 @@ import {
   invalidateMilestoneBehindMemoForBranch,
   isMilestoneBranch,
   postOpenChildrenBlockComment,
+  // Issue #3014: declared-dependency hold alongside the open-children gate.
+  postPendingDependenciesBlockComment,
   renderBlockWarning,
+  renderPendingDependenciesWarning,
   retargetOrphanBoundPr,
   type SummaryPrMergeDecision,
 } from "./milestone_children_gate.ts";
@@ -65,6 +68,11 @@ export enum AutoMergeResult {
    * left open for a human to merge deliberately if they choose.
    */
   BlockedOpenChildren = "blocked_open_children",
+  /**
+   * Refused: this is a milestone summary PR and a member issue declares a
+   * dependency that has not landed on the target branch yet (Issue #3014).
+   */
+  BlockedPendingDependencies = "blocked_pending_dependencies",
   /**
    * The base branch has no required checks, so GitHub's `--auto` would merge
    * immediately whatever CI says (Issue #4375). The PR was routed through the
@@ -298,9 +306,10 @@ async function postBehindSyncReason(
  * either the worker doing what it set out to do (`Enabled`, `Skipped`,
  * `MergedDirectly`) or already explained on the PR by the path that produced
  * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
- * `BlockedOpenChildren` (#3909), a `milestone-behind` outcome (the #2005
- * `postBehindSyncReason` already explains it on the PR), and the #4375/#1082
- * gated direct-merge hold (the deliberate "never `--auto`" path).
+ * `BlockedOpenChildren` (#3909), `BlockedPendingDependencies` (#3014), a
+ * `milestone-behind` outcome (the #2005 `postBehindSyncReason` already
+ * explains it on the PR), and the #4375/#1082 gated direct-merge hold (the
+ * deliberate "never `--auto`" path).
  */
 export function autoMergeOutcomeNeedsComment(
   outcome: EnableAutoMergeResult,
@@ -343,7 +352,8 @@ export function buildArmingReasonComment(
 
 /**
  * Marker on the comment explaining that a milestone summary PR was left
- * unarmed because its open-children count could not be read (Issue #2479).
+ * unarmed because its open-children or declared-dependency state could not
+ * be read (Issues #2479, #3014).
  */
 export const OPEN_CHILDREN_LOOKUP_MARKER =
   "<!-- vibe-open-children-lookup-failed -->";
@@ -446,7 +456,8 @@ export interface EnableAutoMergeResult {
   latched?: boolean;
   /**
    * Whether a comment explaining this block is on the PR — set on both
-   * `blocked_open_children` reasons (Issue #2479). `false` means the block was
+   * `blocked_open_children` reasons (Issue #2479) and on
+   * `blocked_pending_dependencies` (Issue #3014). `false` means the block was
    * announced nowhere but the log, so a caller that comments on unarmed PRs
    * must speak for it rather than assume the gate already did.
    */
@@ -1177,17 +1188,19 @@ export async function enableAutoMerge(
 }
 
 /**
- * Refuse an auto-merge the milestone open-children gate blocked (Issue #3909).
+ * Refuse an auto-merge the milestone open-children gate, or the
+ * declared-dependency hold, blocked (Issues #3909, #3014).
  *
  * Always loud: the warning names the milestone, the summary PR and either the
- * blocking children or the lookup that failed. Both block reasons also explain
- * themselves on the PR exactly once — the open-children gate de-duplicates
- * against its own marker, the unreadable-count comment against its per-PR
- * registry — so a repeating scan cycle explains itself once and then stays
- * quiet (Issue #2479). `blockCommented` reports whether that explanation is
- * actually on the PR, so a caller that comments on unarmed PRs can speak for
- * the block rather than assume the gate already did. The PR is never closed —
- * a human may still choose to merge it by hand.
+ * blocking children, the pending dependencies, or the lookup that failed. Every
+ * block reason also explains itself on the PR exactly once — the open-children
+ * gate and the pending-dependencies hold de-duplicate against their own
+ * markers, the unreadable-state comment against its per-PR registry — so a
+ * repeating scan cycle explains itself once and then stays quiet (Issue
+ * #2479). `blockCommented` reports whether that explanation is actually on the
+ * PR, so a caller that comments on unarmed PRs can speak for the block rather
+ * than assume the gate already did. The PR is never closed — a human may still
+ * choose to merge it by hand.
  */
 async function refuseMilestoneMerge(
   repo: string,
@@ -1206,7 +1219,7 @@ async function refuseMilestoneMerge(
     const message =
       `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
       `for milestone #${gate.milestoneNumber} '${gate.milestoneTitle}' — its ` +
-      `open-children count could not be read: ${gate.message} (Issue #3909)`;
+      `open-children or declared-dependency state could not be read: ${gate.message} (Issue #3909)`;
     log(message);
     const blockCommented = await postOpenChildrenLookupReason(
       repo,
@@ -1221,6 +1234,31 @@ async function refuseMilestoneMerge(
       result: AutoMergeResult.BlockedOpenChildren,
       message,
       blockCommented,
+    };
+  }
+
+  if (gate.reason === "pending-dependencies") {
+    const warning = renderPendingDependenciesWarning(
+      repo,
+      prNumber,
+      gate.milestoneNumber,
+      gate.milestoneTitle,
+      gate.dependencies,
+    );
+    log(warning);
+    const outcome = await postPendingDependenciesBlockComment({
+      repo,
+      prNumber,
+      milestoneTitle: gate.milestoneTitle,
+      dependencies: gate.dependencies,
+      ghCommandFn,
+      log,
+      ...(authorOptions ? { authorOptions } : {}),
+    });
+    return {
+      result: AutoMergeResult.BlockedPendingDependencies,
+      message: warning,
+      blockCommented: outcome !== "unconfirmed",
     };
   }
 
