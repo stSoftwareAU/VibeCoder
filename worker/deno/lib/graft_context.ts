@@ -53,8 +53,8 @@
  * appended to `info/exclude` any more. `/graft/` remains in
  * `REQUIRED_GITIGNORE_PATTERNS` (`gitignore_enforcer.ts`) purely as
  * belt-and-braces cover for a stale in-tree `graft/` an older worker build
- * left behind (Issue #2099) — see that file's own cleanup logic, and
- * {@link resolveGraftDir}'s own legacy-cleanup step below.
+ * left behind (Issue #2099); {@link cleanUpLegacyInTreeGraft} removes such a
+ * directory once it is confirmed untracked, real and Graft's own.
  *
  * ## `graft/` layout, and the scoped ignored clean
  *

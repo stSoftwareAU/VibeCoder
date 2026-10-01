@@ -707,46 +707,243 @@ Deno.test("collectGraftContext - a failed git-path lookup fails loud and spawns 
 });
 
 // ---------------------------------------------------------------------------
-// `graft/` persistence — the exclude file
+// `graft/` location — outside the working tree, inside the git directory
+// (Issue #2915)
 // ---------------------------------------------------------------------------
 
-Deno.test("collectGraftContext - writes /graft/ to info/exclude exactly once across two calls", async () => {
-  await withRepo(async (repoDir) => {
-    await Deno.writeTextFile(
-      `${repoDir}/.git/info/exclude`,
-      "# existing\n*.log\n",
-    );
+Deno.test("collectGraftContext - a linked worktree's absolute git-path answer is used verbatim", async () => {
+  // A linked worktree's `--git-path` answer is an absolute path entirely
+  // outside the worktree's own directory (typically under the main
+  // checkout's `.git/worktrees/<name>/`). The resolver must hand that path
+  // straight to Graft rather than trying to resolve it against `repoDir`.
+  const repoDir = await Deno.makeTempDir({ prefix: "graft_context_test_" });
+  const elsewhere = await Deno.makeTempDir({ prefix: "graft_context_lane_" });
+  try {
+    await Deno.mkdir(`${repoDir}/.git`, { recursive: true });
+    const graftDir = `${elsewhere}/graft`;
+    await Deno.mkdir(`${graftDir}/.graph`, { recursive: true });
+    await Deno.writeTextFile(`${graftDir}/.graph/wiring.json`, WIRING);
+
+    const runner = fakeRunner([ok(""), ok("bundle")]);
     const { logger } = recordingLogger();
 
-    for (let i = 0; i < 2; i++) {
-      await collectGraftContext({
-        repoDir,
-        query: "q",
-        enabled: true,
-        logger,
-        run: fakeRunner([ok(""), ok("bundle")]).run,
-        git: fakeGit().git,
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: runner.run,
+      git: fakeGit(`${graftDir}\n`).git,
+    });
+
+    assertEquals(result.status, "ok");
+    assertEquals(result.nodeCount, 3);
+    assertEquals(runner.calls[0]!.args[1], graftDir);
+    assertEquals(runner.calls[1]!.args[1], graftDir);
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(elsewhere, { recursive: true });
+  }
+});
+
+Deno.test("collectGraftContext - a real git repo never leaves an .md file in the working tree (Issue #2915)", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "graft_context_2915_" });
+  try {
+    const git = async (
+      args: string[],
+    ): Promise<{ code: number; out: string }> => {
+      const command = new Deno.Command("git", {
+        args,
+        cwd: repoDir,
+        stdout: "piped",
+        stderr: "piped",
       });
+      const { code, stdout } = await command.output();
+      return { code, out: new TextDecoder().decode(stdout) };
+    };
+
+    await git(["init", "--quiet"]);
+    await git(["config", "user.email", "test@example.com"]);
+    await git(["config", "user.name", "Test"]);
+
+    const realGit: GraftGitRunner = async (args, options) => {
+      const command = new Deno.Command("git", {
+        args,
+        cwd: options?.cwd ?? repoDir,
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const { code, stdout, stderr } = await command.output();
+      return {
+        ok: true,
+        value: {
+          code,
+          stdout: new TextDecoder().decode(stdout),
+          stderr: new TextDecoder().decode(stderr),
+        },
+      };
+    };
+
+    // A fake `graft` runner that, on `build`, writes a `.graph/wiring.json`
+    // and some `.md` cards into whatever `--dir` it was pointed at — exactly
+    // where a real Graft build would put them.
+    let capturedBuildDir = "";
+    const fakeGraftRunner: GraftRunner = async (_executable, args) => {
+      if (args[2] === "build") {
+        capturedBuildDir = args[1]!;
+        await Deno.mkdir(`${capturedBuildDir}/.graph`, { recursive: true });
+        await Deno.writeTextFile(
+          `${capturedBuildDir}/.graph/wiring.json`,
+          WIRING,
+        );
+        await Deno.writeTextFile(`${capturedBuildDir}/card-a.md`, "# a");
+        return {
+          ok: true,
+          value: {
+            success: true,
+            code: 0,
+            stdout: "",
+            stderr: "",
+            timedOut: false,
+          },
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          success: true,
+          code: 0,
+          stdout: "bundle",
+          stderr: "",
+          timedOut: false,
+        },
+      };
+    };
+
+    const { warns, logger } = recordingLogger();
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: fakeGraftRunner,
+      git: realGit,
+    });
+
+    assertEquals(result.status, "ok", warns.join(" | "));
+    assert(capturedBuildDir.startsWith(`${repoDir}/.git`), capturedBuildDir);
+
+    // No `.md` file anywhere in the working tree outside `.git`.
+    const strayMarkdown: string[] = [];
+    for await (const entry of Deno.readDir(repoDir)) {
+      if (entry.name === ".git") continue;
+      if (entry.name.endsWith(".md")) strayMarkdown.push(entry.name);
     }
+    assertEquals(strayMarkdown, []);
 
-    const text = await excludeText(repoDir);
-    const occurrences = text.split("\n").filter((l) =>
-      l.trim() === GRAFT_EXCLUDE_PATTERN
+    const status = await git(["status", "--porcelain", "--ignored"]);
+    assertEquals(
+      status.out.trim(),
+      "",
+      "a clean working tree, nothing ignored",
     );
-    assertEquals(occurrences.length, 1);
-    // The operator's own entries survive.
-    assertStringIncludes(text, "*.log");
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Legacy in-tree `graft/` clean-up (Issue #2915)
+// ---------------------------------------------------------------------------
+
+Deno.test("collectGraftContext - removes a stale untracked in-tree graft/ left by an older build", async () => {
+  await withRepo(async (repoDir) => {
+    await Deno.mkdir(`${repoDir}/graft/.graph`, { recursive: true });
+    await Deno.writeTextFile(`${repoDir}/graft/.graph/wiring.json`, WIRING);
+
+    const { warns, logger } = recordingLogger();
+    const untrackedGit: GraftGitRunner = (args) => {
+      if (args[0] === "ls-files") {
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }
+      return fakeGit().git(args);
+    };
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: untrackedGit,
+    });
+
+    assertEquals(result.status, "ok");
+    let stillThere = true;
+    try {
+      await Deno.lstat(`${repoDir}/graft`);
+    } catch {
+      stillThere = false;
+    }
+    assertEquals(stillThere, false, "the stale in-tree graft/ must be removed");
+    assert(
+      warns.some((w) => w.includes("[GRAFT_LEGACY_CLEANUP]")),
+      `expected a cleanup warning, got: ${warns.join(" | ")}`,
+    );
   });
 });
 
-Deno.test("collectGraftContext - an exclude file with no trailing newline is not fused onto (Issue #2099)", async () => {
+Deno.test("collectGraftContext - a tracked in-tree graft/ is left alone", async () => {
   await withRepo(async (repoDir) => {
-    // git leaves the file exactly as the operator last wrote it, so a final
-    // pattern without its newline is a real shape. Appending blind would make
-    // it read `*.logs/graft/` and silently stop ignoring both.
-    await Deno.writeTextFile(`${repoDir}/.git/info/exclude`, "# mine\n*.log");
-    const { logger } = recordingLogger();
+    await Deno.mkdir(`${repoDir}/graft/.graph`, { recursive: true });
+    await Deno.writeTextFile(`${repoDir}/graft/.graph/wiring.json`, WIRING);
 
+    const { warns, logger } = recordingLogger();
+    const trackedGit: GraftGitRunner = (args) => {
+      if (args[0] === "ls-files") {
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "graft/.graph/wiring.json\n", stderr: "" },
+        });
+      }
+      return fakeGit().git(args);
+    };
+
+    const result = await collectGraftContext({
+      repoDir,
+      query: "q",
+      enabled: true,
+      logger,
+      run: fakeRunner([ok(""), ok("bundle")]).run,
+      git: trackedGit,
+    });
+
+    assertEquals(result.status, "ok");
+    const stat = await Deno.lstat(`${repoDir}/graft`);
+    assert(stat.isDirectory, "a tracked graft/ must survive");
+    assertEquals(
+      warns.some((w) => w.includes("[GRAFT_LEGACY_CLEANUP]")),
+      false,
+    );
+  });
+});
+
+Deno.test("collectGraftContext - a symlinked in-tree graft/ is left alone", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "graft_context_test_" });
+  const outside = await Deno.makeTempDir({ prefix: "graft_legacy_link_" });
+  try {
+    await Deno.mkdir(`${repoDir}/.git/graft/.graph`, { recursive: true });
+    await Deno.writeTextFile(
+      `${repoDir}/.git/graft/.graph/wiring.json`,
+      WIRING,
+    );
+    await Deno.mkdir(`${outside}/.graph`, { recursive: true });
+    await Deno.writeTextFile(`${outside}/.graph/wiring.json`, WIRING);
+    await Deno.symlink(outside, `${repoDir}/graft`);
+
+    const { warns, logger } = recordingLogger();
     const result = await collectGraftContext({
       repoDir,
       query: "q",
@@ -757,15 +954,24 @@ Deno.test("collectGraftContext - an exclude file with no trailing newline is not
     });
 
     assertEquals(result.status, "ok");
-    const lines = (await excludeText(repoDir)).split("\n");
-    assert(lines.includes("*.log"), lines.join("|"));
-    assert(lines.includes(GRAFT_EXCLUDE_PATTERN), lines.join("|"));
-  });
+    const stat = await Deno.lstat(`${repoDir}/graft`);
+    assert(stat.isSymlink, "a symlinked graft/ must never be removed");
+    assertEquals(
+      warns.some((w) => w.includes("[GRAFT_LEGACY_CLEANUP]")),
+      false,
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
 });
 
-Deno.test("collectGraftContext - creates the exclude file when it is absent", async () => {
+Deno.test("collectGraftContext - an in-tree graft/ without wiring.json is left alone", async () => {
   await withRepo(async (repoDir) => {
-    const { logger } = recordingLogger();
+    await Deno.mkdir(`${repoDir}/graft`, { recursive: true });
+    await Deno.writeTextFile(`${repoDir}/graft/README.md`, "not graft's");
+
+    const { warns, logger } = recordingLogger();
     const result = await collectGraftContext({
       repoDir,
       query: "q",
@@ -776,26 +982,12 @@ Deno.test("collectGraftContext - creates the exclude file when it is absent", as
     });
 
     assertEquals(result.status, "ok");
-    assertStringIncludes(await excludeText(repoDir), GRAFT_EXCLUDE_PATTERN);
-  });
-});
-
-Deno.test("collectGraftContext - resolves an absolute git-path answer (lane worktree)", async () => {
-  await withRepo(async (repoDir) => {
-    const absolute = `${repoDir}/.git/info/exclude`;
-    const { logger } = recordingLogger();
-
-    const result = await collectGraftContext({
-      repoDir,
-      query: "q",
-      enabled: true,
-      logger,
-      run: fakeRunner([ok(""), ok("bundle")]).run,
-      git: fakeGit(`${absolute}\n`).git,
-    });
-
-    assertEquals(result.status, "ok");
-    assertStringIncludes(await excludeText(repoDir), GRAFT_EXCLUDE_PATTERN);
+    const stat = await Deno.lstat(`${repoDir}/graft`);
+    assert(stat.isDirectory);
+    assertEquals(
+      warns.some((w) => w.includes("[GRAFT_LEGACY_CLEANUP]")),
+      false,
+    );
   });
 });
 
@@ -819,7 +1011,7 @@ Deno.test("collectGraftContext - truncates an over-long query on a character bou
       git: fakeGit().git,
     });
 
-    const sent = runner.calls[1]!.args[2]!;
+    const sent = runner.calls[1]!.args[4]!;
     const bytes = new TextEncoder().encode(sent);
     assert(bytes.length <= MAX_GRAFT_QUERY_BYTES, `sent ${bytes.length} bytes`);
     assert(sent.length > 0);
@@ -843,7 +1035,7 @@ Deno.test("collectGraftContext - a short query is passed through untouched", asy
       git: fakeGit().git,
     });
 
-    assertEquals(runner.calls[1]!.args[2], "où est le parseur");
+    assertEquals(runner.calls[1]!.args[4], "où est le parseur");
   });
 });
 
@@ -1144,6 +1336,7 @@ Deno.test("graftContextFacts - drops the bundle and keeps every figure", () => {
     nodeCount: 820,
     callEdgeCount: 1204,
     bundle: "the whole selection",
+    graphDir: "/tmp/checkout/.git/graft",
   });
   assertEquals(facts, {
     status: "ok",
@@ -1154,6 +1347,7 @@ Deno.test("graftContextFacts - drops the bundle and keeps every figure", () => {
     callEdgeCount: 1204,
   });
   assertEquals(Object.hasOwn(facts, "bundle"), false);
+  assertEquals(Object.hasOwn(facts, "graphDir"), false);
 });
 
 Deno.test("graftContextFacts - an outcome that never had a bundle is unchanged", () => {
@@ -1171,25 +1365,44 @@ Deno.test("graftContextFacts - an outcome that never had a bundle is unchanged",
 // The pull side: MCP server, prompt line and query tally (Issue #2314)
 // ---------------------------------------------------------------------------
 
-Deno.test("graftMcpServer - roots the server at the built checkout in its arguments", () => {
-  const server = graftMcpServer("/work/repo");
+Deno.test("graftMcpServer - roots the server at the built checkout and its graph directory (Issue #2915)", () => {
+  const server = graftMcpServer("/work/repo", "/work/repo/.git/graft");
   assertEquals(server.command, "graft");
-  assertEquals(server.args, ["mcp", "/work/repo"]);
+  assertEquals(server.args, [
+    "--dir",
+    "/work/repo/.git/graft",
+    "mcp",
+    "/work/repo",
+  ]);
   assertEquals(server.env, { DO_NOT_TRACK: "1" });
   // Fresh on each call, so a caller mutating one cannot poison the next.
   server.args.push("--extra");
-  assertEquals(graftMcpServer("/work/repo").args, ["mcp", "/work/repo"]);
+  assertEquals(
+    graftMcpServer("/work/repo", "/work/repo/.git/graft").args,
+    ["--dir", "/work/repo/.git/graft", "mcp", "/work/repo"],
+  );
 });
 
 Deno.test("graftMcpServer - refuses an empty checkout rather than rooting at the working directory", () => {
   let threw = false;
   try {
-    graftMcpServer("  ");
+    graftMcpServer("  ", "/work/repo/.git/graft");
   } catch (err) {
     threw = true;
     assertStringIncludes(String(err), "Issue #2314");
   }
   assert(threw, "an empty checkout must throw");
+});
+
+Deno.test("graftMcpServer - refuses an empty graph directory rather than rooting at the working directory (Issue #2915)", () => {
+  let threw = false;
+  try {
+    graftMcpServer("/work/repo", "  ");
+  } catch (err) {
+    threw = true;
+    assertStringIncludes(String(err), "Issue #2915");
+  }
+  assert(threw, "an empty graph directory must throw");
 });
 
 Deno.test("GRAFT_PROMPT_LINE - names the tools the tally counts", () => {

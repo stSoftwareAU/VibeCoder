@@ -43,7 +43,10 @@ async function writtenConfig(
 
 Deno.test("graft mcp - the config the Claude CLI reads exempts the graft server from deferral (Issue #2435)", async () => {
   const { mcpServers } = await writtenConfig({
-    [GRAFT_MCP_SERVER_NAME]: graftMcpServer("/w/checkout-2435", "/w/checkout-2435/.git/graft"),
+    [GRAFT_MCP_SERVER_NAME]: graftMcpServer(
+      "/w/checkout-2435",
+      "/w/checkout-2435/.git/graft",
+    ),
   });
   assertEquals(mcpServers.graft?.alwaysLoad, true);
   // Still the same server: the exemption is added, nothing is replaced.
@@ -65,7 +68,10 @@ Deno.test("codegraph mcp - the sibling server is exempted the same way (Issue #2
 
 Deno.test("graft mcp - Codex is handed the same command, args and env and nothing new (Issue #2435)", async () => {
   const { json } = await writtenConfig({
-    [GRAFT_MCP_SERVER_NAME]: graftMcpServer("/w/checkout-2435", "/w/checkout-2435/.git/graft"),
+    [GRAFT_MCP_SERVER_NAME]: graftMcpServer(
+      "/w/checkout-2435",
+      "/w/checkout-2435/.git/graft",
+    ),
   });
   const args = buildCodexMcpConfigArgs(json);
   const keys = args.filter((a) => a !== "-c").map((a) => a.split("=")[0]);
