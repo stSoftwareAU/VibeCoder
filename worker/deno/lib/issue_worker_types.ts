@@ -34,6 +34,7 @@ import type {
 import type { ImageReference } from "./untrusted_image_signal.ts";
 import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 import type { SummaryRuleRunVerdict } from "./summary_rule_gate_retry.ts";
+import type { ScreenshotGateBlock } from "./screenshot_gate_retry.ts";
 import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
@@ -341,6 +342,19 @@ export interface PhaseState {
    * already on the thread.
    */
   summaryRuleBlocks?: SummaryRuleRunVerdict[];
+  /**
+   * The screenshot gate's verdict for THIS run (Issue #2960), when it has
+   * blocked. Set by the completion phase on the first block; the in-run
+   * recovery reads it, then clears it before the one extra agent turn runs,
+   * so a second block in the same run fails as before rather than looping.
+   */
+  screenshotGateBlock?: ScreenshotGateBlock;
+  /**
+   * The screenshot gate's one extra agent turn (Issue #2960) has already been
+   * tried this run. Caps the recovery at once per run: a second block fails
+   * exactly as the gate reported before this issue.
+   */
+  screenshotRetryAttempted?: boolean;
   /**
    * The trusted discovery label the merged-PR pre-check found added *after*
    * the linked PR merged (Issue #1862), when there was one.
