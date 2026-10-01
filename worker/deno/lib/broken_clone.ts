@@ -17,6 +17,7 @@
 
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { isCloneCorruption } from "./corrupt_clone_recovery.ts";
 
 /**
  * Remove `repoPath` when it is a directory holding no git repository.
@@ -71,6 +72,31 @@ export async function discardBrokenClone(
     };
   }
   return { ok: true, value: true };
+}
+
+/**
+ * Probe an existing clone; returns git's stderr (trimmed) when it reports
+ * clone corruption, else null.
+ */
+export async function probeCorruptClone(
+  repoPath: string,
+): Promise<string | null> {
+  try {
+    if (!(await Deno.stat(repoPath)).isDirectory) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  const probe = await runGitCommand(["rev-parse", "--git-dir"], {
+    cwd: repoPath,
+    env: { GIT_CEILING_DIRECTORIES: parentDirectory(repoPath) },
+  });
+  if (!probe.ok) return null;
+  if (probe.value.code === 0) return null;
+  const stderr = probe.value.stderr.trim();
+  return isCloneCorruption(stderr) ? stderr : null;
 }
 
 /** The directory holding `path` — no `@std/path` in this import map. */

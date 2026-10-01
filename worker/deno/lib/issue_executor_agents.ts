@@ -183,6 +183,13 @@ const STANDARDS_REVIEWER_PROMPT = [
   "- Return one `violation` entry per such departure, naming the standard " +
   "and the `file:line` you saw. A `violation` must cite a rule that is " +
   "written in `CODING-STANDARDS.md` — never a preference of your own.",
+  "- Two departures are always a `violation` (Issue #3011): a " +
+  "named-but-absent test — a comment, anchor or test reference in the " +
+  "diff naming a test file that is neither in the diff nor in the " +
+  "repository; and a test stub for another repository's binary or " +
+  "script that is more permissive than the real callee — it reads " +
+  "different inputs or exits 0 where the callee fails — with no " +
+  "real-checkout run and no named contract source.",
   "- List any other departure (style, naming, taste) under `optional`, one " +
   "line each. Those are not violations and are not to be chased.",
   "- Name the `clean` areas you checked and found compliant.",
