@@ -32,6 +32,9 @@ import {
 
 const silent = { info: () => {}, warn: () => {} };
 
+/** The graph directory an `ok` collection names (Issue #2915). */
+const GRAFT_GRAPH_DIR = "/tmp/phase-accel-2569/.git/graft";
+
 const OK_GRAFT: GraftContextResult = {
   status: "ok",
   enabled: true,
@@ -40,6 +43,7 @@ const OK_GRAFT: GraftContextResult = {
   nodeCount: 10,
   callEdgeCount: 5,
   bundle: "export function parseDate() {}",
+  graphDir: GRAFT_GRAPH_DIR,
 };
 
 /** Prepare against scripted seams; returns the helper and what it asked for. */

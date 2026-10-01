@@ -61,6 +61,7 @@ function okGraftOutcome(): GraftContextResult {
     nodeCount: 820,
     callEdgeCount: 1204,
     bundle: "export function parseDate() {}",
+    graphDir: "/tmp/repo/.git/graft",
   };
 }
 
