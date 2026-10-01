@@ -1052,8 +1052,11 @@ disruption — not the conflict — is the problem, and a human is told so.
 
 For a **PR**, the ledger is the attempt/conclusion marker comments on the PR
 itself, so the bound holds across hosts and worker restarts. For a **milestone
-branch** it is the persisted per-branch ledger in
-`milestone_sync_failures.json` described in
+branch that heads an open PR** (the milestone → default-branch PR), the sync
+reads and writes the same shared marker comments, so a milestone branch and
+its rollup PR cannot each believe they hold separate budgets (Issue #2998).
+Only a **milestone branch with no open PR** falls back to the persisted
+per-branch ledger in `milestone_sync_failures.json`, described in
 [INTERNALS.md → the milestone conflict ledger](INTERNALS.md#-the-conflict-attempt-ledger-a-milestone-branch-spends).
 Either way a **success** is the only thing that refills the budget: a moved
 default tip never refills the attempt count.

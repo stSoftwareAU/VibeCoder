@@ -49,6 +49,20 @@ import {
   resolveBranchTips,
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
+import {
+  confirmSyncLanding,
+  type LandingCheck,
+} from "./milestone_sync_landing.ts";
+import {
+  type MilestoneHeadPr,
+  readMilestoneHeadPr,
+  recordSyncAttemptOnPr,
+} from "./milestone_sync_pr_budget.ts";
+import {
+  CONFLICT_RESOLUTION_BUDGET,
+  hasExhaustedConflictAttempts,
+  spentConflictAttempts,
+} from "./pr_merge_conflict_scan.ts";
 import { isConflictEscalation } from "./milestone_conflict_triage.ts";
 import {
   conflictEscalationMarkerPrefix,
@@ -85,6 +99,7 @@ import {
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   openConflictAttempt,
   recordDefaultSha,
+  recordSyncFailure,
   resetConflictLedgerOnSuccess,
   saveSyncCursor,
   saveSyncStreaks,
@@ -2118,18 +2133,32 @@ export async function syncMilestoneBranches(
   return { ok: true, value: { synced, skipped, failed } };
 }
 
+/** What {@link escalateSyncConflict} did, and where the landing it checked stood. */
+export interface SyncConflictReport {
+  /** Whether a report comment actually went out. */
+  posted: boolean;
+  /** The landing the merge was confirmed against, or why it could not be. */
+  landing: LandingCheck;
+}
+
 /**
- * Report a sync merge that conflicted, on the cycle it conflicted
- * (Issue #1558).
+ * Report a sync merge that conflicted, once its landing is confirmed
+ * (Issue #2998), on the cycle it conflicted (Issue #1558).
  *
- * The merge landed — this is not a blocked sync — but the resolution
- * favoured the default branch, so the branch's own version of every
- * conflicting file was replaced by a decision nobody made. Both sides'
- * commits are named so the reader can see what changed on each without
- * reconstructing it days later.
+ * The merge must be **confirmed** to have landed — on the milestone tip
+ * itself, or held by an open sync PR — before anything is posted: a
+ * repository rule can refuse the push `pushSyncedMilestoneBranch` believed
+ * succeeded, and a report that says the merge landed when it did not tells
+ * the reader to check a decision that does not exist yet. An unconfirmed
+ * landing posts nothing and is logged loudly instead.
  *
- * Best-effort, and returns true only when the report went out, so the caller
- * remembers the commit it reported and does not repeat it every cycle.
+ * Once confirmed, the resolution favoured the default branch, so the
+ * branch's own version of every conflicting file was replaced by a decision
+ * nobody made. Both sides' commits are named so the reader can see what
+ * changed on each without reconstructing it days later.
+ *
+ * Best-effort, and `posted` is true only when the report went out, so the
+ * caller remembers the commit it reported and does not repeat it every cycle.
  *
  * Exported so a child run's pre-cut sync reports a conflicted merge through
  * this very function (Issue #1780): a resolution that favoured the default
@@ -2146,7 +2175,25 @@ export async function escalateSyncConflict(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   dedupAuthors: AlertDedupAuthorOptions = {},
-): Promise<boolean> {
+): Promise<SyncConflictReport> {
+  const landing = await confirmSyncLanding(
+    repo,
+    milestone.milestoneBranch,
+    conflict.mergeSha,
+    ghCommandFn,
+    log,
+  );
+  if (landing.kind === "unconfirmed") {
+    log(
+      `WARNING: Milestone sync conflict for '${milestone.milestoneBranch}' ` +
+        `in ${repo}: the merge ${landing.expectedSha} is not confirmed on ` +
+        `'${milestone.milestoneBranch}' in ${repo} — observed tip ` +
+        `${landing.observedSha}: ${landing.reason}; no report posted ` +
+        `(Issue #2998)`,
+    );
+    return { posted: false, landing };
+  }
+
   const tips = await resolveBranchTips(
     repo,
     [
@@ -2163,6 +2210,7 @@ export async function escalateSyncConflict(
     defaultBranch: milestone.defaultBranch,
     conflict,
     tips,
+    landing,
   });
 
   const what = `a conflicting milestone sync merge for ` +
@@ -2181,7 +2229,7 @@ export async function escalateSyncConflict(
         `tracking issue, so the reasoning is on the merge commit rather ` +
         `than in a comment.`,
     );
-    return true;
+    return { posted: true, landing };
   }
 
   // Issue #2214: a conflict the worker resolved itself is a notice, not an

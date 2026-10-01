@@ -4208,10 +4208,18 @@ it is host-local and still has no wait between its concluded attempts; the
 [the merge-conflict workflow](workflows/merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)
 applies only to the PR scan's shared, PR-side tally.
 
-A PR carries its attempt history in marker comments on the PR; a milestone
-branch has nowhere to write one, so the ledger is persisted per branch in
+A PR carries its attempt history in marker comments on the PR. Since Issue
+#2998 the sync does the same when its branch is the head of an open PR —
+`readMilestoneHeadPr` in
+[milestone_sync_pr_budget.ts](../worker/deno/lib/milestone_sync_pr_budget.ts)
+reads the shared budget from that PR's own trusted markers, and the sync
+records each attempt there (`pass="sync"` plus its conclusion) exactly as the
+ladder does, so the PR-marker budget takes precedence over the local ledger
+whenever one exists. A milestone branch with **no** open PR still has nowhere
+to write one, so for it the ledger is persisted per branch in
 `milestone_sync_failures.json` beside the failure streak and survives worker
-restarts. The sync pass writes `lastSyncedDefaultSha` through it for the
+restarts; a PR or its comments the sync could not read also falls back here,
+with a logged warning. The sync pass writes `lastSyncedDefaultSha` through it for the
 cadence gate (Issue #1776) and charges the conflict *attempts* around every
 merge it makes (Issue #1778). Each entry carries `conflictAttempts` (concluded failures),
 `attemptOpenedAt` (an attempt that opened and has not concluded), `lastAttempt`
@@ -4237,6 +4245,16 @@ Three rules decide what the ledger does, and each is a pure helper:
   `not-charged`. An attempt left open reads as disrupted on the next cycle —
   the run died before the conflict was judged, so the conflict was never
   actually tried (the PR ladder's marker rule from #395 and #1693).
+- **An unconfirmed landing is never charged as the conflict itself, but it is
+  still a failure.** Before the sync reports a conflict it re-reads the
+  milestone tip and accepts it only when the tip equals or contains the merge
+  commit, or an open sync PR's head holds it (`confirmSyncLanding` in
+  `milestone_sync_landing.ts`, Issue #2998). Anything else — including a tip
+  that could not be read at all — concludes the open attempt `not-charged`
+  rather than `failed`, since the merge itself may well have succeeded, and
+  posts no report; `recordSyncFailure` still records it against the failure
+  streak, and a `WARNING` names both the expected merge SHA and the observed
+  tip SHA.
 - **A failure paces nothing.** A `failed` conclusion charges one of the three
   attempts and writes no deferral (Issue #2305): the branch is due again on the
   very next cycle, and the budget itself — three runs, then the roll-back — is

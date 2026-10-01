@@ -424,6 +424,34 @@ pre-merge commit and escalated — with both halves: what the verification said
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
 it is refused the same way.
 
+### A conflict is reported only once the landing is confirmed
+
+A push this host believes succeeded can still lose the race — a sibling
+host's own sync, or a ruleset routing the same merge through a
+`sync/milestone-*` PR — so the sync re-reads the milestone branch's tip
+(`resolveBranchTips`) before it posts anything (Issue #2998). `confirmSyncLanding`
+in [milestone_sync_landing.ts](../../worker/deno/lib/milestone_sync_landing.ts)
+accepts the landing when the current tip **equals or contains** the merge
+commit, or when an open sync PR's head already holds it, and only then does
+`escalateSyncConflict` post the report — saying the merge **landed on
+`<branch>` at `<sha>`**, or **is in sync PR #N**, never that it "was pushed".
+Anything else — a tip that still sits before the merge, or one that could not
+be read at all — is not confirmed: no report is posted, a `WARNING` names
+both the expected merge SHA and the observed tip SHA, and the attempt is
+recorded against the failure streak in `milestone_sync_failures.json`
+(`recordSyncFailure`) while the conflict-attempt ledger entry itself concludes
+`not-charged` — an unreadable tip is never read as a success.
+
+```mermaid
+flowchart TD
+    A["Merge pushed"] --> B["resolveBranchTips:<br/>re-read the milestone tip"]
+    B --> C{"tip equals, or<br/>contains, the merge?"}
+    C -- yes --> D["Report: landed on<br/>&lt;branch&gt; at &lt;sha&gt;"]
+    C -- no --> E{"open sync PR's head<br/>already holds it?"}
+    E -- yes --> F["Report: in sync PR #N"]
+    E -- "no, or unreadable" --> G["No report — WARNING names expected<br/>vs observed SHA; streak failure<br/>recorded, ledger attempt not-charged"]
+```
+
 ### Every sync says where its minutes went
 
 The sync merge runs the same ladder the PR path does, and it can take just as
@@ -519,6 +547,7 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 - The cadence state is the `lastSyncedDefaultSha` in `milestone_sync_failures.json`, so it survives a worker restart — there is no in-memory cooldown to lose (Issue #1776).
 - Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out — there is no wait between a branch's three conflict attempts (Issue #2305), and the budget itself is what bounds the retrying.
 - A branch's conflict budget is **three concluded failures** (`CONFLICT_RESOLUTION_BUDGET`, raised from two under Issue #2996), the same constant a conflicting PR spends, and the third spent failure hands the branch to the roll-back rather than to a fourth merge. An attempt this host opened and never concluded reads as `disrupted` on the next cycle and is charged nothing; while it is open, and while the budget is spent, the claim scan skips that milestone's issues rather than claiming a child that could only defer. This ledger stays host-local and paces itself with no wait between attempts, as it always has; the 2-hour owner-check spacing Issue #2996 adds applies only to the PR scan's own shared tally (see [the merge-conflict workflow](merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)).
+- **A branch that heads an open PR spends that PR's budget instead** (Issue #2998). When the milestone branch is the head of an open milestone → default-branch PR, `readMilestoneHeadPr` in [milestone_sync_pr_budget.ts](../../worker/deno/lib/milestone_sync_pr_budget.ts) reads the shared `CONFLICT_RESOLUTION_BUDGET` from that PR's own trusted marker comments, and the sync records each attempt there as one `pass="sync"` marker plus its conclusion — `resolved` on a confirmed landing, `failed` on a charged failure; a not-charged or disrupted outcome, and an unconfirmed landing, post nothing. Two prior failed markers on the PR leave exactly one attempt; a spent PR budget skips the sync, subject to the same #2311 re-arm when the default tip moves past the fallback. The host-local ledger above remains the budget only for a milestone branch with **no** open PR (Issue #2919); when the PR or its comments cannot be read, the sync logs a warning and falls back to the ledger.
 - A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - **A spent budget rolls the branch back and files one `merge-fallback` flag** (Issue #2311). Both outcomes file or append it — the roll-back that merged cleanly and the one that could not — and the roll-back notice on the escalation target links it by number. The flag names both spent runs (host, stage timings and what each made of the conflict), the conflicted files, how far behind the branch had fallen and what was reverted; a field nothing recorded renders as `not recorded`.
 - **No conflict outcome applies `needs-human` or asks anyone anything.** A roll-back that could not merge posts the notice and stops; it records the default tip it answered for, and when the default branch moves past that tip the branch is offered its three runs again. The repeated-identical-failure escalation of Issue #1964 went with it; the streak escalation (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives only for a **non-conflict** failure — a fetch, a push or an ordinary git error.
