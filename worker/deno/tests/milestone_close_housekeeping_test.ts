@@ -169,6 +169,92 @@ Deno.test("parseClosedMilestones - throws on unreadable output rather than readi
   );
 });
 
+Deno.test("sweepClosedMilestones - a child issue body containing bracket-like text across pages does not break the children lookup", async () => {
+  const fx = await makeFixture();
+  try {
+    const gh = (args: string[]) => {
+      const endpoint = args[args.length - 1] ?? "";
+      if (endpoint.includes("/milestones")) {
+        return Promise.resolve(
+          JSON.stringify([{ number: 9, title: MILESTONE_TITLE }]),
+        );
+      }
+      if (endpoint.includes("/issues")) {
+        // Two concatenated pages with no separator; the first issue's body
+        // contains `[text][ref]`, the second's contains a JSON-escaped
+        // `]\n[` — both used to be mistaken for a page boundary.
+        return Promise.resolve(
+          `[{"number":${CHILD_NUMBER},"body":"see [docs][ref]"}]` +
+            `[{"number":123,"body":"a]\\n[b"}]`,
+        );
+      }
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    };
+
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir: fx.workDir, repoPath: fx.repoPath },
+      { gh, log: () => {} },
+    );
+
+    assertEquals(result.errors, []);
+    assertEquals(result.failures, []);
+    assertEquals(result.swept, [MILESTONE_TITLE]);
+    const branches = await localBranches(fx.repoPath);
+    assertEquals(
+      branches.includes(CHILD_BRANCH),
+      false,
+      "the child issue branch matching the first page's number is swept",
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("sweepClosedMilestones - a truncated issues response fails loudly rather than reading as no children", async () => {
+  const fx = await makeFixture();
+  try {
+    const gh = (args: string[]) => {
+      const endpoint = args[args.length - 1] ?? "";
+      if (endpoint.includes("/milestones")) {
+        return Promise.resolve(
+          JSON.stringify([{ number: 9, title: MILESTONE_TITLE }]),
+        );
+      }
+      if (endpoint.includes("/issues")) {
+        // Truncated mid-page: a malformed response must not be
+        // indistinguishable from "no children".
+        return Promise.resolve(`[{"number":${CHILD_NUMBER}`);
+      }
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    };
+
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir: fx.workDir, repoPath: fx.repoPath },
+      { gh, log: () => {} },
+    );
+
+    assert(
+      result.errors.some((e) => e.includes(MILESTONE_TITLE)),
+      `the truncated response is reported as an error: ${
+        result.errors.join(" | ")
+      }`,
+    );
+    assertEquals(
+      result.swept,
+      [],
+      "a milestone whose children could not be read stays unswept",
+    );
+    const branches = await localBranches(fx.repoPath);
+    assertEquals(
+      branches.includes(CHILD_BRANCH),
+      true,
+      "the child issue branch is left alone when its number could not be confirmed",
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 Deno.test("sweepClosedMilestones - removes the worktree, branches and stream session of a closed milestone", async () => {
   const fx = await makeFixture();
   try {
@@ -439,6 +525,69 @@ Deno.test("sweepClosedMilestones - a gh listing failure is reported, not thrown"
     assertEquals(await exists(fx.worktreePath), true);
   } finally {
     await fx.cleanup();
+  }
+});
+
+Deno.test("sweepClosedMilestones - a repository with no checkout directory is skipped quietly with no gh or git calls", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "milestone-close-" });
+  try {
+    const ghCalls: string[][] = [];
+    let gitCalls = 0;
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir, repoPath: `${workDir}/missing` },
+      {
+        gh: makeGh(ghCalls),
+        git: () => {
+          gitCalls++;
+          return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+        },
+        log: () => {},
+        now: () => 0,
+      },
+    );
+
+    assertEquals(result.errors, []);
+    assertEquals(result.failures, []);
+    assertEquals(result.considered, []);
+    assertEquals(ghCalls.length, 0, "no gh calls");
+    assertEquals(gitCalls, 0, "no git calls");
+    assertEquals(
+      await exists(milestoneCloseStatePath(workDir, REPO)),
+      false,
+      "no state file is created for a repository with no checkout",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("sweepClosedMilestones - a checkout whose branch listing fails still reports the error", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "milestone-close-" });
+  try {
+    await Deno.mkdir(`${workDir}/demo`);
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir, repoPath: `${workDir}/demo` },
+      {
+        gh: makeGh(),
+        git: () =>
+          Promise.resolve({
+            code: 128,
+            stdout: "",
+            stderr: "fatal: not a git repository",
+          }),
+        log: () => {},
+      },
+    );
+
+    assert(
+      result.errors.some((e) =>
+        e.includes("Could not list the local branches of")
+      ),
+      `the branch-listing failure is reported: ${result.errors.join(" | ")}`,
+    );
+    assertEquals(result.swept, []);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
   }
 });
 

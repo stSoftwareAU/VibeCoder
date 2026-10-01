@@ -2347,6 +2347,18 @@
       ]
     },
     {
+      "issue": 2895,
+      "chunk": "top-up-2895",
+      "title": "top-up: the shared gh --paginate page parser",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2895",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: json_array_pages.ts (#2895)",
+      "status": "claimed",
+      "sweptAt": "0a06cd2a0b62aefef8a6820fe2d0b0c5ce09cf99",
+      "paths": [
+        "worker/deno/lib/json_array_pages.ts"
+      ]
+    },
+    {
       "issue": 2896,
       "chunk": "top-up-2896",
       "title": "top-up: the milestone sync unshallow merge retry",

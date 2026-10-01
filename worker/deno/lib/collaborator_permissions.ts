@@ -21,6 +21,7 @@
 import { REPO_SLUG_PATTERN } from "./config.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import { normaliseLogin } from "./identity_guard.ts";
+import { parseJsonArrayPages } from "./json_array_pages.ts";
 
 /**
  * GitHub's collaborators API names the write role `push`. The mapping is
@@ -144,46 +145,6 @@ export function parseCollaboratorHttpStatus(text: string): number | null {
   return null;
 }
 
-/**
- * Parse a `gh api --paginate` JSON-array payload.
- *
- * `gh` may emit one merged array or concatenate pages as separate arrays
- * (`][`). Both shapes are accepted. Throws on unreadable input so a
- * malformed response is never reported as "no collaborators".
- */
-function parseCollaboratorPages(raw: string): unknown[] {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return [];
-
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) {
-      throw new Error(
-        `Expected a JSON array of collaborators, got ${
-          parsed === null ? "null" : typeof parsed
-        }`,
-      );
-    }
-    return parsed;
-  } catch (first) {
-    // Concatenated pages: `[{...}]\n[{...}]` is not valid JSON as a whole.
-    if (!/\]\s*\[/.test(trimmed)) {
-      throw first instanceof Error ? first : new Error(String(first));
-    }
-    const out: unknown[] = [];
-    for (const chunk of trimmed.split(/\]\s*\[/)) {
-      const text = chunk.startsWith("[") ? chunk : `[${chunk}`;
-      const json = text.endsWith("]") ? text : `${text}]`;
-      const parsed: unknown = JSON.parse(json);
-      if (!Array.isArray(parsed)) {
-        throw new Error("Expected a JSON array page of collaborators");
-      }
-      out.push(...parsed);
-    }
-    return out;
-  }
-}
-
 /** Narrow an unknown value to a plain object, or null. */
 function asRecord(value: unknown): Record<string, unknown> | null {
   return (typeof value === "object" && value !== null && !Array.isArray(value))
@@ -244,7 +205,7 @@ export async function fetchRepoCollaborators(
 
   let entries: unknown[];
   try {
-    entries = parseCollaboratorPages(result.stdout);
+    entries = parseJsonArrayPages(result.stdout);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return fail("malformed-json", message);
