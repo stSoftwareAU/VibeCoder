@@ -61,7 +61,9 @@ export function formatCloneCorruptRepeat(repeat: CloneCorruptRepeat): string {
 
 /** Matches the single-line `clone-corrupt-repeat: {json}` payload inside any message. */
 const CLONE_CORRUPT_REPEAT_RE = new RegExp(
-  `${CLONE_CORRUPT_REPEAT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: (\\{[^\\n]*\\})`,
+  `${
+    CLONE_CORRUPT_REPEAT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  }: (\\{[^\\n]*\\})`,
 );
 
 /**

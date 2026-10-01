@@ -394,7 +394,10 @@ Deno.test("setupRepo - a recovery already used within 24h is not retried (Issue 
     // #2958), and the setup-phase reason it feeds through classifies as a
     // transient `clone_corrupt` failure.
     const repeat = parseCloneCorruptRepeat(result.message);
-    assert(repeat !== null, "cap refusal must carry a clone-corrupt-repeat payload");
+    assert(
+      repeat !== null,
+      "cap refusal must carry a clone-corrupt-repeat payload",
+    );
     assertStringIncludes(repeat.currentGitMessage, "bad config line");
 
     const reason = `Failed to set up repo owner/downstream: ${result.message}`;
@@ -410,7 +413,7 @@ Deno.test("setupRepo - a cap refusal after a successful recovery carries both co
     prefix: "setup_repo_recovery_repeat_",
   });
   try {
-    const { clonePath } = await makeUpstreamAndClone(tmp);
+    const { upstream, clonePath } = await makeUpstreamAndClone(tmp);
 
     // First corruption: a bad git-config line, recovered successfully (the
     // same shape as the AC2 test), which writes the object-form state entry.
@@ -419,13 +422,18 @@ Deno.test("setupRepo - a cap refusal after a successful recovery carries both co
       "not a valid config line\n" +
         await Deno.readTextFile(`${clonePath}/.git/config`),
     );
-    _setGhSpawnRunner(recloningRunner(tmp));
+    _setGhSpawnRunner(recloningRunner(upstream));
     try {
       const first = await setupRepo("owner/downstream", tmp);
       assertEquals(first.success, true, first.message);
     } finally {
       _resetGhSpawnRunner();
     }
+
+    // A fresh commit upstream so the up-to-date fast path cannot skip fetch.
+    await write(`${upstream}/file2.txt`, "second\n");
+    await runGit(["add", "."], upstream);
+    await runGit(["commit", "-m", "second"], upstream);
 
     // Second corruption, inside the 24 h window: this time a bad object
     // behind a loose ref.
