@@ -47,7 +47,7 @@ import {
 import {
   detectPlanningHandoff,
   handOffToPlanning,
-  hasPriorPlanningHandoff,
+  hasPriorPlanningHandoffOnThread,
 } from "../planning_handoff.ts";
 import {
   detectAlreadyResolved,
@@ -336,7 +336,20 @@ export async function workOnIssueHandleNoChanges(
   // `work-on` add anchors it, so on any other pickup tier the label would be
   // flagged and ignored — hand those to a human instead.
   const planningImageGate = gatePlanningHandoff(ctx.untrustedImages);
-  if (planningRequest && hasPriorPlanningHandoff(ctx.issueComments)) {
+  // Issue #2942: read the loop guard off the full comment thread, not the
+  // budgeted prompt blob, which drops the marker on a busy issue.
+  const planningClient = planningRequest
+    ? deps.github.createClient(logger)
+    : undefined;
+  const repeatPlanning = planningRequest !== undefined &&
+    await hasPriorPlanningHandoffOnThread({
+      ghClient: planningClient!,
+      repo,
+      issueNumber,
+      fallbackComments: ctx.issueComments,
+      logger,
+    });
+  if (planningRequest && repeatPlanning) {
     logger.warn(
       "Planning requested again after an earlier hand-off — handing off to " +
         "a human instead",
@@ -359,7 +372,7 @@ export async function workOnIssueHandleNoChanges(
     });
   } else if (planningRequest) {
     const handoff = await handOffToPlanning({
-      ghClient: deps.github.createClient(logger),
+      ghClient: planningClient!,
       repo,
       issueNumber,
       githubUser,

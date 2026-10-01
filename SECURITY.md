@@ -1656,7 +1656,11 @@ label the worker may apply, and it is narrowed five ways:
   exception, so they still cannot trigger planning.
 - **Once per issue.** The hand-off comment carries `<!-- vibe-planning-handoff -->`.
   If that marker is already present, a second request falls back to
-  `needs-human`. A forged marker can only make that fallback fire, which is
+  `needs-human`. The marker is looked up across the issue's full comment
+  thread — every author — rather than the budgeted prompt comments (20
+  comments / 12,000 characters), which could drop it on a busy issue
+  (Issue #2942); the prompt comments are only a logged-warning fallback if
+  that fetch fails. A forged marker can only make the fallback fire, which is
   the safe direction. Untrusted issue text reaches the prompt through
   `issue_content_trust_filter.ts` (delimiter sanitising and nonce-boundary
   wrapping). Even if an injection did make the run emit
