@@ -89,7 +89,9 @@ print the minted token, since tracing is suspended around the mint.
    gets the review.
 2. **Nothing is reviewed until CI is green.** Pending checks wait; failing
    checks, merge conflicts and drafts belong to the fleet, so leave them
-   alone and post nothing.
+   alone and post nothing. A PR whose only red checks are cancelled runs is
+   infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
+   once per head, and it is left alone exactly like `ci-failed`.
 3. **Judge the safety net, not test count.** Read the target repository's
    canonical testing standard. New behaviour or a real bug fix usually needs
    a test that would fail on the regression, unless existing tests already
