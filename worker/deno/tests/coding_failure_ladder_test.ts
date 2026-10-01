@@ -13,6 +13,7 @@ import {
   applyCodingFailureLadder,
   buildRepeatedFailureEscalation,
   classifyCodingFailure,
+  isSetupFault,
   planCodingFailure,
 } from "../lib/coding_failure_ladder.ts";
 import {
@@ -332,6 +333,86 @@ Deno.test("planCodingFailure - an applied ladder counts the attempt even when th
   });
   assertEquals(plan.applyLadder, false);
   assertEquals(plan.cooldownKind, "non_transient");
+});
+
+Deno.test("planCodingFailure - a setup-phase failure is released unlabelled, no attempt consumed (Issue #2954)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "setup",
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+});
+
+Deno.test("planCodingFailure - the same reason without a setup phase steps the ladder", () => {
+  const withoutPhase = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(withoutPhase.applyLadder, true);
+  assertEquals(withoutPhase.cooldownKind, "non_transient");
+
+  const executePhase = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "execute",
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(executePhase.applyLadder, true);
+  assertEquals(executePhase.cooldownKind, "non_transient");
+});
+
+Deno.test("planCodingFailure - a host-fault reason is a setup fault even at the execute phase (Issue #2954)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "execute",
+    reason: "fatal: bad object refs/heads/main",
+  });
+  assertEquals(plan.applyLadder, false);
+  assertEquals(plan.cooldownKind, undefined);
+});
+
+Deno.test("planCodingFailure - an ordinary execute-phase failure still steps the ladder (Issue #2954)", () => {
+  const plan = planCodingFailure({
+    success: false,
+    expectedSkip: false,
+    phase: "execute",
+    reason: "No code changes and no useful output from Claude",
+  });
+  assertEquals(plan.applyLadder, true);
+  assertEquals(plan.cooldownKind, "non_transient");
+});
+
+// ---------------------------------------------------------------------------
+// isSetupFault
+// ---------------------------------------------------------------------------
+
+Deno.test("isSetupFault - a setup-phase run is a setup fault", () => {
+  assertEquals(isSetupFault({ phase: "setup", reason: "anything" }), true);
+});
+
+Deno.test("isSetupFault - a host-fault reason is a setup fault regardless of phase", () => {
+  assertEquals(
+    isSetupFault({
+      phase: "execute",
+      reason: "fatal: bad object refs/heads/main",
+    }),
+    true,
+  );
+});
+
+Deno.test("isSetupFault - an ordinary execute failure is not a setup fault", () => {
+  assertEquals(
+    isSetupFault({
+      phase: "execute",
+      reason: "No code changes and no useful output from Claude",
+    }),
+    false,
+  );
 });
 
 // ---------------------------------------------------------------------------

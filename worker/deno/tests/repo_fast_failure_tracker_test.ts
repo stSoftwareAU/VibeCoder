@@ -120,6 +120,47 @@ Deno.test("isFastFailure - an unknown elapsed time is not a fast failure", () =>
   assertEquals(isFastFailure({ category: "internal_error" }, policy), false);
 });
 
+Deno.test("isFastFailure - a setup fault counts whatever the category or clock (Issue #2954)", () => {
+  const policy = resolveRepoFastFailurePolicy();
+  assertEquals(
+    isFastFailure(
+      { category: "unknown", elapsedSeconds: 3600, setupFault: true },
+      policy,
+    ),
+    true,
+  );
+  assertEquals(
+    isFastFailure({ category: "unknown", elapsedSeconds: 3600 }, policy),
+    false,
+  );
+});
+
+Deno.test("isFastFailure - a setup fault never overrides a host-wide cause (Issue #2954)", () => {
+  const policy = resolveRepoFastFailurePolicy();
+  assertEquals(
+    isFastFailure(
+      { category: "rate_limit", elapsedSeconds: 3, setupFault: true },
+      policy,
+    ),
+    false,
+  );
+  assertEquals(
+    isFastFailure(
+      { category: "scheduled_release", elapsedSeconds: 3, setupFault: true },
+      policy,
+    ),
+    false,
+  );
+});
+
+Deno.test("isFastFailure - a setup fault with no elapsed time still counts (Issue #2954)", () => {
+  const policy = resolveRepoFastFailurePolicy();
+  assertEquals(
+    isFastFailure({ category: "unknown", setupFault: true }, policy),
+    true,
+  );
+});
+
 Deno.test("isFastFailure - honours a configured fast_failure_seconds", () => {
   const policy = resolveRepoFastFailurePolicy({ fastFailureSeconds: 300 });
   assertEquals(

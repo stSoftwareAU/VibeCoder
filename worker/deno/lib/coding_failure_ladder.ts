@@ -17,7 +17,9 @@
  *
  * ```mermaid
  * flowchart TD
- *     F["Coding run fails"] --> C{"classifyCodingFailure"}
+ *     F["Coding run fails"] --> S{"phase=setup, or<br/>detectHostFault(reason)?"}
+ *     S -->|"yes (Issue #2954)"| U["released unlabelled,<br/>no attempt consumed"]
+ *     S -->|"no"| C{"classifyCodingFailure"}
  *     C -->|"account state: rate limit,<br/>out of credit, interrupted,<br/>scheduled release, deadline-bound timeout<br/>host state: OOM, full disk,<br/>crash, missing tools, external kill<br/>host capability: token lacks<br/>the workflow scope"| T["transient:<br/>flat 600 s cooldown,<br/>no attempt consumed"]
  *     C -->|"anything else"| L["ladder:<br/>failed-once → failed<br/>+ escalating cooldown"]
  *     L --> L1["1st: failed-once,<br/>2 h cooldown, retried once"]
@@ -39,6 +41,7 @@ import {
   type FailureCategory,
   isTimeoutClassFailureReason,
 } from "./failure_diagnosis.ts";
+import { detectHostFault } from "./host_fault.ts";
 import { classifyRunFailure } from "./run_outcome_classifier.ts";
 import type { handleIssueFailure } from "./label_failure.ts";
 import type {
@@ -262,6 +265,18 @@ export async function applyCodingFailureLadder(
   }
 }
 
+/**
+ * Whether a failed run is a setup fault (Issue #2954): it died in the
+ * `setup` phase, before the agent started, or its reason names a host
+ * fault. Either way the fault is the host's or the repository's, not
+ * the issue's.
+ */
+export function isSetupFault(
+  run: { phase?: string; reason?: string | null },
+): boolean {
+  return run.phase === "setup" || detectHostFault(run.reason ?? "") !== null;
+}
+
 /** One finished coding run, as the main loop sees it. */
 export interface CodingRunOutcomeSummary {
   success: boolean;
@@ -271,6 +286,8 @@ export interface CodingRunOutcomeSummary {
   reason: string;
   /** A phase already stepped the ladder for this run (Issue #1949). */
   ladderApplied?: boolean;
+  /** The phase the run died at, if known (Issue #2954). */
+  phase?: string;
 }
 
 /** What the main loop must do about a finished coding run. */
@@ -310,6 +327,14 @@ export function planCodingFailure(
       cooldownKind: decision.cooldownKind ?? "non_transient",
       decision,
     };
+  }
+
+  // A setup fault (Issue #2954) is the host's or the repository's, not the
+  // issue's: no cooldownKind, so no `failed-once`, no `failed`, no
+  // escalating cooldown — the issue is released unlabelled and the release
+  // comment carries the diagnosis.
+  if (isSetupFault({ phase: run.phase, reason: run.reason })) {
+    return { applyLadder: false, decision };
   }
 
   return {

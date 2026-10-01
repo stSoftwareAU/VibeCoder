@@ -260,6 +260,7 @@ import { workflowScopeState } from "./workflow_scope.ts";
 import {
   applyCodingFailureLadder,
   buildRepeatedFailureEscalation,
+  isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
 import { handleIssueFailure as handleIssueFailureFn } from "./label_failure.ts";
@@ -4460,11 +4461,15 @@ export async function createProductionRunCoreDeps(
       // with the raw gate output) is not stepped again here — that would
       // take an unlabelled issue straight to `failed` in one run — but its
       // attempt is still counted by the cooldown.
+      // A setup fault (Issue #2954) is released unlabelled and consumes no
+      // attempt — the fault is the host's or the repository's, not the
+      // issue's.
       const plan = planCodingFailure({
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
+        ...(result.phase ? { phase: result.phase } : {}),
       });
       const failureKind: CooldownFailureKind | undefined = plan.cooldownKind;
       if (plan.applyLadder) {
@@ -4920,12 +4925,18 @@ export async function createProductionRunCoreDeps(
       // repository's environment, not the issue. Counted durably so three
       // of them in a day back the repository off and file one diagnostic,
       // instead of the whole week of retries the fleet used to spend.
+      // A setup fault (Issue #2954) always counts, regardless of how long it
+      // took to surface.
       if (
         outcome?.kind === "no_pr" &&
         isFastFailure(
           {
             category: outcome.category,
             elapsedSeconds: outcome.elapsedSeconds,
+            setupFault: isSetupFault({
+              phase: outcome.phase,
+              reason: outcome.message,
+            }),
           },
           fastFailurePolicy,
         )

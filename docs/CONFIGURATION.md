@@ -1769,7 +1769,7 @@ unless explicitly overridden.
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
 | Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
-| Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure counts however long it took. |
+| Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
 | Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
 | Fast-failure window (hours) | `repo_fast_failure_window_hours` | `24` | The rolling window the threshold is counted over, and the decay period — a repaired repository recovers on its own once its failures age out. |
 
@@ -2100,7 +2100,7 @@ the PID — so the counters survive a worker restart.
 
 ```mermaid
 flowchart TD
-    R["Run released with no PR"] --> F{"Fast failure?<br/>zero_output, or<br/>under fast_failure_seconds"}
+    R["Run released with no PR"] --> F{"Fast failure?<br/>zero_output, setup fault, or<br/>under fast_failure_seconds"}
     F -- "no" --> K["Nothing recorded"]
     F -- "yes" --> C["Record the event:<br/>phase + the diagnostic error line"]
     C --> T{"repo_fast_failure_threshold<br/>reached inside the window?"}
@@ -2122,7 +2122,10 @@ flowchart TD
   repository at once, and a scheduled release is a deliberate handover. An
   agent-API payment refusal (`API Error: 402`, an out-of-credit message) is
   account state too and is categorised `rate_limit`; before Issue #2590 it
-  read as `internal_error` and backed off a healthy repository.
+  read as `internal_error` and backed off a healthy repository. A setup
+  fault — a run that died in the `setup` phase, before the agent started, or
+  whose failure names a recognised host fault — counts however long it took
+  (Issue #2954); a host-wide cause still never counts.
 - **What the back-off stops.** The repository is excluded from the
   implementation claim scan (`findNextIssue` → `findOldestIssue`), which is
   where the retries Issue #1950 measured were spent. The label-driven lanes
