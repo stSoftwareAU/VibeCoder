@@ -73,10 +73,10 @@ import {
   parseLadderState,
 } from "./conflict_verdict_ladder.ts";
 import {
-  type ConflictLadderRung,
-  conflictAttemptMarker,
   CONFLICT_RESOLUTION_BUDGET,
+  conflictAttemptMarker,
   conflictFailedMarker,
+  type ConflictLadderRung,
   conflictNudgeMarker,
   conflictResolvedMarker,
   conflictRungFailedMarker,
@@ -595,7 +595,9 @@ export function buildResolvedComment(
     ? detail.trim()
     : `Merged \`${baseBranch}\` into \`${branchName}\` and pushed the result.`;
   return [
-    `${conflictResolvedMarker("ladder", headSha)}\n✅ **Merge conflict resolved**`,
+    `${
+      conflictResolvedMarker("ladder", headSha)
+    }\n✅ **Merge conflict resolved**`,
     "",
     body,
     ...buildIntentOverrideSection(parseIntentOverrides(detail), issueContext),
@@ -2310,7 +2312,7 @@ function cutShortByProvider(detail: string): CutShortCause {
  * principle the pass already applies to markers the fleet did not author.
  *
  * The attempt marker is deleted, so the next scan sees neither a concluded
- * attempt (which would spend the two-attempt budget) nor an open one (which
+ * attempt (which would spend the shared resolution budget) nor an open one (which
  * would spend the three-disruption budget). A marker that cannot be deleted
  * is left and said out loud: the PR then reads as disrupted on the next scan,
  * which is retried rather than judged, and that bound still holds.

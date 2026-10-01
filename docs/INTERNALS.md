@@ -4195,9 +4195,9 @@ flowchart TD
 #### 🎟️ The conflict attempt ledger a milestone branch spends
 
 A milestone branch that conflicts with the default branch gets the same
-**budget of three concluded attempts, with no wait between them** (Issue
-#2305; the budget moved from two to three, and the shared tally, under Issue
-#2996) that a conflicting PR gets:
+**budget of three concluded attempts, with no wait between them** (Issue #2305;
+the budget moved from two to three, and the shared tally, under Issue #2996)
+that a conflicting PR gets:
 [milestone_sync_streak.ts](../worker/deno/lib/milestone_sync_streak.ts) exports
 `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as
 [`CONFLICT_RESOLUTION_BUDGET`](../worker/deno/lib/merge_conflict_markers.ts)

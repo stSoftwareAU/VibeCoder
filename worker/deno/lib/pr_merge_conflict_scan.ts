@@ -840,6 +840,28 @@ export function hasExhaustedConflictAttempts(
 }
 
 /**
+ * The most recent `failed` attempt after the last `resolved` one, or
+ * `undefined` — the one attempt {@link isConflictAttemptDue} and the
+ * `owner-check-pending` reason both measure against (Issue #2996).
+ */
+function mostRecentConflictFailure(
+  attempts: readonly ConflictResolutionAttempt[],
+): ConflictResolutionAttempt | undefined {
+  let lastResolvedIndex = -1;
+  for (let index = attempts.length - 1; index >= 0; index--) {
+    if (attempts[index]?.outcome === "resolved") {
+      lastResolvedIndex = index;
+      break;
+    }
+  }
+
+  for (let index = attempts.length - 1; index > lastResolvedIndex; index--) {
+    if (attempts[index]?.outcome === "failed") return attempts[index];
+  }
+  return undefined;
+}
+
+/**
  * Whether another attempt on this PR is due (Issue #2996).
  *
  * A failed attempt leaves the PR to its owner for `ownerCheckHours` — time to
@@ -871,21 +893,7 @@ export function isConflictAttemptDue(
   nowMs: number,
   ownerCheckHours: number = CONFLICT_OWNER_CHECK_HOURS,
 ): boolean {
-  let lastResolvedIndex = -1;
-  for (let index = attempts.length - 1; index >= 0; index--) {
-    if (attempts[index]?.outcome === "resolved") {
-      lastResolvedIndex = index;
-      break;
-    }
-  }
-
-  let lastFailed: ConflictResolutionAttempt | undefined;
-  for (let index = attempts.length - 1; index > lastResolvedIndex; index--) {
-    if (attempts[index]?.outcome === "failed") {
-      lastFailed = attempts[index];
-      break;
-    }
-  }
+  const lastFailed = mostRecentConflictFailure(attempts);
   if (lastFailed === undefined) return true;
 
   const current = currentHeadSha?.trim().toLowerCase();
@@ -1786,12 +1794,16 @@ export async function findConflictingPr(
       // from here must not quote it back as what *this* conflict recorded.
       prComments = prComments.slice(park.index + 1);
       history = parseConflictAttempts(prComments);
+      attempts = readResolutionAttempts(
+        prComments,
+        (login) => isFleetAuthor(login, [...trustedAuthors]),
+      );
     }
 
     // A spent budget reaching here means the conclusion the processor should
     // have drawn never landed (Issue #395): the label check above let the PR
     // through, so nobody owns it and it would stall unowned for ever.
-    if (hasExhaustedConflictAttempts(history.count, maxAttempts)) {
+    if (hasExhaustedConflictAttempts(attempts, maxAttempts)) {
       // Issue #1115: a human is not the next rung. A branch that has defeated
       // two concluded merges is usually cheaper to redo than to reconcile, so
       // the PR is closed, its issue re-queued for a fresh PR off the current
@@ -1819,7 +1831,7 @@ export async function findConflictingPr(
             repo,
             prNumber: pr.number,
             issueNumber: abandon.issueNumber,
-            attempts: history.count,
+            attempts: spentConflictAttempts(attempts),
             maxAttempts,
             label,
           },
@@ -1853,7 +1865,7 @@ export async function findConflictingPr(
           reason: {
             kind: "abandoned-restarted",
             issueNumber: abandon.issueNumber,
-            attemptsSpent: history.count,
+            attemptsSpent: spentConflictAttempts(attempts),
             ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
           },
         };
@@ -1929,7 +1941,7 @@ export async function findConflictingPr(
         {
           repo,
           prNumber: pr.number,
-          attempts: history.count,
+          attempts: spentConflictAttempts(attempts),
           maxAttempts,
           route: route.kind,
           ...(route.kind === "abandon-failed" ? { step: route.step } : {}),
@@ -1939,7 +1951,7 @@ export async function findConflictingPr(
         outcome: "skipped",
         reason: {
           kind: "budget-spent",
-          attemptsSpent: history.count,
+          attemptsSpent: spentConflictAttempts(attempts),
           maxAttempts,
         },
       };
@@ -1982,7 +1994,7 @@ export async function findConflictingPr(
     // An open marker is the one thing that makes a PR "not due" now
     // (Issue #2305), and it is re-attempted rather than waited out — so the
     // record says which of the disruptions is that one.
-    const attemptOpen = !isConflictAttemptDue(history);
+    const attemptOpen = history.pendingAttempt;
     if (disruptedCount > 0) {
       logger.warn(
         `PR #${pr.number} has ${disruptedCount} disrupted merge-conflict ` +
@@ -1998,10 +2010,34 @@ export async function findConflictingPr(
       );
     }
 
+    // Issue #2996: a failed attempt leaves the PR to its owner for
+    // `CONFLICT_OWNER_CHECK_HOURS` unless the head moved — budget left, just
+    // not due yet.
+    if (!isConflictAttemptDue(attempts, pr.headRefOid, nowMs())) {
+      const attemptsSpent = spentConflictAttempts(attempts);
+      // Not-due only falls through here when the last failure's own
+      // timestamp is known (an unmeasurable or head-moved failure is due at
+      // once), so its `atMs` is what the next-due time is counted from.
+      const lastFailedAtMs = mostRecentConflictFailure(attempts)?.atMs ??
+        nowMs();
+      const dueAt = new Date(
+        lastFailedAtMs + CONFLICT_OWNER_CHECK_HOURS * 3_600_000,
+      ).toISOString();
+      logger.info(
+        `PR #${pr.number} failed its last merge-conflict attempt recently — ` +
+          `left to its owner until ${dueAt}`,
+        { repo, prNumber: pr.number, dueAt, attemptsSpent },
+      );
+      return {
+        outcome: "skipped",
+        reason: { kind: "owner-check-pending", dueAt, attemptsSpent },
+      };
+    }
+
     logger.info("Found a conflicting PR that needs a real merge", {
       repo,
       prNumber: pr.number,
-      attempts: history.count,
+      attempts: spentConflictAttempts(attempts),
       disruptedCount,
     });
 
@@ -2013,7 +2049,7 @@ export async function findConflictingPr(
         branchName: pr.headRefName,
         // allow-hardcoded-branch — safe fallback when the listing omits it
         baseBranch: pr.baseRefName || "main",
-        attemptCount: history.count,
+        attemptCount: spentConflictAttempts(attempts),
         disruptedCount,
       },
     };

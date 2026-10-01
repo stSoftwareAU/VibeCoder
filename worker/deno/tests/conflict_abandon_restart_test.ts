@@ -57,8 +57,8 @@ import type { Result } from "../types.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
 } from "../lib/pr_merge_conflict_scan.ts";
+import { CONFLICT_RESOLUTION_BUDGET } from "../lib/merge_conflict_markers.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -93,7 +93,7 @@ function failedComments(
     body: [
       `${CONFLICT_FAILED_MARKER} n="${n}" -->`,
       `❌ **Merge-conflict resolution — attempt ${n} of ` +
-      `${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed**`,
+      `${CONFLICT_RESOLUTION_BUDGET} failed**`,
       "",
       "Merging `main` in did not produce a mergeable branch: the same " +
       `constant is set to two different values (attempt ${n}).`,
