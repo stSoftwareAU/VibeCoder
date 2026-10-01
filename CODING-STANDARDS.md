@@ -69,6 +69,29 @@ the fault immediately rather than swallowing it into a green result.
 - **Prefer loud, early failure** over continuing in a degraded or partial state
   that hides the problem downstream.
 
+## Automation and Shared GitHub State
+
+**Remove only what you can prove you added.** Before automation removes or
+releases a label (or similar shared GitHub state), it must have recorded
+provenance at add time: the label was absent before the add, or a marker
+comment or log entry this code path wrote. An idempotent add succeeding is not
+provenance — `gh issue edit --add-label` and `gh pr edit --add-label` succeed
+whether or not the label was already there. Labels such as `needs-human`,
+`failed` and `failed-once` can come from several actors (a human, another
+worker lane, claim churn); when ownership cannot be proven, leave the label
+alone.
+
+- **Record provenance at add time** — read the labels before the add and
+  remember only a label that was absent, or match a marker this code path wrote
+  under its own heading, not every heading that applies the same label.
+- **Test the pre-existing case** — add a test where the label already exists
+  before the add, and assert that it is not removed later.
+
+Past regressions: a release sweep that counted only one comment heading while
+another path applied the same labels (#2938), a `needs-human` flag set after an
+idempotent `gh pr edit --add-label` (#2949), and stall repair ignoring a
+hand-applied `needs-human` (#2866).
+
 ## Log Levels Are a Promise About What the Reader Must Do
 
 A log level tells the person scanning a fleet log what to do next. Use them
