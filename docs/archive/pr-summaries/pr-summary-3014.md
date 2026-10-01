@@ -180,6 +180,14 @@ The existing `renderBlockWarning` (open children) does not scrub
 `milestoneTitle`, while the new warning does. This is out of scope here; it is
 worth a separate small fix.
 
+## Review feedback addressed
+
+- The `lookup-failed` block comment always named "the open-children count",
+  even when it was the new declared-dependency read that failed. The decision
+  now carries a `stage` (`"open-children"` or `"declared-dependencies"`), and
+  the comment names the lookup that actually failed, with a stage-matching
+  closing sentence.
+
 ## Test Plan
 
 - `deno task test:unit` on the five touched test files: 205 passed,
