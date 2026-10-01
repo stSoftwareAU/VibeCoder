@@ -498,13 +498,20 @@ scan reads that marker back and climbs rather than repeating it.
   says `CONFLICTING` at the nudged head, or at a head a legacy merge/rebase
   marker names. It is the same rung a spent attempt budget uses
   ([below](#-abandon-and-restart-before-a-human-is-asked)), called with this PR
-  and no thread — it fetches its own. The PR is **closed**, never force-pushed,
-  and its originating issue is re-queued on the pickup label it already carried,
-  so the pipeline raises a fresh PR off the current base.
+  and no thread — it fetches its own. Reached with fewer than
+  `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts recorded on the PR since its
+  last resolved marker, the rung **declines** as `attempts-not-spent` rather
+  than abandoning: abandon-and-redo happens only after three failed attempts,
+  never off a stale verdict read before the ladder gave the PR a fair run
+  (GRQ-AutoTrader#1957 reached this rung without one). Otherwise the PR is
+  **closed**, never force-pushed, and its originating issue is re-queued on the
+  pickup label it already carried, so the pipeline raises a fresh PR off the
+  current base.
 - **No rung applies `needs-human`** — not to the PR, not to its issue. A
-  declined abandon (the issue was already restarted, or it has another open PR
-  of its own — a PR naming *no* originating issue is closed against its flag
-  issue instead, Issue #2310) or a failed one posts **one** comment carrying
+  declined abandon (the attempt budget is not yet spent, the issue was already
+  restarted, or it has another open PR of its own — a PR naming *no*
+  originating issue is closed against its flag issue instead, Issue #2310) or
+  a failed one posts **one** comment carrying
   `<!-- vibe-merge-conflict-rung-failed rung="abandon" head="<sha>" -->` and
   stops there, adding no label anywhere. Nothing has been spent and nothing is
   broken on this route — the verdict is merely stale — so parking the work at
@@ -563,11 +570,20 @@ the originating issue, not the PR.
   and linked from the abandon comment. A regenerated branch force-pushed over
   the same PR would destroy its commits and its review history — the same class
   of harm as the side-picking the contract forbids.
-- **Three preconditions run before anything is destroyed**, in this order: the
-  PR's originating issue is resolved; that issue has not already been restarted
-  twice; and it has no *other* open PR of its own. A failed lookup is never read as
-  an absence. The issue's own labels are then read to decide which pickup label
-  the re-queue leaves it on — never whether the abandon happens.
+- **Four preconditions run before anything is destroyed**, in this order: at
+  least `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are recorded on the PR
+  since its last resolved marker (`readResolutionAttempts`); the PR's
+  originating issue is resolved; that issue has not already been restarted
+  twice; and it has no *other* open PR of its own. A failed lookup is never
+  read as an absence. Fewer than three failed attempts declines outright, as
+  `attempts-not-spent`, carrying the `failedAttempts` count and the budget — a
+  log line records it, and nothing is closed or posted (Issue #3000: abandon
+  and redo happens only after three failed attempts, not on the first stale
+  verdict — GRQ-AutoTrader#1957 reached it without a fair run). A `stalled`
+  abandon (the stall-repair pass's second trip, Issue #2802) is exempt from
+  this guard: it is not a conflict-resolution outcome, and is bound instead by
+  its own two-trip limit. The issue's own labels are then read to decide which
+  pickup label the re-queue leaves it on — never whether the abandon happens.
 - **The re-queue keeps the label the issue already carries, and never asks a
   human for one** (Issue #2277). A pickup label already on the issue —
   `top-priority`, `work-on`, `low-priority` or `idle-task` — is left exactly as
@@ -593,35 +609,55 @@ the originating issue, not the PR.
 - **Two restarts per originating issue** (Issue #2312). The marker lives on the
   *issue*, not the PR: the PR being counted is closed moments later and a
   replacement takes its place, so a PR-keyed bound would loop. It is posted
-  before the close, which is also what makes two hosts produce one abandon.
-  One restart was too few — the first fresh PR is raised off a base that has
-  often moved again by the time it conflicts, and a second redo settles a
-  useful share of those. A claim naming *this* PR declines whatever the count
-  says: it means an earlier abandon of this very PR did not finish, and closing
-  it twice is not a retry.
+  on the originating issue **before** the PR is commented on and closed, which
+  is also what makes two hosts produce one abandon; if that post fails, the
+  abandon stops at the `issue-comment` step and the PR stays open rather than
+  being closed against a claim nobody can read back. That restart comment also
+  carries a table of this PR's own resolution attempts — PR, attempt, pass,
+  UTC time and outcome — so the re-queued issue's history is readable without
+  reopening the closed PR. One restart was too few — the first fresh PR is
+  raised off a base that has often moved again by the time it conflicts, and a
+  second redo settles a useful share of those. A claim naming *this* PR
+  declines whatever the count says: it means an earlier abandon of this very
+  PR did not finish, and closing it twice is not a retry.
 - **After the second restart a human decides — there is no third redo**
   (Issue #2804). When an issue already redone twice fails again, by any route
   into the rung — the blocking-PR stall, the conflict-queue stall, or the
-  conflict ladder's own final rung — `abandonAndRestart` itself adds
-  `needs-human` to the **originating issue** and posts one comment through
-  `escalateToHuman`. The comment names the PR, says both redos are used, and
-  asks a human to decide: fix the PR by hand, rescope the issue, or close it.
-  The PR is not closed and the issue is not re-queued. It is idempotent: an
-  issue already carrying `needs-human` gets no second comment. A label or
-  comment that could not be applied is a `failed` outcome naming the
-  `issue-label` or `issue-comment` step (`abandon-failed`), never a quiet
-  decline. The outcome is still `declined` with `already-restarted`, so no
-  caller needed editing.
+  conflict ladder's own final rung — `abandonAndRestart` hands the
+  **originating issue** to a human itself, no longer through
+  `escalateToHuman`. It reads the thread of every PR the issue's restart
+  claims name, plus this PR, and posts **one** comment on the issue naming
+  this PR and carrying a table listing every attempt across the whole restart
+  chain — pass, `YYYY-MM-DD HH:MM UTC` time and outcome. The label goes on
+  first, via `addLabelToIssue` (which still passes the worker label guard),
+  then the comment — a reader who sees `needs-human` can trust the comment is
+  coming. A label that cannot be added is a `failed` outcome at `issue-label`
+  and no comment is attempted; a comment that then fails is `failed` at
+  `issue-comment`, and the label is rolled back **only** when the issue did
+  not already carry `needs-human` before this flow added it (Issue #2951:
+  remove only labels this flow can prove it applied) — a pre-existing
+  `needs-human` is left alone either way. A chain thread that cannot be read
+  is a `failed` outcome at `pr-thread`, before either side effect runs. The PR
+  is not closed and the issue is not re-queued. It is idempotent: once the
+  fleet's own hand-off comment for this PR is already on the issue, nothing
+  more is done — the label is not re-added, since a human may have removed it
+  — so `needs-human` and the comment land together exactly once. The outcome
+  is still `declined` with `already-restarted`, so no caller needed editing.
 
   ```mermaid
   flowchart TD
       A["PR fails again<br/>(conflict budget or stall second trip)"] --> B{"Restarts recorded<br/>on the issue ≥ 2?"}
       B -- no --> C["Close the PR, re-queue the issue<br/>(restart n of 2)"]
-      B -- yes --> D{"Issue already carries<br/>needs-human?"}
-      D -- yes --> E["Nothing more said<br/>(declined: already-restarted)"]
-      D -- no --> F["Add needs-human + one comment<br/>on the issue"]
-      F -- both landed --> E
-      F -- either failed --> G["failed: issue-label / issue-comment<br/>(abandon-failed)"]
+      B -- yes --> D["Read the thread of every PR the<br/>restart chain names, plus this PR"]
+      D --> E{"Chain thread readable?"}
+      E -- no --> F["failed: pr-thread<br/>(abandon-failed)"]
+      E -- yes --> G{"Hand-off comment for<br/>this PR already on the issue?"}
+      G -- yes --> H["Nothing more said<br/>(declined: already-restarted)"]
+      G -- no --> I["Add needs-human<br/>(addLabelToIssue)"]
+      I -- failed --> J["failed: issue-label<br/>(abandon-failed)"]
+      I -- added --> K["Post one comment naming the PR,<br/>with a table of every attempt<br/>across the restart chain"]
+      K -- posted --> H
+      K -- failed --> L["failed: issue-comment<br/>(abandon-failed) —<br/>roll back needs-human only if<br/>this flow just added it"]
   ```
 
 - **The PR itself is parked, not escalated** (Issue #2312). The third
