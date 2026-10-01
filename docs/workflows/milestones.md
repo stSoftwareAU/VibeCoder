@@ -390,7 +390,7 @@ stderr**, because `git commit` explains "nothing to commit, working tree
 clean" on stdout, and a push that fails for anything but a repository rule is
 now a **failed sync** rather than a note on a success. The second-occurrence
 escalation Issue #1964 added for an identical repeated reason was removed by
-Issue #2311: a conflict is answered by the two-run budget, the roll-back and
+Issue #2311: a conflict is answered by the three-run budget, the roll-back and
 the `merge-fallback` flag, and a **non-conflict** failure escalates on the
 ordinary streak threshold.
 
@@ -517,11 +517,11 @@ To disable milestone branch sync entirely, set `sync_milestone_branches: false` 
 
 - The sync is **best-effort** — failures are logged but do not block the main event loop or prevent other work.
 - The cadence state is the `lastSyncedDefaultSha` in `milestone_sync_failures.json`, so it survives a worker restart — there is no in-memory cooldown to lose (Issue #1776).
-- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out — there is no wait between a branch's two conflict attempts (Issue #2305), and the budget itself is what bounds the retrying.
-- A branch's conflict budget is **two concluded failures**, the same constant a conflicting PR spends, and the second spent failure hands the branch to the roll-back rather than to a third merge. An attempt this host opened and never concluded reads as `disrupted` on the next cycle and is charged nothing; while it is open, and while the budget is spent, the claim scan skips that milestone's issues rather than claiming a child that could only defer.
+- Only a **successful** sync records the tip, so a failed sync is retried on the next cycle rather than waited out — there is no wait between a branch's three conflict attempts (Issue #2305), and the budget itself is what bounds the retrying.
+- A branch's conflict budget is **three concluded failures** (`CONFLICT_RESOLUTION_BUDGET`, raised from two under Issue #2996), the same constant a conflicting PR spends, and the third spent failure hands the branch to the roll-back rather than to a fourth merge. An attempt this host opened and never concluded reads as `disrupted` on the next cycle and is charged nothing; while it is open, and while the budget is spent, the claim scan skips that milestone's issues rather than claiming a child that could only defer. This ledger stays host-local and paces itself with no wait between attempts, as it always has; the 2-hour owner-check spacing Issue #2996 adds applies only to the PR scan's own shared tally (see [the merge-conflict workflow](merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)).
 - A merge that conflicts is triaged on that cycle and reported — naming the conflicting files, what was decided about each and both sides' commits — rather than surfacing at rollup time. A clean merge raises nothing.
 - **A spent budget rolls the branch back and files one `merge-fallback` flag** (Issue #2311). Both outcomes file or append it — the roll-back that merged cleanly and the one that could not — and the roll-back notice on the escalation target links it by number. The flag names both spent runs (host, stage timings and what each made of the conflict), the conflicted files, how far behind the branch had fallen and what was reverted; a field nothing recorded renders as `not recorded`.
-- **No conflict outcome applies `needs-human` or asks anyone anything.** A roll-back that could not merge posts the notice and stops; it records the default tip it answered for, and when the default branch moves past that tip the branch is offered its two runs again. The repeated-identical-failure escalation of Issue #1964 went with it; the streak escalation (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives only for a **non-conflict** failure — a fetch, a push or an ordinary git error.
+- **No conflict outcome applies `needs-human` or asks anyone anything.** A roll-back that could not merge posts the notice and stops; it records the default tip it answered for, and when the default branch moves past that tip the branch is offered its three runs again. The repeated-identical-failure escalation of Issue #1964 went with it; the streak escalation (`MILESTONE_SYNC_ESCALATION_THRESHOLD`) survives only for a **non-conflict** failure — a fetch, a push or an ordinary git error.
 - The filing emits a `fallback_flagged` self-heal event carrying the flag's issue number. A `sync_failed` event with a roll-back and no `fallback_flagged` beside it means the record was not written.
 - This complements (syncing before each feature branch creation) by proactively keeping milestone branches current between issues.
 

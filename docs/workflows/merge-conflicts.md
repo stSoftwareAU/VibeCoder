@@ -22,10 +22,14 @@ pushed merge is the gate on a PR and the worker's own type-check gate is the
 gate on a milestone branch (Issue #2306). A dependency-version conflict is settled by deterministic rules
 first, and the AI is only asked about what those rules could not decide.
 
-**The ladder is two judged runs and then a fallback, and the fallback asks
-nobody.** An **intent-aware** attempt, which reads the originating issues behind
-*both* sides before calling anything a contradiction; a second one on the very
-next pass, with no wait between them (Issue #2305); then
+**The ladder is three judged runs, shared with every other pass that touches
+the PR, and then a fallback that asks nobody.** An **intent-aware** attempt,
+which reads the originating issues behind *both* sides before calling anything
+a contradiction; up to two more against whatever the base has become since,
+each due once the PR's head has moved since the last failure, or once
+`CONFLICT_OWNER_CHECK_HOURS` (2 hours) have passed with the head unchanged —
+the owner's window to look before the worker tries again (Issue #2996,
+superseding the "no wait between them" of Issue #2305 on this point); then
 **abandon-and-restart** — the conflicting PR is closed, never force-pushed, and
 its originating issue re-queued so the fleet redoes the work off the current
 base. The re-queued issue keeps whatever pickup label it already carries, and
@@ -67,7 +71,7 @@ flowchart TD
     Disrupted -->|Yes| Human
     Disrupted -->|No| Lock{"PR lock acquired?"}
     Lock -->|No — another host holds it| Sleep
-    Lock -->|Yes| Record["Comment: attempt N of 2<br/>(names any disruption)"]
+    Lock -->|Yes| Record["Comment: attempt N of 3<br/>(names any disruption)"]
     Record --> Merge["git merge origin/base"]
     Merge --> Clean{"Clean merge?"}
     Clean -->|Yes| Push["Commit and push"]
@@ -356,20 +360,21 @@ settle still reaches no agent and now consults no issue either.
   escalated to a human as its own outcome — a re-initialised or rewritten
   branch, not a conflict the agent failed to resolve — and spends **no**
   attempt.
-- **At most 2 concluded attempts, and no wait between them** (Issue #2305 —
-  the first attempt and one retry against whatever the base has become since;
-  milestone branches spend the same budget). A PR with one concluded failure
-  is due again on the very next pass: a conflict a judged attempt could not
-  settle is no easier four hours later, and the wait it replaced held a
-  mergeable PR out of the queue for half a day. Two hosts are kept off one PR
-  by the cross-host PR lock, not by a cooldown.
+- **At most 3 concluded attempts, shared across every pass that works the PR**
+  (Issue #2996, raised from 2 and no longer the ladder's alone — the first
+  attempt and up to two retries against whatever the base has become since;
+  milestone branches spend the same budget). A failed attempt is paced, not
+  run again with no wait: see
+  [below](#-the-shared-three-attempt-budget-and-the-owner-check-window) for the
+  spacing. Two hosts are kept off one PR by the cross-host PR lock, not by this
+  spacing.
 - The attempt is recorded as a marker comment on the PR **before** the merge
   starts. That marker *opens* the attempt; it does not spend it.
 - Every attempt posts a **conclusion**: a resolved marker when the merge lands,
   or a failure comment naming the conflicted files and what went wrong. Only a
-  conclusion spends one of the two attempts. An agent that runs out **its own**
-  timeout has been judged and is charged; a run the **worker** kills at the
-  cycle deadline is withdrawn and charged nothing (Issue #2305).
+  conclusion spends one of the three attempts. An agent that runs out **its
+  own** timeout has been judged and is charged; a run the **worker** kills at
+  the cycle deadline is withdrawn and charged nothing (Issue #2305).
 - History lives on the PR, not in host-local state, so the bounds hold across
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
@@ -386,6 +391,56 @@ settle still reaches no agent and now consults no issue either.
   rung itself. The scan escalates nothing from that route any more (Issue
   #2310): it closes, re-queues and files the flag, and where the rung declines
   or fails it records `budget-spent` and leaves the PR open.
+
+### 🤝 The shared three-attempt budget and the owner-check window
+
+Before Issue #2996 the ladder's `DEFAULT_MAX_CONFLICT_ATTEMPTS` was its own,
+private budget of two. It is gone: the single source of truth is now
+`CONFLICT_RESOLUTION_BUDGET` (3) in
+[`merge_conflict_markers.ts`](../../worker/deno/lib/merge_conflict_markers.ts),
+and it is spent by **every** pass that resolves a conflict on a PR — the
+stale-verdict ladder (`pass="ladder"`), the milestone sync (`pass="sync"`) and
+the takeover rung (`pass="takeover"`). Only the ladder writes attempt markers
+today; the sync and takeover passes start writing them in later sub-issues of
+Issue #2965. A legacy marker with no `pass=` at all — every marker written
+before this issue — reads as `ladder`, so history already on a PR thread is
+not lost.
+
+- **The tally lives on the PR, never host-local** (Issue #2919), read by
+  `readResolutionAttempts(comments, isTrustedAuthor)`. A marker from an
+  untrusted author is ignored outright, exactly as the rest of this vocabulary
+  already is.
+- **Every attempt/failed/resolved marker now carries `pass="…"` and
+  `head="<sha>"`** — the PR head the attempt actually ran against, e.g.
+  `<!-- vibe-coder:merge-conflict-failed n="1" pass="ladder" head="abc1234" -->`.
+  `CONFLICT_RESOLVED_MARKER` is a **prefix** rather than a complete tag, so a
+  legacy `<!-- vibe-coder:merge-conflict-resolved -->` body still resets the
+  budget exactly as the new attributed marker does.
+- **A failed attempt is paced by a 2-hour owner-check window, not by "no
+  wait"** — superseding the Issue #2305 stance on this one point. The next
+  attempt is due the moment the PR's head SHA has moved since the failed
+  attempt; if the head has not moved, it is due once
+  `CONFLICT_OWNER_CHECK_HOURS` (2 hours) have passed since that failure,
+  giving the owner a window to look before the worker tries again. A legacy
+  failure marker carrying no head, or a current head the pass cannot read,
+  cannot prove the head moved — so the 2-hour spacing applies rather than
+  assuming it did. A failure with no readable timestamp is due at once; the
+  three-attempt budget still bounds how often that can happen.
+- **While the window is open, the scan records `owner-check-pending`** (see
+  [the skip-reason table](#-every-decision-leaves-a-reason-behind) below),
+  carrying `dueAt` and `attemptsSpent`. The PR stays labelled `merge-conflict`
+  and stays in the queue — this is a wait, not a skip out of the queue.
+
+```mermaid
+flowchart TD
+    A[Failed attempt recorded] --> B{"Head SHA changed<br/>since that failure?"}
+    B -- "Yes" --> C[Due now]
+    B -- "No / unreadable" --> D{"≥ 2 h since<br/>the failure?"}
+    D -- "Yes" --> C
+    D -- "No" --> E["Skip: owner-check-pending<br/>(dueAt, attemptsSpent)"]
+    style C fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style E fill:#707070,stroke:,color:#fff
+```
 
 ### 🔁 Stale verdict — the base is already in
 
@@ -579,7 +634,7 @@ the originating issue, not the PR.
   the *base* tip moves: a base that has not moved cannot merge any better than
   it did an hour ago. Every later pass compares the PR's live `baseRefOid`
   against the marker and skips it unchanged; the first pass where they differ
-  attempts the PR again with a fresh two-attempt budget **counted from the park
+  attempts the PR again with a fresh three-attempt budget **counted from the park
   marker onward**, so it does not arrive back at a spent one. A base tip that
   cannot be read is not evidence that it moved, so the PR stays parked and the
   unreadable tip is warned about. The stall watchdog honours the same
@@ -946,7 +1001,7 @@ A record is one line, greppable by prefix:
 
 ```text
 merge_conflict_decision=budget-spent repo=org/repo pr=48
-    repo=org/repo prNumber=48 decision=skipped reason=budget-spent attemptsSpent=2 maxAttempts=2
+    repo=org/repo prNumber=48 decision=skipped reason=budget-spent attemptsSpent=3 maxAttempts=3
 merge_conflict_pass=scan labelled=3 attempted=0 considered=3 budget-spent=1 needs-human=2
 ```
 
@@ -962,6 +1017,7 @@ each carries the operands that make the decision checkable afterwards:
 | `scan-error` | `stage`, `error` | A per-PR lookup failed (`mergeable-state`, `labels` or `attempt-history`); the PR keeps its place. A state lookup that failed is **never** reported as merging cleanly. `mergeable-state` also covers the claim-point re-read answering a `mergeable` nobody can act on — GitHub still recomputing the merge — which skips the cycle rather than guessing (Issue #2307). |
 | `needs-human` | `label` | A human already owns the conflict. Not emitted for a `needs-human` that came only from a CI-fix escalation — that PR is resolved (Issue #2728). |
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
+| `owner-check-pending` | `dueAt`, `attemptsSpent` | A failed attempt is spent but the next one is not due yet — the PR's head SHA has not moved since that failure and `CONFLICT_OWNER_CHECK_HOURS` (2 hours) have not yet passed, giving the owner a window to look first (Issue #2996). The PR stays labelled and queued; `dueAt` is when it next becomes due. |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
 | `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` on the PR; its originating issue carries `needs-human` and one comment asking a human to decide (Issue #2804). |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
@@ -1018,7 +1074,7 @@ Three bounds keep the drain from becoming a monopoly:
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 
-The per-PR budget is unchanged by the drain: the two concluded attempts and the
+The per-PR budget is unchanged by the drain: the three concluded attempts and the
 abandon rung with its `merge-fallback` flag behind it are the scan's, and the
 drain only decides how many of the PRs already due get taken now.
 
@@ -1071,8 +1127,8 @@ some other reason. The agent comes back terminated (SIGTERM, exit 143), and the
 kill is the **worker's** decision, so it spends nothing (Issue #1693):
 
 - The attempt marker is **deleted**, so the next scan counts neither a
-  concluded attempt against the two-attempt budget nor an open one against the
-  three-disruption budget.
+  concluded attempt against the three-attempt budget nor an open one against
+  the three-disruption budget.
 - **No conclusion is posted.** A failure comment is the thing that turns an
   opened attempt into a spent one, and there is no verdict here to publish.
 - The merge is aborted, so the branch is left exactly as its author pushed it.
@@ -1129,7 +1185,7 @@ flowchart TD
   twice. Any attempt or conclusion ends the streak the marker belongs to.
 
 **A deferral is not an attempt.** Nothing was started, so it spends neither the
-two concluded attempts nor the three disrupted ones — reusing the disruption
+three concluded attempts nor the three disrupted ones — reusing the disruption
 counter would escalate a PR to a human for a bound it never hit, the opposite
 of what this is for. The `scope=drain` summary carries `maxDeferralStreak`,
 `leftBehind` and `deferralNotices`, so "deferred once, fine" and "deferred nine

@@ -16,7 +16,7 @@
  */
 
 import { atomicWrite } from "./file_utils.ts";
-import { DEFAULT_MAX_CONFLICT_ATTEMPTS } from "./pr_merge_conflict_scan.ts";
+import { CONFLICT_RESOLUTION_BUDGET } from "./merge_conflict_markers.ts";
 
 /** Consecutive failures before a needs-human escalation is posted. */
 export const MILESTONE_SYNC_ESCALATION_THRESHOLD = 3;
@@ -26,13 +26,13 @@ export const MILESTONE_SYNC_ESCALATION_THRESHOLD = 3;
  * the ladder stops trying (Issue #1766), with no wait between them
  * (Issue #2305).
  *
- * One constant, two consumers: this is {@link DEFAULT_MAX_CONFLICT_ATTEMPTS},
- * the budget the PR ladder spends, re-exported under the name the milestone
- * ladder reads it by. A milestone branch and a PR branch conflict for the
- * same reasons, so a divergence between the two budgets would be a bug
- * waiting to be found in production rather than a considered difference.
+ * One constant, two consumers: this is {@link CONFLICT_RESOLUTION_BUDGET},
+ * the shared per-PR budget of Issue #2996, re-exported under the name the
+ * milestone ladder reads it by. A milestone branch and a PR branch conflict
+ * for the same reasons, so a divergence between the two budgets would be a
+ * bug waiting to be found in production rather than a considered difference.
  */
-export const MILESTONE_CONFLICT_ATTEMPT_BUDGET = DEFAULT_MAX_CONFLICT_ATTEMPTS;
+export const MILESTONE_CONFLICT_ATTEMPT_BUDGET = CONFLICT_RESOLUTION_BUDGET;
 
 /**
  * How a conflict-resolution attempt on a milestone branch ended.
@@ -203,7 +203,7 @@ export interface SyncStreakEntry {
    * failed would otherwise sit out every remaining cycle for ever — and the
    * fallback asked no human to rescue it. New commits on the default branch
    * are a different merge, so this records which tip was already answered
-   * for: a tip that has moved past it re-arms the two-run budget.
+   * for: a tip that has moved past it re-arms the budget.
    */
   fallbackDefaultSha?: string;
   /** Lifetime count of conflict resolutions rolled back on this branch. */
@@ -511,7 +511,7 @@ export function openConflictAttempt(
  * Conclude the open attempt, charging the budget only for a real failure
  * (Issue #1766).
  *
- * A `failed` conclusion spends one attempt of the branch's two and nothing
+ * A `failed` conclusion spends one attempt of the branch's budget and nothing
  * else — no deferral is written, so the next attempt is due on the very next
  * cycle (Issue #2305). `not-charged` and `disrupted` conclusions record what
  * happened and spend nothing.
@@ -579,7 +579,7 @@ export function isConflictBudgetExhausted(
  * attempt is open on this branch (Issue #2305).
  *
  * There is no deferral to wait out any more: a charged failure spends one of
- * the branch's two attempts and the next one is due immediately. What is left
+ * the branch's budgeted attempts and the next one is due immediately. What is left
  * is the open-attempt marker, and a marker still open is a run this host has
  * not concluded yet. A sibling host's attempt is refused by the sync claim
  * (`milestone_sync_claim.ts`), not by this ledger, which is host-local.
