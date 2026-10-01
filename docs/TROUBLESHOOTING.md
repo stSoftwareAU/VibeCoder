@@ -967,6 +967,16 @@ fault:** line naming the kind:
 | `disk-full`              | The host ran out of disk space                                                                                       |
 | `container-build-failed` | The issue's container image failed to build                                                                          |
 
+A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
+clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not
+deleted — any older `.corrupt-*` sibling for that repo is removed first) and
+re-clones automatically (Issue #2957). This recovery is capped at one
+re-clone per repo per 24 h, tracked in `clone_recoveries_<host>.json` on the
+work volume. Once the cap is used, setup fails with the original git error
+until the 24 h window elapses; after fixing the underlying corruption, an
+operator can delete that repo's entry (or the whole file) to allow another
+re-clone immediately.
+
 The next time that repository's setup phase successfully creates a feature
 branch — proof the host's clone is healthy again — a sweep checks every open
 `failed-once` / `failed` issue in the repository. If **every** recorded failure
