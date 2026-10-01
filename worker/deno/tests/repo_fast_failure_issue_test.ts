@@ -143,7 +143,9 @@ function createGhStub(start = 500) {
           })),
         ));
       }
-      return Promise.reject(new Error(`unexpected gh api args: ${args.join(" ")}`));
+      return Promise.reject(
+        new Error(`unexpected gh api args: ${args.join(" ")}`),
+      );
     }
     if (cmd === "issue" && sub === "list") {
       const rows = [...issues.values()].map((i) => ({

@@ -404,7 +404,9 @@ export async function escalateToHuman(
     const posted = await dedupAndPostComment();
     dedupSkipped = posted.dedupSkipped;
     commentPosted = posted.commentPosted;
-    labelAdded = (commentPosted || dedupSkipped) ? await ensureAndAddLabel() : false;
+    labelAdded = (commentPosted || dedupSkipped)
+      ? await ensureAndAddLabel()
+      : false;
   } else {
     labelAdded = await ensureAndAddLabel();
     const posted = await dedupAndPostComment();

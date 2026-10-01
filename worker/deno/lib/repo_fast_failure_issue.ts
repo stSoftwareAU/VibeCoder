@@ -654,9 +654,7 @@ function buildErrorOnlyLogger(error: (line: string) => void): Logger {
   const noop = () => {};
   const route = (message: string, context?: unknown) => {
     error(
-      context === undefined
-        ? message
-        : `${message} ${JSON.stringify(context)}`,
+      context === undefined ? message : `${message} ${JSON.stringify(context)}`,
     );
   };
   return {
@@ -817,7 +815,8 @@ export async function escalateRepeatCloneCorruption(
       deps: {
         dedupAuthors: opts,
         github: {
-          ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }),
+          ensureLabelExists: () =>
+            Promise.resolve({ ok: true, value: undefined }),
         },
       },
       logger,
