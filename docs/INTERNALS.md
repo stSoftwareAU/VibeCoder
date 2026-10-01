@@ -4683,6 +4683,20 @@ Two changes close that:
   if a `gh` fault stopped it finishing, and returns every fault to the caller,
   which logs it — a half-run sweep is never reported as a clean one.
 
+**A setup fault is released unlabelled too, by the same `planCodingFailure`
+seam (Issue #2954).** A run that dies in the `setup` phase, or whose reason
+`detectHostFault` recognises, is the host's fault or the repository's, never
+the issue's, so `planCodingFailure` returns `applyLadder: false`: no
+`failed-once` / `failed`, and no escalating cooldown. The issue is released
+unlabelled with the release comment carrying the diagnosis. This only
+short-circuits a failure that would otherwise step the ladder: a `repo_config`
+refusal that happens to fail in `setup` keeps the `record-only` handling of
+the case above — its one Paused comment, and still no label. The same
+`isSetupFault` check also makes the run count towards the fast-failure
+repository back-off (`repo_fast_failure_tracker.ts`),
+since a setup fault is exactly the kind of failure that back-off exists to
+catch regardless of how long the run took to die.
+
 ```mermaid
 flowchart TD
     A[setup: ensure milestone branch] --> B{Refused?}
