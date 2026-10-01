@@ -20,7 +20,12 @@ import {
   _setGhSpawnRunner,
   type GhSpawnRunner,
 } from "../lib/gh_spawn.ts";
-import { cloneRecoveryStatePath } from "../lib/corrupt_clone_recovery.ts";
+import {
+  cloneRecoveryStatePath,
+  parseCloneCorruptRepeat,
+} from "../lib/corrupt_clone_recovery.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 
 // ============================================================================
 // createBranchName — edge cases and parity with shell implementation
@@ -342,6 +347,9 @@ Deno.test("setupRepo - a bad object referenced by a loose ref is moved aside and
     try {
       const result = await setupRepo("owner/downstream", tmp);
       assertEquals(result.success, true, result.message);
+      // A single corruption's own recovery succeeds — its message carries no
+      // clone-corrupt-repeat payload (Issue #2958).
+      assertEquals(parseCloneCorruptRepeat(result.message), null);
     } finally {
       _resetGhSpawnRunner();
     }
@@ -381,6 +389,79 @@ Deno.test("setupRepo - a recovery already used within 24h is not retried (Issue 
     assert(exists(clonePath), "downstream must not be moved while capped");
     const asides = await listCorruptAsides(tmp);
     assertEquals(asides.length, 0, "no aside directory should be created");
+
+    // The refusal carries a parseable clone-corrupt-repeat payload (Issue
+    // #2958), and the setup-phase reason it feeds through classifies as a
+    // transient `clone_corrupt` failure.
+    const repeat = parseCloneCorruptRepeat(result.message);
+    assert(
+      repeat !== null,
+      "cap refusal must carry a clone-corrupt-repeat payload",
+    );
+    assertStringIncludes(repeat.currentGitMessage, "bad config line");
+
+    const reason = `Failed to set up repo owner/downstream: ${result.message}`;
+    assertEquals(detectFailureCategory(reason), "clone_corrupt");
+    assertEquals(classifyCodingFailure(reason).disposition, "transient");
+    // The release path parses the payload out of this exact wrapped message
+    // (`outcome.message`), so the wrapper must not break the parse (Issue
+    // #2958).
+    assertEquals(parseCloneCorruptRepeat(reason), repeat);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("setupRepo - a cap refusal after a successful recovery carries both corruptions' git messages (Issue #2958)", async () => {
+  const tmp = await Deno.makeTempDir({
+    prefix: "setup_repo_recovery_repeat_",
+  });
+  try {
+    const { upstream, clonePath } = await makeUpstreamAndClone(tmp);
+
+    // First corruption: a bad git-config line, recovered successfully (the
+    // same shape as the AC2 test), which writes the object-form state entry.
+    await Deno.writeTextFile(
+      `${clonePath}/.git/config`,
+      "not a valid config line\n" +
+        await Deno.readTextFile(`${clonePath}/.git/config`),
+    );
+    _setGhSpawnRunner(recloningRunner(upstream));
+    try {
+      const first = await setupRepo("owner/downstream", tmp);
+      assertEquals(first.success, true, first.message);
+    } finally {
+      _resetGhSpawnRunner();
+    }
+
+    // A fresh commit upstream so the up-to-date fast path cannot skip fetch.
+    await write(`${upstream}/file2.txt`, "second\n");
+    await runGit(["add", "."], upstream);
+    await runGit(["commit", "-m", "second"], upstream);
+
+    // Second corruption, inside the 24 h window: this time a bad object
+    // behind a loose ref.
+    await runGit(["pack-refs", "--all"], clonePath);
+    await write(
+      `${clonePath}/.git/refs/heads/main`,
+      "1234567890123456789012345678901234567890\n",
+    );
+
+    const second = await setupRepo("owner/downstream", tmp);
+    assertEquals(second.success, false);
+
+    const repeat = parseCloneCorruptRepeat(second.message);
+    assert(repeat !== null, "repeat cap refusal must carry a payload");
+    assertStringIncludes(
+      repeat.previousGitMessage ?? "",
+      "bad config line",
+    );
+    assertStringIncludes(repeat.currentGitMessage, "bad object");
+    assert(repeat.aside !== undefined, "aside must name the first recovery");
+
+    const reason = `Failed to set up repo owner/downstream: ${second.message}`;
+    assertEquals(detectFailureCategory(reason), "clone_corrupt");
+    assertEquals(classifyCodingFailure(reason).disposition, "transient");
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
@@ -412,6 +493,10 @@ Deno.test("setupRepo - a failed recovery re-clone names the repo path (Issue #29
         "Failed to clone owner/downstream: ",
       );
       assertStringIncludes(result.message, clonePath);
+      // A single corruption (this re-clone failed, but nothing repeated yet)
+      // carries no repeat payload, so the release path never escalates it
+      // (Issue #2958).
+      assertEquals(parseCloneCorruptRepeat(result.message), null);
     } finally {
       _resetGhSpawnRunner();
     }

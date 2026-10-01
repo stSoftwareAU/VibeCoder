@@ -14,7 +14,9 @@ import { assert, assertEquals } from "@std/assert";
 import { discardBrokenClone, probeCorruptClone } from "../lib/broken_clone.ts";
 import {
   cloneRecoveryStatePath,
+  formatCloneCorruptRepeat,
   isCloneCorruption,
+  parseCloneCorruptRepeat,
   recoverCorruptClone,
 } from "../lib/corrupt_clone_recovery.ts";
 
@@ -216,7 +218,11 @@ Deno.test("recoverCorruptClone - moves a corrupt clone aside and records the rec
 
     const statePath = cloneRecoveryStatePath(workDir, "test-host");
     const state = JSON.parse(await Deno.readTextFile(statePath));
-    assertEquals(state["org/widget"], start.toISOString());
+    assertEquals(state["org/widget"], {
+      at: start.toISOString(),
+      gitMessage: "fatal: bad config line 1 in file .git/config",
+      aside,
+    });
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -370,6 +376,139 @@ Deno.test("recoverCorruptClone - an unreadable state file fails loud without mov
     assertEquals(result.ok, false);
     assert(!result.ok && result.error.message.includes(statePath));
     assertEquals(await exists(`${repoPath}/.git`), true);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+// --- clone-corrupt-repeat payload (Issue #2958) ---
+
+Deno.test("formatCloneCorruptRepeat / parseCloneCorruptRepeat - round-trip", () => {
+  const repeat = {
+    repo: "org/widget",
+    host: "test-host",
+    previousAt: "2026-10-01T12:00:00.000Z",
+    previousGitMessage: "fatal: bad config line 1 in file .git/config",
+    aside: "/work/widget.corrupt-20261001T120000Z",
+    currentAt: "2026-10-01T13:00:00.000Z",
+    currentGitMessage: "fatal: bad object refs/heads/main",
+  };
+
+  const formatted = formatCloneCorruptRepeat(repeat);
+
+  assert(formatted.startsWith("clone-corrupt-repeat: "));
+  assertEquals(parseCloneCorruptRepeat(formatted), repeat);
+  assertEquals(
+    parseCloneCorruptRepeat(`some prose\n${formatted}\nmore prose`),
+    repeat,
+  );
+});
+
+Deno.test("parseCloneCorruptRepeat - null when the marker is absent", () => {
+  assertEquals(parseCloneCorruptRepeat("no payload here"), null);
+});
+
+Deno.test("parseCloneCorruptRepeat - null for malformed JSON", () => {
+  assertEquals(
+    parseCloneCorruptRepeat("clone-corrupt-repeat: {not json"),
+    null,
+  );
+});
+
+Deno.test("parseCloneCorruptRepeat - null when a required field has the wrong type", () => {
+  assertEquals(
+    parseCloneCorruptRepeat(
+      'clone-corrupt-repeat: {"repo":1,"host":"h","previousAt":"a","currentAt":"b","currentGitMessage":"c"}',
+    ),
+    null,
+  );
+});
+
+Deno.test("parseCloneCorruptRepeat - null when an optional field has the wrong type", () => {
+  assertEquals(
+    parseCloneCorruptRepeat(
+      'clone-corrupt-repeat: {"repo":"r","host":"h","previousAt":"a","currentAt":"b","currentGitMessage":"c","aside":42}',
+    ),
+    null,
+  );
+});
+
+Deno.test("recoverCorruptClone - legacy string state still enforces the cap, with no previousGitMessage/aside", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    const repoPath = `${workDir}/widget`;
+    await initRepo(repoPath);
+    const statePath = cloneRecoveryStatePath(workDir, "test-host");
+    const start = new Date("2026-10-01T12:00:00.000Z");
+    await Deno.writeTextFile(
+      statePath,
+      JSON.stringify({ "org/widget": start.toISOString() }),
+    );
+
+    const laterSameDay = new Date(start.getTime() + 60 * 60 * 1000);
+    const result = await recoverCorruptClone(
+      "org/widget",
+      repoPath,
+      workDir,
+      "fatal: bad object refs/heads/main",
+      { now: () => laterSameDay, hostname: "test-host" },
+    );
+
+    assertEquals(result.ok, false);
+    assert(!result.ok);
+    const repeat = parseCloneCorruptRepeat(result.error.message);
+    assert(repeat !== null);
+    assertEquals(repeat.repo, "org/widget");
+    assertEquals(repeat.host, "test-host");
+    assertEquals(repeat.previousAt, start.toISOString());
+    assertEquals(repeat.previousGitMessage, undefined);
+    assertEquals(repeat.aside, undefined);
+    assertEquals(repeat.currentAt, laterSameDay.toISOString());
+    assertEquals(repeat.currentGitMessage, "fatal: bad object refs/heads/main");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("recoverCorruptClone - a successful recovery's state yields previousAt/previousGitMessage/aside on the next cap refusal", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    const repoPath = `${workDir}/widget`;
+    await initRepo(repoPath);
+    const start = new Date("2026-10-01T12:00:00.000Z");
+
+    const first = await recoverCorruptClone(
+      "org/widget",
+      repoPath,
+      workDir,
+      "fatal: bad config line 1 in file .git/config",
+      { now: () => start, hostname: "test-host" },
+    );
+    assert(first.ok, first.ok ? "" : first.error.message);
+    const expectedAside = first.ok ? first.value : "";
+
+    await initRepo(repoPath);
+    const laterSameDay = new Date(start.getTime() + 60 * 60 * 1000);
+    const second = await recoverCorruptClone(
+      "org/widget",
+      repoPath,
+      workDir,
+      "fatal: bad object refs/heads/main",
+      { now: () => laterSameDay, hostname: "test-host" },
+    );
+
+    assertEquals(second.ok, false);
+    assert(!second.ok);
+    const repeat = parseCloneCorruptRepeat(second.error.message);
+    assert(repeat !== null);
+    assertEquals(repeat.previousAt, start.toISOString());
+    assertEquals(
+      repeat.previousGitMessage,
+      "fatal: bad config line 1 in file .git/config",
+    );
+    assertEquals(repeat.aside, expectedAside);
+    assertEquals(repeat.currentAt, laterSameDay.toISOString());
+    assertEquals(repeat.currentGitMessage, "fatal: bad object refs/heads/main");
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }

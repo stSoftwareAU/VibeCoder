@@ -977,6 +977,15 @@ until the 24 h window elapses; after fixing the underlying corruption, an
 operator can delete that repo's entry (or the whole file) to allow another
 re-clone immediately.
 
+A second corruption of the same repo on the same host inside the window is
+not an ordinary setup fault: something keeps damaging the clone. The run's
+failure carries a `clone-corrupt-repeat` payload, and the worker backs the
+repository off fleet-wide at once and escalates its tally diagnostic issue
+with a `needs-human` label and one comment carrying both corruption times,
+both git messages and the moved-aside path (Issue #2958). The comment's
+checklist names what to check — disk health, the volume, a manual re-clone —
+and closing the diagnostic issue lifts the back-off.
+
 The next time that repository's setup phase successfully creates a feature
 branch — proof the host's clone is healthy again — a sweep checks every open
 `failed-once` / `failed` issue in the repository. If **every** recorded failure
