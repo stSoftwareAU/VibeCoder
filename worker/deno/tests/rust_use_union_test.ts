@@ -249,7 +249,10 @@ fn it_works() {
       } catch {
         conflicted = true;
       }
-      assert(conflicted, "the merge must conflict for this test to prove anything");
+      assert(
+        conflicted,
+        "the merge must conflict for this test to prove anything",
+      );
 
       const base1 = await git(dir, ["show", `:1:${path}`]);
       const ours2 = await git(dir, ["show", `:2:${path}`]);
@@ -265,7 +268,11 @@ fn it_works() {
       };
 
       const result = await unionMergeConflictedFile(file, { cwd: dir });
-      assertEquals(result, null, `expected the union to stage cleanly: ${result}`);
+      assertEquals(
+        result,
+        null,
+        `expected the union to stage cleanly: ${result}`,
+      );
 
       const staged = await Deno.readTextFile(`${dir}/${path}`);
       const useLines = staged

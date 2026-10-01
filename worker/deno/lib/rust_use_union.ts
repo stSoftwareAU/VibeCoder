@@ -168,7 +168,8 @@ function buildGroups(candidates: Candidate[]): Group[] {
   candidates.forEach((candidate, index) => {
     const key = `${candidate.vis}\u0000${candidate.prefix}`;
     const existing = groups.find(
-      (group) => group.key === key && itemsOverlap(group.items, candidate.items),
+      (group) =>
+        group.key === key && itemsOverlap(group.items, candidate.items),
     );
     if (existing) {
       existing.items = unionPreserveOrder(existing.items, candidate.items);
@@ -231,7 +232,9 @@ export function mergeDuplicateRustUses(text: string): string {
     }
   }
   const candidateAtStart = new Map<number, number>();
-  candidates.forEach((candidate, index) => candidateAtStart.set(candidate.start, index));
+  candidates.forEach((candidate, index) =>
+    candidateAtStart.set(candidate.start, index)
+  );
 
   let folded = false;
   const outLines: string[] = [];
@@ -247,7 +250,9 @@ export function mergeDuplicateRustUses(text: string): string {
     const group = groupByMember.get(candidateIndex)!;
     const isFoldedGroup = group.memberIndices.length > 1;
     if (!isFoldedGroup) {
-      for (let k = candidate.start; k <= candidate.end; k++) outLines.push(lines[k]!);
+      for (let k = candidate.start; k <= candidate.end; k++) {
+        outLines.push(lines[k]!);
+      }
       i = candidate.end + 1;
       continue;
     }
@@ -259,7 +264,9 @@ export function mergeDuplicateRustUses(text: string): string {
         isSortedRustfmt(candidates[index]!.items)
       );
       const finalItems = allSorted ? sortRustfmt(group.items) : group.items;
-      outLines.push(...renderGroup(candidate.vis, candidate.prefix, finalItems));
+      outLines.push(
+        ...renderGroup(candidate.vis, candidate.prefix, finalItems),
+      );
     }
     // A non-anchor member's lines are dropped entirely — folded into the anchor.
     i = candidate.end + 1;
