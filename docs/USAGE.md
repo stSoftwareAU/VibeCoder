@@ -91,7 +91,11 @@ summary file is created, a warning note is included in the PR body.
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
-record of an earlier iteration never reaches the archive (Issue #2879).
+record of an earlier iteration never reaches the archive (Issue #2879). Every
+file or behaviour it claims must appear in `git diff <base>...HEAD` — not merely
+exist at the head, since a merge from the base branch can supersede the change —
+and a summary that contradicts the diff is a blocking self-review finding
+(Issue #3015).
 
  moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
 so `docs/` root remains a curated table of contents. The worker still checks the
