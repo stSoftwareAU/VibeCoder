@@ -310,7 +310,8 @@ Deno.test("permissionError lists several missing permissions in one message", ()
     },
     slug: "stsoftware-pr-reviewer",
   });
-  assertStringIncludes(msg, "contents");
-  assertStringIncludes(msg, "workflows");
-  assertStringIncludes(msg, "checks");
+  // contents/workflows are under-scoped on the App itself; checks only awaits acceptance.
+  assertStringIncludes(msg, "Grant contents: write, workflows: write");
+  assertStringIncludes(msg, "The App has checks: read but the installation");
+  assertStringIncludes(msg, "accept the new permissions");
 });

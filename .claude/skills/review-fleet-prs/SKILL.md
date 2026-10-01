@@ -56,9 +56,10 @@ Add `<app-slug>[bot]` to `authorized_commenters` (not `pr_reviewers`,
 which would make PR creation fail). An interactive `/review-fleet-prs`
 session still reviews as the `gh` user.
 
-`app_token.ts` checks the minted token's `permissions` and fails the pass
-with one message naming each missing permission: Pull requests write, Issues
-write, Contents write, Workflows write, Checks read and Statuses read. If the
+The token must carry Pull requests write, Issues write, Contents write,
+Workflows write, Checks read and Statuses read. `app_token.ts` checks the
+minted token's `permissions` and fails the pass with one message naming each
+missing permission. If the
 App itself lacks a permission, the message points at the App's permission
 settings page; if the App has it but the installation has not yet accepted
 it, the message says to accept the new permissions on the installation page.

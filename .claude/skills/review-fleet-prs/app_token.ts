@@ -98,7 +98,9 @@ export function permissionError(opts: {
       REQUIRED_PERMISSIONS[name as keyof typeof REQUIRED_PERMISSIONS] ??
         "read";
   }
-  const list = missing.map((name) => `${name}: ${required[name]}`).join(", ");
+  const levels = (names: string[]) =>
+    names.map((name) => `${name}: ${required[name]}`).join(", ");
+  const list = levels(missing);
 
   // Split the missing permissions: the App itself may lack the grant, or the
   // App may have it but this installation has not accepted it yet. Each needs
@@ -117,16 +119,16 @@ export function permissionError(opts: {
     const settingsUrl = ownerType === "Organization"
       ? `https://github.com/organizations/${ownerLogin}/settings/apps/${slug}/permissions`
       : `https://github.com/settings/apps/${slug}/permissions`;
-    parts.push(`Grant ${appMissing.join(", ")} at ${settingsUrl}`);
+    parts.push(`Grant ${levels(appMissing)} at ${settingsUrl}.`);
   }
 
   if (installationMissing.length > 0) {
     parts.push(
-      `the App has ${
-        installationMissing.join(", ")
+      `The App has ${
+        levels(installationMissing)
       } but the installation has not accepted them: accept the new permissions at ${
         opts.installationUrl ?? "the installation settings page"
-      }`,
+      }.`,
     );
   }
 
