@@ -265,6 +265,19 @@ counts. Do not add a test per function or assertion merely to increase coverage.
 For a real defect, where practical first reproduce the externally meaningful
 failure in a test, then fix it and state the linkage in the PR summary.
 
+**A red run counts only against the base branch.** The regression test must
+fail against the unfixed base-branch production code with the base branch's
+own test doubles; if the change edits a fake, fixture or stub, run the new
+test with the new double against the base-branch production code — if it
+passes there, the red came only from the modified double and proves nothing.
+When the fault is not reproduced, do not change production behaviour or a
+durable format (stored keys, schemas, wire or file formats) on an unverified
+diagnosis: first confirm the premise against the base-branch code (for
+example, what the production adapter actually accepts), or say the fault is
+undiagnosed or already fixed and only pin the current behaviour. When the
+issue cites a logged error line, start the reproducing test from that exact
+input and quote the line in the PR summary.
+
 ### Choosing assertions
 
 - **UI / PWA:** Prefer real/headless-browser user journeys and visible states

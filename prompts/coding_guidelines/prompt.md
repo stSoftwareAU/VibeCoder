@@ -1039,6 +1039,19 @@ the fix. State this linkage in the PR summary. Existing direct or indirect
 behavioural coverage may already be sufficient for a refactor or presentation
 change; explain the verification rather than manufacturing a brittle test.
 
+**A red run counts only against the base branch.** The regression test must
+fail against the unfixed base-branch production code with the base branch's
+own test doubles; if the change edits a fake, fixture or stub, run the new
+test with the new double against the base-branch production code — if it
+passes there, the red came only from the modified double and proves nothing.
+When the fault is not reproduced, do not change production behaviour or a
+durable format (stored keys, schemas, wire or file formats) on an unverified
+diagnosis: first confirm the premise against the base-branch code (for
+example, what the production adapter actually accepts), or say the fault is
+undiagnosed or already fixed and only pin the current behaviour. When the
+issue cites a logged error line, start the reproducing test from that exact
+input and quote the line in the PR summary.
+
 **Do not hardcode to the tests.** Write the implementation to solve the general
 problem, not the specific inputs the tests happen to use. Special-casing a
 test's values, or branching on them to turn a suite green, is a failure dressed
