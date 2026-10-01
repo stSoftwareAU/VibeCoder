@@ -1686,7 +1686,6 @@ async function completionBody(
 
   const screenshotResult = validateScreenshotEvidence({
     prSummaryContent: prBody,
-    issueLabels: ctx.issueLabels.join(","),
     changedFiles,
     repo,
     issueNumber,
