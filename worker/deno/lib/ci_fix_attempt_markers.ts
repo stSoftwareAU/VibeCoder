@@ -17,6 +17,7 @@
  *   <!-- vibe-ci-fix-deferred signature="…" check="…"
  *        depends-on="owner/repo#149" -->
  *   <!-- vibe-ci-human-gate check="…" head="…" -->
+ *   <!-- vibe-ci-infra-rerun head="…" -->
  *
  * The human-gate marker (Issue #2727) records that the fleet has already told
  * the pull request a check waits on a human step. It is keyed by **check
@@ -27,7 +28,16 @@
  * is re-classified rather than parked for ever. A marker without `head`
  * (written before PR #2762) is still read, and simply parks nothing.
  *
- * All three use the canonical `vibe-` grammar — a bare prefix and `key="value"`
+ * The infra-rerun marker (Issue #2919) records that a head's cancelled or
+ * never-started checks were already re-run once by some fleet host. The
+ * once-per-head bound `rerunInfrastructureChecks` enforces used to live in a
+ * marker file in each host's own state volume, invisible to any other host —
+ * so two accounts each re-ran the same cancelled run once, defeating the
+ * bound Issue #2914 added. Moving the record onto the pull request itself
+ * makes the bound fleet-wide, the same move Issue #1879 made for the attempt
+ * cap.
+ *
+ * All four use the canonical `vibe-` grammar — a bare prefix and `key="value"`
  * attributes, no colon payload — so none needs an `ACCEPTED_DEVIATIONS`
  * entry in `tests/marker_grammar_test.ts`. That scanner reads marker
  * *literals* out of `lib/`, and these markers are assembled from a name
@@ -69,6 +79,12 @@ export const CI_FIX_DEFERRAL_MARKER_NAME = "vibe-ci-fix-deferred";
 
 /** Marker recording that a human-gate check was announced (Issue #2727). */
 export const CI_HUMAN_GATE_MARKER_NAME = "vibe-ci-human-gate";
+
+/**
+ * Marker recording that a head's cancelled/never-started checks were
+ * already re-run once by some fleet host (Issue #2919).
+ */
+export const CI_INFRA_RERUN_MARKER_NAME = "vibe-ci-infra-rerun";
 
 /** Longest check name a marker carries; a longer one is truncated. */
 const MAX_CHECK_NAME_LENGTH = 120;
@@ -126,6 +142,12 @@ export interface CiHumanGateMarker {
   head?: string;
 }
 
+/** One recorded infra-rerun announcement (Issue #2919). */
+export interface CiInfraRerunMarker {
+  /** Head SHA the infrastructure rerun was carried out against. */
+  head: string;
+}
+
 /**
  * A pull-request comment as `GitHubClient.getIssueComments` returns it.
  *
@@ -169,6 +191,9 @@ export type CiFixDeferralRecord = CiFixDeferralMarker & CiFixMarkerContext;
 /** A human-gate marker with the comment it was read from. */
 export type CiHumanGateRecord = CiHumanGateMarker & CiFixMarkerContext;
 
+/** An infra-rerun marker with the comment it was read from (Issue #2919). */
+export type CiInfraRerunRecord = CiInfraRerunMarker & CiFixMarkerContext;
+
 /** Every fleet-authored CI-fix marker on a pull request, by signature. */
 export interface FleetCiFixMarkers {
   /** Attempt records, keyed by failure signature, in comment order. */
@@ -180,6 +205,10 @@ export interface FleetCiFixMarkers {
    * (Issue #2727).
    */
   humanGates: Map<string, CiHumanGateRecord[]>;
+  /**
+   * Infra-rerun records, keyed by head SHA, in comment order (Issue #2919).
+   */
+  infraReruns: Map<string, CiInfraRerunRecord[]>;
   /**
    * False when the fleet login set was empty, so nothing could be attributed.
    *
@@ -229,6 +258,12 @@ const DEFERRAL_MARKER_RE = new RegExp(
 /** The human-gate marker, on the same terms. */
 const HUMAN_GATE_MARKER_RE = new RegExp(
   `<!--\\s*${CI_HUMAN_GATE_MARKER_NAME}(?=\\s)([^]*?)-->`,
+  "g",
+);
+
+/** The infra-rerun marker, on the same terms (Issue #2919). */
+const INFRA_RERUN_MARKER_RE = new RegExp(
+  `<!--\\s*${CI_INFRA_RERUN_MARKER_NAME}(?=\\s)([^]*?)-->`,
   "g",
 );
 
@@ -382,6 +417,19 @@ export function buildCiHumanGateMarker(marker: CiHumanGateMarker): string {
 }
 
 /**
+ * Build the marker recording that a head's cancelled/never-started checks
+ * were already re-run once by some fleet host (Issue #2919).
+ *
+ * @param options - The head the rerun was carried out against.
+ * @returns The marker, as a single-line HTML comment.
+ * @throws When `head` is not a 40-character SHA.
+ */
+export function buildCiInfraRerunMarker(options: { head: string }): string {
+  requireField(HEAD_SHA_PATTERN.test(options.head), "head", options.head);
+  return `<!-- ${CI_INFRA_RERUN_MARKER_NAME} head="${options.head}" -->`;
+}
+
+/**
  * Re-stamp every human-gate marker in a comment body with `marker`
  * (PR #2762), leaving the prose around it untouched. The gate comment carries
  * exactly one marker, so this moves its `head` without a second comment.
@@ -478,6 +526,24 @@ export function parseCiHumanGateMarkers(body: string): CiHumanGateMarker[] {
     }
     if (!HEAD_SHA_PATTERN.test(head)) continue;
     markers.push({ checkName, head });
+  }
+  return markers;
+}
+
+/**
+ * Read every well-formed infra-rerun marker out of a comment body
+ * (Issue #2919).
+ *
+ * @param body - The comment body.
+ * @returns One record per valid marker, in the order they appear.
+ */
+export function parseCiInfraRerunMarkers(body: string): CiInfraRerunMarker[] {
+  const markers: CiInfraRerunMarker[] = [];
+  for (const match of body.matchAll(INFRA_RERUN_MARKER_RE)) {
+    const inner = match[1] ?? "";
+    const head = attribute(inner, "head") ?? "";
+    if (!HEAD_SHA_PATTERN.test(head)) continue;
+    markers.push({ head });
   }
   return markers;
 }
