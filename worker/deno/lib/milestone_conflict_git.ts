@@ -23,6 +23,7 @@ import {
   unionIsWellFormed,
 } from "./both_inserted_conflict_rule.ts";
 import { unionJsonInsertions } from "./json_insertion_union.ts";
+import { mergeDuplicateRustUses } from "./rust_use_union.ts";
 import {
   buildAddPathArgs,
   buildCheckoutStrategyArgs,
@@ -414,6 +415,11 @@ export async function unionMergeConflictedFile(
     );
     if (!text.ok) return text.error;
     mergedText = text.value;
+    // A textual union of two edits to the same `use` line keeps both, which
+    // rustc rejects as E0252 (Issue #3007) — fold the duplicate back into one.
+    if (file.path.endsWith(".rs")) {
+      mergedText = mergeDuplicateRustUses(mergedText);
+    }
   }
 
   const wanted = [
