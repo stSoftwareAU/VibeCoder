@@ -2345,6 +2345,18 @@
         "worker/deno/lib/shared_clone_ref_sweep.ts",
         "worker/deno/lib/shared_clone_repair_history.ts"
       ]
+    },
+    {
+      "issue": 2960,
+      "chunk": "top-up-2960",
+      "title": "top-up: the screenshot-gate extra turn",
+      "ledger": "docs/audits/security-sweep-2960-screenshot-gate-retry.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: screenshot_gate_retry.ts (#2960)",
+      "status": "swept",
+      "sweptAt": "df06bc4ec139aee7d0d3b3ca9110a38d8c74b39f",
+      "paths": [
+        "worker/deno/lib/screenshot_gate_retry.ts"
+      ]
     }
   ],
   "roots": [

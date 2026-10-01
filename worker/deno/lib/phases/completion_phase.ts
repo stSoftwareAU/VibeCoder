@@ -1723,7 +1723,7 @@ async function completionBody(
       state.screenshotGateBlock = { failureMessage };
       return { status: "failure", reason: SCREENSHOT_EVIDENCE_MISSING_REASON };
     }
-    logger.warn(
+    logger.error(
       "Screenshot validation still fails after the one extra agent turn " +
         "— it did not capture and commit evidence (Issue #2960)",
     );

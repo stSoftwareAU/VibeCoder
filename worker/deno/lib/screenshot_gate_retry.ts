@@ -99,7 +99,7 @@ export async function recoverFromScreenshotGateBlock(
   if (!block) {
     // The caller only enters here with a block recorded; saying so beats
     // silently returning a pass.
-    logger.warn(
+    logger.error(
       "No screenshot-gate block to act on — failing as the gate reported",
       { repo, issueNumber },
     );
@@ -112,6 +112,9 @@ export async function recoverFromScreenshotGateBlock(
     { repo, issueNumber },
   );
 
+  const timeoutSeconds = config.screenshotRetryTimeoutSeconds ??
+    OPERATIONAL_DEFAULTS.screenshotRetryTimeoutSeconds;
+
   let retryResult;
   try {
     retryResult = await deps.claude.runClaudeWithRetry(
@@ -120,8 +123,7 @@ export async function recoverFromScreenshotGateBlock(
         phase: "issue",
         repo,
         issueNumber,
-        timeoutSeconds: config.screenshotRetryTimeoutSeconds ??
-          OPERATIONAL_DEFAULTS.screenshotRetryTimeoutSeconds,
+        timeoutSeconds,
         killAfterSeconds: config.claudeKillAfter,
         model: config.claudeModel || undefined,
         cwd: state.repoPath,
@@ -135,7 +137,7 @@ export async function recoverFromScreenshotGateBlock(
       { maxRetries: config.maxRateLimitRetries },
     );
   } catch (err) {
-    logger.warn(
+    logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
         `help — ${
           err instanceof Error ? err.message : String(err)
@@ -146,7 +148,7 @@ export async function recoverFromScreenshotGateBlock(
   }
 
   if (!retryResult.ok) {
-    logger.warn(
+    logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
         `help — ${retryResult.error.message}; failing as before ` +
         `(Issue #2960)`,
@@ -157,18 +159,16 @@ export async function recoverFromScreenshotGateBlock(
 
   const { value } = retryResult;
   if (value.timedOut === true) {
-    logger.warn(
+    logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
-        `help — timed out after ${
-          config.screenshotRetryTimeoutSeconds ??
-            OPERATIONAL_DEFAULTS.screenshotRetryTimeoutSeconds
-        }s; failing as before (Issue #2960)`,
+        `help — timed out after ${timeoutSeconds}s; failing as before ` +
+        `(Issue #2960)`,
       { repo, issueNumber },
     );
     return await applyScreenshotGateFailure(ctx, deps, block.failureMessage);
   }
   if (value.exitCode !== 0) {
-    logger.warn(
+    logger.error(
       `Screenshot gate: the one extra agent turn was tried and did not ` +
         `help — exited with code ${value.exitCode}; failing as before ` +
         `(Issue #2960)`,
