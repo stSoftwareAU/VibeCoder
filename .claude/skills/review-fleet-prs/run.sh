@@ -162,7 +162,7 @@ Its output is:
 
 $ready
 
-Follow the skill's 'Reviewing the ready PRs' section (Fable review, post,
+Follow the skill's 'Reviewing the ready PRs' section (Review, post,
 learn from recurring findings, report) for the ready PRs above. Run post.ts
 from $SKILL_DIR and write its input files under $dir. Skip the
 PushNotification step: this session is headless. Finish with the one-line
@@ -170,6 +170,7 @@ round report."
 
   (cd "$CHECKOUT" && perl -e 'alarm shift; exec @ARGV' "$ROUND_TIMEOUT" \
     claude -p "$prompt" \
+    --model claude-opus-5-5 --effort xhigh \
     --allowedTools "Agent" "Read" "Grep" "Glob" "Edit(/$dir/**)" \
     "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
     2>&1) | tee -a "$LOG" "$dir/claude.log"

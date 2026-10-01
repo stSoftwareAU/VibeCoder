@@ -215,7 +215,7 @@ export function unrelatedIssueBody(
     "",
     `Found while reviewing ${pr.url}, but outside that PR's scope.`,
     "",
-    `_${REVIEW_MARKER} (Fable)._`,
+    `_${REVIEW_MARKER}._`,
   ].join("\n");
 }
 
@@ -277,7 +277,7 @@ export function reviewBody(
       ...filed.map((i) => `- #${i.number} ${i.title}`),
     );
   }
-  lines.push("", `_${REVIEW_MARKER} (Fable)._`);
+  lines.push("", `_${REVIEW_MARKER}._`);
   return lines.join("\n");
 }
 
