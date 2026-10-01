@@ -670,7 +670,12 @@ When creating the PR, include evidence based on the type of change:
   negative result as the guidelines' Performance Task Workflow describes.
 - **Bugs/Enhancements**: Follow TDD and ensure tests verify the result/outcome,
   not the implementation method. Tests should continue to work when the
-  implementation is improved or refactored.
+  implementation is improved or refactored. When the change shells out to
+  another repository's binary or script, the test stub must mirror that
+  callee's documented contract — the inputs it actually reads and its exit
+  codes on failure. A stub more permissive than the real callee is a finding:
+  run against a real checkout of the callee, or name the contract the stub
+  mirrors in the PR summary with a source link.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
@@ -772,7 +777,12 @@ The file MUST contain:
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
    merged or reranked
-7. **Test Plan**: List the tests added or modified
+7. **Test Plan**: List the tests added or modified. Every test named here or
+   under Evidence must exist at the head — in the diff or already tracked;
+   check each path with `git ls-files <path>` before raising the PR. A
+   named-but-absent test is a blocking self-review finding: add the test or
+   drop the claim, and never commit a code anchor or comment that references a
+   test that does not exist
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
