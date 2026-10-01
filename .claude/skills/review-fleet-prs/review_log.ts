@@ -72,6 +72,7 @@ export interface LogRecord {
   testChangeNotes: TestChangeNote[];
   removedTests: string[];
   filedIssues?: FiledIssue[];
+  addedNeedsHuman?: boolean; // the skill's own needs-human label is on the PR after this review (Issue #2927)
 }
 
 export const LOG_FILE = "log.jsonl";
@@ -214,7 +215,7 @@ export function unrelatedIssueBody(
     "",
     `Found while reviewing ${pr.url}, but outside that PR's scope.`,
     "",
-    `_${REVIEW_MARKER} (Fable)._`,
+    `_${REVIEW_MARKER}._`,
   ].join("\n");
 }
 
@@ -263,6 +264,8 @@ export function reviewBody(
       ...testNotes(review, removedTests),
       "",
       review.summary,
+      "",
+      "Approve to merge or request changes; then remove `needs-human`.",
     );
   } else {
     lines.push(review.summary);
@@ -274,7 +277,7 @@ export function reviewBody(
       ...filed.map((i) => `- #${i.number} ${i.title}`),
     );
   }
-  lines.push("", `_${REVIEW_MARKER} (Fable)._`);
+  lines.push("", `_${REVIEW_MARKER}._`);
   return lines.join("\n");
 }
 

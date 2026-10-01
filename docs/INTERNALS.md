@@ -337,6 +337,13 @@ bash `worker/run_core.sh` conductor. It sequences:
    trusted-re-label escape hatch all still apply. An issue carrying
    `needs-human` is never closed by it.
 
+   Both merged-PR closers and the merged-branch cleanup take their window
+   from `gh pr list` listings ordered by update recency
+   (`RECENCY_ORDER_SEARCH`, `--search sort:updated-desc`, Issue #2901), not
+   gh's default creation order: a merge updates a PR, so a long-lived PR
+   (e.g. a milestone child) merged after 30 newer PRs had already merged
+   still lands inside the window instead of being pushed out of it.
+
    Beside that re-label hatch sits the **roll-back marker** (Issue #1770,
    [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)).
    When a milestone roll-back reverts a child's merged PR, the child is
@@ -1010,6 +1017,9 @@ after every cycle and again when the run ends, including the abnormal exits
 runs whose idle and blocked seconds an operator needs. A sidecar that exists but
 cannot be read or parsed, or that carries a newer schema, is reported in the log
 before the cumulative totals restart from zero — it is never dropped silently.
+This sidecar only ever describes one host; an operator who wants an `issue`-phase
+run to measure or compare behaviour across the whole fleet configures
+`fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
 ### 🎚️ Per-slot idle accounting — utilisation against capacity (Issue #925)
 
@@ -2347,14 +2357,41 @@ creation:
   This prevents the confusing scenario of multiple open PRs for the same work.
 - **Screenshot processing** — `process_screenshot_evidence()` converts local
   screenshot paths to accessible URLs (via imgbb upload or GitHub raw URLs).
-- **Evidence validation** — `validate_pr_evidence()` blocks UI-related PRs
-  without screenshots and adds the `needs-screenshot` label. A changed UI file
-  whose patch is nothing but version stamps (`?v=1.1.28` → `?v=1.1.30`, the
-  cache-busting bump a release script writes into every page) is not a UI
-  change (Issue #2300): each changed UI file's own patch is read against the
-  branch's resolved base, and a bump-only file is set aside from the gate's
-  extension trigger and keyword fallback. Any other edit to the file counts
-  as before, and an explicit UI label still wins.
+- **Evidence validation** — the completion phase's `validateScreenshotEvidence()`
+  gate blocks UI-related PRs without screenshots. When it finds a genuine UI
+  change with no screenshot evidence, the run is not failed at once. The same
+  agent session is resumed for exactly one extra turn
+  (`worker/deno/lib/screenshot_gate_retry.ts`) — prompted with the gate's own
+  "Screenshot Evidence Required" message, given the browser MCP, and bounded
+  by `screenshot_retry_timeout_seconds` (default `600`) — then anything the
+  turn left uncommitted is committed and completion
+  re-runs once, re-reading the changed files and PR summary and re-checking
+  the gate (Issue #2960). If evidence now exists, the PR is raised with no
+  `needs-screenshot` label or comment. If the gate still fails, or the extra
+  turn errors or times out, the original path runs unchanged: the
+  `needs-screenshot` label, the instructions comment and run failure — with a
+  log line stating that the extra turn was tried and why it did not help.
+  Never more than one extra turn per run, and a `skip_screenshot_check`
+  repository never reaches this path. A changed UI file whose patch is nothing
+  but version stamps (`?v=1.1.28` → `?v=1.1.30`, the cache-busting bump a
+  release script writes into every page) is not a UI change (Issue #2300):
+  each changed UI file's own patch is read against the branch's resolved
+  base, and a bump-only file is set aside from the gate's extension trigger.
+  Any other edit to the file counts as before. A change is a UI change only
+  when at least one substantive changed file has a UI extension (`.css`,
+  `.scss`, `.sass`, `.less`, `.html`, `.htm`, `.jsx`, `.tsx`, `.vue`,
+  `.svelte`); issue labels, PR-summary wording and an empty changed-file list
+  no longer count (Issue #2959).
+
+  ```mermaid
+  flowchart TD
+      A[Gate fails: UI change,<br/>no screenshot evidence] --> B[Resume session<br/>one extra turn]
+      B --> C[Commit anything left<br/>uncommitted]
+      C --> D[Re-run completion<br/>re-run the gate]
+      D -->|pass| E[Raise PR — no label,<br/>no comment]
+      D -->|fail| F[needs-screenshot label<br/>+ comment, run fails]
+      B -->|error or timeout| F
+  ```
 - **Issue linking** — `ensure_pr_references_issue()` appends `Closes #N` if the
   PR body lacks a closing keyword, preventing issues from staying open after
   merge.
@@ -2629,10 +2666,31 @@ milestone branch pushable on unattended hosts:
   checkout (`fatal: bad object refs/heads/…`, `warning: ignoring broken ref
   refs/remotes/origin/<base>`). The worker deletes each ref git names, logs
   one warning per ref, and retries the fetch and checkout. It stops after 10
-  refs per call, and a failure that persists still fails setup with git's
-  words. Every ref is recoverable from the remote. This is distinct from
-  object-store corruption, which re-clones (Issue #1093). Introduced by
+  refs per call. Every ref is recoverable from the remote. Introduced by
   Issue #2880 (GRQ-AutoTrader#1811).
+- **A failure that persists climbs a cheapest-first repair ladder rather than
+  failing setup outright (Issue #2884).** `isBrokenRefFailure()`
+  (`broken_ref_repair.ts`) narrows `createFeatureBranchFromBase`'s own failure
+  to the genuine broken-ref symptom — `bad object refs/…` or `ignoring broken
+  ref refs/…`, with `'<ref>' is not a commit` counted only when the same
+  message already named that ref broken — so an ordinary "no such branch"
+  failure sharing some of the wording is never mistaken for clone damage. On a
+  match the setup phase runs `sweepBrokenRefs()`: list every ref under
+  `refs/heads` and `refs/remotes` with `git for-each-ref`, remove each that
+  fails `git rev-parse --verify <ref>^{commit}`, `git fetch --prune origin` to
+  recreate the remote-tracking refs clean, then retry branch creation once. If
+  the sweep itself fails or the retry still fails, the same #1093 re-clone
+  ladder below runs next (`repairObjectStore` + `setupRepo` + retry) — sweeping
+  loose refs cannot repair a genuinely corrupt object store, so the re-clone is
+  still the necessary fallback. The whole ladder — sweep, then re-clone —
+  shares the #1093 `claimObjectStoreRepair` claim and so runs **at most once
+  per repository per run**, whichever rung is reached first. A failure that
+  survives both rungs escalates `needs-human` with heading "Broken refs in
+  shared clone", naming the repository (dedup key `broken-refs-<repo>`), and
+  is categorised `clone_corrupt` rather than counted against the issue — see
+  "`clone_corrupt` is its own failure category" below. This is still distinct
+  from plain object-store corruption, which skips straight to the re-clone
+  rung (Issue #1093).
 
 ```mermaid
 flowchart TD
@@ -2644,6 +2702,83 @@ flowchart TD
     E -.->|never| F[Base = default branch]
     style E fill:#a4161a,stroke:#6a040f,color:#fff
     style F fill:#adb5bd,stroke:#6c757d,color:#000
+```
+
+#### Shared clone ref sweep (Issue #2889)
+
+The on-demand repair above only fires when something touches the exact broken
+ref. [`shared_clone_ref_sweep.ts`](../worker/deno/lib/shared_clone_ref_sweep.ts)
+sweeps every shared clone proactively, as priority-1.73 handler
+`Shared Clone Ref Sweep` in `buildPriorityDispatchTable` — a maintenance-lane
+pass, not agent-backed, wired to the production dependency
+`sweepSharedCloneRefs`. It runs roughly hourly on every host
+(`SHARED_CLONE_SWEEP_INTERVAL_MS`), and is forced on the first cycle after a
+`HOST_DISK_LOW` episode ends, since a fetch or ref write interrupted by low
+disk is exactly what leaves broken refs behind.
+
+For each shared clone under `${WORK_DIR}/<repo>`, the sweep first skips the
+repo — recording a `skipped` self-heal event — when there is no clone yet, or
+when `acquireMaintenanceRepoLease()` returns `null` because a lane already
+holds the repo. Otherwise it finds broken refs two ways: it walks the loose
+ref files under the clone's git common directory (`refs/heads` and
+`refs/remotes` directly, bypassing `for-each-ref`) for any file that is empty
+or NUL-filled — the 41-byte NUL files disk pressure writes, which
+`git update-ref -d` refuses to touch — and removes it outright, restoring the
+ref `restored-from-packed` if `packed-refs` still resolves it; and it loops
+`git for-each-ref` in bounded rounds (a `fatal: missing object` aborts the
+listing outright, hiding every ref after it), parsing `brokenRefsIn()` out of
+stderr on every round, whatever the exit code, since git still exits 0 after
+`warning: ignoring broken ref` for a truncated loose ref, and removing each with
+`removeBrokenRef()` (`broken_ref_repair.ts`, Issue #2880).
+
+A ref with no surviving packed copy is restored by the same policy
+regardless of how it was found: a remote-tracking ref is refetched from its
+remote (`deleted-gone-on-origin` when the branch is gone on origin); a local
+`issue-*` or `milestone/*` branch is deleted only, never resurrected; any
+other local branch is refetched and reset to `origin/<branch>` if that branch
+still exists there, otherwise deleted.
+
+Every repair emits a `repair-broken-ref` event (module
+`shared-clone-ref-sweep`) to `self-heal.jsonl` carrying last-writer
+provenance: the loose ref file's mtime, the last reflog line, which
+worktrees have the branch checked out (lanes `s1`, `s2` and
+`pr-branch-update` share one ref store), and any `oom-*` log under
+`~/logs` within 15 minutes of the mtime. Repair timestamps per repo are kept
+in `${WORK_DIR}/.shared-clone-ref-repairs.json`, pruned to a 24-hour window;
+more than 2 repairing sweeps for the same repo in that window logs
+`[SHARED_CLONE_REF_CHURN] <repo>: …` and an `escalate` event with result
+`failed` — the surest sign the root cause (disk pressure mid-write) is still
+happening.
+
+While the host disk is low and reclaim did not heal it, this sweep alone is
+skipped for the cycle (the handler's `pausesOnHostDiskLow` flag). Every other
+pass, lane or serial, keeps running because those passes land the PRs already
+open (Issue #226). See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
+in CONTAINER.md.
+
+```mermaid
+flowchart TD
+    A["Sweep due: hourly, or forced<br/>after HOST_DISK_LOW ends"] --> B{"Clone exists<br/>and lease free?"}
+    B -->|no clone / leased| S["skipped event"]
+    B -->|yes| N["Scan refs/heads, refs/remotes<br/>for empty/NUL-filled files"]
+    N --> R{"packed-refs<br/>still resolves it?"}
+    R -->|yes| P["restored-from-packed"]
+    R -->|no| L["restore policy"]
+    N --> E["for-each-ref loop<br/>(bounded rounds)"]
+    E --> D["brokenRefsIn(stderr) →<br/>removeBrokenRef()"]
+    D --> L
+    L -->|remote-tracking| F1["refetch from remote<br/>(deleted-gone-on-origin if absent)"]
+    L -->|"issue-*/milestone/*"| F2[delete only]
+    L -->|other local branch| F3["refetch + reset to origin,<br/>else delete"]
+    F1 --> V["repair-broken-ref event<br/>+ provenance"]
+    F2 --> V
+    F3 --> V
+    P --> V
+    V --> C{">2 repairs<br/>in 24h?"}
+    C -->|yes| X["SHARED_CLONE_REF_CHURN escalate"]
+    C -->|no| Y[done]
+    style S fill:#adb5bd,stroke:#6c757d,color:#000
+    style X fill:#a4161a,stroke:#6a040f,color:#fff
 ```
 
 **Branch cleanup never deletes a milestone branch** —
@@ -3561,8 +3696,13 @@ What it sweeps for a closed milestone: the lane worktrees holding its
 and the stream session record (`stream-<streamKey>.json`) for **every**
 provider.
 
-Three boundaries make it safe to run on every scan:
+Four boundaries make it safe to run on every scan:
 
+- **No checkout, nothing to sweep.** A monitored repository with no checkout
+  directory on this host is skipped quietly before the closed-milestone
+  listing — no warning, and no `gh` calls spent on its milestones. A checkout
+  that exists but whose branches cannot be listed is still reported and
+  retried.
 - **Swept once, then never revisited.** The listing is cached under the work
   root with a 15-minute TTL, and every fully-swept title is persisted forever,
   so a closed milestone costs one `gh` call in its lifetime rather than one per
@@ -4267,7 +4407,10 @@ consequences are worth naming:
   fails on git's `ignoring broken ref refs/remotes/origin/<branch>` warning is
   repaired once — the named ref is deleted and re-fetched, one log line names
   it, and the count is retried once — and still failing falls into the same
-  deferral. The PR comment then says how far behind the branch is "could not
+  deferral, never the setup phase's `clone_corrupt` ladder: this is a narrower,
+  local repair of the one ref the count just met, not the full
+  sweep-then-re-clone rung `createFeatureBranchFromBase` climbs (Issue #2884).
+  The PR comment then says how far behind the branch is "could not
   be measured" and quotes git's reason, rather than claiming the branch is
   still behind (Issue #2824). The longest-behind-first sweep
   ([milestone_behind_count.ts](../worker/deno/lib/milestone_behind_count.ts))
@@ -4514,7 +4657,14 @@ Two changes close that:
   record `repo_config`. Judging it by the category, not by a bare refusal
   pattern, means the whole precedence order applies: a quality-gate record
   that merely *quotes* the branch and the ruleset's words is `quality_check`
-  and keeps its label. Both success paths call it — the setup phase, and the
+  and keeps its label. Every heading a fleet path writes when it applies
+  `failed-once` / `failed` counts as a failure record — the shared
+  `FAILURE_RECORD_HEADING_PATTERN` in `issue_sweep_parse.ts`, which also
+  covers **Claim Churn Detected**, **Question Answering Failed** and
+  **Automatic Escalation to Planning Mode** — so a newer one of those stops
+  the scan and keeps the labels; only an Automated Processing Failed /
+  Paused or Milestone branch unavailable record can be the refusal (Issue
+  #2943). Both success paths call it — the setup phase, and the
   per-cycle `selfHealMilestoneBranches` pass, which is the only one that
   reaches a milestone whose children **all** reached `failed`, since those are
   filtered out of label discovery and can never claim their way into setup.
@@ -4542,6 +4692,79 @@ flowchart TD
     style C fill:#f4a261,stroke:#b5651d,color:#000
     style J fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
+
+#### `clone_corrupt` is its own failure category
+
+A broken ref or a corrupt object store in the host's **shared** clone
+(Issues #2880, #1093, #2884) is a fault of the host, not of the issue: an
+in-process retry against the same damaged clone fails identically, and the
+same fault meets every other issue claimed against that repository. Charging
+the issue's `failed-once` / `failed` budget for it would park a healthy issue
+over infrastructure it cannot fix.
+
+`detectFailureCategory` (`failure_diagnosis.ts`) checks for the worker-authored
+`CLONE_CORRUPT_MARKER` ("the host's shared clone of this repository is
+damaged") before its generic patterns, so a setup-phase diagnosis always wins
+over any raw git error text the same failure message happens to quote. A match
+comes out `clone_corrupt` (display `clone-corrupt`), is `not_code_fixable`, and
+`isInfrastructureFailure()` returns `false` for it — deliberately, for the same
+reason `prompt_too_long` does: the setup phase already ran the sweep/re-clone
+ladder once before giving up, so a further in-process retry can only burn a
+claim on a fault no in-process attempt can clear. The run-outcome class is
+`clone-corrupt`. No `failed-once` or `failed` label is ever applied for it, so
+the fault never charges the issue's own retry budget. It is not left
+claimable, though: the setup-phase ladder's `needs-human` escalation (heading
+"Broken refs in shared clone" / "Corrupt git object store", dedup keys
+`broken-refs-<repo>` / `object-store-corrupt-<repo>`) puts `needs-human` on
+this specific issue whenever the repair — the sweep/prune-fetch retry or the
+re-clone fallback from #1093 — did not clear the fault, including when this
+run's one repair attempt was already spent by an earlier issue and this issue
+therefore attempted no repair at all. `findIssuesByLabel` excludes any issue
+carrying `needsHumanLabel`, so an operator must remove that label after
+repairing the host's clone for the issue to become claimable again. See
+"`create_feature_branch_from_base()`" above and
+[docs/workflows/README.md](workflows/README.md#one-shared-store-means-one-repository-wide-fault-issue-1093)
+for the sweep-then-re-clone repair ladder that produces this category.
+
+### 🩹 Host-fault failure labels release themselves (Issue #2890)
+
+The milestone-branch refusal release above frees a milestone's issues once a
+repo-level fact clears; the same problem exists one level down, for a single
+repository. When the failure that earned an issue `failed-once` or `failed` was
+really the worker's host — a corrupt clone, a clone that could not be made, a
+full disk, a container image that failed to build — the failure comment gains a
+**Host fault:** line naming the kind and a final marker
+(`<!-- vibe-host-fault kind="<kind>" -->`), detected by
+[host_fault.ts](../worker/deno/lib/host_fault.ts):
+
+| Kind                     | Fault                                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `clone-corrupt`          | Broken ref, bad object, or unreadable object in the clone, or a corrupt `.git/config` or lost git directory |
+| `clone-failed`           | The clone could not be created                                                                              |
+| `disk-full`              | The host ran out of disk space                                                                              |
+| `container-build-failed` | The issue's container image failed to build                                                                 |
+
+`releaseHostFaultFailureLabels`
+([host_fault_release.ts](../worker/deno/lib/host_fault_release.ts)) mirrors
+`releaseMilestoneBranchRefusalLabels`: it runs once per repository per worker
+process, triggered after the setup phase successfully creates a feature branch in
+that repository — proof the clone is healthy again — and lists the repository's
+open `failed-once` / `failed` issues. It reads only fleet-authored comments (the
+same `selectFleetAuthoredComments` filter, for the same forgery reason) and
+releases an issue only when **every** fleet failure record on it is a host fault.
+A failure record is any comment headed by a fleet path that applies `failed-once`
+or `failed`: "Automated Processing Failed" or "Paused", "Milestone branch
+unavailable", "Claim Churn Detected", "Question Answering Failed" or "Automatic
+Escalation to Planning Mode". Only an "Automated Processing Failed" record can be
+a host fault: either it carries the marker, or — for failures made before this
+change had no marker to write — its body matches the `clone-corrupt` git
+broken-ref, bad-object, bad `.git/config` line, or "not in a git directory"
+signature (Issue #2953). Any issue carrying even one non-host-fault record (an
+agent failure, claim churn, an ordinary setup error such as an invalid base
+branch) keeps its label. `failed` is released only when a host-fault "Second
+Attempt" record, the run that applies it, explains it; otherwise the issue keeps
+both labels. Errors are logged, never swallowed; a comment-read failure leaves the
+label in place.
 
 ### 📊 Token usage tracking
 

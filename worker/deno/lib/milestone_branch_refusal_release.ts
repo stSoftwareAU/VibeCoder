@@ -24,6 +24,11 @@ import {
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
 import { detectFailureCategory } from "./failure_diagnosis.ts";
+import {
+  FAILURE_RECORD_HEADING_PATTERN,
+  parseCommentRows,
+  parseLabelledIssues,
+} from "./issue_sweep_parse.ts";
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
 
 /** Function signature for running gh CLI commands. */
@@ -75,11 +80,20 @@ export interface RefusalReleaseOutcome {
 }
 
 /**
- * Headings the worker writes on a failure record. The newest comment
- * matching one of these is the issue's most recent failure record, and it
- * alone decides whether the labels are released.
+ * Every fleet failure-label heading — see `issue_sweep_parse.ts`. The newest
+ * comment matching one of these is the issue's most recent failure record,
+ * so a newer non-refusal record (a claim churn, a question-failure, a
+ * planning escalation) stops the scan and keeps the labels (Issue #2943).
  */
-const FAILURE_RECORD_RE =
+const FAILURE_RECORD_RE = new RegExp(FAILURE_RECORD_HEADING_PATTERN, "m");
+
+/**
+ * Only these two headings can carry the milestone-branch refusal itself.
+ * A churn / question-failure / planning-escalation record counts as *a*
+ * failure record above, but it can never BE the refusal, so it never
+ * releases the labels (Issue #2943).
+ */
+const REFUSAL_CANDIDATE_RE =
   /^##\s+(?:Automated Processing (?:Failed|Paused)|Milestone branch unavailable)/m;
 
 /**
@@ -113,69 +127,6 @@ export function resetMilestoneBranchRefusalSweepsForTest(): void {
   swept.clear();
 }
 
-/** One labelled issue as read from `gh issue list`. */
-interface LabelledIssue {
-  number: number;
-  labels: Set<string>;
-}
-
-/** Parse `gh issue list --json number,labels` output, or throw. */
-function parseLabelledIssues(raw: string): LabelledIssue[] {
-  const parsed = JSON.parse(raw) as unknown;
-  if (!Array.isArray(parsed)) {
-    throw new Error("expected an array of issues");
-  }
-  const out: LabelledIssue[] = [];
-  for (const entry of parsed) {
-    if (entry === null || typeof entry !== "object") continue;
-    const record = entry as { number?: unknown; labels?: unknown };
-    if (typeof record.number !== "number") continue;
-    const labels = new Set<string>();
-    if (Array.isArray(record.labels)) {
-      for (const label of record.labels) {
-        const name = (label as { name?: unknown })?.name;
-        if (typeof name === "string") labels.add(name);
-      }
-    }
-    out.push({ number: record.number, labels });
-  }
-  return out;
-}
-
-/** One comment as read from `gh issue view --json comments`. */
-interface CommentRow {
-  /** Login of whoever wrote it — the only authenticated part of a comment. */
-  author?: string | null;
-  body: string;
-}
-
-/**
- * Parse `gh issue view --json comments` output, oldest first, or throw.
- *
- * `author` is rendered as `{ login }` by `gh` and as a bare login by the
- * worker's own `GitHubComment`, so both shapes are accepted — the same
- * normalisation `idle_task_freshness.ts` does at its own comment read.
- */
-function parseCommentRows(raw: string): CommentRow[] {
-  const parsed = JSON.parse(raw) as { comments?: unknown };
-  if (!Array.isArray(parsed?.comments)) {
-    throw new Error("expected a 'comments' array");
-  }
-  const rows: CommentRow[] = [];
-  for (const entry of parsed.comments) {
-    const record = entry as { body?: unknown; author?: unknown };
-    if (typeof record?.body !== "string") continue;
-    const author = record.author;
-    const login = typeof author === "string"
-      ? author
-      : typeof (author as { login?: unknown })?.login === "string"
-      ? (author as { login: string }).login
-      : null;
-    rows.push({ author: login, body: record.body });
-  }
-  return rows;
-}
-
 /**
  * Whether the issue's most recent failure record is the repo-level
  * milestone-branch refusal.
@@ -190,6 +141,10 @@ function parseCommentRows(raw: string): CommentRow[] {
  * branch and the words "required status checks" is `quality_check` there and
  * `quality_check` here, so its label survives — matching the refusal pattern
  * against the comment body alone would have released it.
+ *
+ * A newer claim-churn, question-answering-failure or planning-escalation
+ * record also keeps the labels: it is a genuine failure record of its own,
+ * just not one this sweep is allowed to release (Issue #2943).
  */
 export function refusalIsMostRecentFailure(
   commentBodies: readonly string[],
@@ -197,7 +152,8 @@ export function refusalIsMostRecentFailure(
   for (let i = commentBodies.length - 1; i >= 0; i--) {
     const body = commentBodies[i];
     if (body === undefined || !FAILURE_RECORD_RE.test(body)) continue;
-    return detectFailureCategory(body) === "repo_config";
+    return REFUSAL_CANDIDATE_RE.test(body) &&
+      detectFailureCategory(body) === "repo_config";
   }
   return false;
 }

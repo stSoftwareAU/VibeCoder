@@ -70,6 +70,7 @@ import {
   memoiseIssueFetcher,
   seedIssueFetcherFromListing,
 } from "./issue_finder_common.ts";
+import { isIssueTimeDeferred } from "./time_deferral.ts";
 import {
   resolveFleetAuthors,
   resolveFleetMaintenanceAuthorSet,
@@ -240,6 +241,9 @@ export async function filterNewWorkEligible(
     diag?.logIssueSkipped(repo, issue.number, reason, detail);
   };
 
+  // Issue #2873: one clock reading per scan, not per issue.
+  const nowMs = Date.now();
+
   // A reopened issue sheds the `failed`/`failed-once` label that stopped it
   // last time. Without this the failure gate below, newly honoured for this
   // route, would strand a reopened issue permanently.
@@ -374,6 +378,23 @@ export async function filterNewWorkEligible(
           continue;
         }
       }
+    }
+
+    // Issue #2873: skip while the issue's own `Deferred until` clock has
+    // not yet passed — getIssueBody is memoised, so this read is free.
+    // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
+    // fails toward NOT deferring rather than stalling the issue forever.
+    if (
+      await isIssueTimeDeferred(
+        ctx.fetcher,
+        repo,
+        issue.number,
+        nowMs,
+        console.error,
+      )
+    ) {
+      note(issue, "time-deferred");
+      continue;
     }
 
     if (

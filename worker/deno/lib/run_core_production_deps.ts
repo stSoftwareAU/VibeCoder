@@ -1745,6 +1745,12 @@ export async function createProductionRunCoreDeps(
       onlyPrNumber: stallLaneTarget.prNumber,
     };
 
+  // Issue #2889: shared-clone ref sweep closure state. `checkHostDisk`
+  // records a low reading here so the sweep forces a run straight after the
+  // episode ends, rather than waiting for the next hourly tick.
+  let hostDiskLowSeen = false;
+  let lastSharedCloneSweepAtMs: number | undefined;
+
   const deps: RunCoreDeps = {
     // -- Logging --
     log: (msg) => logger.info(msg),
@@ -3433,6 +3439,61 @@ export async function createProductionRunCoreDeps(
       }
     },
 
+    // -- Priority 1.73: Shared clone ref sweep (Issue #2889) --
+    async sweepSharedCloneRefs() {
+      try {
+        // Defence in depth: the lane pause in run_core.ts normally keeps
+        // this handler off the ladder while the host disk is low, but a
+        // reading taken here too avoids a fetch/ref write landing mid
+        // episode on a path that reached this handler regardless.
+        const disk = await hostDisk.check();
+        if (disk.level === "low") {
+          return { ok: true, value: undefined };
+        }
+        // A low episode ended since the last time this ran — sweep now
+        // regardless of the hourly cadence, because that is exactly the
+        // condition that leaves NUL-filled refs behind.
+        const force = hostDiskLowSeen;
+        const { isSweepDue, sweepSharedClones } = await import(
+          "./shared_clone_ref_sweep.ts"
+        );
+        if (!force && !isSweepDue(lastSharedCloneSweepAtMs, Date.now())) {
+          return { ok: true, value: undefined };
+        }
+        const sweepWorkDir = config.workDir || env("HOME") || ".";
+        const home = env("HOME");
+        const logsDir = home ? `${home}/logs` : undefined;
+        logger.info(
+          `[SHARED_CLONE_REF_SWEEP] sweeping ${repos.length} shared clones (reason: ${
+            force ? "after HOST_DISK_LOW" : "hourly"
+          })`,
+        );
+        const outcomes = await sweepSharedClones(repos, sweepWorkDir, {
+          log: (message: string) => logger.info(message),
+          logError: (message: string) => logger.error(message),
+          logsDir,
+        });
+        lastSharedCloneSweepAtMs = Date.now();
+        hostDiskLowSeen = false;
+        const repaired = outcomes.reduce(
+          (sum, o) => sum + o.repaired.length,
+          0,
+        );
+        const skipped = outcomes.filter((o) => o.skipped !== null).length;
+        const escalated = outcomes.filter((o) => o.escalated).length;
+        logger.info(
+          `[SHARED_CLONE_REF_SWEEP] done: ${outcomes.length} repos, ` +
+            `${repaired} refs repaired, ${skipped} skipped, ${escalated} escalated`,
+        );
+        return { ok: true, value: undefined };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err : new Error(String(err)),
+        };
+      }
+    },
+
     // -- Priority 1.7: Milestone completions --
     async checkMilestoneCompletions() {
       try {
@@ -3933,7 +3994,15 @@ export async function createProductionRunCoreDeps(
     // all read the same holds.
     inFlightRepos,
     slotCeiling,
-    checkHostDisk: () => hostDisk.check(),
+    checkHostDisk: async () => {
+      const result = await hostDisk.check();
+      // Issue #2889: record a low reading so the shared-clone ref sweep
+      // forces a run straight after the episode ends.
+      if (result.level === "low") {
+        hostDiskLowSeen = true;
+      }
+      return result;
+    },
     // Issue #242: before the disk gate stops this cycle claiming, drop the
     // work root's disposable tier — the sibling/data clones a gate pulled
     // in — largest first, then re-read the disk so a host that healed
@@ -4153,6 +4222,7 @@ export async function createProductionRunCoreDeps(
         issueLabels: issueData.labels ?? [],
         issueAuthor: issueData.author,
         config,
+        githubUser,
       }, { ghFn: runGhCommand, timelineCache });
       if (integrity.blocked) {
         logger.warn(

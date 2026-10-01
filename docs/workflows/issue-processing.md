@@ -367,7 +367,7 @@ A `top-priority` issue is **not** automatically picked just because the label is
 
 Even when tier 1 yields no *selectable* candidate, [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) does not blindly fall through to tier 2. If a configured-label candidate was found but held by the open-PR gate on its work stream, every `work-on` candidate in the same `repo + milestone` is dropped before the tier 2 pool is considered. The intent is to keep a full work stream from being over-filled — the stream is already at its PR limit (its slot cap on the default branch, or its one PR on a milestone branch), and the worker should wait rather than race ahead with a lower-priority issue on the same branch. Surviving `work-on` candidates from other repos / milestones remain eligible. If suppression empties tier 2 entirely, selection falls through to tier 3 (`low-priority`) under the same global gate. The idle-decision census models this gate too (Issue #2922) and reports the suppressed candidates as `work_on_suppressed=<n>` rather than counting them towards an inversion signal.
 
-A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream — so the `work-on` issues beside it stay eligible: top priority starves nothing, and a tier that is truly blocked means working elsewhere. Until #2563 the dependency wait parked the stream whenever the repo had any open fleet PR, even a milestone rollup PR that blocks nothing in the stream. On stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed for hours with no skip reason recorded, while the idle-decision census rightly counted them as claimable and filed an idle-inversion issue.
+A `top-priority` issue waiting on a **dependency** suppresses nothing (Issue #2563). The wait belongs to that one issue — it says nothing about its stream — so the `work-on` issues beside it stay eligible: top priority starves nothing, and a tier that is truly blocked means working elsewhere. Until #2563 the dependency wait parked the stream whenever the repo had any open fleet PR, even a milestone rollup PR that blocks nothing in the stream. On stSoftwareAU/GRQ-AutoTrader that left four claimable `work-on` issues unclaimed for hours with no skip reason recorded, while the idle-decision census rightly counted them as claimable and filed an idle-inversion issue. A `time-deferred` skip (Issue #2873, below) is the same shape and follows the same rule: the `until` wait belongs to the one issue parked on it, never to its repo, milestone or tier, so a multi-day defer on a `top-priority` issue does not starve the `work-on` and `low-priority` candidates sitting beside it.
 
 ```mermaid
 flowchart TD
@@ -431,7 +431,7 @@ Issue #898 is the same disagreement one level up: not a gate the census missed, 
 Two diagnostics answer the "why was this issue selected and not that one?" question without reading TypeScript:
 
 - **`selection-reasoning` log line** — emitted unconditionally by [`logSelectionReasoning`](../../worker/deno/lib/issue_finder_logger.ts) whenever the worker selects a `work-on` (or lower-tier) candidate while configured-label candidates were considered or blocked. The line includes the selected issue, how many configured-label candidates were considered, and which were blocked (`repo#N(reason)`), making the bypass auditable from the worker log alone.
-- **`ISSUE_FINDER_DEBUG=true`** — set this environment variable to enable the per-issue trace from [`createDiagnostics`](../../worker/deno/lib/issue_finder_logger.ts). Every candidate considered, eligible, or skipped is emitted to stderr with its skip reason (`milestone-occupied`, `pr-blocked`, `closed-pr-cooldown`, `dependency-blocked`, `content-modified-after-approval`, `cooldown`, `needs-human`, …). Use this when the unconditional `selection-reasoning` line is not enough — for example when no candidate at all was selected.
+- **`ISSUE_FINDER_DEBUG=true`** — set this environment variable to enable the per-issue trace from [`createDiagnostics`](../../worker/deno/lib/issue_finder_logger.ts). Every candidate considered, eligible, or skipped is emitted to stderr with its skip reason (`milestone-occupied`, `pr-blocked`, `closed-pr-cooldown`, `dependency-blocked`, `time-deferred`, `content-modified-after-approval`, `cooldown`, `needs-human`, …). Use this when the unconditional `selection-reasoning` line is not enough — for example when no candidate at all was selected.
 
 ### How to use `low-priority`
 
@@ -700,7 +700,7 @@ gitGraph
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
-- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
+- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
 - **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins. See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
@@ -836,6 +836,80 @@ because a blocked answer routinely contains phrases such as "no changes needed"
 and closing a live task is the one outcome the next scan cannot undo. The agent
 cannot make that call itself either: the `gh` guard refuses
 `gh issue close|reopen|delete|transfer|lock` on the claimed repo.
+
+### Time-gated deferral (Issue #2873)
+
+An analysis-only run can be correct about the issue and still have nothing to
+report, because the data it needs to answer does not exist yet — "measure X
+over the last 7 days" when that window has not elapsed, for example. That is
+not "blocked on another issue" (the `## Blocked:` shape above) and it is not
+"analysis-only with no deliverable" — it is a wait for the calendar. The agent
+declares it by ending its final message with a marker on its own line:
+
+```text
+<!-- vibe-defer-until until="<ISO-8601 time with Z or ±HH:MM offset>" reason="<why the data is not there yet>" -->
+```
+
+The no-changes handler checks for this marker **immediately after** the
+`## Blocked:` dependency deferral and before the already-resolved / analysis-only
+checks, so a time-gated wait is never mis-read as either of those. `until` must
+be in the future and at most 30 days away; a marker that is unparseable, in the
+past, or further out than that bound is ignored and the run falls through to
+the ordinary no-changes handling as if no marker had been emitted.
+
+When the marker is honoured, the worker **parks** the issue rather than
+escalating it:
+
+- posts exactly one comment, `## Deferred until <time>`, carrying a hidden
+  `<!-- vibe-time-deferral until="…" -->` record so a later scan can recognise
+  the same wait and count it;
+- writes a `Deferred until YYYY-MM-DDTHH:MM:SSZ` line into the same
+  machine-owned worker-record block that carries `Depends on owner/repo#N`
+  (`<!-- vibe-worker-record-start -->` … `<!-- vibe-worker-record-end -->`) —
+  the line is denial-only (it can only ever make discovery skip the issue
+  later, never process unapproved content), so the content-approval gate
+  strips it before hashing exactly as it already does for the dependency line
+  (Issue #1631);
+- keeps the discovery label and adds **no** `needs-human`;
+- releases the claim with the outcome `deferred: until <time>`.
+
+Discovery then skips the issue with the skip reason `time-deferred` until
+`until` passes, and re-runs it automatically on the first scan after — no
+human involvement, no extra attempt charged. This skip reason suppresses only
+the one issue it is recorded against, the same as `dependency-blocked`: a
+multi-day wait on a `top-priority` issue must not park the repo's
+`work-on` / `low-priority` work sitting beside it.
+
+**Deferral has a budget.** After three time-deferrals on the same issue
+(`MAX_TIME_DEFERRALS`), the next `vibe-defer-until` marker is not honoured: the
+worker posts a `## Deferral limit reached` comment listing the prior deferral
+history and instead applies the existing analysis-only `needs-human` hand-off
+described above (Issue #2834). An analysis-only run that emits no defer marker
+at all is unaffected by any of this — it still gets the ordinary #2834
+hand-off.
+
+**Only a time is supported.** There is no "wait N runs" variant; the marker's
+sole parameter is `until`.
+
+```mermaid
+flowchart TD
+  Run["No-changes run"] --> Blocked{"## Blocked: /<br/>Depends on section?"}
+  Blocked -- yes --> Defer1["Dependency deferral<br/>(above)"]
+  Blocked -- no --> Marker{"vibe-defer-until<br/>marker, until valid<br/>(future, ≤30 days)?"}
+  Marker -- no --> Resolved["Already-resolved /<br/>analysis-only checks<br/>(unchanged)"]
+  Marker -- yes --> Budget{"Prior time-deferrals<br/>on this issue < 3?"}
+  Budget -- yes --> Park["Park: post '## Deferred until …',<br/>write Deferred until … into the<br/>worker-record block, keep label,<br/>no needs-human, release claim"]
+  Budget -- no --> Limit["## Deferral limit reached<br/>+ analysis-only needs-human hand-off (#2834)"]
+  Park --> Skip["Discovery skips with<br/>skip reason time-deferred<br/>until the time passes"]
+  Skip --> Reissue["Time passes →<br/>issue re-enters discovery,<br/>run repeats"]
+  Reissue --> Run
+  style Park fill:#5a86b0,stroke:#1d3a5a,color:#fff
+  style Skip fill:#707070,stroke:,color:#fff
+  style Limit fill:#c45858,stroke:#6b2020,color:#fff
+```
+
+**Implementation:** [`worker_record_block.ts`](../../worker/deno/lib/worker_record_block.ts)
+(shared grammar for the `Depends on` and `Deferred until` lines).
 
 **Fallback loop guard.** When neither clean signal fires — Claude produces no
 changes **and** no useful output — the run returns a failure and the existing
@@ -1011,6 +1085,20 @@ that minimised scenario is the regression test; apply the fix and watch the same
 command go green. The attempt is bounded, and a loop that never went red is
 reported as `partial` or `not-run` naming what was tried — the ladder has an
 honest bottom rung, which is why it does not become a licence to over-claim.
+
+**What a red run proves (Issue #2924).** A fleet run once claimed a bug fix
+whose regression test only went red against the PR's own modified fake, and
+passed on unmodified base-branch production code — proving nothing about the
+defect — while another changed production behaviour on an unreproduced
+diagnosis. The prompt now ties red to the base branch: the test must fail
+against the unfixed **base-branch** production code with the **base branch's**
+own test doubles, not a double the PR has already changed, and a reviewer can
+check this by running the PR's new test against the base ref's production
+code. While the status is `partial` or `not-run`, the run must not change
+production behaviour or a durable format on an unverified diagnosis — it
+either confirms the premise against the base branch or pins current behaviour
+with a test. Where the issue cites a logged error line, the reproducing test
+starts from that exact input, and the PR summary quotes it.
 
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in

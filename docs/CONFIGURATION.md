@@ -397,6 +397,14 @@ key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
 mounted into the container. Use a different App from the worker's own
 `github_app_*` identity, since GitHub refuses an approval from a PR's author.
 
+The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
+read and write, plus **Checks** and **Commit statuses** read. Contents write
+lets the gate's Dependabot upkeep merge an already-clean PR with
+`gh pr merge --auto` and arm auto-merge; Workflows write lets it merge
+Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
+[the skill doc](../.claude/skills/review-fleet-prs/SKILL.md#as-a-github-app)
+for details.
+
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
 the worker acts on its change requests. Keep `github-copilot[bot]` and
 `github-actions[bot]` in the list: setting the key replaces those defaults.
@@ -448,6 +456,7 @@ explicitly overridden.
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
+| `fleet_run_archive` | unset | Optional `owner/repo` slug naming the operator's private fleet run archive — a repository a hook extension fills with per-run records (outcome, mode, host, token and cost telemetry) from every host. Validated as an `owner/repo` slug at load; a malformed value fails config loading loudly. Absent (the default) means fleet-wide measurement is off. See [Fleet Run Archive](#-fleet-run-archive). |
 
 > **📝 Hardwired labels (not overridable).** Some labels have **no** config key
 > — they are fixed in the codebase and any `.config.json` key that tries to set
@@ -463,6 +472,49 @@ explicitly overridden.
 > To change the planning model, use `phase_model_overrides` (e.g.
 > `{ "planning": "sonnet" }`) or `best_planning_model` — there is no separate
 > per-phase planning-model config key.
+
+### 📈 Fleet Run Archive
+
+`fleet_run_archive` names a repository —
+`"your-org/vibe-fleet-archive"` — that an operator-maintained hook
+extension fills with per-run records (outcome,
+mode, host, token and cost telemetry) gathered from every host in the fleet.
+VibeCoder names no specific archive and ships no hook that writes to one; the
+operator builds and configures both. Validated with the canonical
+`owner/repo` slug check (`isValidRepoSlug` — rejects `..` and dot-led path
+segments); a malformed value fails config loading loudly rather than
+silently disabling fleet-wide measurement.
+
+When set, an `issue`-phase run gains a `<fleet_data_source>` block naming the
+archive and explaining that a host's own `fleet_telemetry_*.json` sidecars and
+`.credit_log_*.json` only describe that one host. The run is told to read the
+archive **read-only** via `gh api repos/<archive>/contents/...` — starting
+with its README to learn the layout — and never to write to it. The slug
+itself is fenced inside the run's untrusted boundary; the archive's
+contents are fetched by the run itself at runtime, so the prompt instead
+**instructs** the run to treat everything it reads back as untrusted
+data — never an instruction to follow — and the standing untrusted-data
+rules apply to it. An incomplete or unreadable archive is reported as a
+**partial** verdict naming the hosts and dates covered and the gaps. The
+run's GitHub token must be able to read the archive repository; the `gh`
+guard already confines writes to the issue's own claim repository, so the
+archive stays read-only from the run regardless of token scope.
+
+Unset (the default), the `issue` prompt tells a measurement-shaped issue to
+label its verdict **single-host** or **partial** rather than claim fleet-wide
+coverage it cannot see.
+
+```mermaid
+flowchart LR
+    H1["Host A"] --> HOOK["Operator's<br/>post-run hook"]
+    H2["Host B"] --> HOOK
+    H3["Host C"] --> HOOK
+    HOOK --> ARCH["fleet_run_archive<br/>(private repo)"]
+    ARCH -.->|"gh api … (read-only)"| RUN["issue-phase run<br/>on any host"]
+    RUN --> V{"Archive readable<br/>and complete?"}
+    V -->|yes| FW["Verdict: fleet-wide"]
+    V -->|no| PART["Verdict: partial<br/>(hosts/dates + gaps named)"]
+```
 
 ### ⚖️ Idle-Task Template Weights
 
@@ -1711,6 +1763,7 @@ unless explicitly overridden.
 | Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped. |
 | Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
 | Call-storm novel share | `call_storm_novel_share` | `0.25` | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped. |
+| Screenshot retry timeout | `screenshot_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -1876,7 +1929,7 @@ calls the agent made are counted from the run's per-tool tally — both the
 as `queries` in the run-stats line, the log line and the callback block.
 
 **When Graft is unavailable.** An enabled host that cannot run Graft — the
-clone's `info/exclude` cannot be resolved or appended to, the binary is
+graph directory inside the clone's git dir cannot be resolved, the binary is
 missing, the build or the query fails, the query succeeds but returns an empty
 bundle, the build produces a graph with 0 nodes (no file matched a language
 Graft parses, or the build matched no files), or the graph index cannot be
@@ -1914,25 +1967,30 @@ records a `failed` Graft status — the bundle is an accelerator, so losing it
 never fails the run, and the loss is recorded rather than passed off as a
 clean run.
 
-**Where the graph lives.** Graft writes its graph to `graft/` at the root of
-the repository checkout, which is persistent between runs, so an unchanged
-file replays from Graft's own cache on the next build instead of being
-re-parsed. The worker never deletes `graft/`. Two entries keep it that way
-(Issue #2099): `/graft/` is added to the clone's own `.git/info/exclude`
-before each build — per-clone, unstageable, and unlike a `.gitignore` edit it
-survives the `git reset --hard` + `git clean -fd` every run starts with — and
-`/graft/` is in the canonical `.gitignore` pattern set the worker enforces, so
-a checkout whose `.gitignore` carries that set cannot stage the graph either.
-The two differ in reach, and it is worth being exact about which does the
-work: the `.gitignore` entry is written by `gitignore-sync` at `setup.sh` time
-and that edit is uncommitted, so the per-run `git reset --hard` reverts it —
-during a run it is the `info/exclude` entry that is actually in force, and the
-`.gitignore` pattern is the belt to its braces once the line reaches a
-repository's committed `.gitignore`. Graft itself is run with `--no-gitignore
---no-ignore`, which #2060 records as the flags that stop it editing
-`.gitignore`; that is an assumption from Graft's documentation rather than one
-observed here, because Graft is not installed on the image this was written
-against. The `info/exclude` entry holds either way.
+**Where the graph lives.** Graft writes its graph inside the clone's git
+directory, not the working tree: the worker resolves
+`git rev-parse --git-path graft` — ordinarily `<checkout>/.git/graft`, and for
+a lane worktree the `graft` directory inside that worktree's own git dir — and
+passes it as `graft --dir <path> build|ask|mcp` (Issue #2915). That directory
+is persistent between runs, so an unchanged file still replays from Graft's
+own cache on the next build instead of being re-parsed, but because it sits
+outside the working tree a repository's lint and format tools never glob it,
+nothing there can ever be staged, and `git reset --hard` plus `git clean -fd`
+— the per-run reset every run starts with — leaves it untouched, the same
+survival property the old `info/exclude` entry gave the in-tree `graft/` it
+replaces. The worker no longer appends `/graft/` to the clone's
+`.git/info/exclude`. Before each build the worker removes a **legacy in-tree
+`graft/`** left over from a checkout built before this change — recognised as
+a real directory (not a symlink) carrying `.graph/wiring.json` with nothing
+under it tracked by git — logging a `warn` line when it does; a `graft/` the
+repository itself tracks is never touched. `/graft/` stays in the canonical
+`.gitignore` pattern set the worker enforces (`gitignore-sync` at `setup.sh`
+time) as belt and braces for any lingering in-tree copy or a repository that
+still references the old path, even though the graph the worker builds today
+never lands there. Graft itself is run with `--no-gitignore --no-ignore`,
+which Issue #2060 records as the flags that stop it editing `.gitignore`;
+that is an assumption from Graft's documentation rather than one observed
+here, because Graft is not installed on the image this was written against.
 
 **Validation.** The block is validated at config load. An unrecognised key
 inside it warns and is ignored, the way an unknown top-level key does, but a
@@ -4314,7 +4372,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `quality_command`       | string  | Custom command to run instead of `./quality.sh`                                                                                                                                                                                                                                                                                                                           |
 | `custom_instructions`   | string  | Additional instructions to include in the Claude prompt for this repository                                                                                                                                                                                                                                                                                               |
 | `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#docker-based-quality-checks).                                                                                                                                                                                                                           |
-| `requires_screenshots`  | boolean | When `true`, always injects screenshot instructions into Claude's prompt **and** hands the run the Playwright MCP browser (Issue #192 — a run with no screenshot need is given no browser tool). Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
+| `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass. A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
@@ -4355,8 +4413,9 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
   always captures Playwright screenshots on the first attempt (avoids a
   round-trip failure)
 - **Non-UI repositories**: Set `skip_screenshot_check: true` to skip screenshot
-  validation entirely, preventing false positives from keyword detection, and
-  to keep Playwright out of the run — it beats `requires_screenshots` and the
+  validation entirely, so a repository whose UI-extension files (for example
+  generated `.html` reports) need no screenshot never meets the gate, and to
+  keep Playwright out of the run — it beats `requires_screenshots` and the
   `needs-screenshot` label
 - **Disable auto-merge**: Set `skip_auto_merge: true` if you prefer to manually
   merge PRs

@@ -77,6 +77,8 @@ import {
 import { verifyWorkOnContentIntegrity } from "./work_on_content_integrity.ts";
 import { buildBatchedGh } from "./timeline_batch.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+import { idleTaskIntegrityConfig } from "./idle_task_trust.ts";
+import { isIssueTimeDeferred } from "./time_deferral.ts";
 
 /**
  * `labelIndex` for idle-task candidates. Set above low-priority's 199 so
@@ -146,6 +148,9 @@ export async function collectIdleTaskCandidates(
   // `isDependencyBlocked` collapse to local map reads on the warm path.
   const openStateMap = buildOpenIssueStateMap(repoAllIssues);
 
+  // Issue #2873: one clock reading per scan, not per issue.
+  const nowMs = Date.now();
+
   // Issue #2173: the lazy open-milestone lookup for the cross-milestone
   // dependency hold. Built once per repo and shared by every candidate; the
   // listing is only fetched if a closed dependency actually carries a
@@ -172,11 +177,14 @@ export async function collectIdleTaskCandidates(
   // reserved discovery labels, `idle-task` is deliberately worker-appliable
   // (Issue #2022), so fleet logins are *included* here rather than excluded —
   // the worker must stay able to claim wrappers it (or a sibling host) filed.
-  const idleTaskTrustedAuthors = resolveFleetAuthors(
+  // Issue #2944: computed via the same helper pickup-time content integrity
+  // uses, so the scan and the later re-verification trust identical logins.
+  const idleTaskConfig = idleTaskIntegrityConfig(
+    config,
+    repo,
     options.githubUser,
-    repoAllowedAuthors,
-    config.fleetPrAuthors,
   );
+  const idleTaskTrustedAuthors = idleTaskConfig.allowedAuthors;
 
   // Issue #2882: adder-only widening of the `idle-task` origin trust set. A
   // known bot listed in `authorized_commenters` (e.g. the fleet PR-reviewer
@@ -301,11 +309,7 @@ export async function collectIdleTaskCandidates(
       issue,
       // Issue #2734: the per-repo map is dropped so the integrity check
       // reads this widened set, not the narrower per-repo one it holds.
-      {
-        ...config,
-        allowedAuthors: idleTaskTrustedAuthors,
-        allowedAuthorsByRepo: undefined,
-      },
+      idleTaskConfig,
       ghFn,
       diag,
       options.contentApprovalDeps,
@@ -400,6 +404,23 @@ export async function collectIdleTaskCandidates(
           continue;
         }
       }
+    }
+
+    // Issue #2873: skip while the issue's own `Deferred until` clock has
+    // not yet passed — getIssueBody is memoised, so this read is free.
+    // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
+    // fails toward NOT deferring rather than stalling the issue forever.
+    if (
+      await isIssueTimeDeferred(
+        fetcher,
+        repo,
+        issue.number,
+        nowMs,
+        console.error,
+      )
+    ) {
+      diag?.logIssueSkipped(repo, issue.number, "time-deferred");
+      continue;
     }
 
     if (

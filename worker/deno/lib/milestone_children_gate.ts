@@ -39,6 +39,7 @@ import {
   partitionMilestoneTrackers,
 } from "./milestone_tracker_identity.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_pr.ts";
+import { parseJsonArrayPages } from "./json_array_pages.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 
@@ -239,32 +240,27 @@ export async function fetchOpenMilestoneChildren(
 /**
  * Parse a `gh` JSON array response into issue-shaped records.
  *
- * `gh api --paginate` concatenates pages as separate JSON arrays when the
- * response is not merged, so both a single array and a whitespace-separated
- * run of arrays are accepted. A malformed payload throws — an unreadable
- * response must never be reported as "no children".
+ * `gh api --paginate` concatenates pages as separate top-level JSON arrays
+ * with no guaranteed separator, so pages are parsed with a string-aware scan
+ * rather than a `][`-boundary regex (Issue #2895). A malformed payload
+ * throws — an unreadable response must never be reported as "no children".
  */
 function parseIssueArray(raw: string): RawIssue[] {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return [];
   const out: RawIssue[] = [];
-  // Split concatenated top-level arrays: `][` boundaries between pages.
-  for (const chunk of trimmed.split(/\]\s*\[/)) {
-    const text = chunk.startsWith("[") ? chunk : `[${chunk}`;
-    const json = text.endsWith("]") ? text : `${text}]`;
-    const parsed = JSON.parse(json) as RawIssue[];
-    for (const item of parsed) {
-      if (typeof item?.number === "number") {
-        out.push(
-          {
-            number: item.number,
-            title: typeof item.title === "string" ? item.title : "",
-            pull_request: item.pull_request,
-            body: typeof item.body === "string" ? item.body : "",
-            author: typeof item.user?.login === "string" ? item.user.login : "",
-          } as RawIssue & { body: string; author: string },
-        );
-      }
+  for (const item of parseJsonArrayPages(raw)) {
+    const record = item as RawIssue | null | undefined;
+    if (typeof record?.number === "number") {
+      out.push(
+        {
+          number: record.number,
+          title: typeof record.title === "string" ? record.title : "",
+          pull_request: record.pull_request,
+          body: typeof record.body === "string" ? record.body : "",
+          author: typeof record.user?.login === "string"
+            ? record.user.login
+            : "",
+        } as RawIssue & { body: string; author: string },
+      );
     }
   }
   return out;
@@ -1045,22 +1041,15 @@ export async function decideMilestoneBaseMerge(
       `repos/${repo}/milestones?state=all&per_page=100`,
     ]);
     // parseIssueArray keeps number/title only; the milestone STATE is the
-    // point here, so split the paginated arrays the same way and keep it.
+    // point here, so parse the paginated arrays the same way and keep it.
     const milestones: Array<
       { number?: unknown; title?: unknown; state?: unknown }
     > = [];
-    const trimmed = raw.trim();
-    if (trimmed.length > 0) {
-      for (const chunk of trimmed.split(/\]\s*\[/)) {
-        const text = chunk.startsWith("[") ? chunk : `[${chunk}`;
-        const json = text.endsWith("]") ? text : `${text}]`;
-        for (const item of JSON.parse(json) as unknown[]) {
-          if (item && typeof item === "object") {
-            milestones.push(
-              item as { number?: unknown; title?: unknown; state?: unknown },
-            );
-          }
-        }
+    for (const item of parseJsonArrayPages(raw)) {
+      if (item && typeof item === "object") {
+        milestones.push(
+          item as { number?: unknown; title?: unknown; state?: unknown },
+        );
       }
     }
     for (const milestone of milestones) {

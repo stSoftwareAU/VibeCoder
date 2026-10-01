@@ -244,10 +244,11 @@ export function buildPushCreateBranchArgs(
 export interface RebaseArgsOptions {
   /**
    * Add `--no-rebase-merges` so merge commits are dropped and the replayed
-   * history is linear (Issue #2279). The stale-verdict ladder's rebase rung
-   * needs it: a PR head that is itself a merge of the base is exactly the
-   * shape that ladder exists for, and re-creating that merge would replay the
-   * head rather than flatten it.
+   * history is linear (Issue #2279). Written for the stale-verdict ladder's
+   * rebase rung, since dropped (Issue #2842): a PR head that is itself a
+   * merge of the base is exactly the shape that rung existed for, and
+   * re-creating that merge would have replayed the head rather than
+   * flattening it.
    */
   noRebaseMerges?: boolean;
 }

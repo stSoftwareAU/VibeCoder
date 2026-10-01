@@ -31,6 +31,11 @@ import type {
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import {
+  buildHostFaultMarker,
+  buildHostFaultNote,
+  detectHostFault,
+} from "./host_fault.ts";
 
 /**
  * Check if an issue already has the failed-once label.
@@ -153,9 +158,16 @@ export async function markIssueAsFailedOnce(
     diagSection = `\n\n### Diagnostic Context\n${diagnosticSummary}`;
   }
 
+  // Issue #2890: a failure caused by the worker host itself (a corrupt
+  // clone, a full disk, a container image that would not build) is not a
+  // fault of this issue, so it is called out so a later sweep can release
+  // the label once the host is healthy again.
+  const hostFault = detectHostFault(options.failureMessage);
+  const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
+
   let commentBody = `## Automated Processing Failed (First Attempt)
 
-**Category:** \`${categoryDisplay}\`
+**Category:** \`${categoryDisplay}\`${hostFaultLine}
 
 The automated worker was unable to complete this issue on the first attempt.
 
@@ -175,6 +187,13 @@ If you want to work on this manually, remove the \`${labels.failedOnceLabel}\` l
   // Append worker identity footer (Issue #436)
   if (options.workerFooter) {
     commentBody += options.workerFooter;
+  }
+
+  // Issue #2890: the marker must be the very last line of the comment body,
+  // after the optional worker footer, so the later sweep can find it without
+  // parsing the whole comment.
+  if (hostFault) {
+    commentBody += `\n\n${buildHostFaultMarker(hostFault)}`;
   }
 
   try {
@@ -322,10 +341,14 @@ export async function markIssueAsFailed(
 
   const errorSection = buildErrorSection(options.failureMessage);
 
+  // Issue #2890: see the matching note in markIssueAsFailedOnce.
+  const hostFault = detectHostFault(options.failureMessage);
+  const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
+
   let commentBody =
     `## Automated Processing Failed (Second Attempt - Permanently Failed)
 
-**Category:** \`${categoryDisplay}\`
+**Category:** \`${categoryDisplay}\`${hostFaultLine}
 
 The automated worker has failed to complete this issue twice and will not retry automatically.
 
@@ -349,6 +372,11 @@ ${diagnosisText}
   // Append worker identity footer (Issue #436)
   if (options.workerFooter) {
     commentBody += options.workerFooter;
+  }
+
+  // Issue #2890: see the matching note in markIssueAsFailedOnce.
+  if (hostFault) {
+    commentBody += `\n\n${buildHostFaultMarker(hostFault)}`;
   }
 
   try {
@@ -456,6 +484,26 @@ export async function handleIssueFailure(
   if (
     failureCategory === "scheduled_release" || failureCategory === "token_scope"
   ) {
+    return {
+      ok: true,
+      value: {
+        markedAsFailed: false,
+        markedAsFailedOnce: false,
+        failureCategory,
+        isInfrastructure: false,
+      },
+    };
+  }
+
+  // A damaged host shared clone never enters the ladder either (Issue
+  // #2884). Broken refs or a corrupt object store on the host's shared clone
+  // meet every issue claimed on this host identically, so this is defence in
+  // depth: `clone_corrupt` is already non-infrastructure per
+  // `isInfrastructureFailure` and already in the ladder's transient class,
+  // but a caller reaching this function directly must still never label the
+  // issue `failed-once`/`failed` for a fault that is the host's, not the
+  // issue's.
+  if (failureCategory === "clone_corrupt") {
     return {
       ok: true,
       value: {

@@ -31,6 +31,7 @@ import {
   describeDependencyBlockers,
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
+import { isTimeDeferred } from "./time_deferral.ts";
 import { runGhCommand } from "./github.ts";
 import {
   resolveFleetAuthors,
@@ -485,6 +486,34 @@ export async function diagnoseIssue(
       name: "not-dependency-blocked",
       passed: true,
       detail: "Could not check dependencies (assuming not blocked)",
+    });
+  }
+
+  // 9. Time-deferral check (Issue #2873): mirrors the scan's own
+  // `isTimeDeferred` gate on the issue body's machine-owned `Deferred until`
+  // line. An unreadable body fails toward NOT deferred, the same fail-safe
+  // direction as the dependency check above.
+  try {
+    const fetcher = createDiagnosticIssueFetcher(ghFn);
+    const body = await fetcher.getIssueBody(repo, issueNumber);
+    const deferred = isTimeDeferred(body, Date.now());
+    checks.push({
+      name: "not-time-deferred",
+      passed: !deferred,
+      detail: deferred
+        ? "Issue has a future `Deferred until` line in its worker record"
+        : "Issue is not time-deferred",
+      suggestion: deferred
+        ? "Wait for the deferral to expire, or clear the worker record's `Deferred until` line"
+        : undefined,
+    });
+  } catch (error) {
+    checks.push({
+      name: "not-time-deferred",
+      passed: true,
+      detail: `Could not check time deferral (assuming not deferred): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     });
   }
 

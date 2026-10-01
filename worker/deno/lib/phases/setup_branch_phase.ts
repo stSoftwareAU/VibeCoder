@@ -63,6 +63,9 @@ import {
 } from "../object_store_repair.ts";
 import { repairMilestoneCreateBlockAndRetry } from "../milestone_create_block_repair.ts";
 import { releaseMilestoneBranchRefusalLabels } from "../milestone_branch_refusal_release.ts";
+import { isBrokenRefFailure } from "../broken_ref_repair.ts";
+import { CLONE_CORRUPT_MARKER } from "../failure_diagnosis.ts";
+import { releaseHostFaultFailureLabels } from "../host_fault_release.ts";
 
 /**
  * What a human must do when a milestone branch cannot be ensured
@@ -84,6 +87,17 @@ export const OBJECT_STORE_NEXT_STEP =
   "is the usual cause. The worker already re-cloned once this run and the " +
   "corruption survived it, so the fault is in the volume rather than in the " +
   "objects.";
+
+/**
+ * What a human must do when broken refs in the shared clone survive a sweep
+ * and a re-clone (Issue #2884). Exported so tests assert the handoff wording.
+ */
+export const BROKEN_REFS_NEXT_STEP =
+  "Delete the repository's clone and its lane worktrees under the work " +
+  "volume by hand and check the host's free disk. The worker already swept " +
+  "the broken refs, pruned and fetched from origin, and — when that did not " +
+  "hold — re-cloned the repository once this run, so the fault is in the " +
+  "volume rather than a ref the worker could clear itself.";
 
 /**
  * Set up the repository and create/checkout the feature branch.
@@ -745,6 +759,61 @@ export async function workOnIssueSetupBranch(
       state.baseBranch,
       { cwd: repoPath },
     );
+    // Whether the failure (if any) belongs to the shared-clone repair ladder
+    // below, rather than being an ordinary branch failure — decides whether
+    // CLONE_CORRUPT_MARKER goes into the final reason (Issue #2884).
+    let isCloneCorruptFailure = false;
+
+    // Re-clone the repository off its remote and retry branch creation once
+    // (Issue #1093), shared by the object-store rung below and the Issue
+    // #2884 broken-ref rung as their common last resort.
+    const reCloneAndRetry = async (): Promise<string> => {
+      const repair = await deps.git.repairObjectStore({
+        repo,
+        workDir: config.workDir,
+      });
+      if (!repair.ok) {
+        logger.error("Object-store repair failed (Issue #1093)", {
+          repo,
+          issueNumber,
+          error: repair.error.message,
+        });
+        return repair.error.message;
+      }
+      logger.info(
+        "Repository re-cloned — retrying the feature branch (Issue #1093)",
+        {
+          repo,
+          issueNumber,
+          removed: repair.value.removed,
+          fsck: repair.value.fsck,
+        },
+      );
+      // The lane's worktree went with the clone, so take a fresh one off
+      // the new store before retrying.
+      const reSetup = await deps.git.setupRepo(
+        repo,
+        config.workDir,
+        ctx.laneId,
+      );
+      if (!reSetup.ok) {
+        logger.error(
+          "Could not take a working tree off the repaired clone (Issue #1093)",
+          { repo, issueNumber, error: reSetup.error.message },
+        );
+        return `the repaired clone could not be re-opened: ${reSetup.error.message}`;
+      }
+      repoPath = reSetup.value;
+      branchResult = await deps.git.createFeatureBranchFromBase(
+        state.branchName,
+        state.baseBranch,
+        { cwd: repoPath },
+      );
+      if (!branchResult.ok) {
+        return `the branch still could not be created after the re-clone: ${branchResult.error.message}`;
+      }
+      return "";
+    };
 
     // Issue #1093: `inflate: data stream error` is not a bad ref, it is a
     // damaged object in the store every lane worktree of this repository
@@ -755,6 +824,7 @@ export async function workOnIssueSetupBranch(
     if (
       !branchResult.ok && isObjectStoreCorruption(branchResult.error.message)
     ) {
+      isCloneCorruptFailure = true;
       const corruption = branchResult.error.message;
       let repairDetail = "";
       if (!claimObjectStoreRepair(repo)) {
@@ -772,54 +842,7 @@ export async function workOnIssueSetupBranch(
           "Shared object store is corrupt — re-cloning the repository before failing the issue (Issue #1093)",
           { repo, issueNumber, error: corruption },
         );
-        const repair = await deps.git.repairObjectStore({
-          repo,
-          workDir: config.workDir,
-        });
-        if (!repair.ok) {
-          repairDetail = repair.error.message;
-          logger.error("Object-store repair failed (Issue #1093)", {
-            repo,
-            issueNumber,
-            error: repairDetail,
-          });
-        } else {
-          logger.info(
-            "Object store re-cloned — retrying the feature branch (Issue #1093)",
-            {
-              repo,
-              issueNumber,
-              removed: repair.value.removed,
-              fsck: repair.value.fsck,
-            },
-          );
-          // The lane's worktree went with the clone, so take a fresh one
-          // off the new store before retrying.
-          const reSetup = await deps.git.setupRepo(
-            repo,
-            config.workDir,
-            ctx.laneId,
-          );
-          if (!reSetup.ok) {
-            repairDetail =
-              `the repaired clone could not be re-opened: ${reSetup.error.message}`;
-            logger.error(
-              "Could not take a working tree off the repaired clone (Issue #1093)",
-              { repo, issueNumber, error: reSetup.error.message },
-            );
-          } else {
-            repoPath = reSetup.value;
-            branchResult = await deps.git.createFeatureBranchFromBase(
-              state.branchName,
-              state.baseBranch,
-              { cwd: repoPath },
-            );
-            if (!branchResult.ok) {
-              repairDetail =
-                `the branch still could not be created after the re-clone: ${branchResult.error.message}`;
-            }
-          }
-        }
+        repairDetail = await reCloneAndRetry();
       }
 
       if (!branchResult.ok) {
@@ -855,18 +878,148 @@ export async function workOnIssueSetupBranch(
           });
         }
       }
+    } else if (
+      !branchResult.ok && isBrokenRefFailure(branchResult.error.message)
+    ) {
+      // Issue #2884: a broken ref in the shared clone — `bad object
+      // refs/heads/…`, `ignoring broken ref refs/remotes/origin/…` — fails
+      // branch creation for every issue in the repository identically, just
+      // like the object-store corruption above. Repair cheapest first: drop
+      // the broken local refs and prune-fetch from origin, which is far
+      // cheaper than a re-clone and clears the common case outright; only
+      // fall back to the #1093 re-clone when the sweep does not hold.
+      isCloneCorruptFailure = true;
+      const brokenRefOutput = branchResult.error.message;
+      let repairDetail = "";
+      if (!claimObjectStoreRepair(repo)) {
+        // Shares the #1093 once-per-repo claim: sweep-then-reclone is one
+        // ladder, taken at most once per repository per run.
+        repairDetail =
+          "the clone was already repaired this run and the broken refs " +
+          "recurred";
+        logger.error(
+          "Broken refs recurred after this run's repair — not repairing again (Issue #2884)",
+          { repo, issueNumber, error: brokenRefOutput },
+        );
+      } else {
+        logger.error(
+          "Shared clone has broken refs — sweeping them before failing the issue (Issue #2884)",
+          { repo, issueNumber, error: brokenRefOutput },
+        );
+        const sweep = await deps.git.sweepBrokenRefs({ cwd: repoPath });
+        if (!sweep.ok) {
+          repairDetail = sweep.error.message;
+          logger.error("Broken-ref sweep failed (Issue #2884)", {
+            repo,
+            issueNumber,
+            error: repairDetail,
+          });
+        } else {
+          logger.info(
+            "Broken refs swept — retrying the feature branch (Issue #2884)",
+            { repo, issueNumber, removed: sweep.value.removed },
+          );
+          branchResult = await deps.git.createFeatureBranchFromBase(
+            state.branchName,
+            state.baseBranch,
+            { cwd: repoPath },
+          );
+          if (!branchResult.ok) {
+            repairDetail =
+              `the branch still could not be created after sweeping broken refs: ${branchResult.error.message}`;
+          }
+        }
+
+        if (!branchResult.ok) {
+          logger.error(
+            "Broken-ref sweep did not clear the failure — falling back to a re-clone (Issue #2884)",
+            { repo, issueNumber },
+          );
+          repairDetail = await reCloneAndRetry();
+        }
+      }
+
+      if (!branchResult.ok) {
+        // As with object-store corruption, one report per repository names
+        // the fault rather than failing every issue in it silently.
+        const ghClient = deps.github.createClient(logger);
+        const escalation = await escalateToHuman({
+          ghClient,
+          repo,
+          target: { kind: "issue", number: issueNumber },
+          needsHumanLabel: config.needsHumanLabel,
+          heading: "Broken refs in shared clone",
+          reason:
+            `The shared git clone of \`${repo}\` on this host has broken refs, ` +
+            `and the worker could not repair it: ${repairDetail}.\n\n` +
+            "The lane worktrees share one clone per repository, so this " +
+            "fault applies to every slot and every milestone branch in it.\n\n" +
+            "```\n" + brokenRefOutput + "\n```",
+          nextStep: BROKEN_REFS_NEXT_STEP,
+          dedupKey: `broken-refs-${repo}`,
+          githubUser,
+          deps: {
+            github: { ensureLabelExists: deps.github.ensureLabelExists },
+          },
+          logger,
+        });
+        if (!escalation.ok) {
+          logger.error("Broken-refs escalation failed", {
+            repo,
+            issueNumber,
+            error: escalation.error.message,
+          });
+        }
+      }
     }
 
     if (!branchResult.ok) {
+      const msg = branchResult.error.message;
       return {
         status: "failure",
-        reason:
-          `Failed to create feature branch: ${branchResult.error.message}`,
+        reason: isCloneCorruptFailure
+          ? `Failed to create feature branch: ${CLONE_CORRUPT_MARKER} (${repo}): ${msg}`
+          : `Failed to create feature branch: ${msg}`,
       };
     }
   }
 
   state.repoPath = repoPath;
+
+  // A feature branch just got created off a fresh clone on this host — the
+  // first witness that the host is healthy again. Any issue still carrying
+  // `failed-once`/`failed` purely because a host fault (corrupt clone, full
+  // disk, failed container build) was blamed on it can be released now
+  // (Issue #2890). Best-effort — the branch is usable whatever the sweep
+  // finds — but never silent.
+  const hostFaultRelease = await releaseHostFaultFailureLabels({
+    repo,
+    labels: {
+      failedLabel: config.failedLabel,
+      failedOnceLabel: config.failedOnceLabel,
+    },
+    ghCommandFn: deps.github.runGhCommand,
+    authorOptions: {
+      fleetAuthors: resolveFleetMaintenanceAuthorSet({
+        githubUser,
+        fleetPrAuthors: config.fleetPrAuthors,
+        serviceAccounts: config.serviceAccounts,
+      }),
+    },
+    log: (message) => logger.warn(message, { repo }),
+  });
+  if (hostFaultRelease.released.length > 0) {
+    logger.info(
+      "Released failure labels left by a worker-host fault (Issue #2890)",
+      { repo, released: hostFaultRelease.released },
+    );
+  }
+  for (const error of hostFaultRelease.errors) {
+    logger.warn(
+      `Host-fault label sweep: ${error} (Issue #2890)`,
+      { repo },
+    );
+  }
 
   // Run repository-specific pre-setup command if configured (Issue #85, #1184)
   const preSetupResult = await runPreSetupCommand(

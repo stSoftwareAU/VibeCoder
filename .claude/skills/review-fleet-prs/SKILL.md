@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, a Fable reviewer checks each PR; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review.
 ---
 
 # Review fleet PRs
@@ -9,7 +9,7 @@ Reviews the open PRs that Dependabot and the fleet accounts raise across the
 repos in this checkout's `.config.json`, as the signed-in `gh` user. The aim
 is that most PRs are approved without the owner: CI is clean, new
 functionality is tested where appropriate, no existing test is meaningfully
-changed, and a Fable review is happy.
+changed, and the review is happy.
 
 Start it once, in a Claude Code session opened in the VibeCoder checkout, and
 leave the session running:
@@ -45,12 +45,42 @@ With `pr_reviewer_app` in `.config.json` (see
 `run.sh` reviews as that App's bot instead of the `gh` user. `app_token.ts`
 mints a fresh installation token for every pass, since one lasts an hour.
 When minting fails, the pass is skipped; it never falls back to posting as the
-`gh` user. The App needs **Pull requests** and **Issues** read and write,
-**Contents**, **Checks** and **Commit statuses** read, and installation on
-every monitored repo and on `stSoftwareAU/VibeCoder` (for improvement issues).
+`gh` user. The App needs **Pull requests**, **Issues**, **Contents** and
+**Workflows** read and write, plus **Checks** and **Commit statuses** read:
+Contents write lets the Dependabot upkeep merge an already-clean PR with
+`gh pr merge --auto` and arm auto-merge, and Workflows write lets it merge
+Dependabot's GitHub Actions bumps, which change `.github/workflows/*`.
+Installation is needed on every monitored repo and on
+`stSoftwareAU/VibeCoder` (for improvement issues).
 Add `<app-slug>[bot]` to `authorized_commenters` (not `pr_reviewers`,
 which would make PR creation fail). An interactive `/review-fleet-prs`
 session still reviews as the `gh` user.
+
+The token must carry Pull requests write, Issues write, Contents write,
+Workflows write, Checks read and Statuses read. `app_token.ts` checks the
+minted token's `permissions` and fails the pass with one message naming each
+missing permission. If the
+App itself lacks a permission, the message points at the App's permission
+settings page; if the App has it but the installation has not yet accepted
+it, the message says to accept the new permissions on the installation page.
+
+### Persistent failure escalation
+
+After 12 consecutive failed passes (about an hour at the 5-minute interval),
+`escalate.ts` opens one deduplicated issue in `stSoftwareAU/VibeCoder`,
+titled `review-fleet-prs runner failing on <host>: <error>`, using the host's
+own `gh` login rather than the App token. If the error changes, it retitles
+the issue and comments on it. It appends a
+`[review-fleet-prs-health] host=… status=unhealthy …` line to `health.log`
+in the log directory, which is also echoed to `runner.log`. The first
+successful pass after that comments, closes the issue and logs
+`status=recovered`. State lives in `failures.json` in the log directory.
+If the escalation itself fails, that is logged as "escalation failed" and
+the next pass retries it.
+
+`run.sh --once` runs the same housekeeping as the loop: pruning rounds older
+than 30 days and rotating `runner.log`. Running `bash -x run.sh` does not
+print the minted token, since tracing is suspended around the mint.
 
 ## Rules
 
@@ -59,7 +89,9 @@ session still reviews as the `gh` user.
    gets the review.
 2. **Nothing is reviewed until CI is green.** Pending checks wait; failing
    checks, merge conflicts and drafts belong to the fleet, so leave them
-   alone and post nothing.
+   alone and post nothing. A PR whose only red checks are cancelled runs is
+   infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
+   once per head, and it is left alone exactly like `ci-failed`.
 3. **Judge the safety net, not test count.** Read the target repository's
    canonical testing standard. New behaviour or a real bug fix usually needs
    a test that would fail on the regression, unless existing tests already
@@ -71,7 +103,9 @@ session still reviews as the `gh` user.
    restore it. A deliberate change the issue does require (an expected value
    or behaviour the issue changes, or deleting a test that only pinned the
    old implementation) is the owner's call: the PR is held with a
-   comment-only review, neither approved nor sent back. Trivial edits
+   comment-only review, neither approved nor sent back, and labelled
+   `needs-human`; the skill removes that label on a later approve or
+   send-back only when it was the one that added it. Trivial edits
    (formatting, renames, imports, added cases, fixture paths) are not, and
    neither are edits that only **tighten** a meaningful behavioural or
    contractual test (it now asserts more or allows less, as the issue asks):
@@ -82,8 +116,8 @@ session still reviews as the `gh` user.
 7. **A pre-existing problem the PR did not cause gets its own issue.** If
    a dark-theme PR passes by a cross-site scripting bug that was already on
    the default branch, it would be unfair to hold the PR up over it, but
-   now that it has been found it must not be forgotten: Fable reports it
-   separately, and it is filed as a new issue in the PR's repo (linked from
+   now that it has been found it must not be forgotten: the reviewer
+   reports it separately, and it is filed as a new issue in the PR's repo (linked from
    the review) without affecting the outcome. **If the PR caused the
    problem, it is never an unrelated issue:** had the dark-theme change
    itself introduced the cross-site scripting bug, it is a blocking finding
@@ -121,8 +155,11 @@ with no model involved (`dependabot.ts`):
 - **Approved at its head and not yet armed:** arms auto-merge (squash where
   the repo allows it), so it merges as soon as every required check passes.
 
-Dependabot PRs are still reviewed by Fable like any other; this upkeep only
-gets an approved one merged. The pass reports what it did in `upkeep`.
+Dependabot PRs are still reviewed like any other; this upkeep only
+gets an approved one merged. The pass reports what it did in `upkeep`. A
+failed upkeep action is reported there as `<repo>#<n> auto-merge failed:
+<first line of the error>` (or `rebase failed: ...`), logged, and does not
+stop the pass; that action is not retried until the PR's head commit changes.
 
 ## The loop
 
@@ -154,12 +191,14 @@ the ready PRs (possibly none) and exits.
 
 ## Reviewing the ready PRs
 
-### 1. Fable review
+### 1. Review
 
 Take at most **5** PRs per round, so a backlog cannot burn a night's quota in
 one go; the rest come back on the next gate run. Launch one Agent per PR in a
-single message so they run in parallel, each with `model: "fable"` and
-`subagent_type: "general-purpose"`, and this prompt (fill in the fields):
+single message so they run in parallel, each with
+`subagent_type: "fleet-pr-reviewer"` — the agent definition in
+`.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-opus-5-5`
+at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
 
 > You are reviewing PR #{number} in {repo} ("{title}"), authored by {author}
 > ({kind}), head commit {headSha}, base {baseRef}. CI has passed. You are a
@@ -243,8 +282,8 @@ that PR; the next gate run reports it again.
 
 ### 2. Post
 
-For each reply, write `{"pr": <the gate's ready entry>, "review": <Fable's
-reply>}` to a file in the scratchpad and run, from this skill's base
+For each reply, write `{"pr": <the gate's ready entry>, "review": <the
+reviewer's reply>}` to a file in the scratchpad and run, from this skill's base
 directory:
 
 ```bash
@@ -253,15 +292,20 @@ deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XD
 
 The script does the rest, so do not post anything yourself:
 
-- It files each of Fable's `unrelatedIssues` first: they are already on
+- It files each of the reviewer's `unrelatedIssues` first: they are already on
   the base branch, so they are filed even if the PR has since moved or
   merged.
 - It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
-- It decides the outcome: Fable findings mean **request changes** (the
+- It decides the outcome: reviewer findings mean **request changes** (the
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
   worker ignores; otherwise **approve**.
+- After a held review posts, it labels the PR `needs-human`. When it later
+  posts an approved or sent-back review for a PR whose latest `log.jsonl`
+  record shows this skill added that label, it removes it; it never
+  removes a label it did not add. A failed add or remove leaves the
+  review posted and is not retried.
 - It links an open issue with the same title instead of filing an
   unrelated issue twice. A failure to file one never stops the review.
 - It writes and posts the review body (listing any issues filed), appends
@@ -269,9 +313,11 @@ The script does the rest, so do not post anything yourself:
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
-It prints `{ posted, outcome?, filedIssues?, reason? }`. Exit code 2 means
-Fable's reply was malformed: nothing was posted, and the PR comes back on the
-next gate pass.
+It prints `{ posted, outcome?, filedIssues?, labelError?, reason? }`.
+`labelError` names the label action (`add` or `remove`) and the `gh` error
+when the label call failed; the exit code is unchanged either way. Exit
+code 2 means the reviewer's reply was malformed: nothing was posted, and the PR
+comes back on the next gate pass.
 
 ### 3. Learn from recurring findings
 
@@ -312,7 +358,8 @@ search or file an improvement issue must not change the PR review outcome.
 ### 4. Report
 
 One short line per round: approved, sent back, and held for the owner, each
-with PR links, plus any issues filed. Then go back to the loop.
+with PR links, plus any issues filed. When post.ts printed a `labelError`
+for a PR, name that PR and the failure. Then go back to the loop.
 
 When the round held a PR for the owner or sent one back to the fleet, also
 send one PushNotification (status `proactive`) naming those PRs and why,

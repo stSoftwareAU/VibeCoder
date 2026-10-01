@@ -440,11 +440,15 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "### Base-branch failures",
   "### Blocked on another issue → say so; the worker defers",
   "### Cypress — Disable Video Recording",
+  // Issue #2873: the time-deferral section of prompts/issue/prompt.md.
+  "### Data not there yet → emit the defer-until marker (Issue #2873)",
   "### Dependency audit failures",
   "### Detect-and-flag self-check + escalation marker",
   "### Every workflow file, template or not",
   "### Example",
   "### Files you create",
+  // Issue #2930: the fleet-run-archive section of prompts/issue/prompt.md.
+  "### Fleet-wide measurement → name your data source (Issue #2930)",
   "### GitHub CLI (`gh`)",
   "### How to open that PR — declare it; the worker opens it",
   "### Nor is your own pull request",

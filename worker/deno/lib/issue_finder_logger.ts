@@ -47,6 +47,13 @@ export const SKIP_REASONS = [
    */
   "merged-pr-permanent",
   "dependency-blocked",
+  /**
+   * Issue #2873: the issue body records a `Deferred until` time still in
+   * the future — the agent reported the data it needs is not there yet.
+   * Distinct from `dependency-blocked` because nothing else needs to
+   * finish first; the issue simply waits out its own clock.
+   */
+  "time-deferred",
   /** Issue #2473: blocking dependency is unclaimable — escalated and dropped */
   "cooldown",
   "cross-worker-cooldown",

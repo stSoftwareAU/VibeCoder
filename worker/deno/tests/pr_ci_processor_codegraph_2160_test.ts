@@ -20,7 +20,7 @@ import type {
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, RepoConfig } from "../types.ts";
 import { openPrGh } from "./support/pr_live_state_stub.ts";
 import {
   CODEGRAPH_PROMPT_LINE,
@@ -67,6 +67,8 @@ interface RunOptions {
   toolCallCounts?: Record<string, number>;
   /** Drive the post-quality retry (Issue #1456) as well. */
   qualityRetry?: boolean;
+  /** Per-repo configuration (Issue #2925's `skip_screenshot_check`). */
+  repoConfigs?: Record<string, RepoConfig>;
 }
 
 async function runCiFix(options: RunOptions): Promise<Observed> {
@@ -140,6 +142,7 @@ async function runCiFix(options: RunOptions): Promise<Observed> {
       workDir: tmpDir,
       workRoot: tmpDir,
       codegraphContextEnabled: options.enabled,
+      ...(options.repoConfigs ? { repoConfigs: options.repoConfigs } : {}),
       ...(options.qualityRetry
         ? {
           qualityGateFn: () =>
@@ -184,9 +187,9 @@ Deno.test("pr_ci_processor - the switch off leaves the invocation untouched", as
 
   assertEquals(observed.prepared[0]?.enabled, false);
   assertEquals(
-    Object.hasOwn(observed.runOptions[0] ?? {}, "mcpConfig"),
-    false,
-    "an off host must write no MCP configuration at all",
+    observed.runOptions[0]?.mcpConfig,
+    true,
+    "an off host adds no CodeGraph server — the browser alone is requested",
   );
   assertEquals(
     String(observed.runOptions[0]?.prompt).includes("CodeGraph index"),
@@ -216,7 +219,7 @@ Deno.test("pr_ci_processor - an indexed run gets the line and the server togethe
     playwright?: boolean;
     servers?: Record<string, { command: string }>;
   };
-  assertEquals(mcp.playwright, false);
+  assertEquals(mcp.playwright, true);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
   assertCodegraphRootedAt(
     mcp,
@@ -235,10 +238,7 @@ Deno.test("pr_ci_processor - a failed index adds neither half", async () => {
       toolCallCounts: { Bash: 2 },
     });
 
-    assertEquals(
-      Object.hasOwn(observed.runOptions[0] ?? {}, "mcpConfig"),
-      false,
-    );
+    assertEquals(observed.runOptions[0]?.mcpConfig, true);
     assertEquals(
       String(observed.runOptions[0]?.prompt).includes("CodeGraph index"),
       false,
@@ -267,8 +267,10 @@ Deno.test("pr_ci_processor - the post-quality retry reuses the index, it does no
   assertStringIncludes(String(retry.prompt), CODEGRAPH_PROMPT_LINE);
   assertEquals(retry.cwd, observed.prepared[0]?.repoDir);
   const mcp = retry.mcpConfig as {
+    playwright?: boolean;
     servers?: Record<string, { command: string }>;
   };
+  assertEquals(mcp?.playwright, true, "the retry keeps the browser");
   assertEquals(mcp?.servers?.codegraph?.command, "codegraph");
   assertCodegraphRootedAt(
     mcp,
@@ -276,4 +278,25 @@ Deno.test("pr_ci_processor - the post-quality retry reuses the index, it does no
     "pr_ci_processor retry",
   );
   assertEquals(observed.queries, 4, "both invocations' tallies are summed");
+});
+
+Deno.test("pr_ci_processor - the browser is granted unless skip_screenshot_check (Issue #2925)", async () => {
+  const granted = await runCiFix({
+    enabled: false,
+    codegraph: { status: "off", enabled: false },
+    qualityRetry: true,
+  });
+  assertEquals(granted.runOptions[0]?.mcpConfig, true);
+  assertEquals(granted.runOptions[1]?.mcpConfig, true, "and on the retry");
+
+  const withheld = await runCiFix({
+    enabled: false,
+    codegraph: { status: "off", enabled: false },
+    qualityRetry: true,
+    repoConfigs: { "org/repo": { skipScreenshotCheck: true } as RepoConfig },
+  });
+  for (const run of withheld.runOptions) {
+    // `false` and absent both write no MCP configuration at all.
+    assertEquals(Boolean(run.mcpConfig), false);
+  }
 });

@@ -919,6 +919,17 @@ to `git clone`.
   history in doubling steps (50, 100, 200, …) until a common ancestor is found,
   falling back to `git fetch --unshallow` as a last resort. On a full clone the
   helper is a no-op.
+- **Belt-and-braces unshallow retry on the milestone sync** — even with
+  `ensureHistoryDepth()` run first, `syncMilestoneBranchWithDefault()` in
+  `worker/deno/lib/git_pull.ts` can still meet a `git merge` that refuses with
+  "refusing to merge unrelated histories" when the doubling steps stopped
+  short of the real merge base (Issue #2896). `mergeWithUnshallowRetry()` in
+  `worker/deno/lib/git_merge_unshallow_retry.ts` treats that specific refusal
+  on a shallow clone as the shallow-history artefact it is: it runs
+  `git fetch --unshallow origin` and retries the merge exactly once before
+  falling through to the ordinary conflict/non-conflict handling. A refusal
+  on a clone that is already full is left alone — that is a genuinely
+  unrelated history, not a depth problem.
 
 **Implementation:** `buildShallowCloneArgs()` in
 `worker/deno/commands/git_operations.ts` produces the argument list for the
@@ -2749,7 +2760,9 @@ A blocked run is now **deferred**:
   bookkeeping write no longer reads as content changed after approval
   (Issue #1631). The exemption is scoped to the **edit**, never the author: a
   block is ignored only while every line inside it matches
-  `Depends on [owner/repo]#N`, so nothing else can be smuggled past the gate,
+  `Depends on [owner/repo]#N` or (Issue #2873) `Deferred until
+  YYYY-MM-DDTHH:MM:SSZ` — the line the time-gated deferral below writes — so
+  nothing else can be smuggled past the gate,
   and a compromised agent running as the worker's own login gains nothing;
 - the claim is released with the outcome `deferred: depends on owner/repo#N`,
   which the release comment states.
@@ -2766,7 +2779,12 @@ does not defer a second time — the gate plainly did not hold (the dependency
 closed and the work is still reported blocked, or the record was lost), and
 re-deferring would spend a full agent run on every scan. The repeat falls
 through to the analysis-only hand-off, so a human sees it; it is still never
-closed.
+closed. The marker is looked up in the issue's full comment thread (fetched via
+the GitHub client, every author), not the budgeted prompt comments (20
+comments / 12,000 characters): on a busy issue that budget could drop the
+marker, so the guard never fired and the same dependency was re-deferred on
+every scan (Issue #2936). The prompt comments are used only as a fallback,
+with a logged warning, if the full-thread fetch fails.
 
 Two supporting changes make the deferral hold. The dependency gate now resolves
 a **cross-repo** `Depends on owner/repo#N` against its own repo — previously
@@ -2784,6 +2802,35 @@ flowchart TD
     C -- yes --> X["Close as complete,<br/>evidence in the comment"]
     C -- no --> A["Analysis-only hand-off<br/>(needs-human)"]
 ```
+
+### A time-gated analysis run is parked, not escalated (Issue #2873)
+
+Some analysis-only issues have a correct answer the agent simply cannot reach
+yet — "measure X over the last 7 days" asked before the window has elapsed.
+That is a third shape beside "blocked on another issue" and
+"analysis-only with no deliverable": a wait on the **calendar**, not on a
+dependency or a human. The agent says so with
+`<!-- vibe-defer-until until="<ISO-8601>" reason="…" -->`, checked immediately
+after the `## Blocked:` dependency deferral above and before the
+already-resolved / analysis-only checks. `until` must be in the future and at
+most 30 days out; anything else is ignored and the run falls through unchanged.
+
+A time-gated run is **parked**: one `## Deferred until <time>` comment (hidden
+`<!-- vibe-time-deferral until="…" -->` record), a `Deferred until
+YYYY-MM-DDTHH:MM:SSZ` line in the same worker-record block that carries
+`Depends on owner/repo#N`, the discovery label kept, no `needs-human`, claim
+released. Discovery skips it with reason `time-deferred` until `until` passes,
+then re-runs it — the same single-issue suppression the dependency wait uses,
+never a whole repo or tier. After three deferrals on one issue
+(`MAX_TIME_DEFERRALS`) the next marker is not honoured: the worker posts
+`## Deferral limit reached` with the deferral history and falls back to the
+existing analysis-only `needs-human` hand-off (#2834) instead. Only a time
+wait is supported; there is no run-count variant.
+
+**Implementation:** [`worker_record_block.ts`](worker/deno/lib/worker_record_block.ts)
+(shared grammar for both machine-owned lines). Operator view:
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) →
+Time-gated deferral.
 
 ### A blocked issue promotes its chain rather than yielding the fleet
 

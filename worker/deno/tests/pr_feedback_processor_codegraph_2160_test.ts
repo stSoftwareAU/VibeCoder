@@ -3,7 +3,8 @@
  *
  * Mirrors the issue-path suite: off changes nothing, an indexed run gets the
  * MCP entry and the prompt line together, and any other status gets neither
- * while the run itself carries on.
+ * while the run itself carries on. The Playwright browser rides beside it on
+ * every run unless the repo sets `skip_screenshot_check` (Issue #2925).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -19,7 +20,7 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, RepoConfig } from "../types.ts";
 import { openPrGh } from "./support/pr_live_state_stub.ts";
 import {
   CODEGRAPH_PROMPT_LINE,
@@ -56,6 +57,7 @@ async function runFeedback(
   enabled: boolean,
   codegraph: CodegraphContextResult,
   toolCallCounts?: Record<string, number>,
+  repoConfigs?: Record<string, RepoConfig>,
 ): Promise<Observed> {
   const observed: Observed = { runOptions: [], prepared: [] };
   const mockClaude: Partial<ClaudeDeps> = {
@@ -111,6 +113,7 @@ async function runFeedback(
     workDir: "/tmp/codegraph-2160-clone",
     workRoot: "/tmp/codegraph-2160-work",
     codegraphContextEnabled: enabled,
+    ...(repoConfigs ? { repoConfigs } : {}),
     verifyPushFn: () =>
       Promise.resolve({
         landed: true,
@@ -139,9 +142,9 @@ Deno.test("pr_feedback_processor - the switch off leaves the invocation untouche
 
   assertEquals(observed.prepared[0]?.enabled, false);
   assertEquals(
-    Object.hasOwn(observed.runOptions[0] ?? {}, "mcpConfig"),
-    false,
-    "an off host must write no MCP configuration at all",
+    observed.runOptions[0]?.mcpConfig,
+    true,
+    "an off host adds no CodeGraph server — the browser alone is requested",
   );
   assertEquals(
     String(observed.runOptions[0]?.prompt).includes("CodeGraph index"),
@@ -171,7 +174,7 @@ Deno.test("pr_feedback_processor - an indexed run gets the line and the server t
     playwright?: boolean;
     servers?: Record<string, { command: string }>;
   };
-  assertEquals(mcp.playwright, false);
+  assertEquals(mcp.playwright, true);
   assertEquals(mcp.servers?.codegraph?.command, "codegraph");
   assertCodegraphRootedAt(
     mcp,
@@ -188,10 +191,7 @@ Deno.test("pr_feedback_processor - a failed index adds neither half", async () =
       Bash: 2,
     });
 
-    assertEquals(
-      Object.hasOwn(observed.runOptions[0] ?? {}, "mcpConfig"),
-      false,
-    );
+    assertEquals(observed.runOptions[0]?.mcpConfig, true);
     assertEquals(
       String(observed.runOptions[0]?.prompt).includes("CodeGraph index"),
       false,
@@ -199,4 +199,23 @@ Deno.test("pr_feedback_processor - a failed index adds neither half", async () =
     assertEquals(observed.status, status);
     assertEquals(observed.queries, 0);
   }
+});
+
+Deno.test("pr_feedback_processor - the browser is granted unless skip_screenshot_check (Issue #2925)", async () => {
+  // A reviewer asking for screenshots is where the missing browser bites.
+  const granted = await runFeedback(false, { status: "off", enabled: false });
+  assertEquals(granted.runOptions[0]?.mcpConfig, true);
+
+  const withheld = await runFeedback(
+    false,
+    { status: "off", enabled: false },
+    undefined,
+    { "org/repo": { skipScreenshotCheck: true } as RepoConfig },
+  );
+  // `false` and absent both write no MCP configuration at all.
+  assertEquals(
+    Boolean(withheld.runOptions[0]?.mcpConfig),
+    false,
+    "a skip_screenshot_check repo with CodeGraph off writes no MCP config",
+  );
 });

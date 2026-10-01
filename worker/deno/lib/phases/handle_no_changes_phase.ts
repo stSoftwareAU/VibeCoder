@@ -33,11 +33,21 @@ import {
   detectBlockedOutcome,
   formatDependencyRef,
 } from "../blocked_outcome.ts";
-import { deferBlockedIssue, hasPriorDeferral } from "../blocked_deferral.ts";
+import {
+  deferBlockedIssue,
+  hasPriorDeferralOnThread,
+} from "../blocked_deferral.ts";
+import {
+  buildDeferralExhaustedComment,
+  countPriorTimeDeferrals,
+  deferIssueUntil,
+  detectTimeDeferral,
+  MAX_TIME_DEFERRALS,
+} from "../time_deferral.ts";
 import {
   detectPlanningHandoff,
   handOffToPlanning,
-  hasPriorPlanningHandoff,
+  hasPriorPlanningHandoffOnThread,
 } from "../planning_handoff.ts";
 import {
   detectAlreadyResolved,
@@ -173,12 +183,19 @@ export async function workOnIssueHandleNoChanges(
   // Loop guard: a deferral holds only while the dependency gate skips the
   // issue. Back here on the *same* dependency means it did not hold, and
   // deferring again would spin a fresh agent run on every scan — so the repeat
-  // falls through to the analysis-only hand-off and a human sees it.
+  // falls through to the analysis-only hand-off and a human sees it. Reads
+  // the full comment thread rather than the budgeted prompt blob, which drops
+  // the marker on a busy issue (Issue #2936).
+  const blockedClient = blocked ? deps.github.createClient(logger) : undefined;
   const repeatDeferral = blocked !== undefined &&
-    hasPriorDeferral(
-      ctx.issueComments,
-      formatDependencyRef(blocked.dependency),
-    );
+    await hasPriorDeferralOnThread({
+      ghClient: blockedClient!,
+      repo,
+      issueNumber,
+      ref: formatDependencyRef(blocked.dependency),
+      fallbackComments: ctx.issueComments,
+      logger,
+    });
   if (blocked && repeatDeferral) {
     logger.warn(
       "Blocked on a dependency already deferred once — handing off to a " +
@@ -191,9 +208,8 @@ export async function workOnIssueHandleNoChanges(
     );
   }
   if (blocked && !repeatDeferral) {
-    const ghClient = deps.github.createClient(logger);
     const result = await deferBlockedIssue({
-      ghClient,
+      ghClient: blockedClient!,
       repo,
       issueNumber,
       githubUser,
@@ -216,6 +232,99 @@ export async function workOnIssueHandleNoChanges(
     };
   }
 
+  // Issue #2873 — a run that reports the data it needs to analyse does not
+  // exist *yet* (rather than the issue being blocked on another issue, or
+  // genuinely needing a human decision) asks to be parked until a future
+  // time via a `vibe-defer-until` marker. This is checked here, after the
+  // blocked-dependency deferral above (which takes priority when both
+  // appear) and before the #2834 analysis-only hand-off below, which a
+  // missing/invalid/exhausted marker falls through to.
+  const timeDeferral = blocked ? undefined : detectTimeDeferral(
+    claudeOutput,
+    Date.now(),
+  );
+  if (timeDeferral?.kind === "invalid") {
+    logger.warn(
+      "Time-deferral marker present but invalid — falling through to " +
+        "normal handling",
+      { repo, issueNumber, why: timeDeferral.why },
+    );
+  } else if (timeDeferral?.kind === "valid") {
+    const ghClient = deps.github.createClient(logger);
+    const history = await countPriorTimeDeferrals({
+      ghClient,
+      repo,
+      issueNumber,
+      // Fleet-wide, not this host alone (Issue #2933 review): a sibling
+      // host's park comments must count too, or the bound becomes
+      // MAX_TIME_DEFERRALS per login rather than per issue.
+      fleetAuthors: resolveFleetMaintenanceAuthorSet({
+        githubUser,
+        fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
+        serviceAccounts: ctx.config.serviceAccounts ?? [],
+      }),
+      fallbackComments: ctx.issueComments,
+      logger,
+    });
+    if (history.length < MAX_TIME_DEFERRALS) {
+      const result = await deferIssueUntil({
+        ghClient,
+        repo,
+        issueNumber,
+        githubUser,
+        request: timeDeferral.request,
+        priorCount: history.length,
+        logger,
+      });
+      logger.info(
+        "Data not there yet — deferred until the requested time instead of " +
+          "escalating",
+        {
+          repo,
+          issueNumber,
+          until: timeDeferral.request.until,
+          recorded: result.recorded,
+        },
+      );
+      return {
+        status: "early_exit",
+        reason: `deferred: until ${timeDeferral.request.until}`,
+        expectedSkip: true,
+        outcome: result.outcome,
+      };
+    }
+
+    logger.warn(
+      "Time-deferral limit reached — handing off to a human instead of " +
+        "deferring again",
+      { repo, issueNumber, priorCount: history.length },
+    );
+    try {
+      await ghClient.postComment(
+        repo,
+        issueNumber,
+        buildDeferralExhaustedComment(history, timeDeferral.request),
+      );
+    } catch (err) {
+      logger.error("Failed to post the deferral-exhausted comment", {
+        repo,
+        issueNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    await handOffAnalysisOnly({
+      ghClient,
+      repo,
+      issueNumber,
+      needsHumanLabel: config.needsHumanLabel,
+      githubUser,
+      trigger: "no_changes",
+      logger,
+      deps: { ensureLabelExists: deps.github.ensureLabelExists },
+    });
+    return { status: "early_exit", reason: "analysis_only_handed_off" };
+  }
+
   // Issue #2688 — a run that judged the issue too large for one PR asks for
   // decomposition. The worker applies `planning` itself (audited, and trusted
   // only while the human `work-on` add anchors it). A repeat request, or a
@@ -227,7 +336,20 @@ export async function workOnIssueHandleNoChanges(
   // `work-on` add anchors it, so on any other pickup tier the label would be
   // flagged and ignored — hand those to a human instead.
   const planningImageGate = gatePlanningHandoff(ctx.untrustedImages);
-  if (planningRequest && hasPriorPlanningHandoff(ctx.issueComments)) {
+  // Issue #2942: read the loop guard off the full comment thread, not the
+  // budgeted prompt blob, which drops the marker on a busy issue.
+  const planningClient = planningRequest
+    ? deps.github.createClient(logger)
+    : undefined;
+  const repeatPlanning = planningRequest !== undefined &&
+    await hasPriorPlanningHandoffOnThread({
+      ghClient: planningClient!,
+      repo,
+      issueNumber,
+      fallbackComments: ctx.issueComments,
+      logger,
+    });
+  if (planningRequest && repeatPlanning) {
     logger.warn(
       "Planning requested again after an earlier hand-off — handing off to " +
         "a human instead",
@@ -250,7 +372,7 @@ export async function workOnIssueHandleNoChanges(
     });
   } else if (planningRequest) {
     const handoff = await handOffToPlanning({
-      ghClient: deps.github.createClient(logger),
+      ghClient: planningClient!,
       repo,
       issueNumber,
       githubUser,

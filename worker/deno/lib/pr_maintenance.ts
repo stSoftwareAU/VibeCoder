@@ -1512,16 +1512,6 @@ export async function findFailedCiChecks(
               .join(", ")
           } — infrastructure, not code; no CI-fix agent (Issue #2914)`,
         );
-        await rerunInfrastructureChecks({
-          repo,
-          prNumber,
-          headSha: pr.headRefOid,
-          infrastructure: classified.infrastructure,
-          codeRunIds: classified.codeRunIds,
-          stateDir,
-          ghCommandFn,
-          logger,
-        });
       }
 
       // Issue #1878: an aggregator such as `CI Required Checks` is red
@@ -1545,12 +1535,17 @@ export async function findFailedCiChecks(
 
       // Issue #1881: the checks a fleet-authored deferral marker has parked
       // on an issue that is still open. Issue #2744: the same read carries
-      // the human gates the CI-fix lane parked (#2727). Read only when a
-      // non-aggregator failure is left to decide, so a green or
-      // aggregator-only PR costs no comment fetch. Every degraded read is
-      // logged inside and leaves the check unparked — the scan never goes
-      // quiet on an error.
-      const parked = failedChecks.some((check) => !aggregators.has(check.name))
+      // the human gates the CI-fix lane parked (#2727). Issue #2919: the
+      // same read also carries the fleet-wide infra-rerun markers an
+      // infrastructure check's once-per-head bound now binds on, so it is
+      // read whenever an infrastructure check is in play, not only when a
+      // non-aggregator code failure is left to decide. Either way a green
+      // or aggregator-only PR with no infrastructure check costs no comment
+      // fetch. Every degraded read is logged inside and leaves the check
+      // unparked — the scan never goes quiet on an error.
+      const needsParkedRead = classified.infrastructure.length > 0 ||
+        failedChecks.some((check) => !aggregators.has(check.name));
+      const parked = needsParkedRead
         ? await findParkedChecks({
           repo,
           prNumber,
@@ -1559,6 +1554,19 @@ export async function findFailedCiChecks(
           logger,
         })
         : undefined;
+
+      if (classified.infrastructure.length > 0 && parked !== undefined) {
+        await rerunInfrastructureChecks({
+          repo,
+          prNumber,
+          headSha: pr.headRefOid,
+          infrastructure: classified.infrastructure,
+          codeRunIds: classified.codeRunIds,
+          fleetMarkers: parked.markers,
+          ghCommandFn,
+          logger,
+        });
+      }
       const deferrals = parked?.deferrals ?? [];
       const deferredNames = new Set(deferrals.map((d) => d.checkName));
       if (deferrals.length > 0) {

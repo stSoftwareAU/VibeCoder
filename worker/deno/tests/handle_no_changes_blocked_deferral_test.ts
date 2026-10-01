@@ -17,12 +17,16 @@ import { workOnIssueHandleNoChanges } from "../lib/phases/handle_no_changes_phas
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
-import type { GitHubClient, GitHubIssue } from "../types.ts";
+import type { GitHubClient, GitHubComment, GitHubIssue } from "../types.ts";
 import { extractDependencyReferencesDetailed } from "../lib/issue_dependencies.ts";
 import {
   buildDeferralMarker,
   hasPriorDeferral,
 } from "../lib/blocked_deferral.ts";
+import {
+  buildImplementationCommentContext,
+  IMPLEMENTATION_COMMENT_LIMITS,
+} from "../lib/implementation_comments.ts";
 
 const REPO = "stSoftwareAU/NEAT-AI-Backpropagation";
 const ISSUE = 94;
@@ -59,7 +63,22 @@ function makeCalls(): StubCalls {
   };
 }
 
-function makeClient(calls: StubCalls, body = "Original body."): GitHubClient {
+/** A minimal `GitHubComment`, for feeding `getIssueComments` stubs. */
+function comment(id: number, author: string, body: string): GitHubComment {
+  return {
+    id,
+    author,
+    body,
+    createdAt: "",
+    reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+  };
+}
+
+function makeClient(
+  calls: StubCalls,
+  body = "Original body.",
+  comments: GitHubComment[] = [],
+): GitHubClient {
   const issue: GitHubIssue = {
     number: ISSUE,
     title: "Validate every trained creature before returning it",
@@ -72,7 +91,7 @@ function makeClient(calls: StubCalls, body = "Original body."): GitHubClient {
   };
   return {
     getIssue: () => Promise.resolve(issue),
-    getIssueComments: () => Promise.resolve([]),
+    getIssueComments: () => Promise.resolve(comments),
     addLabel: (_r, _i, label) => {
       calls.addLabel.push(label);
       return Promise.resolve();
@@ -224,15 +243,20 @@ Deno.test(
     // itself blocked), so deferring again would spin a fresh agent run every
     // scan. The repeat escalates to a human — and is still never closed.
     const calls = makeCalls();
-    const deps = createMockDeps({
-      github: { createClient: () => makeClient(calls) },
-    });
-
     const priorComment = `## Deferred — blocked on ${DEP}\n\n…\n\n${
       buildDeferralMarker(DEP)
     }`;
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(calls, "Original body.", [
+            comment(1, "testbot", priorComment),
+          ]),
+      },
+    });
+
     const result = await workOnIssueHandleNoChanges(
-      makeContext({ issueComments: priorComment }),
+      makeContext({ issueComments: "" }),
       makeState(BLOCKED_OUTPUT),
       deps,
     );
@@ -247,6 +271,123 @@ Deno.test(
     assert(
       !calls.postComment.some((c) => c.includes("## Deferred")),
       "a repeat deferral must not post another deferral comment",
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - Issue #2936: a prior deferral dropped by the " +
+    "prompt budget is still found on the full thread",
+  async () => {
+    // Thread: one old fleet deferral comment, then enough human traffic to
+    // blow the implementation prompt's comment budget and drop the marker
+    // from the blob the phase used to check.
+    const priorComment = comment(
+      1,
+      "testbot",
+      `## Deferred — blocked on ${DEP}\n\n…\n\n${buildDeferralMarker(DEP)}`,
+    );
+    const flood: GitHubComment[] = [];
+    for (let i = 0; i < IMPLEMENTATION_COMMENT_LIMITS.maxComments + 5; i++) {
+      flood.push(comment(100 + i, "human", `Just checking in, #${i}`));
+    }
+    const thread = [priorComment, ...flood];
+
+    const budgeted = buildImplementationCommentContext(
+      thread.map((c) => ({ author: c.author, body: c.body })),
+      {
+        allowedAuthors: ["human"],
+        authorisedCommenters: [],
+        workerLogin: "testbot",
+      },
+    );
+    // Prove the budget dropped the marker — the bug this test regresses.
+    assert(!hasPriorDeferral(budgeted.issueComments, DEP));
+
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => makeClient(calls, "Original body.", thread),
+      },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: budgeted.issueComments }),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
+    assertEquals(calls.editIssue.length, 0);
+    assert(
+      !calls.postComment.some((c) => c.includes("## Deferred")),
+      "a repeat deferral hidden by the budget must not defer again",
+    );
+    assertEquals(calls.closeIssue, 0);
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - falls back to the budgeted comments when the " +
+    "full thread cannot be read",
+  async () => {
+    const priorComment = `## Deferred — blocked on ${DEP}\n\n…\n\n${
+      buildDeferralMarker(DEP)
+    }`;
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => {
+          const client = makeClient(calls);
+          return {
+            ...client,
+            getIssueComments: () => Promise.reject(new Error("boom")),
+          };
+        },
+      },
+    });
+
+    // The fallback blob still carries the marker, so the repeat is caught.
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: priorComment }),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - defers when the thread read fails and the " +
+    "fallback blob is empty",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => {
+          const client = makeClient(calls);
+          return {
+            ...client,
+            getIssueComments: () => Promise.reject(new Error("boom")),
+          };
+        },
+      },
+    });
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext({ issueComments: "" }),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+    assertEquals(
+      (result as { reason: string }).reason,
+      `deferred: depends on ${DEP}`,
     );
   },
 );

@@ -21,7 +21,8 @@
 // Output: one line of JSON, { ready: [...], skipped: { <reason>: count },
 // upkeep: [...] }. Unlike the review itself, each pass also does the
 // Dependabot upkeep in dependabot.ts (rebase requests, arming auto-merge);
-// --dry-run reports that upkeep without doing it.
+// --dry-run reports that upkeep without doing it. A failed upkeep action is
+// reported in `upkeep` too, and is not retried at the same head commit.
 
 // The skill lives at <checkout>/.claude/skills/review-fleet-prs/, next to the
 // checkout's own .config.json.
@@ -57,6 +58,7 @@ const MAX_CONSECUTIVE_FAILURES = 12;
 type Skip =
   | "waiting-ci" // checks still running (or none reported yet)
   | "ci-failed" // the fleet fixes it; no review
+  | "ci-cancelled" // every red check is a cancelled run (Issue #2916): the fleet's CI-fix scan re-runs it once per head; no review
   | "conflicting" // the fleet resolves it; no review
   | "draft"
   | "not-default-branch" // e.g. into a milestone branch: the merge to the default branch gets the review
@@ -89,6 +91,15 @@ export interface Review {
   commit: { oid: string } | null;
 }
 
+/** One check the rollup folded in; unknown `__typename`s are ignored. */
+export interface RollupContextNode {
+  __typename: string;
+  /** Present on `CheckRun` nodes. */
+  conclusion?: string | null;
+  /** Present on `StatusContext` nodes. */
+  state?: string | null;
+}
+
 export interface SearchPr {
   number: number;
   title: string;
@@ -109,7 +120,16 @@ export interface SearchPr {
   };
   author: { login: string } | null;
   commits: {
-    nodes: { commit: { statusCheckRollup: { state: string } | null } }[];
+    nodes: {
+      commit: {
+        statusCheckRollup: {
+          state: string;
+          // Optional: absent when the query did not ask for it (or the
+          // rollup carries no contexts).
+          contexts?: { nodes: RollupContextNode[] };
+        } | null;
+      };
+    }[];
   };
   reviews: { nodes: Review[] };
 }
@@ -198,13 +218,59 @@ export function skipReason(pr: SearchPr, reviewer: string): Skip | null {
   }
   if (pr.isDraft) return "draft";
   if (pr.mergeable === "CONFLICTING") return "conflicting";
-  const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup?.state;
-  if (rollup === "FAILURE" || rollup === "ERROR") return "ci-failed";
-  if (rollup !== "SUCCESS") return "waiting-ci";
+  const rollup = pr.commits.nodes[0]?.commit.statusCheckRollup;
+  if (rollup?.state === "FAILURE" || rollup?.state === "ERROR") {
+    // GitHub rolls a CANCELLED check up as FAILURE, so the contexts tell
+    // the two apart (Issue #2916): when every red context is a cancelled
+    // CheckRun, the PR is stuck on infrastructure the fleet's CI-fix scan
+    // re-runs once per head — same treatment as ci-failed, but named so
+    // the pass can say what it saw.
+    return everyRedCheckCancelled(rollup.contexts?.nodes ?? [])
+      ? "ci-cancelled"
+      : "ci-failed";
+  }
+  if (rollup?.state !== "SUCCESS") return "waiting-ci";
   if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
     return "already-reviewed";
   }
   return null;
+}
+
+// A red context is one the rollup counts against the PR. CheckRun
+// conclusions GitHub reports for a failed check run; StatusContext states
+// are the older commit-status values (Issue #2916).
+const RED_CHECKRUN_CONCLUSIONS = new Set([
+  "FAILURE",
+  "CANCELLED",
+  "TIMED_OUT",
+  "ACTION_REQUIRED",
+  "STARTUP_FAILURE",
+]);
+const RED_STATUS_STATES = new Set(["FAILURE", "ERROR"]);
+
+function isRedContext(node: RollupContextNode): boolean {
+  if (node.__typename === "CheckRun") {
+    return node.conclusion !== undefined && node.conclusion !== null &&
+      RED_CHECKRUN_CONCLUSIONS.has(node.conclusion);
+  }
+  if (node.__typename === "StatusContext") {
+    return node.state !== undefined && node.state !== null &&
+      RED_STATUS_STATES.has(node.state);
+  }
+  return false;
+}
+
+/** True when at least one context is red and every red one is CANCELLED. */
+function everyRedCheckCancelled(nodes: RollupContextNode[]): boolean {
+  let sawRed = false;
+  for (const node of nodes) {
+    if (!isRedContext(node)) continue;
+    sawRed = true;
+    if (node.__typename !== "CheckRun" || node.conclusion !== "CANCELLED") {
+      return false;
+    }
+  }
+  return sawRed;
 }
 
 export function authorKind(
@@ -271,7 +337,9 @@ query($q: String!, $after: String) {
         autoMergeAllowed squashMergeAllowed mergeCommitAllowed
       }
       author { login }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state
+        contexts(first: 100) { nodes { __typename ... on CheckRun { conclusion } ... on StatusContext { state } } }
+      } } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
     } }
   }
@@ -292,6 +360,7 @@ query($q: String!, $after: String) {
 async function fleetActiveRepos(
   owners: string[],
   fleet: readonly string[],
+  gh: (args: string[]) => Promise<string>,
   days = 30,
 ): Promise<Set<string>> {
   const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(
@@ -327,6 +396,7 @@ async function fleetActiveRepos(
 async function searchOpenPrs(
   owners: string[],
   logins: string[],
+  gh: (args: string[]) => Promise<string>,
 ): Promise<SearchPr[]> {
   const q = [
     "is:pr is:open archived:false",
@@ -356,43 +426,61 @@ async function searchOpenPrs(
 // request is not repeated while Dependabot works on it.
 const REBASE_FILE = "dependabot-rebase.json";
 
+// Head commit an upkeep action (rebase or auto-merge) last failed at, per PR
+// and action, so a failure is not retried every pass.
+const FAILED_FILE = "dependabot-failed.json";
+
 // --dry-run reports the Dependabot upkeep it would do without doing it.
 const DRY_RUN = Deno.args.includes("--dry-run");
 
-async function readRebaseAsked(): Promise<Record<string, string>> {
+async function readMemory(
+  dir: string,
+  file: string,
+): Promise<Record<string, string>> {
   try {
-    return JSON.parse(await Deno.readTextFile(`${stateDir()}/${REBASE_FILE}`));
+    return JSON.parse(await Deno.readTextFile(`${dir}/${file}`));
   } catch {
     return {};
   }
 }
 
-async function writeRebaseAsked(asked: Record<string, string>) {
-  await Deno.mkdir(stateDir(), { recursive: true });
-  await Deno.writeTextFile(
-    `${stateDir()}/${REBASE_FILE}`,
-    JSON.stringify(asked),
-  );
+async function writeMemory(
+  dir: string,
+  file: string,
+  memory: Record<string, string>,
+) {
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(`${dir}/${file}`, JSON.stringify(memory));
 }
 
-async function pass(
+// A single line up to (and excluding) its first newline, so a multi-line gh
+// error does not spill a stack trace into `upkeep` or the summary.
+function firstLine(message: string): string {
+  return message.split("\n")[0]!;
+}
+
+export async function pass(
   repos: ReadonlySet<string>,
   fleet: ReadonlySet<string>,
   reviewer: string,
+  deps: { gh?: (args: string[]) => Promise<string>; dir?: string } = {},
 ) {
+  const callGh = deps.gh ?? gh;
+  const dir = deps.dir ?? stateDir();
   const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
   const logins = ["app/dependabot", ...fleet];
   const ready: ReadyPr[] = [];
   const skipped: Record<string, number> = {};
   const open = new Set<string>();
   const upkeep: string[] = [];
-  const log = await readLog(stateDir());
-  const rebaseAsked = await readRebaseAsked();
+  const log = await readLog(dir);
+  const rebaseAsked = await readMemory(dir, REBASE_FILE);
+  const failed = await readMemory(dir, FAILED_FILE);
   const single = repos.size === 1;
   const active = single
     ? new Set<string>()
-    : await fleetActiveRepos(owners, [...fleet]);
-  for (const pr of await searchOpenPrs(owners, logins)) {
+    : await fleetActiveRepos(owners, [...fleet], callGh);
+  for (const pr of await searchOpenPrs(owners, logins, callGh)) {
     const repo = pr.repository.nameWithOwner;
     const kind = authorKind(pr.author?.login ?? "", fleet);
     // Fleet PRs only exist in repos some host monitors; Dependabot PRs are
@@ -409,40 +497,62 @@ async function pass(
     ) {
       const key = prKey(repo, pr.number);
       const action = dependabotAction(pr, reviewer, rebaseAsked[key]);
-      if (action.kind === "rebase") {
-        if (!DRY_RUN) {
-          await gh([
-            "pr",
-            "comment",
-            String(pr.number),
-            "-R",
-            repo,
-            "--body",
-            "@dependabot rebase",
-          ]);
-          rebaseAsked[key] = pr.headRefOid;
+      const alreadyFailed = (action.kind === "rebase" ||
+        action.kind === "auto-merge") &&
+        failed[`${key} ${action.kind}`] === pr.headRefOid;
+      if (action.kind === "rebase" && !alreadyFailed) {
+        try {
+          if (!DRY_RUN) {
+            await callGh([
+              "pr",
+              "comment",
+              String(pr.number),
+              "-R",
+              repo,
+              "--body",
+              "@dependabot rebase",
+            ]);
+            rebaseAsked[key] = pr.headRefOid;
+          }
+          upkeep.push(`${key} rebase requested${DRY_RUN ? " (dry run)" : ""}`);
+          skipped["rebasing"] = (skipped["rebasing"] ?? 0) + 1;
+          continue;
+        } catch (e) {
+          failed[`${key} rebase`] = pr.headRefOid;
+          const line = `${key} rebase failed: ${
+            firstLine((e as Error).message)
+          }`;
+          upkeep.push(line);
+          console.error(line);
+          // Falls through to the normal skipReason check below.
         }
-        upkeep.push(`${key} rebase requested${DRY_RUN ? " (dry run)" : ""}`);
-        skipped["rebasing"] = (skipped["rebasing"] ?? 0) + 1;
-        continue;
-      }
-      if (action.kind === "auto-merge") {
-        if (!DRY_RUN) {
-          await gh([
-            "pr",
-            "merge",
-            String(pr.number),
-            "-R",
-            repo,
-            "--auto",
-            `--${action.method}`,
-          ]);
+      } else if (action.kind === "auto-merge" && !alreadyFailed) {
+        try {
+          if (!DRY_RUN) {
+            await callGh([
+              "pr",
+              "merge",
+              String(pr.number),
+              "-R",
+              repo,
+              "--auto",
+              `--${action.method}`,
+            ]);
+          }
+          upkeep.push(
+            `${key} auto-merge armed (${action.method})${
+              DRY_RUN ? " (dry run)" : ""
+            }`,
+          );
+        } catch (e) {
+          failed[`${key} auto-merge`] = pr.headRefOid;
+          const line = `${key} auto-merge failed: ${
+            firstLine((e as Error).message)
+          }`;
+          upkeep.push(line);
+          console.error(line);
+          // Falls through to the normal skipReason check below.
         }
-        upkeep.push(
-          `${key} auto-merge armed (${action.method})${
-            DRY_RUN ? " (dry run)" : ""
-          }`,
-        );
       }
     }
     const skip = skipReason(pr, reviewer);
@@ -451,7 +561,11 @@ async function pass(
       continue;
     }
     const files: PrFile[] = JSON.parse(
-      await gh(["api", `repos/${repo}/pulls/${pr.number}/files`, "--paginate"]),
+      await callGh([
+        "api",
+        `repos/${repo}/pulls/${pr.number}/files`,
+        "--paginate",
+      ]),
     );
     ready.push({
       repo,
@@ -469,8 +583,9 @@ async function pass(
   }
   // A single --repo run sees only part of the fleet, so it leaves the
   // summary's open set alone.
-  if (repos.size > 1) await writeSummary(stateDir(), open);
-  await writeRebaseAsked(rebaseAsked);
+  if (repos.size > 1) await writeSummary(dir, open);
+  await writeMemory(dir, REBASE_FILE, rebaseAsked);
+  await writeMemory(dir, FAILED_FILE, failed);
   return { ready, skipped, upkeep };
 }
 

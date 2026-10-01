@@ -1703,10 +1703,21 @@ export async function fetchRecentMergedPRs(
 }
 
 /**
+ * `gh pr list` without `--search` orders by creation date, not update
+ * recency (Issue #2901): a PR merged or closed after `limit` newer-numbered
+ * PRs were created never enters a window ordered that way. Passing this as
+ * `--search` orders by update recency instead, so a merge or close always
+ * puts the PR back at the front of the window.
+ */
+export const RECENCY_ORDER_SEARCH = "sort:updated-desc";
+
+/**
  * Fetch merged PRs by a given user (Issue #1787).
  *
  * Used by branch cleanup, merged-PR-driven issue closure, and the
- * closed-PR self-healing path. Cache key is `prs_merged_${user}`.
+ * closed-PR self-healing path. Cache key is `prs_merged_${user}`. Ordered by
+ * update recency, not creation date, so a long-lived PR's merge keeps it in
+ * the window (Issue #2901).
  */
 export async function fetchMergedPRsByUser(
   repo: string,
@@ -1741,6 +1752,8 @@ export async function fetchMergedPRsByUser(
     "merged",
     "--author",
     githubUser,
+    "--search",
+    RECENCY_ORDER_SEARCH,
     "--json",
     "number,title,headRefName,mergedAt,body",
     "--limit",
@@ -1812,6 +1825,8 @@ function parseMergedPrListing(output: string): MergedPR[] {
  *
  * Cached under `prs_merged_any` for the cache's normal TTL — at worst a close
  * lands one TTL late, and each host spends one listing per repo per TTL.
+ * Ordered by update recency, not creation date, so a long-lived PR's merge
+ * keeps it in the window (Issue #2901).
  */
 export async function fetchMergedPRsAnyAuthor(
   repo: string,
@@ -1832,6 +1847,8 @@ export async function fetchMergedPRsAnyAuthor(
     repo,
     "--state",
     "merged",
+    "--search",
+    RECENCY_ORDER_SEARCH,
     "--json",
     "number,title,headRefName,mergedAt,body",
     "--limit",
@@ -2740,6 +2757,9 @@ export function parseClosedPRListJson(jsonStr: string): ClosedPR[] {
  * @param cache - Optional cache instance
  * @param ghCommandFn - Optional gh command function for testing
  * @returns Array of closed PRs with merge state
+ *
+ * Ordered by update recency, not creation date, so a long-lived PR's close
+ * or merge keeps it in the window (Issue #2901).
  */
 export async function fetchClosedPRsByUser(
   repo: string,
@@ -2774,6 +2794,8 @@ export async function fetchClosedPRsByUser(
     "closed",
     "--author",
     githubUser,
+    "--search",
+    RECENCY_ORDER_SEARCH,
     "--json",
     "number,title,mergedAt,closedAt,body",
     "--limit",

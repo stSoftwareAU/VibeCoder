@@ -54,6 +54,7 @@ import {
   type FindIssuesOptions,
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
+import { isIssueTimeDeferred } from "./time_deferral.ts";
 import { verifyWorkOnContentIntegrity } from "./work_on_content_integrity.ts";
 import { buildBatchedGh } from "./timeline_batch.ts";
 import type { BlockedCandidateInfo } from "./issue_finder_logger.ts";
@@ -116,6 +117,10 @@ export async function collectLabelCandidates(
   // `getIssueState` calls inside `isDependencyBlocked` resolve from
   // the local map on the warm path.
   const openStateMap = buildOpenIssueStateMap(repoAllIssues);
+
+  // Issue #2873: one clock reading per scan, not per issue — consistent with
+  // the other once-per-repo state built above.
+  const nowMs = Date.now();
 
   // Issue #2173: the lazy open-milestone lookup for the cross-milestone
   // dependency hold. Built once per repo and shared by every candidate; the
@@ -420,6 +425,29 @@ export async function collectLabelCandidates(
             continue;
           }
         }
+      }
+
+      // Issue #2873: skip while the issue's own `Deferred until` clock has
+      // not yet passed — getIssueBody is memoised, so this read is free.
+      // Mirrors `isDependencyBlocked`'s own fail-safe: an unreadable body
+      // fails toward NOT deferring rather than stalling the issue forever.
+      if (
+        await isIssueTimeDeferred(
+          fetcher,
+          repo,
+          issue.number,
+          nowMs,
+          console.error,
+        )
+      ) {
+        diag?.logIssueSkipped(repo, issue.number, "time-deferred");
+        blockedDetails.push({
+          repo,
+          issueNumber: issue.number,
+          milestone: milestoneTitle,
+          reason: "time-deferred",
+        });
+        continue;
       }
 
       // Check dependency blocking. Issue #2494: the blocker list is collected

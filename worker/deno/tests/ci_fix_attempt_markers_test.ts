@@ -15,9 +15,11 @@ import {
   buildCiFixAttemptMarker,
   buildCiFixDeferralMarker,
   buildCiHumanGateMarker,
+  buildCiInfraRerunMarker,
   CI_FIX_ATTEMPT_MARKER_NAME,
   CI_FIX_DEFERRAL_MARKER_NAME,
   CI_HUMAN_GATE_MARKER_NAME,
+  CI_INFRA_RERUN_MARKER_NAME,
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
   countAttempts,
@@ -25,9 +27,11 @@ import {
   findHumanGate,
   findNoChangeComment,
   isHumanGateParkedAt,
+  isInfraRerunRecordedAt,
   parseCiFixAttemptMarkers,
   parseCiFixDeferralMarkers,
   parseCiHumanGateMarkers,
+  parseCiInfraRerunMarkers,
   restampHumanGateMarker,
 } from "../lib/ci_fix_attempt_markers.ts";
 
@@ -721,4 +725,71 @@ Deno.test("ci_fix_attempt_markers - restampHumanGateMarker replaces only the mar
     head: "e".repeat(40),
   });
   assertEquals(restampHumanGateMarker(before, next), `Prose stays.\n\n${next}`);
+});
+
+// ---------------------------------------------------------------------------
+// Infra-rerun markers (Issue #2919)
+// ---------------------------------------------------------------------------
+
+Deno.test("ci_fix_attempt_markers - an infra-rerun marker round-trips", () => {
+  const marker = buildCiInfraRerunMarker({ head: HEAD });
+
+  assertEquals(marker, `<!-- ${CI_INFRA_RERUN_MARKER_NAME} head="${HEAD}" -->`);
+  assertEquals(parseCiInfraRerunMarkers(marker), [{ head: HEAD }]);
+});
+
+Deno.test("ci_fix_attempt_markers - an infra-rerun marker with an invalid head fails loud and parses to nothing", () => {
+  assertThrows(
+    () => buildCiInfraRerunMarker({ head: "not-a-sha" }),
+    Error,
+    "head is not valid",
+  );
+  assertEquals(
+    parseCiInfraRerunMarkers(
+      `<!-- ${CI_INFRA_RERUN_MARKER_NAME} head="short" -->`,
+    ),
+    [],
+  );
+  assertEquals(
+    parseCiInfraRerunMarkers(`<!-- ${CI_INFRA_RERUN_MARKER_NAME} -->`),
+    [],
+  );
+});
+
+Deno.test("ci_fix_attempt_markers - the recorded head is matched case-insensitively", () => {
+  const collected = collectFleetCiFixMarkers(
+    [comment({ body: buildCiInfraRerunMarker({ head: HEAD }) })],
+    FLEET,
+    () => {},
+  );
+
+  assertEquals(isInfraRerunRecordedAt(collected, HEAD), true);
+  assertEquals(isInfraRerunRecordedAt(collected, HEAD.toUpperCase()), true);
+  assertEquals(isInfraRerunRecordedAt(collected, "b".repeat(40)), false);
+  assertEquals(isInfraRerunRecordedAt(collected, undefined), false);
+  assertEquals(isInfraRerunRecordedAt(collected, "not-a-sha"), false);
+});
+
+Deno.test("ci_fix_attempt_markers - infra-rerun markers are collected from the fleet only", () => {
+  const warnings: string[] = [];
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({
+        id: 2,
+        author: "drive-by-contributor",
+        body: buildCiInfraRerunMarker({ head: HEAD }),
+      }),
+      comment({
+        id: 3,
+        author: "stservice",
+        body: buildCiInfraRerunMarker({ head: HEAD }),
+      }),
+    ],
+    FLEET,
+    (message) => warnings.push(message),
+  );
+
+  assertEquals(isInfraRerunRecordedAt(collected, HEAD), true);
+  assertEquals(collected.ignoredOutsideFleet, 1);
+  assertEquals(warnings.length, 1);
 });
