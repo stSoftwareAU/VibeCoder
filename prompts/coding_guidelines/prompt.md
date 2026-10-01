@@ -199,6 +199,16 @@ Deno-native path over a Node one, add a one-line entry under a **Deno regression
 avoided** heading in `docs/archive/pr-summaries/pr-summary-*.md` so reviewers
 can see the worker actively chose Deno over Node.
 
+**A `deno.lock` change must trace to a source change.** Tooling run inside
+the checkout — a browser, a one-off `deno run npm:…` — can write its own npm
+entries into the product's `deno.lock`. Before raising a PR, read `git diff
+<base> -- deno.lock`: when the change adds or changes no dependency, restore
+the base lockfile (`git checkout <base> -- deno.lock`); otherwise state in
+the PR summary which import or manifest change pulls in each new entry, and
+drop any entry no source imports — `deno install` does not prune one. Run
+your own one-off tools with `deno run --no-config --no-lock` so they never
+touch the repo's config or lockfile.
+
 **Carve-out — Node-only repos stay Node.** This rule is regression-prevention,
 not migration. Repos with no Deno markers stay on Node, and pre-existing Node
 files inside a Deno repo are not cleaned up by this rule — leave them alone
