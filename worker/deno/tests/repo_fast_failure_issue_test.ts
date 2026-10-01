@@ -6,6 +6,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  escalateRepeatCloneCorruption,
   formatFastFailureCommentMarker,
   formatRepoFastFailureMarker,
   formatRepoFastFailureTallyBody,
@@ -87,6 +88,7 @@ Deno.test("formatFastFailureCommentMarker - sanitises host and issue so neither 
 interface FakeComment {
   author: string;
   body: string;
+  createdAt: string;
 }
 
 interface FakeIssue {
@@ -94,6 +96,7 @@ interface FakeIssue {
   body: string;
   author: string;
   comments: FakeComment[];
+  labels: string[];
 }
 
 function arg(args: string[], flag: string): string | undefined {
@@ -107,11 +110,41 @@ function createGhStub(start = 500) {
   const calls: string[][] = [];
   let failComment: string | undefined;
   let failEdit: string | undefined;
+  let failLabel: string | undefined;
   let commentAuthor = "vibe-bot";
 
   const ghFn = (args: string[]): Promise<string> => {
     calls.push(args);
     const [cmd, sub] = args;
+    if (cmd === "api") {
+      // `createGhEscalationClient`'s REST attempts — always rejected here so
+      // every test exercises its documented CLI fallback (Issue #2958).
+      if (sub === "-X" && args[2] === "POST") {
+        return Promise.reject(new Error("REST API not available in stub"));
+      }
+      // GET repos/{repo}/issues/{n}/comments?per_page=100&page={page}
+      const m = /issues\/(\d+)\/comments\?per_page=\d+&page=(\d+)/.exec(
+        args[1] ?? "",
+      );
+      if (m) {
+        const number = parseInt(m[1]!, 10);
+        const page = parseInt(m[2]!, 10);
+        const issue = issues.get(number);
+        if (!issue) {
+          return Promise.reject(new Error(`no such issue #${number}`));
+        }
+        if (page !== 1) return Promise.resolve("[]");
+        return Promise.resolve(JSON.stringify(
+          issue.comments.map((c, i) => ({
+            id: i + 1,
+            body: c.body,
+            created_at: c.createdAt,
+            user: { login: c.author },
+          })),
+        ));
+      }
+      return Promise.reject(new Error(`unexpected gh api args: ${args.join(" ")}`));
+    }
     if (cmd === "issue" && sub === "list") {
       const rows = [...issues.values()].map((i) => ({
         number: i.number,
@@ -128,7 +161,13 @@ function createGhStub(start = 500) {
       }
       const body = arg(args, "--body") ?? "";
       const number = next++;
-      issues.set(number, { number, body, author: "vibe-bot", comments: [] });
+      issues.set(number, {
+        number,
+        body,
+        author: "vibe-bot",
+        comments: [],
+        labels: [],
+      });
       return Promise.resolve(
         `https://github.com/${REPO}/issues/${number}\n`,
       );
@@ -141,7 +180,11 @@ function createGhStub(start = 500) {
       if (!issue) {
         return Promise.reject(new Error(`no such issue #${number}`));
       }
-      issue.comments.push({ author: commentAuthor, body });
+      issue.comments.push({
+        author: commentAuthor,
+        body,
+        createdAt: new Date().toISOString(),
+      });
       return Promise.resolve("");
     }
     if (cmd === "issue" && sub === "view") {
@@ -159,6 +202,17 @@ function createGhStub(start = 500) {
       }));
     }
     if (cmd === "issue" && sub === "edit") {
+      if (args.includes("--add-label")) {
+        if (failLabel) return Promise.reject(new Error(failLabel));
+        const number = parseInt(args[2]!, 10);
+        const label = arg(args, "--add-label") ?? "";
+        const issue = issues.get(number);
+        if (!issue) {
+          return Promise.reject(new Error(`no such issue #${number}`));
+        }
+        issue.labels.push(label);
+        return Promise.resolve("");
+      }
       if (failEdit) return Promise.reject(new Error(failEdit));
       const number = parseInt(args[2]!, 10);
       const body = arg(args, "--body") ?? "";
@@ -177,7 +231,7 @@ function createGhStub(start = 500) {
     issues,
     calls,
     seedIssue(number: number, body: string, author = "vibe-bot") {
-      issues.set(number, { number, body, author, comments: [] });
+      issues.set(number, { number, body, author, comments: [], labels: [] });
       next = Math.max(next, number + 1);
     },
     setCommentAuthor(author: string) {
@@ -188,6 +242,9 @@ function createGhStub(start = 500) {
     },
     failNextEdit(message: string) {
       failEdit = message;
+    },
+    failNextLabel(message: string) {
+      failLabel = message;
     },
   };
 }
