@@ -447,6 +447,8 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "### Every workflow file, template or not",
   "### Example",
   "### Files you create",
+  // Issue #2930: the fleet-run-archive section of prompts/issue/prompt.md.
+  "### Fleet-wide measurement → name your data source (Issue #2930)",
   "### GitHub CLI (`gh`)",
   "### How to open that PR — declare it; the worker opens it",
   "### Nor is your own pull request",
