@@ -204,6 +204,11 @@ export interface FastFailureCandidate {
   category: FailureCategory;
   /** Wall-clock seconds from claim to release. */
   elapsedSeconds?: number;
+  /**
+   * The run died in setup, before the agent started, or on a recognised
+   * host fault (Issue #2954) — fast whatever the category or the clock.
+   */
+  setupFault?: boolean;
 }
 
 /**
@@ -211,7 +216,9 @@ export interface FastFailureCandidate {
  *
  * `zero_output` is fast whatever the clock says — the run ended before the
  * agent produced any output, which is the setup fault this tracker exists
- * to catch. Host-wide causes ({@link NOT_REPO_FAULT}) never count.
+ * to catch. A run flagged `setupFault` (Issue #2954) is likewise fast
+ * regardless of category or elapsed time. Host-wide causes
+ * ({@link NOT_REPO_FAULT}) never count, whichever of those applies.
  */
 export function isFastFailure(
   candidate: FastFailureCandidate,
@@ -219,6 +226,7 @@ export function isFastFailure(
 ): boolean {
   if (NOT_REPO_FAULT.has(candidate.category)) return false;
   if (candidate.category === "zero_output") return true;
+  if (candidate.setupFault === true) return true;
   const elapsed = candidate.elapsedSeconds;
   if (typeof elapsed !== "number" || !Number.isFinite(elapsed)) return false;
   return elapsed < policy.fastFailureSeconds;
