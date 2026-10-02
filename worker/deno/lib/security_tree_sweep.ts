@@ -51,7 +51,10 @@ import { runGitCommand } from "./git_timeout.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { runGhCommand } from "./github.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
-import { listAllOpenIssueTitles } from "./idle_task_snapshot.ts";
+import {
+  listAllOpenIssueTitles,
+  listKnownOpenFindingIds,
+} from "./idle_task_snapshot.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import {
   extractFindingId,
@@ -2013,10 +2016,21 @@ export function createDefaultSweepDeps(): SweepDeps {
         slug,
         (args) => runGhCommand(args),
       );
+      // Known-open `SEC-` finding ids (Issue #4040 follow-up to #3045): the
+      // prompt's Phase 4 no longer re-checks the live open-issue list for
+      // dedup, so this author-verified list is the scan's only finding-id
+      // dedup source. Omitting `fleetAuthors` reads the configured fleet
+      // identity, as every other production caller does.
+      const knownOpenFindingIds = await listKnownOpenFindingIds(
+        slug,
+        "security",
+        (args) => runGhCommand(args),
+        "SEC-",
+      );
       const result = await runSecurityScan({
         repo: slug,
         workDir: repoDir,
-        knownOpenFindingIds: [],
+        knownOpenFindingIds,
         openIssueTitles,
         suppressedIds: [],
       });

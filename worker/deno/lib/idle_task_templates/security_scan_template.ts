@@ -60,6 +60,7 @@ import { buildPromptPreviewBody } from "../idle_task_body_preview.ts";
 import {
   diffNewlyFiled,
   listAllOpenIssueTitles,
+  listKnownOpenFindingIds,
   listOpenIssueNumbersByLabel,
   NEWLY_FILED_UNKNOWN_SUMMARY,
   parseGhJsonArray,
@@ -410,6 +411,24 @@ export function createSecurityScanTemplate(
         ghCommandFn,
       );
 
+      // 2a. Known-open `SEC-` finding ids (Issue #4040 follow-up to #3045):
+      //     the prompt's Phase 4 no longer re-checks the live open-issue
+      //     list for dedup, so this author-verified list is now the scan's
+      //     ONLY finding-id dedup source — it must not stay empty the way
+      //     the 12 best-practices-family templates' lists do not.
+      const knownOpenFindingIds = await listKnownOpenFindingIds(
+        opts.repo,
+        "security",
+        ghCommandFn,
+        "SEC-",
+        {
+          fleetAuthors: deps.fleetAuthors,
+          env: deps.env,
+          loadConfigFn: deps.loadConfigFn,
+          log,
+        },
+      );
+
       // 3. Run the scanner. Claude itself files findings via
       //    `gh issue create` — we never see a JSON block or summary.
       //    Issue #4010: honour the tier the wrapper was filed for; an
@@ -418,7 +437,7 @@ export function createSecurityScanTemplate(
       const scanResult = await deps.runSecurityScanFn({
         repo: opts.repo,
         workDir: opts.workDir,
-        knownOpenFindingIds: [],
+        knownOpenFindingIds,
         openIssueTitles,
         suppressedIds: [],
         ...(opts.modelTier !== undefined ? { model: opts.modelTier } : {}),

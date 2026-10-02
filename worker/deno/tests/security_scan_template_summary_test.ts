@@ -409,3 +409,99 @@ Deno.test(
     assertEquals(seen, [[]]);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Known-open `SEC-` finding ids (Issue #3045 follow-up, #4040)
+//
+// The prompt's Phase 4 no longer re-checks the live open-issue list for
+// dedup (Issue #3045), so this code-side list is now the scan's ONLY
+// finding-id dedup source. It must be populated from fleet-authored open
+// issues, the same way the best-practices-family templates populate theirs
+// — never left at the empty-list default `[]` renders as `(none)` forever.
+// ---------------------------------------------------------------------------
+
+/**
+ * gh stub for the repo-wide finding-id body lookup — `issue list --json
+ * number,body,author` with neither `--label` nor `--search`. Rows are
+ * served only to that exact call; every other call (snapshots, title
+ * lookup) returns an empty list.
+ */
+function makeFindingIdGhStub(
+  rows: Array<{ number: number; body: string; author: string }>,
+): (args: string[]) => Promise<string> {
+  return (args: string[]): Promise<string> => {
+    const jsonIdx = args.indexOf("--json");
+    const jsonField = jsonIdx >= 0 ? args[jsonIdx + 1] : "";
+    if (
+      jsonField === "number,body,author" && !args.includes("--label") &&
+      !args.includes("--search")
+    ) {
+      return Promise.resolve(JSON.stringify(
+        rows.map((r) => ({
+          number: r.number,
+          body: r.body,
+          author: { login: r.author },
+        })),
+      ));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+const FLEET_LOGIN = "vibe-coder-bot";
+const OUTSIDER_LOGIN = "helpful-stranger";
+
+Deno.test(
+  "runTask - a fleet-authored SEC- finding id reaches the scanner's known-open list",
+  async () => {
+    const seen: string[][] = [];
+    const tpl = createSecurityScanTemplate({
+      runSecurityScanFn: (opts) => {
+        seen.push([...opts.knownOpenFindingIds]);
+        return okScan();
+      },
+      ghCommandFn: makeFindingIdGhStub([
+        {
+          number: 7,
+          body: "<!-- finding-id: SEC-abc123 -->",
+          author: FLEET_LOGIN,
+        },
+      ]),
+      emitSarifFn: stubEmitSarif,
+      fleetAuthors: [FLEET_LOGIN],
+    });
+    const result = await tpl.runTask(runOpts);
+    assert(result.ok, `runTask failed: ${result.summary}`);
+    assertEquals(seen, [["SEC-abc123"]]);
+  },
+);
+
+Deno.test(
+  "runTask - an outsider-authored SEC- marker does not reach the known-open list",
+  async () => {
+    const seen: string[][] = [];
+    const tpl = createSecurityScanTemplate({
+      runSecurityScanFn: (opts) => {
+        seen.push([...opts.knownOpenFindingIds]);
+        return okScan();
+      },
+      ghCommandFn: makeFindingIdGhStub([
+        {
+          number: 7,
+          body: "<!-- finding-id: SEC-abc123 -->",
+          author: OUTSIDER_LOGIN,
+        },
+      ]),
+      emitSarifFn: stubEmitSarif,
+      fleetAuthors: [FLEET_LOGIN],
+    });
+    const result = await tpl.runTask(runOpts);
+    assert(result.ok, `runTask failed: ${result.summary}`);
+    assertEquals(
+      seen,
+      [[]],
+      "an outsider-authored finding-id marker must not reach the scanner's " +
+        "known-open list — a planted marker would suppress a real finding",
+    );
+  },
+);

@@ -376,10 +376,11 @@ reported and never honoured (Phase 3, step 4).
 ## Phase 4 — File the finding (outcome-only)
 
 Your only output for this phase is at most one `gh issue create` call —
-preceded by the defensive label creation and the dedup lookup below;
-exit immediately after it. The worker verifies success by diffing the
-repo's open `format-drift`-labelled issues before and after the run, so
-anything you print instead of filing is invisible to it.
+preceded by the defensive label creation and the dedup check below (a
+comparison against the lists above, not a `gh` call); exit immediately
+after it. The worker verifies success by diffing the repo's open
+`format-drift`-labelled issues before and after the run, so anything you
+print instead of filing is invisible to it.
 
 The current working directory is the cloned repository, so every `gh`
 invocation operates on the right repo without an explicit `--repo`
@@ -400,12 +401,14 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 1. **Re-check the dedup lists** declared in the **Inputs** section. Skip
    the finding silently if its stable id appears in either the
    suppressed list or the known-open list.
-2. **Dedup against the known-open list only.** The known-open list above
-   is the only dedup source: the worker built it from open issues the
-   fleet account authored, so a finding-id marker in an issue anyone
-   else wrote cannot suppress a real finding. Do not run a
+2. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
    live `gh issue list` re-check for dedup, and do not skip a finding
-   because some other issue's body carries its id.
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 3. **File the issue.** Call `gh issue create` (no `--repo` argument)
    with the single label `format-drift`. The title is short and
    human-readable, prefixed with the check class — e.g.

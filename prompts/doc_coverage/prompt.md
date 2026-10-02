@@ -524,12 +524,14 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 1. **Re-check the dedup lists** declared in the **Inputs** section.
    Skip the finding silently if its stable id appears in either the
    suppressed list or the known-open list.
-2. **Dedup against the known-open list only.** The known-open list above
-   is the only dedup source: the worker built it from open issues the
-   fleet account authored, so a finding-id marker in an issue anyone
-   else wrote cannot suppress a real finding. Do not run a
+2. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
    live `gh issue list` re-check for dedup, and do not skip a finding
-   because some other issue's body carries its id.
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 3. **File the issue.** Call `gh issue create` (no `--repo` argument)
    with these labels:
    - `doc-coverage` (always)

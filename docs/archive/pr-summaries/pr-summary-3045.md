@@ -22,6 +22,20 @@ flowchart LR
 - [x] Regression test that fails on base and passes after the fix
 - [x] Removed the live re-check from all 14 idle-task prompts
 - [x] Docs: `docs/SECURITY-SCAN.md` dedup section
+- [x] Fixed a gap this removal exposed: `security_scan_template.ts::runTask`
+      and `security_tree_sweep.ts`'s `runWorkerScanFn` always passed
+      `knownOpenFindingIds: []` to the scanner, so with the live re-check
+      gone `security_scan` had **no** finding-id dedup at all. Both now call
+      `listKnownOpenFindingIds(..., "SEC-", ...)`, the same call the 12
+      best-practices-family templates already make.
+- [x] Reworded the dedup step in all 14 prompts from "the only dedup
+      source" to "the only **finding-id** dedup source" — the blanket
+      phrasing read as overriding the separate, still-active
+      `{{OPEN_ISSUE_TITLES}}` semantic check. Also fixed six Phase 4 intros
+      (`dead_code`, `deprecated_api`, `duplicated_knowledge`, `orphan_deps`,
+      `format_drift`, `best_practices`) that still described "the dedup
+      lookup(s)" as part of the `gh` calls the agent issues — that call no
+      longer exists; the dedup is now a comparison against the lists above.
 
 ## Spec
 
@@ -52,7 +66,19 @@ None.
   It loads each of the 14 idle-task prompts and asserts three things for
   each: there is no unfiltered `--json number,body` lookup, there is no
   "Re-check the live open-issue list" step, and the prompt states that the
-  known-open list is "the only dedup source".
+  known-open list is "the only finding-id dedup source".
+- **security_scan finding-id dedup gap (found on review):**
+  `worker/deno/tests/security_scan_template_summary_test.ts` adds two
+  `runTask` tests — a fleet-authored `SEC-` marker reaches the scanner's
+  `knownOpenFindingIds`, an outsider-authored one does not. Both fail
+  against the unfixed `security_scan_template.ts` (confirmed by stashing
+  just that file and re-running: `AssertionError` expected `["SEC-abc123"]`,
+  got `[]`), and pass after wiring `runTask` to call
+  `listKnownOpenFindingIds(opts.repo, "security", ghCommandFn, "SEC-",
+  deps)` before invoking the scanner. `security_tree_sweep.ts`'s
+  `runWorkerScanFn` got the same fix (no dedicated new test — it is covered
+  end-to-end by the existing `security_tree_sweep_test.ts` suite, which
+  still passes).
 - **Fails before:** the regression test fails against the unfixed code. With
   `prompts/` restored from `main`, it reports:
 

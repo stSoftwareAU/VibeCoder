@@ -13,7 +13,10 @@
  *
  * This test asserts, for every idle-task prompt, that the dedup step no
  * longer performs that live, unfiltered `gh issue list` re-check and instead
- * states that the known-open list is the only dedup source.
+ * states that the known-open list is the only *finding-id* dedup source —
+ * deliberately scoped to the marker check, since the separate
+ * open-issue-titles (Issue #537) semantic check still applies regardless of
+ * who filed that issue.
  */
 
 import { assert } from "@std/assert";
@@ -65,8 +68,10 @@ Deno.test(
         `${name} must not re-check the live open-issue list for dedup`,
       );
       assert(
-        text.includes("the only dedup source"),
-        `${name} must state that the known-open list is the only dedup source`,
+        text.includes("the only finding-id dedup source"),
+        `${name} must state that the known-open list is the only ` +
+          `finding-id dedup source (scoped to the marker check, not the ` +
+          `separate open-issue-titles check)`,
       );
     }
   },

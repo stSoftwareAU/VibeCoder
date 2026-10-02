@@ -471,8 +471,9 @@ or past expiry — is reported and never honoured (Phase 3, step 5).
 ## Phase 4 — File one issue per finding (outcome-only)
 
 Your only output for this phase is the `gh` calls themselves — the label
-creations, the dedup lookup, and one `gh issue create` per surviving
-finding, **issue only, never a pull request**; exit immediately after the
+creations and one `gh issue create` per surviving finding, **issue only,
+never a pull request** — preceded by the dedup check below (a comparison
+against the lists above, not a `gh` call); exit immediately after the
 last one. The worker measures success by diffing the repo's open
 `orphan-deps`-labelled issues before and after the run, so anything you
 print instead of filing is invisible to it.
@@ -496,12 +497,14 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 
 ### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
-1. **Dedup against the known-open list only.** The known-open list above
-   is the only dedup source: the worker built it from open issues the
-   fleet account authored, so a finding-id marker in an issue anyone
-   else wrote cannot suppress a real finding. Do not run a
+1. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
    live `gh issue list` re-check for dedup, and do not skip a finding
-   because some other issue's body carries its id.
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 2. **File the issue** with `gh issue create` (no `--repo` argument) and
    exactly these labels:
    - `orphan-deps` (always)
