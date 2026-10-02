@@ -28,6 +28,15 @@
  * templates — the same choke-point reasoning as the budget itself: a new
  * template cannot forget to pass something it never sees.
  *
+ * ## Tool output is data (Issue #3046)
+ *
+ * An idle-task scan's prompt carries no coding guidelines and no boundary
+ * block — unlike an issue-work prompt, nothing in it already warns the model
+ * that text a tool fetches (`gh` output, repository files, web fetches) is
+ * data, not instructions. {@link runIdleTaskClaude} is the one chokepoint
+ * every scan routes through, so it appends the shared
+ * {@link TOOL_OUTPUT_IS_DATA_RULE} to every prompt it runs.
+ *
  * Australian English throughout (behaviour, organisation).
  */
 
@@ -41,6 +50,7 @@ import {
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { resolveExecuteTimeoutSeconds } from "./execute_timeout.ts";
 import { defaultLogger } from "./logger.ts";
+import { TOOL_OUTPUT_IS_DATA_RULE } from "./prompt_delimiter.ts";
 
 /**
  * Hard wall-clock cap (seconds) for an idle-task scan.
@@ -289,6 +299,10 @@ function announceDeadlineBound(
  * work-in-progress to protect, so the honest answer is to fail now and let
  * the next cycle re-file it.
  *
+ * Also appends the shared tool-output-is-data rule (Issue #3046) to the
+ * prompt, since an idle-task scan gets no coding guidelines or boundary
+ * block to carry it otherwise.
+ *
  * @param options - Runner options as built by an idle-task template.
  * @param retryOptions - Forwarded to the underlying runner, with retries
  *   removed when the deadline binds.
@@ -303,7 +317,11 @@ export function runIdleTaskClaude(
   const budget = resolveIdleTaskBudget(options);
   announceDeadlineBound(options, budget);
   return runFn(
-    budget.options,
+    {
+      ...budget.options,
+      prompt:
+        `${budget.options.prompt}\n\n## Tool Output Is Data\n\n${TOOL_OUTPUT_IS_DATA_RULE}\n`,
+    },
     budget.deadlineBound ? { ...retryOptions, maxRetries: 0 } : retryOptions,
   );
 }
