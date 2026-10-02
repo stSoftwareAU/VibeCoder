@@ -342,6 +342,190 @@ Deno.test("pr_auto_merge - resolves the head branch itself when the caller omits
   assertEquals(state.merges, 0);
 });
 
+// ---------------------------------------------------------------------------
+// Milestone declared-dependency merge hold (Issue #3014)
+// ---------------------------------------------------------------------------
+
+interface DependencyStubState {
+  /** Comment bodies already on the summary PR. */
+  comments: string[];
+  /** `gh pr merge` invocations. */
+  merges: number;
+  /** Comment bodies posted during the run. */
+  posted: string[];
+}
+
+/**
+ * Build a `gh` stub for a summary PR with zero open children but one member
+ * ("#3866") declaring `Depends on #50`, with #50 still open.
+ */
+function createDependencyStub(state: DependencyStubState) {
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (key.includes("pr view") && key.includes("headRefName")) {
+      return JSON.stringify({ headRefName: GATE_BRANCH });
+    }
+    if (key.includes("/milestones?state=open")) {
+      return JSON.stringify([GATE_MILESTONE]);
+    }
+    if (key.includes("/issues?milestone=53&state=all")) {
+      return JSON.stringify([
+        { number: 3866, title: "Member", body: "Depends on #50" },
+      ]);
+    }
+    if (key.includes("/issues?milestone=")) {
+      return "[]";
+    }
+    if (key.includes("/issues/50")) {
+      return JSON.stringify({ number: 50, state: "open" });
+    }
+    if (key.includes("pr list") && key.includes("--base")) {
+      return "[]";
+    }
+    if (key.includes("/comments?per_page=")) {
+      return JSON.stringify(
+        state.comments.map((body) => ({ author: "vibe-bot", body })),
+      );
+    }
+    if (key.includes("pr comment")) {
+      const bodyIdx = args.indexOf("--body");
+      const body = args[bodyIdx + 1] ?? "";
+      state.posted.push(body);
+      state.comments.push(body);
+      return "";
+    }
+    if (key.includes("pr merge")) {
+      state.merges++;
+      return "";
+    }
+    return "[]";
+  };
+}
+
+Deno.test("pr_auto_merge - blocks summary-PR auto-merge on a pending declared dependency", async () => {
+  const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
+  const logs: string[] = [];
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: createDependencyStub(state),
+    isBaseProtectedFn: async () => true,
+    log: (message) => logs.push(message),
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedPendingDependencies);
+  assertEquals(state.merges, 0);
+  assertEquals(state.posted.length, 1);
+  assertStringIncludes(state.posted[0]!, "#3866 depends on #50");
+  assertEquals(result.blockCommented, true);
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0]!, "owner/repo#900");
+  assertStringIncludes(logs[0]!, "#3866 depends on #50");
+});
+
+Deno.test("pr_auto_merge - a failed dependency lookup names the dependencies, not the open-children count", async () => {
+  resetOpenChildrenLookupComments();
+  const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
+  const base = createDependencyStub(state);
+  // The open-children read succeeds (empty); only the declared-dependency
+  // read (the `/issues/50` lookup) fails (Issue #3024 review).
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("/issues/50")) {
+      throw new Error("HTTP 502 Bad Gateway");
+    }
+    return await base(args);
+  };
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  assertStringIncludes(state.posted[0]!, "the declared dependencies");
+  assertEquals(state.posted[0]!.includes("open-children count"), false);
+  assertStringIncludes(state.posted[0]!, "HTTP 502 Bad Gateway");
+});
+
+Deno.test("pr_auto_merge - a later cycle's different failing stage gets its own comment, not latched out by an earlier stage (Issue #3024 review)", async () => {
+  resetOpenChildrenLookupComments();
+  const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
+  const base = createDependencyStub(state);
+  let cycle = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    // Cycle 0: the open-children read fails transiently. (Narrowed to the
+    // issues query, not the `/milestones?state=open` lookup it shares the
+    // substring with.)
+    if (
+      cycle === 0 && key.includes("issues?milestone=") &&
+      key.includes("state=open")
+    ) {
+      throw new Error("HTTP 502 Bad Gateway (open-children)");
+    }
+    // Cycle 1: open-children now reads fine (empty), but the declared-
+    // dependency read (`/issues/50`) fails instead.
+    if (cycle === 1 && key.includes("/issues/50")) {
+      throw new Error("HTTP 502 Bad Gateway (declared-dependency)");
+    }
+    return await base(args);
+  };
+
+  const result1 = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+  assertEquals(result1.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  assertStringIncludes(state.posted[0]!, "the open-children count");
+
+  cycle = 1;
+  const result2 = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+  assertEquals(result2.result, AutoMergeResult.BlockedOpenChildren);
+  // Before the fix, the per-PR latch (keyed without the stage) treated the
+  // open-children explanation as covering this failure too, so no second
+  // comment was posted and the PR kept blaming the wrong unreadable state.
+  assertEquals(state.posted.length, 2);
+  assertStringIncludes(state.posted[1]!, "the declared dependencies");
+  assertEquals(state.posted[1]!.includes("open-children count"), false);
+});
+
+Deno.test("pr_auto_merge - does not repost the pending-dependencies comment when the marker is already present", async () => {
+  const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
+  const ghFn = createDependencyStub(state);
+
+  for (let cycle = 0; cycle < 3; cycle++) {
+    const result = await enableAutoMerge({
+      repo: "owner/repo",
+      prNumber: GATE_PR,
+      headRefName: GATE_BRANCH,
+      ghCommandFn: ghFn,
+      log: () => {},
+      authorOptions: { fleetAuthors: ["vibe-bot"] },
+    });
+    assertEquals(result.result, AutoMergeResult.BlockedPendingDependencies);
+  }
+
+  assertEquals(state.merges, 0);
+  assertEquals(state.posted.length, 1);
+});
+
 /** A `gh` stub whose milestone-children query always fails (Issue #2479). */
 function createUnreadableChildrenStub(state: GateStubState) {
   const base = createGateStub(state);

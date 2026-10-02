@@ -443,6 +443,38 @@ Deno.test("buildMilestoneSummaryBody - omits Closes when no tracking issue", () 
   assertEquals(body.includes("Closes"), false);
 });
 
+// Issue #3014: dependencyNote is appended, byte-identical output otherwise.
+Deno.test("buildMilestoneSummaryBody - unchanged when dependencyNote omitted", () => {
+  const closedIssues = [{ number: 10, title: "Add login" }];
+  const withoutParam = buildMilestoneSummaryBody("v1.0", "main", closedIssues);
+  const withUndefined = buildMilestoneSummaryBody(
+    "v1.0",
+    "main",
+    closedIssues,
+    undefined,
+    undefined,
+  );
+  assertEquals(withoutParam, withUndefined);
+});
+
+Deno.test("buildMilestoneSummaryBody - places dependencyNote before Review notes", () => {
+  const closedIssues = [{ number: 10, title: "Add login" }];
+  const note =
+    "### ⏸️ Held: pending dependencies\n\n- #1 depends on #2 (still open)";
+  const body = buildMilestoneSummaryBody(
+    "v1.0",
+    "main",
+    closedIssues,
+    undefined,
+    note,
+  );
+  const issuesIdx = body.indexOf("### Issues addressed");
+  const noteIdx = body.indexOf("Held: pending dependencies");
+  const reviewIdx = body.indexOf("### Review notes");
+  assertEquals(issuesIdx >= 0 && noteIdx > issuesIdx, true);
+  assertEquals(noteIdx >= 0 && reviewIdx > noteIdx, true);
+});
+
 // ============================================================================
 // checkAndHandleMilestoneCompletions (main orchestration)
 // ============================================================================
@@ -608,6 +640,191 @@ Deno.test("checkAndHandleMilestoneCompletions - creates tracking issue and summa
   // Issue #1133: Tracking issue should have been closed immediately
   assertEquals(closedIssueNumbers.length, 1);
   assertEquals(closedIssueNumbers[0], 300);
+});
+
+// Issue #3014: the summary PR body states declared dependencies that have
+// not merged yet, so the hold the merge gate enforces is explained.
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds on a pending declared dependency", async () => {
+  const createdPrs: {
+    title: string;
+    head: string;
+    base: string;
+    body: string;
+  }[] = [];
+  const logs: string[] = [];
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    // Issue #3014: the milestone's member issues (`--paginate`, `state=all`)
+    // — matched before the generic authoritativeStub below, which also
+    // matches on "/issues?milestone=".
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      return JSON.stringify([{ number: 10, body: "Depends on #20" }]);
+    }
+    // The declared dependency issue — still open.
+    if (key.includes("api repos/owner/repo/issues/20")) {
+      return JSON.stringify({ state: "open" });
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Add login", milestone: { title: "v1.0" } },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const titleIdx = args.indexOf("--title");
+      const headIdx = args.indexOf("--head");
+      const baseIdx = args.indexOf("--base");
+      const bodyIdx = args.indexOf("--body");
+      if (titleIdx >= 0 && headIdx >= 0 && baseIdx >= 0 && bodyIdx >= 0) {
+        createdPrs.push({
+          title: args[titleIdx + 1]!,
+          head: args[headIdx + 1]!,
+          base: args[baseIdx + 1]!,
+          body: args[bodyIdx + 1]!,
+        });
+      }
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  assertStringIncludes(createdPrs[0]!.body, "Held: pending dependencies");
+  assertStringIncludes(createdPrs[0]!.body, "#10 depends on #20");
+  assertEquals(
+    logs.some((msg) =>
+      msg.includes("WARNING") && msg.includes("declared dependencies") &&
+      msg.includes("Issue #3014")
+    ),
+    true,
+  );
+});
+
+// Issue #3014: a lookup failure must never block PR creation — it only
+// swaps in a note, since the merge gate re-checks before merging.
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiable dependencies when the lookup fails", async () => {
+  const createdPrs: { body: string }[] = [];
+  const logs: string[] = [];
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      throw new Error("gh api rate limited");
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Add login", milestone: { title: "v1.0" } },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0) createdPrs.push({ body: args[bodyIdx + 1]! });
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  assertStringIncludes(
+    createdPrs[0]!.body,
+    "Declared dependencies not verified",
+  );
+  assertEquals(
+    logs.some((msg) =>
+      msg.includes("WARNING") &&
+      msg.includes("could not verify declared dependencies") &&
+      msg.includes("Issue #3014")
+    ),
+    true,
+  );
 });
 
 Deno.test("checkAndHandleMilestoneCompletions - reuses existing tracker with drifted default branch (no duplicate)", async () => {
