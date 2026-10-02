@@ -746,6 +746,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     note:
       "fast-failure repository back-off diagnostic issue-body marker prefix (Issue #1950)",
   },
+  VIBE_REPO_FAST_FAILURE_TALLY: {
+    role: "marker",
+    note:
+      "fleet-wide fast-failure tally issue-body marker prefix (Issue #2956)",
+  },
   VIBE_MILESTONE_BRANCH_REFUSED: {
     role: "marker",
     note:

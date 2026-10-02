@@ -260,6 +260,7 @@ import { workflowScopeState } from "./workflow_scope.ts";
 import {
   applyCodingFailureLadder,
   buildRepeatedFailureEscalation,
+  isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
 import { handleIssueFailure as handleIssueFailureFn } from "./label_failure.ts";
@@ -289,16 +290,21 @@ import {
 import {
   backedOffRepos,
   clearRepoFastFailures,
-  formatRepoFastFailureSummary,
+  createFleetDiagnosticCache,
+  describeRepoFastFailureBackOffs,
   isFastFailure,
-  loadRepoFastFailureStates,
+  ownersOfRepos,
   recordRepoFastFailure,
   recordRepoFastFailureDiagnostic,
   refreshRepoFastFailureBackOffs,
   type RepoFastFailureOptions,
   resolveRepoFastFailurePolicy,
 } from "./repo_fast_failure_tracker.ts";
-import { fileRepoFastFailureIssue } from "./repo_fast_failure_issue.ts";
+import {
+  escalateRepeatCloneCorruption,
+  recordRepoFastFailureTally,
+} from "./repo_fast_failure_issue.ts";
+import { parseCloneCorruptRepeat } from "./corrupt_clone_recovery.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
@@ -1007,12 +1013,22 @@ export async function createProductionRunCoreDeps(
     workDir,
     policy: fastFailurePolicyInput,
     warn: (message: string) => logger.warn(message),
+    // Issue #2955: an open, fleet-authored diagnostic issue backs the
+    // repository off on every host, not only the one that filed it.
+    fleetDiagnostics: {
+      owners: () => ownersOfRepos(config.repos ?? []),
+      ghCommandFn: runGhCommandRaw,
+      cache: createFleetDiagnosticCache(),
+      warn: (message: string) => logger.warn(message),
+      error: (message: string) => logger.error(message),
+    },
   };
 
   /**
-   * Record one fast failure for `repo` and, when it tips the repository
-   * over the threshold, file the single deduplicated diagnostic issue that
-   * names the failing phase and the last error line (Issue #1950).
+   * Record one fast failure for `repo` locally, then tally it as a marker
+   * comment on the repo's one fleet-wide fast-failure diagnostic issue. The
+   * diagnostic issue gains the back-off marker once the fleet count within
+   * the window reaches the threshold (Issue #2956).
    *
    * Every failure path is reported rather than swallowed: a tracker that
    * quietly stops counting is the fault this module exists to remove.
@@ -1045,23 +1061,30 @@ export async function createProductionRunCoreDeps(
         `(phase ${outcome.phase}, ${outcome.elapsedSeconds}s)` +
         (state.backedOff ? " — backed off" : ""),
     );
-    // One diagnostic per repository: a back-off that already carries one
-    // never files again.
-    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
-    const decision = await fileRepoFastFailureIssue({
-      state,
-      policy: fastFailurePolicy,
+    // Every recorded fast failure is tallied on the repo's one fleet-wide
+    // diagnostic issue (Issue #2956).
+    const decision = await recordRepoFastFailureTally({
+      repo,
+      failedIssueNumber: issueNumber,
+      reason: `${outcome.phase} after ${outcome.elapsedSeconds}s: ${
+        state.lastDetail ?? outcome.message
+      }`,
       machineId,
+      policy: fastFailurePolicy,
       ghFn: runGhCommandRaw,
       log: (message: string) => logger.info(message),
+      warn: (message: string) => logger.warn(message),
     });
     if (decision.action === "suppressed") {
       logger.warn(
-        `repo-fast-failures: ${repo} is backed off but no diagnostic could ` +
-          `be filed (${decision.reason})`,
+        `repo-fast-failures: could not tally the fast failure for ${repo} ` +
+          `on its diagnostic issue (${decision.reason})`,
       );
       return;
     }
+    // Link the tally issue as this host's diagnostic once, when the local
+    // count backs the repo off.
+    if (!state.backedOff || state.diagnosticIssue !== undefined) return;
     const attached = await recordRepoFastFailureDiagnostic({
       ...fastFailureOptions,
       repo,
@@ -3891,6 +3914,9 @@ export async function createProductionRunCoreDeps(
         isIssueClosed: isDiagnosticIssueClosed,
         log: (message: string) => logger.info(message),
       });
+      // Issue #2955: `backedOffRepos` returns this host's sidecar plus
+      // any open, fleet-authored diagnostic for the repository, so a
+      // repository another host already backed off is excluded here too.
       const fastFailureBackOff = await backedOffRepos(fastFailureOptions);
       const excludedRepos = fastFailureBackOff.size > 0
         ? new Set([...(options?.excludeRepos ?? []), ...fastFailureBackOff])
@@ -4448,11 +4474,15 @@ export async function createProductionRunCoreDeps(
       // with the raw gate output) is not stepped again here — that would
       // take an unlabelled issue straight to `failed` in one run — but its
       // attempt is still counted by the cooldown.
+      // A setup fault (Issue #2954) is released unlabelled and consumes no
+      // attempt — the fault is the host's or the repository's, not the
+      // issue's.
       const plan = planCodingFailure({
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
+        ...(result.phase ? { phase: result.phase } : {}),
       });
       const failureKind: CooldownFailureKind | undefined = plan.cooldownKind;
       if (plan.applyLadder) {
@@ -4802,11 +4832,11 @@ export async function createProductionRunCoreDeps(
     },
 
     // Issue #1950: the cycle-summary line naming every repository with a
-    // live fast failure and how long each is backed off for.
+    // live fast failure and how long each is backed off for. Issue #2955:
+    // also names a repository backed off fleet-wide by an open diagnostic
+    // this host never filed.
     async describeRepoFastFailures() {
-      return formatRepoFastFailureSummary(
-        await loadRepoFastFailureStates(fastFailureOptions),
-      );
+      return await describeRepoFastFailureBackOffs(fastFailureOptions);
     },
 
     // -- Crash handling --
@@ -4903,17 +4933,62 @@ export async function createProductionRunCoreDeps(
           }
         } catch { /* best-effort — never blocks the release */ }
       }
+      // Issue #2958: a clone that corrupted twice within 24 h means
+      // something keeps damaging the clone — the host, not the issue. Back
+      // the repository off fleet-wide and escalate to a human straight
+      // away, rather than counting towards the ordinary tally threshold
+      // below. The repeat payload rides in the setup error message, so the
+      // parse is what tells the two corruptions apart.
+      const repeatCorruption = outcome?.kind === "no_pr"
+        ? parseCloneCorruptRepeat(outcome.message)
+        : null;
+      if (repeatCorruption !== null) {
+        try {
+          const decision = await escalateRepeatCloneCorruption({
+            repo,
+            failedIssueNumber: issueNumber,
+            repeat: repeatCorruption,
+            policy: fastFailurePolicy,
+            ghFn: runGhCommandRaw,
+            log: (message) => logger.info(message),
+            warn: (message) => logger.warn(message),
+            error: (message) => logger.error(message),
+          });
+          if (decision.action === "suppressed") {
+            logger.warn(
+              `Repeat clone corruption escalation failed for ${repo} ` +
+                `(${decision.reason})`,
+            );
+          }
+        } catch (err) {
+          // Best-effort — never blocks the release, but never silent either.
+          logger.warn(
+            `Repeat clone corruption escalation failed for ${repo}#${issueNumber}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
       // Issue #1950: a run that died before the agent produced output, or
       // inside `fast_failure_seconds`, failed at claim or setup — the
       // repository's environment, not the issue. Counted durably so three
       // of them in a day back the repository off and file one diagnostic,
       // instead of the whole week of retries the fleet used to spend.
+      // A setup fault (Issue #2954) always counts, regardless of how long it
+      // took to surface.
+      // A repeat clone corruption is skipped here: it was already escalated
+      // above, and posting a tally marker on the same issue would double up.
       if (
         outcome?.kind === "no_pr" &&
+        repeatCorruption === null &&
         isFastFailure(
           {
             category: outcome.category,
             elapsedSeconds: outcome.elapsedSeconds,
+            setupFault: isSetupFault({
+              phase: outcome.phase,
+              reason: outcome.message,
+            }),
           },
           fastFailurePolicy,
         )
@@ -5326,12 +5401,14 @@ export async function createProductionRunCoreDeps(
             repo,
             issueNumber,
           );
-        // Issue #2085: the repositories this host has backed off for fast
-        // failures (Issue #1950), which `findNextIssue` unions into the
-        // scan's `excludeRepos`. The scan was never shown them, so it cannot
-        // have disagreed with the audit about them — the same reasoning
+        // Issue #2085: the repositories backed off for fast failures (Issue
+        // #1950), which `findNextIssue` unions into the scan's
+        // `excludeRepos`. The scan was never shown them, so it cannot have
+        // disagreed with the audit about them — the same reasoning
         // `heldRepos` already applies to a maintenance-lane lease. Read from
-        // the same durable sidecar the scan reads: a local file, no API call.
+        // the same durable sidecar the scan reads, unioned with any open
+        // fleet-wide diagnostic (Issue #2955) — the latter cached per owner
+        // for 600 s, so this costs at most one `gh search issues` per owner.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
         const result = await auditClaimableState({
           repos,
@@ -5469,8 +5546,9 @@ export async function createProductionRunCoreDeps(
         // reading it as "scanned and refused" is what escalated
         // stSoftwareAU/GRQ-FX-validation's eight-issue backlog on three
         // consecutive cycles while VibeCoder#2079 already named the real
-        // fault. Read from the same durable sidecar the scan reads, exactly
-        // as the run-local holds above are.
+        // fault. Read from the same durable sidecar the scan reads, unioned
+        // with any open fleet-wide diagnostic (Issue #2955), exactly as the
+        // run-local holds above are.
         const scanBackedOff = await backedOffRepos(fastFailureOptions);
         const perRepo = await Promise.all(
           repos.map(async (repo) => {
