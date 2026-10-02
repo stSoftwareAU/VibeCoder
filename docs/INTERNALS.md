@@ -4238,7 +4238,9 @@ A PR carries its attempt history in marker comments on the PR. Since Issue
 reads the shared budget from that PR's own trusted markers, and the sync
 records each attempt there (`pass="sync"` plus its conclusion) exactly as the
 ladder does, so the PR-marker budget takes precedence over the local ledger
-whenever one exists. A milestone branch with **no** open PR still has nowhere
+whenever one exists — including the roll-back decision on a spent budget.
+There is no #2311-style re-arm for the PR budget; only a `resolved` marker
+resets the PR's tally. A milestone branch with **no** open PR still has nowhere
 to write one, so for it the ledger is persisted per branch in
 `milestone_sync_failures.json` beside the failure streak and survives worker
 restarts; a PR or its comments the sync could not read also falls back here,
@@ -4277,7 +4279,8 @@ Three rules decide what the ledger does, and each is a pure helper:
   rather than `failed`, since the merge itself may well have succeeded, and
   posts no report; `recordSyncFailure` still records it against the failure
   streak, and a `WARNING` names both the expected merge SHA and the observed
-  tip SHA.
+  tip SHA. The cycle counts the branch as **failed**, not synced, and nothing
+  is posted on the PR.
 - **A failure paces nothing.** A `failed` conclusion charges one of the three
   attempts and writes no deferral (Issue #2305): the branch is due again on the
   very next cycle, and the budget itself — three runs, then the roll-back — is

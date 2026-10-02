@@ -14,7 +14,8 @@
  */
 
 import type { GhCommandFn } from "./milestone_branch_sync.ts";
-import { isConflictHeadSha, resolveBranchTips, UNRESOLVED_SHA } from "./milestone_sync_conflict.ts";
+import { isConflictHeadSha } from "./merge_conflict_markers.ts";
+import { resolveBranchTips, UNRESOLVED_SHA } from "./milestone_sync_conflict.ts";
 import { syncBranchFor } from "./milestone_sync_pr.ts";
 
 /** Where a confirmed merge actually landed. */
@@ -41,8 +42,14 @@ interface SyncPrListRow {
   headRefOid?: unknown;
 }
 
-/** Parse a `gh pr list` payload, tolerating an empty body. */
-function parsePrListRows(raw: string): SyncPrListRow[] {
+/**
+ * Parse a `gh pr list` payload, tolerating an empty body.
+ *
+ * Exported so {@link readMilestoneHeadPr} in `milestone_sync_pr_budget.ts`
+ * shares this one parser rather than keeping a second copy of it
+ * (Issue #2998).
+ */
+export function parsePrListRows(raw: string): SyncPrListRow[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
   const parsed: unknown = JSON.parse(trimmed);
@@ -77,6 +84,27 @@ async function compareStatus(
     );
     return undefined;
   }
+}
+
+/**
+ * Render the WARNING line logged wherever a merge's landing could not be
+ * confirmed (Issue #2998) — one renderer, so the sweep and the pre-cut sync
+ * cannot report the same condition in two different wordings.
+ *
+ * @param repo - Repository in `owner/repo` form
+ * @param milestoneBranch - The branch the sync merged into
+ * @param landing - Why the landing could not be confirmed
+ */
+export function describeUnconfirmedLanding(
+  repo: string,
+  milestoneBranch: string,
+  landing: UnconfirmedLanding,
+): string {
+  return `WARNING: Milestone sync conflict for '${milestoneBranch}' in ` +
+    `${repo}: the merge ${landing.expectedSha} is not confirmed on ` +
+    `'${milestoneBranch}' in ${repo} — observed tip ` +
+    `${landing.observedSha}: ${landing.reason}; no report posted ` +
+    `(Issue #2998)`;
 }
 
 /**

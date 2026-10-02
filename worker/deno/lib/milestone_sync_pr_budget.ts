@@ -30,6 +30,7 @@ import { spentConflictAttempts } from "./pr_merge_conflict_scan.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import type { GhCommandFn } from "./milestone_branch_sync.ts";
+import { parsePrListRows } from "./milestone_sync_landing.ts";
 
 /** The open PR carrying a milestone branch's head, with its attempt history. */
 export interface MilestoneHeadPr {
@@ -39,19 +40,6 @@ export interface MilestoneHeadPr {
   headSha: string;
   /** The shared conflict-resolution attempts already recorded on it. */
   attempts: ConflictResolutionAttempt[];
-}
-
-/** One PR as `gh pr list --json number,headRefOid` reports it. */
-interface PrListRow {
-  number?: unknown;
-  headRefOid?: unknown;
-}
-
-function parsePrListRows(raw: string): PrListRow[] {
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
-  const parsed: unknown = JSON.parse(trimmed);
-  return Array.isArray(parsed) ? parsed as PrListRow[] : [];
 }
 
 /**
@@ -69,7 +57,7 @@ export async function readMilestoneHeadPr(
   log: (message: string) => void,
   dedupAuthors: AlertDedupAuthorOptions = {},
 ): Promise<MilestoneHeadPr | null> {
-  let rows: PrListRow[];
+  let rows: ReturnType<typeof parsePrListRows>;
   try {
     const raw = await ghCommandFn([
       "pr",
@@ -171,12 +159,18 @@ export async function recordSyncAttemptOnPr(
   detail: string,
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
+  /**
+   * The head sha the marker names, when it differs from the PR's own live
+   * head (Issue #2998) — a resolved marker names the merge that actually
+   * landed, not necessarily `pr.headSha`. Defaults to `pr.headSha`.
+   */
+  markerSha?: string,
 ): Promise<boolean> {
   const attemptNumber = spentConflictAttempts(pr.attempts) + 1;
   const body = buildSyncAttemptComment(
     attemptNumber,
     outcome,
-    pr.headSha,
+    markerSha ?? pr.headSha,
     detail,
   );
   try {
