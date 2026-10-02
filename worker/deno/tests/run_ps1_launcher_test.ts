@@ -43,6 +43,7 @@ import {
   declareContainerExtension,
   denoInvocationOrder,
   type Harness,
+  type LauncherInvocation,
   type LaunchOutcome,
   mountValues,
   POWERSHELL_LAUNCHER,
@@ -56,6 +57,7 @@ import {
   runLauncher as runHarnessLauncher,
   setupHarness,
   spawnLauncher as spawnHarnessLauncher,
+  tempFileModes,
   waitForRecord,
 } from "./fixtures/launcher_harness.ts";
 
@@ -527,6 +529,91 @@ Deno.test({
         await runCoreLog(harness),
         "container-build-heal",
       );
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+/**
+ * `run.ps1` under a permissive umask, via `bash` (Issue #3057).
+ *
+ * The umask is inherited, not configurable, so a mode a temporary file is
+ * left to take from the umask is only distinguishable from one the launcher
+ * sets explicitly when the umask would otherwise have allowed a wider mode
+ * through — exactly the `run.sh` precedent for the stderr capture FIFO
+ * (Issue #1299).
+ */
+const PERMISSIVE_UMASK_PS1_LAUNCHER: LauncherInvocation = {
+  name: "run.ps1 (umask 022)",
+  command: "bash",
+  args: [
+    "-c",
+    'umask 022; exec "$0" "$@"',
+    PWSH!,
+    "-NoProfile",
+    "-NonInteractive",
+    "-File",
+    `${REPO_ROOT}/run.ps1`,
+  ],
+};
+
+Deno.test({
+  name:
+    "run.ps1 - the run's temporary files are private to this account (Issue #3057)",
+  ignore: ignore || Deno.build.os === "windows",
+  fn: async () => {
+    // A heal-and-retry launch (Issue #4441) touches every run-scoped
+    // temporary file in one pass: the launch plan and its sibling
+    // Containerfile, the egress probe's evidence (run unconditionally,
+    // before the build), the builder-heal log, the build log (written
+    // twice - once per attempt) and the run's own stderr capture.
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "1",
+      STUB_BUILD_EXIT: "1",
+      STUB_BUILD_STDERR:
+        'Error: resourceExhausted: "failed to solve: write /out.tar: no ' +
+        'space left on device"',
+      STUB_BUILD_RETRY_EXIT: "0",
+      STUB_RECORD_TEMP_MODES: "1",
+    });
+    const tmp = `${harness.tmpDir}/tmp`;
+    await Deno.mkdir(tmp, { recursive: true });
+    harness.env.TMPDIR = tmp;
+    try {
+      // Run under a permissive umask on purpose: see
+      // PERMISSIVE_UMASK_PS1_LAUNCHER above.
+      const outcome = await runHarnessLauncher(
+        harness,
+        PERMISSIVE_UMASK_PS1_LAUNCHER,
+      );
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      const records = await tempFileModes(harness);
+      const classes: [string, RegExp][] = [
+        ["the launch plan", /^vibe-launch-plan-[^.]+$/],
+        [
+          "the launch plan's Containerfile",
+          /^vibe-launch-plan-.*\.Containerfile$/,
+        ],
+        ["the egress probe's evidence", /^vibe-egress-/],
+        ["the builder-heal log", /^vibe-heal-/],
+        ["the build log", /^vibe-build-/],
+        ["the run's stderr capture", /^vibe-run-/],
+      ];
+      for (const [label, pattern] of classes) {
+        assert(
+          records.some((record) => pattern.test(record.name)),
+          `${label} was never seen on disk; seen: ${JSON.stringify(records)}`,
+        );
+      }
+      for (const record of records) {
+        assertEquals(
+          record.mode,
+          "600",
+          `${record.name} must be owner-only, was ${record.mode}`,
+        );
+      }
     } finally {
       await harness.cleanup();
     }

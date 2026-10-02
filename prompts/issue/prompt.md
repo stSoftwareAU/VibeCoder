@@ -119,11 +119,32 @@ guessing — the analysis-only hand-off then routes it to a human.
      not a shape fitted to the test inputs. Special-casing the values in the
      test — hardcoded returns, branches keyed to a fixture — makes the suite
      green while the feature stays broken for every other input.
+   - **Call the existing owner — never copy it.** Before writing code that
+     formats, orders, ranks, validates or decides something the product
+     already does, find the helper, component or policy that owns it and
+     call it. Open every component or function the issue names — above all
+     in an Implementation section — and grep for the domain term (`rating`,
+     `buy_order`, `Stars`). When the owner is private (`pub(crate)`, not
+     exported), widen its visibility (`pub(crate)` → `pub`, add the export)
+     instead of copying it; that widening is part of this change, not the
+     adjacent refactor **Change Scope** rules out. A hand-made copy drifts
+     from its owner and drops the owner's edge cases. A component the issue
+     says to reuse is a stated requirement: the Spec reviewer judges it as a
+     criterion, and a diff that re-implements it by hand instead of calling
+     it is not `met`.
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
    the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
+   **Change only what the issue changes.** Edit only the expectation the
+   issue changes and keep every other assertion the test made; renaming or
+   rewriting the whole test is how still-true assertions get lost. Before
+   raising the PR, list the assertions your diff removes from each existing
+   test and name, for each, the issue requirement that makes it untrue,
+   recording it in the PR summary's Test Plan. An assertion removed without
+   one is a blocking self-review finding — restore it, or move it to a test
+   that still covers the behaviour and say where.
 3. Update the documentation in the same change. A change that **adds, changes
    or removes** behaviour, a field, a UI element or a setting owes a docs
    change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
@@ -133,7 +154,25 @@ guessing — the analysis-only hand-off then routes it to a human.
    you removed — a label, a status sentence, a setting's description — then
    fix every hit, so no manual still describes what the code no longer does.
    Record the sweep as the **Docs sweep** line in the PR summary (see
-   **PR Summary File** below). When the change involves architecture, data
+   **PR Summary File** below).
+   Before new prompt or doc text states how another component behaves —
+   above all an exclusive or negative claim ("the only …", "never …", "the
+   worker does not …") — open the code that implements it and cite that file
+   in the PR summary. A claim about a security control (redaction, guards,
+   sandboxing, dedup) must agree with `SECURITY.md` and
+   `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the
+   discrepancy. A rule that needs no such claim states the rule and the risk
+   it addresses instead (see **Prompt Engineering Guidance** in
+   `CODING-STANDARDS.md`). Before adding or changing a rule in
+   `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
+   under `worker/deno/lib/`, grep those files for existing rules on the same
+   subject — the nouns the rule governs, not only the issue's wording — and
+   make the new rule agree with each one, or change the existing rule in the
+   same diff. A broad rule ("never …", "every …", "any …") names every
+   exception the existing rules carve out. List the related existing rules
+   you checked in the PR summary, or say you found none; two rules left
+   telling the agent to do opposite things is a blocking self-review
+   finding. When the change involves architecture, data
    flow, state transitions, or sequence of events, include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
    `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
@@ -481,6 +520,8 @@ reviewer its path.
   verdict per stated criterion, plus an `unrequested` entry per change it cannot
   trace to the issue. All four are verdicts and all four are recorded the same
   way, so an `unrequested` entry carries `reviewer: unrequested` like the rest.
+  A helper or component the issue says to reuse counts as a stated criterion:
+  a diff that re-implements it by hand instead of calling it is not `met`.
 - **Standards reviewer** — inputs: the same diff and `CODING-STANDARDS.md`. One
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
@@ -695,7 +736,15 @@ When creating the PR, include evidence based on the type of change:
   callee's documented contract — the inputs it actually reads and its exit
   codes on failure. A stub more permissive than the real callee is a finding:
   run against a real checkout of the callee, or name the contract the stub
-  mirrors in the PR summary with a source link.
+  mirrors in the PR summary with a source link. When the change relies on how
+  git, `gh`, the GitHub API or another external tool behaves in a particular
+  case, run the real tool on that case first and build the fake's fixture
+  from the observed output (see **Observe the real tool before you rely on
+  it** in the guidelines). The PR summary's Evidence gives the command you
+  ran and the part of the output the code depends on, or cites the tool's
+  documentation or source when the case cannot be observed safely. A fake
+  built from the behaviour you expected rather than the behaviour you
+  observed is a blocking self-review finding.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
@@ -816,7 +865,24 @@ The file MUST contain:
    check each path with `git ls-files <path>` before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
-   test that does not exist
+   test that does not exist. For every existing test the diff edits, list each
+   assertion it removes with the issue requirement that makes it untrue; an
+   assertion removed with no such requirement is a blocking self-review
+   finding — restore it, or move it to a test that still covers the behaviour
+   and name that test. A negative test — one asserting something does
+   *not* happen — counts only once you have seen it go red with its guard
+   broken on purpose (see **A negative test must be able to fail** in the
+   guidelines); one that stays green without its guard is a blocking
+   self-review finding. Likewise, each call site the diff changes needs a
+   test that goes red when only that caller's change is reverted (see
+   **Every changed call site needs a test that goes red without it** in the
+   guidelines); a changed call site whose revert leaves the suite green is a
+   blocking self-review finding. Likewise, every outcome of a branch the diff
+   adds — each new condition, match arm, exit code and interface default —
+   counts only once a named test reaches it and flipping that outcome on
+   purpose turns the suite red (see **Every outcome of a branch you add needs
+   a test that reaches it** in the guidelines); an outcome no test reaches is a
+   blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
