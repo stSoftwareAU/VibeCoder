@@ -56,10 +56,14 @@ None.
 - **Fails before / passes after:** against the base branch (origin/main
   91ebb035) all three fail by assertion (0 passed, 3 failed — the rule text
   is absent); with this change all three pass.
-- **Trigger closed:** every prompt route that lets the model fetch text with
-  tools — boundary-instruction prompts, every coding_guidelines layer, and
-  every idle-task scan via the single `runIdleTaskClaude` chokepoint — now
-  carries the rule; there is no prompt path that bypasses all three.
+- **Trigger closed:** the original trigger is closed — tool-fetched text
+  (`gh issue list`, `gh api`, repository files, web fetches) is now
+  explicitly declared data, never instructions, on every prompt route that
+  lets the model fetch text with tools: boundary-instruction prompts, every
+  coding_guidelines layer, and every idle-task scan via the single
+  `runIdleTaskClaude` chokepoint. No trivial bypass exists: a new idle scan
+  cannot skip the chokepoint, and a phase prompt cannot drop the unmarked
+  guidelines section.
   Residual risk (documented in docs/THREAT-MODEL.md): it is an instruction,
   not a structural fence.
 - `tests/coding_guidelines_layers_2574_test.ts` pinned heading lists updated
