@@ -1412,10 +1412,11 @@ branch at the same time. A host that loses the race returns immediately.
   human on a decline *other* than a spent restart budget (Issue #2312), and the
   exhausted stale-verdict ladder, which records the rung as failed and asks
   nobody (Issue #2280).
-- `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
-  a label with no concluded attempt behind it. It reruns the ladder once, then
-  abandons and redoes the PR; it files no issue and applies no label, never
-  `escalated` or `needs-human`.
+- `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 2-hour owner
+  check. While the shared 3-attempt budget remains it runs the conflict
+  takeover; once the budget is spent it abandons and redoes the PR, and only
+  then. It files no issue and applies no label, never `escalated` or
+  `needs-human`.
 - `worker/deno/lib/merge_conflict_markers.ts` — the marker literals the scan,
   the processor, the deferral tracker and the abandon rung all read, in one
   place so they cannot drift apart.

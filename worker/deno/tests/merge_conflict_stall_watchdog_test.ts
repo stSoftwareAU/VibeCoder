@@ -375,6 +375,22 @@ Deno.test("detectConflictQueueStall - a parked PR with the budget spent still tr
   assertEquals(stall.attemptsSpent, 3);
 });
 
+Deno.test("detectConflictQueueStall - a conclusion after a park ends the park", () => {
+  // A trusted failed conclusion after the park means the PR was un-parked
+  // and worked on. The park no longer suppresses the stall, even though the
+  // shared budget still has attempts left (Issue #3001 review).
+  const stall = detect(
+    observation(30, [
+      comment(conflictParkedMarker(PARKED_BASE), 20),
+      comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 12),
+    ], { baseRefOid: PARKED_BASE }),
+  );
+  assert(stall !== null);
+  assertEquals(stall.budgetSpent, false);
+  assertEquals(stall.clockStart, "attempt");
+  assertEquals(stall.stalledMs, 12 * HOUR);
+});
+
 // ---------------------------------------------------------------------------
 // Repair — fix forward: takeover while budget remains, else guarded abandon
 // ---------------------------------------------------------------------------
