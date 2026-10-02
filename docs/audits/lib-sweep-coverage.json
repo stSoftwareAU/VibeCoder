@@ -2468,7 +2468,7 @@
       "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3073",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: docs_sweep_gate.ts (#3073)",
       "status": "claimed",
-      "sweptAt": "85f16ee414f249d3232bc770e83474e3d2a655ef",
+      "sweptAt": "d2571a0755334c5a447be97ed673ce15c26b55ba",
       "paths": [
         "worker/deno/lib/docs_sweep_gate.ts"
       ]
