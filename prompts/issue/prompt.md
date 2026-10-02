@@ -854,11 +854,15 @@ The file MUST contain:
    *not* happen — counts only once you have seen it go red with its guard
    broken on purpose (see **A negative test must be able to fail** in the
    guidelines); one that stays green without its guard is a blocking
-   self-review finding. Likewise, every outcome of a branch the diff adds —
-   each new condition, match arm, exit code and interface default — counts
-   only once a named test reaches it and flipping that outcome on purpose
-   turns the suite red (see **Every outcome of a branch you add needs a test
-   that reaches it** in the guidelines); an outcome no test reaches is a
+   self-review finding. Likewise, each call site the diff changes needs a
+   test that goes red when only that caller's change is reverted (see
+   **Every changed call site needs a test that goes red without it** in the
+   guidelines); a changed call site whose revert leaves the suite green is a
+   blocking self-review finding. Likewise, every outcome of a branch the diff
+   adds — each new condition, match arm, exit code and interface default —
+   counts only once a named test reaches it and flipping that outcome on
+   purpose turns the suite red (see **Every outcome of a branch you add needs
+   a test that reaches it** in the guidelines); an outcome no test reaches is a
    blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
