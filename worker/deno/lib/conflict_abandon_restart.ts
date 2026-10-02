@@ -1924,7 +1924,16 @@ export async function abandonAndRestart(
   // A `stalled` reason is exempt (Issue #2802): the stall-repair pass's
   // second trip is not a conflict-resolution outcome at all, and has its own
   // two-trip bound — this guard only ever applies to the merge-conflict route.
+  //
+  // With no fleet identity resolved (`deps.trustedAuthors` empty),
+  // `partitionConflictComments` can never call anything "trusted" — so a
+  // computed `failedAttempts` of 0 would be a false "not spent yet" rather
+  // than a genuine read of the thread. Decline no earlier than the
+  // restart-marker check further down, which already declines an
+  // unattributable claim explicitly (Issue #1247) instead of silently
+  // reading it as a healthy zero.
   if (
+    deps.trustedAuthors.length > 0 &&
     request.reason?.kind !== "stalled" &&
     failedAttempts < CONFLICT_RESOLUTION_BUDGET
   ) {

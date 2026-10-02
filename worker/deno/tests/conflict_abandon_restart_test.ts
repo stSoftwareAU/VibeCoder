@@ -1427,13 +1427,17 @@ Deno.test("abandonAndRestart - a comment that fails after this flow added the la
   assertEquals(removeLabelCalls(fake).length, 1);
   assertEquals(fake.state.issueLabels.includes("needs-human"), false);
 
-  // A second pass, with the comment working, applies both exactly once.
+  // A second pass, with the comment working, lands the comment once. The
+  // dedup check only recognises the fleet's own *comment* (Issue #3000), so
+  // a failed-and-rolled-back first attempt leaves no marker behind — the
+  // label is legitimately re-added here, since nothing proves it is already
+  // on the issue.
   const second = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
     trustedAuthors: FLEET_AUTHORS,
   });
   assertEquals(second.outcome, "declined");
-  assertEquals(needsHumanLabelCalls(fake).length, 1);
+  assertEquals(needsHumanLabelCalls(fake).length, 2);
   assertEquals(issueCommentPosts(fake).length, 1);
   assertEquals(fake.state.issueLabels.includes("needs-human"), true);
 });
