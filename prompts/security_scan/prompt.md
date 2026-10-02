@@ -1710,7 +1710,7 @@ reconcile pass has nothing to repaint.
 1. **Dedup against the known-open list only.** The known-open list above
    is the only dedup source: the worker built it from open issues the
    fleet account authored, so a finding-id marker in an issue anyone
-   else wrote cannot suppress a real finding (Issue #3045). Do not run a
+   else wrote cannot suppress a real finding. Do not run a
    live `gh issue list` re-check for dedup, and do not skip a finding
    because some other issue's body carries its id.
 2. **Honour only governed in-source suppression markers.** A marker

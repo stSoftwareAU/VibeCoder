@@ -45,14 +45,14 @@ const PROMPT_NAMES = [
  */
 const flatten = (text: string) => text.replace(/\s+/g, " ");
 
-for (const name of PROMPT_NAMES) {
-  Deno.test(
-    `${name}: dedups only on the fleet-filtered known-open list (Issue #3045)`,
-    async () => {
+Deno.test(
+  "idle-task prompts dedup only on the fleet-filtered known-open list (Issue #3045)",
+  async () => {
+    for (const name of PROMPT_NAMES) {
       const result = await loadPrompt(name, PROMPTS_DIR);
       assert(result.ok, `${name} failed to load`);
       if (!result.ok) {
-        return;
+        continue;
       }
       const text = flatten(result.value);
 
@@ -68,6 +68,6 @@ for (const name of PROMPT_NAMES) {
         text.includes("the only dedup source"),
         `${name} must state that the known-open list is the only dedup source`,
       );
-    },
-  );
-}
+    }
+  },
+);
