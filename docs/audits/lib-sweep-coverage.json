@@ -142,6 +142,7 @@
         "worker/deno/lib/run_entrypoint.ts",
         "worker/deno/lib/run_housekeeping.ts",
         "worker/deno/lib/run_worker.ts",
+        "worker/deno/lib/rust_use_union.ts",
         "worker/deno/lib/security_fix_gate_feedback.ts",
         "worker/deno/lib/security_fix_gate_retry.ts",
         "worker/deno/lib/self_heal_events.ts",
