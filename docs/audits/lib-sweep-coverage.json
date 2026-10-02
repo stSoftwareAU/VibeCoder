@@ -2481,7 +2481,7 @@
       "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2999",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_takeover.ts, conflict_takeover_resolvers.ts (#2999)",
       "status": "claimed",
-      "sweptAt": "8d3bc59b4ee5e862cf03050d754986e873e8a5d6",
+      "sweptAt": "e6a89d49eb3ec840e1f661ee5c3a1326f43582ac",
       "paths": [
         "worker/deno/lib/conflict_takeover.ts",
         "worker/deno/lib/conflict_takeover_resolvers.ts"
