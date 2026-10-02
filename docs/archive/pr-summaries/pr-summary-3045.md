@@ -37,6 +37,9 @@ what the fleet itself filed.
   prompt-side copy would only duplicate it and could drift.
 - `security_scan` no longer lists Phase 4 dedup among its permitted
   `gh issue list` uses.
+- The new prompt wording names no issue number: cross-repo-filed prompt
+  bodies must not carry a bare `#NNN`, because it would mislink in the target
+  repo.
 
 ### Undiscoverable Facts
 
