@@ -51,6 +51,12 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# `$IsWindows` only exists in PowerShell Core, and Set-StrictMode makes reading
+# an undefined variable a hard error - so the platform is resolved once, here,
+# in a way Windows PowerShell 5.1 answers too.
+$script:VibeIsWindows =
+    ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
+
 $BaseDir = if ($PSScriptRoot) {
     $PSScriptRoot
 } else {
@@ -494,6 +500,36 @@ function Write-BuildFailureEvidence {
     Write-RunCoreExcerpt -Label $Label -Source $Source
 }
 
+<#
+.SYNOPSIS
+    Pre-create a run-scoped temporary file owner-only, before its first write.
+
+.DESCRIPTION
+    The twin of setup.ps1's New-VibeCredentialDirectory (Issue #3057): on
+    non-Windows, [System.IO.Path]::GetTempPath() is shared by every local
+    account, and a file later opened or written there takes the umask default
+    - commonly 0644, world-readable - until something narrows it. Creating it
+    here, owner-only from the instant it exists, closes that window; the
+    writer that follows (Deno's writeTextFile, .NET's WriteAllText, or an
+    explicit FileMode.Open) truncates the content but keeps the mode.
+
+    A no-op on Windows: the launcher's temp path there already sits under the
+    per-user %TEMP%, which setup.ps1's own default (Get-VibeHomeDirectory)
+    shares.
+#>
+function New-VibePrivateTempFile {
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    if ($script:VibeIsWindows) { return }
+    # umask 077 makes it 0600; noclobber (set -C) refuses a file or symlink
+    # already planted at the path. The path travels as $1, never
+    # interpolated.
+    & sh -c 'umask 077; set -C; : > "$1"' sh $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not create private temporary file $Path (sh exited $LASTEXITCODE)"
+    }
+}
+
 # Update the worker checkout on the host, before the container is launched
 # (Issue #512). This is the only update of that checkout since Issue #513
 # retired the in-container reset: nothing inside the container writes to
@@ -528,6 +564,17 @@ if ($checkoutUpdate.ExitCode -ne 0) {
 $ContainerName = "vibe-coder-$PID"
 $PlanFile = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("vibe-launch-plan-" + [System.Guid]::NewGuid().ToString("N"))
+
+# Issue #3057: both plan-file artefacts are pre-created owner-only before
+# Deno's container-launch-plan writes them, so neither is briefly
+# world-readable under a permissive umask.
+try {
+    New-VibePrivateTempFile $PlanFile
+    New-VibePrivateTempFile "$PlanFile.Containerfile"
+} catch {
+    [Console]::Error.WriteLine("Error: $_")
+    Exit-Launcher 1
+}
 
 $Runtime = ""
 $Image = ""
@@ -762,6 +809,8 @@ function Write-EgressEvidence {
 
 $EgressLog = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("vibe-egress-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+# Issue #3057: owner-only before container-egress-probe's first write.
+New-VibePrivateTempFile $EgressLog
 $egress = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
     "run",
     "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
@@ -865,6 +914,8 @@ function Invoke-BuildHeal {
     if (-not $HealLog) {
         $script:HealLog = Join-Path ([System.IO.Path]::GetTempPath()) `
             ("vibe-heal-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+        # Issue #3057: owner-only before the WriteAllText below.
+        New-VibePrivateTempFile $script:HealLog
     }
     $text = "$($healed.StdOut)$($healed.StdErr)"
     [System.IO.File]::WriteAllText($HealLog, $text)
@@ -880,6 +931,8 @@ if ($present.ExitCode -ne 0) {
     Write-LaunchPhase "image_build"
     $BuildLog = Join-Path ([System.IO.Path]::GetTempPath()) `
         ("vibe-build-" + [System.Guid]::NewGuid().ToString("N") + ".log")
+    # Issue #3057: owner-only before Invoke-ImageBuild's WriteAllText.
+    New-VibePrivateTempFile $BuildLog
     try {
         $buildStatus = Invoke-ImageBuild -LogPath $BuildLog
         # Set once the build's own output has reached run_core.log, so the
@@ -1317,11 +1370,23 @@ $RunCapture = $null
 try {
     $captureCandidate = Join-Path ([System.IO.Path]::GetTempPath()) `
         ("vibe-run-" + [System.Guid]::NewGuid().ToString("N") + ".log")
-    $RunCapture = [System.IO.File]::Open(
-        $captureCandidate,
-        [System.IO.FileMode]::CreateNew,
-        [System.IO.FileAccess]::Write,
-        [System.IO.FileShare]::ReadWrite)
+    # Issue #3057: owner-only before the capture is opened; on non-Windows
+    # the file already exists afterwards, so it is opened rather than
+    # created anew.
+    if ($script:VibeIsWindows) {
+        $RunCapture = [System.IO.File]::Open(
+            $captureCandidate,
+            [System.IO.FileMode]::CreateNew,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::ReadWrite)
+    } else {
+        New-VibePrivateTempFile $captureCandidate
+        $RunCapture = [System.IO.File]::Open(
+            $captureCandidate,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::ReadWrite)
+    }
     $RunLog = $captureCandidate
 } catch {
     [Console]::Error.WriteLine(

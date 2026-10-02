@@ -127,6 +127,15 @@ evidence that supported behaviour, an invariant, or a contract regressed.
 3. Do not remove, skip, or weaken tests just to pass a gate. If a supported
    contract changes, or a test pins only incidental implementation, update or
    remove the test deliberately and document the reason and remaining coverage.
+   **Change only what the issue changes.** When an issue alters part of what
+   an existing test expects, edit that expectation and keep every other
+   assertion the test made — a green gate before and after does not prove
+   nothing was lost. Before raising the PR, go through the assertions your
+   diff removes from each existing test (`git diff <base>...HEAD` over the
+   edited test files). Each one needs an issue requirement that makes it
+   untrue, recorded in the PR summary. An assertion removed without one is a
+   blocking self-review finding: restore it, or move it to a test that still
+   covers the behaviour and say where.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its
@@ -301,6 +310,39 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A negative test must be able to fail.** An assertion that something does
+*not* happen — not leaked, not carried over, not exported, not called, null
+rather than stale — needs a fixture that contains the forbidden thing: a real
+token to leak, an earlier value to carry over, a caller that would otherwise
+run. A new guard has no base-branch red run to lean on, so before raising the
+PR break the guard on purpose (remove the filter, invert the check, or fill
+from the wrong source), run the test, confirm it goes red, then restore the
+guard. A negative test that stays green without its guard is a blocking
+self-review finding.
+
+**Every changed call site needs a test that goes red without it.** When a
+change threads a new argument, flag or behaviour through more than one
+production caller, a test of the helper, or of some callers, does not cover
+the others. For each call site the diff changes, revert only that caller's
+change (pass the old value, drop the new argument, restore the old filter)
+and confirm at least one test goes red. A test double that bypasses the
+production path (for example, a stub that ignores the filter it is passed, or
+forcing a fallback path) does not count for that path. A changed call site
+whose revert leaves the suite green is a blocking self-review finding: add a
+test through that caller, ideally at the level the linked issue's Failure
+Detection names.
+
+**Every outcome of a branch you add needs a test that reaches it.** For each
+new condition, match arm, exit-code check or trait/interface default in the
+diff, list its outcomes (success, absent/empty, error, fail-closed default)
+and name the test that drives each one. A test double that overrides the
+default, or a stub that always returns the same code, does not reach the
+other outcomes. Flip each outcome on purpose (return the lenient value
+instead of the error, treat "absent" as "failed"), run the tests, confirm at
+least one goes red, then restore it. An outcome with no test, or one whose
+flip leaves the suite green, is a blocking self-review finding: add a test
+for it.
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
@@ -342,11 +384,19 @@ blocking self-review finding (Issue #3021).
 - **Units:** Assert meaningful invariants and outcomes at useful boundaries,
   not private call sequences or line-by-line implementation. Refactoring private
   code should not require widespread test changes. Existing higher-level tests
-  can cover behaviour without a direct unit test.
+  can cover behaviour without a direct unit test. A unit test of a shared
+  helper does not cover its callers' wiring — see **Every changed call site
+  needs a test that goes red without it** above. Each outcome of a branch you
+  add needs its own test, and a test double that overrides a default or stubs
+  past the branch does not count — see **Every outcome of a branch you add
+  needs a test that reaches it** above.
 
 Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an
-explicit contract or leave it out. See Playwright's
+explicit contract or leave it out. Ask a negative assertion the opposite
+question too: would it fail if the guard it protects were removed? If not,
+its fixture lacks the forbidden value — see **A negative test must be able to
+fail** above. See Playwright's
 [user-visible testing guidance](https://playwright.dev/docs/best-practices)
 and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
 
@@ -946,6 +996,20 @@ gate if a model-generation name reappears in this document.
   spelling" is more effective than "Do not use American English spelling".
 - **Structure prompts with clear sections** — headings and bullet points aid
   literal parsing.
+- **Verify a claim about another component before you write it.** Before new
+  prompt or doc text states how another part of the system behaves, find the
+  code that implements that behaviour and cite the file in the PR body — above
+  all for an exclusive or negative claim ("the only …", "never …", "the worker
+  does not …"). A statement about a security control (redaction, guards,
+  sandboxing, dedup) must agree with [SECURITY.md](SECURITY.md) and
+  [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md); when they disagree, fix the
+  claim or raise the discrepancy rather than writing around it. When a rule
+  needs no claim about the system to justify it, leave the claim out: state the
+  rule and the risk it addresses. Two fleet PRs were sent back for this: one
+  told the scan prompts a known-open list was "the only dedup source" while
+  every security_scan caller passed it empty (#3068); one said the worker files
+  an agent's `gh issue create` body unscrubbed, when the `gh` guard shim
+  redacts it (#3071).
 
 ## Configuration
 
