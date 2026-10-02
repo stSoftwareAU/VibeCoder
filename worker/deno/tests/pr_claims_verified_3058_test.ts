@@ -47,6 +47,8 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "git diff --stat HEAD",
       "whatever planning, escape-hatch or blocked/deferral marker",
       "suspicious-image flag is the exception",
+      "hands it to a human only while the branch has no commits",
+      "record that criterion as `missing`",
     ]
   ) {
     assertStringIncludes(body, required);
@@ -63,6 +65,23 @@ Deno.test("Issue #3058 - issue prompt holds docs the diff touches to the same ru
     ]
   ) {
     assertStringIncludes(body, required);
+  }
+});
+
+Deno.test("Issue #3058 - coding guidelines scope Blocked and the escape hatch to an uncommitted branch", async () => {
+  const guidelines = normalise(
+    await Deno.readTextFile(
+      `${REPO_ROOT}prompts/coding_guidelines/prompt.md`,
+    ),
+  );
+
+  for (
+    const required of [
+      "defers** the issue only while the branch has no commits",
+      "hands the issue to a human (`needs-human`) only while the branch has no commits",
+    ]
+  ) {
+    assertStringIncludes(guidelines, required);
   }
 });
 

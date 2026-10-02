@@ -77,6 +77,20 @@ flowchart LR
 "blocking self-review finding"; updated: `CODING-STANDARDS.md`,
 `docs/USAGE.md`, `docs/workflows/issue-processing.md`.
 
+Related rules checked, and brought into line with change detection in
+`worker/deno/lib/phases/execute_phase.ts` (a commit or uncommitted change
+returns `continue`; this branch has no declared-handoff phase):
+
+- `prompts/coding_guidelines/prompt.md` — "Blocked on another issue" now
+  defers only while the branch has no commits and no uncommitted changes,
+  and tells a committed run to record the deliverable as `missing`.
+- `prompts/coding_guidelines/prompt.md` — Escape Hatch hands off to a human
+  only in that same uncommitted window.
+- `prompts/issue/prompt.md` — Escape Hatch and the planning marker carry the
+  same window. A core deliverable that is genuinely blocked after a commit
+  is recorded as `missing`, with the dependency named beside the closing
+  keyword.
+
 **Docs sweep (review round)** — grep: `must match the head code and appear`,
 "every doc the diff adds or edits", `finish the work or hand it off`,
 "missing core deliverable"; updated: `prompts/issue/prompt.md`,

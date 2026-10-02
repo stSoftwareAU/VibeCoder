@@ -686,11 +686,15 @@ message, in this shape:
 Depends on owner/repo#N
 ```
 
-The worker recognises that shape and **defers** the issue: it stays open with
-its discovery label, `Depends on owner/repo#N` is recorded in its body, and the
-dependency gate skips it on every scan until that dependency closes. The
-release comment says `deferred: depends on owner/repo#N`. No human is paged and
-no work is lost.
+The worker recognises that shape and **defers** the issue only while the
+branch has no commits and no uncommitted changes against the base: it stays
+open with its discovery label, `Depends on owner/repo#N` is recorded in its
+body, and the dependency gate skips it on every scan until that dependency
+closes. The release comment says `deferred: depends on owner/repo#N`. No
+human is paged and no work is lost. Once work is committed, change detection
+sends the run to the PR path and this shape is not read. Record the core
+deliverable as `missing` and name the blocking dependency beside the closing
+keyword.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the
@@ -889,7 +893,9 @@ this **instead of looping**:
    **Do not close the issue yourself**: the `gh` guard refuses
    `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
    The worker releases its claim and hands the issue to a human
-   (`needs-human`), who decides whether to close it.
+   (`needs-human`) only while the branch has no commits and no uncommitted
+   changes against the base. Once work is committed, this free-text hand-off
+   is not read. A human decides whether to close the issue.
 4. Exit cleanly. Do not retry the original change.
 
 **Do not invoke this lightly.** Make a serious attempt first. Use the escape

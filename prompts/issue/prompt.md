@@ -264,8 +264,10 @@ apply:
   `needs-human` included, is removed after creation, so name `needs-human` in
   the comment instead.
 - Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
-  as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
-  and hands it to a human.
+  as `{{REPO}}#NNN`), and leave the issue open. The worker releases its claim
+  and hands it to a human only while the branch has no commits and no
+  uncommitted changes against the base. Once work is committed, this
+  free-text hand-off is not read.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -278,8 +280,9 @@ change, and end your final message with this marker on its own line:
 <!-- vibe-needs-planning reason="<why it splits — the independent pieces you found>" -->
 ```
 
-The worker applies `planning` through its audited hand-off, posts your reason
-on the issue, and the planning run breaks it into sub-issues. `reason` is
+The worker applies `planning` through its audited hand-off only while the
+branch has no commits and no uncommitted changes against the base. It posts
+your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
 goes to a human instead. The marker applies to `work-on` issues only: on any
 other pickup label, or when the issue body carried an image from an untrusted
@@ -643,6 +646,9 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   have committed work, so a planning, escape-hatch or blocked/deferral
   hand-off at this point is not read — finishing the deliverable is the only
   way to avoid a `Closes #{{ISSUE_NUMBER}}` over work left undone.
+  When the core deliverable is genuinely blocked on another open issue and
+  work is already committed, record that criterion as `missing` and name the
+  blocking dependency beside the closing keyword.
   When a lesser criterion stays `partial` or `missing`, the Summary names it
   beside the closing keyword instead of describing the issue as resolved.
 
