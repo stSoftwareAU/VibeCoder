@@ -600,7 +600,9 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
   );
 
   // A modified file with no patch (a changed binary) cannot be confirmed
-  // unchanged. An added binary is compared by blob sha instead.
+  // unchanged. Both sides carry the same blob sha, which GitHub always
+  // sends, so this stays false only because sameAddedBlob requires
+  // status "added" — a modified binary is not an added blob.
   const { gh: noPatchGh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{
       sha: "m1",
@@ -609,14 +611,79 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
     "repos/o/r/compare/main...X": compareFiles([{
       filename: "a.bin",
       status: "modified",
+      sha: "762368ae",
     }]),
     "repos/o/r/compare/main...head": compareFiles([{
       filename: "a.bin",
       status: "modified",
+      sha: "762368ae",
     }]),
   });
   assertEquals(
     await ownDiffUnchanged(noPatchGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // GitHub's compare API lists at most 300 files. Identical first-300
+  // lists cannot prove a later file is unchanged.
+  const threeHundred = Array.from({ length: 300 }, (_, i) => ({
+    filename: `f${String(i).padStart(3, "0")}.ts`,
+    patch: "@@ -1,3 +1,4 @@\n+x",
+  }));
+  const { gh: cappedGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles(threeHundred),
+    "repos/o/r/compare/main...head": compareFiles(threeHundred),
+  });
+  assertEquals(
+    await ownDiffUnchanged(cappedGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // Same filename and patch, but the rename source differs.
+  const { gh: renamedGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+      previous_filename: "old.ts",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+      previous_filename: "other.ts",
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(renamedGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // Same filename and normalised patch, but the change kind differs.
+  const { gh: statusGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      status: "added",
+      patch: "@@ -0,0 +1 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      status: "modified",
+      patch: "@@ -0,0 +1 @@\n+x",
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(statusGh, "o/r", "main", "X", "head"),
     false,
   );
 

@@ -101,7 +101,7 @@ gets a fresh review" and `review-fleet-prs`. Updated
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — tests call real code with injected fakes and no wall-clock waits; every error path of `ownDiffUnchanged` is tested; `SIMPLE-ON-PURPOSE` marker is in the required form; the catch block logs with context and does not hide the error; the docs change ships in the same diff; Australian English throughout. Optional notes (an inline sort comparator, the moved `firstLine`) were not acted on
+- **clean** — tests call real code with injected fakes and no wall-clock waits; the fail-closed returns of `ownDiffUnchanged` that this PR adds each have a case that stays false only because that guard fires (diverged history, a truncated commit list, a file-count mismatch, the 300-file cap, a `previous_filename` mismatch, a `status` mismatch, and a patch-less modified file that shares a blob sha); `SIMPLE-ON-PURPOSE` marker is in the required form; the catch block logs with context and does not hide the error; the docs change ships in the same diff; Australian English throughout. Optional notes (an inline sort comparator, the moved `firstLine`) were not acted on
 
 ## Test Plan
 
@@ -138,6 +138,10 @@ gets a fresh review" and `review-fleet-prs`. Updated
     b.length`): a merge-base diff that adds one file (e.g. a test) past what
     the pre-send-back diff had, with the shared file's patch identical,
     still returns `false`
+  - the same test now also covers the 300-file cap (identical 300-file
+    lists return `false`), a `previous_filename` mismatch, a `status`
+    mismatch (`added` vs `modified` with the same patch), and a patch-less
+    modified file that carries the same blob sha on both sides
 - Ran `deno test` on `review_fleet_prs_gate_2675_test.ts` and
   `review_fleet_prs_log_2678_test.ts` (29 passed)
 
