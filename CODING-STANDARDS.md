@@ -320,6 +320,18 @@ from the wrong source), run the test, confirm it goes red, then restore the
 guard. A negative test that stays green without its guard is a blocking
 self-review finding.
 
+**Every changed call site needs a test that goes red without it.** When a
+change threads a new argument, flag or behaviour through more than one
+production caller, a test of the helper, or of some callers, does not cover
+the others. For each call site the diff changes, revert only that caller's
+change (pass the old value, drop the new argument, restore the old filter)
+and confirm at least one test goes red. A test double that bypasses the
+production path (for example, a stub that ignores the filter it is passed, or
+forcing a fallback path) does not count for that path. A changed call site
+whose revert leaves the suite green is a blocking self-review finding: add a
+test through that caller, ideally at the level the linked issue's Failure
+Detection names.
+
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
 diff, list its outcomes (success, absent/empty, error, fail-closed default)
@@ -372,7 +384,9 @@ blocking self-review finding (Issue #3021).
 - **Units:** Assert meaningful invariants and outcomes at useful boundaries,
   not private call sequences or line-by-line implementation. Refactoring private
   code should not require widespread test changes. Existing higher-level tests
-  can cover behaviour without a direct unit test. Each outcome of a branch you
+  can cover behaviour without a direct unit test. A unit test of a shared
+  helper does not cover its callers' wiring — see **Every changed call site
+  needs a test that goes red without it** above. Each outcome of a branch you
   add needs its own test, and a test double that overrides a default or stubs
   past the branch does not count — see **Every outcome of a branch you add
   needs a test that reaches it** above.
