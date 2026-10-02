@@ -19,11 +19,16 @@ not fixed". Closes #3063.
 
 ### Essential Design Decisions
 
-- `awaiting-fix` needs three things: the reviewer's latest counted review is
+- `awaiting-fix` needs two things: the reviewer's latest counted review is
   `CHANGES_REQUESTED` at a commit `X` that is not the head; `X...head` is
-  `ahead` and contains only commits with two or more parents; and both
-  merge-base diffs hold the same files, statuses and patches. Hunk-header line
-  numbers are ignored in the patch comparison
+  `ahead`; and both merge-base diffs hold the same files, statuses and
+  patches. Hunk-header line numbers are ignored in the patch comparison. An
+  earlier per-commit "two or more parents" check was dropped (PR #3079
+  review): `compare/{X}...{head}` also lists the single-parent base-branch
+  commits a merge brought in, not just the merge commit, so the check
+  rejected every real base-branch merge. The merge-base diff equality already
+  proves the PR's own change is unchanged; any fix or conflict-resolution
+  edit changes that diff
 - If any check cannot be confirmed (a compare error such as a 404 after a
   force-push, a binary file without a patch, a truncated list of 250+ commits
   or 300+ files), `ownDiffUnchanged` logs one line to stderr and returns
@@ -54,7 +59,7 @@ compare JSON.
 flowchart TD
     A[Green, mergeable, not reviewed at head] --> B{Latest review by reviewer<br/>CHANGES_REQUESTED at X != head?}
     B -- no --> R[ready: review]
-    B -- yes --> C{X...head ahead and<br/>every commit a merge?}
+    B -- yes --> C{X...head ahead?}
     C -- no --> R
     C -- yes --> D{base...X diff ==<br/>base...head diff?}
     D -- no --> R
@@ -76,8 +81,7 @@ gets a fresh review" and `review-fleet-prs`. Updated
 
 - **met** — Add an `awaiting-fix` skip reason — evidence: `.claude/skills/review-fleet-prs/gate.ts` (`Skip`, `skipReason`) — reviewer: met
 - **met** — Applies when the latest review is CHANGES_REQUESTED at X and the merge-base diff is unchanged — evidence: `worker/deno/tests/review_fleet_prs_gate_2675_test.ts::skipReason: a merge-only head after a send-back is awaiting-fix (Issue #3063)` — reviewer: met
-- **met** — Every commit after X must be a two-parent merge with no conflict-resolution edits — evidence: `ownDiffUnchanged` in `gate.ts` — reviewer: met
-- **met** — A conflict-resolving merge or any non-merge commit still gets a fresh review — evidence: `worker/deno/tests/review_fleet_prs_gate_2675_test.ts::skipReason: a merge with conflict-resolution edits is a fresh review (Issue #3063)` and `::skipReason: a fix commit is a fresh review and skips the merge-base compares (Issue #3063)` — reviewer: met
+- **met** — A conflict-resolving merge or any non-merge commit that changes the PR's own diff still gets a fresh review — evidence: `worker/deno/tests/review_fleet_prs_gate_2675_test.ts::skipReason: a merge with conflict-resolution edits is a fresh review (Issue #3063)` and `::skipReason: a fix commit changes the merge-base diff and gets a fresh review (Issue #3079)` — reviewer: met
 - **met** — Rule 8 reads "a new push that changes the PR's own diff" — evidence: `.claude/skills/review-fleet-prs/SKILL.md` rule 8 — reviewer: met
 - **met** — Unit tests for `skipReason`: merge-only → `awaiting-fix`; conflict edits → null; fix commit → null; approved PR moved by a base merge unaffected — evidence: `worker/deno/tests/review_fleet_prs_gate_2675_test.ts::skipReason: an approved PR whose head moved by a base merge never calls the checker (Issue #3063)` and the three tests above — reviewer: met
 - **partial** — Later rounds' `log.jsonl` shows no repeated "not fixed" reviews, and `skipped` counts show `awaiting-fix` — evidence: `pass()` counts every `Skip` in `skipped` — reviewer: partial — reason: this can only be observed in live review rounds after merge, not from the diff
@@ -97,8 +101,14 @@ gets a fresh review" and `review-fleet-prs`. Updated
   - `sentBackAt: the latest counted review decides the verdict`
   - four `skipReason … (Issue #3063)` cases
   - `ownDiffUnchanged returns false rather than throwing (Issue #3063)`
-- Ran `deno test` on `review_fleet_prs_gate_2675_test.ts` and
-  `review_fleet_prs_upkeep_failure_2891_test.ts` (18 passed), then the full
-  `./quality.sh` (passed)
+- PR #3079 review fix: the merge-only fixture in `skipReason: a merge-only
+  head after a send-back is awaiting-fix` now includes a single-parent
+  base-branch commit alongside the merge commit, matching GitHub's real
+  `compare` response; `skipReason: a fix commit is a fresh review and skips
+  the merge-base compares` is renamed to `... changes the merge-base diff and
+  gets a fresh review (Issue #3079)` and now asserts the merge-base compares
+  are called and differ
+- Ran `deno test` on `review_fleet_prs_gate_2675_test.ts` (16 passed), then
+  the full `./quality.sh` (passed)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -384,11 +384,14 @@ Deno.test("skipReason: a merge-only head after a send-back is awaiting-fix (Issu
     baseRefName: "main",
     reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
   });
+  // GitHub's real compare/X...head also lists the single-parent base
+  // commits a merge brought in, not just the 2-parent merge commit itself
+  // (Issue #3079 — GRQ-AutoTrader #2213, #2210, #2218).
   const { gh } = fakeGh({
-    "repos/o/r/compare/X...head": compareResponse("ahead", [{
-      sha: "m1",
-      parents: 2,
-    }]),
+    "repos/o/r/compare/X...head": compareResponse("ahead", [
+      { sha: "base1", parents: 1 },
+      { sha: "m1", parents: 2 },
+    ]),
     "repos/o/r/compare/main...X": compareFiles([{
       filename: "a.ts",
       patch: "@@ -1,3 +1,4 @@\n+x",
@@ -438,16 +441,26 @@ Deno.test("skipReason: a merge with conflict-resolution edits is a fresh review 
   );
 });
 
-Deno.test("skipReason: a fix commit is a fresh review and skips the merge-base compares (Issue #3063)", async () => {
+Deno.test("skipReason: a fix commit changes the merge-base diff and gets a fresh review (Issue #3079)", async () => {
   const pr = searchPr({
     headRefOid: "head",
     baseRefName: "main",
     reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
   });
+  // A single-parent fix commit is no longer rejected by its own parent
+  // count — the merge-base diff is what proves it changed the PR.
   const { gh, calls } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{
       sha: "fix1",
       parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x\n+y",
     }]),
   });
   assertEquals(
@@ -458,7 +471,11 @@ Deno.test("skipReason: a fix commit is a fresh review and skips the merge-base c
     ),
     null,
   );
-  assertEquals(calls, ["repos/o/r/compare/X...head"]);
+  assertEquals(calls, [
+    "repos/o/r/compare/X...head",
+    "repos/o/r/compare/main...X",
+    "repos/o/r/compare/main...head",
+  ]);
 });
 
 Deno.test("skipReason: an approved PR whose head moved by a base merge never calls the checker (Issue #3063)", async () => {

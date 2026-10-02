@@ -287,7 +287,6 @@ export async function ownDiffUnchanged(
       return false;
     }
     if (sinceToHead.commits.length === 0) return false;
-    if (sinceToHead.commits.some((c) => c.parents.length < 2)) return false;
 
     const [baseToSince, baseToHead]: [CompareFiles, CompareFiles] = [
       JSON.parse(await gh(["api", `repos/${repo}/compare/${base}...${since}`])),
