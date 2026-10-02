@@ -37,6 +37,7 @@ import {
   REVIEW_MARKER,
   sameLogin,
   stateDir,
+  wasChangeRequestAt,
   writeSummary,
 } from "./review_log.ts";
 import { dependabotAction } from "./dependabot.ts";
@@ -217,20 +218,24 @@ export function reviewedAtHead(
 // The commit this reviewer last sent the PR back at, when its latest counted
 // review is a change request at a commit other than the head; else null.
 // Review nodes are oldest-first, so the last counted one is the verdict that
-// stands. A DISMISSED latest review returns null: GitHub's DISMISSED state
-// cannot tell a stale-dismissed approval from a claimed change request, so it
-// gets a fresh review as before.
+// stands. GitHub's DISMISSED state cannot by itself tell a stale-dismissed
+// approval from a change request the worker claimed (and so dismissed)
+// before pushing the fix: `wasChangeRequest` is the skill's own log answering
+// that question for this exact commit (Issue #3079).
 export function sentBackAt(
   reviews: Review[],
   reviewer: string,
   headSha: string,
+  wasChangeRequest: (oid: string) => boolean = () => false,
 ): string | null {
   const counted = reviews.filter((r) => countsAsReview(r, reviewer));
   const last = counted[counted.length - 1];
-  if (!last || last.state !== "CHANGES_REQUESTED") return null;
+  if (!last) return null;
   const oid = last.commit?.oid;
   if (!oid || oid === headSha) return null;
-  return oid;
+  if (last.state === "CHANGES_REQUESTED") return oid;
+  if (last.state === "DISMISSED" && wasChangeRequest(oid)) return oid;
+  return null;
 }
 
 // A single line up to (and excluding) its first newline, so a multi-line gh
@@ -333,6 +338,7 @@ export async function skipReason(
   reviewer: string,
   ownDiffUnchangedSince: (since: string) => Promise<boolean> = () =>
     Promise.resolve(false),
+  wasChangeRequestSince: (oid: string) => boolean = () => false,
 ): Promise<Skip | null> {
   // Only a merge into the default branch needs an approval; PRs into
   // milestone branches are reviewed when the milestone merges.
@@ -356,7 +362,12 @@ export async function skipReason(
   if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
     return "already-reviewed";
   }
-  const since = sentBackAt(pr.reviews.nodes, reviewer, pr.headRefOid);
+  const since = sentBackAt(
+    pr.reviews.nodes,
+    reviewer,
+    pr.headRefOid,
+    wasChangeRequestSince,
+  );
   if (since !== null && await ownDiffUnchangedSince(since)) {
     return "awaiting-fix";
   }
@@ -681,6 +692,7 @@ export async function pass(
       reviewer,
       (since) =>
         ownDiffUnchanged(callGh, repo, pr.baseRefName, since, pr.headRefOid),
+      (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
     );
     if (skip) {
       skipped[skip] = (skipped[skip] ?? 0) + 1;

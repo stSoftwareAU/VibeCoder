@@ -302,13 +302,36 @@ Deno.test("sentBackAt: the latest counted review decides the verdict", () => {
     sentBackAt([review("CHANGES_REQUESTED", "head")], "nleck", "head"),
     null,
   );
-  // DISMISSED latest → null: cannot tell stale-dismissed approval from a
-  // claimed change request.
+  // DISMISSED latest, no log lookup given → null: the default cannot tell a
+  // stale-dismissed approval from a claimed change request.
   assertEquals(
     sentBackAt(
       [review("CHANGES_REQUESTED", "X"), review("DISMISSED", "X")],
       "nleck",
       "head",
+    ),
+    null,
+  );
+  // DISMISSED latest, the log says this PR was sent back at X (the worker
+  // claimed and dismissed the change request before pushing the fix) → "X"
+  // (Issue #3079).
+  assertEquals(
+    sentBackAt(
+      [review("CHANGES_REQUESTED", "X"), review("DISMISSED", "X")],
+      "nleck",
+      "head",
+      (oid) => oid === "X",
+    ),
+    "X",
+  );
+  // DISMISSED latest, the log says this was a dismissed approval (or has no
+  // record) → still null, even with a lookup given.
+  assertEquals(
+    sentBackAt(
+      [review("APPROVED", "X"), review("DISMISSED", "X")],
+      "nleck",
+      "head",
+      () => false,
     ),
     null,
   );
@@ -411,6 +434,52 @@ Deno.test("skipReason: a merge-only head after a send-back is awaiting-fix (Issu
   );
 });
 
+Deno.test("skipReason: a claimed (DISMISSED, logged changes_requested) review followed by a merge-only head is awaiting-fix; a DISMISSED approval is not (Issue #3079)", async () => {
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -11,3 +11,4 @@\n+x",
+    }]),
+  });
+  const claimed = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("DISMISSED", "X")] },
+  });
+  assertEquals(
+    await skipReason(
+      claimed,
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      (oid) => oid === "X",
+    ),
+    "awaiting-fix",
+  );
+
+  const dismissedApproval = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("DISMISSED", "X")] },
+  });
+  assertEquals(
+    await skipReason(
+      dismissedApproval,
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+      () => false,
+    ),
+    null,
+  );
+});
+
 Deno.test("skipReason: a merge with conflict-resolution edits is a fresh review (Issue #3063)", async () => {
   const pr = searchPr({
     headRefOid: "head",
@@ -505,12 +574,23 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
     false,
   );
 
+  // Identical merge-base file lists on both sides: if the guard under test
+  // did not return false, every later check would pass and the function
+  // would return true, so each case below only stays green because its own
+  // guard fires first (Issue #3079).
+  const sameFiles = compareFiles([{
+    filename: "a.ts",
+    patch: "@@ -1,3 +1,4 @@\n+x",
+  }]);
+
   // status is "diverged" rather than "ahead".
   const { gh: divergedGh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("diverged", [{
       sha: "m1",
       parents: 2,
     }]),
+    "repos/o/r/compare/main...X": sameFiles,
+    "repos/o/r/compare/main...head": sameFiles,
   });
   assertEquals(
     await ownDiffUnchanged(divergedGh, "o/r", "main", "X", "head"),
@@ -538,9 +618,37 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
       total_commits: 300,
       commits: [{ sha: "m1", parents: [{ sha: "p0" }, { sha: "p1" }] }],
     }),
+    "repos/o/r/compare/main...X": sameFiles,
+    "repos/o/r/compare/main...head": sameFiles,
   });
   assertEquals(
     await ownDiffUnchanged(truncatedGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // The merge-base diff adds a file (e.g. a test the earlier review asked
+  // for) that the pre-send-back diff never had: the file-count guard is what
+  // catches this, since the shared file's patch alone is identical.
+  const { gh: newFileGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "fix1",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }, {
+      filename: "z_test.ts",
+      status: "added",
+      patch: "@@ -0,0 +1,3 @@\n+test",
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(newFileGh, "o/r", "main", "X", "head"),
     false,
   );
 });

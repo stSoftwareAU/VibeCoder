@@ -34,9 +34,16 @@ not fixed". Closes #3063.
   or 300+ files), `ownDiffUnchanged` logs one line to stderr and returns
   `false`. The PR then gets a fresh review, as it did before, and the pass is
   never blocked
-- A latest review in state `DISMISSED` does not trigger `awaiting-fix`. GitHub
-  cannot tell a stale-dismissed approval from a change request the worker has
-  claimed, so the PR gets a fresh review as before
+- A latest review in state `DISMISSED` triggers `awaiting-fix` only when the
+  skill's own `log.jsonl` has a record for that exact head commit with
+  `outcome === "changes_requested"` (PR #3079 review). GitHub's `DISMISSED`
+  state alone cannot tell a stale-dismissed approval from a change request the
+  worker claimed — and so dismissed — before pushing the fix; the worker does
+  exactly that dismissal as soon as it claims the feedback
+  (`claim_pr_comment.ts`), well before the fix lands, so without this the
+  gate's own fix only delayed the repeat review until the claim rather than
+  preventing it (GRQ-AutoTrader #2218). A dismissed approval, or a PR with no
+  log record, still gets a fresh review
 - `skipReason` is now async and takes the checker as a parameter. It calls the
   checker only after every cheap check has passed. The three compare calls
   repeat on each pass while a PR is awaiting its fix; this is marked
@@ -101,14 +108,35 @@ gets a fresh review" and `review-fleet-prs`. Updated
   - `sentBackAt: the latest counted review decides the verdict`
   - four `skipReason … (Issue #3063)` cases
   - `ownDiffUnchanged returns false rather than throwing (Issue #3063)`
-- PR #3079 review fix: the merge-only fixture in `skipReason: a merge-only
-  head after a send-back is awaiting-fix` now includes a single-parent
-  base-branch commit alongside the merge commit, matching GitHub's real
-  `compare` response; `skipReason: a fix commit is a fresh review and skips
-  the merge-base compares` is renamed to `... changes the merge-base diff and
-  gets a fresh review (Issue #3079)` and now asserts the merge-base compares
-  are called and differ
-- Ran `deno test` on `review_fleet_prs_gate_2675_test.ts` (16 passed), then
-  the full `./quality.sh` (passed)
+- PR #3079 review fix (round 1): the merge-only fixture in `skipReason: a
+  merge-only head after a send-back is awaiting-fix` now includes a
+  single-parent base-branch commit alongside the merge commit, matching
+  GitHub's real `compare` response; `skipReason: a fix commit is a fresh
+  review and skips the merge-base compares` is renamed to `... changes the
+  merge-base diff and gets a fresh review (Issue #3079)` and now asserts the
+  merge-base compares are called and differ
+- PR #3079 review fix (round 2): `sentBackAt` and `skipReason` take a
+  `wasChangeRequest`/`wasChangeRequestSince` lookup, so a `DISMISSED` latest
+  review counts as a send-back when the skill's own log recorded
+  `changes_requested` at that head — new `wasChangeRequestAt` in
+  `review_log.ts`, covered by its own test in
+  `review_fleet_prs_log_2678_test.ts`. New/updated tests in
+  `review_fleet_prs_gate_2675_test.ts`:
+  - `sentBackAt`: a claimed (logged) change request behind a `DISMISSED`
+    review now returns the commit; a dismissed approval still returns `null`
+  - `skipReason: a claimed (DISMISSED, logged changes_requested) review
+    followed by a merge-only head is awaiting-fix; a DISMISSED approval is not
+    (Issue #3079)`
+  - `ownDiffUnchanged returns false rather than throwing`: the "diverged" and
+    "truncated" cases now supply identical merge-base file lists on both
+    sides of the compare, so each stays green only because its own guard
+    fires — confirmed by removing each guard in turn and seeing the test go
+    red
+  - a new case covers the file-count guard (`gate.ts`'s `a.length !==
+    b.length`): a merge-base diff that adds one file (e.g. a test) past what
+    the pre-send-back diff had, with the shared file's patch identical,
+    still returns `false`
+- Ran `deno test` on `review_fleet_prs_gate_2675_test.ts` and
+  `review_fleet_prs_log_2678_test.ts` (29 passed)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
