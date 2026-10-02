@@ -1850,8 +1850,12 @@ Deno.test("findConflictingPr - an exhausted PR with no originating issue is clos
  */
 function assertNeedsHumanOnIssueOnly(fake: FakeGh, issueNumber: number): void {
   const issuePath = `/issues/${issueNumber}/`;
+  // A hand-off comment may mention the label by name. Only a call that
+  // applies or removes the label itself counts as the label reaching somewhere.
   const naming = fake.calls.filter((args) =>
-    args.some((arg) => arg.includes("needs-human"))
+    args.some((arg) =>
+      arg === "needs-human" || arg.startsWith("labels[]=needs-human")
+    )
   );
   assert(
     naming.some((args) =>

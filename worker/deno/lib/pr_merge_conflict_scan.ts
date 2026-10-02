@@ -63,6 +63,7 @@ import {
   MERGE_CONFLICT_LABEL,
   readParkedBase,
   readResolutionAttempts,
+  spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
 import {
   abandonAndRestart,
@@ -130,6 +131,10 @@ export {
   // label could not stay here without a cycle. Re-exported, so every existing
   // importer keeps its path.
   MERGE_CONFLICT_LABEL,
+  // Moved to the leaf module (Issue #3000) so `conflict_abandon_restart.ts`
+  // can spend the same tally without importing this scan and creating a
+  // cycle. Re-exported, so every existing importer keeps its path.
+  spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
 
 /**
@@ -801,32 +806,6 @@ export const DISRUPTED_CONFLICT_NEXT_STEP =
  */
 
 /**
- * Failed attempts spent against the shared budget since the last resolved
- * one (Issue #2996).
- *
- * A resolved marker resets the tally to zero — attempts before a successful
- * merge belong to a conflict that is already over — so this walks the full
- * list, oldest first, and counts `failed` outcomes after the most recent
- * `resolved`. Every pass counts here: the stale-verdict ladder, the milestone
- * sync and the takeover rung all spend from the same number.
- *
- * @param attempts - From {@link readResolutionAttempts}.
- */
-export function spentConflictAttempts(
-  attempts: readonly ConflictResolutionAttempt[],
-): number {
-  let count = 0;
-  for (const attempt of attempts) {
-    if (attempt.outcome === "resolved") {
-      count = 0;
-      continue;
-    }
-    if (attempt.outcome === "failed") count++;
-  }
-  return count;
-}
-
-/**
  * Whether the PR has spent its shared attempt budget (Issue #2996).
  *
  * @param attempts - From {@link readResolutionAttempts}.
@@ -1226,7 +1205,10 @@ async function fileConflictFallbackFlag(
   args: ConflictFlagFilingArgs,
 ): Promise<ConflictFlagFiling | undefined> {
   const { repo, prNumber, ghCommandFn, logger } = args;
-  const history = summariseFailedAttempts(args.prComments);
+  const history = summariseFailedAttempts(
+    args.prComments,
+    args.trustedAuthors,
+  );
 
   const divergence = await readPrDivergence({
     repo,
