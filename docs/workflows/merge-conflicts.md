@@ -136,7 +136,7 @@ flowchart TD
     style Declined fill:#707070,stroke:,color:#fff
     style Left fill:#707070,stroke:,color:#fff
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
-    style Warn fill:#707070,stroke:,color:#fff
+    style Warn fill:#707070,stroke:#707070,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
 ```
 

@@ -2371,8 +2371,9 @@ async function failAttempt(
 
   // Issue #1115: a human is not the next rung any more. The budget is spent,
   // so the branch has defeated two real merges — usually cheaper to redo than
-  // to reconcile, and redoing it needs nobody. Only when that is declined or
-  // fails does the escalation below run, and it then says which route it took.
+  // to reconcile, and redoing it needs nobody. A declined or failed abandon
+  // still ends without a person: the branches below leave the PR open and
+  // unlabelled and log which route was taken.
   const abandon = await runAbandonRestart(input, processorDeps);
 
   if (abandon.outcome === "abandoned") {
@@ -2397,21 +2398,21 @@ async function failAttempt(
     };
   }
 
-  // Issue #2312: a spent *restart* budget is not a human's problem either. The
-  // issue has had its restarts, so this PR is parked on `merge-conflict` — and
-  // the scan owns that parking, because it is the pass that reads the base tip
-  // and offers the PR again when it moves. Escalating here would put
-  // `needs-human` on a PR the scan is still working, and that label is a
-  // cross-subsystem veto: it would remove the PR from the very lane that
-  // clears it.
+  // Issue #3033: the rung declines `already-restarted` only when a restart
+  // claim on the issue names *this* PR — an earlier abandon of it started and
+  // did not finish, and closing it twice is not a retry. Nobody is asked and
+  // nothing is parked: the PR is left open and unlabelled, the scan's own
+  // budget-spent WARN names the route on its next pass, and the stall
+  // watchdog (Issue #569) is the backstop for a claim nobody ever reads back.
   if (
     abandon.outcome === "declined" &&
     abandon.reason.kind === "already-restarted"
   ) {
     logger.warn(
-      `Merge-conflict attempts exhausted on PR #${prNumber} and issue ` +
-        `#${abandon.reason.issueNumber} has spent its restarts — left open ` +
-        "for the scan to park, no human asked",
+      `Merge-conflict attempts exhausted on PR #${prNumber} and a restart ` +
+        `claim on issue #${abandon.reason.issueNumber} names this PR — an ` +
+        "earlier abandon of it did not finish, so it is left open, no human " +
+        "asked",
       {
         repo,
         prNumber,
@@ -2428,9 +2429,9 @@ async function failAttempt(
         merged: false,
         escalated: false,
         summary: `Merge-conflict attempts exhausted on PR #${prNumber} — ` +
-          `issue #${abandon.reason.issueNumber} has spent its restarts, so ` +
-          "the PR is left open to be parked on `merge-conflict` until its " +
-          "base moves",
+          `a restart claim on issue #${abandon.reason.issueNumber} names ` +
+          "this PR, so it is left open and the scan's budget-spent WARN " +
+          "names the route",
       },
     };
   }
