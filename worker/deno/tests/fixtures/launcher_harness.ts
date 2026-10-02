@@ -41,10 +41,35 @@ fi
 exec /bin/df "\$@"
 `;
 
+/**
+ * Shared bash snippet, appended at the top of both stubs' bodies (Issue
+ * #3057): opted into with `STUB_RECORD_TEMP_MODES`, it records the
+ * permission bits of the run-scoped temporary files `run.sh`/`run.ps1`
+ * create directly under `${TMPDIR:-/tmp}` — the launch plan, its sibling
+ * `.Containerfile`, the egress probe's evidence, the builder-heal log, the
+ * build log and the run's own stderr capture — the moment any stub call
+ * observes them. The launcher deletes every one before it exits, so a stub
+ * call mid-run is the only window in which a test can see the mode they
+ * were created with. GNU \`stat\` first, BSD (macOS) \`stat\` second, both
+ * silenced, exactly like the FIFO mode check below. Appending rather than
+ * overwriting lets every stub call across the whole run contribute its own
+ * sighting of each file to \`temp-modes.log\`.
+ */
+const RECORD_TEMP_MODES = `
+if [[ -n "\${STUB_RECORD_TEMP_MODES:-}" ]]; then
+  for _tmp_f in "\${TMPDIR:-/tmp}"/vibe-launch-plan-* "\${TMPDIR:-/tmp}"/vibe-egress-*.log "\${TMPDIR:-/tmp}"/vibe-heal-*.log "\${TMPDIR:-/tmp}"/vibe-build-*.log "\${TMPDIR:-/tmp}"/vibe-run-*.log; do
+    [[ -f "\${_tmp_f}" && ! -L "\${_tmp_f}" ]] || continue
+    _tmp_mode="\$(stat -c '%a' "\${_tmp_f}" 2>/dev/null || stat -f '%Lp' "\${_tmp_f}" 2>/dev/null || true)"
+    printf '%s %s\\n' "\${_tmp_mode}" "\$(basename "\${_tmp_f}")" >> "\${record_dir}/temp-modes.log"
+  done
+fi
+`;
+
 const RUNTIME_STUB = `#!/bin/bash
 set -u
 record_dir="\${VIBE_STUB_RECORD}"
 mkdir -p "\${record_dir}"
+${RECORD_TEMP_MODES}
 sub="\${1:-none}"
 # The volume-ownership init (Issue #4186) is also a \`run\`; record it under
 # its own name so a test waiting for the worker's run cannot fire early on it.
@@ -382,6 +407,7 @@ function denoStubSource(full: boolean): string {
 set -u
 record_dir="\${VIBE_STUB_RECORD}"
 mkdir -p "\${record_dir}"
+${RECORD_TEMP_MODES}
 for arg in "\$@"; do
   case "\${arg}" in
 ${
@@ -771,6 +797,43 @@ export async function runErrFifoModes(harness: Harness): Promise<string[]> {
     return text.split("\n").map((line) => line.trim()).filter((line) =>
       line !== ""
     );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Permission bits of the run's own temporary files (Issue #3057): the
+ * launch plan, its sibling `.Containerfile`, the egress probe's evidence,
+ * the builder-heal log, the build log and the run's stderr capture — every
+ * file `run.sh`/`run.ps1` creates directly under `${TMPDIR:-/tmp}` rather
+ * than on a volume. Each is deleted before the launcher exits, so this
+ * reads what `STUB_RECORD_TEMP_MODES` had the stubs note down while the
+ * files still existed, one sighting per stub call that found them on disk.
+ *
+ * Point the launcher at a private `TMPDIR` before calling this, for the same
+ * reason as {@linkcode runErrFifoModes}: a shared `/tmp` would also report
+ * files belonging to other runs.
+ *
+ * @param harness - The harness the launcher ran under
+ * @returns One entry per sighting, e.g. `[{ mode: "600", name:
+ *   "vibe-run-abc123.log" }]` — empty when `STUB_RECORD_TEMP_MODES` was unset
+ *   or nothing was ever seen
+ */
+export async function tempFileModes(
+  harness: Harness,
+): Promise<{ mode: string; name: string }[]> {
+  try {
+    const text = await Deno.readTextFile(
+      `${harness.recordDir}/temp-modes.log`,
+    );
+    return text.split("\n").map((line) => line.trim()).filter((line) =>
+      line !== ""
+    ).map((line) => {
+      const parts = line.split(" ");
+      const mode = parts.shift() ?? "";
+      return { mode, name: parts.join(" ") };
+    });
   } catch {
     return [];
   }
