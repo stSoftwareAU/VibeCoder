@@ -635,6 +635,21 @@ The body has three parts (per the Phase 4 instructions in
    - `## Suggested fix` — a one- or two-paragraph proposal that the
      downstream issue run will treat as the starting point.
 
+**Secret values are redacted.** A finding about a hard-coded or
+committed secret cites it by `file:line` and shows at most the
+value's first four characters followed by `…` — never the full value
+(Issue #3047). The model files the issue body itself with `gh issue
+create`, so this rule is the primary control, carried by the Phase 4
+instructions rather than a worker-side scrub of the finding's prose.
+The agent's `gh issue create` call does pass through the gh guard
+shim's `redactGhBodyArgs` pass
+([`worker/deno/lib/gh_guard_cli.ts`](../worker/deno/lib/gh_guard_cli.ts)),
+which backstops the title and body on every call — but that pass is
+shape-based: it masks recognised credential formats (API keys,
+tokens) and not an arbitrary password or an unrecognised key, which is
+why the Phase 4 instruction above is still load-bearing rather than
+redundant.
+
 Operators who want to suppress the finding on future runs paste the
 in-source comment described in
 [`DESIGN-PRINCIPLES.md → Security scans`](../DESIGN-PRINCIPLES.md#security-scans):
@@ -761,7 +776,10 @@ and at which commit. `deno run … mod.ts sweep-drift` prints, for every
 slice, the modules added or modified since that slice's `sweptAt` — the
 file list a delta sweep regenerates from, rather than from stale counts
 in an overflow issue. Drift is a report, not a merge gate: rewriting a
-swept module must not turn CI red.
+swept module must not turn CI red. A ledger root may itself be a single
+file rather than a directory, owned as-is with no further walk — this is
+how the root-level launcher scripts (`loop.sh`, `run.sh`, `setup.sh`,
+`quality.sh` and their `.ps1` counterparts) are tracked (#2760).
 
 **`sweptAt` is a commit reachable from the default branch.** For a new record
 take it from `git merge-base origin/main HEAD` at list-generation time; when

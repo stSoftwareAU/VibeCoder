@@ -1,6 +1,6 @@
 {
   "parent": 1209,
-  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/ and worker/deno/setup/. Every non-test module under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate. A top-up slice's chunk id is top-up-<issue> so two runs adding modules in the same window cannot allocate the same id (#1968).",
+  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/, worker/deno/setup/, joined under #2759, the prompts/<type>/prompt.md templates under prompts/, and the root-level launcher scripts (#2760). Every non-test module and prompt.md template under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate. A top-up slice's chunk id is top-up-<issue> so two runs adding modules in the same window cannot allocate the same id (#1968).",
   "slices": [
     {
       "issue": 1214,
@@ -142,6 +142,7 @@
         "worker/deno/lib/run_entrypoint.ts",
         "worker/deno/lib/run_housekeeping.ts",
         "worker/deno/lib/run_worker.ts",
+        "worker/deno/lib/rust_use_union.ts",
         "worker/deno/lib/security_fix_gate_feedback.ts",
         "worker/deno/lib/security_fix_gate_retry.ts",
         "worker/deno/lib/self_heal_events.ts",
@@ -2396,11 +2397,82 @@
       "paths": [
         "worker/deno/lib/repo_formatters.ts"
       ]
+    },
+    {
+      "issue": 2759,
+      "chunk": "10-prompts",
+      "title": "prompt templates",
+      "ledger": "docs/audits/security-sweep-2759-prompt-templates.md",
+      "definition": "git ls-files 'prompts/*/prompt.md'",
+      "status": "swept",
+      "sweptAt": "3a566abe0938798bf4996ebe8a6a183f51a20d51",
+      "paths": [
+        "prompts/alert_feed/prompt.md",
+        "prompts/bash_script_refs/prompt.md",
+        "prompts/bash_syntax_audit/prompt.md",
+        "prompts/best_practices/prompt.md",
+        "prompts/ci_fix/prompt.md",
+        "prompts/coding_guidelines/prompt.md",
+        "prompts/coding_guidelines_claude/prompt.md",
+        "prompts/dead_code/prompt.md",
+        "prompts/deprecated_api/prompt.md",
+        "prompts/doc_coverage/prompt.md",
+        "prompts/documentation_audit/prompt.md",
+        "prompts/duplicated_knowledge/prompt.md",
+        "prompts/format_drift/prompt.md",
+        "prompts/gate_skip_drift/prompt.md",
+        "prompts/github_actions_audit/prompt.md",
+        "prompts/grill-me/prompt.md",
+        "prompts/issue/prompt.md",
+        "prompts/merge_conflict/prompt.md",
+        "prompts/orphan_deps/prompt.md",
+        "prompts/planning/prompt.md",
+        "prompts/planning_critique/prompt.md",
+        "prompts/pr_feedback/prompt.md",
+        "prompts/private_repo_reference_audit/prompt.md",
+        "prompts/question/prompt.md",
+        "prompts/quorum/prompt.md",
+        "prompts/quorum_judge/prompt.md",
+        "prompts/retro/prompt.md",
+        "prompts/security_scan/prompt.md",
+        "prompts/spelling_fix/prompt.md",
+        "prompts/supply_chain_detection/prompt.md",
+        "prompts/supply_chain_readiness/prompt.md",
+        "prompts/test_audit/prompt.md",
+        "prompts/workflow_annotation_scan/prompt.md",
+        "prompts/workflow_setup/prompt.md"
+      ]
+    },
+    {
+      "issue": 2760,
+      "chunk": "11-launchers",
+      "title": "launcher scripts",
+      "ledger": "docs/audits/security-sweep-2760-launcher-scripts.md",
+      "definition": "root-level launcher scripts: .sh delta since #2181 (5e3b65ae), full read of .ps1 and quality.sh (#2760)",
+      "status": "swept",
+      "sweptAt": "3a566abe0938798bf4996ebe8a6a183f51a20d51",
+      "paths": [
+        "loop.ps1",
+        "loop.sh",
+        "quality.sh",
+        "run.ps1",
+        "run.sh",
+        "setup.ps1",
+        "setup.sh"
+      ]
     }
   ],
   "roots": [
     "worker/deno/lib",
     "worker/deno/commands",
-    "worker/deno/setup"
+    "worker/deno/setup",
+    "prompts",
+    "loop.ps1",
+    "loop.sh",
+    "quality.sh",
+    "run.ps1",
+    "run.sh",
+    "setup.ps1",
+    "setup.sh"
   ]
 }
