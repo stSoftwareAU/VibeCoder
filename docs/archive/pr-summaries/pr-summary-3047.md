@@ -7,10 +7,11 @@ Closes #3047
 The `security_scan` prompt asked the model to find and confirm **live**
 secrets, and to describe "the concrete input and path that fires it", but
 nothing told it to redact the value. The model files each finding itself with
-`gh issue create`, and the worker does not scrub that body, so a confirmed
-credential could be published verbatim in a public issue. The prompt now
-carries an explicit redaction rule at all three points where a secret reaches
-an issue.
+`gh issue create`; the gh guard shim's `redactGhBodyArgs` pass
+(`gh_guard_cli.ts`) backstops that title and body, but only for recognised
+credential shapes, so a password or unrecognised key could still be
+published verbatim in a public issue. The prompt now carries an explicit
+redaction rule at all three points where a secret reaches an issue.
 
 ```mermaid
 flowchart LR
@@ -39,11 +40,14 @@ fixed.
 
 ### Essential Design Decisions
 
-- **The fix is in the prompt.** There is no worker-side filing path for
-  scanner findings, because the model runs `gh issue create` itself. That
-  leaves nowhere for the issue's optional `redactSecrets` step to hook in, so
-  the instruction is the control. The existing `redactSecrets()` pass in the
-  SARIF builder still covers what is published to code scanning.
+- **The prompt instruction is the primary control.** The model runs
+  `gh issue create` itself; the gh guard shim's `redactGhBodyArgs` pass
+  (`worker/deno/lib/gh_guard_cli.ts`) backstops the title and body of every
+  agent `gh` call, but it is shape-based — it masks recognised credential
+  formats (API keys, tokens) and not an arbitrary password or an
+  unrecognised key — so the Phase 4 instruction is still load-bearing rather
+  than redundant. The SARIF builder's separate `redactSecrets()` pass only
+  covers what is published to code scanning.
 - **Cite by `file:line`, with at most a four-character prefix plus `…`.** A
   reviewer can still recognise the credential type (`AKIA…`, `ghp_…`)
   without the value being usable.
