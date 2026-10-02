@@ -1495,6 +1495,39 @@ Deno.test("sweep: readChangedFiles - an unreadable list fails loud", () => {
   );
 });
 
+Deno.test("sweep: readChangedFiles - a NUL-delimited list keeps non-ASCII and spaced paths verbatim (Issue #2776)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
+  const path = `${dir}/changed.txt`;
+  Deno.writeTextFileSync(path, "lib/café.ts\0src/a b.ts\0");
+  assertEquals(
+    readChangedFiles(path),
+    new Set(["lib/café.ts", "src/a b.ts"]),
+  );
+});
+
+Deno.test("sweep: readChangedFiles - a git C-quoted line fails closed (Issue #2776)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
+  const path = `${dir}/changed.txt`;
+  Deno.writeTextFileSync(path, 'src/app.ts\n"lib/caf\\303\\251.ts"\n');
+  assertThrows(
+    () => readChangedFiles(path),
+    Error,
+    "C-quoted",
+  );
+});
+
+Deno.test("sweep: a finding in a non-ASCII changed file blocks the PR run (Issue #2776)", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
+  const path = `${dir}/changed.txt`;
+  Deno.writeTextFileSync(path, "lib/café.ts\0");
+  const { blockingRows, outOfScopeRows } = splitByChangedFiles(
+    [{ path: "lib/café.ts" }],
+    readChangedFiles(path),
+  );
+  assertEquals(blockingRows.length, 1);
+  assertEquals(outOfScopeRows.length, 0);
+});
+
 Deno.test("sweep: unbaselined findings outside the changed files are reported, not fatal", async () => {
   const stub = makeStub();
   const dir = Deno.makeTempDirSync({ prefix: "sweep-changed-" });
