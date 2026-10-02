@@ -301,6 +301,16 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A negative test must be able to fail.** An assertion that something does
+*not* happen — not leaked, not carried over, not exported, not called, null
+rather than stale — needs a fixture that contains the forbidden thing: a real
+token to leak, an earlier value to carry over, a caller that would otherwise
+run. A new guard has no base-branch red run to lean on, so before raising the
+PR break the guard on purpose (remove the filter, invert the check, or fill
+from the wrong source), run the test, confirm it goes red, then restore the
+guard. A negative test that stays green without its guard is a blocking
+self-review finding.
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
@@ -346,7 +356,10 @@ blocking self-review finding (Issue #3021).
 
 Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an
-explicit contract or leave it out. See Playwright's
+explicit contract or leave it out. Ask a negative assertion the opposite
+question too: would it fail if the guard it protects were removed? If not,
+its fixture lacks the forbidden value — see **A negative test must be able to
+fail** above. See Playwright's
 [user-visible testing guidance](https://playwright.dev/docs/best-practices)
 and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
 
