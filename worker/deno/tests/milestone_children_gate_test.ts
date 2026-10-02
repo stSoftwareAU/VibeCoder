@@ -212,6 +212,117 @@ Deno.test("decideSummaryPrMerge - blocks when the milestone still has open child
 });
 
 // ---------------------------------------------------------------------------
+// decideSummaryPrMerge — declared-dependency hold (Issue #3014)
+// ---------------------------------------------------------------------------
+
+Deno.test("decideSummaryPrMerge - blocks on pending-dependencies when a member declares an open dependency", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/milestones?state=open")) {
+      return JSON.stringify([{ number: 53, title: "M1" }]);
+    }
+    if (key.includes("/issues?milestone=53&state=all")) {
+      return JSON.stringify([
+        { number: 3866, title: "Member", body: "Depends on #50" },
+      ]);
+    }
+    if (key.includes("/issues?milestone=")) {
+      // No open children.
+      return "[]";
+    }
+    if (key.includes("/issues/50")) {
+      return JSON.stringify({ number: 50, state: "open" });
+    }
+    return "[]";
+  };
+
+  const decision = await decideSummaryPrMerge({
+    repo: "owner/repo",
+    prNumber: 900,
+    headRefName: "milestone/m1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(decision.decision, "block");
+  if (
+    decision.decision === "block" && decision.reason === "pending-dependencies"
+  ) {
+    assertEquals(decision.milestoneNumber, 53);
+    assertEquals(decision.dependencies, [
+      { issueNumber: 3866, dependencyNumber: 50, reason: "open" },
+    ]);
+  }
+});
+
+Deno.test("decideSummaryPrMerge - blocks on lookup-failed when the dependency lookup throws", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/milestones?state=open")) {
+      return JSON.stringify([{ number: 53, title: "M1" }]);
+    }
+    if (key.includes("/issues?milestone=53&state=all")) {
+      return JSON.stringify([
+        { number: 3866, title: "Member", body: "Depends on #50" },
+      ]);
+    }
+    if (key.includes("/issues?milestone=")) {
+      return "[]";
+    }
+    if (key.includes("/issues/50")) {
+      throw new Error("boom");
+    }
+    return "[]";
+  };
+
+  const decision = await decideSummaryPrMerge({
+    repo: "owner/repo",
+    prNumber: 900,
+    headRefName: "milestone/m1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(decision.decision, "block");
+  if (decision.decision === "block" && decision.reason === "lookup-failed") {
+    // Issue #3024 review: the stage must name the dependency read, not the
+    // open-children read, so the PR comment blames the right lookup.
+    assertEquals(decision.stage, "declared-dependencies");
+  }
+});
+
+Deno.test("decideSummaryPrMerge - allows when the declared dependency is closed with no open milestone", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/milestones?state=open")) {
+      return JSON.stringify([{ number: 53, title: "M1" }]);
+    }
+    if (key.includes("/issues?milestone=53&state=all")) {
+      return JSON.stringify([
+        { number: 3866, title: "Member", body: "Depends on #50" },
+      ]);
+    }
+    if (key.includes("/issues?milestone=")) {
+      return "[]";
+    }
+    if (key.includes("/issues/50")) {
+      return JSON.stringify({ number: 50, state: "closed", milestone: null });
+    }
+    return "[]";
+  };
+
+  const decision = await decideSummaryPrMerge({
+    repo: "owner/repo",
+    prNumber: 900,
+    headRefName: "milestone/m1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(decision.decision, "allow");
+  if (decision.decision === "allow") {
+    assertEquals(decision.reason, "no-open-children");
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Comment rendering and idempotency
 // ---------------------------------------------------------------------------
 

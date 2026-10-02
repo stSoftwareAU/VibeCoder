@@ -53,6 +53,12 @@ import {
   invalidateAllStateIssuesByMilestone,
   invalidateAllStatePRsByBranch,
 } from "./issue_query.ts";
+// Issue #3014: the summary PR body states which declared sub-issue
+// dependencies have not merged yet, so the merge gate's hold is explained.
+import {
+  findPendingMilestoneDependencies,
+  renderPendingDependenciesSection,
+} from "./milestone_dependency_hold.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -632,6 +638,9 @@ export async function hasNothingToMerge(
  * @param defaultBranch - The default branch name
  * @param closedIssues - List of closed issues in the milestone
  * @param trackingIssueNumber - Optional tracking issue number to reference
+ * @param dependencyNote - Issue #3014: optional already-rendered markdown
+ *   section (e.g. the pending-dependencies hold) appended after "Issues
+ *   addressed" and before "Review notes"; omitted entirely when empty
  * @returns Markdown PR body
  */
 export function buildMilestoneSummaryBody(
@@ -639,6 +648,7 @@ export function buildMilestoneSummaryBody(
   defaultBranch: string,
   closedIssues: ClosedIssue[],
   trackingIssueNumber?: number,
+  dependencyNote?: string,
 ): string {
   // Closed-issue titles are attacker-writable text quoted into a PR body the
   // worker signs, so they are scrubbed before interpolation (Issue #1249,
@@ -651,13 +661,18 @@ export function buildMilestoneSummaryBody(
     ? `\nCloses #${trackingIssueNumber}`
     : "";
 
+  // Issue #3014: an already-rendered section (e.g. pending declared
+  // dependencies) slotted between "Issues addressed" and "Review notes";
+  // byte-identical output when absent.
+  const dependencySection = dependencyNote ? `\n${dependencyNote}\n` : "";
+
   return `## Milestone: ${milestoneTitle}
 
 This PR merges the completed milestone branch into ${defaultBranch}.${trackingRef}
 
 ### Issues addressed
 ${issuesList || "_No issues found_"}
-
+${dependencySection}
 ### Review notes
 All individual issues were reviewed and merged into the milestone branch via separate PRs.
 This final PR consolidates all changes for a comprehensive review before merging to ${defaultBranch}.`;
@@ -901,6 +916,7 @@ async function armSummaryPrAutoMerge(
 async function createMilestoneSummaryPr(
   repo: string,
   milestoneTitle: string,
+  milestoneNumber: number,
   milestoneBranch: string,
   defaultBranch: string,
   trackingIssueNumber: number | null,
@@ -940,11 +956,44 @@ async function createMilestoneSummaryPr(
     return { outcome: "failed", reason: "branch_missing" };
   }
 
+  // Issue #3014: state which declared sub-issue dependencies have not
+  // merged yet, so the PR body explains the hold the merge gate enforces.
+  // A lookup failure never blocks PR creation — it only swaps in a note
+  // saying verification could not be done, since the gate re-checks later.
+  let dependencyNote: string | undefined;
+  const pendingResult = await findPendingMilestoneDependencies({
+    repo,
+    milestoneNumber,
+    ghCommandFn,
+  });
+  if (pendingResult.ok) {
+    if (pendingResult.value.length > 0) {
+      log(
+        `WARNING: milestone '${milestoneTitle}' in ${repo} has ` +
+          `${pendingResult.value.length} declared dependencies not merged ` +
+          `yet — the summary PR is raised held and the merge gate refuses ` +
+          `it until they land (Issue #3014)`,
+      );
+      dependencyNote = renderPendingDependenciesSection(pendingResult.value);
+    }
+  } else {
+    log(
+      `WARNING: could not verify declared dependencies for milestone ` +
+        `'${milestoneTitle}' in ${repo}: ${pendingResult.error.message} — ` +
+        `the merge gate re-checks before merging (Issue #3014)`,
+    );
+    dependencyNote = "### ⏸️ Declared dependencies not verified\n\n" +
+      "The worker could not read the declared dependencies of this " +
+      "milestone's issues when raising this PR. The merge gate re-checks " +
+      "them before merging and holds the PR while any is pending.";
+  }
+
   const prBody = buildMilestoneSummaryBody(
     milestoneTitle,
     defaultBranch,
     closedIssues,
     trackingIssueNumber ?? undefined,
+    dependencyNote,
   );
 
   let prUrl: string;
@@ -1569,6 +1618,7 @@ async function processRepoMilestones(
     const prResult = await createMilestoneSummaryPr(
       repo,
       milestone.title,
+      milestone.number,
       milestoneBranch,
       defaultBranch,
       trackingIssueNumber,

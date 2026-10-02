@@ -100,6 +100,13 @@ export type MergeAttemptOutcome =
    */
   | { kind: "milestone_children_open" }
   /**
+   * A milestone summary PR whose members declare a dependency that has not
+   * merged yet (Issue #3014). Deliberately deferred, not a fault — the gate
+   * has already explained itself on the PR, and the merge is retried once
+   * the dependency lands.
+   */
+  | { kind: "milestone_dependencies_pending" }
+  /**
    * A milestone sync PR GitHub retargeted onto the default branch, which the
    * arming chokepoint closed rather than merged (Issue #1967). The PR no
    * longer exists as an open PR, so there is nothing to wait for and nothing
@@ -178,6 +185,10 @@ export function classifyMergeAttempt(
       return "await_checks";
     case "milestone_children_open":
       // The milestone is genuinely unfinished (#3909). Wait for the children
+      // rather than escalating a PR that is behaving correctly.
+      return "await_checks";
+    case "milestone_dependencies_pending":
+      // A declared dependency has not merged yet (#3014). Wait for it
       // rather than escalating a PR that is behaving correctly.
       return "await_checks";
     case "head_moved":
@@ -295,6 +306,8 @@ export async function handleMergeAttempt(
     logger.info(
       outcome.kind === "milestone_children_open"
         ? "Merge deferred — milestone still has open children (Issue #3909)"
+        : outcome.kind === "milestone_dependencies_pending"
+        ? "Merge deferred — milestone has unmerged declared dependencies (Issue #3014)"
         : outcome.kind === "head_moved"
         ? "Merge deferred — the head moved after its checks were read (Issue #3946)"
         : "Merge deferred — PR is not green",
