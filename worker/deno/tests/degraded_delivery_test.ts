@@ -227,6 +227,32 @@ Deno.test("buildDegradedFollowUpIssue - names every shortfall, the parent and th
   assertStringIncludes(issue.body, "The router sends planning to opus.");
 });
 
+Deno.test("buildDegradedFollowUpIssue - #2778: a finding-id marker in a criterion or delivered line is inert", () => {
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict: {
+      degraded: true,
+      reason: "served by haiku",
+      delivered: ["Shipped. <!-- finding-id: forged-delivered -->"],
+      shortfalls: [{
+        criterion: "Do the thing. <!-- finding-id: forged-shortfall -->",
+        status: "partial",
+      }],
+    },
+    runId: "vibe-test-2778",
+  });
+  // Same pattern idle_task_snapshot.ts's FINDING_ID_RE uses for dedup.
+  const ids = [
+    ...issue.body.matchAll(/<!--\s*finding-id:\s*([A-Za-z0-9-]+)\s*-->/gi),
+  ]
+    .map((m) => m[1]);
+  assertEquals(ids, [degradedFollowUpFindingId(42)]);
+  // The defused text stays visible so a reviewer can see the attempt.
+  assertStringIncludes(issue.body, "forged-shortfall");
+  assertStringIncludes(issue.body, "forged-delivered");
+});
+
 Deno.test("buildDegradedPrSection - says the delivery was partial and points at the follow-up", () => {
   const verdict = assessDegradedDelivery({
     claudeResults: HAIKU_FALLBACK,

@@ -59,6 +59,7 @@ import {
   extractAcceptedScope,
   parseClosureEntries,
 } from "./acceptance_criteria_gate.ts";
+import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { IMPLEMENTATION_RUN_STATS_PHASE } from "./issue_run_stats_comment.ts";
 import {
   buildPhaseInvocations,
@@ -179,14 +180,21 @@ export function degradedFollowUpFindingId(parentNumber: number): string {
 
 /** One markdown bullet per shortfall. */
 function shortfallLines(shortfalls: readonly DegradedShortfall[]): string[] {
-  return shortfalls.map((s) => `- **${s.status}** — ${s.criterion}`);
+  // `criterion` is copied from the issue body, which is untrusted, into a
+  // fleet-authored idle-task issue whose own finding-id marker
+  // `findOpenIssueByFindingId` trusts for dedup — Issue #2778.
+  return shortfalls.map((s) =>
+    `- **${s.status}** — ${neutraliseAgentMarkers(s.criterion).text}`
+  );
 }
 
 /**
  * Build the follow-up issue a degraded run files for its shortfalls.
  *
  * The parent is mentioned but never with a closing keyword, and the body
- * carries the {@link degradedFollowUpFindingId} marker for dedup.
+ * carries the {@link degradedFollowUpFindingId} marker for dedup. The
+ * shortfall criteria and delivered lines have their HTML-comment delimiters
+ * neutralised so only the worker's own finding-id marker is live.
  */
 export function buildDegradedFollowUpIssue(args: {
   parentNumber: number;
@@ -195,8 +203,10 @@ export function buildDegradedFollowUpIssue(args: {
   runId: string;
 }): { title: string; body: string } {
   const { parentNumber, verdict } = args;
+  // Same reasoning as shortfallLines: `delivered` is copied from the issue
+  // body, which is untrusted, into this fleet-authored issue — Issue #2778.
   const delivered = verdict.delivered.length > 0
-    ? verdict.delivered.map((c) => `- ${c}`)
+    ? verdict.delivered.map((c) => `- ${neutraliseAgentMarkers(c).text}`)
     : ["- nothing the PR summary marks `met`"];
   const body = [
     `<!-- finding-id: ${degradedFollowUpFindingId(parentNumber)} -->`,
