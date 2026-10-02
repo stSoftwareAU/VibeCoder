@@ -473,7 +473,10 @@ prompt-build time from open issues the **fleet account authored**.
 Phase 4 no longer runs a live `gh issue list --search "SEC- in:body"`
 re-check: an issue body is attacker-writable, but its author is not,
 so a finding-id marker planted in an issue someone else filed must
-not be able to suppress a real finding (Issue #3045). Findings whose
+not be able to suppress a real finding (Issue #3045).
+`run-security-scan` builds that same list when
+`--known-open-finding-ids` is omitted, and unions the flag with the
+list when the flag is set. Findings whose
 id matches an entry in that fleet-filtered list are skipped — there
 is no in-place update path any more. The expectation is that the
 human operator triages the open issue (close it, fix it, or add a

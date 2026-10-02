@@ -76,9 +76,12 @@ None.
   got `[]`), and pass after wiring `runTask` to call
   `listKnownOpenFindingIds(opts.repo, "security", ghCommandFn, "SEC-",
   deps)` before invoking the scanner. `security_tree_sweep.ts`'s
-  `runWorkerScanFn` got the same fix (no dedicated new test — it is covered
-  end-to-end by the existing `security_tree_sweep_test.ts` suite, which
-  still passes).
+  `runWorkerScanFn` got the same fix. `runWorkerScan` is covered by
+  `security_tree_sweep_worker_scan_3045_test.ts`: a fleet-authored `SEC-`
+  id reaches the scanner, and an outsider-authored one does not. The
+  sweep suite still stubs `runWorkerScanFn`, so it does not cover this
+  call. `run-security-scan` unions `--known-open-finding-ids` with the
+  same list, covered by `run_security_scan_known_open_3045_test.ts`.
 - **Fails before:** the regression test fails against the unfixed code. With
   `prompts/` restored from `main`, it reports:
 

@@ -411,11 +411,11 @@ export function createSecurityScanTemplate(
         ghCommandFn,
       );
 
-      // 2a. Known-open `SEC-` finding ids (Issue #4040 follow-up to #3045):
+      // 2a. Known-open `SEC-` finding ids (Issue #3045, PR #3068 review):
       //     the prompt's Phase 4 no longer re-checks the live open-issue
       //     list for dedup, so this author-verified list is now the scan's
-      //     ONLY finding-id dedup source — it must not stay empty the way
-      //     the 12 best-practices-family templates' lists do not.
+      //     only finding-id dedup source. It must be populated, as the 12
+      //     best-practices-family templates already do.
       const knownOpenFindingIds = await listKnownOpenFindingIds(
         opts.repo,
         "security",

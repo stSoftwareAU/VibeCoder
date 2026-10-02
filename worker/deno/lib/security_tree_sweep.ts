@@ -1992,6 +1992,51 @@ async function defaultWhich(bin: string): Promise<string | null> {
   return null;
 }
 
+/** Dependencies for {@link runWorkerScan}. Production omits the overrides. */
+export interface WorkerScanDeps {
+  ghCommandFn: (args: string[]) => Promise<string>;
+  /** Defaults to {@link runSecurityScan}. Tests capture the ids it receives. */
+  runSecurityScanFn?: typeof runSecurityScan;
+  /**
+   * Fleet logins whose finding-id markers count. Omitted in production so
+   * the configured fleet identity is used (Issue #3045).
+   */
+  fleetAuthors?: readonly string[];
+}
+
+/**
+ * Run the worker's security scan for one repo, filling the known-open
+ * `SEC-` list from fleet-authored issues (Issue #3045, PR #3068 review).
+ *
+ * Phase 4 no longer re-checks the live issue list, so this list is the
+ * scan's only finding-id dedup source.
+ */
+export async function runWorkerScan(
+  opts: { slug: string; repoDir: string },
+  deps: WorkerScanDeps,
+): Promise<WorkerScanOutcome> {
+  const openIssueTitles = await listAllOpenIssueTitles(
+    opts.slug,
+    deps.ghCommandFn,
+  );
+  const knownOpenFindingIds = await listKnownOpenFindingIds(
+    opts.slug,
+    "security",
+    deps.ghCommandFn,
+    "SEC-",
+    deps.fleetAuthors ? { fleetAuthors: [...deps.fleetAuthors] } : {},
+  );
+  const scan = deps.runSecurityScanFn ?? runSecurityScan;
+  const result = await scan({
+    repo: opts.slug,
+    workDir: opts.repoDir,
+    knownOpenFindingIds,
+    openIssueTitles,
+    suppressedIds: [],
+  });
+  return result.ok ? { ok: true } : { ok: false, error: result.error.message };
+}
+
 /** Production dependencies. */
 export function createDefaultSweepDeps(): SweepDeps {
   return {
@@ -2009,35 +2054,10 @@ export function createDefaultSweepDeps(): SweepDeps {
         );
       }
     },
-    runWorkerScanFn: async ({ slug, repoDir }) => {
-      // Repo-wide open-issue titles (Issue #537) — the semantic second line
-      // of dedup. A gh failure returns an empty list, which renders `(none)`.
-      const openIssueTitles = await listAllOpenIssueTitles(
-        slug,
-        (args) => runGhCommand(args),
-      );
-      // Known-open `SEC-` finding ids (Issue #4040 follow-up to #3045): the
-      // prompt's Phase 4 no longer re-checks the live open-issue list for
-      // dedup, so this author-verified list is the scan's only finding-id
-      // dedup source. Omitting `fleetAuthors` reads the configured fleet
-      // identity, as every other production caller does.
-      const knownOpenFindingIds = await listKnownOpenFindingIds(
-        slug,
-        "security",
-        (args) => runGhCommand(args),
-        "SEC-",
-      );
-      const result = await runSecurityScan({
-        repo: slug,
-        workDir: repoDir,
-        knownOpenFindingIds,
-        openIssueTitles,
-        suppressedIds: [],
-      });
-      return result.ok
-        ? { ok: true }
-        : { ok: false, error: result.error.message };
-    },
+    runWorkerScanFn: (opts) =>
+      runWorkerScan(opts, {
+        ghCommandFn: (args) => runGhCommand(args),
+      }),
   };
 }
 

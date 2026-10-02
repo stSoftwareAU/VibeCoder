@@ -411,7 +411,7 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// Known-open `SEC-` finding ids (Issue #3045 follow-up, #4040)
+// Known-open `SEC-` finding ids (Issue #3045, PR #3068 review)
 //
 // The prompt's Phase 4 no longer re-checks the live open-issue list for
 // dedup (Issue #3045), so this code-side list is now the scan's ONLY
