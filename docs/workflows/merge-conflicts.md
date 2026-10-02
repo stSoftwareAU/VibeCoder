@@ -884,8 +884,7 @@ A PR carrying `merge-conflict` that still conflicts on the live state is the
 single owner check's responsibility, whatever caused the silence
 (Issue #3001). `worker/deno/lib/merge_conflict_stall_watchdog.ts` is now the
 one owner for every conflicted PR, not a backstop keyed on label age alone: its
-clock
-starts at the **latest** of four events — the `merge-conflict` label's own
+clock starts at the **latest** of four events — the `merge-conflict` label's own
 `labeled` timeline event; the latest trusted stand-down
 (`readLatestStandDownAtMs`, Issue #2997 — gated-head, milestone-head or park
 markers, read back by their own `at="…"`); the last trusted resolution attempt

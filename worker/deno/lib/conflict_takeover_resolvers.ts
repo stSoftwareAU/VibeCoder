@@ -74,8 +74,28 @@ async function resolveOnFixBranch(
   const cwd = await checkout(pr.repo);
   const run = (args: string[]) => runGit(args, { cwd });
 
-  await run(buildFetchTrackingRefArgs("origin", pr.headRefName));
-  await run(buildFetchTrackingRefArgs("origin", pr.baseRefName));
+  const headFetch = await run(
+    buildFetchTrackingRefArgs("origin", pr.headRefName),
+  );
+  if (!headFetch.ok || headFetch.value.code !== 0) {
+    return {
+      resolved: false,
+      detail: `could not fetch '${pr.headRefName}' from origin: ${
+        describeResult(headFetch)
+      }`,
+    };
+  }
+  const baseFetch = await run(
+    buildFetchTrackingRefArgs("origin", pr.baseRefName),
+  );
+  if (!baseFetch.ok || baseFetch.value.code !== 0) {
+    return {
+      resolved: false,
+      detail: `could not fetch '${pr.baseRefName}' from origin: ${
+        describeResult(baseFetch)
+      }`,
+    };
+  }
 
   const reset = await run(buildCheckoutResetBranchArgs(fixBranch, headSha));
   if (!reset.ok || reset.value.code !== 0) {

@@ -60,9 +60,9 @@ import {
   type RepoLease,
 } from "./maintenance_lane.ts";
 import {
+  type ConflictPrDecision,
   conflictPrKey,
   conflictReasonOperands,
-  type ConflictPrDecision,
   type ConflictSkipReason,
   MERGE_CONFLICT_LABEL,
 } from "./pr_merge_conflict_scan.ts";

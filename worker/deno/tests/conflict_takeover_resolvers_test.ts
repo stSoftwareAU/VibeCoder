@@ -284,3 +284,43 @@ Deno.test("resolveOnFixBranch - an invalid head sha rejects without running git"
   );
   assertEquals(gitCalls, 0, "no git command ran before the sha was validated");
 });
+
+// ---------------------------------------------------------------------------
+// A failed fetch must not fall through to a merge against a stale base
+// ---------------------------------------------------------------------------
+
+Deno.test("resolveOnFixBranch - a failed base fetch is unresolved and runs no checkout/merge/push", async () => {
+  const calls: string[][] = [];
+  const resolvers = bindConflictTakeoverResolvers({
+    checkout: () => Promise.resolve("/work/widgets"),
+    runGit: (
+      args: string[],
+    ): Promise<Result<{ code: number; stdout: string; stderr: string }>> => {
+      calls.push(args);
+      if (args[0] === "fetch" && args.length > 0 && calls.length === 2) {
+        // The second call is the base fetch — exits non-zero.
+        return Promise.resolve({
+          ok: true,
+          value: { code: 1, stdout: "", stderr: "fatal: could not fetch base" },
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        value: { code: 0, stdout: "", stderr: "" },
+      });
+    },
+  });
+
+  const pr = makePr({ headSha: "a".repeat(40) });
+  const outcome = await resolvers.resolveOnFixBranch(pr, "milestone-fix/x-4");
+
+  assertEquals(outcome.resolved, false);
+  assertStringIncludes(outcome.detail, "could not fetch");
+  assertStringIncludes(outcome.detail, "main");
+  assertStringIncludes(outcome.detail, "fatal: could not fetch base");
+
+  // Exactly the head fetch and the base fetch ran — nothing past it.
+  assertEquals(calls.length, 2, JSON.stringify(calls));
+  assertEquals(calls[0]![0], "fetch");
+  assertEquals(calls[1]![0], "fetch");
+});
