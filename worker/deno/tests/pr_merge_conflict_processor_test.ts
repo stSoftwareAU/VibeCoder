@@ -3202,7 +3202,7 @@ Deno.test("runAbandonRestart - a milestone/** head calls milestoneRebuildFn, nev
 
   const result = await runAbandonRestart(
     input,
-    makeProcessorDeps({
+    makeProcessorDeps(makeEmptyCaptured(), {
       milestoneRebuildFn: (request) => {
         milestoneCalls.push(request);
         return Promise.resolve(outcome);
@@ -3234,7 +3234,7 @@ Deno.test("runAbandonRestart - a non-milestone head calls abandonRestartFn, neve
 
   const result = await runAbandonRestart(
     input,
-    makeProcessorDeps({
+    makeProcessorDeps(makeEmptyCaptured(), {
       abandonRestartFn: (request) => {
         abandonCalls.push(request);
         return Promise.resolve({
