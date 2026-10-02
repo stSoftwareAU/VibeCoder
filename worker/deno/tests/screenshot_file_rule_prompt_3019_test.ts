@@ -12,7 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import { UI_FILE_EXTENSIONS } from "../lib/screenshot_validation.ts";
 
@@ -22,7 +22,7 @@ const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
  * Extract the backticked extension list from the `- **UI Changes**:` bullet
  * block of the issue prompt. Returns the extensions (without the leading
  * dot) found on the first line within that block consisting solely of
- * `` `\.ext` `` tokens, or an empty array if no such line is found.
+ * `` `.ext` `` tokens, or an empty array if no such line is found.
  */
 export function extractUiChangesExtensions(prompt: string): string[] {
   const lines = prompt.split("\n");
@@ -38,10 +38,11 @@ export function extractUiChangesExtensions(prompt: string): string[] {
   const block = lines.slice(start, end);
 
   for (const line of block) {
-    const matches = [...line.matchAll(/`\\\.([a-z]+)`/g)].map((m) => m[1]);
-    if (matches.length > 0 && line.trim().split(/\s+/).every((tok) =>
-      /^`\\\.[a-z]+`$/.test(tok)
-    )) {
+    const matches = [...line.matchAll(/`\.([a-z]+)`/g)].map((m) => m[1] ?? "");
+    if (
+      matches.length > 0 &&
+      line.trim().split(/\s+/).every((tok) => /^`\.[a-z]+`$/.test(tok))
+    ) {
       return matches;
     }
   }
@@ -71,7 +72,7 @@ Deno.test("issue prompt UI Changes extension list matches UI_FILE_EXTENSIONS", a
 
 Deno.test("extractUiChangesExtensions - a trimmed list differs from UI_FILE_EXTENSIONS", () => {
   const block = "- **UI Changes**: rule.\n" +
-    "  `\\.css` `\\.scss`\n" +
+    "  `.css` `.scss`\n" +
     "- **Other Bullet**: unrelated.";
   const extracted = extractUiChangesExtensions(block);
   assertEquals(extracted, ["css", "scss"]);

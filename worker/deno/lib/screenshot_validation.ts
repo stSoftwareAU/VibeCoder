@@ -15,10 +15,22 @@ import { findScreenshotReferences } from "./pr_evidence.ts";
  * prompt states the same list up front (Issue #3019); a drift test pins them.
  */
 export const UI_FILE_EXTENSIONS: readonly string[] = [
-  "css", "scss", "sass", "less", "html", "htm", "jsx", "tsx", "vue", "svelte",
+  "css",
+  "scss",
+  "sass",
+  "less",
+  "html",
+  "htm",
+  "jsx",
+  "tsx",
+  "vue",
+  "svelte",
 ];
 
-const UI_FILE_PATTERN = new RegExp(`\\.(${UI_FILE_EXTENSIONS.join("|")})$`, "i");
+const UI_FILE_PATTERN = new RegExp(
+  `\\.(${UI_FILE_EXTENSIONS.join("|")})$`,
+  "i",
+);
 
 export interface ScreenshotValidationOptions {
   prSummaryContent: string;
