@@ -686,15 +686,18 @@ message, in this shape:
 Depends on owner/repo#N
 ```
 
-The worker recognises that shape and **defers** the issue only while the
-branch has no commits and no uncommitted changes against the base: it stays
-open with its discovery label, `Depends on owner/repo#N` is recorded in its
-body, and the dependency gate skips it on every scan until that dependency
-closes. The release comment says `deferred: depends on owner/repo#N`. No
-human is paged and no work is lost. Once work is committed, change detection
-sends the run to the PR path and this shape is not read. Record the core
-deliverable as `missing` and name the blocking dependency beside the closing
-keyword.
+In an issue run, the worker recognises that shape and **defers** the issue
+only while the branch has no commits and no uncommitted changes against the
+base: it stays open with its discovery label, `Depends on owner/repo#N` is
+recorded in its body, and the dependency gate skips it on every scan until
+that dependency closes. The release comment says
+`deferred: depends on owner/repo#N`. No human is paged and no work is lost.
+Once work is committed, change detection sends the issue run to the PR path
+and this shape is not read. Record the core deliverable as `missing` and
+name the blocking dependency beside the closing keyword. A CI-fix run is the
+exception: `prompts/ci_fix/prompt.md` "Base-branch failures" still ends with
+`Depends on owner/repo#N`, and that line defers a check that is already red
+on the base branch.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the

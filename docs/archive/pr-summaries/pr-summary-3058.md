@@ -54,11 +54,9 @@ Closes #3058.
 
 Prompt and docs change only (no UI, no runtime code).
 `worker/deno/tests/pr_claims_verified_3058_test.ts` loads the rendered issue
-prompt and `CODING-STANDARDS.md` and checks that each new rule is present,
-including the change-detection wording `git log <base>..HEAD` and
-`git diff --stat HEAD`.
-`./quality.sh` passed after the final edit; the config-integration stage was
-skipped by the gate.
+prompt, `prompts/coding_guidelines/prompt.md` and `CODING-STANDARDS.md`, and
+checks that each new rule is present, including the change-detection wording
+`git log <base>..HEAD` and `git diff --stat HEAD`. The file has 5 tests.
 
 ```mermaid
 flowchart LR
@@ -90,6 +88,12 @@ returns `continue`; this branch has no declared-handoff phase):
   same window. A core deliverable that is genuinely blocked after a commit
   is recorded as `missing`, with the dependency named beside the closing
   keyword.
+- `prompts/ci_fix/prompt.md` — "Base-branch failures" still ends with
+  `Depends on owner/repo#N` on a committed PR branch. The Blocked rule and
+  `CODING-STANDARDS.md` name that CI-fix deferral as the exception.
+- `CODING-STANDARDS.md` — a core deliverable genuinely blocked on another
+  open issue after work is committed is recorded as `missing`, with the
+  dependency named beside the closing keyword.
 
 **Docs sweep (review round)** — grep: `must match the head code and appear`,
 "every doc the diff adds or edits", `finish the work or hand it off`,
@@ -98,9 +102,14 @@ returns `continue`; this branch has no declared-handoff phase):
 
 ## Test Plan
 
-- Added `worker/deno/tests/pr_claims_verified_3058_test.ts` (4 tests).
-- Ran `deno task test:unit tests/pr_claims_verified_3058_test.ts tests/pr_body_matches_final_diff_3015_test.ts tests/coding_guidelines_layers_2574_test.ts`:
-  21 passed.
-- `./quality.sh` passed.
+- `worker/deno/tests/pr_claims_verified_3058_test.ts` (5 tests) pins the
+  issue prompt, the coding guidelines and `CODING-STANDARDS.md`, including
+  the CI-fix exception and the committed-but-blocked `missing` outcome.
+- Ran `deno test --frozen --lock=deno.lock --allow-read --allow-env --allow-write`
+  on `tests/pr_claims_verified_3058_test.ts`,
+  `tests/pr_body_matches_final_diff_3015_test.ts` and
+  `tests/coding_guidelines_layers_2574_test.ts`: 22 passed, 0 failed.
+  `./quality.sh` was not re-run on this head; the required validate-scripts
+  checks cover the gate.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

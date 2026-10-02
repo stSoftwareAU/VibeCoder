@@ -78,6 +78,9 @@ Deno.test("Issue #3058 - coding guidelines scope Blocked and the escape hatch to
   for (
     const required of [
       "defers** the issue only while the branch has no commits",
+      "In an issue run",
+      "A CI-fix run is the exception",
+      "Base-branch failures",
       "hands the issue to a human (`needs-human`) only while the branch has no commits",
     ]
   ) {
@@ -97,7 +100,9 @@ Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification r
       "every doc the diff adds or edits",
       "the diff itself introduced",
       "core deliverable is `missing`",
+      "genuinely blocked on another open issue after work is committed",
       "regardless of a planning or escape-hatch marker",
+      "A CI-fix run is the exception",
     ]
   ) {
     assertStringIncludes(standards, required);

@@ -957,12 +957,16 @@ After any merge of the base branch into the branch, re-verify each claim; one
 whose subject the merge absorbed is dropped, or the work redone. A
 Standards-review violation the diff itself introduced is fixed before the PR
 is raised, never listed as standing, and a PR whose core deliverable is
-`missing` is not raised over a `Closes #<n>` — finish the work. A hand-off
-(the planning marker or the escape hatch) is honoured only while the branch
-has no commits and no uncommitted changes against the base; once work is
-committed the run is routed to the PR regardless of a planning or escape-hatch marker, so
-finishing is the only way to avoid a `Closes #<n>` over undone work
-(Issue #3058). Any later commit on the branch — a
+`missing` is not raised over a `Closes #<n>` — finish the work, except when
+the core deliverable is genuinely blocked on another open issue after work
+is committed: then record that criterion as `missing` and name the blocking
+dependency beside the closing keyword. A hand-off (the planning marker or
+the escape hatch) is honoured only while the branch has no commits and no
+uncommitted changes against the base; once work is committed the issue run
+is routed to the PR regardless of a planning or escape-hatch marker
+(Issue #3058). A CI-fix run is the exception: a check already red on the
+base branch still defers on a `Depends on owner/repo#N` line
+(`prompts/ci_fix/prompt.md`, "Base-branch failures"). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
