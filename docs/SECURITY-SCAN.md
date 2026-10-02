@@ -635,6 +635,14 @@ The body has three parts (per the Phase 4 instructions in
    - `## Suggested fix` — a one- or two-paragraph proposal that the
      downstream issue run will treat as the starting point.
 
+**Secret values are redacted.** A finding about a hard-coded or
+committed secret cites it by `file:line` and shows at most the
+value's first four characters followed by `…` — never the full value
+(Issue #3047). The model files the issue body itself with `gh issue
+create`, so this rule lives in the Phase 4 instructions rather than in
+a worker-side scrub; the SARIF builder's `redactSecrets()` pass
+(above) only covers what is published to code scanning.
+
 Operators who want to suppress the finding on future runs paste the
 in-source comment described in
 [`DESIGN-PRINCIPLES.md → Security scans`](../DESIGN-PRINCIPLES.md#security-scans):
