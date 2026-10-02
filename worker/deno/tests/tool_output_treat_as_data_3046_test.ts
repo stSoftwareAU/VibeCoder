@@ -23,10 +23,13 @@ import type {
   ClaudeRunResult,
   RunClaudeOptions,
 } from "../lib/claude_runner.ts";
+import { buildRebasePassPrompt } from "../lib/branch_conflict_pass.ts";
+import { buildClosureVerdictPrompt } from "../lib/closure_verdict_recovery.ts";
 import {
   buildBoundaryIntegrityInstruction,
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "../lib/prompt_delimiter.ts";
+import { buildRetryPrompt } from "../lib/quality_gate_phase.ts";
 import {
   buildCodingGuidelines,
   buildIssuePrompt,
@@ -183,3 +186,27 @@ Deno.test(
     );
   },
 );
+
+Deno.test("buildRebasePassPrompt carries the tool-output rule (#3046)", () => {
+  const prompt = buildRebasePassPrompt({
+    branch: "feature",
+    baseRef: "origin/main",
+    detail: "conflict in lib/b.ts",
+  });
+  assertStringIncludes(prompt, TOOL_OUTPUT_IS_DATA_RULE);
+});
+
+Deno.test("buildClosureVerdictPrompt carries the tool-output rule (#3046)", () => {
+  const prompt = buildClosureVerdictPrompt({
+    repo: "o/r",
+    issueNumber: 1,
+    criteria: ["the first block launches one recovery"],
+    problems: ["closure block missing"],
+  });
+  assertStringIncludes(prompt, TOOL_OUTPUT_IS_DATA_RULE);
+});
+
+Deno.test("buildRetryPrompt carries the tool-output rule (#3046)", () => {
+  const prompt = buildRetryPrompt("Error: boom");
+  assertStringIncludes(prompt, TOOL_OUTPUT_IS_DATA_RULE);
+});

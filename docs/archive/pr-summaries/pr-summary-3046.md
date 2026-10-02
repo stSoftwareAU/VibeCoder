@@ -60,18 +60,18 @@ None.
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::runIdleTaskClaude - every idle-task scan prompt carries the tool-output rule (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildIssuePrompt - the tool-output rule excepts the named wind-down file (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::the guidelines tool-output section matches TOOL_OUTPUT_IS_DATA_RULE (#3046)`
-- **Fails before / passes after:** the file holds five tests. On the
+- **Fails before / passes after:** the file holds eight tests. On the
   pre-fix base `TOOL_OUTPUT_IS_DATA_RULE` is not exported, so the module
   fails to load (a missing-export error, not an assertion failure). On
-  this head all five pass.
-- **Trigger closed:** the original trigger is closed — tool-fetched text
-  (`gh issue list`, `gh api`, repository files, web fetches) is now
-  explicitly declared data, never instructions, on every prompt route that
-  lets the model fetch text with tools: boundary-instruction prompts, every
-  coding_guidelines layer, and every idle-task scan via the single
-  `runIdleTaskClaude` chokepoint. No trivial bypass exists: a new idle scan
-  cannot skip the chokepoint, and a phase prompt cannot drop the unmarked
-  guidelines section.
+  this head all eight pass.
+- **Trigger closed:** tool-fetched text (`gh issue list`, `gh api`,
+  repository files, web fetches) is declared data, never instructions, on
+  the routes that fetch it: boundary-instruction prompts, every
+  coding_guidelines layer, every idle-task scan via `runIdleTaskClaude`,
+  the declined-rebase pass (`buildRebasePassPrompt`), the closure-verdict
+  run (`buildClosureVerdictPrompt`) and the ci_fix quality retry
+  (`buildRetryPrompt`). Each of those three builders has a test that goes
+  red when its append is removed.
   Residual risk (documented in docs/THREAT-MODEL.md): it is an instruction,
   not a structural fence.
 - `tests/coding_guidelines_layers_2574_test.ts` pinned heading lists updated
@@ -83,14 +83,14 @@ None.
   (prompts/question, quorum, grill-me, workflow_setup,
   docs/security/ghostcommit-image-injection-assessment.md) only reference
   the boundary section by name and stay accurate.
-- **Quality gate:** `deno test --frozen --lock=deno.lock --allow-read --allow-env tests/tool_output_treat_as_data_3046_test.ts` — 5 passed, 0 failed. The full `./quality.sh` gate was not re-run for this evidence correction; the head's required validate-scripts checks are already green.
+- **Quality gate:** `deno test --frozen --lock=deno.lock --allow-read --allow-env tests/tool_output_treat_as_data_3046_test.ts` — 8 passed, 0 failed. The full `./quality.sh` gate was not re-run; the required validate-scripts checks cover the gate.
 
 ## Test Plan
 
 - [x] `deno task test:unit tests/tool_output_treat_as_data_3046_test.ts
       tests/coding_guidelines_layers_2574_test.ts
       tests/idle_task_claude_budget_test.ts tests/prompt_delimiter_test.ts` —
-      84 passed, 0 failed
+      89 passed, 0 failed
 - [x] New tests red on base, green after
 - [x] markdownlint clean on changed markdown
-- [x] `tests/tool_output_treat_as_data_3046_test.ts` — 5 passed, 0 failed (see Evidence)
+- [x] `tests/tool_output_treat_as_data_3046_test.ts` — 8 passed, 0 failed (see Evidence)
