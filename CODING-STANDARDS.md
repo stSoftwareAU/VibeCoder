@@ -982,6 +982,20 @@ gate if a model-generation name reappears in this document.
   spelling" is more effective than "Do not use American English spelling".
 - **Structure prompts with clear sections** — headings and bullet points aid
   literal parsing.
+- **Verify a claim about another component before you write it.** Before new
+  prompt or doc text states how another part of the system behaves, find the
+  code that implements that behaviour and cite the file in the PR body — above
+  all for an exclusive or negative claim ("the only …", "never …", "the worker
+  does not …"). A statement about a security control (redaction, guards,
+  sandboxing, dedup) must agree with [SECURITY.md](SECURITY.md) and
+  [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md); when they disagree, fix the
+  claim or raise the discrepancy rather than writing around it. When a rule
+  needs no claim about the system to justify it, leave the claim out: state the
+  rule and the risk it addresses. Two fleet PRs were sent back for this: one
+  told the scan prompts a known-open list was "the only dedup source" while
+  every security_scan caller passed it empty (#3068); one said the worker files
+  an agent's `gh issue create` body unscrubbed, when the `gh` guard shim
+  redacts it (#3071).
 
 ## Configuration
 
