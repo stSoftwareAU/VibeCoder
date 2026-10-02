@@ -2827,9 +2827,6 @@ export async function createProductionRunCoreDeps(
             // repo×author serves every Priority-1.x scan this cycle.
             cache: issueCache,
             shuffleRepos: shuffleArray,
-            // Issue #395: the scan escalates a repeatedly disrupted conflict
-            // itself, so it needs the configured escalation label.
-            needsHumanLabel: config.needsHumanLabel,
             exclude,
             // Issue #1111: the deferral cursor, so a PR the last pass left
             // behind leads this one.
@@ -2881,7 +2878,6 @@ export async function createProductionRunCoreDeps(
             claudeNoOutputTimeout: config.claudeNoOutputTimeout,
             maxRateLimitRetries: config.maxRateLimitRetries,
             workerId: getWorkerUniqueId(config.workerName),
-            needsHumanLabel: config.needsHumanLabel,
             repoConfigs: config.repoConfig,
             // Issue #1247: the abandon rung reads its restart bound off comment
             // markers, so it needs to know whose markers count.

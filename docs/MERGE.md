@@ -961,8 +961,8 @@ bounded by **two concluded attempts, with no wait between them** —
 the first attempt and one retry against whatever the base has become since
 (Issue #2305). The second judged failure runs the abandon-and-restart rung, and
 no outcome of the *scan's* spent-budget route asks a person at all (Issue #2310);
-the resolution processor's own last escalation goes with the next sub-issue under
- #2298. A PR one concluded failure in is due
+the resolution processor's own spent budget asks no person either — it goes to
+abandon-and-redo in its turn (Issue #3032). A PR one concluded failure in is due
 again on the very next pass: the four-hour cooldown that used to sit between
 the attempts bought nothing a moved base does not, and two hosts are kept off
 one PR by the cross-host lock rather than by a wait.
@@ -1011,7 +1011,8 @@ self-closing alert issue per provider in VibeCoder — see
 
 A disrupted attempt is re-attempted rather than charged, and is bounded
 separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the
-disruption — not the conflict — is the problem, and a human is told so.
+disruption — not the conflict — is the problem, and it is logged loudly rather
+than asking a person: no label is applied and the PR is left queued.
 
 For a **PR**, the ledger is the attempt/conclusion marker comments on the PR
 itself, so the bound holds across hosts and worker restarts. For a **milestone

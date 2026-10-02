@@ -32,11 +32,11 @@
  *
  * The pass is bounded, and every attempt ends visibly (Issue #395): the
  * attempt is recorded on the PR *before* the merge runs, and each outcome —
- * merged, failed, escalated — posts its own conclusion marker. An attempt
- * that opened and never concluded was disrupted rather than judged, so it
- * does not spend the budget; the next attempt says so loudly on the PR. The
- * final *concluded* failure escalates with `needs-human` and a conflict
- * summary instead of retrying forever.
+ * merged or failed — posts its own conclusion marker. An attempt that opened
+ * and never concluded was disrupted rather than judged, so it does not spend
+ * the budget; the next attempt says so loudly on the PR. The final
+ * *concluded* failure hands the PR to abandon-and-redo (Issue #1115) instead
+ * of retrying forever — never to a human (Issue #3032).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -86,8 +86,6 @@ import {
   currentHost,
   formatStageTimings,
 } from "./conflict_stage_timer.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { BOTH_INSERTED_RULE_NAME } from "./both_inserted_conflict_rule.ts";
 import {
   applyDependencyConflictRules,
@@ -109,7 +107,6 @@ import {
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
   describeExhaustedRoute,
-  exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   requeueLabelName,
 } from "./conflict_abandon_restart.ts";
@@ -213,10 +210,8 @@ export interface MergeConflictProcessorDeps {
   maxRateLimitRetries?: number;
   /** Unique worker identity for the cross-host PR lock. */
   workerId?: string;
-  /** Attempts allowed before escalating (default 2). */
+  /** Attempts allowed before the PR goes to abandon-and-redo (default 2). */
   maxAttempts?: number;
-  /** Label applied on escalation. Defaults to `needs-human`. */
-  needsHumanLabel?: string;
   /** Per-repo config, used to resolve the pre-flight push gate. */
   repoConfigs?: Record<string, RepoConfig>;
   /** Override the prompts directory (tests). */
@@ -244,7 +239,7 @@ export interface MergeConflictProcessorDeps {
   gatherIssueContextFn?: typeof gatherConflictIssueContext;
   /**
    * Injectable abandon-and-restart rung (Issue #1115) — what the final
-   * concluded failure tries before a human. Defaults to
+   * concluded failure tries once the attempt budget is spent. Defaults to
    * {@link abandonAndRestart}.
    */
   abandonRestartFn?: (
@@ -255,8 +250,9 @@ export interface MergeConflictProcessorDeps {
    * the abandon rung.
    *
    * Left empty, a restart claim on the originating issue cannot be
-   * attributed, so the rung declines and the conflict rests at `needs-human`
-   * naming that route — loud and non-destructive, never a silent close.
+   * attributed, so the rung declines and the conflict rests at this head,
+   * recorded on the PR — loud and non-destructive, never a silent close and
+   * never a human asked (Issue #3032).
    */
   trustedAuthors?: readonly string[];
   /**
@@ -271,12 +267,6 @@ export interface MergeConflictProcessorDeps {
    */
   nowMsFn?: () => number;
 }
-
-/** What the human must do when the worker gives up on a conflict. */
-export const CONFLICT_ESCALATION_NEXT_STEP =
-  "Merge the base branch into the PR branch by hand, keeping both sides' " +
-  "changes, run the repo's quality gate on the result, and push. Remove the " +
-  "`needs-human` label once the PR is mergeable again.";
 
 // ---------------------------------------------------------------------------
 // Git helpers
@@ -619,8 +609,9 @@ function buildStageTimingSection(timings?: string): string[] {
  *
  * This is the conclusion that turns an opened attempt into a spent one. Its
  * absence is what makes a disrupted attempt detectable on a later scan, so it
- * must be posted for every judged failure — including the last one, which
- * also escalates.
+ * must be posted for every judged failure — including the last one, which is
+ * also what the attempt budget is counted against when it goes to
+ * abandon-and-redo (Issue #3032).
  */
 export function buildFailedComment(
   attemptNumber: number,
@@ -747,32 +738,6 @@ export function buildRungFailedComment(
     `${where} ${next}`,
     "",
     "No resolution attempt was opened or spent on this (Issue #2272).",
-  ].join("\n");
-}
-
-/** Escalation reason naming what was tried and what is still conflicted. */
-export function buildConflictEscalationReason(
-  input: MergeConflictInput,
-  conflictedFiles: readonly string[],
-  failureDetail: string,
-  maxAttempts: number,
-): string {
-  const files = conflictedFiles.length > 0
-    ? conflictedFiles.map((f) => `- \`${f}\``).join("\n")
-    : "- (git reported no unmerged paths)";
-  return [
-    `The worker has spent its ${maxAttempts} merge-conflict attempts on ` +
-    `PR #${input.prNumber} without producing a mergeable branch, so it has ` +
-    "stopped rather than retrying.",
-    "",
-    `Merging \`${input.baseBranch}\` into \`${input.branchName}\` conflicted in:`,
-    "",
-    files,
-    "",
-    `Last failure: ${failureDetail}`,
-    "",
-    "The branch was left exactly as its author pushed it — the worker never " +
-    "side-picks a conflict (Issue #4373), so no change has been lost.",
   ].join("\n");
 }
 
@@ -1074,20 +1039,24 @@ async function resolveConflict(
   // shallow clone whose tips have diverged fails with "refusing to merge
   // unrelated histories" — GitHub can see the ancestor; the clone cannot.
   // Deepen until the merge base is present (a no-op on a full clone) BEFORE
-  // the attempt is opened, so a clone problem never spends an attempt. A
-  // branch with no common ancestor even in full history is a human's
-  // problem — a re-initialised or rewritten branch — not a conflict the
-  // agent failed to resolve.
+  // the attempt is opened, so a clone problem does not open an attempt that
+  // then has to be withdrawn. A branch with no common ancestor even in full
+  // history — a re-initialised or rewritten branch — is not a conflict the
+  // agent failed to resolve, but it is still recorded as a failed attempt
+  // (Issue #3032): retried, then abandoned-and-redone once the budget is
+  // spent, never escalated to a human.
   const depth = await ensureHistoryDepth([`origin/${baseBranch}`, "HEAD"], {
     cwd: workDir,
     gitRunner: run,
   });
   timer.stop();
   if (!depth.ok) {
-    return await escalateNoCommonAncestor(
+    return await failNoCommonAncestor(
       input,
       processorDeps,
       depth.error.message,
+      attemptNumber,
+      timer,
     );
   }
 
@@ -1215,17 +1184,14 @@ async function resolveConflict(
       // deepen step, name the refusal for what it is rather than spend an
       // attempt on a generic "did not conflict but failed".
       if (/refusing to merge unrelated histories/i.test(merge.stderr)) {
-        await deleteAttemptMarker(
-          deps,
-          repo,
-          attemptCommentId,
-          logger,
-          "no common ancestor even in full history (Issue #1458)",
-        );
-        return await escalateNoCommonAncestor(
+        // The attempt marker opened above stays — this failure concludes it,
+        // rather than withdrawing it (Issue #3032).
+        return await failNoCommonAncestor(
           input,
           processorDeps,
           merge.stderr.trim(),
+          attemptNumber,
+          timer,
         );
       }
       return await failAttempt(
@@ -1950,10 +1916,11 @@ function runAbandonRestart(
  * (Issue #2277).
  *
  * **No route here applies `needs-human`**, to the PR or to its issue. The
- * budget-spent caller still escalates on a declined abandon, because there the
- * PR has failed two real merges and has nowhere left to go. Here nothing has
- * been spent and nothing is broken — the verdict is merely stale — so a
- * declined or failed rung records itself and stops at this head. The stall
+ * budget-spent caller leaves the PR open on a declined or failed abandon too
+ * (Issue #3032) — there the PR has failed two real merges and has nowhere
+ * left to go, but still no human is asked. Here nothing has been spent and
+ * nothing is broken — the verdict is merely stale — so a declined or failed
+ * rung records itself and stops at this head. The stall
  * watchdog (`merge_conflict_stall_watchdog.ts`, Issue #569) is the backstop,
  * and a later head or base move restarts the ladder at a real merge attempt.
  */
@@ -2143,15 +2110,21 @@ async function deleteAttemptMarker(
 
 /**
  * The branch and its base share no common ancestor even in full history
- * (Issue #1458). That is not a conflict the agent failed to resolve, so no
- * attempt is spent: the PR is handed to a human with the ancestry named.
+ * (Issue #1458) — a re-initialised branch, a force-pushed rewrite, or a clone
+ * the worker cannot repair. That is not a conflict the agent failed to
+ * resolve, but Issue #3032 forbids escalating it to a human too: it is
+ * recorded as a failed attempt instead, so it is retried and, once the
+ * attempt budget is spent, handed to abandon-and-redo like any other
+ * exhausted conflict.
  */
-async function escalateNoCommonAncestor(
+async function failNoCommonAncestor(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
   detail: string,
+  attemptNumber: number,
+  timer: ConflictStageTimer,
 ): Promise<Result<MergeConflictResult>> {
-  const { logger, deps } = processorDeps;
+  const { logger } = processorDeps;
   const { repo, prNumber, branchName, baseBranch } = input;
 
   logger.warn(
@@ -2159,55 +2132,16 @@ async function escalateNoCommonAncestor(
     { repo, prNumber, branchName, baseBranch, detail },
   );
 
-  const escalation = await escalateToHuman({
-    ghClient: createGhEscalationClient(deps.github.runGhCommand),
-    repo,
-    target: { kind: "pr", number: prNumber },
-    needsHumanLabel: processorDeps.needsHumanLabel ?? "needs-human",
-    heading: "Merge conflict needs human attention",
-    reason: [
-      `\`${branchName}\` and \`origin/${baseBranch}\` share **no common ` +
-      `ancestor**, even after the worker fetched full history ` +
-      `(\`git fetch --unshallow\`). The branch does not descend from the ` +
-      `base — a re-initialised branch, a force-pushed rewrite, or a clone ` +
-      `the worker cannot repair — so there is no merge for the resolver to ` +
-      `attempt (Issue #1458).`,
-      "",
-      `git said: \`${detail.split("\n")[0]?.trim() ?? detail}\``,
-      "",
-      "No resolution attempt was spent on this.",
-    ].join("\n"),
-    nextStep: `Check the ancestry (\`git merge-base origin/${baseBranch} ` +
-      `${branchName}\`). Rebase or recreate the branch from ` +
-      `\`origin/${baseBranch}\`, then remove \`needs-human\` and ` +
-      `\`merge-conflict\` so the resolver can try again.`,
-    dedupKey: `merge-conflict-no-common-ancestor-${prNumber}`,
-    ensureLabelColour: "d4c5f9",
-    ensureLabelDescription:
-      "Worker could not produce a fix; human review required",
-    deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-    logger,
-  });
-  if (!escalation.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to escalate the missing common ancestor on PR #${prNumber}: ${escalation.error.message}`,
-      ),
-    };
-  }
-
-  return {
-    ok: true,
-    value: {
-      processed: true,
-      merged: false,
-      escalated: true,
-      summary: `PR #${prNumber}: no common ancestor between '${branchName}' ` +
-        `and 'origin/${baseBranch}' even in full history — escalated to a ` +
-        `human, no attempt spent (Issue #1458)`,
-    },
-  };
+  return await failAttempt(
+    input,
+    processorDeps,
+    [],
+    `no-common-ancestor: '${branchName}' and 'origin/${baseBranch}' share ` +
+      `no common ancestor even in full history (Issue #1458); git said: ` +
+      `${detail.split("\n")[0]?.trim() ?? detail}`,
+    attemptNumber,
+    timer,
+  );
 }
 
 /**
@@ -2362,12 +2296,15 @@ async function withdrawCutShortAttempt(
 }
 
 /**
- * Record a failed attempt, escalating to a human when the budget is spent.
+ * Record a failed attempt, running abandon-and-redo when the budget is spent.
  *
  * The failure is always posted on the PR (Issue #395): it is the conclusion
  * that spends this attempt, and without it the attempt is indistinguishable
  * from one a dying worker abandoned. The branch is left exactly as its author
- * pushed it — the caller has already aborted any in-progress merge.
+ * pushed it — the caller has already aborted any in-progress merge. No path
+ * through here ever labels the PR `needs-human` (Issue #3032) — a spent
+ * budget goes to {@link runAbandonRestart}, and a declined or failed abandon
+ * leaves the PR open rather than escalating it.
  */
 async function failAttempt(
   input: MergeConflictInput,
@@ -2498,48 +2435,35 @@ async function failAttempt(
     };
   }
 
+  // Issue #3032: a declined or failed abandon still never escalates to a
+  // human. The budget is spent and abandon-and-redo did not run, so the PR
+  // is left exactly where it is — open, unlabelled — and the scan's own
+  // retry/park logic picks it up again. Loud in the log, since nothing is
+  // posted to the PR naming this outcome.
   const route = exhaustedEscalationRoute(abandon);
-  const escalation = await escalateToHuman({
-    ghClient: createGhEscalationClient(deps.github.runGhCommand),
-    repo,
-    target: { kind: "pr", number: prNumber },
-    needsHumanLabel: processorDeps.needsHumanLabel ?? "needs-human",
-    heading: "Merge conflict needs human attention",
-    reason: [
-      buildConflictEscalationReason(
-        input,
-        conflictedFiles,
-        failureDetail,
-        maxAttempts,
-      ),
-      "",
-      ...describeExhaustedRoute(route),
-    ].join("\n"),
-    nextStep: CONFLICT_ESCALATION_NEXT_STEP,
-    dedupKey: exhaustedEscalationDedupKey(prNumber, route),
-    ensureLabelColour: "d4c5f9",
-    ensureLabelDescription:
-      "Worker could not produce a fix; human review required",
-    deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-    logger,
-  });
-  if (!escalation.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to escalate the merge conflict on PR #${prNumber}: ${escalation.error.message}`,
-      ),
-    };
-  }
+  logger.warn(
+    `Merge-conflict attempts exhausted on PR #${prNumber} and ` +
+      `abandon-and-redo did not run (${route.kind}) — left open, no label ` +
+      "added and no human asked",
+    {
+      repo,
+      prNumber,
+      maxAttempts,
+      failureDetail,
+      route: route.kind,
+      reason: describeExhaustedRoute(route).join(" "),
+    },
+  );
 
   return {
     ok: true,
     value: {
       processed: true,
       merged: false,
-      escalated: true,
-      summary:
-        `Merge-conflict attempts exhausted on PR #${prNumber} — escalated to a human`,
+      escalated: false,
+      summary: `Merge-conflict attempts exhausted on PR #${prNumber} — ` +
+        `abandon-and-redo did not run (${route.kind}) — left open, no label ` +
+        "added and no human asked",
     },
   };
 }
