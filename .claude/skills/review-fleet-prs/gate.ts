@@ -3,8 +3,8 @@
 // Finds the open PRs by Dependabot and the fleet accounts in the repos of the
 // VibeCoder .config.json that are ready for a model review: into the default
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
-// head commit. It never
-// posts anything itself.
+// head commit, and not sent back awaiting a fix whose only new commits are
+// base-branch merges. It never posts anything itself.
 //
 // One GraphQL search (about 2 points a page) covers every repo, so polling
 // every few minutes stays cheap. With --watch=<seconds> the gate keeps polling
@@ -62,7 +62,8 @@ type Skip =
   | "conflicting" // the fleet resolves it; no review
   | "draft"
   | "not-default-branch" // e.g. into a milestone branch: the merge to the default branch gets the review
-  | "already-reviewed"; // reviewed at this exact head commit
+  | "already-reviewed" // reviewed at this exact head commit
+  | "awaiting-fix"; // sent back at an earlier commit; only base-branch merges since, the PR's own diff unchanged
 
 export interface ReadyPr {
   repo: string;
@@ -190,27 +191,150 @@ export function noTestAdded(files: PrFile[], kind: ReadyPr["kind"]): boolean {
   return codeChanged && !testsAdded;
 }
 
-// An approval or change request always counts, even once dismissed: the
+// Whether a review counts towards this reviewer's verdict at all. An
+// approval or change request always counts, even once dismissed: the
 // worker dismisses a change request when it claims the feedback, before it
 // pushes the fix, and the fix's new commit is what earns a fresh review. A
 // comment-only review counts only when this skill posted it (the owner's
 // own comments do not).
+function countsAsReview(r: Review, reviewer: string): boolean {
+  return sameLogin(r.author?.login, reviewer) &&
+    (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" ||
+      r.state === "DISMISSED" ||
+      (r.state === "COMMENTED" && (r.body ?? "").includes(REVIEW_MARKER)));
+}
+
 export function reviewedAtHead(
   reviews: Review[],
   reviewer: string,
   headSha: string,
 ): boolean {
   return reviews.some((r) =>
-    sameLogin(r.author?.login, reviewer) && r.commit?.oid === headSha &&
-    (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" ||
-      r.state === "DISMISSED" ||
-      (r.state === "COMMENTED" && (r.body ?? "").includes(REVIEW_MARKER)))
+    countsAsReview(r, reviewer) && r.commit?.oid === headSha
   );
+}
+
+// The commit this reviewer last sent the PR back at, when its latest counted
+// review is a change request at a commit other than the head; else null.
+// Review nodes are oldest-first, so the last counted one is the verdict that
+// stands. A DISMISSED latest review returns null: GitHub's DISMISSED state
+// cannot tell a stale-dismissed approval from a claimed change request, so it
+// gets a fresh review as before.
+export function sentBackAt(
+  reviews: Review[],
+  reviewer: string,
+  headSha: string,
+): string | null {
+  const counted = reviews.filter((r) => countsAsReview(r, reviewer));
+  const last = counted[counted.length - 1];
+  if (!last || last.state !== "CHANGES_REQUESTED") return null;
+  const oid = last.commit?.oid;
+  if (!oid || oid === headSha) return null;
+  return oid;
+}
+
+// A single line up to (and excluding) its first newline, so a multi-line gh
+// error does not spill a stack trace into `upkeep` or the summary.
+function firstLine(message: string): string {
+  return message.split("\n")[0]!;
+}
+
+interface ComparePr {
+  status: string;
+  total_commits: number;
+  commits: { sha: string; parents: { sha: string }[] }[];
+}
+
+interface CompareFiles {
+  files?: {
+    filename: string;
+    status: string;
+    previous_filename?: string;
+    patch?: string;
+  }[];
+}
+
+// A hunk header carries line numbers that shift when the base changes
+// elsewhere in the same file, without changing the PR's own edits.
+function normalisePatch(patch: string): string {
+  return patch.replace(/^@@ [^@]* @@.*$/gm, "@@");
+}
+
+// Whether the only commits since `since` are base-branch merges that leave
+// this PR's own diff (its change against the base) unchanged, so the review
+// it got at `since` still stands. Returns false (= give the PR a fresh
+// review) as soon as any check fails to confirm that.
+//
+// SIMPLE-ON-PURPOSE: the three compare calls below are repeated each pass
+// while the PR awaits its fix, fine for a handful of sent-back PRs — upgrade
+// when awaiting-fix PRs exceed ~50 per pass (cache the verdict per PR, since
+// and head in the state dir).
+export async function ownDiffUnchanged(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+  base: string,
+  since: string,
+  head: string,
+): Promise<boolean> {
+  try {
+    const sinceToHead: ComparePr = JSON.parse(
+      await gh(["api", `repos/${repo}/compare/${since}...${head}`]),
+    );
+    // "ahead" means `since` is an ancestor of `head`, so no force-push moved
+    // the history out from under it.
+    if (sinceToHead.status !== "ahead") return false;
+    if (sinceToHead.commits.length !== sinceToHead.total_commits) {
+      return false;
+    }
+    if (sinceToHead.commits.length === 0) return false;
+    if (sinceToHead.commits.some((c) => c.parents.length < 2)) return false;
+
+    const [baseToSince, baseToHead]: [CompareFiles, CompareFiles] = [
+      JSON.parse(await gh(["api", `repos/${repo}/compare/${base}...${since}`])),
+      JSON.parse(await gh(["api", `repos/${repo}/compare/${base}...${head}`])),
+    ];
+    const a = baseToSince.files ?? [];
+    const b = baseToHead.files ?? [];
+    if (a.length !== b.length) return false;
+    if (a.length >= 300) return false;
+    if (a.some((f) => typeof f.patch !== "string")) return false;
+    if (b.some((f) => typeof f.patch !== "string")) return false;
+    const sortByName = (x: typeof a[number], y: typeof a[number]) =>
+      x.filename < y.filename ? -1 : x.filename > y.filename ? 1 : 0;
+    const sortedA = [...a].sort(sortByName);
+    const sortedB = [...b].sort(sortByName);
+    for (let i = 0; i < sortedA.length; i++) {
+      const fa = sortedA[i]!;
+      const fb = sortedB[i]!;
+      if (
+        fa.filename !== fb.filename || fa.status !== fb.status ||
+        fa.previous_filename !== fb.previous_filename ||
+        normalisePatch(fa.patch!) !== normalisePatch(fb.patch!)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch (e) {
+    // A sent-back commit that is gone (force-push → 404) must not wedge
+    // every later pass; falling back to a fresh review is the old behaviour.
+    console.error(
+      `${repo}: cannot compare ${since}..${head} (${
+        firstLine((e as Error).message)
+      }); reviewing afresh`,
+    );
+    return false;
+  }
 }
 
 // Sorts one searched PR: null when it is ready for review, else why not.
 // GitHub's rollup already treats skipped and neutral checks as passing.
-export function skipReason(pr: SearchPr, reviewer: string): Skip | null {
+export async function skipReason(
+  pr: SearchPr,
+  reviewer: string,
+  ownDiffUnchangedSince: (since: string) => Promise<boolean> = () =>
+    Promise.resolve(false),
+): Promise<Skip | null> {
   // Only a merge into the default branch needs an approval; PRs into
   // milestone branches are reviewed when the milestone merges.
   if (pr.baseRefName !== pr.repository.defaultBranchRef?.name) {
@@ -232,6 +356,10 @@ export function skipReason(pr: SearchPr, reviewer: string): Skip | null {
   if (rollup?.state !== "SUCCESS") return "waiting-ci";
   if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
     return "already-reviewed";
+  }
+  const since = sentBackAt(pr.reviews.nodes, reviewer, pr.headRefOid);
+  if (since !== null && await ownDiffUnchangedSince(since)) {
+    return "awaiting-fix";
   }
   return null;
 }
@@ -453,12 +581,6 @@ async function writeMemory(
   await Deno.writeTextFile(`${dir}/${file}`, JSON.stringify(memory));
 }
 
-// A single line up to (and excluding) its first newline, so a multi-line gh
-// error does not spill a stack trace into `upkeep` or the summary.
-function firstLine(message: string): string {
-  return message.split("\n")[0]!;
-}
-
 export async function pass(
   repos: ReadonlySet<string>,
   fleet: ReadonlySet<string>,
@@ -555,7 +677,12 @@ export async function pass(
         }
       }
     }
-    const skip = skipReason(pr, reviewer);
+    const skip = await skipReason(
+      pr,
+      reviewer,
+      (since) =>
+        ownDiffUnchanged(callGh, repo, pr.baseRefName, since, pr.headRefOid),
+    );
     if (skip) {
       skipped[skip] = (skipped[skip] ?? 0) + 1;
       continue;

@@ -9,11 +9,13 @@ import {
   existingTestChanges,
   isTestPath,
   noTestAdded,
+  ownDiffUnchanged,
   REVIEW_MARKER,
   reviewedAtHead,
   type RollupContextNode,
   runWithTimeout,
   type SearchPr,
+  sentBackAt,
   skipReason,
 } from "../../../.claude/skills/review-fleet-prs/gate.ts";
 
@@ -119,22 +121,34 @@ const searchPr = (
   ...overrides,
 });
 
-Deno.test("skipReason: only a green, mergeable, unreviewed, non-draft PR is ready", () => {
-  assertEquals(skipReason(searchPr(), "nleck"), null);
-  assertEquals(skipReason(searchPr({}, "PENDING"), "nleck"), "waiting-ci");
-  assertEquals(skipReason(searchPr({}, null), "nleck"), "waiting-ci");
-  assertEquals(skipReason(searchPr({}, "FAILURE"), "nleck"), "ci-failed");
-  assertEquals(skipReason(searchPr({}, "ERROR"), "nleck"), "ci-failed");
-  assertEquals(skipReason(searchPr({ isDraft: true }), "nleck"), "draft");
+Deno.test("skipReason: only a green, mergeable, unreviewed, non-draft PR is ready", async () => {
+  assertEquals(await skipReason(searchPr(), "nleck"), null);
   assertEquals(
-    skipReason(searchPr({ baseRefName: "milestone/42-x" }), "nleck"),
+    await skipReason(searchPr({}, "PENDING"), "nleck"),
+    "waiting-ci",
+  );
+  assertEquals(await skipReason(searchPr({}, null), "nleck"), "waiting-ci");
+  assertEquals(
+    await skipReason(searchPr({}, "FAILURE"), "nleck"),
+    "ci-failed",
+  );
+  assertEquals(await skipReason(searchPr({}, "ERROR"), "nleck"), "ci-failed");
+  assertEquals(
+    await skipReason(searchPr({ isDraft: true }), "nleck"),
+    "draft",
+  );
+  assertEquals(
+    await skipReason(searchPr({ baseRefName: "milestone/42-x" }), "nleck"),
     "not-default-branch",
   );
   assertEquals(
-    skipReason(searchPr({ mergeable: "CONFLICTING" }), "nleck"),
+    await skipReason(searchPr({ mergeable: "CONFLICTING" }), "nleck"),
     "conflicting",
   );
-  assertEquals(skipReason(searchPr({ mergeable: "UNKNOWN" }), "nleck"), null);
+  assertEquals(
+    await skipReason(searchPr({ mergeable: "UNKNOWN" }), "nleck"),
+    null,
+  );
   const approved = {
     nodes: [{
       author: { login: "nleck" },
@@ -144,12 +158,12 @@ Deno.test("skipReason: only a green, mergeable, unreviewed, non-draft PR is read
     }],
   };
   assertEquals(
-    skipReason(searchPr({ reviews: approved }), "nleck"),
+    await skipReason(searchPr({ reviews: approved }), "nleck"),
     "already-reviewed",
   );
 });
 
-Deno.test("skipReason: a red rollup whose every red check is cancelled is ci-cancelled (Issue #2916)", () => {
+Deno.test("skipReason: a red rollup whose every red check is cancelled is ci-cancelled (Issue #2916)", async () => {
   const cancelled: RollupContextNode[] = [
     { __typename: "CheckRun", conclusion: "CANCELLED" },
     { __typename: "CheckRun", conclusion: "CANCELLED" },
@@ -157,22 +171,22 @@ Deno.test("skipReason: a red rollup whose every red check is cancelled is ci-can
     { __typename: "CheckRun", conclusion: "SUCCESS" },
   ];
   assertEquals(
-    skipReason(searchPr({}, "FAILURE", cancelled), "nleck"),
+    await skipReason(searchPr({}, "FAILURE", cancelled), "nleck"),
     "ci-cancelled",
   );
   assertEquals(
-    skipReason(searchPr({}, "ERROR", cancelled), "nleck"),
+    await skipReason(searchPr({}, "ERROR", cancelled), "nleck"),
     "ci-cancelled",
   );
 });
 
-Deno.test("skipReason: a real failure anywhere keeps the PR ci-failed (Issue #2916)", () => {
+Deno.test("skipReason: a real failure anywhere keeps the PR ci-failed (Issue #2916)", async () => {
   const cancelledPlusFailure: RollupContextNode[] = [
     { __typename: "CheckRun", conclusion: "CANCELLED" },
     { __typename: "CheckRun", conclusion: "FAILURE" },
   ];
   assertEquals(
-    skipReason(searchPr({}, "FAILURE", cancelledPlusFailure), "nleck"),
+    await skipReason(searchPr({}, "FAILURE", cancelledPlusFailure), "nleck"),
     "ci-failed",
   );
   // A red commit-status context is a real failure too, whatever the
@@ -182,15 +196,18 @@ Deno.test("skipReason: a real failure anywhere keeps the PR ci-failed (Issue #29
     { __typename: "StatusContext", state: "ERROR" },
   ];
   assertEquals(
-    skipReason(searchPr({}, "FAILURE", cancelledPlusStatus), "nleck"),
+    await skipReason(searchPr({}, "FAILURE", cancelledPlusStatus), "nleck"),
     "ci-failed",
   );
 });
 
-Deno.test("skipReason: a red rollup with no contexts is ci-failed (Issue #2916)", () => {
+Deno.test("skipReason: a red rollup with no contexts is ci-failed (Issue #2916)", async () => {
   // `contexts` is optional on the query result, and a FAILURE rollup from
   // an older query shape carried none.
-  assertEquals(skipReason(searchPr({}, "FAILURE"), "nleck"), "ci-failed");
+  assertEquals(
+    await skipReason(searchPr({}, "FAILURE"), "nleck"),
+    "ci-failed",
+  );
 });
 
 Deno.test("reviewedAtHead: approvals, change requests and the skill's own comment reviews count at the head commit only", () => {
@@ -243,6 +260,270 @@ Deno.test("reviewedAtHead: approvals, change requests and the skill's own commen
       "nleck",
       "head",
     ),
+    false,
+  );
+});
+
+// --- Issue #3063: awaiting-fix skip reason ---------------------------------
+
+const review = (
+  state: string,
+  commit_id: string | null,
+  body = "",
+  login = "nleck",
+) => ({
+  author: { login },
+  commit: commit_id === null ? null : { oid: commit_id },
+  state,
+  body,
+});
+
+Deno.test("sentBackAt: the latest counted review decides the verdict", () => {
+  // CHANGES_REQUESTED then APPROVED → null.
+  assertEquals(
+    sentBackAt(
+      [review("CHANGES_REQUESTED", "X"), review("APPROVED", "head")],
+      "nleck",
+      "head",
+    ),
+    null,
+  );
+  // APPROVED then CHANGES_REQUESTED at X → "X".
+  assertEquals(
+    sentBackAt(
+      [review("APPROVED", "older"), review("CHANGES_REQUESTED", "X")],
+      "nleck",
+      "head",
+    ),
+    "X",
+  );
+  // Change request at head → null (nothing to skip: head already counted).
+  assertEquals(
+    sentBackAt([review("CHANGES_REQUESTED", "head")], "nleck", "head"),
+    null,
+  );
+  // DISMISSED latest → null: cannot tell stale-dismissed approval from a
+  // claimed change request.
+  assertEquals(
+    sentBackAt(
+      [review("CHANGES_REQUESTED", "X"), review("DISMISSED", "X")],
+      "nleck",
+      "head",
+    ),
+    null,
+  );
+  // Someone else's change request → null.
+  assertEquals(
+    sentBackAt(
+      [review("CHANGES_REQUESTED", "X", "", "someone-else")],
+      "nleck",
+      "head",
+    ),
+    null,
+  );
+  // An owner's unmarked COMMENTED after the change request does not hide it.
+  assertEquals(
+    sentBackAt(
+      [
+        review("CHANGES_REQUESTED", "X"),
+        review("COMMENTED", "Y", "a note", "owner"),
+      ],
+      "nleck",
+      "head",
+    ),
+    "X",
+  );
+});
+
+const compareResponse = (
+  status: string,
+  commits: { sha: string; parents: number }[],
+) =>
+  JSON.stringify({
+    status,
+    total_commits: commits.length,
+    commits: commits.map((c) => ({
+      sha: c.sha,
+      parents: Array.from({ length: c.parents }, (_, i) => ({ sha: `p${i}` })),
+    })),
+  });
+
+const compareFiles = (
+  files: {
+    filename: string;
+    status?: string;
+    patch?: string;
+    previous_filename?: string;
+  }[],
+) =>
+  JSON.stringify({
+    files: files.map((f) => ({
+      filename: f.filename,
+      status: f.status ?? "modified",
+      previous_filename: f.previous_filename,
+      ...(f.patch !== undefined ? { patch: f.patch } : {}),
+    })),
+  });
+
+function fakeGh(
+  responses: Record<string, string>,
+): { gh: (args: string[]) => Promise<string>; calls: string[] } {
+  const calls: string[] = [];
+  const gh = (args: string[]) => {
+    const endpoint = args[1]!;
+    calls.push(endpoint);
+    if (endpoint in responses) return Promise.resolve(responses[endpoint]!);
+    throw new Error(`unexpected endpoint: ${endpoint}`);
+  };
+  return { gh, calls };
+}
+
+Deno.test("skipReason: a merge-only head after a send-back is awaiting-fix (Issue #3063)", async () => {
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+  });
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -11,3 +11,4 @@\n+x",
+    }]),
+  });
+  assertEquals(
+    await skipReason(
+      pr,
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+    ),
+    "awaiting-fix",
+  );
+});
+
+Deno.test("skipReason: a merge with conflict-resolution edits is a fresh review (Issue #3063)", async () => {
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+  });
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+x",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.ts",
+      patch: "@@ -1,3 +1,4 @@\n+y",
+    }]),
+  });
+  assertEquals(
+    await skipReason(
+      pr,
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+    ),
+    null,
+  );
+});
+
+Deno.test("skipReason: a fix commit is a fresh review and skips the merge-base compares (Issue #3063)", async () => {
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+  });
+  const { gh, calls } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "fix1",
+      parents: 1,
+    }]),
+  });
+  assertEquals(
+    await skipReason(
+      pr,
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+    ),
+    null,
+  );
+  assertEquals(calls, ["repos/o/r/compare/X...head"]);
+});
+
+Deno.test("skipReason: an approved PR whose head moved by a base merge never calls the checker (Issue #3063)", async () => {
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("APPROVED", "X")] },
+  });
+  let called = false;
+  assertEquals(
+    await skipReason(pr, "nleck", () => {
+      called = true;
+      return Promise.resolve(true);
+    }),
+    null,
+  );
+  assertEquals(called, false);
+});
+
+Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", async () => {
+  // gh throws, e.g. a 404 for a force-pushed commit.
+  const throwing = (_args: string[]): Promise<string> => {
+    throw new Error("gh: 404 Not Found");
+  };
+  assertEquals(
+    await ownDiffUnchanged(throwing, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // status is "diverged" rather than "ahead".
+  const { gh: divergedGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("diverged", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(divergedGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // A file with no patch (binary/huge) cannot be confirmed unchanged.
+  const { gh: noPatchGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{ filename: "a.bin" }]),
+    "repos/o/r/compare/main...head": compareFiles([{ filename: "a.bin" }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(noPatchGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // total_commits exceeds the listed commits (truncated at 250).
+  const { gh: truncatedGh } = fakeGh({
+    "repos/o/r/compare/X...head": JSON.stringify({
+      status: "ahead",
+      total_commits: 300,
+      commits: [{ sha: "m1", parents: [{ sha: "p0" }, { sha: "p1" }] }],
+    }),
+  });
+  assertEquals(
+    await ownDiffUnchanged(truncatedGh, "o/r", "main", "X", "head"),
     false,
   );
 });
