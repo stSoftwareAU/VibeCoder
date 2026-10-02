@@ -100,8 +100,10 @@ None.
   `{{KNOWN_OPEN_FINDING_IDS}}`, which the worker builds in code from
   fleet-authored issues, so the prompt gives the agent no path that consults
   an issue body written by someone else.
-- **Docs sweep:** I updated the "Dedup against open and recently-closed
-  findings" section of `docs/SECURITY-SCAN.md`.
+- **Docs sweep:** grep: `KNOWN_OPEN_FINDING_IDS`, `live dedup`,
+  `gh issue list`; updated: `docs/SECURITY-SCAN.md`,
+  `docs/GITHUB-ACTIONS-AUDIT-SCAN.md`,
+  `docs/SUPPLY-CHAIN-READINESS-SCAN.md`, `docs/TEST-AUDIT-SCAN.md`.
 
 ## Reproduction
 

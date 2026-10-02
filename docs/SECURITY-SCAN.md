@@ -448,7 +448,7 @@ the template appends to the wrapper close comment.
 Three dedup mechanisms operate on different surfaces and do not overlap:
 
 1. **Issue dedup** — Phase 4 skips a finding whose `SEC-<hex>` id already
-   appears in an open `security` issue (see
+   appears in an open fleet-authored `security` issue (see
    [Dedup against open and recently-closed findings](#dedup-against-open-and-recently-closed-findings)).
 2. **Code-scanning dedup** — GitHub reconciles re-uploaded results by rule id
    and `partialFingerprints`, so re-scanning the same unchanged code updates the
@@ -754,8 +754,9 @@ in \`<file>\`: <summary>`.
 **Follow-up processing.** The tracker is informational — it is not re-read by
 the scanner on the next run. A subsequent scan re-runs the full four-phase
 pipeline against the current source tree, so any finding that still exists in
-the code will simply be re-detected and re-filed (subject to the live dedup
-query against open `security` issues that Phase 4 runs before each filing).
+the code will simply be re-detected and re-filed unless its id is already in
+the fleet-authored known-open list built when the prompt is built, or the
+open-issue-titles check catches it.
 The operator workflow is therefore:
 
 1. Triage the six filed issues — close, fix, or add a

@@ -42,3 +42,24 @@ Deno.test("run-security-scan - a fleet-authored SEC- id reaches the scanner when
   assert(result.success, result.message);
   assertEquals(seen, [["SEC-abc123"]]);
 });
+
+Deno.test("run-security-scan - the flag is unioned with the fleet-authored list (Issue #3045)", async () => {
+  const seen: string[][] = [];
+  const result = await executeRunSecurityScan(
+    {
+      repo: "o/r",
+      "work-dir": "/tmp/repo",
+      "known-open-finding-ids": "SEC-flag1",
+    },
+    {
+      ghCommandFn: findingIdGh(),
+      fleetAuthors: [FLEET_LOGIN],
+      runSecurityScanFn: (opts) => {
+        seen.push([...opts.knownOpenFindingIds]);
+        return Promise.resolve({ ok: true, value: { ok: true } });
+      },
+    },
+  );
+  assert(result.success, result.message);
+  assertEquals(seen, [["SEC-abc123", "SEC-flag1"]]);
+});
