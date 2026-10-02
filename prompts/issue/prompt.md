@@ -161,7 +161,16 @@ guessing — the analysis-only hand-off then routes it to a human.
    `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the
    discrepancy. A rule that needs no such claim states the rule and the risk
    it addresses instead (see **Prompt Engineering Guidance** in
-   `CODING-STANDARDS.md`). When the change involves architecture, data
+   `CODING-STANDARDS.md`). Before adding or changing a rule in
+   `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
+   under `worker/deno/lib/`, grep those files for existing rules on the same
+   subject — the nouns the rule governs, not only the issue's wording — and
+   make the new rule agree with each one, or change the existing rule in the
+   same diff. A broad rule ("never …", "every …", "any …") names every
+   exception the existing rules carve out. List the related existing rules
+   you checked in the PR summary, or say you found none; two rules left
+   telling the agent to do opposite things is a blocking self-review
+   finding. When the change involves architecture, data
    flow, state transitions, or sequence of events, include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
    `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
