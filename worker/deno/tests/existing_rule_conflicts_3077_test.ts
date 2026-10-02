@@ -69,7 +69,7 @@ const ISSUE_PROMPT_KEY_PHRASES = [
   "change the existing rule in the same diff",
   "names every exception the existing rules carve out",
   "List the related existing rules you checked",
-  "blocking self-review finding",
+  "two rules left telling the agent to do opposite things",
 ];
 
 Deno.test("issue prompt Instructions requires checking existing rules before adding one (Issue #3077)", async () => {

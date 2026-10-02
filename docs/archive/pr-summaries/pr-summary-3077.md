@@ -39,7 +39,7 @@ This PR follows its own rule. The search covered `CODING-STANDARDS.md`, `prompts
 
 This is a documentation and prompt change only; there is no UI.
 
-- `worker/deno/tests/existing_rule_conflicts_3077_test.ts` checks that all three surfaces still carry the rule. As a red run, all three cases failed with the pre-edit files restored from `HEAD`, and pass with the edits.
+- `worker/deno/tests/existing_rule_conflicts_3077_test.ts` checks that all three surfaces still carry the rule. The issue-prompt case pins "two rules left telling the agent to do opposite things", which appears only in the new clause, so deleting that clause fails the test. As a red run, all three cases failed with the pre-edit files restored from `HEAD`, and pass with the edits.
 - These targeted tests pass: `existing_rule_conflicts_3077_test.ts`, `system_behaviour_claims_3072_test.ts`, `coding_guidelines_twin_drift_test.ts`, `coding_guidelines_layers_2574_test.ts`, `coding_guidelines_meaning_change_2904_test.ts` and `negative_test_must_fail_3060_test.ts` (30 passed).
 - `./quality.sh` passed in full; config integration was skipped, as it is locally.
 
