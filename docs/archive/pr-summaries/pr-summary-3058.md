@@ -42,8 +42,12 @@ Closes #3058.
 - Proposal 3 says "do not claim the issue closes". It was not taken literally:
   a PR without a closing keyword loops forever (Issue #520, see
   `worker/deno/lib/degraded_delivery.ts`). Instead, a missing core deliverable
-  means no PR at all (finish the work, or use the planning marker or escape
-  hatch), and an unmet lesser criterion is named beside the keyword.
+  means finishing the work — the planning marker and escape hatch are only
+  honoured by the worker while the branch has no commits
+  (`handle_no_changes_phase.ts` is the only caller of
+  `detectPlanningHandoff`/`detectBlockedOutcome`; `execute_phase.ts` routes any
+  non-empty `base..HEAD` straight to the PR path regardless of a hand-off
+  marker) — and an unmet lesser criterion is named beside the keyword.
 
 ## Evidence
 
@@ -59,7 +63,7 @@ flowchart LR
     V -- yes --> F[Fix in this diff]
     V -- no --> C{Core deliverable<br/>missing?}
     F --> C
-    C -- yes --> H[Finish, or planning marker / escape hatch]
+    C -- yes --> H[Finish the deliverable<br/>hand-off only works pre-commit]
     C -- no --> D[Check body, docs, doc comments<br/>against git diff base...HEAD]
     D --> M{Base merged in?}
     M -- yes --> D
@@ -69,6 +73,11 @@ flowchart LR
 **Docs sweep** — grep: `git diff <base>...HEAD`, `named test must exist`,
 "blocking self-review finding"; updated: `CODING-STANDARDS.md`,
 `docs/USAGE.md`, `docs/workflows/issue-processing.md`.
+
+**Docs sweep (review round)** — grep: `must match the head code and appear`,
+"every doc the diff adds or edits", `finish the work or hand it off`,
+"missing core deliverable"; updated: `prompts/issue/prompt.md`,
+`docs/USAGE.md`, `CODING-STANDARDS.md`.
 
 ## Test Plan
 
