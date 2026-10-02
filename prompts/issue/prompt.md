@@ -546,10 +546,11 @@ of these rules is broken, commenting on the issue with every rule it found
 broken.
 
 **A violation this diff introduced blocks the PR — you enforce this one, not
-the gate.** A doc comment the change made wrong, a test the summary cites but
-the diff lacks, a standard breached in a line this PR wrote: fix it in this
-diff before you raise the PR, never list it as standing. Only a departure that
-predates the diff, or one the issue itself requires, may stand, and its
+the gate.** A doc comment the change made wrong, a test the summary cites that
+exists neither in the diff nor at the head, a standard breached in a line this
+PR wrote: fix it in this diff before you raise the PR, never list it as
+standing. Only a departure that predates the diff, or one the issue itself
+requires, may stand, and its
 `reason:` says which.
 
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR

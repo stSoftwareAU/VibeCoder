@@ -1015,9 +1015,10 @@ each given the finished diff and nothing from the author's context:
   not assert.
 
 **A violation the diff introduced blocks the PR.** A Standards finding in a
-line this PR wrote — a doc comment the change made wrong, a cited test the
-diff lacks — is fixed in the same diff before the PR is raised; only a
-departure that predates the diff, or one the issue requires, may stand with a
+line this PR wrote — a doc comment the change made wrong, a cited test that
+exists neither in the diff nor at the head — is fixed in the same diff before
+the PR is raised; only a departure that predates the diff, or one the issue
+requires, may stand with a
 `reason:` saying which. The run enforces this rule itself; the gate does not
 parse it (Issue #3058).
 
