@@ -67,11 +67,15 @@ export interface DocsSweepLine {
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
 
 /**
- * A line that opens with `Docs sweep` (any case, flexible whitespace) once
- * markdown decoration (`*`, `_`, backtick, list marker) is stripped, followed
- * by a separator and non-empty text.
+ * The `Docs sweep` prefix once markdown decoration is stripped: the words,
+ * optional space, then a separator. The body is the slice after that
+ * prefix, not a `.+` up to `$`, so a long space run before a lone CR
+ * cannot make the match backtrack (Issue #3085 review).
  */
-const DOCS_SWEEP_LINE_RE = /^docs\s+sweep\s*[:\-–—]\s*(.+)$/i;
+const DOCS_SWEEP_PREFIX_RE = /^docs\s+sweep\s*[:\-–—]/i;
+
+/** Every line terminator, so a lone CR or Unicode separator cannot stay inside a line. */
+const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 /** The `section:` / `sections:` field inside a Docs sweep line's body. */
 const SECTION_FIELD_RE = /\bsections?\s*:\s*([^;]+)/i;
@@ -95,13 +99,14 @@ function stripDecoration(line: string): string {
 export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
   const lines = (prSummaryContent ?? "")
     .slice(0, MAX_SCAN_CHARS)
-    .split(/\r?\n/);
+    .split(LINE_TERMINATOR_RE);
 
   for (const raw of lines) {
     const stripped = stripDecoration(raw);
-    const match = stripped.match(DOCS_SWEEP_LINE_RE);
-    if (!match) continue;
-    const body = match[1]!.trim();
+    const prefix = stripped.match(DOCS_SWEEP_PREFIX_RE);
+    if (!prefix) continue;
+    const body = stripped.slice(prefix[0].length).trim();
+    if (body === "") continue;
     // The section value is read from the line's (decoration-stripped) body,
     // trimmed of surrounding backtick/whitespace decoration left after the
     // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.

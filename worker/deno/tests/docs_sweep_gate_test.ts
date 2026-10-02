@@ -246,14 +246,14 @@ Deno.test("buildDocsSweepGateComment - contains the problems and the section sha
 Deno.test(
   "validateDocsSweep - a bare placeholder with a long trailing-decoration run scales linearly",
   () => {
-    // `none` followed by a long run of `.` is the exact shape that made
-    // isBarePlaceholder's unanchored `/[.!\s]+$/g` backtrack quadratically —
-    // measured locally at 0.4 s/20k chars, 8 s/80k, 37 s/200k. The cap this
-    // fix adds bounds the regex to a fixed-size slice regardless of input
-    // size, so both runs should cost about the same and both must still
-    // detect the bare placeholder correctly.
+    // A run of `.` that does NOT reach the end of the value is the shape
+    // that makes `/[.!\s]+$/` backtrack. A trailing `x` is outside the
+    // decoration class, so without the 64-character cap the scan is
+    // quadratic and the value is no longer read as a placeholder. With the
+    // cap the slice still ends in `.`, so it stays a bare placeholder and
+    // both sizes cost about the same.
     const buildSummary = (chars: number) =>
-      `**Docs sweep** — section: none${".".repeat(chars)}`;
+      `**Docs sweep** — section: none${".".repeat(chars)}x`;
 
     const result = assertLinearGrowth(
       "docs-sweep bare-placeholder trailing-decoration scan",
@@ -272,5 +272,32 @@ Deno.test(
       "still a bare placeholder, not an explained negative",
     );
     assertStringIncludes(result.problems[0]!, "placeholder");
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - a Docs sweep line with a long space run before a lone CR scales linearly",
+  () => {
+    // `"Docs sweep:" + spaces + "\\rX\\rY"` used to be one line, because the
+    // split kept a lone CR. `.+` cannot match CR and `$` only matches at the
+    // end, so the old line regex retried from every space. Splitting on
+    // every line terminator and taking the body by slice stays linear, and
+    // the empty body after the separator is still not a Docs sweep line.
+    const buildSummary = (chars: number) =>
+      `Docs sweep:${" ".repeat(chars)}\rX\rY`;
+
+    const result = assertLinearGrowth(
+      "docs-sweep line match",
+      buildSummary,
+      (input) =>
+        validateDocsSweep({
+          changedFiles: CODE_FILES,
+          prSummaryContent: input,
+        }),
+      { baseChars: 20_000 },
+    );
+
+    assertEquals(result.line.present, false);
+    assertEquals(result.valid, false);
   },
 );
