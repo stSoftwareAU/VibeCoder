@@ -29,7 +29,10 @@ next pass, with no wait between them (Issue #2305); then
 **abandon-and-restart** — the conflicting PR is closed, never force-pushed, and
 its originating issue re-queued so the fleet redoes the work off the current
 base. The re-queued issue keeps whatever pickup label it already carries, and
-gains `idle-task` when it carries none (Issue #2277). Every fallback leaves one
+gains `idle-task` when it carries none (Issue #2277). That issue then becomes
+the next pickup in its own repo through pickup ordering, not by applying
+`top-priority` — see [Conflict redo first in its repo](issue-processing.md#-issue-selection-priority)
+(Issue #3034). Every fallback leaves one
 `merge-fallback` issue behind recording what happened, linked from the closed PR
 (Issues #2304, #2310 — the scan's fallback; the resolution processor's own copy
 of this rung now follows it, Issue #3032). A PR whose
