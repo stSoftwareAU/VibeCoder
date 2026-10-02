@@ -1118,10 +1118,10 @@ contains the forbidden thing and a run with the guard broken on purpose that
 goes red; a negative test that stays green without its guard is a blocking
 self-review finding.
 
-**Every changed call site needs a test that goes red without it (Issue
-#3067).** A test of a shared helper, or of some of its callers, does not
-cover the other callers' wiring. Fleet PRs threaded a new argument through
-several production callers and tested only one: VibeCoder#2918 passed
+**Every changed call site needs a test that goes red without it (Issue #3067).**
+A test of a shared helper, or of some of its callers, does not cover the
+other callers' wiring. Fleet PRs threaded a new argument through several
+production callers and tested only one: VibeCoder#2918 passed
 `RED_CHECK_CONCLUSIONS` to `buildFailedCheckRunsLookup` from
 `findFailedCiChecks`, but the REST stub ignored `--jq`, so reverting that
 caller kept every test green; GRQ-AutoTrader#2220 left the
