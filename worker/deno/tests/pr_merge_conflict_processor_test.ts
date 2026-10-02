@@ -3,8 +3,8 @@
  *
  * The processor is the receiver Issue #4373 deferred to: it merges the base
  * branch into a conflicting PR for real, refuses to push a tree that is not
- * fully resolved, bounds its attempts, and escalates with `needs-human` when
- * the budget is spent.
+ * fully resolved, bounds its attempts, and hands a spent budget to
+ * abandon-and-redo — never to a human (Issue #3032).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  *
@@ -19,7 +19,6 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildAttemptComment,
-  buildConflictEscalationReason,
   buildFailedComment,
   buildNudgeComment,
   buildNudgeCommitMessage,
@@ -711,19 +710,6 @@ Deno.test("parseUnmergedPaths - trims and drops blank lines", () => {
   assertEquals(parseUnmergedPaths(""), []);
 });
 
-Deno.test("buildConflictEscalationReason - names the files and the failure", () => {
-  const reason = buildConflictEscalationReason(
-    makeInput(),
-    ["SECURITY.md", "docs/archive/pr-summaries/pr-summary-50.md"],
-    "the agent left 1 path(s) unmerged",
-    2,
-  );
-  assertStringIncludes(reason, "SECURITY.md");
-  assertStringIncludes(reason, "pr-summary-50.md");
-  assertStringIncludes(reason, "the agent left 1 path(s) unmerged");
-  assertStringIncludes(reason, "never side-picks");
-});
-
 // ---------------------------------------------------------------------------
 // Resolution
 // ---------------------------------------------------------------------------
@@ -932,7 +918,7 @@ Deno.test("processMergeConflict - a shallow clone is deepened to the merge base 
   assert(deepenAt < mergeAt, "the deepen must precede the merge");
 });
 
-Deno.test("processMergeConflict - no common ancestor even after unshallow escalates without spending an attempt (Issue #1458)", async () => {
+Deno.test("processMergeConflict - no common ancestor even after unshallow fails the attempt, asking no human (Issue #3032)", async () => {
   const { captured, result } = await runProcessor(
     makeInput(),
     makeGitScript({
@@ -943,41 +929,28 @@ Deno.test("processMergeConflict - no common ancestor even after unshallow escala
   );
   assert(result.ok);
   assertEquals(result.value.merged, false);
-  assertEquals(result.value.escalated, true, result.value.summary);
+  assertEquals(result.value.escalated, false, result.value.summary);
   assert(
     result.value.summary.includes("common ancestor"),
     result.value.summary,
   );
-  // No merge was tried, no attempt marker was posted, no failed-attempt
-  // conclusion spent the budget — the clone, not the PR, is the problem.
+  // No merge was tried — the clone, not the PR, is the problem — but the
+  // failure still concludes as a FAILED attempt, spending the budget.
   assertEquals(
     captured.events.some((e) => e.startsWith("git:merge origin/")),
     false,
   );
-  assertEquals(
-    captured.comments.some((c) =>
-      c.includes("Merge-conflict resolution — attempt")
-    ),
-    false,
-    "an attempt must not be opened for a clone problem",
-  );
-  assertEquals(
-    captured.labelsAdded.includes("needs-human"),
-    true,
-    captured.labelsAdded.join(","),
-  );
-  assert(
-    captured.comments.some((c) =>
-      c.includes("common ancestor") && c.includes("Issue #1458")
-    ),
-    captured.comments.join("\n---\n"),
-  );
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  const failed = captured.comments.at(-1) ?? "";
+  assertStringIncludes(failed, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(failed, "no-common-ancestor");
 });
 
-Deno.test("processMergeConflict - 'refusing to merge unrelated histories' is a clone fault, not a failed attempt (Issue #1458)", async () => {
+Deno.test("processMergeConflict - 'refusing to merge unrelated histories' fails the attempt, not escalating (Issue #3032)", async () => {
   // Belt and braces: should git still refuse after the deepen step, the
-  // refusal is classified for what it is rather than as a generic
-  // "did not conflict but failed" that spends an attempt.
+  // refusal is classified for what it is — a failed, retried attempt —
+  // rather than a generic "did not conflict but failed", and never asks a
+  // human.
   const { captured, result } = await runProcessor(
     makeInput(),
     makeGitScript({
@@ -988,18 +961,41 @@ Deno.test("processMergeConflict - 'refusing to merge unrelated histories' is a c
   );
   assert(result.ok);
   assertEquals(result.value.merged, false);
-  assertEquals(result.value.escalated, true, result.value.summary);
-  assertEquals(
-    captured.comments.some((c) =>
-      c.includes(`attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`)
-    ),
-    false,
-    "the refusal must not be posted as a failed attempt",
-  );
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  assertEquals(result.value.escalated, false, result.value.summary);
+  const failed = captured.comments.at(-1) ?? "";
+  assertStringIncludes(failed, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(failed, "no-common-ancestor");
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
 
-Deno.test("processMergeConflict - the final failed attempt escalates to a human", async () => {
+Deno.test("processMergeConflict - a no-common-ancestor failure at the cap runs the abandon rung (Issue #3032)", async () => {
+  const seen: AbandonRestartRequest[] = [];
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeGitScript({
+      mergeCode: 128,
+      unmergedAfterMerge: [],
+      mergeStderr: "fatal: refusing to merge unrelated histories",
+    }),
+    {
+      abandonRestartFn: (request) => {
+        seen.push(request);
+        return Promise.resolve({
+          outcome: "abandoned",
+          issueNumber: 16,
+          label: { kept: "work-on" },
+        });
+      },
+    },
+  );
+  assert(result.ok);
+  assertEquals(result.value.escalated, false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertEquals(seen.length, 1, "the cap must run the abandon rung");
+  assert(captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)));
+});
+
+Deno.test("processMergeConflict - the final failed attempt never escalates to a human (Issue #3032)", async () => {
   const { captured, result } = await runProcessor(
     makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
@@ -1007,13 +1003,13 @@ Deno.test("processMergeConflict - the final failed attempt escalates to a human"
 
   assert(result.ok);
   assertEquals(result.value.merged, false);
-  assertEquals(result.value.escalated, true);
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  assertEquals(result.value.escalated, false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
 
-  const escalation = captured.comments.at(-1) ?? "";
-  assertStringIncludes(escalation, "**Why:**");
-  assertStringIncludes(escalation, "**Next step:**");
-  assertStringIncludes(escalation, "SECURITY.md");
+  // No hand-off comment is posted on the route out of a spent budget that
+  // does not run abandon-and-redo; the FAILED marker is the last word.
+  const lastComment = captured.comments.at(-1) ?? "";
+  assertStringIncludes(lastComment, CONFLICT_FAILED_MARKER);
 });
 
 // ---------------------------------------------------------------------------
@@ -1163,44 +1159,63 @@ Deno.test("processMergeConflict - a spent restart budget asks no human (Issue #2
   assertStringIncludes(result.value.summary, "parked");
 });
 
-Deno.test("processMergeConflict - an abandon that fails escalates naming the step", async () => {
+Deno.test("processMergeConflict - an abandon that fails still asks no human (Issue #3032)", async () => {
+  const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
     makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
-      abandonRestartFn: () =>
-        Promise.resolve({
+      abandonRestartFn: (request) => {
+        seen.push(request);
+        return Promise.resolve({
           outcome: "failed",
           step: "pr-close",
           message: "gh refused",
-        }),
+        });
+      },
     },
   );
 
   assert(result.ok);
-  assertEquals(result.value.escalated, true);
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
-  const escalation = captured.comments.at(-1) ?? "";
-  assertStringIncludes(escalation, "`pr-close` step");
+  assertEquals(result.value.escalated, false);
+  assertEquals(seen.length, 1, "the abandon rung must still be tried");
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertEquals(
+    captured.comments.some((c) => c.includes("needs-human")),
+    false,
+  );
+  assertEquals(
+    captured.comments.some((c) => c.includes("needs-human-escalation")),
+    false,
+  );
+  assertStringIncludes(result.value.summary, "abandon-failed");
 });
 
-Deno.test("processMergeConflict - a declined abandon escalates saying why", async () => {
+Deno.test("processMergeConflict - a declined abandon (not already-restarted) still asks no human (Issue #3032)", async () => {
+  const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
     makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
-      abandonRestartFn: () =>
-        Promise.resolve({
+      abandonRestartFn: (request) => {
+        seen.push(request);
+        return Promise.resolve({
           outcome: "declined",
           reason: { kind: "no-originating-issue", detail: "no-signal" },
-        }),
+        });
+      },
     },
   );
 
   assert(result.ok);
-  assertEquals(result.value.escalated, true);
-  const escalation = captured.comments.at(-1) ?? "";
-  assertStringIncludes(escalation, "names no originating issue");
+  assertEquals(result.value.escalated, false);
+  assertEquals(seen.length, 1, "the abandon rung must still be tried");
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertEquals(
+    captured.comments.some((c) => c.includes("needs-human")),
+    false,
+  );
+  assertStringIncludes(result.value.summary, "abandon-declined");
 });
 
 // ---------------------------------------------------------------------------
@@ -1229,14 +1244,14 @@ Deno.test("processMergeConflict - a failed attempt posts an explicit conclusion"
   assertStringIncludes(conclusion, "SECURITY.md");
 });
 
-Deno.test("processMergeConflict - the escalating attempt also posts its conclusion", async () => {
+Deno.test("processMergeConflict - the budget-spent attempt also posts its conclusion", async () => {
   const { captured, result } = await runProcessor(
     makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
   );
 
   assert(result.ok);
-  assertEquals(result.value.escalated, true);
+  assertEquals(result.value.escalated, false);
   assert(
     captured.comments.some((c) => c.includes(CONFLICT_FAILED_MARKER)),
     `a failure conclusion must be posted; got ${captured.comments.length} comments`,
