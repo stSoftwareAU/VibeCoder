@@ -14,7 +14,9 @@
  *                                (required).
  *   --suppressed-ids             Comma-separated stable finding IDs to drop.
  *   --known-open-finding-ids     Comma-separated stable finding IDs that
- *                                already have an open GitHub issue.
+ *                                already have an open GitHub issue. Unioned
+ *                                with the fleet-authored list this command
+ *                                builds itself.
  *   --timeout-seconds            Hard wall-clock cap on the Claude scan.
  *
  * Issue #2159 (v8 prompt): the `--language-hints` argument was retired —
