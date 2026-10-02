@@ -111,6 +111,7 @@ Deno.test(
         defaultBranch: "main",
         conflict,
         tips: [],
+        landing: { kind: "tip", branch: BRANCH, sha: conflict.mergeSha ?? "unknown" },
       });
       assertStringIncludes(comment, JUDGEMENT);
 

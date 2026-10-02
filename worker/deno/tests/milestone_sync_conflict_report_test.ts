@@ -19,6 +19,7 @@ import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import { buildConflictEscalationComment } from "../lib/milestone_sync_conflict.ts";
+import type { SyncLanding } from "../lib/milestone_sync_landing.ts";
 
 async function git(
   args: string[],
@@ -254,6 +255,7 @@ Deno.test(
         defaultBranch: "main",
         conflict,
         tips: [],
+        landing: { kind: "tip", branch: "milestone/1558", sha: conflict.mergeSha ?? "unknown" },
       });
       assertStringIncludes(comment, timings);
     } finally {
@@ -266,11 +268,17 @@ Deno.test(
   "buildConflictEscalationComment - both reports carry the timings line, and omit it when there is none (Issue #2308)",
   () => {
     const line = "Timings (host `mel-01`): deepen 3s · rules 1s · agent 212s";
+    const landing: SyncLanding = {
+      kind: "tip",
+      branch: "milestone/1558",
+      sha: "bbb",
+    };
     const base = {
       repo: "org/repo",
       milestoneBranch: "milestone/1558",
       defaultBranch: "main",
       tips: [],
+      landing,
     };
 
     // The success notice — every file settled by a rung of the ladder.

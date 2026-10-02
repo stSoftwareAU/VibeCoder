@@ -4231,9 +4231,9 @@ it is host-local and still has no wait between its concluded attempts; the
 [the merge-conflict workflow](workflows/merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)
 applies only to the PR scan's shared, PR-side tally.
 
-A PR carries its attempt history in marker comments on the PR. Since Issue
-#2998 the sync does the same when its branch is the head of an open PR —
-`readMilestoneHeadPr` in
+A PR carries its attempt history in marker comments on the PR. Since
+Issue #2998 the sync does the same when its branch is the head of an
+open PR — `readMilestoneHeadPr` in
 [milestone_sync_pr_budget.ts](../worker/deno/lib/milestone_sync_pr_budget.ts)
 reads the shared budget from that PR's own trusted markers, and the sync
 records each attempt there (`pass="sync"` plus its conclusion) exactly as the

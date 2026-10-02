@@ -138,7 +138,7 @@ export function buildSyncAttemptComment(
     : conflictFailedMarker(attemptNumber, "sync", headSha);
   return [
     `Milestone sync conflict attempt ${attemptNumber} (pass \`sync\`) ` +
-      `${verb}: ${detail} (Issue #2998)`,
+    `${verb}: ${detail} (Issue #2998)`,
     conflictAttemptMarker(attemptNumber, "sync", headSha),
     conclusionMarker,
   ].join("\n");

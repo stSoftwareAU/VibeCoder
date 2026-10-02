@@ -26,6 +26,10 @@ const CONFLICT: MilestoneSyncConflict = {
   milestoneSha: MILESTONE_SHA,
   defaultSha: DEFAULT_SHA,
   resolution: "theirs",
+  // `deps()`'s `/commits/` handler always answers DEFAULT_SHA for a branch
+  // lookup (it only answers MILESTONE_SHA for a sha-keyed lookup), so this
+  // is what `confirmSyncLanding` reads as the milestone tip (Issue #2998).
+  mergeSha: DEFAULT_SHA,
 };
 
 /** Sync deps whose merge conflicted (or did not), recording gh calls. */

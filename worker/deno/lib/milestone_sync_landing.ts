@@ -15,7 +15,10 @@
 
 import type { GhCommandFn } from "./milestone_branch_sync.ts";
 import { isConflictHeadSha } from "./merge_conflict_markers.ts";
-import { resolveBranchTips, UNRESOLVED_SHA } from "./milestone_sync_conflict.ts";
+import {
+  resolveBranchTips,
+  UNRESOLVED_SHA,
+} from "./milestone_sync_conflict.ts";
 import { syncBranchFor } from "./milestone_sync_pr.ts";
 
 /** Where a confirmed merge actually landed. */
@@ -203,7 +206,9 @@ export async function confirmSyncLanding(
       const headRefOid = typeof row.headRefOid === "string"
         ? row.headRefOid.trim().toLowerCase()
         : undefined;
-      if (prNumber === undefined || !headRefOid || !isConflictHeadSha(headRefOid)) {
+      if (
+        prNumber === undefined || !headRefOid || !isConflictHeadSha(headRefOid)
+      ) {
         continue;
       }
       if (headRefOid === expected) {

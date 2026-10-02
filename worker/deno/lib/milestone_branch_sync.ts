@@ -56,7 +56,6 @@ import {
   type LandingCheck,
 } from "./milestone_sync_landing.ts";
 import {
-  type MilestoneHeadPr,
   readMilestoneHeadPr,
   recordSyncAttemptOnPr,
 } from "./milestone_sync_pr_budget.ts";
@@ -1835,7 +1834,13 @@ export async function syncMilestoneBranches(
               log,
             );
             if (landing.kind === "unconfirmed") {
-              log(describeUnconfirmedLanding(repo, milestone.milestoneBranch, landing));
+              log(
+                describeUnconfirmedLanding(
+                  repo,
+                  milestone.milestoneBranch,
+                  landing,
+                ),
+              );
               failed++;
               if (streakPath) {
                 let entry = recordSyncFailure(streaks[streakKey]);
@@ -1888,7 +1893,12 @@ export async function syncMilestoneBranches(
           // now, while the divergence is one day wide — once per conflicting
           // default-branch commit, so a branch that keeps conflicting against
           // the same commit is not reported every cycle.
-          if (conflict && landing) {
+          if (conflict && landing && landing.kind !== "unconfirmed") {
+            // Narrowed explicitly: by construction `landing` is never
+            // "unconfirmed" here (that path already `continue`d above), but
+            // the discriminant is restated so this block's own type is a
+            // confirmed {@link SyncLanding} rather than the wider check.
+            const confirmedLanding = landing;
             // A conflict whose default-branch commit could not be read still
             // needs a dedup key, or the same report goes out every cycle.
             const conflictKey = conflict.defaultSha || UNRESOLVED_SHA;
@@ -1901,7 +1911,7 @@ export async function syncMilestoneBranches(
                 ghCommandFn,
                 log,
                 deps.dedupAuthors ?? {},
-                landing,
+                confirmedLanding,
               );
               // Only a report that went out is remembered: an escalation
               // that failed must be retried next cycle, not marked done.
@@ -1912,10 +1922,10 @@ export async function syncMilestoneBranches(
                 repo,
                 headPr,
                 "resolved",
-                `merge ${describeSyncLanding(landing)}`,
+                `merge ${describeSyncLanding(confirmedLanding)}`,
                 ghCommandFn,
                 log,
-                landing.sha,
+                confirmedLanding.sha,
               );
             }
             if (
