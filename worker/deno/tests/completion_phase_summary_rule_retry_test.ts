@@ -414,6 +414,77 @@ Deno.test(
   },
 );
 
+/** Closure is valid; the Standards heading and the Docs sweep line are absent. */
+const SUMMARY_CLOSURE_WITHOUT_STANDARDS = `## Summary
+
+Recovered in-run. Closes #${ISSUE}.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the first block launches one recovery invocation — evidence: \`worker/deno/lib/summary_rule_gate_retry.ts\` — reviewer: met
+- **met** — a second block in the same run fails as today — evidence: \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts\` — reviewer: met
+
+## Test Plan
+
+- \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts\`
+`;
+
+Deno.test(
+  "completion - a bug summary missing both the reproduction block and the Docs sweep line is asked for both in the one recovery turn (Issue #3085 review)",
+  async () => {
+    // No acceptance criteria, so the closure and independent-review gates
+    // do not run. The reproduction gate is the one that blocks, and it must
+    // fold the docs-sweep notice into that same turn.
+    const outcome = await runCompletion({
+      summary: BUG_SUMMARY_WITHOUT_REPRODUCTION,
+      retryWrites: BUG_SUMMARY_WITH_REPRODUCTION,
+      issueBody: "## Problem\n\nThe gate ends the run.\n",
+      labels: ["bug", "work-on"],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(
+      outcome.prCreateCalls,
+      1,
+      "the PR is raised once both are fixed",
+    );
+    assertStringIncludes(
+      outcome.claudePrompts[0]!,
+      "Reproduction status missing",
+    );
+    assertStringIncludes(outcome.claudePrompts[0]!, "Docs sweep");
+  },
+);
+
+Deno.test(
+  "completion - a summary with a valid closure but no Standards Review and no Docs sweep line is asked for both in the one recovery turn (Issue #3085 review)",
+  async () => {
+    // Closure passes, so the independent-review gate is the one that blocks.
+    // Dropping the fold at that call site would leave "Docs sweep" out of
+    // the only recovery prompt.
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLOSURE_WITHOUT_STANDARDS,
+      retryWrites: SUMMARY_WITH_BLOCK,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(
+      outcome.prCreateCalls,
+      1,
+      "the PR is raised once both are fixed",
+    );
+    assertStringIncludes(
+      outcome.claudePrompts[0]!,
+      "Independent review missing",
+    );
+    assertStringIncludes(outcome.claudePrompts[0]!, "Docs sweep");
+  },
+);
+
 Deno.test(
   "completion - a block on a run that already has a PR is not re-invoked",
   async () => {
