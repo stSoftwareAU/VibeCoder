@@ -187,6 +187,13 @@ worth a separate small fix.
   now carries a `stage` (`"open-children"` or `"declared-dependencies"`), and
   the comment names the lookup that actually failed, with a stage-matching
   closing sentence.
+- The per-PR lookup-comment latch was keyed only by `repo#prNumber`, so a
+  cycle whose open-children read failed could latch out a later cycle's
+  declared-dependency failure on the same PR, leaving the PR carrying a
+  comment that named the wrong unreadable state. The registry key now
+  includes the stage (`repo#prNumber:stage`), so each failing stage gets its
+  own comment, and the post-failure WARNING names the stage that actually
+  failed rather than always saying "open-children count".
 
 ## Test Plan
 

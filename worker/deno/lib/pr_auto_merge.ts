@@ -373,13 +373,15 @@ export function resetOpenChildrenLookupComments(): void {
 }
 
 /**
- * Tell a PR that its merge-block state could not be read, at most once.
+ * Tell a PR that its merge-block state could not be read, at most once per
+ * failing stage.
  *
  * The key is recorded only after a successful post, so a post that failed is
  * retried on the next sweep rather than latched as "explained". `stage` names
  * which read actually failed — the open-children count or the declared
- * dependencies — so the comment never blames the wrong lookup (Issue #3024
- * review).
+ * dependencies — and is part of the registry key so a later cycle's
+ * different-stage failure on the same PR gets its own comment rather than
+ * being latched out by an earlier stage's explanation (Issue #3024 review).
  *
  * @returns true when the PR carries the explanation, false when the post failed
  */
@@ -393,7 +395,7 @@ async function postOpenChildrenLookupReason(
   commentFn: (repo: string, prNumber: number, body: string) => Promise<void>,
   log: (message: string) => void,
 ): Promise<boolean> {
-  const key = `${repo}#${prNumber}`;
+  const key = `${repo}#${prNumber}:${stage}`;
   if (postedOpenChildrenLookupReason.has(key)) return true;
   // The title is attacker-writable and the detail is raw API text: redact any
   // secret the transport error carried, then neutralise marker-shaped content
@@ -423,7 +425,7 @@ async function postOpenChildrenLookupReason(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log(
-      `WARNING: could not post the unreadable open-children count on ${repo}#${prNumber}: ${message}`,
+      `WARNING: could not post the unreadable ${subject} on ${repo}#${prNumber}: ${message}`,
     );
     return false;
   }

@@ -454,6 +454,58 @@ Deno.test("pr_auto_merge - a failed dependency lookup names the dependencies, no
   assertStringIncludes(state.posted[0]!, "HTTP 502 Bad Gateway");
 });
 
+Deno.test("pr_auto_merge - a later cycle's different failing stage gets its own comment, not latched out by an earlier stage (Issue #3024 review)", async () => {
+  resetOpenChildrenLookupComments();
+  const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
+  const base = createDependencyStub(state);
+  let cycle = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    // Cycle 0: the open-children read fails transiently. (Narrowed to the
+    // issues query, not the `/milestones?state=open` lookup it shares the
+    // substring with.)
+    if (
+      cycle === 0 && key.includes("issues?milestone=") &&
+      key.includes("state=open")
+    ) {
+      throw new Error("HTTP 502 Bad Gateway (open-children)");
+    }
+    // Cycle 1: open-children now reads fine (empty), but the declared-
+    // dependency read (`/issues/50`) fails instead.
+    if (cycle === 1 && key.includes("/issues/50")) {
+      throw new Error("HTTP 502 Bad Gateway (declared-dependency)");
+    }
+    return await base(args);
+  };
+
+  const result1 = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+  assertEquals(result1.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  assertStringIncludes(state.posted[0]!, "the open-children count");
+
+  cycle = 1;
+  const result2 = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: GATE_BRANCH,
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+  assertEquals(result2.result, AutoMergeResult.BlockedOpenChildren);
+  // Before the fix, the per-PR latch (keyed without the stage) treated the
+  // open-children explanation as covering this failure too, so no second
+  // comment was posted and the PR kept blaming the wrong unreadable state.
+  assertEquals(state.posted.length, 2);
+  assertStringIncludes(state.posted[1]!, "the declared dependencies");
+  assertEquals(state.posted[1]!.includes("open-children count"), false);
+});
+
 Deno.test("pr_auto_merge - does not repost the pending-dependencies comment when the marker is already present", async () => {
   const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
   const ghFn = createDependencyStub(state);
