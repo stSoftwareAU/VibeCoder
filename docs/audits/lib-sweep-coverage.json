@@ -1,6 +1,6 @@
 {
   "parent": 1209,
-  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/ and worker/deno/setup/. Every non-test module under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate. A top-up slice's chunk id is top-up-<issue> so two runs adding modules in the same window cannot allocate the same id (#1968).",
+  "description": "Coverage ledger for the security sweeps of worker/deno/lib/, worker/deno/commands/, worker/deno/setup/ and, joined under #2759, the prompts/<type>/prompt.md templates under prompts/. Every non-test module and prompt.md template under those roots belongs to exactly one slice, and each slice records the commit its written record landed at (sweptAt). Enforced by worker/deno/tests/lib_sweep_coverage_test.ts. Drift since sweptAt is a report (`sweep-drift`), not a merge gate. A top-up slice's chunk id is top-up-<issue> so two runs adding modules in the same window cannot allocate the same id (#1968).",
   "slices": [
     {
       "issue": 1214,

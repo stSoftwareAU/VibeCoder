@@ -1,7 +1,8 @@
 /**
  * Coverage ledger for the security sweeps of `worker/deno/lib/`,
  * `worker/deno/commands/` and `worker/deno/setup/` (Issue #1609, parents
- * #1219 / #1209).
+ * #1219 / #1209), joined by the `prompts/<type>/prompt.md` templates under
+ * `prompts/` (Issue #2759).
  *
  * The lib/ sweep was cut into sink-organised slices and later top-ups.
  * `commands/` and `setup/` were read under #1218 and #1220 but were never
@@ -23,11 +24,12 @@ export const LIB_SWEEP_LEDGER_PATH = "docs/audits/lib-sweep-coverage.json";
 /** Repo-relative directory the original ledger covered. */
 export const LIB_SWEEP_ROOT = "worker/deno/lib";
 
-/** The three trees the ledger now partitions (Issue #1609). */
+/** The four trees the ledger partitions (Issues #1609, #2759). */
 export const SWEEP_COVERAGE_ROOTS = [
   "worker/deno/lib",
   "worker/deno/commands",
   "worker/deno/setup",
+  "prompts",
 ] as const;
 
 /** A 40-character lowercase git commit. */
@@ -332,6 +334,13 @@ export function parseCoverageLedger(json: string): SweepCoverageLedger {
   };
 }
 
+/**
+ * Split a `git diff --name-only` stdout into non-test owned-file names.
+ *
+ * A `_test.ts` file is never a ledger-owned module, so it is filtered here
+ * rather than relied on to be absent upstream — `prompt.md` has no test-file
+ * convention to exclude (Issue #2759).
+ */
 function splitGitNames(stdout: string): string[] {
   return stdout.split("\n").map((line) => line.trim()).filter((line) =>
     line.length > 0 && !line.endsWith("_test.ts")
@@ -534,10 +543,14 @@ export async function listSweptModulesForRoots(
 }
 
 /**
- * List the non-test TypeScript modules under a directory, repo-relative.
+ * List the swept files under a directory, repo-relative: non-test TypeScript
+ * modules and `prompt.md` templates (Issue #2759).
  *
  * This is the `find lib -name '*.ts' ! -name '*_test.ts'` of the issue, done
  * without a subprocess so the check runs under the unit-test permission set.
+ * `prompts/<type>/prompt.md` joined the same walk under #2759 — the template
+ * itself is swept, but a sibling file such as `prompts/<type>/buckets/*.md`
+ * is not.
  *
  * @param repoRoot - Absolute path of the repository root.
  * @param root - Repo-relative directory to walk (defaults to `worker/deno/lib`).
@@ -554,8 +567,10 @@ export async function listSweptModules(
       if (entry.isDirectory) {
         await visit(relPath);
       } else if (
-        entry.isFile && entry.name.endsWith(".ts") &&
-        !entry.name.endsWith("_test.ts")
+        entry.isFile && (
+          (entry.name.endsWith(".ts") && !entry.name.endsWith("_test.ts")) ||
+          entry.name === "prompt.md"
+        )
       ) {
         paths.push(relPath);
       }
