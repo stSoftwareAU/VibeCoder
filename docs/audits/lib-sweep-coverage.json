@@ -2406,7 +2406,7 @@
       "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2998",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_sync_landing.ts, milestone_sync_pr_budget.ts (#2998)",
       "status": "claimed",
-      "sweptAt": "85952f1169ec6e412dffd691aefd3e2d98787e24",
+      "sweptAt": "84b3700e047d33d75bffde20dcc1aa7127db5f43",
       "paths": [
         "worker/deno/lib/milestone_sync_landing.ts",
         "worker/deno/lib/milestone_sync_pr_budget.ts"
