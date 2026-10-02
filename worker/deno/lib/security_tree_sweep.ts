@@ -241,12 +241,13 @@ export interface SweepOptions {
   /** Trigger a fresh worker scan before harvesting its issues. */
   runWorkerScan?: boolean;
   /**
-   * A file of repo-relative paths (one per line) naming the files a pull
-   * request changed. When set, unbaselined findings OUTSIDE that set are
-   * reported but do not fail the run — a PR gate fails on findings its
-   * diff introduced, while the tree-wide schedule stays strict. An
-   * unreadable file is fatal: a gate that cannot scope itself has
-   * inspected nothing (Issue #3234).
+   * A file of repo-relative paths naming the files a pull request
+   * changed — NUL-delimited (`git diff -z`) preferred, newline accepted,
+   * C-quoted lines rejected (Issue #2776). When set, unbaselined findings
+   * OUTSIDE that set are reported but do not fail the run — a PR gate
+   * fails on findings its diff introduced, while the tree-wide schedule
+   * stays strict. An unreadable file is fatal: a gate that cannot scope
+   * itself has inspected nothing (Issue #3234).
    */
   changedFilesPath?: string;
 }
@@ -2069,16 +2070,16 @@ export function splitByChangedFiles<T extends Pick<SweepRow, "path">>(
 }
 
 /**
- * Read the changed-files list (one repo-relative path per line) into a
- * set. Fails loud on an unreadable file — a PR gate that cannot scope
- * itself would otherwise pass findings it never inspected (Issue #3234).
+ * Read the changed-files list into a set. NUL-delimited (as written by
+ * `git diff -z`) is preferred and keeps non-ASCII/spaced paths verbatim;
+ * a legacy newline list is accepted, but a C-quoted line is rejected
+ * (Issue #2776). Fails loud on an unreadable file — a PR gate that cannot
+ * scope itself would otherwise pass findings it never inspected (Issue #3234).
  */
 export function readChangedFiles(path: string): ReadonlySet<string> {
+  let text: string;
   try {
-    const text = Deno.readTextFileSync(path);
-    return new Set(
-      text.split("\n").map((line) => line.trim()).filter((line) => line !== ""),
-    );
+    text = Deno.readTextFileSync(path);
   } catch (error) {
     throw new Error(
       `cannot read changed-files list ${path}: ${(error as Error).message}. ` +
@@ -2086,6 +2087,25 @@ export function readChangedFiles(path: string): ReadonlySet<string> {
         "read as 'nothing changed'.",
     );
   }
+  if (text.includes("\0")) {
+    return new Set(text.split("\0").filter((entry) => entry !== ""));
+  }
+  const lines = text.split("\n").map((line) => line.trim()).filter((line) =>
+    line !== ""
+  );
+  // A C-quoted path (git's default for non-ASCII/special names) never
+  // matches a finding's raw path, so it would silently scope the finding
+  // out (Issue #2776) — fail closed rather than pass findings unseen.
+  const quoted = lines.find((line) => line.startsWith('"'));
+  if (quoted !== undefined) {
+    throw new Error(
+      `changed-files list ${path} contains a C-quoted line (${
+        JSON.stringify(quoted)
+      }); write the list with ` +
+        "`git -c core.quotePath=false diff --name-only -z` instead.",
+    );
+  }
+  return new Set(lines);
 }
 
 /** Read a pre-produced tool output file, failing loud when it is missing. */

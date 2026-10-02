@@ -113,6 +113,9 @@ jobs:
       # and no commit on the PR branch could clear them anyway. The base
       # SHA (not the base ref, which moves) names exactly the PR's change
       # set; the scheduled sweep stays strict with no list at all.
+      # `-z` writes NUL-delimited, unquoted paths so a non-ASCII or
+      # newline-bearing filename matches the finding's path rather than
+      # scoping it out (Issue #2776).
       - name: Collect the PR's changed files (pull_request only)
         if: github.event_name == 'pull_request'
         env:
@@ -120,7 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"
+          git -c core.quotePath=false diff --name-only -z "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"
 
       - name: Sweep — normalise, deduplicate, classify against the baseline
         id: sweep
