@@ -331,9 +331,11 @@ screenshot.
 
 ## Pre-warmed Deno cache
 
-The MCP server itself is launched as `deno run npm:@playwright/mcp@<pin>`,
-and Deno resolves that package — with its own copy of `playwright-core` —
-into the *Deno* npm cache, not the global npm install above. Left alone,
+The MCP server itself is launched as `deno run --no-config --no-lock
+npm:@playwright/mcp@<pin>` — the two flags stop it from reading or writing
+the product checkout's `deno.json` / `deno.lock` (Issue #3020) — and Deno
+resolves that package, with its own copy of `playwright-core`, into the
+*Deno* npm cache, not the global npm install above. Left alone,
 that meant a mid-run download from npm on every fresh workspace volume (or
 after the cache guard wiped it), and a registry blip broke screenshots for
 the run. The image therefore carries a pre-warmed Deno cache at

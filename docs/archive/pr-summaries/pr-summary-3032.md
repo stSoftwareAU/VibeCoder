@@ -10,6 +10,12 @@ abandon-and-redo. A no-common-ancestor result is now an ordinary failed attempt.
 The scan's disruption bound logs a WARN and leaves the PR queued. The read-only
 gate that respects an existing `needs-human` label is unchanged.
 
+**Update (base merge):** merging the milestone base branch into this PR
+brought in #3033, which removes `conflict_abandon_restart.ts`'s restart cap
+and its `handOffSpentRestarts` hand-off. The acceptance criteria below that
+were previously **partial** because that rung still escalated at a spent
+restart budget are now **met**.
+
 ## Spec
 
 ### Intent and Rationale
@@ -84,10 +90,10 @@ flowchart TD
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **partial** — With the attempt budget spent, the processor applies no needs-human label and posts no hand-off comment. It calls abandon-and-redo instead. — evidence: `worker/deno/lib/pr merge conflict processor.ts (failAttempt: escalateToHuman removed, loud WARN on a declined or failed abandon); worker/deno/tests/pr merge conflict processor test.ts::processMergeConflict - the final failed attempt never escalates to a human (Issue 3032), ::an abandon that fails st` — reviewer: partial — reason: The processor's own escalation is gone, but the abandon-and-redo rung it calls still adds needs-human and a hand-off comment to the originating issue once its restarts are spent (Issue 2804, conflict abandon restart.ts handOffSpentRestarts), and this diff leaves that unchanged.
+- **met** — With the attempt budget spent, the processor applies no needs-human label and posts no hand-off comment. It calls abandon-and-redo instead. — evidence: `worker/deno/lib/pr_merge_conflict_processor.ts (failAttempt: escalateToHuman removed, loud WARN on a declined or failed abandon); worker/deno/tests/pr_merge_conflict_processor_test.ts::processMergeConflict - the final failed attempt never escalates to a human (Issue 3032)` — reviewer: met — the gap noted at the time this PR was opened (the abandon-and-redo rung handing the originating issue to a human once restarts were spent, Issue #2804) was removed by #3033 landing in the base branch; after merging that base in, `conflict_abandon_restart.ts` has no restart cap and no hand-off path at all.
 - **met** — A no-common-ancestor result records a failed attempt and applies no needs-human . — evidence: `worker/deno/lib/pr merge conflict processor.ts::failNoCommonAncestor; worker/deno/tests/pr merge conflict processor test.ts::processMergeConflict - no common ancestor even after unshallow fails the attempt, asking no human (Issue 3032), ::'refusing to merge unrelated histories' fails the attempt, no` — reviewer: met
 - **met** — escalateConflictingPr no longer adds needs-human . — evidence: `worker/deno/lib/pr merge conflict scan.ts (escalateConflictingPr deleted; the disruption bound now logs a WARN and leaves the PR queued); worker/deno/tests/pr merge conflict scan test.ts::findConflictingPr - repeated disruption is logged and left queued, not escalated, ::the disruption bound is conf` — reviewer: met
-- **partial** — A test with the budget spent asserts zero needs-human label calls and zero hand-off comments across the processor and the scan. — evidence: `worker/deno/tests/pr merge conflict scan test.ts::findConflictingPr - the budget-spent record carries the attempts and the cap (assertNoNeedsHumanWrites, no needs-human-escalation comment); worker/deno/tests/pr merge conflict processor test.ts::processMergeConflict - an abandon that fails still asks` — reviewer: partial — reason: The assertions are split across separate processor and scan tests, and each uses a mocked abandon rung. The restarts-spent route still hands off to a human, and pr merge conflict scan test.ts::the third exhaustion parks the PR and hands its issue to a human still asserts a needs-human write, so 'zer
+- **met** — A test with the budget spent asserts zero needs-human label calls and zero hand-off comments across the processor and the scan. — evidence: `worker/deno/tests/pr_merge_conflict_scan_test.ts::findConflictingPr - repeated disruption is logged and left queued, not escalated; worker/deno/tests/pr_merge_conflict_processor_test.ts::processMergeConflict - the final failed attempt never escalates to a human (Issue 3032)` — reviewer: met — merging the base branch in brought #3033's removal of the restart cap and `handOffSpentRestarts`; `conflict_abandon_restart_test.ts` no longer has a "parks the PR and hands its issue to a human" case, so no route across the processor or the scan writes `needs-human` on budget exhaustion.
 - **met** — Tests and quality checks pass. — evidence: `cd worker/deno && deno task test: 25884 passed, 0 failed, 5 ignored; deno task check: 2958 files clean; deno lint: clean; deno fmt --check clean on the four changed .ts files (the three changed .md files also fail fmt --check on main, so that failure is not from this diff)` — reviewer: met
 
 ## Standards Review

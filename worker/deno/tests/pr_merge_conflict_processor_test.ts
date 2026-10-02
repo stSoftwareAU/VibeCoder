@@ -2802,7 +2802,7 @@ Deno.test("processMergeConflict - a declined abandon records the rung and adds n
   assertStringIncludes(comment, `head="${script.headSha}"`);
   // Issue #2312: the spent-restart decline reads as an ordinary decline now,
   // and says the PR is left on the queue label rather than handed anywhere.
-  assertStringIncludes(comment, "spent its 2 restarts");
+  assertStringIncludes(comment, "already records 2 restart claim(s)");
 
   // No rung applies `needs-human`, on the PR or on the issue (Issue #2280).
   assertEquals(captured.labelsAdded, []);

@@ -570,10 +570,11 @@ function isAbandonWaitMarker(
  * the PR and redoes its work through `abandonAndRestart`, whose re-queue label
  * is the issue's own, else `idle-task` — never `work-on`.
  *
- * It files no issue, adds no label and never applies `needs-human` itself —
- * only the rung does, on the originating issue, once its two redos are spent
- * (Issue #2804). It never throws: every failure is logged and reported as
- * `failed`, and the next pass retries.
+ * It files no issue, adds no label and never applies `needs-human` — nor does
+ * the rung it hands off to: there is no restart cap and no needs-human
+ * hand-off for this route, however many times the issue has already been
+ * redone (Issue #3033). It never throws: every failure is logged and
+ * reported as `failed`, and the next pass retries.
  */
 export async function repairConflictQueueStall(
   stall: ConflictQueueStall,
