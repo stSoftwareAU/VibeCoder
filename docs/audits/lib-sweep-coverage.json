@@ -2399,6 +2399,18 @@
       "paths": [
         "worker/deno/lib/repo_formatters.ts"
       ]
+    },
+    {
+      "issue": 3035,
+      "chunk": "top-up-3035",
+      "title": "top-up: the milestone-redo rebuild module",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3035",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_milestone_rebuild.ts (#3035)",
+      "status": "claimed",
+      "sweptAt": "3a566abe0938798bf4996ebe8a6a183f51a20d51",
+      "paths": [
+        "worker/deno/lib/conflict_milestone_rebuild.ts"
+      ]
     }
   ],
   "roots": [

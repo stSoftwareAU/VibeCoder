@@ -47,7 +47,7 @@ import {
   createMergeConflictReplyReader,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
-import { standDownMilestoneHead } from "./gated_head_guard.ts";
+import { isMilestoneHead, standDownMilestoneHead } from "./gated_head_guard.ts";
 import { assertNever } from "./assert_never.ts";
 import { isRuleViolationPush } from "./milestone_sync_pr.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
@@ -110,6 +110,11 @@ import {
   exhaustedEscalationRoute,
   requeueLabelName,
 } from "./conflict_abandon_restart.ts";
+import {
+  abandonAndRebuildMilestone,
+  type MilestoneRebuildOutcome,
+  type MilestoneRebuilt,
+} from "./conflict_milestone_rebuild.ts";
 import {
   clearMergeConflictLabel,
   CONFLICT_ATTEMPT_MARKER,
@@ -245,6 +250,14 @@ export interface MergeConflictProcessorDeps {
   abandonRestartFn?: (
     request: AbandonRestartRequest,
   ) => Promise<AbandonRestartOutcome>;
+  /**
+   * Injectable milestone-redo rung (Issue #3035) — the route the abandon
+   * rung takes for a `milestone/**` head instead of {@link abandonRestartFn}.
+   * Defaults to {@link abandonAndRebuildMilestone}.
+   */
+  milestoneRebuildFn?: (
+    request: AbandonRestartRequest,
+  ) => Promise<MilestoneRebuildOutcome>;
   /**
    * Fleet logins whose marker comments count (Issue #1247), passed through to
    * the abandon rung.
@@ -1875,20 +1888,45 @@ async function runNudgeRung(
 }
 
 /**
- * Run the abandon-and-restart rung, through its injected seam or for real.
+ * Run the abandon rung, through its injected seam or for real.
  *
  * One call site's shape for both callers of it — the spent attempt budget
  * (Issue #1115) and the exhausted stale-verdict ladder (Issue #2280) — so the
- * two can never drift into asking the rung for different things.
+ * two can never drift into asking the rung for different things. Both callers
+ * reach here only after the 3-failed-attempts guard (or the stale-verdict
+ * ladder's own climb) has already passed — this function does not re-check it.
+ *
+ * A `milestone/**` head takes a different route (Issue #3035): the unit that
+ * needs redoing is the whole collection branch, not one issue, so this calls
+ * {@link abandonAndRebuildMilestone} instead of the single-issue rung. Every
+ * other head keeps the existing {@link abandonAndRestart} path exactly.
  *
  * No thread is passed: the rung fetches its own, and fails loud if it cannot.
  * "No failure comment survives" must never be published because a read failed.
  */
-function runAbandonRestart(
+export function runAbandonRestart(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
-): Promise<AbandonRestartOutcome> {
+): Promise<AbandonRestartOutcome | MilestoneRebuilt> {
   const { logger, deps } = processorDeps;
+
+  if (isMilestoneHead(input.branchName)) {
+    const milestoneRung = processorDeps.milestoneRebuildFn ??
+      ((request: AbandonRestartRequest) =>
+        abandonAndRebuildMilestone(request, {
+          gh: deps.github.runGhCommand,
+          git: (args: string[]) =>
+            git(deps.git.runGitCommand, args, processorDeps.workDir),
+          logger,
+        }));
+    return milestoneRung({
+      repo: input.repo,
+      prNumber: input.prNumber,
+      branchName: input.branchName,
+      baseBranch: input.baseBranch,
+    });
+  }
+
   const rung = processorDeps.abandonRestartFn ??
     ((request: AbandonRestartRequest) =>
       abandonAndRestart(request, {
@@ -1933,6 +1971,41 @@ async function runAbandonRung(
   const { logger, deps } = processorDeps;
 
   const abandon = await runAbandonRestart(input, processorDeps);
+
+  if (abandon.outcome === "milestone-rebuilt") {
+    const requeuedText = abandon.requeued.length === 0
+      ? "none"
+      : abandon.requeued.map((r) => `#${r.issueNumber}`).join(", ");
+    logger.info(
+      `GitHub's merge verdict stayed stale through the whole ladder on ` +
+        `PR #${prNumber} — rebuilt the ${abandon.milestoneBranch} milestone ` +
+        `branch from ${abandon.baseBranch} instead of abandoning a single ` +
+        "issue",
+      {
+        repo,
+        prNumber,
+        branchName,
+        currentHead,
+        milestoneBranch: abandon.milestoneBranch,
+        requeued: requeuedText,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        attemptCharged: false,
+        rung: "abandon",
+        summary: `PR #${prNumber}: GitHub's merge verdict stayed stale ` +
+          `through the whole ladder — rebuilt ${abandon.milestoneBranch} ` +
+          `from ${abandon.baseBranch} and replayed ` +
+          `${abandon.replayed.length} sub-PR(s); re-queued sub-issue(s) ` +
+          `${requeuedText}, no attempt spent`,
+      },
+    };
+  }
 
   if (abandon.outcome === "abandoned") {
     const label = requeueLabelName(abandon.label);
@@ -2375,6 +2448,36 @@ async function failAttempt(
   // still ends without a person: the branches below leave the PR open and
   // unlabelled and log which route was taken.
   const abandon = await runAbandonRestart(input, processorDeps);
+
+  if (abandon.outcome === "milestone-rebuilt") {
+    const requeuedText = abandon.requeued.length === 0
+      ? "none"
+      : abandon.requeued.map((r) => `#${r.issueNumber}`).join(", ");
+    logger.info(
+      `Merge-conflict attempts exhausted on PR #${prNumber} — rebuilt the ` +
+        `${abandon.milestoneBranch} milestone branch from ` +
+        `${abandon.baseBranch} instead of abandoning a single issue`,
+      {
+        repo,
+        prNumber,
+        milestoneBranch: abandon.milestoneBranch,
+        requeued: requeuedText,
+        maxAttempts,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        summary: `Merge-conflict attempts exhausted on PR #${prNumber} — ` +
+          `rebuilt ${abandon.milestoneBranch} from ${abandon.baseBranch} ` +
+          `and replayed ${abandon.replayed.length} sub-PR(s); re-queued ` +
+          `sub-issue(s) ${requeuedText}`,
+      },
+    };
+  }
 
   if (abandon.outcome === "abandoned") {
     // Issue #2277: the issue keeps the pickup label it already carried, or

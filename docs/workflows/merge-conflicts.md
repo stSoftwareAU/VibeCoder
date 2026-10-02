@@ -595,9 +595,52 @@ there is no such budget to use up.
   broken, the reading is merely stale or unattributable, so parking the work
   at `needs-human` would block it from discovery over a reading that may
   already have changed by the next pass.
+- **A `milestone/**` head is rebuilt, not closed** (Issue #3035). A milestone
+  PR's head is the merged work of many sub-PRs, so closing it and re-queuing
+  one issue would lose all of them. When the rung is reached for a
+  `milestone/**` head (`isMilestoneHead`), `runAbandonRestart` sends it to
+  `abandonAndRebuildMilestone` (`worker/deno/lib/conflict_milestone_rebuild.ts`)
+  instead of `abandonAndRestart`. The rebuild lists the PRs merged into the
+  milestone branch — sync PRs excluded, since they only carry the base branch
+  forward — ordered by `mergedAt`, and cuts the rebuild detached at
+  `origin/<base>`'s current tip. It then cherry-picks each sub-PR's merge
+  commit in that order; one that does not replay cleanly is skipped and the
+  replay continues with the next. It then `git merge -s ours` the old
+  milestone tip, so the rebuild still descends from it, and delivers the
+  result with a plain fast-forward push, or — when the ruleset refuses that
+  push (GH013) — through the milestone sync PR, which lands as a merge commit
+  so the base stays in the branch's ancestry. Never a force-push of the
+  milestone branch. Each skipped sub-PR's sub-issue is re-queued the same way
+  as the single-issue route (`planRequeueLabel`: kept pickup label, else
+  `idle-task`; reopened if closed) with a fleet-authored restart marker
+  naming the sub-PR — which is what the redo-priority pickup ordering reads —
+  plus a milestone roll-back marker, so the merged-PR closers do not close it
+  again. One comment on the milestone PR, and the WARN log line, list every
+  replayed and every skipped sub-PR by sub-issue number. No `needs-human` on
+  any outcome and no restart cap; a failed step is reported by name like the
+  single-issue route (`milestone-sub-prs`, `milestone-rebuild`,
+  `milestone-push`, `sub-issue-requeue`, `pr-comment`). Note honestly: the
+  merge-conflict pass still stands down on `milestone/**` heads before
+  spending an attempt (Issue #1772), so this route is what the rung does once
+  a milestone head reaches it.
 - **A part-done abandon is never where this stops.** Every step names itself on
   failure, and the pass records that step at WARN with `route=abandon-failed` —
   "PR closed, issue not re-queued" must be visible, not silent.
+
+The milestone redo, end to end:
+
+```mermaid
+flowchart LR
+    A["Spent-budget rung reached<br/>on a milestone/** head"] --> B["List merged sub-PRs,<br/>ordered by mergedAt"]
+    B --> C["Cut rebuild detached<br/>at origin/base tip"]
+    C --> D["Cherry-pick each<br/>sub-PR merge commit"]
+    D -->|"replays cleanly"| E["Keep in rebuilt branch"]
+    D -->|"conflicts"| F["Skip and re-queue<br/>sub-issue"]
+    E --> G["git merge -s ours<br/>old milestone tip"]
+    F --> G
+    G --> H["Push: fast-forward,<br/>or via milestone sync PR"]
+    H --> I["Comment + WARN log:<br/>replayed and skipped sub-PRs"]
+```
 
 ### 🚩 Every fallback is flagged
 
@@ -1234,6 +1277,10 @@ branch at the same time. A host that loses the race returns immediately.
   attempt budget logs a loud WARN and leaves the PR open, and the exhausted
   stale-verdict ladder records the rung as failed and asks nobody
   (Issue #2280). Both callers use it.
+- `worker/deno/lib/conflict_milestone_rebuild.ts` — the milestone redo
+  (Issue #3035): rebuilds a conflicted `milestone/**` branch from the base
+  tip, replays merged sub-PRs in merge order, and re-queues the sub-issue of
+  every sub-PR that will not replay.
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
   a label with no concluded attempt behind it. It reruns the ladder once, then
   abandons and redoes the PR; it files no issue and applies no label, never
