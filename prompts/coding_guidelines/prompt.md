@@ -1072,6 +1072,39 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A negative test must be able to fail.** An assertion that something does
+*not* happen — not leaked, not carried over, not exported, not called, null
+rather than stale — needs a fixture that contains the forbidden thing: a real
+token to leak, an earlier value to carry over, a caller that would otherwise
+run. A new guard has no base-branch red run to lean on, so before raising the
+PR break the guard on purpose (remove the filter, invert the check, or fill
+from the wrong source), run the test, confirm it goes red, then restore the
+guard. A negative test that stays green without its guard is a blocking
+self-review finding.
+
+**Every outcome of a branch you add needs a test that reaches it.** For each
+new condition, match arm, exit-code check or trait/interface default in the
+diff, list its outcomes (success, absent/empty, error, fail-closed default)
+and name the test that drives each one. A test double that overrides the
+default, or a stub that always returns the same code, does not reach the
+other outcomes. Flip each outcome on purpose (return the lenient value
+instead of the error, treat "absent" as "failed"), run the tests, confirm at
+least one goes red, then restore it. An outcome with no test, or one whose
+flip leaves the suite green, is a blocking self-review finding: add a test
+for it.
+
+**Every changed call site needs a test that goes red without it.** When a
+change threads a new argument, flag or behaviour through more than one
+production caller, a test of the helper, or of some callers, does not cover
+the others. For each call site the diff changes, revert only that caller's
+change (pass the old value, drop the new argument, restore the old filter)
+and confirm at least one test goes red. A test double that bypasses the
+production path (for example, a stub that ignores the filter it is passed, or
+forcing a fallback path) does not count for that path. A changed call site
+whose revert leaves the suite green is a blocking self-review finding: add a
+test through that caller, ideally at the level the linked issue's Failure
+Detection names.
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
