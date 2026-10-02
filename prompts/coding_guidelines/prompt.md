@@ -230,6 +230,18 @@ not after a reviewer finds it weeks later.
   updated — and fix any that still describe the old behaviour.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
+- When the change adds or changes a **rule** in a prompt template, coding
+  standard or agent instruction (`prompts/*/prompt.md`,
+  `CODING-STANDARDS.md`, a shared prompt constant under `worker/deno/lib/`,
+  or the repository's equivalents), first grep those files for existing
+  rules on the same subject — the nouns the rule governs (the file, label,
+  test, channel or step), not only the issue's wording. Make the new rule
+  agree with each overlapping rule, or change that rule in the same diff and
+  say so in the PR body; fixing it is part of this change, not a follow-up
+  under **Stay in scope**. A broad rule ("never …", "every …", "any …") names
+  every exception the existing rules carve out. Two rules left telling the
+  agent to do opposite things is a blocking self-review finding. List the
+  related existing rules you checked in the PR body, or say you found none.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
