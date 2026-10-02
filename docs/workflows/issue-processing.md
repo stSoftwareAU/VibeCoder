@@ -1115,6 +1115,41 @@ either confirms the premise against the base branch or pins current behaviour
 with a test. Where the issue cites a logged error line, the reproducing test
 starts from that exact input, and the PR summary quotes it.
 
+**A negative test must be able to fail (Issue #3060).** The base-branch red
+run covers bug fixes, but a new guard has no unfixed base to go red against.
+Fleet PRs were sent back for negative tests whose fixture never held the
+forbidden value — a "GH_TOKEN is unset" test whose mint step already returned
+an empty token, a "null rather than carried over" test whose only earlier line
+had no prices either — so each passed with or without its guard. The
+guidelines and the issue prompt's Test Plan step now require a fixture that
+contains the forbidden thing and a run with the guard broken on purpose that
+goes red; a negative test that stays green without its guard is a blocking
+self-review finding.
+
+**Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
+also sent back for a new branch with one outcome no test reached: a
+stale-remote guard whose stubs all returned `ls-remote` exit 0, so
+simplifying the condition to `code !== 0` (and so standing down on exit 2,
+the path every real gated CI fix takes) left the suite green; and a trait
+default promised to return an error whose every test used an implementation
+that overrode it. The guidelines and the issue prompt's Test Plan step now
+require each outcome of a branch the diff adds — condition, match arm, exit
+code, interface default — to have a named test that reaches it, checked by
+flipping the outcome on purpose and seeing the suite go red; a test double
+that overrides the default or always returns the same code does not count.
+
+**Every changed call site needs a test that goes red without it (Issue #3067).**
+A test of a shared helper, or of some of its callers, does not cover the
+other callers' wiring. Fleet PRs threaded a new argument through several
+production callers and tested only one: VibeCoder#2918 passed
+`RED_CHECK_CONCLUSIONS` to `buildFailedCheckRunsLookup` from
+`findFailedCiChecks`, but the REST stub ignored `--jq`, so reverting that
+caller kept every test green; GRQ-AutoTrader#2220 left the
+`screen_candidates` caller of `commit_buy` untested for its new `is_held`
+argument. The guidelines and the issue prompt's Test Plan step now require
+reverting each changed call site on its own and seeing a test go red; a call
+site whose revert leaves the suite green is a blocking self-review finding.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)

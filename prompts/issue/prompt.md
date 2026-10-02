@@ -124,6 +124,14 @@ guessing — the analysis-only hand-off then routes it to a human.
    may require changing or deleting a test; document why and what still protects
    the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
+   **Change only what the issue changes.** Edit only the expectation the
+   issue changes and keep every other assertion the test made; renaming or
+   rewriting the whole test is how still-true assertions get lost. Before
+   raising the PR, list the assertions your diff removes from each existing
+   test and name, for each, the issue requirement that makes it untrue,
+   recording it in the PR summary's Test Plan. An assertion removed without
+   one is a blocking self-review finding — restore it, or move it to a test
+   that still covers the behaviour and say where.
 3. Update the documentation in the same change. A change that **adds, changes
    or removes** behaviour, a field, a UI element or a setting owes a docs
    change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
@@ -133,7 +141,16 @@ guessing — the analysis-only hand-off then routes it to a human.
    you removed — a label, a status sentence, a setting's description — then
    fix every hit, so no manual still describes what the code no longer does.
    Record the sweep as the **Docs sweep** line in the PR summary (see
-   **PR Summary File** below). When the change involves architecture, data
+   **PR Summary File** below).
+   Before new prompt or doc text states how another component behaves —
+   above all an exclusive or negative claim ("the only …", "never …", "the
+   worker does not …") — open the code that implements it and cite that file
+   in the PR summary. A claim about a security control (redaction, guards,
+   sandboxing, dedup) must agree with `SECURITY.md` and
+   `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the
+   discrepancy. A rule that needs no such claim states the rule and the risk
+   it addresses instead (see **Prompt Engineering Guidance** in
+   `CODING-STANDARDS.md`). When the change involves architecture, data
    flow, state transitions, or sequence of events, include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
    `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
@@ -844,7 +861,24 @@ The file MUST contain:
    check each path with `git ls-files <path>` before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
-   test that does not exist
+   test that does not exist. For every existing test the diff edits, list each
+   assertion it removes with the issue requirement that makes it untrue; an
+   assertion removed with no such requirement is a blocking self-review
+   finding — restore it, or move it to a test that still covers the behaviour
+   and name that test. A negative test — one asserting something does
+   *not* happen — counts only once you have seen it go red with its guard
+   broken on purpose (see **A negative test must be able to fail** in the
+   guidelines); one that stays green without its guard is a blocking
+   self-review finding. Likewise, each call site the diff changes needs a
+   test that goes red when only that caller's change is reverted (see
+   **Every changed call site needs a test that goes red without it** in the
+   guidelines); a changed call site whose revert leaves the suite green is a
+   blocking self-review finding. Likewise, every outcome of a branch the diff
+   adds — each new condition, match arm, exit code and interface default —
+   counts only once a named test reaches it and flipping that outcome on
+   purpose turns the suite red (see **Every outcome of a branch you add needs
+   a test that reaches it** in the guidelines); an outcome no test reaches is a
+   blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
