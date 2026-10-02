@@ -43,6 +43,8 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "must have been run on the final head",
       "one untested branch makes it `partial`",
       "A missing core deliverable is not a PR",
+      "git log <base>..HEAD",
+      "git diff --stat HEAD",
     ]
   ) {
     assertStringIncludes(body, required);

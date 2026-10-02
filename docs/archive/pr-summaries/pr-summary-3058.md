@@ -53,7 +53,9 @@ Closes #3058.
 
 Prompt and docs change only (no UI, no runtime code).
 `worker/deno/tests/pr_claims_verified_3058_test.ts` loads the rendered issue
-prompt and `CODING-STANDARDS.md` and checks that each new rule is present.
+prompt and `CODING-STANDARDS.md` and checks that each new rule is present,
+including the change-detection wording `git log <base>..HEAD` and
+`git diff --stat HEAD`.
 `./quality.sh` passed after the final edit; the config-integration stage was
 skipped by the gate.
 

@@ -621,14 +621,17 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   tests exercise, and one untested branch makes it `partial`.
 - **A missing core deliverable is not a PR.** When the thing the issue asks for
   is `missing`, finish it. The planning marker and the escape hatch are
-  honoured only while the branch has no commits and no uncommitted changes
-  against the base — the worker's change detection sends any non-empty
-  `git diff <base>...HEAD` straight to the PR path regardless of a marker or
-  follow-up in your output, and the PR body gets `Closes #{{ISSUE_NUMBER}}`
-  appended automatically if your summary omits it. By the time you are
-  closing out acceptance criteria you will usually already have committed
-  work, so a hand-off at this point is not read — finishing the deliverable
-  is the only way to avoid a `Closes #{{ISSUE_NUMBER}}` over work left undone.
+  honoured only while the branch has no commits and no uncommitted changes —
+  the worker's change detection (`worker/deno/lib/phases/execute_phase.ts`)
+  sends the run to the PR path when `git log <base>..HEAD` lists any commit
+  (including one a later revert cancels, or a branch commit a base merge
+  absorbed) or `git diff --stat HEAD` shows any uncommitted change, whatever
+  marker or follow-up your output carries, and the PR body gets
+  `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
+  By the time you are closing out acceptance criteria you will usually already
+  have committed work, so a hand-off at this point is not read — finishing the
+  deliverable is the only way to avoid a `Closes #{{ISSUE_NUMBER}}` over work
+  left undone.
   When a lesser criterion stays `partial` or `missing`, the Summary names it
   beside the closing keyword instead of describing the issue as resolved.
 
