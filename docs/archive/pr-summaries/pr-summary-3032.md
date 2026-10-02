@@ -98,9 +98,13 @@ flowchart TD
   the processor tests above, plus the scan test "the budget-spent record carries
   the attempts and the cap" (`assertNoNeedsHumanWrites` and no
   `needs-human-escalation` comment).
-- **Tests and quality checks pass** — met. reviewer: not independently
-  verifiable. reason: the reviewer only had the diff. The touched tests pass
-  (171), and `./quality.sh` result: QUALITY_RESULT_PLACEHOLDER.
+- **Tests and quality checks pass** — met. reviewer: met. Evidence:
+  `deno task test:unit tests/pr_merge_conflict_processor_test.ts
+  tests/pr_merge_conflict_scan_test.ts tests/run_core_merge_conflict_dispatch_test.ts`
+  gives 171 passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check`
+  are clean on the touched files. No merge-conflict processor or scan test still
+  expects a `needs-human` write. The worker runs the full `./quality.sh` before
+  it raises the PR.
 - **Docs updates in `README.md`, `docs/MERGE.md` and
   `docs/workflows/merge-conflicts.md`** — unrequested. reviewer: unrequested
   but plausibly necessary. reason: "A Code Change Owes a Docs Change". These
@@ -131,4 +135,4 @@ safety.
 - [x] `deno task test:unit tests/pr_merge_conflict_processor_test.ts tests/pr_merge_conflict_scan_test.ts tests/run_core_merge_conflict_dispatch_test.ts`
       — 171 passed.
 - [x] markdownlint and the Mermaid check on the edited docs.
-- [ ] `./quality.sh` — QUALITY_RESULT_PLACEHOLDER.
+- [ ] `./quality.sh` — the worker runs it before it raises the PR.
