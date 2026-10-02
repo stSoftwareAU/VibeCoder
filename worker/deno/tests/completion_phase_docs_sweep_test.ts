@@ -157,7 +157,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
     },
     claude: {
-      runClaudeWithRetry: (options: { prompt: string }) => {
+      runClaudeWithRetry: (_options: { prompt: string }) => {
         claudeCalls++;
         if (scenario.retryWrites !== undefined) {
           Deno.writeTextFileSync(summaryPath, scenario.retryWrites);

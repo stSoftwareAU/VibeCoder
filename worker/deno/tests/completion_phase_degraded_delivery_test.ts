@@ -120,7 +120,7 @@ Did a little.
 
 /** A minimal summary carrying only the Docs sweep line (Issue #3073). */
 const SUMMARY_MINIMAL_WITH_DOCS_SWEEP =
-  "## Summary\n\nFinished the switch.\n\n**Docs sweep** — grep: `opus`; section: `docs/MODEL-AND-CACHING.md#planning`; no hits\n";
+  `## Summary\n\nFinished the switch. Closes #${ISSUE}.\n\n**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits\n`;
 
 const DEGRADED: PhaseClaudeResult[] = [{ fallbackModel: "haiku" }];
 const HEALTHY: PhaseClaudeResult[] = [];

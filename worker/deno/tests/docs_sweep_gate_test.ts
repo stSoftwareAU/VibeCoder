@@ -107,8 +107,15 @@ Deno.test("parseDocsSweepLine - line with no section field reports empty section
 // validateDocsSweep
 // ---------------------------------------------------------------------------
 
-const CODE_FILES = ["web/src/BrokerBalance.tsx", "crates/report/src/decisions.rs"];
-const DOC_FILES = ["README.md", "docs/guide.md", "worker/deno/tests/foo_test.ts"];
+const CODE_FILES = [
+  "web/src/BrokerBalance.tsx",
+  "crates/report/src/decisions.rs",
+];
+const DOC_FILES = [
+  "README.md",
+  "docs/guide.md",
+  "worker/deno/tests/foo_test.ts",
+];
 
 Deno.test("validateDocsSweep - docs-only diff is not applicable", () => {
   const result = validateDocsSweep({

@@ -64,6 +64,8 @@ Distinguished the outcomes. Closes #1140.
 
 - **clean** — Australian English, TDD, fail-loud error handling
 
+**Docs sweep** — grep: \`describeRunOutcome\`; section: \`docs/EXTENDING.md#run-outcome\`; no hits
+
 ## Test Plan
 
 - \`worker/deno/tests/completion_phase_summary_incomplete_test.ts\`
