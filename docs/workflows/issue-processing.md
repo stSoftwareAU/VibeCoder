@@ -1142,6 +1142,22 @@ argument. The guidelines and the issue prompt's Test Plan step now require
 reverting each changed call site on its own and seeing a test go red; a call
 site whose revert leaves the suite green is a blocking self-review finding.
 
+**Observe the real tool before you rely on it (Issue #3082).** The
+stub-contract rule says a fake must match the real tool, but not how to
+learn what the real tool does, so fleet PRs guessed and built the fake from
+the same guess. PR #2939 assumed `git for-each-ref` fails on a malformed ref,
+when it exits 0 and prints `warning: ignoring broken ref` on stderr; PR #2949
+matched `gh` labels case-sensitively, though `Needs-Human` and
+`needs-human` are the same label; and PR #3079's fake `gh` returned only
+the merge commit for `compare/{X}...{head}`, when the real API also lists
+the base commits that merge brought in. The guidelines now require running
+the real tool on the case first (on the issue's own examples when it names
+any), building the fake's fixture from the observed output, and giving the
+command and the output relied on in the PR summary — or citing the tool's
+documentation or source when the case cannot be observed safely. The issue
+prompt's Bugs/Enhancements requirement makes a fake built from expected
+rather than observed behaviour a blocking self-review finding.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
