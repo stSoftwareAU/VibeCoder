@@ -1107,6 +1107,17 @@ either confirms the premise against the base branch or pins current behaviour
 with a test. Where the issue cites a logged error line, the reproducing test
 starts from that exact input, and the PR summary quotes it.
 
+**A negative test must be able to fail (Issue #3060).** The base-branch red
+run covers bug fixes, but a new guard has no unfixed base to go red against.
+Fleet PRs were sent back for negative tests whose fixture never held the
+forbidden value — a "GH_TOKEN is unset" test whose mint step already returned
+an empty token, a "null rather than carried over" test whose only earlier line
+had no prices either — so each passed with or without its guard. The
+guidelines and the issue prompt's Test Plan step now require a fixture that
+contains the forbidden thing and a run with the guard broken on purpose that
+goes red; a negative test that stays green without its guard is a blocking
+self-review finding.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
