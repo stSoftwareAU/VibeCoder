@@ -3486,7 +3486,24 @@ Deno.test({
     });
     const deps = createMockDeps({
       github: {
-        createClient: () => makeStubGhClient(calls),
+        createClient: () => ({
+          ...makeStubGhClient(calls),
+          // The committed path defers only when the dependency is still
+          // open. The shared stub throws from getIssue; this run's
+          // dependency is open (Issue #3088 review).
+          getIssue: (_repo: string, number: number) =>
+            Promise.resolve({
+              number,
+              title: "Example issue",
+              body: "Implement the parser fix in `src/parser.ts`.",
+              labels: ["work-on"],
+              author: "human",
+              assignees: ["testbot"],
+              createdAt: "",
+              updatedAt: "",
+              state: "OPEN" as const,
+            }),
+        }),
       },
       claude: {
         runClaudeWithRetry: () =>
