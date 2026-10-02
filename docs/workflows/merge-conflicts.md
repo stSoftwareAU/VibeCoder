@@ -56,9 +56,12 @@ worker itself SIGTERMs at the cycle end has its attempt **withdrawn** rather
 than judged: the kill is the worker's decision, so the PR pays nothing for it. Every
 pass records one reason per labelled PR, so "the label went on and then
 silence" is now a thing you can grep for rather than infer. A PR that still
-conflicts and has carried the label for **8 hours with nothing concluding** is
-a stalled queue in its own right: it is filed as work, once, whatever caused
-the silence.
+conflicts with its head unchanged for `CONFLICT_OWNER_CHECK_HOURS` (2 hours)
+since the latest of the label going on, a trusted stand-down, a trusted
+resolution attempt or the head's own last move is its own stalled queue: the
+single owner check fixes it forward itself — a takeover while the shared
+budget remains, the guarded abandon-and-restart once it is spent
+(Issue #3001).
 
 ```mermaid
 flowchart TD
@@ -453,8 +456,9 @@ flowchart TD
 - `runConflictTakeover(pr, deps)` in
   [`conflict_takeover.ts`](../../worker/deno/lib/conflict_takeover.ts) resolves
   a stalled conflicted PR itself instead of waiting for another owner. The
-  stall watchdog sub-issue of #2965 calls it; every GitHub call and both
-  resolvers are injected.
+  stall watchdog calls it (Issue #3001); every GitHub call and both resolvers
+  are injected, and production binds both in
+  [`conflict_takeover_resolvers.ts`](../../worker/deno/lib/conflict_takeover_resolvers.ts).
 - Read-only checks first: reads the shared tally from trusted markers
   (`readResolutionAttempts`); declines with no marker at all when
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
@@ -640,9 +644,14 @@ the originating issue, not the PR.
   log line records it, and nothing is closed or posted (Issue #3000: abandon
   and redo happens only after three failed attempts, not on the first stale
   verdict — GRQ-AutoTrader#1957 reached it without a fair run). A `stalled`
-  abandon (the stall-repair pass's second trip, Issue #2802) is exempt from
-  this guard: it is not a conflict-resolution outcome, and is bound instead by
-  its own two-trip limit. The issue's own labels are then read to decide which
+  abandon is exempt from this guard, and the exemption now covers only the
+  blocking-PR stall repair's second trip (`stall_repair.ts`, Issue #2802): it
+  is not a conflict-resolution outcome, and is bound instead by its own
+  two-trip limit. The merge-conflict queue's own stall watchdog (Issue #3001)
+  no longer uses the `stalled` reason at all — it calls this same guarded
+  route with the ordinary merge-conflict reason, so a trip of its 2-hour owner
+  check is held to the same three-failed-attempts guard as every other caller.
+  The issue's own labels are then read to decide which
   pickup label the re-queue leaves it on — never whether the abandon happens.
 - **The re-queue keeps the label the issue already carries, and never asks a
   human for one** (Issue #2277). A pickup label already on the issue —
@@ -706,7 +715,7 @@ the originating issue, not the PR.
 
   ```mermaid
   flowchart TD
-      A["PR fails again<br/>(conflict budget or stall second trip)"] --> B{"Restarts recorded<br/>on the issue ≥ 2?"}
+      A["PR fails again<br/>(conflict budget spent, or blocking-PR<br/>stall second trip)"] --> B{"Restarts recorded<br/>on the issue ≥ 2?"}
       B -- no --> C["Close the PR, re-queue the issue<br/>(restart n of 2)"]
       B -- yes --> D["Read the thread of every PR the<br/>restart chain names, plus this PR"]
       D --> E{"Chain thread readable?"}
@@ -737,11 +746,14 @@ the originating issue, not the PR.
   attempts the PR again with a fresh three-attempt budget **counted from the park
   marker onward**, so it does not arrive back at a spent one. A base tip that
   cannot be read is not evidence that it moved, so the PR stays parked and the
-  unreadable tip is warned about. The stall watchdog honours the same
-  comparison: a parked PR on an unmoved base is not a stall, because the park
-  marker is what *follows* the label rather than the silence after it — and
-  once the base moves the watchdog measures that PR the ordinary way again, so
-  a park can never buy permanent silence.
+  unreadable tip is warned about. The stall watchdog (Issue #3001) honours the
+  same comparison, but only while the shared budget remains: a parked PR on an
+  unmoved base is suppressed, because the park marker is what *follows* the
+  label rather than the silence after it. Once the budget is spent a parked PR
+  still trips — the watchdog reaches the guarded `abandonAndRestart`, whose
+  restarts-spent hand-off is idempotent — and once the base moves the
+  watchdog measures that PR the ordinary way again, so a park can never buy
+  permanent silence.
 - **A half-done abandon is never parked away.** When the restart claim on the
   issue names *this* PR, an earlier abandon of it started and stopped part-way,
   so the issue may never have been re-queued. That is a failure, not a wait:
@@ -868,35 +880,45 @@ PR out of budget whose final escalation never landed. Nothing covered a stall
 **before the first attempt**, which is the case that actually happened: the
 label went on NEAT-AI-Ockham#116 and nothing followed for hours.
 
-A PR carrying `merge-conflict` with **no concluded attempt** after a bounded
-time is itself a defect, whatever caused it, so the watchdog in
-`worker/deno/lib/merge_conflict_stall_watchdog.ts` detects that shape directly
-rather than any one cause. Every other guard in this subsystem keys on attempt
-records; this one cannot, because the failure being detected is that *no
-attempt record exists*. It keys on the **age of the label**, read from the PR's
-`labeled` timeline event.
+A PR carrying `merge-conflict` that still conflicts on the live state is the
+single owner check's responsibility, whatever caused the silence
+(Issue #3001). `worker/deno/lib/merge_conflict_stall_watchdog.ts` is now the
+one owner for every conflicted PR, not a backstop keyed on label age alone: its
+clock starts at the **latest** of four events — the `merge-conflict` label's own
+`labeled` timeline event; the latest trusted stand-down
+(`readLatestStandDownAtMs`, Issue #2997 — gated-head, milestone-head or park
+markers, read back by their own `at="…"`); the last trusted resolution attempt
+(`readResolutionAttempts`, Issue #2996); and the head's own last move (the head
+commit's committer date, read per PR — a future-dated or unreadable time is
+ignored, so the watchdog fails towards acting). Only fleet-authored markers
+count. Once `CONFLICT_OWNER_CHECK_HOURS` (2 hours) have passed since that
+latest event with the head unchanged, the PR trips.
 
 ```mermaid
 flowchart TD
     A[PR carries merge-conflict] --> S{"Still CONFLICTING<br/>on the live state?"}
     S -->|"No — stale label"| Q[Nothing to say]
-    S -->|Yes| B{"Label older than 8 h?"}
-    B -->|No| Q
-    B -->|Yes| C{"needs-human or closed?"}
+    S -->|Yes| C{"needs-human or closed?"}
     C -->|Yes| Q
-    C -->|No| D{"Anything at all since<br/>the label or the last<br/>conclusion, within 8 h?"}
-    D -->|"Yes — a conclusion moved it"| Q
-    D -->|"No — including an attempt<br/>that opened and went silent"| T{"Trip marker since<br/>the label and the<br/>last conclusion?"}
-    T -->|"No — first trip"| E["Clear the ladder's wait<br/>marker for this head;<br/>post the trip-1 comment"]
-    T -->|"Yes, under 8 h old"| Q
-    T -->|"Yes, 8 h or older —<br/>second trip"| G["abandonAndRestart<br/>(stalled reason)"]
+    C -->|No| K["Clock start = latest of:<br/>label applied, trusted stand-down,<br/>trusted resolution attempt,<br/>head's last move"]
+    K --> B{"≥ 2 h since clock start,<br/>with the head unchanged?"}
+    B -->|No| Q
+    B -->|Yes| P{"Parked on an unmoved<br/>base, budget left?"}
+    P -->|Yes| Q
+    P -->|No| L{"Maintenance lease<br/>acquired?"}
+    L -->|No| Q
+    L -->|Yes| R["Re-check under the lease:<br/>head moved, or another<br/>host's attempt landed?"]
+    R -->|Yes| Q
+    R -->|No| U{"Shared budget<br/>(CONFLICT_RESOLUTION_BUDGET)<br/>left?"}
+    U -->|Yes| V["runConflictTakeover<br/>(posts its own attempt marker,<br/>restarting the clock)"]
+    U -->|No| G["Guarded abandonAndRestart<br/>(merge-conflict reason)"]
     style A fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
-    style E fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style V fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style G fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style Q fill:#707070,stroke:,color:#fff
 ```
 
-Five details carry the weight:
+Six details carry the weight:
 
 - **It reads the live state, not the label.** The label is only removed by a
   successful fleet merge, so a conflict that cleared by other means leaves it
@@ -904,36 +926,38 @@ Five details carry the weight:
   `MERGEABLE` is skipped before it costs a timeline or a thread read. An
   `UNKNOWN` state — GitHub computes mergeability lazily — is re-read per PR and,
   if it still cannot be established, said out loud rather than dropped.
-- **A conclusion, not an attempt, clears it.** An attempt that opened and then
-  went silent is the disrupted case, and if the disruption bound has not fired
-  either then nothing is moving the PR — so that PR *is* detected. Keying on
-  "an attempt marker exists" would miss the GRQ#4408 shape exactly.
-- **The clock starts at the label, and a conclusion restarts it.** Markers
-  older than the `labeled` event belong to a previous conflict and say nothing
-  about this one. A conclusion puts the PR back in the ordinary ladder and
-  starts a fresh clock from itself — so one failed attempt in hour two does not
-  buy permanent silence for a PR that then never gets its second, which nothing
-  else watches either, because its budget is not spent.
-- **The trip lives on the PR.** The first trip posts one
-  `<!-- vibe-conflict-stall-repair trip="1" -->` comment, and every host reads
-  it back, so a stall trips once however many hosts see it. A conclusion after
-  the trip ends it: the next stall starts again at its own first trip. Trip
-  markers count only from a fleet author, so a forged one can never skip
-  straight to closing the PR.
-- **It repairs, it never starts an attempt** (Issue #2803). Forcing an attempt
-  from a watchdog would race the ordinary pass and manufacture the disrupted
-  state the workflow works hard to avoid. The first trip instead deletes the
-  ladder's `rung="abandon"` wait marker for the head, so the ordinary pass
-  reruns the ladder — its own merge-then-resolve attempt — once. If the PR is
-  still stalled 8 hours after the trip, the second trip closes it and redoes
-  its work through `abandonAndRestart` with a `stalled` reason whose comments
-  say the ladder was rerun once — never that the branch was synced or a lane
-  rerun, which is the blocking-PR route's repair; the re-queue label is the
-  issue's own pickup label, else `idle-task`, never `work-on`.
-  It files no issue and adds no label; both trips run under the maintenance
-  lease. When the issue has already been redone twice, the rung hands the
-  issue to a human instead of a third redo (Issue #2804,
-  [above](#-abandon-and-restart-before-a-human-is-asked)).
+- **The clock starts at the latest of four events, not the label alone.** A
+  label applied hours ago says nothing once a stand-down, a resolution attempt
+  or a moved head has happened more recently — each of those is evidence the
+  queue is owned, so the 2-hour window is counted from whichever came last. A
+  head that has since moved again resets the clock to that move: the watchdog
+  is asking "has the head been unchanged for 2 hours", not "how old is the
+  label".
+- **Only trusted markers and a readable head count.** Stand-down and attempt
+  markers are read back only from a fleet-authored comment, exactly as the rest
+  of this vocabulary already requires, so a forged one can never buy silence.
+  The head's committer date is read per PR; a time in the future or one the
+  pass cannot read is ignored rather than trusted, so the watchdog fails
+  towards acting rather than towards silence.
+- **It fixes forward — takeover while the budget remains, guarded abandon once
+  it is spent.** A trip no longer repairs the ladder in two stages of its own;
+  it runs `runConflictTakeover` (Issue #2999) while
+  `CONFLICT_RESOLUTION_BUDGET` (3) is unspent — that pass posts its own
+  `pass="takeover"` attempt marker, which restarts the clock, so the next trip
+  comes 2 hours later — and once the budget is spent it calls the same guarded
+  `abandonAndRestart` (Issue #3000) every other caller uses, with the ordinary
+  merge-conflict reason, so the three-failed-attempts guard applies exactly as
+  it does everywhere else.
+- **The maintenance lease keeps one host acting, and the re-check keeps it
+  honest.** Only the host holding the lease acts on a trip; under the lease it
+  re-reads the thread and the live head and stands down if the head has moved
+  or another host's attempt has landed since the trip was detected.
+- **It never applies `needs-human` itself.** It files no issue and adds no
+  label; the only hand-off to a human is the restarts-spent one inside
+  `abandonAndRestart` (#3000/#2804), posted on the originating issue, not the
+  PR. The `<!-- vibe-conflict-stall-repair -->` trip marker and the "clear the
+  ladder's rung=\"abandon\" wait marker" first trip are gone with the two-trip
+  design they belonged to.
 
 ### 🤫 Why #116 went silent
 
@@ -1036,11 +1060,14 @@ that gap, and reading the queue means reading both:
   and waited.
 - **The stall watchdog**
   ([above](#-a-label-with-nothing-behind-it-repairs-itself)). A PR that is
-  still `CONFLICTING`, has carried the label for **8 hours**, and has had no
-  attempt *conclude* in that window is a stalled queue whatever caused it
-  (Issue #1112). Its first trip posts one comment on the PR — label age, the
-  silence, the skip reasons — and reruns the ladder once; its second trip
-  abandons and redoes the PR through `abandonAndRestart` (Issue #2803).
+  still `CONFLICTING` and has had its head unchanged for
+  `CONFLICT_OWNER_CHECK_HOURS` (2 hours) since the latest of the label, a
+  trusted stand-down, a trusted resolution attempt or the head's own last move
+  is a stalled queue whatever caused it (Issue #3001, superseding #1112's
+  8-hour, two-trip design). It fixes forward itself: `runConflictTakeover`
+  while the shared budget remains — which posts its own attempt marker and so
+  restarts the clock — and the guarded `abandonAndRestart` once the budget is
+  spent.
 - **The watchdog files no issue and applies no label to the PR — never
   `escalated`, never `needs-human`.** A mechanical stall is repaired, not
   reported, and `needs-human` is a cross-subsystem veto that would remove the

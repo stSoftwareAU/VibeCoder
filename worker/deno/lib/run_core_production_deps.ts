@@ -171,6 +171,7 @@ import {
   listedOpenPrs,
   scanConflictQueueStalls,
 } from "./merge_conflict_stall_watchdog.ts";
+import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -2925,11 +2926,14 @@ export async function createProductionRunCoreDeps(
       });
 
       // Issue #1112: the ladder above is attempt-driven, so it cannot see the
-      // stall where no attempt record exists at all. This watchdog keys on the
-      // age of the `merge-conflict` label instead, and repairs a PR that has
-      // carried it for hours with nothing concluding (Issue #2803): rerun the
-      // ladder once, then abandon and redo — never `needs-human`, which would
-      // remove it from this very lane (Issue #569).
+      // stall where no attempt record exists at all. This watchdog instead
+      // trips 2 hours after the latest of: the `merge-conflict` label landing,
+      // a stand-down, the last resolution attempt, or a head change — then
+      // fixes the PR forward through the conflict takeover (Issue #3001)
+      // while the shared budget remains, and only once that budget is spent
+      // does it climb the guarded abandon-and-redo rung — never
+      // `needs-human`, which would remove it from this very lane
+      // (Issue #569).
       // Skipped once the cycle's deadline has passed: the drain stops there
       // for the same reason, and a watchdog that observes is never worth
       // running into the next pass's time.
@@ -2954,9 +2958,21 @@ export async function createProductionRunCoreDeps(
               await fetchAllOpenPRs(repo, issueCache, STALL_OPEN_PR_LIMIT),
             ),
           openPrListingLimit: STALL_OPEN_PR_LIMIT,
-          // Issue #2803: the second trip abandons and redoes through the
-          // same rung, which declines without the fleet's own logins.
+          // Issue #2803/#3001: both the conflict takeover's shared tally and
+          // the guarded abandon-and-redo rung decline without the fleet's own
+          // logins to attribute spend to.
           trustedAuthors: [...trustedAuthors],
+          takeoverResolvers: bindConflictTakeoverResolvers({
+            checkout: async (repo: string) => {
+              const setup = await setupRepo(repo, workDir);
+              if (!setup.success) {
+                throw new Error(
+                  `repo setup failed for ${repo}: ${setup.message}`,
+                );
+              }
+              return setup.message;
+            },
+          }),
         });
       }
 
