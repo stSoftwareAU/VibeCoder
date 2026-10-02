@@ -768,6 +768,77 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
     await ownDiffUnchanged(emptyCommitsGh, "o/r", "main", "X", "head"),
     false,
   );
+
+  // A rename of an added file (foo_tst.ts → foo_test.ts) changes the diff.
+  // Both sides have one added file, the same patch and no previous_filename,
+  // so this stays false only because the filename clause fires (Issue #3079).
+  const renamedPatch = "@@ -0,0 +1 @@\n+t";
+  const { gh: filenameGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "fix1",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "foo_tst.ts",
+      status: "added",
+      patch: renamedPatch,
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "foo_test.ts",
+      status: "added",
+      patch: renamedPatch,
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(filenameGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // A patch-less file that is added on only one side is not the same blob.
+  // Each case stays false only because its own `status === "added"` clause
+  // in sameAddedBlob fires (Issue #3079).
+  const sameSha = "762368ae";
+  const { gh: addedThenModifiedGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "fix1",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.png",
+      status: "added",
+      sha: sameSha,
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.png",
+      status: "modified",
+      sha: sameSha,
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(addedThenModifiedGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  const { gh: modifiedThenAddedGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "fix1",
+      parents: 1,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.png",
+      status: "modified",
+      sha: sameSha,
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.png",
+      status: "added",
+      sha: sameSha,
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(modifiedThenAddedGh, "o/r", "main", "X", "head"),
+    false,
+  );
 });
 
 Deno.test("skipReason: an added binary with the same blob sha is awaiting-fix (Issue #3063)", async () => {
