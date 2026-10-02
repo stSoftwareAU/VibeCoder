@@ -33,7 +33,6 @@ import {
   buildAbandonPrComment,
   buildNoIssueAbandonPrComment,
   buildRestartIssueComment,
-  buildRestartsSpentHandOff,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
   describeConcludedAttempts,
