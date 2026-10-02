@@ -809,7 +809,7 @@ Deno.test("findConflictingPr - a disrupted attempt is re-attempted, not counted 
   );
 });
 
-Deno.test("findConflictingPr - repeated disruption escalates loudly instead of stalling", async () => {
+Deno.test("findConflictingPr - repeated disruption is logged and left queued, not escalated", async () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
@@ -827,16 +827,7 @@ Deno.test("findConflictingPr - repeated disruption escalates loudly instead of s
 
   assert(result.ok);
   assertEquals(result.value.selected, null);
-  assertEquals(
-    fake.labelsAdded.some((l) =>
-      l.prNumber === 48 && l.label === "needs-human"
-    ),
-    true,
-  );
-
-  const escalation = fake.commentsPosted.at(-1)?.body ?? "";
-  assertStringIncludes(escalation, "disrupted");
-  assertStringIncludes(escalation, "**Next step:**");
+  assertNoNeedsHumanWrites(fake);
 });
 
 Deno.test("findConflictingPr - the disruption bound is configurable", async () => {
@@ -855,10 +846,7 @@ Deno.test("findConflictingPr - the disruption bound is configurable", async () =
 
   assert(result.ok);
   assertEquals(result.value.selected, null);
-  assertEquals(
-    fake.labelsAdded.some((l) => l.label === "needs-human"),
-    true,
-  );
+  assertNoNeedsHumanWrites(fake);
 });
 
 Deno.test("findConflictingPr - a disallowed repo is never listed", async () => {
@@ -1152,6 +1140,11 @@ Deno.test("findConflictingPr - the budget-spent record carries the attempts and 
   assertEquals(
     recordFor(log, 48).context?.maxAttempts,
     DEFAULT_MAX_CONFLICT_ATTEMPTS,
+  );
+  assertNoNeedsHumanWrites(fake);
+  assertEquals(
+    fake.commentsPosted.some((c) => c.body.includes("needs-human-escalation")),
+    false,
   );
 });
 

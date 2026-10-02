@@ -32,7 +32,7 @@ base. The re-queued issue keeps whatever pickup label it already carries, and
 gains `idle-task` when it carries none (Issue #2277). Every fallback leaves one
 `merge-fallback` issue behind recording what happened, linked from the closed PR
 (Issues #2304, #2310 — the scan's fallback; the resolution processor's own copy
-of this rung is wired to the flag by the next sub-issue under #2298). A PR whose
+of this rung now follows it, Issue #3032). A PR whose
 originating issue **cannot** be found is closed
 as well, and its flag issue carries `idle-task` and the PR's diff summary, so the
 flag is the re-do item. **There is no cap on restarts per originating issue**
@@ -44,18 +44,21 @@ step any more. Every redo starts on a **fresh branch cut from the base
 branch's current tip**, never from the abandoned head, so a redo never
 inherits whatever defeated the one before it; the restart marker left on the
 issue records the abandoned branch's name so the next pickup's setup phase
-never resumes it. **The merge-conflict scan applies `needs-human` to no
-conflicting PR** (Issue #2310) — only for a *worker* fault, three attempts
-disrupted before any conclusion — and a hand-applied `needs-human` is still
-honoured as a veto. The only declines that are not a spent restart budget are
-a trusted restart claim naming *this* PR (an earlier abandon of it did not
-finish), a restart claim whose author cannot be established, and the issue
-already having another open PR of its own — each of those is logged and left
-for the next pass, never escalated to `needs-human` on this route either.
+never resumes it. **Neither the merge-conflict scan nor the resolution
+processor applies `needs-human` to a conflicting PR** (Issues #2310, #3032) —
+even a *worker* fault, three attempts disrupted before any conclusion, only
+logs a loud WARN and leaves the PR queued — and a hand-applied `needs-human`
+is still honoured as a veto. The only declines that are not a spent restart
+budget are a trusted restart claim naming *this* PR (an earlier abandon of it
+did not finish), a restart claim whose author cannot be established, and the
+issue already having another open PR of its own — each of those is logged and
+left for the next pass, never escalated to `needs-human` on this route
+either.
 
-Every attempt ends visibly: merged, failed, or escalated. An attempt that
+Every attempt ends visibly: merged, failed, or disrupted. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
-budget, it is re-attempted, and three disruptions on one PR escalate. The pass
+budget, it is re-attempted, and three disruptions on one PR trip a WARN and
+leave it queued, asking nobody. The pass
 also refuses to *start* a resolution the cycle cannot cover, and an agent the
 worker itself SIGTERMs at the cycle end has its attempt **withdrawn** rather
 than judged: the kill is the worker's decision, so the PR pays nothing for it. Every
@@ -73,7 +76,7 @@ flowchart TD
     Label --> Spent{"Concluded budget spent?"}
     Spent -->|Yes — and no needs-human| Abandon
     Spent -->|No| Disrupted{"3+ attempts disrupted<br/>with no conclusion?"}
-    Disrupted -->|Yes| Human
+    Disrupted -->|Yes| Warn["Log loudly (WARN);<br/>no label applied;<br/>PR left queued"]
     Disrupted -->|No| Lock{"PR lock acquired?"}
     Lock -->|No — another host holds it| Sleep
     Lock -->|Yes| Record["Comment: attempt N of 2<br/>(names any disruption)"]
@@ -130,7 +133,7 @@ flowchart TD
     style Declined fill:#707070,stroke:,color:#fff
     style Left fill:#707070,stroke:,color:#fff
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
-    style Human fill:#c96868,stroke:#7a2020,color:#fff
+    style Warn fill:#707070,stroke:,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
 ```
 
@@ -369,9 +372,10 @@ settle still reaches no agent and now consults no issue either.
   deepens the clone (`git fetch --deepen`, then `--unshallow`) until
   `git merge-base` answers, a no-op on a full clone, **before** the attempt
   marker is posted. A branch with no common ancestor even in full history is
-  escalated to a human as its own outcome — a re-initialised or rewritten
-  branch, not a conflict the agent failed to resolve — and spends **no**
-  attempt.
+  recorded as a failed attempt with outcome `no-common-ancestor` — a
+  re-initialised or rewritten branch, not a conflict the agent failed to
+  resolve — and runs the same retry/abandon-and-redo rule as any other failed
+  attempt rather than being escalated on its own (Issue #3032).
 - **At most 2 concluded attempts, and no wait between them** (Issue #2305 —
   the first attempt and one retry against whatever the base has become since;
   milestone branches spend the same budget). A PR with one concluded failure
@@ -390,17 +394,16 @@ settle still reaches no agent and now consults no issue either.
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
   that conflicts again months later starts from a full budget.
-- The final *concluded* failure runs **abandon-and-restart** first. In the
-  resolution processor that rung is still followed by a `needs-human`
-  escalation when it declines or fails, naming the conflicted files, why the
-  merge failed and which route ended at a person — the **scan's** copy of that
-  escalation is gone (Issue #2310), and the processor's is the next sub-issue
-  under #2298.
+- The final *concluded* failure runs **abandon-and-restart** first. Neither the
+  resolution processor nor the scan asks a person when that rung declines or
+  fails: the processor logs a loud WARN and leaves the PR open with no label —
+  the **scan's** copy of that escalation was already gone (Issue #2310), and
+  the processor's own copy has now followed it (Issue #3032).
 - **Nothing stalls unowned.** If the processor's own conclusion never landed —
   the run ended between the failure comment and it — the next scan finds a PR
   that is out of budget and carries no `needs-human` and runs the same abandon
-  rung itself. The scan escalates nothing from that route any more (Issue
-  #2310): it closes, re-queues and files the flag, and where the rung declines
+  rung itself. Neither route escalates to a person any more (Issues #2310,
+  #3032): it closes, re-queues and files the flag, and where the rung declines
   or fails it records `budget-spent` and leaves the PR open.
 
 ### 🔁 Stale verdict — the base is already in
@@ -477,7 +480,7 @@ scan reads that marker back and climbs rather than repeating it.
   "spent its restarts" decline any more either: the budget-spent caller never
   hands an issue to a human just because it has already been restarted —
   every one of the three decline reasons above is logged and left for the
-  next pass.
+  next pass (Issue #3032).
 - **One rung per head, and no cap on abandons per issue** (Issue #3033). The
   ladder's own markers bound each rung to one run at the head they name; the
   restart marker left on the issue is what stops two hosts abandoning the same
@@ -693,9 +696,10 @@ actually used.
 - The next attempt comment says so on the PR — how many attempts were
   disrupted, and that a disruption does not spend the budget.
 - Disruption has its own bound: **3 disrupted attempts** on one PR and the scan
-  applies `needs-human` with a comment pointing at the worker, not the conflict.
-  That escalation runs from the scan, not the resolution pass, precisely
-  because the resolution pass may be what cannot finish.
+  logs a loud WARN pointing at the worker, not the conflict — no label is
+  applied and the PR is left queued (Issue #3032). That bound is checked by the
+  scan, not the resolution pass, precisely because the resolution pass may be
+  what cannot finish.
 - One disruption source is closed outright: the cross-host PR lock is now
   **refreshed while the attempt runs**. The lock TTL is five minutes and a
   resolution runs for as long as the agent takes, so without renewal a second
@@ -746,9 +750,12 @@ Five details carry the weight:
   `UNKNOWN` state — GitHub computes mergeability lazily — is re-read per PR and,
   if it still cannot be established, said out loud rather than dropped.
 - **A conclusion, not an attempt, clears it.** An attempt that opened and then
-  went silent is the disrupted case, and if the disruption bound has not fired
-  either then nothing is moving the PR — so that PR *is* detected. Keying on
-  "an attempt marker exists" would miss the GRQ#4408 shape exactly.
+  went silent is the disrupted case, and the disruption bound no longer applies
+  any label of its own (Issue #3032) — so a PR held there carries no
+  `needs-human` and this watchdog is what still moves it. If the disruption
+  bound has not fired either then nothing else is moving the PR — so that PR
+  *is* detected. Keying on "an attempt marker exists" would miss the GRQ#4408
+  shape exactly.
 - **The clock starts at the label, and a conclusion restarts it.** Markers
   older than the `labeled` event belong to a previous conflict and say nothing
   about this one. A conclusion puts the PR back in the ordinary ladder and
@@ -1151,20 +1158,18 @@ leftovers of the old escalation each cycle
 reserved for what genuinely needs a person: a policy call, a credential,
 confirming intent.
 
-**The merge-conflict scan applies it for no conflict outcome** (Issue #2310). A
-spent budget used to end here — `needs-human` plus a summary naming the route —
-which is how a mechanical stall acquired a label that means "a human must
-decide". It does not any more: the budget-spent branch closes and re-queues,
-files the `merge-fallback` flag, and records everything else in the pass log.
-The resolution processor's own final escalation is the last one left on this
-path and goes with the next sub-issue under #2298. Two things are deliberately
-unchanged:
+**Neither the merge-conflict scan nor the resolution processor applies it for
+any conflict outcome any more** (Issues #2310, #3032). A spent budget used to
+end here — `needs-human` plus a summary naming the route — which is how a
+mechanical stall acquired a label that means "a human must decide". It does not
+any more: the budget-spent branch closes and re-queues, files the
+`merge-fallback` flag, and records everything else in the pass log. The
+resolution processor's own final escalation has followed the scan's: a declined
+or failed abandon-and-redo now logs a loud WARN and leaves the PR open with no
+label, rather than asking a person. One thing is deliberately unchanged:
 
 - **A hand-applied `needs-human` is still a veto.** A human who labels a PR owns
   it, so the scan keeps skipping it and never overrides the label.
-- **The disruption bound still escalates.** Three attempts cut short before any
-  conclusion is a fault in the *worker*, not an outcome of the conflict, and a
-  person is the right reader for it.
 
 ## 🔁 The lane rotates, so this pass is not always last
 
@@ -1221,12 +1226,11 @@ branch at the same time. A host that loses the race returns immediately.
   its preconditions, the restart marker (which now also records the abandoned
   branch, so a redo never resumes it), the comments it posts on the PR and the
   issue, and `exhaustedEscalationRoute`, which names the route when the rung
-  declines or fails. There is no cap on restarts per issue (Issue #3033): both
-  callers escalate to a human only on a decline for another reason — a trusted
-  restart claim naming this very PR, an unverifiable restart claim, or the
-  issue having another open PR — never for a spent restart budget. Both
-  callers use it: the spent attempt budget, and the exhausted stale-verdict
-  ladder, which records the rung as failed and asks nobody (Issue #2280).
+  declines or fails. There is no cap on restarts per issue (Issue #3033), and
+  neither caller ever asks a person on a decline (Issue #3032): the spent
+  attempt budget logs a loud WARN and leaves the PR open, and the exhausted
+  stale-verdict ladder records the rung as failed and asks nobody
+  (Issue #2280). Both callers use it.
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 8-hour watchdog for
   a label with no concluded attempt behind it. It reruns the ladder once, then
   abandons and redoes the PR; it files no issue and applies no label, never
