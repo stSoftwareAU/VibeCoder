@@ -2407,7 +2407,7 @@
       "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3035",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_milestone_rebuild.ts (#3035)",
       "status": "claimed",
-      "sweptAt": "3ababf37d69c7c31e9ae4d02002b1c5cf14927ab",
+      "sweptAt": "3a566abe0938798bf4996ebe8a6a183f51a20d51",
       "paths": [
         "worker/deno/lib/conflict_milestone_rebuild.ts"
       ]
