@@ -49,10 +49,9 @@ toolchain signal.
     deprecation rule or `tsc --noEmit`, `cargo` deprecation warnings,
     `go vet`, `javac -Xlint:deprecation`, the repo's configured Python
     linter).
-  - **GitHub** — `gh issue list` (dedup), `gh label create` (defensive,
-    before filing), `gh issue create` (filing), and `gh issue edit`
-    (only to correct an issue you just filed, per the Phase 4
-    verification step).
+  - **GitHub** — `gh label create` (defensive, before filing),
+    `gh issue create` (filing), and `gh issue edit` (only to correct an
+    issue you just filed, per the Phase 4 verification step).
 
   Forbidden: any command that executes repo logic (`deno run`,
   `deno test`, `node`, `python <app>`, `cargo run`, `cargo test`,
@@ -334,11 +333,12 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 1. **Re-check the dedup lists** declared in the **Inputs** section. Skip
    the finding silently if its stable id appears in either the suppressed
    list or the known-open list.
-2. **Re-check the live open-issue list.** Before filing, call
-   `gh issue list --state open --label deprecated-api --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip any candidate whose id is
-   already filed.
+2. **Dedup against the known-open list only.** The known-open list above
+   is the only dedup source: the worker built it from open issues the
+   fleet account authored, so a finding-id marker in an issue anyone
+   else wrote cannot suppress a real finding (Issue #3045). Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id.
 3. **File the issue.** Call `gh issue create` (no `--repo` argument) with
    these labels:
    - `deprecated-api` (always)

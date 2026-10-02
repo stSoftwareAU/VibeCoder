@@ -153,7 +153,7 @@ MUST end with, reproduced verbatim (see Phase 4):
    code.** See "The one sanctioned network exception" above. The permitted
    tools are file readers (`cat`, `grep`, `rg`, `ls`, `find`), the
    allow-listed registry GETs, the allow-listed `gh api` metadata calls,
-   and — for Phase 4 — `gh issue list`, `gh label create`,
+   and — for Phase 4 — `gh label create`,
    `gh issue create`, and `gh issue edit` (only to correct an issue you
    just filed). Metadata lookups for different packages are independent —
    issue them **in parallel rather than one at a time**. Only sequence a
@@ -496,11 +496,12 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 
 ### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
-1. **Re-check the live open-issue list.** Call
-   `gh issue list --state open --label orphan-deps --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip any finding whose id already
-   has an open issue.
+1. **Dedup against the known-open list only.** The known-open list above
+   is the only dedup source: the worker built it from open issues the
+   fleet account authored, so a finding-id marker in an issue anyone
+   else wrote cannot suppress a real finding (Issue #3045). Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id.
 2. **File the issue** with `gh issue create` (no `--repo` argument) and
    exactly these labels:
    - `orphan-deps` (always)

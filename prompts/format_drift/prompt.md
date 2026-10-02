@@ -115,10 +115,9 @@ MUST end with, reproduced verbatim (see Phase 4):
    `--check`), executing repo logic (`deno run`, `node`, `python <app>`,
    `cargo run`, `cargo test`, `go run`, `npm start`, `make`), and any
    command that reaches a network or registry. The only `gh` calls you
-   may make are `gh issue list` (for dedup lookups), `gh label create`
-   (defensively, before filing), `gh issue create` (to file the
-   finding), and `gh issue edit` (only to correct an issue you just
-   filed).
+   may make are `gh label create` (defensively, before filing),
+   `gh issue create` (to file the finding), and `gh issue edit` (only to
+   correct an issue you just filed).
 
    The formatter check, the linter run, and the workflow reads are
    independent of one another — issue them **in parallel rather than
@@ -401,11 +400,12 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 1. **Re-check the dedup lists** declared in the **Inputs** section. Skip
    the finding silently if its stable id appears in either the
    suppressed list or the known-open list.
-2. **Re-check the live open-issue list.** Before filing, call
-   `gh issue list --state open --label format-drift --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip if the id already has an
-   open issue.
+2. **Dedup against the known-open list only.** The known-open list above
+   is the only dedup source: the worker built it from open issues the
+   fleet account authored, so a finding-id marker in an issue anyone
+   else wrote cannot suppress a real finding (Issue #3045). Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id.
 3. **File the issue.** Call `gh issue create` (no `--repo` argument)
    with the single label `format-drift`. The title is short and
    human-readable, prefixed with the check class — e.g.

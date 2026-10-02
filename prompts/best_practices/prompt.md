@@ -79,9 +79,8 @@ MUST end with, reproduced verbatim (see Phase 4):
    `grep`, `rg`, `ls`, `find`, and structured file readers are
    permitted. Any command that executes repo logic (`bash`, `deno run`,
    `node`, `python`, `make`, `cargo run`, `npm test`, …) is forbidden.
-   The only permitted `gh` calls are `gh issue list` (Phase 4 dedup),
-   `gh label create` (defensive, before filing), and `gh issue create`
-   (filing).
+   The only permitted `gh` calls are `gh label create` (defensive,
+   before filing) and `gh issue create` (filing).
 
    A bucket guide may **nominate read-only language analysers** — the
    `rust` guide nominates `cargo clippy` and `cargo check` — which you
@@ -579,11 +578,12 @@ argument.
 
 For each surviving finding (skip silently if its id is in the suppressed or known-open list):
 
-1. **Re-check the live open-issue list.** Call
-   `gh issue list --state open --label best-practices --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip any finding whose id
-   already has an open issue.
+1. **Dedup against the known-open list only.** The known-open list above
+   is the only dedup source: the worker built it from open issues the
+   fleet account authored, so a finding-id marker in an issue anyone
+   else wrote cannot suppress a real finding (Issue #3045). Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id.
 2. **File the issue** with `gh issue create` (no `--repo` argument) and
    exactly these labels:
    - `best-practices` (always)

@@ -116,10 +116,9 @@ end with, reproduced verbatim (see Phase 4):
    readers are permitted. Any command that **executes** repo logic (`bash`,
    `deno run`/`deno test`, `node`, `python`, `make`, `cargo`, `npm`, `mvn`, `go`,
    `pytest`, `bats`, …) is forbidden. Never regress a Deno repo to Node tooling.
-   The only permitted `gh` calls are `gh issue list` (Phase 3 dedup),
-   `gh label create` (defensive, before filing), `gh issue create` (filing), and
-   `gh issue edit` (only to correct an issue you just filed, per the Phase 4
-   verification step).
+   The only permitted `gh` calls are `gh label create` (defensive,
+   before filing), `gh issue create` (filing), and `gh issue edit` (only to
+   correct an issue you just filed, per the Phase 4 verification step).
 3. **Issue independent reads together.** The convention documents in Phase 0,
    the candidate sites in Phase 1, and the greps for distinctive constants and
    error messages are independent of one another — issue them **in parallel
@@ -422,10 +421,12 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 
 ### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
-1. **Re-check the live open-issue list.** Call
-   `gh issue list --state open --label duplicated-knowledge --search "BP- in:body" --json number,body --limit 200`
-   and inspect each body for the `<!-- finding-id: BP-… -->` marker. Skip any
-   finding whose id already has an open issue.
+1. **Dedup against the known-open list only.** The known-open list above
+   is the only dedup source: the worker built it from open issues the
+   fleet account authored, so a finding-id marker in an issue anyone
+   else wrote cannot suppress a real finding (Issue #3045). Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id.
 2. **File the issue** with `gh issue create` (no `--repo` argument) and exactly
    these labels:
    - `duplicated-knowledge` (always)
