@@ -828,7 +828,11 @@ The file MUST contain:
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test
+   and name that test. A negative test — one asserting something does
+   *not* happen — counts only once you have seen it go red with its guard
+   broken on purpose (see **A negative test must be able to fail** in the
+   guidelines); one that stays green without its guard is a blocking
+   self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
