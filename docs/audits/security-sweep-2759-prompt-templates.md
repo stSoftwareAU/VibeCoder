@@ -11,10 +11,11 @@ commit.
 ## Why a new slice
 
 Until now the coverage ledger walked only TypeScript under its roots, so no
-slice could claim a template. This change adds `prompts` to the ledger roots and
-teaches `listSweptModules` to list `prompt.md` files. The new `10-prompts` slice
-claims all 34 templates, and `sweep-drift` reports a template that changes after
-`sweptAt` exactly as it reports a drifted module.
+slice could claim a template. This change adds `prompts` to the ledger roots
+(`docs/audits/lib-sweep-coverage.json`) and teaches `listSweptModules` to list
+`prompt.md` files. The new `10-prompts` slice claims all 34 templates, and
+`sweep-drift` reports a template that changes after `sweptAt` exactly as it
+reports a drifted module.
 
 ## Method
 

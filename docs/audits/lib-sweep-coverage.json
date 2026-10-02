@@ -2397,11 +2397,57 @@
       "paths": [
         "worker/deno/lib/repo_formatters.ts"
       ]
+    },
+    {
+      "issue": 2759,
+      "chunk": "10-prompts",
+      "title": "prompt templates",
+      "ledger": "docs/audits/security-sweep-2759-prompt-templates.md",
+      "definition": "git ls-files 'prompts/*/prompt.md'",
+      "status": "swept",
+      "sweptAt": "3a566abe0938798bf4996ebe8a6a183f51a20d51",
+      "paths": [
+        "prompts/alert_feed/prompt.md",
+        "prompts/bash_script_refs/prompt.md",
+        "prompts/bash_syntax_audit/prompt.md",
+        "prompts/best_practices/prompt.md",
+        "prompts/ci_fix/prompt.md",
+        "prompts/coding_guidelines/prompt.md",
+        "prompts/coding_guidelines_claude/prompt.md",
+        "prompts/dead_code/prompt.md",
+        "prompts/deprecated_api/prompt.md",
+        "prompts/doc_coverage/prompt.md",
+        "prompts/documentation_audit/prompt.md",
+        "prompts/duplicated_knowledge/prompt.md",
+        "prompts/format_drift/prompt.md",
+        "prompts/gate_skip_drift/prompt.md",
+        "prompts/github_actions_audit/prompt.md",
+        "prompts/grill-me/prompt.md",
+        "prompts/issue/prompt.md",
+        "prompts/merge_conflict/prompt.md",
+        "prompts/orphan_deps/prompt.md",
+        "prompts/planning/prompt.md",
+        "prompts/planning_critique/prompt.md",
+        "prompts/pr_feedback/prompt.md",
+        "prompts/private_repo_reference_audit/prompt.md",
+        "prompts/question/prompt.md",
+        "prompts/quorum/prompt.md",
+        "prompts/quorum_judge/prompt.md",
+        "prompts/retro/prompt.md",
+        "prompts/security_scan/prompt.md",
+        "prompts/spelling_fix/prompt.md",
+        "prompts/supply_chain_detection/prompt.md",
+        "prompts/supply_chain_readiness/prompt.md",
+        "prompts/test_audit/prompt.md",
+        "prompts/workflow_annotation_scan/prompt.md",
+        "prompts/workflow_setup/prompt.md"
+      ]
     }
   ],
   "roots": [
     "worker/deno/lib",
     "worker/deno/commands",
-    "worker/deno/setup"
+    "worker/deno/setup",
+    "prompts"
   ]
 }
