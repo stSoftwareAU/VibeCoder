@@ -358,6 +358,16 @@ real callee masks the contract it stands in for and is a finding. Run the test
 against a real checkout of the callee, or name the contract the stub mirrors in
 the PR summary with a source link to the callee's code or docs.
 
+**Observe the real tool before you rely on it.** When a decision depends on
+how git, `gh`, the GitHub API or another external tool behaves in a
+particular case (exit code, warnings on stderr, case-sensitivity, ordering,
+which items a response includes), run the real tool on that case first. If
+the issue names real examples, use them. Build the fake's fixture from the
+observed output, not from what you expect it to be. In the PR summary, give
+the command you ran and the part of the output the code depends on. If the
+case cannot be observed safely, cite the tool's documentation or source for
+that behaviour.
+
 **A workflow behaviour change extends the workflow validator.** When a change
 alters what a `.github/workflows/*` file does — a new or changed flag, step,
 trigger or setting the job's correctness depends on — extend the repository's
