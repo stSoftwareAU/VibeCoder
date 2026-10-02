@@ -1,0 +1,45 @@
+{
+  "source": "GRQ-AutoTrader#1957 — sanitised: placeholder repository, logins and SHAs (Issue #3002)",
+  "repo": "example-org/example-trader",
+  "workerLogin": "fleet-worker-bot",
+  "humanLogin": "example-human",
+  "milestoneIssue": 1810,
+  "milestoneTitle": "1810 example milestone",
+  "pr": {
+    "number": 1957,
+    "head": "milestone/1810-example-milestone",
+    "base": "Develop"
+  },
+  "commits": {
+    "baseRoot": "1957000000000000000000000000000000000a01",
+    "baseTip": "1957000000000000000000000000000000000a02",
+    "initialHead": "1957000000000000000000000000000000000a03",
+    "syncMerge": "1957000000000000000000000000000000000a04",
+    "humanPush": "1957000000000000000000000000000000000a05"
+  },
+  "events": [
+    { "at": "2026-09-30T23:38:00Z", "kind": "conflict-labelled" },
+    { "at": "2026-10-01T00:49:00Z", "kind": "milestone-head-stand-down" },
+    {
+      "at": "2026-10-01T03:59:00Z",
+      "kind": "milestone-sync-run",
+      "reported": "pushed",
+      "mergeSha": "1957000000000000000000000000000000000a04",
+      "landed": false
+    },
+    {
+      "at": "2026-10-01T05:03:00Z",
+      "kind": "gated-head-stand-down",
+      "ruleTypes": ["pull_request"]
+    },
+    {
+      "at": "2026-10-01T08:25:00Z",
+      "kind": "human-push",
+      "historical": true,
+      "actor": "example-human",
+      "sha": "1957000000000000000000000000000000000a05"
+    },
+    { "at": "2026-10-01T08:47:00Z", "kind": "pr-merged", "historical": true }
+  ],
+  "replay": { "tickMinutes": 15, "endAt": "2026-10-01T08:25:00Z" }
+}
