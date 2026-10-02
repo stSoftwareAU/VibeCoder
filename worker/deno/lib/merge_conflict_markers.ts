@@ -510,3 +510,29 @@ export function readResolutionAttempts(
 
   return attempts;
 }
+
+/**
+ * Failed attempts spent against the shared budget since the last resolved
+ * one (Issue #2996).
+ *
+ * A resolved marker resets the tally to zero — attempts before a successful
+ * merge belong to a conflict that is already over — so this walks the full
+ * list, oldest first, and counts `failed` outcomes after the most recent
+ * `resolved`. Every pass counts here: the stale-verdict ladder, the milestone
+ * sync and the takeover rung all spend from the same number.
+ *
+ * @param attempts - From {@link readResolutionAttempts}.
+ */
+export function spentConflictAttempts(
+  attempts: readonly ConflictResolutionAttempt[],
+): number {
+  let count = 0;
+  for (const attempt of attempts) {
+    if (attempt.outcome === "resolved") {
+      count = 0;
+      continue;
+    }
+    if (attempt.outcome === "failed") count++;
+  }
+  return count;
+}

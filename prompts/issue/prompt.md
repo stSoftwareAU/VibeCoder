@@ -426,6 +426,18 @@ The committed file must yield no finding from the file-scoped Actions checks in
 - `version-comment-drift` — one pinned SHA carries one version comment, so two
   different tags never claim the same SHA.
 
+### A behaviour change extends the workflow validator
+
+The file-scoped checks above hold every workflow to the fleet's baseline; they
+know nothing of the contract your change adds. When the change alters what a
+workflow does — a flag such as `--no-suppress-errors`, a step, a trigger or a
+setting the job's correctness depends on — extend the repository's own
+workflow validator in the same PR, or add one when the repository has none,
+with a positive and a negative test for each new or changed invariant. A
+load-bearing flag must be load-bearing in the validator too: an invariant the
+README, a code comment or the PR summary calls enforced, but no validator
+asserts, is documented but not validated — a blocking self-review finding.
+
 ### Resolving action SHAs
 
 A wrong SHA does not fail here — it fails later as an unresolvable action
@@ -670,7 +682,12 @@ When creating the PR, include evidence based on the type of change:
   negative result as the guidelines' Performance Task Workflow describes.
 - **Bugs/Enhancements**: Follow TDD and ensure tests verify the result/outcome,
   not the implementation method. Tests should continue to work when the
-  implementation is improved or refactored.
+  implementation is improved or refactored. When the change shells out to
+  another repository's binary or script, the test stub must mirror that
+  callee's documented contract — the inputs it actually reads and its exit
+  codes on failure. A stub more permissive than the real callee is a finding:
+  run against a real checkout of the callee, or name the contract the stub
+  mirrors in the PR summary with a source link.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
@@ -722,18 +739,30 @@ of your changes, providing permanent documentation of the PR.
 summary is the PR body and the permanent record, so a reader takes every claim
 in it as true of the head commit. Write it last, and whenever a later commit on
 the branch changes what the PR does — a fix after the independent review, a
-retry after a failed check, a resumed attempt — rewrite it, never append to it:
+retry after a failed check, a merge from the base branch, a resumed attempt —
+rewrite it, never append to it:
 
 - Before the last commit, re-read `git diff <base>...HEAD` and rerun the tests
   the summary names, then make every claim match the head: the reproduction
   status, each test's pass/fail result, any "known defect" note, and every
   function, file and helper it names — each must exist at the head and be used
   as described.
+- Re-derive the Summary, Evidence and Acceptance Criteria sections from that
+  diff, not from memory of the run. Every file or behaviour the summary says
+  this PR changes must appear in `git diff <base>...HEAD` — existing at the
+  head is not enough, because a merge from the base branch can bring in the
+  same change and leave this PR's own diff without it. When a design
+  iteration was abandoned, replace its description with the one that
+  shipped.
 - Drop the interim notes from earlier attempts: a superseded approach, a red
   test that is now green, a helper "not imported anywhere" that now is. A
   summary saying the fix is broken or unfinished when the head holds a working,
   tested fix is a wrong record — anyone reading the archive concludes the issue
   is unfixed.
+- A body that contradicts the diff — a claimed file, behaviour or criterion the
+  diff does not carry, or a change the body describes differently from how the
+  diff makes it — is a blocking self-review finding. Fix the summary (or the
+  diff) before raising the PR.
 
 The file MUST contain:
 
@@ -772,7 +801,12 @@ The file MUST contain:
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
    merged or reranked
-7. **Test Plan**: List the tests added or modified
+7. **Test Plan**: List the tests added or modified. Every test named here or
+   under Evidence must exist at the head — in the diff or already tracked;
+   check each path with `git ls-files <path>` before raising the PR. A
+   named-but-absent test is a blocking self-review finding: add the test or
+   drop the claim, and never commit a code anchor or comment that references a
+   test that does not exist
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at

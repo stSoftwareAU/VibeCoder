@@ -2326,22 +2326,45 @@ immediately before `gh pr merge`:
   merge it deliberately.
 - **Unverifiable state blocks too** — once the PR is known to be a summary PR, a
   failed children read blocks the merge rather than being read as "no children".
-  That block also posts one comment naming the unreadable lookup and saying the
-  sweep retries, so an unarmed PR is never silent (Issue #2479); it is
+  That block also posts one comment naming the unreadable lookup — the
+  open-children count or the declared dependencies, whichever read actually
+  failed — and saying the sweep retries, so an unarmed PR is never silent
+  (Issue #2479; the comment's per-lookup wording is Issue #3024's review fix); it is
   de-duplicated by an in-memory per-PR registry that deliberately survives the
   per-iteration cache reset, so a lookup that stays broken is explained once, not
   once per cycle. The maintenance scan treats the block as a deferral
   (`await_checks`), not an escalation. Either block reports whether the PR
   carries its explanation as `blockCommented` on the auto-merge result.
+- **No open children is not quite done** — once the open-children gate is clear,
+  `decideSummaryPrMerge()` runs
+  [`findPendingMilestoneDependencies()`](../worker/deno/lib/milestone_dependency_hold.ts)
+  (Issue #3014): every issue in the milestone (open and closed) has its sub-issues'
+  declared `Depends on #N` references read, and a dependency is **pending** when
+  it is still open, or when it is closed but assigned to a different milestone
+  that is still open — that work sits on an unmerged milestone branch, not on the
+  target branch. A dependency in the same milestone is ignored (it assembles in
+  the same PR, and an open one is already caught by the open-children gate). A
+  pending dependency blocks with `reason: "pending-dependencies"`, logging a
+  warning listing each "#A depends on #B" description and posting one idempotent comment
+  marked `<!-- milestone-pending-dependencies-merge-block -->`. A failed
+  dependency read is folded into the same `lookup-failed` block as the children
+  read, but the decision carries a `stage` of `"open-children"` or
+  `"declared-dependencies"` so the posted comment names the lookup that
+  actually failed, not the other one. A cross-milestone dependency cycle (A's
+  sub-issue depends on B's and vice versa) holds both summary PRs; a human can
+  still merge one by hand.
 
 ```mermaid
 flowchart TD
     A[enableAutoMerge] --> B{head is milestone/*?}
     B -- No --> M[gh pr merge --auto]
     B -- Yes --> C[Re-read open children<br/>issues + PRs based on branch]
-    C -- none --> M
+    C -- none --> N[Re-read declared<br/>dependencies]
     C -- some --> D[Warn + one gate comment<br/>marker de-duplicated<br/>PR left open]
     C -- read failed --> E[Warn + one lookup comment<br/>registry de-duplicated<br/>PR left open]
+    N -- none pending --> M
+    N -- some pending --> F[Warn + one pending-dependencies<br/>comment, PR left open]
+    N -- read failed --> E
 ```
 
 ### 📝 PR creation
@@ -4700,6 +4723,20 @@ Two changes close that:
   if a `gh` fault stopped it finishing, and returns every fault to the caller,
   which logs it — a half-run sweep is never reported as a clean one.
 
+**A setup fault is released unlabelled too, by the same `planCodingFailure`
+seam (Issue #2954).** A run that dies in the `setup` phase, or whose reason
+`detectHostFault` recognises, is the host's fault or the repository's, never
+the issue's, so `planCodingFailure` returns `applyLadder: false`: no
+`failed-once` / `failed`, and no escalating cooldown. The issue is released
+unlabelled with the release comment carrying the diagnosis. This only
+short-circuits a failure that would otherwise step the ladder: a `repo_config`
+refusal that happens to fail in `setup` keeps the `record-only` handling of
+the case above — its one Paused comment, and still no label. The same
+`isSetupFault` check also makes the run count towards the fast-failure
+repository back-off (`repo_fast_failure_tracker.ts`),
+since a setup fault is exactly the kind of failure that back-off exists to
+catch regardless of how long the run took to die.
+
 ```mermaid
 flowchart TD
     A[setup: ensure milestone branch] --> B{Refused?}
@@ -5237,6 +5274,7 @@ All business logic lives here. Shell tooling invokes them directly with
 | **Milestone management**    |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [milestone_completion.ts](../worker/deno/lib/milestone_completion.ts)                                             | Milestone completion detection and consolidation PR                                                                                                                                  |
 |                             | [milestone_open_children.ts](../worker/deno/lib/milestone_open_children.ts)                                       | Authoritative (fresh, uncached) open-children count that vetoes milestone finalisation                                                                                               |
+|                             | [milestone_dependency_hold.ts](../worker/deno/lib/milestone_dependency_hold.ts)                                   | Flags each sub-issue's declared `Depends on #N` references still pending (open, or closed into a different still-open milestone), so the summary PR merge waits for them (Issue #3014) |
 |                             | [milestone_progress.ts](../worker/deno/lib/milestone_progress.ts)                                                 | Milestone progress notifications                                                                                                                                                     |
 |                             | [milestone_priority.ts](../worker/deno/lib/milestone_priority.ts)                                                 | Configurable issue ordering within milestones                                                                                                                                        |
 |                             | [milestone_branch_sync.ts](../worker/deno/lib/milestone_branch_sync.ts)                                           | Periodic milestone branch sync with default branch                                                                                                                                   |

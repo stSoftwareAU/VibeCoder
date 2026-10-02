@@ -274,6 +274,18 @@ Deno.test("generateMcpConfig - pins @playwright/mcp to an exact version (no @lat
   }
 });
 
+Deno.test("generateMcpConfig - runs the server with neither the checkout's deno.json nor its deno.lock (Issue #3020)", () => {
+  const config: ScreenshotConfig = { scriptDir: "/opt/vibe" };
+  const args: string[] =
+    JSON.parse(generateMcpConfig(config)).mcpServers.playwright.args;
+
+  const npmIndex = args.findIndex((a) => a.startsWith("npm:@playwright/mcp@"));
+  assertEquals(args.includes("--no-config"), true);
+  assertEquals(args.includes("--no-lock"), true);
+  assertEquals(args.indexOf("--no-config") < npmIndex, true);
+  assertEquals(args.indexOf("--no-lock") < npmIndex, true);
+});
+
 Deno.test("generateMcpConfig - drops --allow-all in favour of scoped permissions", () => {
   const config: ScreenshotConfig = { scriptDir: "/opt/vibe" };
   const args: string[] =

@@ -301,6 +301,30 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A named test must exist.** Every test the PR summary names under Evidence or
+Test Plan, and every code comment or anchor that points at a test, must be a
+file in the PR's diff or already tracked at the head. Before raising the PR,
+check each named path with `git ls-files <path>`; a named-but-absent test is a
+blocking self-review finding — add the test or drop the claim, and never commit
+an anchor that references a test that does not exist.
+
+**A stub mirrors the real callee's contract.** When code shells out to another
+repository's binary or script, the test stub must reproduce that callee's
+documented contract: the inputs it actually reads (an index file, say, rather
+than a tree scan) and its exit codes on failure. A stub more permissive than the
+real callee masks the contract it stands in for and is a finding. Run the test
+against a real checkout of the callee, or name the contract the stub mirrors in
+the PR summary with a source link to the callee's code or docs.
+
+**A workflow behaviour change extends the workflow validator.** When a change
+alters what a `.github/workflows/*` file does — a new or changed flag, step,
+trigger or setting the job's correctness depends on — extend the repository's
+workflow validator in the same PR, or add one when the repository has none,
+with a positive and a negative test for each new or changed invariant. A flag
+that is load-bearing must be load-bearing in the validator too, not only in
+the README or a code comment: an invariant documented but not validated is a
+blocking self-review finding (Issue #3021).
+
 ### Choosing assertions
 
 - **UI / PWA:** Prefer real/headless-browser user journeys and visible states
@@ -859,9 +883,13 @@ The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
 (reproduction status, test results, "known defect" notes, named functions and
-files) matches the head. Any later commit on the branch — a review fix, a PR
-feedback or CI-fix run — refreshes the summary in the same push when it changes
-what the summary says.
+files) matches the head. Every file or behaviour the summary says the PR changes
+must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
+from the base branch can supersede the change — and an abandoned iteration's
+description is replaced by the one that shipped. A summary that contradicts the
+diff is a blocking self-review finding. Any later commit on the branch — a
+review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
+in the same push when it changes what the summary says.
 
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
