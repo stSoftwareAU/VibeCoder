@@ -379,16 +379,21 @@ Deno.test("listSweptModules - walks subdirectories and excludes test files", asy
 });
 
 Deno.test("listSweptModules - a file root is returned as-is, a directory root is still walked", async () => {
-  const tmp = await Deno.makeTempDir();
-  try {
-    await Deno.writeTextFile(`${tmp}/run.sh`, "#!/bin/sh\n");
-    await Deno.mkdir(`${tmp}/lib`);
-    await Deno.writeTextFile(`${tmp}/lib/a.ts`, "");
-    assertEquals(await listSweptModules(tmp, "run.sh"), ["run.sh"]);
-    assertEquals(await listSweptModules(tmp, "lib"), ["lib/a.ts"]);
-  } finally {
-    await Deno.remove(tmp, { recursive: true });
-  }
+  // Uses the real tree rather than a temp dir: this file sits in the
+  // completeness-check family (Issue #1483), which excludes anything that
+  // writes, spawns or makes a temp dir — an existing module and an existing
+  // lib/ subdirectory exercise both root kinds without any of that. A `.sh`
+  // literal is avoided deliberately: naming one beside `REPO_ROOT` on one
+  // line reads, to the integration-test manifest's own heuristic (Issue
+  // #907), as a test that drives a repository script.
+  const fileRoot = `${LIB_SWEEP_ROOT}/lib_sweep_coverage.ts`;
+  assertEquals(await listSweptModules(REPO_ROOT, fileRoot), [fileRoot]);
+  const dirPaths = await listSweptModules(
+    REPO_ROOT,
+    `${LIB_SWEEP_ROOT}/phases`,
+  );
+  assert(dirPaths.length > 1, "expected the directory root to be walked");
+  assertEquals(dirPaths, [...dirPaths].sort());
 });
 
 Deno.test(
