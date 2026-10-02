@@ -168,6 +168,10 @@ const SPEC_REVIEWER_PROMPT = [
   "gaps that affect correctness or the stated requirements; do not propose " +
   "improvements the issue did not ask for.",
   "",
+  "A helper, component or policy the issue says to reuse is a stated " +
+  "requirement (Issue #3084): a diff that re-implements it by hand instead " +
+  "of calling it is not `met`.",
+  "",
   "You are read-only and cannot spawn sub-agents. Do the review yourself.",
 ].join("\n");
 
