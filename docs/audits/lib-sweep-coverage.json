@@ -2473,6 +2473,19 @@
         "worker/deno/lib/milestone_sync_landing.ts",
         "worker/deno/lib/milestone_sync_pr_budget.ts"
       ]
+    },
+    {
+      "issue": 2999,
+      "chunk": "top-up-2999",
+      "title": "top-up: the conflict takeover pass and its milestone-fix resolvers",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2999",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_takeover.ts, conflict_takeover_resolvers.ts (#2999)",
+      "status": "claimed",
+      "sweptAt": "8d3bc59b4ee5e862cf03050d754986e873e8a5d6",
+      "paths": [
+        "worker/deno/lib/conflict_takeover.ts",
+        "worker/deno/lib/conflict_takeover_resolvers.ts"
+      ]
     }
   ],
   "roots": [
