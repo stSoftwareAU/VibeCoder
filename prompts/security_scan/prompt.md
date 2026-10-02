@@ -648,7 +648,14 @@ than duplicating it here.
   secrets/MACs.
 - **Secrets** — hard-coded credentials, API keys committed to source,
   secret values logged or echoed, secrets in error messages, secrets in
-  default config files.
+  default config files. **Never quote a secret value** in the issue
+  title, body, or any comment: cite the secret by `file:line`, never
+  its value, and where the value's shape matters show at most its
+  first four characters followed by `…` (e.g. `AKIA…`). A filed issue
+  is readable by anyone who can read the repo's issues. Outbound
+  redaction only masks recognised token shapes, so do not rely on it
+  to catch a password or key it does not recognise — follow this
+  rule yourself.
 
 #### A05:2025 — Injection
 
@@ -911,7 +918,10 @@ sweeps apply everywhere — every repo has files and comments.)
   confirm whether `.gitignore` actually excludes secrets, uploads, and
   local config. Open a candidate file to confirm it holds a **live**
   secret before filing (an empty `.env.example` template or a public
-  certificate is not a leak). This is the committed-file literal sweep;
+  certificate is not a leak). Cite the file and line of the secret,
+  never its value — the same redaction rule as the A04 **Secrets**
+  class (at most the first four characters followed by `…`). This is
+  the committed-file literal sweep;
   file it under A04 and only **cross-reference** the A04 hard-coded-secret
   line — do not duplicate it. (If a dedicated secret-scanning idle-task
   owns committed-secret detection, cross-reference that task instead of
@@ -1766,6 +1776,15 @@ reconcile pass has nothing to repaint.
    emoji intact. Example rendered footer:
    `🏷️ Filed by idle-task template: \`security-scan\` · Run id: \`vibe-abc123\``.
 
+   **Redact secret values.** No part of the title, body, or a comment
+   may contain a live credential, token, key, or password value —
+   including inside `## Trigger` and `## Exploit sketch`. Cite the
+   secret by `file:line`, never its value, and where the value's
+   shape matters show at most its first four characters followed by
+   `…` (e.g. `ghp_…`). Outbound redaction only masks recognised token
+   shapes, so do not rely on it to catch a password or key it does
+   not recognise — this rule is the control for those.
+
    The body takes exactly this shape — markers first, each on its own
    line, sections in this order, and only the sections you have evidence
    for:
@@ -1787,7 +1806,7 @@ reconcile pass has nothing to repaint.
 
    ## Trigger
 
-   <the concrete input and path that fires it>
+   <the concrete input and path that fires it — secret values redacted>
 
    ## Exploit sketch
 
