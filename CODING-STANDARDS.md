@@ -127,6 +127,15 @@ evidence that supported behaviour, an invariant, or a contract regressed.
 3. Do not remove, skip, or weaken tests just to pass a gate. If a supported
    contract changes, or a test pins only incidental implementation, update or
    remove the test deliberately and document the reason and remaining coverage.
+   **Change only what the issue changes.** When an issue alters part of what
+   an existing test expects, edit that expectation and keep every other
+   assertion the test made — a green gate before and after does not prove
+   nothing was lost. Before raising the PR, go through the assertions your
+   diff removes from each existing test (`git diff <base>...HEAD` over the
+   edited test files). Each one needs an issue requirement that makes it
+   untrue, recorded in the PR summary. An assertion removed without one is a
+   blocking self-review finding: restore it, or move it to a test that still
+   covers the behaviour and say where.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its
