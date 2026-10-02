@@ -841,9 +841,7 @@ The file MUST contain:
    - For bug fixes/CLI changes: Reference the tests that verify the fix
    - Always: a one-line **Docs sweep** — the grep terms you searched, the
      manual section you found and checked, and the doc files you updated, or
-     `no hits` — e.g. **Docs sweep** — grep: `retryLimit`, "Retrying in";
-     section: `docs/workflows/retries.md#retry-limit`; updated:
-     `docs/workflows/retries.md`
+     `no hits` — e.g. **Docs sweep** — grep: `retryLimit`, "Retrying in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering

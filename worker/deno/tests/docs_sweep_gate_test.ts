@@ -104,6 +104,48 @@ Deno.test("parseDocsSweepLine - line with no section field reports empty section
   assertEquals(line.section, "");
 });
 
+Deno.test("parseDocsSweepLine - section on a wrapped continuation line parses", () => {
+  const line = parseDocsSweepLine(
+    '**Docs sweep** — grep: "A stub mirrors the real callee\'s contract", "stub\n' +
+      'must mirror"; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md',
+  );
+  assert(line.present);
+  assertEquals(line.section, "docs/workflows/issue-processing.md#stubs");
+});
+
+Deno.test("parseDocsSweepLine - indented list continuation still carries section", () => {
+  const line = parseDocsSweepLine(
+    "- **Docs sweep** — grep: `stub`\n" +
+      "  must mirror; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md",
+  );
+  assert(line.present);
+  assertEquals(line.section, "docs/workflows/issue-processing.md#stubs");
+});
+
+Deno.test("parseDocsSweepLine - a blank line ends the entry", () => {
+  const line = parseDocsSweepLine(
+    "**Docs sweep** — grep: `x`; no hits\n\nsection: `docs/x.md#y`",
+  );
+  assert(line.present);
+  assertEquals(line.section, "");
+});
+
+Deno.test("parseDocsSweepLine - a later list item is not part of the entry", () => {
+  const line = parseDocsSweepLine(
+    "- **Docs sweep** — grep: `x`\n- section: `docs/x.md#y`",
+  );
+  assert(line.present);
+  assertEquals(line.section, "");
+});
+
+Deno.test("parseDocsSweepLine - a heading ends the entry", () => {
+  const line = parseDocsSweepLine(
+    "**Docs sweep** — grep: `x`\n## Evidence\nsection: `docs/x.md#y`",
+  );
+  assert(line.present);
+  assertEquals(line.section, "");
+});
+
 // ---------------------------------------------------------------------------
 // validateDocsSweep
 // ---------------------------------------------------------------------------
@@ -145,6 +187,27 @@ Deno.test("validateDocsSweep - code diff with a line but no section is rejected"
   assertEquals(result.applicable, true);
   assertEquals(result.valid, false);
   assertStringIncludes(result.problems[0]!, "section");
+});
+
+Deno.test("validateDocsSweep - a wrapped plain entry with section on the next line is accepted", () => {
+  const result = validateDocsSweep({
+    changedFiles: ["worker/deno/lib/x.ts"],
+    prSummaryContent:
+      '**Docs sweep** — grep: "A stub mirrors the real callee\'s contract", "stub\n' +
+      'must mirror"; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md',
+  });
+  assertEquals(result.valid, true);
+  assertEquals(result.line.section, "docs/workflows/issue-processing.md#stubs");
+});
+
+Deno.test("validateDocsSweep - a wrapped list item with section on the continuation is accepted", () => {
+  const result = validateDocsSweep({
+    changedFiles: ["worker/deno/lib/x.ts"],
+    prSummaryContent: "- **Docs sweep** — grep: `stub`\n" +
+      "  must mirror; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md",
+  });
+  assertEquals(result.valid, true);
+  assertEquals(result.line.section, "docs/workflows/issue-processing.md#stubs");
 });
 
 Deno.test("validateDocsSweep - a bare 'section: none' is rejected", () => {

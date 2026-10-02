@@ -29,6 +29,14 @@ import { isTestFilePath } from "./security_fix_gate.ts";
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
+/**
+ * Cap on one Docs sweep entry after wrapped continuation lines are joined.
+ * A real entry is one sentence plus paths; joining past this cannot be a
+ * wrap and would pull later summary text into the `section:` scan
+ * (Issue #3085 review).
+ */
+const MAX_DOCS_SWEEP_ENTRY_CHARS = 4_000;
+
 /** Documentation file extensions, matched case-insensitively. */
 const DOC_EXTENSION_RE = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
 
@@ -66,6 +74,9 @@ export interface DocsSweepLine {
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
 
+/** A markdown heading. A wrapped Docs sweep entry stops before the next one. */
+const HEADING_RE = /^\s{0,3}#{1,6}\s/;
+
 /**
  * The `Docs sweep` prefix once markdown decoration is stripped: the words,
  * optional space, then a separator. The body is the slice after that
@@ -94,20 +105,48 @@ function stripDecoration(line: string): string {
 }
 
 /**
- * Parse the first `Docs sweep` line out of a PR summary. First match wins.
+ * A wrapped Docs sweep entry ends at a blank line, a new list item, or a
+ * heading. The entry's own first line is a list item and is not tested here.
+ */
+function isEntryBoundary(raw: string): boolean {
+  if (raw.trim() === "") return true;
+  if (LIST_MARKER_RE.test(raw)) return true;
+  if (HEADING_RE.test(raw)) return true;
+  return false;
+}
+
+/**
+ * Parse the first `Docs sweep` entry out of a PR summary. First match wins.
+ * Continuation lines are joined until a blank line, a new list marker, or a
+ * heading, so `section:` on a hard-wrapped line is still read (Issue #3085).
  */
 export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
   const lines = (prSummaryContent ?? "")
     .slice(0, MAX_SCAN_CHARS)
     .split(LINE_TERMINATOR_RE);
 
-  for (const raw of lines) {
-    const stripped = stripDecoration(raw);
+  for (let i = 0; i < lines.length; i++) {
+    const stripped = stripDecoration(lines[i]!);
     const prefix = stripped.match(DOCS_SWEEP_PREFIX_RE);
     if (!prefix) continue;
-    const body = stripped.slice(prefix[0].length).trim();
+    const firstBody = stripped.slice(prefix[0].length).trim();
+    // An empty body after the separator is not an entry. Joining the
+    // following lines would turn `Docs sweep:\rX` into a line (Issue #3085
+    // linear-scan case).
+    if (firstBody === "") continue;
+    const parts = [firstBody];
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j]!;
+      if (isEntryBoundary(next)) break;
+      parts.push(stripDecoration(next));
+      if (parts.join(" ").length >= MAX_DOCS_SWEEP_ENTRY_CHARS) break;
+    }
+    let body = parts.join(" ").trim();
+    if (body.length > MAX_DOCS_SWEEP_ENTRY_CHARS) {
+      body = body.slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
+    }
     if (body === "") continue;
-    // The section value is read from the line's (decoration-stripped) body,
+    // The section value is read from the joined (decoration-stripped) body,
     // trimmed of surrounding backtick/whitespace decoration left after the
     // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.
     const sectionMatch = body.match(SECTION_FIELD_RE);
