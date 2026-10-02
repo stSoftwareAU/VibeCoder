@@ -1118,6 +1118,18 @@ contains the forbidden thing and a run with the guard broken on purpose that
 goes red; a negative test that stays green without its guard is a blocking
 self-review finding.
 
+**Every changed call site needs a test that goes red without it (Issue
+#3067).** A test of a shared helper, or of some of its callers, does not
+cover the other callers' wiring. Fleet PRs threaded a new argument through
+several production callers and tested only one: VibeCoder#2918 passed
+`RED_CHECK_CONCLUSIONS` to `buildFailedCheckRunsLookup` from
+`findFailedCiChecks`, but the REST stub ignored `--jq`, so reverting that
+caller kept every test green; GRQ-AutoTrader#2220 left the
+`screen_candidates` caller of `commit_buy` untested for its new `is_held`
+argument. The guidelines and the issue prompt's Test Plan step now require
+reverting each changed call site on its own and seeing a test go red; a call
+site whose revert leaves the suite green is a blocking self-review finding.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
