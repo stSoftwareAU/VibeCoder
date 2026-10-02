@@ -42,12 +42,13 @@ Closes #3058.
 - Proposal 3 says "do not claim the issue closes". It was not taken literally:
   a PR without a closing keyword loops forever (Issue #520, see
   `worker/deno/lib/degraded_delivery.ts`). Instead, a missing core deliverable
-  means finishing the work — the planning marker and escape hatch are only
-  honoured by the worker while the branch has no commits
-  (`handle_no_changes_phase.ts` is the only caller of
-  `detectPlanningHandoff`/`detectBlockedOutcome`; `execute_phase.ts` routes any
-  non-empty `base..HEAD` straight to the PR path regardless of a hand-off
-  marker) — and an unmet lesser criterion is named beside the keyword.
+  means finishing the work. In an issue run, the planning marker and the
+  blocked-outcome deferral are acted on in `handle_no_changes_phase.ts`, and
+  that phase runs only when `execute_phase.ts` finds no commits in
+  `git log <base>..HEAD` and no uncommitted change. `detectBlockedOutcome`
+  also serves the CI-fix base-branch deferral in `pr_ci_processor.ts`, so the
+  no-changes phase is not its only caller. An unmet lesser criterion is named
+  beside the keyword.
 
 ## Evidence
 
