@@ -751,7 +751,15 @@ When creating the PR, include evidence based on the type of change:
   callee's documented contract — the inputs it actually reads and its exit
   codes on failure. A stub more permissive than the real callee is a finding:
   run against a real checkout of the callee, or name the contract the stub
-  mirrors in the PR summary with a source link.
+  mirrors in the PR summary with a source link. When the change relies on how
+  git, `gh`, the GitHub API or another external tool behaves in a particular
+  case, run the real tool on that case first and build the fake's fixture
+  from the observed output (see **Observe the real tool before you rely on
+  it** in the guidelines). The PR summary's Evidence gives the command you
+  ran and the part of the output the code depends on, or cites the tool's
+  documentation or source when the case cannot be observed safely. A fake
+  built from the behaviour you expected rather than the behaviour you
+  observed is a blocking self-review finding.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
