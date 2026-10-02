@@ -277,9 +277,10 @@ The worker applies `planning` through its audited hand-off, posts your reason
 on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
 goes to a human instead. This marker is honoured even when you have already
-committed — the worker then raises no PR. The marker applies to `work-on` issues only: on any
-other pickup label, or when the issue body carried an image from an untrusted
-author, the worker hands the issue to a human rather than to planning. Sheer
+committed — the worker then raises no PR. The marker applies to `work-on`
+issues only: on any other pickup label, or when the issue body carried an
+image from an untrusted author, the worker hands the issue to a human rather
+than to planning. Sheer
 volume in one coherent change is not a reason:
 a large PR that lands as one unit is still one PR.
 

@@ -752,7 +752,7 @@ async function workOnIssueCore(
       };
     }
 
-    // Phase 3.6 — Declared hand-off (Issue #3088)
+    // Phase 3.4 — Declared hand-off (Issue #3088)
     // The no-changes phase above only runs when execute made no commits at
     // all. A run that DID commit code can still declare a `## Blocked:`
     // dependency, a `vibe-defer-until` time deferral or a planning request

@@ -1,0 +1,110 @@
+# PR Summary — Issue #3088
+
+Closes #3088
+
+## Summary
+
+A run that commits work *and* declares a structured hand-off (`## Blocked:` /
+`Depends on …`, a `vibe-defer-until` marker, or a `vibe-needs-planning`
+request) is now honoured: the new `declared_handoff` phase defers or hands off
+the issue instead of pushing the commits and raising a PR that closes it. The
+free-text escape hatch is documented in the prompts as honoured only before the
+first commit.
+
+- [x] Extract the declared-outcome detection from `handle_no_changes_phase.ts`
+      into a shared `handOffDeclaredOutcome`
+- [x] Add the `declared_handoff` phase (Phase 3.4) after execute, before
+      `bump_deps`
+- [x] Add the `declared_handoff` trigger to `handOffAnalysisOnly`
+- [x] Prompts: state when each hand-off is honoured
+- [x] Docs: DESIGN-PRINCIPLES and `docs/workflows/issue-processing.md`
+- [x] Sweep ledger: `top-up-3088` slice plus its written record
+- [x] Tests: phase unit tests plus a `workOnIssue` wiring test
+
+## Spec
+
+### Intent and Rationale
+
+The hand-off detectors ran only in the no-changes phase, so once the agent
+had committed anything, a declared block or planning request was silently
+dropped and the worker raised a PR with `Closes #N`, closing an issue the agent
+had said was unfinished.
+
+### Essential Design Decisions
+
+- **Option (a) for structured signals.** The machine-readable markers are
+  detected after a commit-producing execute phase too, and PR creation is
+  skipped. The same `handOffDeclaredOutcome` serves both phases, so the
+  behaviour cannot drift.
+- **Option (b) for the free-text escape hatch.** Prose such as "out of scope"
+  is too ambiguous to override committed work, so the prompts now say it is
+  honoured only when the run has made no commit.
+- **Commits stay local.** The phase never pushes. The work is left on the
+  local branch, and the run ends with `early_exit`.
+- **Dropping `Closes` was rejected.** A PR without a closing keyword loops
+  forever (Issue #520), so the fix stops PR creation rather than editing
+  the PR body.
+- **A declared signal whose guard refuses it** (a repeat deferral, a planning
+  request without the anchor label) still hands off to a human through
+  `handOffAnalysisOnly` with the `declared_handoff` trigger. It never falls
+  through to a PR.
+
+### Undiscoverable Facts
+
+- Every new `worker/deno/lib` module must be claimed by a sweep slice with a
+  written record (`deno task check:manifests`); hence `top-up-3088` and
+  `docs/audits/security-sweep-3088-declared-handoff.md`.
+- An exhausted time-deferral still hands off with the `no_changes` trigger,
+  which keeps the existing wording for that path unchanged.
+
+## Evidence
+
+```mermaid
+flowchart LR
+    E[execute] -->|no commits| N[handle_no_changes]
+    E -->|commits| D[declared_handoff]
+    N -->|declared| H[defer / plan / human hand-off]
+    D -->|declared| H
+    D -->|nothing declared| B[bump_deps]
+    B --> Q[quality_gate] --> C[completion: push + PR]
+```
+
+Red runs: flipping `declared` to `false` in `handOffDeclaredOutcome` turns the
+phase tests red, and stubbing out the `declared_handoff` wiring in
+`issue_worker.ts` turns the `workOnIssue` wiring test red (the run completes
+and raises a PR).
+
+**Docs sweep:** `DESIGN-PRINCIPLES.md`, `docs/workflows/issue-processing.md`,
+`prompts/issue/prompt.md` and `prompts/coding_guidelines/prompt.md` were
+updated. No `*/README.md` describes the phase list, so none changed.
+
+## Test Plan
+
+- `worker/deno/tests/declared_handoff_phase_3088_test.ts`
+  - blocked output defers
+  - planning marker with anchor hands off to planning
+  - planning marker without anchor hands off to a human
+  - plain summary output continues without any writes
+  - a repeat blocked deferral hands off to a human
+- `worker/deno/tests/issue_worker_test.ts`: "workOnIssue - a commit-producing
+  run that also declares a blocked hand-off defers instead of completing
+  (Issue #3088)"
+- The existing `handle_no_changes` suites still pass unchanged against the
+  refactor.
+- `./quality.sh`
+
+## Security Self-Check
+
+- [x] Input validation: the agent output is untrusted and is only matched by
+      the existing detectors; nothing from it is executed.
+- [x] Secrets: published snippets go through `redactSecrets` before the
+      3000-character tail slice, and no secret files are staged.
+- [x] Injection surface: no new shell, SQL or filesystem calls.
+- [x] Output encoding: comments reuse the existing hand-off helpers.
+- [x] Authorisation: the planning hand-off stays gated on the human-applied
+      anchor label and the untrusted-image gate.
+- [x] Error handling: there is no silent fallback; a refused signal hands off
+      to a human.
+- [x] Dependencies: none added.
+- [x] Path confinement: not applicable.
+</content>

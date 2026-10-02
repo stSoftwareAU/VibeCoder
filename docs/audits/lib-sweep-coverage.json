@@ -2460,6 +2460,19 @@
         "setup.ps1",
         "setup.sh"
       ]
+    },
+    {
+      "issue": 3088,
+      "chunk": "top-up-3088",
+      "title": "top-up: declared-outcome hand-off on a commit-producing run",
+      "ledger": "docs/audits/security-sweep-3088-declared-handoff.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: phases/declared_handoff.ts, phases/declared_handoff_phase.ts (#3088)",
+      "status": "swept",
+      "sweptAt": "f2be890ba42f48401c7b94e0c35d87febdf888db",
+      "paths": [
+        "worker/deno/lib/phases/declared_handoff.ts",
+        "worker/deno/lib/phases/declared_handoff_phase.ts"
+      ]
     }
   ],
   "roots": [
