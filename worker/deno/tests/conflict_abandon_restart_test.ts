@@ -876,13 +876,12 @@ Deno.test("abandonAndRestart - an issue with another open PR is left alone", asy
 });
 
 // ---------------------------------------------------------------------------
-// The bound — two restarts per originating issue (Issue #2312)
+// No restart cap, and no needs-human hand-off (Issue #3033)
 // ---------------------------------------------------------------------------
 
 Deno.test("abandonAndRestart - a restarted issue is restarted a second time", async () => {
-  // Issue #2312 raised the bound from one restart to two. The fresh PR is a
-  // different PR, so the first round's marker must not decline the second —
-  // the regression this asserts against is the one-restart rule.
+  // The fresh PR is a different PR, so the first round's marker must not
+  // decline the second.
   const fake = makeFake();
   const first = await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
@@ -908,10 +907,9 @@ Deno.test("abandonAndRestart - a restarted issue is restarted a second time", as
   );
 });
 
-Deno.test("abandonAndRestart - the third exhaustion is declined, not restarted", async () => {
-  // The bound itself (Issue #2312). Two restarts, then a human decides
-  // (Issue #2804): a third close-and-re-raise of the same work is not a new
-  // experiment.
+Deno.test("abandonAndRestart - three or more prior trusted restart claims for other PRs still close the PR and re-queue the issue", async () => {
+  // There is no cap (Issue #3033): a third, fourth or fifth round closes and
+  // re-queues exactly like the first and second.
   const fake = makeFake();
   await abandonAndRestart(makeRequest(), {
     gh: fake.gh,
@@ -926,23 +924,30 @@ Deno.test("abandonAndRestart - the third exhaustion is declined, not restarted",
     makeRequest({ prNumber: 88, branchName: `issue-${ISSUE_NUMBER}-limits-3` }),
     { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
   );
-
   assertEquals(third, {
-    outcome: "declined",
-    reason: {
-      kind: "already-restarted",
-      issueNumber: ISSUE_NUMBER,
-      samePr: false,
-      restartCount: MAX_RESTARTS_PER_ISSUE,
-    },
+    outcome: "abandoned",
+    issueNumber: ISSUE_NUMBER,
+    label: { kept: "work-on" },
   });
-  // Two closes across the three rounds — the third PR is left open.
-  assertEquals(callsMatching(fake, "pr", "close").length, 2);
-});
 
-// ---------------------------------------------------------------------------
-// A spent restart budget goes to a human (Issue #2804)
-// ---------------------------------------------------------------------------
+  const fourth = await abandonAndRestart(
+    makeRequest({ prNumber: 89, branchName: `issue-${ISSUE_NUMBER}-limits-4` }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+  const fifth = await abandonAndRestart(
+    makeRequest({ prNumber: 90, branchName: `issue-${ISSUE_NUMBER}-limits-5` }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+  assertEquals(fourth.outcome, "abandoned");
+  assertEquals(fifth.outcome, "abandoned");
+
+  // All five rounds closed their PR and re-queued the issue.
+  assertEquals(callsMatching(fake, "pr", "close").length, 5);
+  assertEquals(
+    restartMarkerPrNumbers(fake.state.issueComments),
+    [PR_NUMBER, 77, 88, 89, 90],
+  );
+});
 
 /** An issue that has already been restarted twice, by the fleet. */
 function spentIssueComments(): Array<
@@ -963,203 +968,54 @@ function needsHumanLabelCalls(fake: FakeGh): string[][] {
   );
 }
 
-/** Escalation comment POSTs onto the originating issue. */
-function issueCommentPosts(fake: FakeGh): string[][] {
-  return fake.calls.filter((args) =>
-    args[0] === "api" && args.includes("POST") &&
-    args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/comments`))
-  );
+/** `count` concluded failure markers, numbered from one. */
+function manyFailedComments(
+  count: number,
+): Array<{ body: string; created_at: string; user: { login: string } }> {
+  return Array.from({ length: count }, (_, index) => {
+    const n = index + 1;
+    return {
+      user: { login: FLEET },
+      body: [
+        `${CONFLICT_FAILED_MARKER} n="${n}" -->`,
+        `❌ **Merge-conflict resolution — attempt ${n} failed**`,
+        "",
+        "Merging `main` in did not produce a mergeable branch.",
+        "",
+        "Conflicted files:",
+        "- `worker/deno/lib/limits.ts`",
+      ].join("\n"),
+      created_at: `2026-08-19T1${n}:00:00Z`,
+    };
+  });
 }
 
-/** The fake, with applied labels and REST comments reflected back. */
-function withLabelEcho(fake: FakeGh): FakeGh {
-  const gh = async (args: string[]): Promise<string> => {
-    const out = await fake.gh(args);
-    if (args[0] !== "api" || !args.includes("POST")) return out;
-    const label = args.find((arg) => arg.startsWith("labels[]="));
-    const body = args.find((arg) => arg.startsWith("body="));
-    if (label !== undefined) {
-      fake.state.issueLabels.push(label.slice("labels[]=".length));
-    } else if (body !== undefined) {
-      fake.state.issueComments.push(
-        comment(body.slice("body=".length), FLEET),
-      );
-    }
-    return out;
-  };
-  return { ...fake, gh };
-}
-
-Deno.test("abandonAndRestart - a spent restart budget adds needs-human and one comment to the issue", async () => {
+Deno.test("abandonAndRestart - spent attempt and restart budgets never apply needs-human or post a hand-off", async () => {
+  // A conflict-attempt budget spent (3 trusted failure markers) *and* two
+  // prior trusted restart claims naming other PRs: neither budget ever hands
+  // the issue to a human (Issue #3033).
   const fake = makeFake({ issueComments: spentIssueComments() });
 
-  const outcome = await abandonAndRestart(makeRequest(), {
-    gh: fake.gh,
-    trustedAuthors: FLEET_AUTHORS,
-  });
-
-  assertEquals(outcome, {
-    outcome: "declined",
-    reason: {
-      kind: "already-restarted",
-      issueNumber: ISSUE_NUMBER,
-      samePr: false,
-      restartCount: MAX_RESTARTS_PER_ISSUE,
-    },
-  });
-  assertEquals(needsHumanLabelCalls(fake).length, 1);
-  const posts = issueCommentPosts(fake);
-  assertEquals(posts.length, 1);
-  const body = posts[0]?.find((arg) => arg.startsWith("body=")) ?? "";
-  assertStringIncludes(body, `${REPO}#${PR_NUMBER}`);
-  assertStringIncludes(body, `redone ${MAX_RESTARTS_PER_ISSUE} times`);
-  assertStringIncludes(body, "fix");
-  assertStringIncludes(body, "rescope this issue");
-  assertStringIncludes(body, "close this issue");
-  // No third redo: the PR is not closed and the issue is not re-queued.
-  assertEquals(callsMatching(fake, "pr", "close").length, 0);
-  assertEquals(callsMatching(fake, "issue", "reopen").length, 0);
-  assertEquals(callsMatching(fake, "pr", "comment").length, 0);
-  assertEquals(
-    fake.calls.filter((args) => args.includes("labels[]=idle-task")).length,
-    0,
-  );
-  assertEquals(restartMarkerPrNumbers(fake.state.issueComments), [31, 32]);
-});
-
-Deno.test("abandonAndRestart - a second pass over a spent budget posts no second comment", async () => {
-  const fake = withLabelEcho(makeFake({ issueComments: spentIssueComments() }));
-  const deps = { gh: fake.gh, trustedAuthors: FLEET_AUTHORS };
-
-  await abandonAndRestart(makeRequest(), deps);
-  const second = await abandonAndRestart(makeRequest(), deps);
-
-  assertEquals(second.outcome, "declined");
-  assertEquals(issueCommentPosts(fake).length, 1);
-  assertEquals(needsHumanLabelCalls(fake).length, 1);
-  assertEquals(callsMatching(fake, "pr", "close").length, 0);
-});
-
-Deno.test("abandonAndRestart - a stalled PR's spent budget names the stall", async () => {
-  const fake = makeFake({ issueComments: spentIssueComments() });
-
-  await abandonAndRestart(
-    makeRequest({
-      reason: {
-        kind: "stalled",
-        detail: "has stalled: red CI",
-        tried: "sync-and-lane-rerun",
-      },
-    }),
+  const outcome = await abandonAndRestart(
+    makeRequest({ prComments: manyFailedComments(3) }),
     { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
   );
 
-  const body =
-    issueCommentPosts(fake)[0]?.find((arg) => arg.startsWith("body=")) ?? "";
-  assertStringIncludes(body, "has stalled: red CI");
-  assertEquals(needsHumanLabelCalls(fake).length, 1);
-});
-
-Deno.test("abandonAndRestart - a conflict-queue stall's spent budget names the ladder rerun, never a lane rerun or a sync", async () => {
-  const fake = makeFake({ issueComments: spentIssueComments() });
-
-  await abandonAndRestart(
-    makeRequest({
-      reason: {
-        kind: "stalled",
-        detail: "has carried `merge-conflict` for 9 hours",
-        tried: "ladder-rerun",
-      },
-    }),
-    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  assertEquals(outcome.outcome, "abandoned");
+  assertEquals(needsHumanLabelCalls(fake).length, 0);
+  assertNoNeedsHuman(fake);
+  const handOffHeadings = fake.calls.filter((args) =>
+    args.some((arg) =>
+      arg.includes("needs a human") || arg.includes("handed to a human")
+    )
   );
-
-  const body =
-    issueCommentPosts(fake)[0]?.find((arg) => arg.startsWith("body=")) ?? "";
-  assertStringIncludes(body, "one rerun of the merge-conflict ladder");
-  assert(!body.includes("owning lane"), body);
-  assert(!body.includes("sync with"), body);
-});
-
-Deno.test("abandonAndRestart - a failed needs-human label is a failure, not a decline", async () => {
-  const fake = makeFake({ issueComments: spentIssueComments() });
-  const gh = (args: string[]): Promise<string> =>
-    args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/labels`)) ||
-      args.includes("--add-label")
-      ? Promise.reject(new Error("label refused"))
-      : fake.gh(args);
-
-  const outcome = await abandonAndRestart(makeRequest(), {
-    gh,
-    trustedAuthors: FLEET_AUTHORS,
-  });
-
-  assertEquals(outcome.outcome, "failed");
-  assert(outcome.outcome === "failed");
-  assertEquals(outcome.step, "issue-label");
-  assertEquals(outcome.issueNumber, ISSUE_NUMBER);
-  assertEquals(exhaustedEscalationRoute(outcome).kind, "abandon-failed");
-  assertEquals(callsMatching(fake, "pr", "close").length, 0);
-});
-
-Deno.test("abandonAndRestart - a failed hand-off comment is a failure, not a decline", async () => {
-  const fake = makeFake({ issueComments: spentIssueComments() });
-  const gh = (args: string[]): Promise<string> =>
-    (args.includes("POST") &&
-        args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/comments`))) ||
-      (args[0] === "issue" && args[1] === "comment")
-      ? Promise.reject(new Error("comment refused"))
-      : fake.gh(args);
-
-  const outcome = await abandonAndRestart(makeRequest(), {
-    gh,
-    trustedAuthors: FLEET_AUTHORS,
-  });
-
-  assertEquals(outcome.outcome, "failed");
-  assert(outcome.outcome === "failed");
-  assertEquals(outcome.step, "issue-comment");
-  assertEquals(exhaustedEscalationRoute(outcome).kind, "abandon-failed");
-  assertEquals(callsMatching(fake, "pr", "close").length, 0);
-});
-
-Deno.test("abandonAndRestart - a comment that failed after the label is retried, not read as done", async () => {
-  // The label lands first, so a failed comment leaves `needs-human` alone on
-  // the issue. The next pass must post the comment, not call that finished.
-  const fake = withLabelEcho(makeFake({ issueComments: spentIssueComments() }));
-  let refuseComment = true;
-  const gh = (args: string[]): Promise<string> =>
-    refuseComment &&
-      ((args.includes("POST") &&
-        args.some((arg) => arg.endsWith(`/issues/${ISSUE_NUMBER}/comments`))) ||
-        (args[0] === "issue" && args[1] === "comment"))
-      ? Promise.reject(new Error("comment refused"))
-      : fake.gh(args);
-  const deps = { gh, trustedAuthors: FLEET_AUTHORS };
-
-  const first = await abandonAndRestart(makeRequest(), deps);
-  assert(first.outcome === "failed");
-  assertEquals(first.step, "issue-comment");
-  assertEquals(fake.state.issueLabels.includes("needs-human"), true);
-
-  refuseComment = false;
-  const second = await abandonAndRestart(makeRequest(), deps);
-  assertEquals(second.outcome, "declined");
-  assertEquals(
-    fake.state.issueComments.filter((c) => c.body.includes("redone")).length,
-    1,
-  );
-
-  // …and a third pass, with both in place, says nothing more.
-  await abandonAndRestart(makeRequest(), deps);
-  assertEquals(
-    fake.state.issueComments.filter((c) => c.body.includes("redone")).length,
-    1,
-  );
+  assertEquals(handOffHeadings, []);
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
 });
 
 Deno.test("abandonAndRestart - an unfinished abandon of this PR is not a spent budget", async () => {
-  // One claim, naming this PR: the budget is not spent, so nobody is asked.
+  // One claim, naming this PR: an earlier abandon of this PR did not finish,
+  // so this PR alone declines, whatever the count says.
   const fake = makeFake({
     issueComments: [comment(conflictRestartMarker(REPO, PR_NUMBER))],
   });
@@ -1173,30 +1029,43 @@ Deno.test("abandonAndRestart - an unfinished abandon of this PR is not a spent b
   assertNoNeedsHuman(fake);
 });
 
-Deno.test("buildRestartIssueComment - the last restart says what follows it", () => {
-  // The comment is permanent, so "this is your last restart" has to be true
-  // when it says so, and the first one must not promise a park (Issue #2312).
-  const first = buildRestartIssueComment({
+Deno.test("buildRestartIssueComment - says the restart number with no cap", () => {
+  const body = buildRestartIssueComment({
     request: makeRequest(),
     history: summariseFailedAttempts(failedComments()),
     label: { kept: "work-on" },
-    restartNumber: 1,
+    restartNumber: 3,
   });
-  assertStringIncludes(first, `restart **1 of ${MAX_RESTARTS_PER_ISSUE}**`);
-  assertStringIncludes(first, "redone once more");
+  assertStringIncludes(body, "restart **3**");
+  assert(!body.includes(" of "), body);
+  assertStringIncludes(body, "no cap");
+});
 
-  const last = buildRestartIssueComment({
-    request: makeRequest(),
-    history: summariseFailedAttempts(failedComments()),
-    label: { kept: "work-on" },
-    restartNumber: MAX_RESTARTS_PER_ISSUE,
-  });
-  assertStringIncludes(
-    last,
-    `restart **${MAX_RESTARTS_PER_ISSUE} of ${MAX_RESTARTS_PER_ISSUE}**`,
+Deno.test("conflictRestartMarker - carries the abandoned branch when it is safe", () => {
+  const marker = conflictRestartMarker(REPO, PR_NUMBER, "issue-16-limits");
+  assertEquals(
+    marker,
+    `${CONFLICT_RESTART_MARKER} pr="${REPO}#${PR_NUMBER}" branch="issue-16-limits" -->`,
   );
-  assertStringIncludes(last, "no third redo");
-  assertStringIncludes(last, "handed to a human");
+});
+
+Deno.test("conflictRestartMarker - an unsafe branch name omits the attribute", () => {
+  const withSpace = conflictRestartMarker(REPO, PR_NUMBER, "issue 16 limits");
+  assert(!withSpace.includes("branch="), withSpace);
+
+  const withQuote = conflictRestartMarker(REPO, PR_NUMBER, 'issue-16-"limits');
+  assert(!withQuote.includes('limits"'), withQuote);
+
+  const withDotDot = conflictRestartMarker(REPO, PR_NUMBER, "../escape");
+  assert(!withDotDot.includes("branch="), withDotDot);
+});
+
+Deno.test("restartMarkerPrNumbers - still parses a marker carrying the branch attribute", () => {
+  const marker = conflictRestartMarker(REPO, PR_NUMBER, "issue-16-limits");
+  assertEquals(
+    restartMarkerPrNumbers([comment(marker)]),
+    [PR_NUMBER],
+  );
 });
 
 // ---------------------------------------------------------------------------

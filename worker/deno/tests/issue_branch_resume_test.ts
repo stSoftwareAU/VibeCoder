@@ -323,6 +323,105 @@ Deno.test("#220 - ls-remote finds an issue's branches on a real remote", async (
   }
 });
 
+Deno.test("#3033 - the only candidate is abandoned: branch null, never checked out, named in skipped and abandoned", async () => {
+  const checkedOut: string[] = [];
+  const outcome = await resumeIssueBranch(
+    {
+      issueNumber: 12,
+      baseBranch: "main",
+      gitOptions: GIT_OPTIONS,
+      loadAbandonedBranches: () =>
+        Promise.resolve({ ok: true, value: ["issue-12-foo"] }),
+    },
+    fakeGit({ "issue-12-foo": { ahead: 3 } }, {
+      resumeFeatureBranchFromRemote: (branch) => {
+        checkedOut.push(branch);
+        return Promise.resolve({ ok: true, value: true });
+      },
+    }),
+  );
+
+  assertEquals(outcome.branch, null);
+  assertEquals(outcome.reason, "no-usable-candidate");
+  assertEquals(checkedOut, []);
+  assertEquals(outcome.skipped, [
+    "issue-12-foo (abandoned by a merge-conflict restart — the redo starts " +
+    "from main)",
+  ]);
+  assertEquals(outcome.abandoned, ["issue-12-foo"]);
+});
+
+Deno.test("#3033 - an abandoned branch plus a non-abandoned redo branch resumes the redo branch", async () => {
+  const outcome = await resumeIssueBranch(
+    {
+      issueNumber: 12,
+      baseBranch: "main",
+      gitOptions: GIT_OPTIONS,
+      loadAbandonedBranches: () =>
+        Promise.resolve({ ok: true, value: ["issue-12-foo"] }),
+    },
+    fakeGit(
+      {
+        "issue-12-foo": { ahead: 3 },
+        "issue-12-foo-redo-1": { ahead: 1 },
+      },
+      {
+        orderBranchesByRecency: () =>
+          Promise.resolve(["issue-12-foo-redo-1", "issue-12-foo"]),
+      },
+    ),
+  );
+
+  assertEquals(outcome.branch, "issue-12-foo-redo-1");
+  assertEquals(outcome.abandoned, ["issue-12-foo"]);
+  assertEquals(
+    outcome.skipped.some((entry) => entry.startsWith("issue-12-foo (")),
+    true,
+  );
+});
+
+Deno.test("#3033 - zero candidates never calls the abandoned-branch loader", async () => {
+  let called = false;
+  const outcome = await resumeIssueBranch(
+    {
+      issueNumber: 999,
+      baseBranch: "main",
+      gitOptions: GIT_OPTIONS,
+      loadAbandonedBranches: () => {
+        called = true;
+        return Promise.resolve({ ok: true, value: [] });
+      },
+    },
+    fakeGit({ "issue-211-other-issue": { ahead: 1 } }),
+  );
+
+  assertEquals(outcome.branch, null);
+  assertEquals(outcome.reason, "no-candidates");
+  assertEquals(outcome.abandoned, []);
+  assertEquals(called, false);
+});
+
+Deno.test("#3033 - a failed abandoned-branch lookup reports lookup-failed", async () => {
+  const outcome = await resumeIssueBranch(
+    {
+      issueNumber: 12,
+      baseBranch: "main",
+      gitOptions: GIT_OPTIONS,
+      loadAbandonedBranches: () =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("comment thread fetch failed"),
+        }),
+    },
+    fakeGit({ "issue-12-foo": { ahead: 3 } }),
+  );
+
+  assertEquals(outcome.branch, null);
+  assertEquals(outcome.reason, "lookup-failed");
+  assertEquals(outcome.abandoned, []);
+  assertEquals(outcome.detail, "comment thread fetch failed");
+});
+
 /** Run a git command in `cwd`, failing loudly on a non-zero exit. */
 async function git(args: string[], cwd: string): Promise<void> {
   const { code, stderr } = await new Deno.Command("git", {

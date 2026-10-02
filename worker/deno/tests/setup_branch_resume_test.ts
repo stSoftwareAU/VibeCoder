@@ -12,6 +12,7 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { workOnIssueSetupBranch } from "../lib/phases/setup_branch_phase.ts";
+import { createBranchName } from "../lib/git_branch.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -469,6 +470,64 @@ Deno.test("#2530 - a shared stream keeps this run on a per-issue session", async
       ).length,
       1,
     );
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("#3033 - a re-queued redo starts on a fresh branch from the base tip, not the abandoned head", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue3033-setup-" });
+  try {
+    const ctx = buildContext(workDir, false);
+    const state = buildState();
+    const freshBranches: string[] = [];
+    const derivedBranchName = createBranchName(211, ctx.issueTitle);
+    // The remote lists only the branch the ladder abandoned, which happens to
+    // be this issue's title-derived name (it was retitled back to the same
+    // slug by the re-queue).
+    const abandonedBranch = derivedBranchName;
+    const deps = createMockDeps({
+      git: {
+        listRemoteIssueBranches: () =>
+          Promise.resolve({
+            ok: true as const,
+            value: [{ branch: abandonedBranch, sha: "7bc5ea8" }],
+          }),
+        countCommitsAhead: () =>
+          Promise.resolve({ ok: true as const, value: 2 }),
+        resumeFeatureBranchFromRemote: () =>
+          Promise.resolve({ ok: true as const, value: true }),
+        createFeatureBranchFromBase: (branch: string, base: string) => {
+          freshBranches.push(branch);
+          assertEquals(base, "main");
+          return Promise.resolve({ ok: true as const, value: branch });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) => {
+          const url = args[args.length - 1] ?? "";
+          if (url.includes("/comments")) {
+            return Promise.resolve(JSON.stringify([{
+              body: `<!-- vibe-merge-conflict-restart pr="${ctx.repo}#34" ` +
+                `branch="${abandonedBranch}" -->\n♻️ re-queued`,
+              user: { login: "vibe-worker" },
+            }]));
+          }
+          return Promise.resolve("");
+        },
+      },
+    });
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+
+    assertEquals(result.status, "continue");
+    assertEquals(state.resumedFromCheckpoint, false);
+    assertEquals(state.branchName, `${derivedBranchName}-redo-1`);
+    assertEquals(freshBranches, [`${derivedBranchName}-redo-1`]);
+    // The abandoned branch itself is never pushed to.
+    assertEquals(freshBranches.includes(abandonedBranch), false);
 
     if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
   } finally {
