@@ -6,7 +6,9 @@
  * The lib/ sweep was cut into sink-organised slices and later top-ups.
  * `commands/` and `setup/` were read under #1218 and #1220 but were never
  * partitioned, so a later scan could not tell a swept module from an
- * unread one. Each slice now records `sweptAt` — the commit its written
+ * unread one. A ledger root may also be a single file — the root-level
+ * launcher scripts (#2760) are owned as-is rather than walked. Each slice
+ * now records `sweptAt` — the commit its written
  * record landed at — so `driftSince` and the `sweep-drift` command can
  * list the modules added or rewritten since that read.
  *
@@ -28,6 +30,13 @@ export const SWEEP_COVERAGE_ROOTS = [
   "worker/deno/lib",
   "worker/deno/commands",
   "worker/deno/setup",
+  "loop.ps1",
+  "loop.sh",
+  "quality.sh",
+  "run.ps1",
+  "run.sh",
+  "setup.ps1",
+  "setup.sh",
 ] as const;
 
 /** A 40-character lowercase git commit. */
@@ -535,18 +544,24 @@ export async function listSweptModulesForRoots(
 
 /**
  * List the non-test TypeScript modules under a directory, repo-relative.
+ * If `root` names a file rather than a directory, it is returned as-is —
+ * this is how a single root-level launcher script (#2760) is owned.
  *
  * This is the `find lib -name '*.ts' ! -name '*_test.ts'` of the issue, done
  * without a subprocess so the check runs under the unit-test permission set.
  *
  * @param repoRoot - Absolute path of the repository root.
- * @param root - Repo-relative directory to walk (defaults to `worker/deno/lib`).
+ * @param root - Repo-relative directory (or file) to walk (defaults to `worker/deno/lib`).
  * @returns Sorted repo-relative paths, using forward slashes.
  */
 export async function listSweptModules(
   repoRoot: string,
   root: string = LIB_SWEEP_ROOT,
 ): Promise<string[]> {
+  const rootStat = await Deno.stat(`${repoRoot}/${root}`);
+  if (rootStat.isFile) {
+    return [root];
+  }
   const paths: string[] = [];
   const visit = async (relDir: string): Promise<void> => {
     for await (const entry of Deno.readDir(`${repoRoot}/${relDir}`)) {

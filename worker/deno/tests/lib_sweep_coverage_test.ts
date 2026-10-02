@@ -378,6 +378,19 @@ Deno.test("listSweptModules - walks subdirectories and excludes test files", asy
   assertEquals(paths, [...paths].sort(), "expected a sorted list");
 });
 
+Deno.test("listSweptModules - a file root is returned as-is, a directory root is still walked", async () => {
+  const tmp = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${tmp}/run.sh`, "#!/bin/sh\n");
+    await Deno.mkdir(`${tmp}/lib`);
+    await Deno.writeTextFile(`${tmp}/lib/a.ts`, "");
+    assertEquals(await listSweptModules(tmp, "run.sh"), ["run.sh"]);
+    assertEquals(await listSweptModules(tmp, "lib"), ["lib/a.ts"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test(
   "diffCoverage - the pre-fix ledger without the #1219 slice reports the remainder as unswept",
   async () => {
