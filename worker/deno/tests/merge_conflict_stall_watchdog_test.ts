@@ -568,7 +568,7 @@ Deno.test("repairConflictQueueStall - a declined or failed abandon is reported, 
   assertEquals(await repair(fakeGitHub([tripComment(8.5)]), failed), "failed");
 });
 
-Deno.test("repairConflictQueueStall - a second trip on an issue already redone twice adds needs-human and one comment (Issue #2804)", async () => {
+Deno.test("repairConflictQueueStall - a second trip on an issue already redone twice still abandons and re-queues, no needs-human (Issue #3033)", async () => {
   const ISSUE = 7;
   const github = fakeGitHub([tripComment(8.5)]);
   const issue = {
@@ -587,6 +587,16 @@ Deno.test("repairConflictQueueStall - a second trip on an issue already redone t
         state: "OPEN",
         labels: issue.labels.map((name) => ({ name })),
       }));
+    }
+    if (
+      args[0] === "issue" && args[1] === "comment" &&
+      args[2] === String(ISSUE)
+    ) {
+      github.calls.push(args);
+      issue.comments.push(
+        comment(args[args.indexOf("--body") + 1] ?? "", 0),
+      );
+      return Promise.resolve("");
     }
     if (path === "") return github.gh(args);
     github.calls.push(args);
@@ -643,19 +653,26 @@ Deno.test("repairConflictQueueStall - a second trip on an issue already redone t
       },
     });
 
-  assertEquals(await run(), "abandon-declined");
+  assertEquals(await run(), "abandoned");
 
-  assertEquals(issue.labels, ["work-on", "needs-human"]);
+  // A third restart is still a restart, not a hand-off: the pickup label the
+  // issue already carried is kept, and no `needs-human` is ever applied
+  // (Issue #3033).
+  assertEquals(issue.labels, ["work-on"]);
   assertEquals(issue.comments.length, 3);
   assertStringIncludes(String(issue.comments[2]?.body), `${REPO}#${PR}`);
+  assertStringIncludes(String(issue.comments[2]?.body), "restart **3**");
   assert(
-    !github.calls.some((call) => call[0] === "pr" && call[1] === "close"),
-    "no third redo closes the PR",
+    !issue.comments.some((entry) =>
+      String(entry.body).includes("needs a human") ||
+      String(entry.body).includes("handed to a human")
+    ),
+    "no hand-off comment is posted",
   );
-
-  // A later check finds needs-human already there and says nothing more.
-  assertEquals(await run(), "abandon-declined");
-  assertEquals(issue.comments.length, 3);
+  assert(
+    github.calls.some((call) => call[0] === "pr" && call[1] === "close"),
+    "the exhausted PR is closed and the issue re-queued instead",
+  );
 });
 
 Deno.test("repairConflictQueueStall - the real second-trip comments say the ladder was rerun, in one sentence, never a lane rerun or a sync", async () => {

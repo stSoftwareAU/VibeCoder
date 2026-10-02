@@ -57,7 +57,6 @@ import {
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
   exhaustedEscalationRoute,
-  MAX_RESTARTS_PER_ISSUE,
   mergeFallbackRunsFromHistory,
   requeueLabelName,
   summariseFailedAttempts,
@@ -1238,11 +1237,8 @@ export function buildParkedPrComment(args: {
     conflictParkedMarker(args.base),
     "⏸️ **Parked on `merge-conflict` until the base moves**",
     "",
-    `Issue #${args.issueNumber} has had its ` +
-    `${MAX_RESTARTS_PER_ISSUE} restarts: this work has already been closed ` +
-    "and redone off the current base twice, and both replacements conflicted " +
-    "again. A third redo of the same work against the same base is not a " +
-    "different experiment, so this PR is **left open** rather than closed.",
+    `Issue #${args.issueNumber} declined a further restart of this work, ` +
+    "so this PR is **left open** rather than closed.",
     "",
     `It keeps the \`${MERGE_CONFLICT_LABEL}\` label and stays in the queue, ` +
     `but no further resolution attempt is started while \`${args.baseBranch}\` ` +
@@ -1319,9 +1315,8 @@ async function parkConflictingPr(
 
   logger.warn(
     `PR #${prNumber} was parked on \`${MERGE_CONFLICT_LABEL}\` — issue ` +
-      `#${args.issueNumber} has spent its ${MAX_RESTARTS_PER_ISSUE} restarts, ` +
-      `so nothing is attempted until \`${args.baseBranch}\` moves off ` +
-      `${args.base}`,
+      `#${args.issueNumber} declined a further restart, so nothing is ` +
+      `attempted until \`${args.baseBranch}\` moves off ${args.base}`,
     {
       repo,
       prNumber,
@@ -1789,9 +1784,9 @@ export async function findConflictingPr(
             issueNumber: abandon.reason.issueNumber,
             fallbackAction: `Left ${repo}#${pr.number} ` +
               `(\`${pr.headRefName}\`) open on \`${MERGE_CONFLICT_LABEL}\`. ` +
-              `Issue #${abandon.reason.issueNumber} has spent its ` +
-              `${MAX_RESTARTS_PER_ISSUE} restarts, so the PR is parked at ` +
-              `base \`${base}\` and re-attempted only when that tip moves.`,
+              `Issue #${abandon.reason.issueNumber} declined a further ` +
+              `restart, so the PR is parked at base \`${base}\` and ` +
+              "re-attempted only when that tip moves.",
             trustedAuthors,
             ...(options.fileFallbackFlag !== undefined
               ? { fileFallbackFlag: options.fileFallbackFlag }

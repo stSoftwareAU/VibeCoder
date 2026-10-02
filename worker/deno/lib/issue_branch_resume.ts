@@ -12,6 +12,15 @@
  * the branch the run works on; every candidate that was passed over is named
  * in the outcome so nothing is dropped silently.
  *
+ * **A candidate the merge-conflict ladder abandoned is never resumed**
+ * (Issue #3033). `conflict_abandon_restart.ts` closes an exhausted PR but
+ * leaves its branch on origin, so a re-queued issue's only remote candidate
+ * can be the very head the ladder gave up on. When the caller supplies
+ * {@link ResumeBranchParams.loadAbandonedBranches}, every candidate it names
+ * is skipped before being checked out — never resumed, never counted towards
+ * "no commits beyond base" — and {@link ResumeBranchOutcome.abandoned} names
+ * them so the caller can cut the redo's branch fresh from base instead.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -53,6 +62,13 @@ export interface ResumeBranchOutcome {
   aheadCount?: number;
   /** Failure detail for a lookup that could not complete. */
   detail?: string;
+  /**
+   * Candidates the merge-conflict ladder abandoned (Issue #3033), seen among
+   * this lookup's candidates — `[]` when none were, or when
+   * {@link ResumeBranchParams.loadAbandonedBranches} was not supplied or had
+   * nothing to check (no candidates at all).
+   */
+  abandoned: string[];
 }
 
 /** Git functions the lookup needs, injected so tests drive them directly. */
@@ -72,6 +88,15 @@ export interface ResumeBranchParams {
   persistedBranch?: string;
   /** Git command options (cwd of the clone). */
   gitOptions: GitCommandOptions;
+  /**
+   * Branches the merge-conflict ladder has abandoned for this issue
+   * (Issue #3033) — called only when there is at least one remote candidate
+   * to check, so a run with no remote branch at all costs no extra API call.
+   * A failure (`ok: false`) is reported as `lookup-failed`, the same as a
+   * failed remote branch listing: prior work can then be neither found nor
+   * ruled out.
+   */
+  loadAbandonedBranches?: () => Promise<Result<readonly string[]>>;
 }
 
 /**
@@ -108,7 +133,13 @@ export async function resumeIssueBranch(
   params: ResumeBranchParams,
   git: ResumeBranchGitDeps,
 ): Promise<ResumeBranchOutcome> {
-  const { issueNumber, baseBranch, persistedBranch, gitOptions } = params;
+  const {
+    issueNumber,
+    baseBranch,
+    persistedBranch,
+    gitOptions,
+    loadAbandonedBranches,
+  } = params;
 
   const listed = await git.listRemoteIssueBranches(
     issueNumber,
@@ -123,6 +154,7 @@ export async function resumeIssueBranch(
       reason: "lookup-failed",
       candidates: [],
       skipped: [],
+      abandoned: [],
       detail: listed.error.message,
     };
   }
@@ -134,8 +166,30 @@ export async function resumeIssueBranch(
       reason: "no-candidates",
       candidates: [],
       skipped: [],
+      abandoned: [],
     };
   }
+
+  // Only reached when there is at least one candidate, so a run with no
+  // remote branch at all never pays for this lookup (Issue #3033).
+  let abandoned: readonly string[] = [];
+  if (loadAbandonedBranches) {
+    const abandonedResult = await loadAbandonedBranches();
+    if (!abandonedResult.ok) {
+      return {
+        branch: null,
+        reason: "lookup-failed",
+        candidates,
+        skipped: [],
+        abandoned: [],
+        detail: abandonedResult.error.message,
+      };
+    }
+    abandoned = abandonedResult.value;
+  }
+  const abandonedSeen = candidates.filter((branch) =>
+    abandoned.includes(branch)
+  );
 
   const ordered = candidates.length > 1
     ? await git.orderBranchesByRecency(candidates, gitOptions)
@@ -145,6 +199,13 @@ export async function resumeIssueBranch(
   for (
     const { branch, reason } of rankResumeCandidates(ordered, persistedBranch)
   ) {
+    if (abandoned.includes(branch)) {
+      skipped.push(
+        `${branch} (abandoned by a merge-conflict restart — the redo ` +
+          `starts from ${baseBranch})`,
+      );
+      continue;
+    }
     const checkout = await git.resumeFeatureBranchFromRemote(
       branch,
       gitOptions,
@@ -163,6 +224,7 @@ export async function resumeIssueBranch(
       reason,
       candidates,
       skipped: [...skipped, ...remainingAfter(ordered, branch, skipped)],
+      abandoned: abandonedSeen,
       ...(ahead.ok ? { aheadCount: ahead.value } : {}),
       ...(ahead.ok
         ? {}
@@ -175,6 +237,7 @@ export async function resumeIssueBranch(
     reason: "no-usable-candidate",
     candidates,
     skipped,
+    abandoned: abandonedSeen,
   };
 }
 
