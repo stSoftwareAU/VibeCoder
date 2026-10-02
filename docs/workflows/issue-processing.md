@@ -1286,7 +1286,13 @@ rediscovered by hand and refiled as #2560.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
-after the summary gates and before the PR is raised:
+after the closure, independent-review and reproduction-status gates but
+**before** the docs-sweep gate and the PR is raised. That ordering is
+deliberate (Issue #3085 review): on a branch that already carries an open PR,
+a failing summary gate finalises that PR via its own recovery path — and the
+docs-sweep gate is the one of the four that fires on almost every
+code-changing run, so it ran ahead of the guard only long enough to drop the
+degraded-run follow-up and PR-body note whenever a PR already existed:
 
 ```mermaid
 flowchart TD

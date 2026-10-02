@@ -79,6 +79,13 @@ interface Scenario {
   changedFiles: string;
   /** Whether the run's branch already carries an open PR. */
   prExistsForBranch?: boolean;
+  /**
+   * When true, the `git diff --name-only <base>...HEAD` call that resolves
+   * `changedFiles` for the docs-sweep gate fails (non-zero exit) — the gate
+   * must fail closed rather than read the unreadable diff as docs-free
+   * (Issue #3073 / #3085 review).
+   */
+  diffFails?: boolean;
 }
 
 interface Outcome {
@@ -150,6 +157,23 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             value: { code: 0, stdout, stderr: "" },
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
+        // The 3-arg form (`diff --name-only <base>...HEAD`) is the call that
+        // feeds the docs-sweep gate's `changedFiles`; the 4-arg form (with
+        // `--diff-filter=ACMR`) feeds the unrelated changed-workflow gate and
+        // must keep succeeding so a failing diff only exercises the gate
+        // under test.
+        if (
+          cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only" &&
+          cmdArgs.length === 3
+        ) {
+          if (scenario.diffFails) {
+            return Promise.resolve({
+              ok: true as const,
+              value: { code: 128, stdout: "", stderr: "fatal: bad revision" },
+            });
+          }
+          return ok(scenario.changedFiles);
+        }
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok(scenario.changedFiles);
         }
@@ -276,5 +300,25 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.claudeCalls, 0);
     assertEquals(outcome.comments.length, 0);
+  },
+);
+
+Deno.test(
+  "completion - an unreadable diff fails closed even with no Docs sweep line",
+  async () => {
+    // `git diff --name-only` fails (non-zero exit), so `changedFiles` is
+    // unknown. The gate must treat that as "diff could not be read" — not
+    // as a docs-free diff — and still block PR creation (Issue #3085 review).
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_LINE,
+      changedFiles: "",
+      diffFails: true,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertStringIncludes(outcome.reason ?? "", "Docs sweep");
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.comments[0]!, "section:");
   },
 );

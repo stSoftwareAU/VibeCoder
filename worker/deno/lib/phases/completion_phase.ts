@@ -2056,37 +2056,6 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
-  // Docs-sweep gate (Issue #3073).
-  //
-  // The PR-summary contract already asked for a one-line Docs sweep entry,
-  // but nothing checked it: a term-only grep sweep still missed the manual
-  // for the changed surface, and some PRs carried no line at all. When the
-  // diff changes a non-test, non-doc file, the summary must name the manual
-  // `section:` that documents the surface — not merely that a grep ran.
-  // ---------------------------------------------------------------------
-  const docsSweep = validateDocsSweep({
-    changedFiles: changedFilesKnown ? changedFiles : null,
-    prSummaryContent: prBody,
-  });
-  if (docsSweep.applicable && !docsSweep.valid) {
-    logger.warn("Docs-sweep gate blocked PR creation", {
-      changedFilesKnown,
-      codeFiles: docsSweep.codeFiles.length,
-      problems: docsSweep.problems,
-    });
-    return await reportSummaryRuleBlock(
-      `Docs sweep not recorded in the PR summary: ${
-        docsSweep.problems[0] ?? "Docs sweep line missing"
-      }`,
-      buildDocsSweepGateComment(docsSweep),
-      ctx,
-      state,
-      prBody,
-      deps,
-    );
-  }
-
-  // ---------------------------------------------------------------------
   // Degraded-run delivery guard (Issue #2562).
   //
   // A run served by a fallback model must not read as complete delivery: on
@@ -2159,6 +2128,45 @@ async function completionBody(
       },
     );
     prBody = buildDegradedNoFollowUpSection(degradedDelivery) + prBody;
+  }
+
+  // ---------------------------------------------------------------------
+  // Docs-sweep gate (Issue #3073).
+  //
+  // The PR-summary contract already asked for a one-line Docs sweep entry,
+  // but nothing checked it: a term-only grep sweep still missed the manual
+  // for the changed surface, and some PRs carried no line at all. When the
+  // diff changes a non-test, non-doc file, the summary must name the manual
+  // `section:` that documents the surface — not merely that a grep ran.
+  //
+  // Issue #3085 (review): this gate must run after the degraded-run delivery
+  // guard above. The guard files the follow-up and prefixes the PR body
+  // *before* any gate is allowed to call reportSummaryRuleBlock, which on an
+  // existing-PR branch finalises that PR via recoverAndFinaliseExistingPr —
+  // arming auto-merge and returning early. Gating here first would let a
+  // degraded run's follow-up and PR-body note go unrecorded whenever the
+  // branch already had an open PR.
+  // ---------------------------------------------------------------------
+  const docsSweep = validateDocsSweep({
+    changedFiles: changedFilesKnown ? changedFiles : null,
+    prSummaryContent: prBody,
+  });
+  if (docsSweep.applicable && !docsSweep.valid) {
+    logger.warn("Docs-sweep gate blocked PR creation", {
+      changedFilesKnown,
+      codeFiles: docsSweep.codeFiles.length,
+      problems: docsSweep.problems,
+    });
+    return await reportSummaryRuleBlock(
+      `Docs sweep not recorded in the PR summary: ${
+        docsSweep.problems[0] ?? "Docs sweep line missing"
+      }`,
+      buildDocsSweepGateComment(docsSweep),
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
   }
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),

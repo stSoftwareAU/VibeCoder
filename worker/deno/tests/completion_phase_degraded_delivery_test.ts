@@ -71,6 +71,30 @@ Did half of it.
 **Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
 `;
 
+/**
+ * Same as `SUMMARY_PARTIAL` but with no `Docs sweep` line, so the docs-sweep
+ * gate (Issue #3073) itself blocks — used to check gate ordering against the
+ * degraded-delivery guard on a branch that already has an open PR (Issue
+ * #3085 review).
+ */
+const SUMMARY_PARTIAL_NO_DOCS_SWEEP = `## Summary
+
+Did half of it.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: met
+- **missing** — the docs table lists opus — reviewer: missing — reason: ran out of turns
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, TDD, fail-loud error handling
+`;
+
 const SUMMARY_COMPLETE = `## Summary
 
 Did all of it.
@@ -148,11 +172,15 @@ interface Outcome {
   prBodies: string[];
 }
 
+const EXISTING_PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/777";
+
 async function runCompletion(opts: {
   issueBody: string;
   summary: string | null;
   claudeRunStats: PhaseClaudeResult[];
   failIssueCreate?: boolean;
+  /** Issue #3085 review: the branch already has an open PR before this run. */
+  prExistsForBranch?: boolean;
 }): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   if (opts.summary !== null) {
@@ -211,6 +239,9 @@ async function runCompletion(opts: {
         if (args[0] === "pr" && args[1] === "create") {
           prBodies.push(args[args.indexOf("--body") + 1] ?? "");
         }
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(JSON.stringify({ state: "OPEN" }));
+        }
         return Promise.resolve(
           "https://github.com/stSoftwareAU/VibeCoder/pull/100",
         );
@@ -236,7 +267,23 @@ async function runCompletion(opts: {
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
       findExistingPrForBranch: () =>
-        Promise.resolve({ ok: false, error: new Error("none") }),
+        Promise.resolve(
+          opts.prExistsForBranch
+            ? { ok: true as const, value: EXISTING_PR_URL }
+            : { ok: false as const, error: new Error("none") },
+        ),
+      // Captures the body the recovery path writes back to the existing PR
+      // (Issue #3085 review) — `gh pr create` is never called on that path,
+      // so `prBodies` above would otherwise stay empty.
+      recoverExistingPr: (
+        _repo: string,
+        _issueNumber: number,
+        _prUrl: string,
+        body?: string,
+      ) => {
+        prBodies.push(body ?? "");
+        return Promise.resolve({ ok: true as const, value: "recovered" });
+      },
     },
   });
 
@@ -245,7 +292,9 @@ async function runCompletion(opts: {
 
   return {
     status: result.status,
-    reason: result.status === "failure" ? result.reason : undefined,
+    reason: result.status === "failure" || result.status === "early_exit"
+      ? result.reason
+      : undefined,
     issueCreates,
     prBodies,
   };
@@ -309,7 +358,7 @@ Deno.test("completion - a degraded run that met every criterion raises the PR wi
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
 });
 
-Deno.test("completion - #2543 reproduction (b): a degraded run with no summary on a grill-me issue files no follow-up but says so in the PR (Issue #2695)", async () => {
+Deno.test("completion - #2543 reproduction (b): a degraded run with a minimal summary on a grill-me issue files no follow-up but says so in the PR (Issue #2695)", async () => {
   const outcome = await runCompletion({
     issueBody: GRILL_ME_ISSUE,
     summary: SUMMARY_MINIMAL_WITH_DOCS_SWEEP,
@@ -388,4 +437,33 @@ Deno.test("completion - a degraded run whose follow-up cannot be filed raises no
   assertEquals(outcome.status, "failure");
   assertStringIncludes(outcome.reason ?? "", "follow-up");
   assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
+});
+
+Deno.test("completion - a docs-sweep block on an existing-PR branch still runs the degraded-delivery guard first (Issue #3085 review)", async () => {
+  // The docs-sweep gate (Issue #3073) blocks this summary — it carries no
+  // `Docs sweep` line. Previously that gate ran *before* the degraded-run
+  // delivery guard, so on a branch that already had an open PR, the gate's
+  // own `reportSummaryRuleBlock` call recovered (and finalised) that PR
+  // before the guard ever filed the follow-up or prefixed the PR body — the
+  // exact #2543 loss the guard exists to stop.
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_DOCS_SWEEP,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+  });
+
+  assertEquals(outcome.status, "early_exit", outcome.reason);
+  assertEquals(
+    outcome.issueCreates.length,
+    1,
+    "the degraded-run follow-up is still filed even though the docs-sweep " +
+      "gate blocks this summary",
+  );
+  assertEquals(
+    outcome.prBodies.length,
+    1,
+    "the recovery path wrote the PR body back exactly once",
+  );
+  assertStringIncludes(outcome.prBodies[0]!, "Degraded run — partial delivery");
 });
