@@ -1082,6 +1082,17 @@ from the wrong source), run the test, confirm it goes red, then restore the
 guard. A negative test that stays green without its guard is a blocking
 self-review finding.
 
+**Every outcome of a branch you add needs a test that reaches it.** For each
+new condition, match arm, exit-code check or trait/interface default in the
+diff, list its outcomes (success, absent/empty, error, fail-closed default)
+and name the test that drives each one. A test double that overrides the
+default, or a stub that always returns the same code, does not reach the
+other outcomes. Flip each outcome on purpose (return the lenient value
+instead of the error, treat "absent" as "failed"), run the tests, confirm at
+least one goes red, then restore it. An outcome with no test, or one whose
+flip leaves the suite green, is a blocking self-review finding: add a test
+for it.
+
 **Every changed call site needs a test that goes red without it.** When a
 change threads a new argument, flag or behaviour through more than one
 production caller, a test of the helper, or of some callers, does not cover

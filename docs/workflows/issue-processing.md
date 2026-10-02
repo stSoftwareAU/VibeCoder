@@ -1118,6 +1118,18 @@ contains the forbidden thing and a run with the guard broken on purpose that
 goes red; a negative test that stays green without its guard is a blocking
 self-review finding.
 
+**Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
+also sent back for a new branch with one outcome no test reached: a
+stale-remote guard whose stubs all returned `ls-remote` exit 0, so
+simplifying the condition to `code !== 0` (and so standing down on exit 2,
+the path every real gated CI fix takes) left the suite green; and a trait
+default promised to return an error whose every test used an implementation
+that overrode it. The guidelines and the issue prompt's Test Plan step now
+require each outcome of a branch the diff adds — condition, match arm, exit
+code, interface default — to have a named test that reaches it, checked by
+flipping the outcome on purpose and seeing the suite go red; a test double
+that overrides the default or always returns the same code does not count.
+
 **Every changed call site needs a test that goes red without it (Issue #3067).**
 A test of a shared helper, or of some of its callers, does not cover the
 other callers' wiring. Fleet PRs threaded a new argument through several
