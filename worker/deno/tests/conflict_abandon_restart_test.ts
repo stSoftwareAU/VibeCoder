@@ -53,12 +53,21 @@ import type {
   MergeFallbackOutcome,
 } from "../lib/merge_fallback_issue.ts";
 import { formatStageTimings } from "../lib/conflict_stage_timer.ts";
-import type { Result } from "../types.ts";
+import type { LogContext, Logger, Result } from "../types.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   DEFAULT_MAX_CONFLICT_ATTEMPTS,
 } from "../lib/pr_merge_conflict_scan.ts";
+import {
+  abandonAndRebuildMilestone,
+  buildMilestoneRebuildPrComment,
+  buildSubIssueRequeueComment,
+  describeMilestoneRebuild,
+  listMergedSubPrs,
+  type MilestoneRebuildDeps,
+  type MilestoneRebuilt,
+} from "../lib/conflict_milestone_rebuild.ts";
 
 // ---------------------------------------------------------------------------
 // Fixtures

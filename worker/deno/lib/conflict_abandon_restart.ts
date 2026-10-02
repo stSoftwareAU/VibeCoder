@@ -479,7 +479,15 @@ export type AbandonStep =
    * close: the flag is the re-do item, so closing the PR without one would
    * lose the work outright — the same harm the old decline avoided.
    */
-  | "fallback-flag";
+  | "fallback-flag"
+  /** Listing the merged sub-PRs a `milestone/**` rebuild replays (Issue #3035). */
+  | "milestone-sub-prs"
+  /** The git work rebuilding the milestone branch from its base (Issue #3035). */
+  | "milestone-rebuild"
+  /** Delivering the rebuild to the milestone branch (Issue #3035). */
+  | "milestone-push"
+  /** Re-queuing a skipped sub-PR's sub-issue after a milestone rebuild (Issue #3035). */
+  | "sub-issue-requeue";
 
 /** What {@link abandonAndRestart} did. */
 export type AbandonRestartOutcome =
@@ -1253,12 +1261,12 @@ export function buildStalledNoIssueClosePrComment(args: {
 // ---------------------------------------------------------------------------
 
 /** The issue state and labels one `gh issue view` answers for. */
-interface IssueSnapshot {
+export interface IssueSnapshot {
   state: string;
   labels: string[];
 }
 
-async function fetchIssueSnapshot(
+export async function fetchIssueSnapshot(
   repo: string,
   issueNumber: number,
   gh: (args: string[]) => Promise<string>,
