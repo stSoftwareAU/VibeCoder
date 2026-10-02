@@ -1,13 +1,12 @@
 /**
- * Tests for merge_conflict_stall_watchdog.ts — a PR that has carried
- * `merge-conflict` for hours with no attempt ever concluding (Issue #1112).
+ * Tests for merge_conflict_stall_watchdog.ts — the single 2-hour owner check
+ * on a `merge-conflict` queue (Issue #3001, part of #2965).
  *
- * The detection keys on **wall-clock time since the label went on**, not on
- * attempt records, because the failure being detected is precisely that no
- * attempt record exists. The three tests the issue names as its earliest
- * failure detection points are here: the boundary table (with the open,
- * unconcluded attempt row), the cross-host dedupe, and the assertion that this
- * path never applies `needs-human`.
+ * The clock starts at the LATEST of the label event, the newest trusted
+ * stand-down, the newest trusted resolution attempt, and the PR's last head
+ * change. Two hours after that with nothing since, the watchdog fixes
+ * forward: a takeover while the shared budget remains, a guarded abandon once
+ * it is spent.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -20,32 +19,31 @@ import {
 } from "@std/assert";
 import type { Logger } from "../types.ts";
 import {
-  buildConflictStallComment,
-  CONFLICT_STALL_REPAIR_MARKER,
+  conflictStallClockStart,
   type ConflictStallObservation,
-  DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS,
   detectConflictQueueStall,
   listedOpenPrs,
   repairConflictQueueStall,
   scanConflictQueueStalls,
 } from "../lib/merge_conflict_stall_watchdog.ts";
+import { MERGE_CONFLICT_LABEL } from "../lib/pr_merge_conflict_scan.ts";
 import {
-  CONFLICT_ATTEMPT_MARKER,
-  CONFLICT_FAILED_MARKER,
-  CONFLICT_RESOLVED_MARKER,
-  MERGE_CONFLICT_LABEL,
-} from "../lib/pr_merge_conflict_scan.ts";
-import {
+  conflictAttemptMarker,
+  conflictFailedMarker,
   conflictParkedMarker,
-  conflictRungFailedMarker,
+  conflictResolvedMarker,
 } from "../lib/merge_conflict_markers.ts";
-import {
-  type AbandonRestartDeps,
-  type AbandonRestartOutcome,
-  type AbandonRestartRequest,
-  conflictRestartMarker,
+import { gatedHeadMarker } from "../lib/gated_head_guard.ts";
+import type {
+  AbandonRestartDeps,
+  AbandonRestartOutcome,
+  AbandonRestartRequest,
 } from "../lib/conflict_abandon_restart.ts";
-import type { ConflictIssueContext } from "../lib/conflict_issue_context.ts";
+import type {
+  ConflictTakeoverDeps,
+  ConflictTakeoverOutcome,
+  ConflictTakeoverPr,
+} from "../lib/conflict_takeover.ts";
 import type { RepoLease } from "../lib/maintenance_lane.ts";
 
 const HOUR = 3600_000;
@@ -55,6 +53,8 @@ const PR = 116;
 /** The fleet login every trusted fixture comment is authored by. */
 const FLEET = "vibe-coder-bot";
 const isTrustedAuthor = (login: string) => login === FLEET;
+const HEAD_SHA = "abcdef1234567890abcdef1234567890abcdef12";
+const OTHER_HEAD_SHA = "1234567890abcdef1234567890abcdef12345678";
 
 /** A silent logger — the tests assert on effects, not on log lines. */
 const noop = () => {};
@@ -123,31 +123,31 @@ Deno.test("detectConflictQueueStall - the four boundary states", () => {
     openAttempt?: boolean;
   }[] = [
     {
-      name: "labelled 9h ago with no attempt at all",
-      labelAgeHours: 9,
+      name: "labelled 3h ago with no attempt at all",
+      labelAgeHours: 3,
       comments: [],
       detected: true,
       openAttempt: false,
     },
     {
-      name: "labelled 9h ago with one concluded attempt",
-      labelAgeHours: 9,
+      name: "labelled 3h ago with one concluded attempt just now",
+      labelAgeHours: 3,
       comments: [
-        comment(`${CONFLICT_ATTEMPT_MARKER} n="1" -->`, 8),
-        comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 7),
+        comment(conflictAttemptMarker(1, "ladder", HEAD_SHA), 2.5),
+        comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 1),
       ],
       detected: false,
     },
     {
-      name: "labelled 9h ago with one open, unconcluded attempt",
-      labelAgeHours: 9,
-      comments: [comment(`${CONFLICT_ATTEMPT_MARKER} n="1" -->`, 8)],
+      name: "labelled 3h ago with one open, unconcluded attempt",
+      labelAgeHours: 3,
+      comments: [comment(conflictAttemptMarker(1, "ladder", HEAD_SHA), 2.5)],
       detected: true,
       openAttempt: true,
     },
     {
-      name: "labelled 3h ago, inside the threshold",
-      labelAgeHours: 3,
+      name: "labelled 1h ago, inside the window",
+      labelAgeHours: 1,
       comments: [],
       detected: false,
     },
@@ -166,102 +166,165 @@ Deno.test("detectConflictQueueStall - the four boundary states", () => {
 
 Deno.test("detectConflictQueueStall - a merge that resolved the conflict is not a stall", () => {
   const stall = detect(
-    observation(9, [comment(CONFLICT_RESOLVED_MARKER, 6)]),
+    observation(3, [comment(conflictResolvedMarker("ladder", HEAD_SHA), 1)]),
   );
   assertEquals(stall, null);
 });
 
-Deno.test("detectConflictQueueStall - a conclusion predating the label does not count", () => {
-  // The label went on 9h ago; the conclusion is from the conflict before it.
-  const stall = detect(
-    observation(9, [comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 30)]),
-  );
-  assert(stall !== null);
-  assertEquals(stall.labelAgeMs, 9 * HOUR);
-});
-
-Deno.test("detectConflictQueueStall - a conclusion starts a fresh clock", () => {
-  // Labelled 20h ago, one attempt concluded 9h ago, silence since: the PR is
-  // back in the ordinary ladder, and that ladder has stopped moving too.
-  const stalled = detect(
-    observation(20, [
-      comment(`${CONFLICT_ATTEMPT_MARKER} n="1" -->`, 10),
-      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 9),
-    ]),
-  );
-  assert(stalled !== null);
-  assertEquals(stalled.stalledMs, 9 * HOUR);
-  assertEquals(stalled.labelAgeMs, 20 * HOUR);
-  assertEquals(stalled.lastConclusionAtMs, NOW - 9 * HOUR);
-  assertEquals(stalled.openAttempt, false);
-
-  // …and the fresh clock is a real clock: a conclusion 7h ago is inside it.
+Deno.test("detectConflictQueueStall - an attempt starts a fresh clock", () => {
+  // Labelled 10h ago, one attempt concluded 1h59m ago: inside the window.
   assertEquals(
     detect(
-      observation(20, [comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 7)]),
+      observation(10, [
+        comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 1 + 59 / 60),
+      ]),
     ),
     null,
   );
-});
-
-Deno.test("detectConflictQueueStall - a trip before the last conclusion does not suppress", () => {
-  // The previous stall was tripped, an attempt then concluded, and the queue
-  // stopped again: that is a new stall, and it gets its own repair.
+  // At exactly 2h since the attempt, it trips, and names "attempt".
   const stall = detect(
-    observation(30, [
-      comment(`${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->\nstalled`, 20),
-      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
+    observation(10, [
+      comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 2),
     ]),
   );
   assert(stall !== null);
-  assertEquals(stall.stalledMs, 12 * HOUR);
+  assertEquals(stall.clockStart, "attempt");
+  assertEquals(stall.lastAttemptAtMs, NOW - 2 * HOUR);
 });
 
 Deno.test("detectConflictQueueStall - a forged conclusion cannot silence the watchdog", () => {
   // Any account may write a marker into a comment body on a public repo, so
-  // an untrusted conclusion is ignored: the fail direction is towards saying
+  // an untrusted attempt is ignored: the fail direction is towards saying
   // something, never towards silence.
   const stall = detect(
-    observation(9, [
-      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 5, "drive-by"),
+    observation(3, [
+      comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 1, "drive-by"),
     ]),
   );
   assert(stall !== null);
+  assertEquals(stall.clockStart, "label");
 });
 
-Deno.test("detectConflictQueueStall - parked PRs are excluded", () => {
+Deno.test("detectConflictQueueStall - parked on needs-human/closed/stale/unknown/unlabelled/unknown-age is excluded", () => {
   const parked: [string, ConflictStallObservation][] = [
     [
       "needs-human",
-      observation(9, [], {
+      observation(3, [], {
         labels: [MERGE_CONFLICT_LABEL, "needs-human"],
       }),
     ],
-    ["closed", observation(9, [], { closed: true })],
+    ["closed", observation(3, [], { closed: true })],
     // The label is not removed when a conflict clears by other means, so a
     // labelled PR that now merges cleanly is a stale label, not a stall.
     [
       "stale label — no longer conflicting",
-      observation(9, [], {
+      observation(3, [], {
         mergeableState: "MERGEABLE",
       }),
     ],
     [
       "mergeable state unknown",
-      observation(9, [], {
+      observation(3, [], {
         mergeableState: undefined,
       }),
     ],
-    ["not in the queue", observation(9, [], { labels: [] })],
-    ["label age unknown", observation(9, [], { labelledAtMs: undefined })],
+    ["not in the queue", observation(3, [], { labels: [] })],
+    ["label age unknown", observation(3, [], { labelledAtMs: undefined })],
   ];
   for (const [name, obs] of parked) {
     assertEquals(detect(obs), null, name);
   }
 });
 
+Deno.test("detectConflictQueueStall - the window is two hours (Issue #2996)", () => {
+  assertEquals(detect(observation(1.9833)), null); // 1h59m
+  assert(detect(observation(2)) !== null);
+});
+
 // ---------------------------------------------------------------------------
-// Parked on the base tip (Issue #2312)
+// Clock start — stand-down, head change, future head change (Issue #3001)
+// ---------------------------------------------------------------------------
+
+Deno.test("detectConflictQueueStall - head unchanged 1h59m after a trusted stand-down is not a stall; at 2h it is", () => {
+  const standDownAgoAtAlmostTwoHours = (agoHours: number) =>
+    observation(10, [
+      comment(gatedHeadMarker("milestone/x", NOW - agoHours * HOUR), agoHours),
+    ]);
+
+  assertEquals(detect(standDownAgoAtAlmostTwoHours(1.9833)), null);
+  const stall = detect(standDownAgoAtAlmostTwoHours(2));
+  assert(stall !== null);
+  assertEquals(stall.clockStart, "stand-down");
+  assertEquals(stall.standDownAtMs, NOW - 2 * HOUR);
+});
+
+Deno.test("detectConflictQueueStall - a head change after a stand-down resets the clock", () => {
+  const comments = [
+    comment(gatedHeadMarker("milestone/x", NOW - 10 * HOUR), 10),
+  ];
+  // The head changed 1h ago — inside the window.
+  assertEquals(
+    detect(
+      observation(20, comments, { headChangedAtMs: NOW - 1 * HOUR }),
+    ),
+    null,
+  );
+  // The head changed exactly 2h ago — the window has elapsed.
+  const stall = detect(
+    observation(20, comments, { headChangedAtMs: NOW - 2 * HOUR }),
+  );
+  assert(stall !== null);
+  assertEquals(stall.clockStart, "head-change");
+  assertEquals(stall.headChangedAtMs, NOW - 2 * HOUR);
+});
+
+Deno.test("detectConflictQueueStall - a future headChangedAtMs is ignored", () => {
+  const stall = detect(
+    observation(3, [], { headChangedAtMs: NOW + HOUR }),
+  );
+  assert(stall !== null);
+  assertEquals(stall.clockStart, "label");
+  assertEquals(stall.headChangedAtMs, NOW + HOUR, "kept on the stall record");
+});
+
+Deno.test("detectConflictQueueStall - untrusted attempt/stand-down markers do not move the clock", () => {
+  const stall = detect(
+    observation(3, [
+      comment(gatedHeadMarker("milestone/x", NOW - 1 * HOUR), 1, "drive-by"),
+      comment(
+        conflictFailedMarker(1, "ladder", HEAD_SHA),
+        1,
+        "drive-by",
+      ),
+    ]),
+  );
+  assert(stall !== null);
+  assertEquals(stall.clockStart, "label");
+  assertEquals(stall.standDownAtMs, undefined);
+  assertEquals(stall.lastAttemptAtMs, undefined);
+});
+
+Deno.test("conflictStallClockStart - the latest of label, stand-down, attempt and head-change wins", () => {
+  const labelledAtMs = NOW - 20 * HOUR;
+  const comments = [
+    comment(gatedHeadMarker("milestone/x", NOW - 15 * HOUR), 15),
+    comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 10),
+  ];
+  const result = conflictStallClockStart(
+    comments,
+    labelledAtMs,
+    NOW - 5 * HOUR,
+    NOW,
+    isTrustedAuthor,
+  );
+  assertEquals(result.cause, "head-change");
+  assertEquals(result.startMs, NOW - 5 * HOUR);
+  assertEquals(result.standDownAtMs, NOW - 15 * HOUR);
+  assertEquals(result.lastAttemptAtMs, NOW - 10 * HOUR);
+});
+
+// ---------------------------------------------------------------------------
+// Parked on the base tip (Issue #2312) — suppressed only while budget remains
 // ---------------------------------------------------------------------------
 
 /** The base tip a park marker names in these fixtures. */
@@ -269,13 +332,10 @@ const PARKED_BASE = "1111111111111111111111111111111111111111";
 /** The base tip after somebody pushed to the base branch. */
 const MOVED_BASE = "2222222222222222222222222222222222222222";
 
-Deno.test("detectConflictQueueStall - a parked PR on an unmoved base is not a stall", () => {
-  // The park marker is what *follows* the label: the fleet has spent this
-  // issue's restarts and is waiting on the base tip, which is the opposite of
-  // the silence this watchdog reports.
+Deno.test("detectConflictQueueStall - a parked PR on an unmoved base with budget remaining is not a stall", () => {
   assertEquals(
     detect(
-      observation(20, [comment(conflictParkedMarker(PARKED_BASE), 10)], {
+      observation(10, [comment(conflictParkedMarker(PARKED_BASE), 5)], {
         baseRefOid: PARKED_BASE,
       }),
     ),
@@ -284,10 +344,8 @@ Deno.test("detectConflictQueueStall - a parked PR on an unmoved base is not a st
 });
 
 Deno.test("detectConflictQueueStall - a parked PR whose base moved is judged the usual way", () => {
-  // The suppression is narrow on purpose: once the base moves, the scan owes
-  // this PR an attempt again, so a park must not buy permanent silence.
   const stall = detect(
-    observation(20, [comment(conflictParkedMarker(PARKED_BASE), 10)], {
+    observation(10, [comment(conflictParkedMarker(PARKED_BASE), 5)], {
       baseRefOid: MOVED_BASE,
     }),
   );
@@ -296,73 +354,38 @@ Deno.test("detectConflictQueueStall - a parked PR whose base moved is judged the
 
 Deno.test("detectConflictQueueStall - an outsider's park marker cannot silence the watchdog", () => {
   const stall = detect(
-    observation(20, [
-      comment(conflictParkedMarker(PARKED_BASE), 10, "drive-by"),
+    observation(10, [
+      comment(conflictParkedMarker(PARKED_BASE), 5, "drive-by"),
     ], { baseRefOid: PARKED_BASE }),
   );
   assert(stall !== null);
 });
 
-Deno.test("detectConflictQueueStall - a conclusion after a park ends the park", () => {
-  // An attempt that concluded after the park means the PR was un-parked and
-  // worked on; the park no longer describes what is happening.
+Deno.test("detectConflictQueueStall - a parked PR with the budget spent still trips", () => {
   const stall = detect(
-    observation(30, [
-      comment(conflictParkedMarker(PARKED_BASE), 20),
-      comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
+    observation(10, [
+      comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 9),
+      comment(conflictFailedMarker(2, "ladder", HEAD_SHA), 8),
+      comment(conflictFailedMarker(3, "ladder", HEAD_SHA), 3),
+      comment(conflictParkedMarker(PARKED_BASE), 2.5),
     ], { baseRefOid: PARKED_BASE }),
   );
   assert(stall !== null);
-  assertEquals(stall.stalledMs, 12 * HOUR);
-});
-
-Deno.test("detectConflictQueueStall - the threshold is eight hours (Issue #2305)", () => {
-  assertEquals(DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS, 8);
-  assertEquals(detect(observation(7.9)), null);
-  assert(detect(observation(8.1)) !== null);
-  // …and is configurable.
-  assert(
-    detectConflictQueueStall(observation(3), {
-      nowMs: NOW,
-      isTrustedAuthor,
-      thresholdHours: 2,
-    }) !== null,
-  );
-});
-
-Deno.test("buildConflictStallComment - names the age, the silence and the skip reasons", () => {
-  const stall = detect(
-    observation(9, [], {
-      skipReasons: [
-        { kind: "budget-spent", attemptsSpent: 2, maxAttempts: 2 },
-        { kind: "repo-leased", deferralStreak: 4 },
-      ],
-    }),
-  );
-  assert(stall !== null);
-  const body = buildConflictStallComment(stall);
-  assertStringIncludes(body, `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->`);
-  assertStringIncludes(body, "9 hours");
-  assertStringIncludes(body, "budget-spent");
-  assertStringIncludes(body, "attemptsSpent");
-  assertStringIncludes(body, "repo-leased");
-  assertStringIncludes(body, "deferralStreak");
+  assertEquals(stall.budgetSpent, true);
+  assertEquals(stall.attemptsSpent, 3);
 });
 
 // ---------------------------------------------------------------------------
-// Repair — rerun the ladder once, then abandon-and-redo (Issue #2803)
+// Repair — fix forward: takeover while budget remains, else guarded abandon
 // ---------------------------------------------------------------------------
-
-/** The head sha the ladder's wait markers name in these fixtures. */
-const HEAD = "abcdef1";
 
 /** A fake GitHub holding one PR's thread, shared by every simulated host. */
 function fakeGitHub(
   prComments: Record<string, unknown>[] = [],
   mergeableState = "CONFLICTING",
+  headRefOid = HEAD_SHA,
 ) {
   const calls: string[][] = [];
-  const deleted: number[] = [];
   const timeline = [{
     event: "labeled",
     label: { name: MERGE_CONFLICT_LABEL },
@@ -378,17 +401,20 @@ function fakeGitHub(
         number: PR,
         labels: [{ name: MERGE_CONFLICT_LABEL }],
         mergeable: mergeableState,
+        headRefOid,
       }]));
     }
     if (verb === "pr" && noun === "view") {
       return Promise.resolve(
-        JSON.stringify({ headRefName: "issue-7-branch", baseRefName: "main" }),
+        JSON.stringify({
+          headRefName: "issue-7-branch",
+          baseRefName: "main",
+          headRefOid,
+        }),
       );
     }
-    if (verb === "api" && args[1] === "-X" && args[2] === "DELETE") {
-      const id = /\/comments\/(\d+)$/.exec(args[3] ?? "")?.[1];
-      if (id !== undefined) deleted.push(Number(id));
-      return Promise.resolve("");
+    if (verb === "api" && args[1]?.includes("/commits/")) {
+      return Promise.resolve(new Date(NOW - 9 * HOUR).toISOString());
     }
     if (verb === "api" && args[1]?.includes("/timeline")) {
       // Page 2 onwards is empty — one short page ends the pagination.
@@ -408,11 +434,11 @@ function fakeGitHub(
     return Promise.resolve("");
   };
 
-  return { calls, deleted, prComments, gh };
+  return { calls, prComments, gh };
 }
 
 /** A recording `abandonAndRestart` seam and a lease that is always granted. */
-function fakeRepair(
+function fakeAbandon(
   outcome: AbandonRestartOutcome = {
     outcome: "abandoned",
     issueNumber: 7,
@@ -432,18 +458,37 @@ function fakeRepair(
   };
 }
 
-/** A trip marker comment, as the first trip posts it. */
-const tripComment = (agoHours: number, login = FLEET) =>
-  comment(
-    `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->\nrerunning`,
-    agoHours,
-    login,
-  );
+/** A recording takeover seam. */
+function fakeTakeover(
+  outcome: ConflictTakeoverOutcome = { kind: "resolved" },
+) {
+  const calls: { pr: ConflictTakeoverPr; deps: ConflictTakeoverDeps }[] = [];
+  return {
+    calls,
+    takeover: (pr: ConflictTakeoverPr, deps: ConflictTakeoverDeps) => {
+      calls.push({ pr, deps });
+      return Promise.resolve(outcome);
+    },
+  };
+}
+
+/** Three trusted failed attempts — the budget spent, in the thread. */
+const budgetSpentComments = [
+  comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 9),
+  comment(conflictFailedMarker(2, "ladder", HEAD_SHA), 8),
+  comment(conflictFailedMarker(3, "ladder", HEAD_SHA), 3),
+];
+
+const takeoverResolvers = {
+  resolveViaLadder: () => Promise.resolve({ resolved: true, detail: "" }),
+  resolveOnFixBranch: () => Promise.resolve({ resolved: true, detail: "" }),
+};
 
 /**
- * Neither trip files an issue, labels the PR `escalated`, or applies the
- * `needs-human` veto (Issues #569, #2803). Comment bodies are exempt: they
- * explain in prose, and are not mutations.
+ * Neither the takeover nor the abandon path files an issue, labels the PR
+ * `escalated`, or applies the `needs-human` veto directly (Issues #569,
+ * #2803). Comment bodies are exempt: they explain in prose, and are not
+ * mutations.
  */
 function assertNoEscalation(calls: readonly string[][]): void {
   const mutations = calls.map((call) => {
@@ -465,88 +510,204 @@ function assertNoEscalation(calls: readonly string[][]): void {
     ),
     `a stall adds no escalated label: ${JSON.stringify(mutations)}`,
   );
+}
+
+/** No `gh` call this watchdog makes ever names `needs-human`. */
+function assertNoNeedsHuman(calls: readonly string[][]): void {
   assert(
-    !mutations.some((call) => call.some((arg) => arg.includes("needs-human"))),
-    `needs-human must never be applied by this path: ${
-      JSON.stringify(mutations)
-    }`,
+    !calls.some((call) => call.some((arg) => arg.includes("needs-human"))),
+    `needs-human must never be applied by this path: ${JSON.stringify(calls)}`,
   );
 }
 
-async function repair(
-  github: ReturnType<typeof fakeGitHub>,
-  fake: ReturnType<typeof fakeRepair>,
-  stall = detect(observation(9)),
-) {
+Deno.test("repairConflictQueueStall - budget remains: takeover is called once, abandon is not", async () => {
+  const github = fakeGitHub();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
+  const stall = detect(observation(3));
   assert(stall !== null);
-  return await repairConflictQueueStall(stall, {
+
+  const action = await repairConflictQueueStall(stall, {
     ghCommandFn: github.gh,
     logger,
     isTrustedAuthor,
     nowMs: NOW,
-    abandon: fake.abandon,
-    acquireLease: fake.acquireLease,
+    abandon: abandon.abandon,
+    acquireLease: abandon.acquireLease,
+    takeover: takeover.takeover,
+    takeoverResolvers,
+    trustedAuthors: [FLEET],
   });
-}
 
-Deno.test("repairConflictQueueStall - the first trip reruns the ladder once and does not abandon", async () => {
-  const github = fakeGitHub([
-    { id: 501, ...comment(conflictRungFailedMarker("abandon", HEAD), 5) },
-    // An outsider's wait marker is not the ladder's, so it is left alone.
-    {
-      id: 502,
-      ...comment(conflictRungFailedMarker("abandon", HEAD), 4, "drive-by"),
-    },
-    // A rebase-rung failure is not the wait the rerun needs cleared.
-    { id: 503, ...comment(conflictRungFailedMarker("rebase", HEAD), 3) },
-  ]);
-  const fake = fakeRepair();
-
-  assertEquals(await repair(github, fake), "first-trip");
-
-  assertEquals(github.deleted, [501], "only the ladder's own wait is cleared");
-  const posted = postedComments(github.calls);
-  assertEquals(posted.length, 1);
-  assertStringIncludes(
-    posted[0] ?? "",
-    `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->`,
-  );
-  assertEquals(fake.abandoned, [], "the first trip never abandons");
+  assertEquals(action, "taken-over");
+  assertEquals(takeover.calls.length, 1);
+  assertEquals(takeover.calls[0]!.pr, {
+    repo: REPO,
+    number: PR,
+    headRefName: "issue-7-branch",
+    baseRefName: "main",
+    headSha: HEAD_SHA,
+  });
+  assertEquals(abandon.abandoned, []);
   assertNoEscalation(github.calls);
-  assertEquals(fake.released(), 1);
+  assertNoNeedsHuman(github.calls);
+  assertEquals(abandon.released(), 1);
 });
 
-Deno.test("repairConflictQueueStall - inside the window after the first trip it waits", async () => {
-  const github = fakeGitHub([tripComment(2)]);
-  const fake = fakeRepair();
+Deno.test("repairConflictQueueStall - budget spent: abandon is called with reason merge-conflict, takeover is not", async () => {
+  const github = fakeGitHub(budgetSpentComments.slice());
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
+  const stall = detect(observation(10, budgetSpentComments));
+  assert(stall !== null);
+  assertEquals(stall.budgetSpent, true);
 
-  assertEquals(await repair(github, fake), "awaiting-second-check");
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    abandon: abandon.abandon,
+    acquireLease: abandon.acquireLease,
+    takeover: takeover.takeover,
+    takeoverResolvers,
+    trustedAuthors: [FLEET],
+  });
 
-  assertEquals(postedComments(github.calls), []);
-  assertEquals(fake.abandoned, []);
-  assertNoEscalation(github.calls);
-});
-
-Deno.test("repairConflictQueueStall - the second trip abandons and redoes exactly once", async () => {
-  const github = fakeGitHub([tripComment(8.5)]);
-  const fake = fakeRepair();
-
-  assertEquals(await repair(github, fake), "abandoned");
-
-  assertEquals(fake.abandoned.length, 1);
-  const request = fake.abandoned[0]!;
+  assertEquals(action, "abandoned");
+  assertEquals(takeover.calls, []);
+  assertEquals(abandon.abandoned.length, 1);
+  const request = abandon.abandoned[0]!;
   assertEquals(request.repo, REPO);
   assertEquals(request.prNumber, PR);
   assertEquals(request.branchName, "issue-7-branch");
   assertEquals(request.baseBranch, "main");
-  assertEquals(request.reason?.kind, "stalled");
-  assertEquals(postedComments(github.calls), [], "no second trip comment");
+  assertEquals(request.reason, { kind: "merge-conflict" });
   assertNoEscalation(github.calls);
-  assertEquals(fake.released(), 1);
+  assertNoNeedsHuman(github.calls);
+  assertEquals(abandon.released(), 1);
+});
+
+Deno.test("repairConflictQueueStall - a parked PR with budget spent reaches abandon end-to-end through the scan", async () => {
+  const github = fakeGitHub(budgetSpentComments.concat([
+    comment(conflictParkedMarker(PARKED_BASE), 2.5),
+  ]));
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
+
+  const scan = await scanConflictQueueStalls({
+    repos: [REPO],
+    ghCommandFn: (args: string[]) => {
+      if (args[0] === "pr" && args[1] === "list") {
+        return Promise.resolve(JSON.stringify([{
+          number: PR,
+          labels: [{ name: MERGE_CONFLICT_LABEL }],
+          mergeable: "CONFLICTING",
+          baseRefOid: PARKED_BASE,
+          headRefOid: HEAD_SHA,
+        }]));
+      }
+      return github.gh(args);
+    },
+    isTrustedAuthor,
+    nowMs: () => NOW,
+    logger,
+    abandon: abandon.abandon,
+    acquireLease: abandon.acquireLease,
+    takeover: takeover.takeover,
+    takeoverResolvers,
+    trustedAuthors: [FLEET],
+  });
+
+  assertEquals(scan.length, 1);
+  assertEquals(scan[0]!.budgetSpent, true);
+  assertEquals(abandon.abandoned.length, 1);
+  assertEquals(takeover.calls, []);
+});
+
+Deno.test("repairConflictQueueStall - budget remains with no takeoverResolvers injected fails loudly", async () => {
+  const github = fakeGitHub();
+  const stall = detect(observation(3));
+  assert(stall !== null);
+  const takeover = fakeTakeover();
+
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    acquireLease: () => ({ release: noop }),
+    takeover: takeover.takeover,
+    trustedAuthors: [FLEET],
+  });
+
+  assertEquals(action, "failed");
+  assertEquals(takeover.calls, []);
+});
+
+Deno.test("repairConflictQueueStall - a held maintenance lease defers the repair", async () => {
+  const github = fakeGitHub();
+  const stall = detect(observation(3));
+  assert(stall !== null);
+
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    acquireLease: () => null,
+  });
+
+  assertEquals(action, "skipped-lease-held");
+  assertEquals(github.calls, []);
+});
+
+Deno.test("repairConflictQueueStall - under-lease re-check: a newer trusted attempt marker means no-longer-stalled", async () => {
+  const github = fakeGitHub([
+    comment(conflictFailedMarker(1, "ladder", HEAD_SHA), 0.1),
+  ]);
+  const stall = detect(observation(3));
+  assert(stall !== null);
+  const takeover = fakeTakeover();
+
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    acquireLease: () => ({ release: noop }),
+    takeover: takeover.takeover,
+    takeoverResolvers,
+    trustedAuthors: [FLEET],
+  });
+
+  assertEquals(action, "no-longer-stalled");
+  assertEquals(takeover.calls, []);
+});
+
+Deno.test("repairConflictQueueStall - under-lease re-check: a different live head means no-longer-stalled", async () => {
+  const github = fakeGitHub([], "CONFLICTING", OTHER_HEAD_SHA);
+  const stall = detect(observation(3, [], { headRefOid: HEAD_SHA }));
+  assert(stall !== null);
+  const takeover = fakeTakeover();
+
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    acquireLease: () => ({ release: noop }),
+    takeover: takeover.takeover,
+    takeoverResolvers,
+    trustedAuthors: [FLEET],
+  });
+
+  assertEquals(action, "no-longer-stalled");
+  assertEquals(takeover.calls, []);
 });
 
 Deno.test("repairConflictQueueStall - a declined or failed abandon is reported, never swallowed", async () => {
-  const declined = fakeRepair({
+  const declined = fakeAbandon({
     outcome: "declined",
     reason: {
       kind: "already-restarted",
@@ -555,324 +716,162 @@ Deno.test("repairConflictQueueStall - a declined or failed abandon is reported, 
       restartCount: 2,
     },
   });
+  const github1 = fakeGitHub(budgetSpentComments.slice());
+  const stall1 = detect(observation(10, budgetSpentComments));
+  assert(stall1 !== null);
   assertEquals(
-    await repair(fakeGitHub([tripComment(8.5)]), declined),
+    await repairConflictQueueStall(stall1, {
+      ghCommandFn: github1.gh,
+      logger,
+      isTrustedAuthor,
+      nowMs: NOW,
+      abandon: declined.abandon,
+      acquireLease: declined.acquireLease,
+      trustedAuthors: [FLEET],
+    }),
     "abandon-declined",
   );
 
-  const failed = fakeRepair({
+  const failed = fakeAbandon({
     outcome: "failed",
     step: "pr-close",
     message: "gh pr close failed",
   });
-  assertEquals(await repair(fakeGitHub([tripComment(8.5)]), failed), "failed");
-});
-
-Deno.test("repairConflictQueueStall - a second trip on an issue already redone twice adds needs-human and one comment (Issue #2804)", async () => {
-  const ISSUE = 7;
-  const github = fakeGitHub([tripComment(8.5)]);
-  const issue = {
-    labels: ["work-on"],
-    comments: [
-      comment(conflictRestartMarker(REPO, 61), 48),
-      comment(conflictRestartMarker(REPO, 62), 24),
-    ],
-  };
-  const issuePath = `/issues/${ISSUE}/`;
-  const gh = (args: string[]): Promise<string> => {
-    const path = args.find((arg) => arg.includes(issuePath)) ?? "";
-    if (args[0] === "issue" && args[1] === "view") {
-      github.calls.push(args);
-      return Promise.resolve(JSON.stringify({
-        state: "OPEN",
-        labels: issue.labels.map((name) => ({ name })),
-      }));
-    }
-    // The spent-restart hand-off posts with `gh issue comment`, not the
-    // REST comments endpoint the branch below records.
-    if (args[0] === "issue" && args[1] === "comment") {
-      github.calls.push(args);
-      const body = args[args.indexOf("--body") + 1] ?? "";
-      issue.comments.push(comment(body, 0));
-      return Promise.resolve("");
-    }
-    if (path === "") return github.gh(args);
-    github.calls.push(args);
-    if (args[1] !== "-X") {
-      return Promise.resolve(
-        path.includes("page=1") ? JSON.stringify(issue.comments) : "[]",
-      );
-    }
-    const field = args[5] ?? "";
-    if (path.endsWith("/labels")) {
-      issue.labels.push(field.replace(/^labels\[\]=/, ""));
-    } else if (path.endsWith("/comments")) {
-      issue.comments.push(comment(field.replace(/^body=/, ""), 0));
-    }
-    return Promise.resolve("");
-  };
-  const context: ConflictIssueContext = {
-    repo: REPO,
-    prNumber: PR,
-    prSide: {
-      resolved: true,
-      signal: "branch",
-      issue: {
-        number: ISSUE,
-        title: "Fix it",
-        state: "OPEN",
-        body: "",
-        bodyTruncated: false,
-      },
-    },
-    baseSide: [],
-    truncation: {
-      commitCapPaths: [],
-      issueCapHit: false,
-      textTruncatedIssues: [],
-      ghCallCapHit: false,
-    },
-    ghCallsUsed: 0,
-    warnings: [],
-  };
-  const stall = detect(observation(9, [tripComment(8.5)]));
-  assert(stall !== null);
-  const run = () =>
-    repairConflictQueueStall(stall, {
-      ghCommandFn: gh,
+  const github2 = fakeGitHub(budgetSpentComments.slice());
+  const stall2 = detect(observation(10, budgetSpentComments));
+  assert(stall2 !== null);
+  assertEquals(
+    await repairConflictQueueStall(stall2, {
+      ghCommandFn: github2.gh,
       logger,
       isTrustedAuthor,
       nowMs: NOW,
+      abandon: failed.abandon,
+      acquireLease: failed.acquireLease,
       trustedAuthors: [FLEET],
-      acquireLease: () => ({ release: noop }),
-      abandonDeps: {
-        resolveContext: () => Promise.resolve(context),
-        findOtherPrs: () => Promise.resolve([]),
-      },
-    });
-
-  assertEquals(await run(), "abandon-declined");
-
-  assertEquals(issue.labels, ["work-on", "needs-human"]);
-  assertEquals(issue.comments.length, 3);
-  assertStringIncludes(String(issue.comments[2]?.body), `${REPO}#${PR}`);
-  assert(
-    !github.calls.some((call) => call[0] === "pr" && call[1] === "close"),
-    "no third redo closes the PR",
-  );
-
-  // A later check finds needs-human already there and says nothing more.
-  assertEquals(await run(), "abandon-declined");
-  assertEquals(issue.comments.length, 3);
-});
-
-Deno.test("repairConflictQueueStall - the real second-trip comments say the ladder was rerun, in one sentence, never a lane rerun or a sync", async () => {
-  const ISSUE = 7;
-  const github = fakeGitHub([tripComment(8.5)]);
-  const issueComments: string[] = [];
-  const gh = (args: string[]): Promise<string> => {
-    if (args[0] === "issue" && args[1] === "view") {
-      github.calls.push(args);
-      return Promise.resolve(JSON.stringify({
-        state: "OPEN",
-        labels: [{ name: "work-on" }],
-      }));
-    }
-    if (args[0] === "issue" && args[1] === "comment") {
-      github.calls.push(args);
-      issueComments.push(args[args.indexOf("--body") + 1] ?? "");
-      return Promise.resolve("");
-    }
-    return github.gh(args);
-  };
-  const context: ConflictIssueContext = {
-    repo: REPO,
-    prNumber: PR,
-    prSide: {
-      resolved: true,
-      signal: "branch",
-      issue: {
-        number: ISSUE,
-        title: "Fix it",
-        state: "OPEN",
-        body: "",
-        bodyTruncated: false,
-      },
-    },
-    baseSide: [],
-    truncation: {
-      commitCapPaths: [],
-      issueCapHit: false,
-      textTruncatedIssues: [],
-      ghCallCapHit: false,
-    },
-    ghCallsUsed: 0,
-    warnings: [],
-  };
-  const stall = detect(observation(9, [tripComment(8.5)]));
-  assert(stall !== null);
-
-  const action = await repairConflictQueueStall(stall, {
-    ghCommandFn: gh,
-    logger,
-    isTrustedAuthor,
-    nowMs: NOW,
-    trustedAuthors: [FLEET],
-    acquireLease: () => ({ release: noop }),
-    abandonDeps: {
-      resolveContext: () => Promise.resolve(context),
-      findOtherPrs: () => Promise.resolve([]),
-    },
-  });
-
-  assertEquals(action, "abandoned");
-  const prComment = postedComments(github.calls).at(-1) ?? "";
-  assertEquals(issueComments.length, 1);
-  const issueComment = issueComments[0]!;
-  const bodies: [string, string][] = [
-    ["PR", prComment],
-    ["issue", issueComment],
-  ];
-  for (const [where, body] of bodies) {
-    assertStringIncludes(body, "merge-conflict ladder", where);
-    for (const untrue of ["owning lane", "synced", "Skip reason"]) {
-      assert(
-        !body.includes(untrue),
-        `the ${where} comment must not say "${untrue}": ${body}`,
-      );
-    }
-    // The stall detail reads as one sentence: its line carries the whole
-    // claim, not a multi-paragraph report spliced mid-sentence.
-    const line = body.split("\n").find((l) => l.includes("has carried"));
-    assert(line, `the ${where} comment names the stall: ${body}`);
-    assertStringIncludes(line, "for 9 hours", where);
-  }
-  assertStringIncludes(prComment, "This PR has carried `merge-conflict`");
-  assertStringIncludes(
-    issueComment,
-    `${REPO}#${PR} has carried \`merge-conflict\``,
+    }),
+    "failed",
   );
 });
 
-Deno.test("repairConflictQueueStall - an untrusted or pre-label trip marker is not a trip", async () => {
-  // A forged marker must not skip straight to closing the PR, and a trip from
-  // an earlier stall — before the label last went on — belongs to that stall.
-  for (const trip of [tripComment(8.5, "drive-by"), tripComment(20)]) {
-    const github = fakeGitHub([trip]);
-    const fake = fakeRepair();
-    assertEquals(await repair(github, fake), "first-trip");
-    assertEquals(fake.abandoned, []);
-  }
-});
-
-Deno.test("repairConflictQueueStall - a conclusion after the trip starts the ladder over", async () => {
-  // The rerun concluded, then the queue stalled again: that is a fresh stall,
-  // and it gets its own first trip rather than an abandon.
-  const github = fakeGitHub([
-    tripComment(30),
-    comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 12),
-  ]);
-  const fake = fakeRepair();
-  const stall = detect(
-    observation(40, [...github.prComments]),
-  );
-
-  assertEquals(await repair(github, fake, stall), "first-trip");
-  assertEquals(fake.abandoned, []);
-});
-
-Deno.test("repairConflictQueueStall - a held maintenance lease defers the repair", async () => {
+Deno.test("repairConflictQueueStall - a declined-budget takeover outcome is reported, not treated as taken-over", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
-  const stall = detect(observation(9));
+  const stall = detect(observation(3));
   assert(stall !== null);
+  const takeover = fakeTakeover({ kind: "declined-budget", attemptsSpent: 3 });
 
   const action = await repairConflictQueueStall(stall, {
     ghCommandFn: github.gh,
     logger,
     isTrustedAuthor,
     nowMs: NOW,
-    abandon: fake.abandon,
-    acquireLease: () => null,
+    acquireLease: () => ({ release: noop }),
+    takeover: takeover.takeover,
+    takeoverResolvers,
+    trustedAuthors: [FLEET],
   });
 
-  assertEquals(action, "skipped-lease-held");
-  assertEquals(github.calls, []);
+  assertEquals(action, "takeover-declined");
 });
 
 // ---------------------------------------------------------------------------
-// Scan — cross-host dedupe and the label assertion (Issue #1112)
+// Scan (Issue #1112, #1515, #2409)
 // ---------------------------------------------------------------------------
 
 const scanOptions = (
   github: ReturnType<typeof fakeGitHub>,
-  fake: ReturnType<typeof fakeRepair>,
+  abandon: ReturnType<typeof fakeAbandon>,
+  takeover: ReturnType<typeof fakeTakeover>,
 ) => ({
   repos: [REPO],
   ghCommandFn: github.gh,
-  abandon: fake.abandon,
-  acquireLease: fake.acquireLease,
+  abandon: abandon.abandon,
+  acquireLease: abandon.acquireLease,
+  takeover: takeover.takeover,
+  takeoverResolvers,
+  trustedAuthors: [FLEET],
   isTrustedAuthor,
   nowMs: () => NOW,
   logger,
 });
 
-Deno.test("scanConflictQueueStalls - two hosts in one window trip once", async () => {
+Deno.test("scanConflictQueueStalls - reads headRefOid from the listing and the commit date, trips on takeover", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
-  const hostA = await scanConflictQueueStalls(scanOptions(github, fake));
-  const hostB = await scanConflictQueueStalls(scanOptions(github, fake));
+  const scan = await scanConflictQueueStalls(
+    scanOptions(github, abandon, takeover),
+  );
 
-  assertEquals(hostA.length, 1);
-  // The second host still sees the stall, but reads the first host's trip
-  // marker off the PR itself, so it neither trips again nor abandons.
-  assertEquals(hostB.length, 1);
-  assertEquals(postedComments(github.calls).length, 1);
-  assertEquals(fake.abandoned, []);
-});
-
-Deno.test("scanConflictQueueStalls - files no issue and adds no label on either trip", async () => {
-  const github = fakeGitHub();
-  const fake = fakeRepair();
-
-  // First trip, then the next check once the window has passed again.
-  await scanConflictQueueStalls(scanOptions(github, fake));
-  await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
-    nowMs: () => NOW + 9 * HOUR,
-  });
-
-  assertEquals(postedComments(github.calls).length, 1);
-  assertEquals(fake.abandoned.length, 1, "the second trip abandons once");
-  assertNoEscalation(github.calls);
-  assertEquals(
-    github.calls.filter((call) => call.includes("--add-label")),
-    [],
+  assertEquals(scan.length, 1);
+  assertEquals(scan[0]!.headRefOid, HEAD_SHA);
+  assertEquals(takeover.calls.length, 1);
+  assertEquals(abandon.abandoned, []);
+  assert(
+    github.calls.some((call) =>
+      call[0] === "api" && (call[1] ?? "").includes(`/commits/${HEAD_SHA}`)
+    ),
+    "the commit date is fetched for the head sha",
   );
 });
 
-Deno.test("scanConflictQueueStalls - a concluded attempt after a trip is not abandoned", async () => {
+Deno.test("scanConflictQueueStalls - an unreadable commit date still trips on the other events", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
-
-  await scanConflictQueueStalls(scanOptions(github, fake));
-  // The rerun happens: an attempt runs and concludes.
-  github.prComments.push(comment(`${CONFLICT_ATTEMPT_MARKER} n="1" -->`, 0));
-  github.prComments.push(comment(`${CONFLICT_FAILED_MARKER} n="1" -->`, 0));
-
-  const next = await scanConflictQueueStalls(scanOptions(github, fake));
-
-  assertEquals(next.length, 0);
-  assertEquals(fake.abandoned, []);
-});
-
-Deno.test("scanConflictQueueStalls - carries this cycle's skip reasons into the comment", async () => {
-  const github = fakeGitHub();
-  const fake = fakeRepair();
+  const warnings: string[] = [];
+  const withFailingCommit = (args: string[]) => {
+    if (args[0] === "api" && args[1]?.includes("/commits/")) {
+      return Promise.reject(new Error("commit unavailable"));
+    }
+    return github.gh(args);
+  };
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
+    ghCommandFn: withFailingCommit,
+    logger: { ...logger, warn: (message: string) => warnings.push(message) },
+  });
+
+  assertEquals(scan.length, 1);
+  assertEquals(scan[0]!.headChangedAtMs, undefined);
+  assertEquals(scan[0]!.clockStart, "label");
+  assert(
+    warnings.some((message) => message.includes("head commit date")),
+    `expected a warning about the unreadable commit date: ${
+      warnings.join(" | ")
+    }`,
+  );
+});
+
+Deno.test("scanConflictQueueStalls - files no issue and never names needs-human on either repair path", async () => {
+  const github = fakeGitHub();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
+
+  await scanConflictQueueStalls(scanOptions(github, abandon, takeover));
+  assertNoEscalation(github.calls);
+  assertNoNeedsHuman(github.calls);
+
+  const spentGithub = fakeGitHub(budgetSpentComments.slice());
+  const spentAbandon = fakeAbandon();
+  const spentTakeover = fakeTakeover();
+  await scanConflictQueueStalls(
+    scanOptions(spentGithub, spentAbandon, spentTakeover),
+  );
+  assertNoEscalation(spentGithub.calls);
+  assertNoNeedsHuman(spentGithub.calls);
+  assertEquals(spentAbandon.abandoned.length, 1);
+});
+
+Deno.test("scanConflictQueueStalls - carries this cycle's skip reasons into the stall record", async () => {
+  const github = fakeGitHub();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
+
+  const scan = await scanConflictQueueStalls({
+    ...scanOptions(github, abandon, takeover),
     decisions: [{
       repo: REPO,
       prNumber: PR,
@@ -882,19 +881,19 @@ Deno.test("scanConflictQueueStalls - carries this cycle's skip reasons into the 
   });
 
   assertEquals(scan[0]?.skipReasons.length, 1);
-  const body = postedComments(github.calls)[0] ?? "";
-  assertStringIncludes(body, "repo-leased");
-  assertStringIncludes(body, "deferralStreak=6");
+  assertEquals(scan[0]?.skipReasons[0]?.kind, "repo-leased");
 });
 
 Deno.test("scanConflictQueueStalls - a stale label on a mergeable PR is not repaired", async () => {
   const github = fakeGitHub([], "MERGEABLE");
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
-  const scan = await scanConflictQueueStalls(scanOptions(github, fake));
+  const scan = await scanConflictQueueStalls(
+    scanOptions(github, abandon, takeover),
+  );
 
   assertEquals(scan.length, 0);
-  // Not even read: the listing already said the queue is not real.
   assertEquals(postedComments(github.calls).length, 0);
   assertEquals(
     github.calls.filter((call) => call[0] === "api").length,
@@ -903,11 +902,9 @@ Deno.test("scanConflictQueueStalls - a stale label on a mergeable PR is not repa
 });
 
 Deno.test("scanConflictQueueStalls - an uncomputed mergeable state is re-read, not assumed", async () => {
-  // GitHub computes mergeability lazily, so the listing can answer UNKNOWN for
-  // a PR that genuinely conflicts. Dropping it there would be the silence this
-  // watchdog exists to remove.
   const github = fakeGitHub([], "UNKNOWN");
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
   const withView = (args: string[]) => {
     if (args[0] === "pr" && args[1] === "view") {
       return Promise.resolve("CONFLICTING\n");
@@ -916,17 +913,17 @@ Deno.test("scanConflictQueueStalls - an uncomputed mergeable state is re-read, n
   };
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     ghCommandFn: withView,
   });
 
   assertEquals(scan.length, 1);
-  assertEquals(postedComments(github.calls).length, 1);
 });
 
 Deno.test("scanConflictQueueStalls - a state that stays uncomputed repairs nothing", async () => {
   const github = fakeGitHub([], "UNKNOWN");
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
   const warnings: string[] = [];
   const withView = (args: string[]) => {
     if (args[0] === "pr" && args[1] === "view") {
@@ -936,13 +933,12 @@ Deno.test("scanConflictQueueStalls - a state that stays uncomputed repairs nothi
   };
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     ghCommandFn: withView,
     logger: { ...logger, warn: (message: string) => warnings.push(message) },
   });
 
   assertEquals(scan.length, 0);
-  assertEquals(postedComments(github.calls).length, 0);
   // Loud, not silent: an unestablished state is exactly what went unnoticed.
   assert(
     warnings.some((message) => message.includes("mergeable state")),
@@ -950,34 +946,13 @@ Deno.test("scanConflictQueueStalls - a state that stays uncomputed repairs nothi
   );
 });
 
-Deno.test("scanConflictQueueStalls - repeated identical skip reasons are collapsed", async () => {
-  const github = fakeGitHub();
-  const fake = fakeRepair();
-  const leased = {
-    repo: REPO,
-    prNumber: PR,
-    outcome: "skipped" as const,
-    reason: { kind: "repo-leased" as const, deferralStreak: 4 },
-  };
-
-  const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
-    // The drain calls the scan once per PR it takes, so one held-back PR is
-    // decided on several times in a cycle.
-    decisions: [leased, leased, leased],
-  });
-
-  assertEquals(scan[0]?.skipReasons.length, 1);
-  const body = postedComments(github.calls)[0] ?? "";
-  assertEquals(body.split("`repo-leased`").length - 1, 1);
-});
-
 Deno.test("scanConflictQueueStalls - a repo outside the allowlist is not touched", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     isRepoAllowed: () => false,
   });
 
@@ -987,7 +962,8 @@ Deno.test("scanConflictQueueStalls - a repo outside the allowlist is not touched
 
 Deno.test("scanConflictQueueStalls - an unreadable PR does not stop the pass", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
   const failing = (args: string[]) => {
     if (args[0] === "api" && args[1]?.includes("/comments")) {
       return Promise.reject(new Error("comments unavailable"));
@@ -996,7 +972,7 @@ Deno.test("scanConflictQueueStalls - an unreadable PR does not stop the pass", a
   };
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     ghCommandFn: failing,
   });
 
@@ -1076,13 +1052,6 @@ Deno.test("scanConflictQueueStalls - an ordinary listing failure is still report
 
 // =============================================================================
 // The label listing is gated on the listing the scan already holds (#2409)
-//
-// Live measurement, 2026-09-20: `graphql-shapes:` showed
-// `20×[pr list --json --label --repo --state]` on every cycle — this watchdog
-// asking each of 20 repositories for its open PRs carrying `merge-conflict`,
-// every ~3 minutes, almost always to learn "none". The fleet was exhausting
-// its GraphQL quota ~25 minutes into every hour. A stall is eight hours long;
-// learning that a PR gained the label ten minutes late costs nothing.
 // =============================================================================
 
 const prListCalls = (calls: readonly string[][]) =>
@@ -1090,10 +1059,11 @@ const prListCalls = (calls: readonly string[][]) =>
 
 Deno.test("scanConflictQueueStalls - a complete cached listing with no labelled PR means no live listing (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     listOpenPrLabels: () =>
       Promise.resolve([
         { number: 1, labels: ["enhancement"] },
@@ -1107,10 +1077,11 @@ Deno.test("scanConflictQueueStalls - a complete cached listing with no labelled 
 
 Deno.test("scanConflictQueueStalls - a cached listing that shows the label still takes the LIVE listing, for the live merge state (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     listOpenPrLabels: () =>
       Promise.resolve([{ number: PR, labels: [MERGE_CONFLICT_LABEL] }]),
   });
@@ -1121,10 +1092,11 @@ Deno.test("scanConflictQueueStalls - a cached listing that shows the label still
 
 Deno.test("scanConflictQueueStalls - a full cached listing cannot prove absence, so the repository is asked (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     listOpenPrLabels: () =>
       Promise.resolve([{ number: 1, labels: [] }, { number: 2, labels: [] }]),
     // The listing came back full: a labelled PR may sit beyond it.
@@ -1137,10 +1109,11 @@ Deno.test("scanConflictQueueStalls - a full cached listing cannot prove absence,
 
 Deno.test("scanConflictQueueStalls - a cached listing that cannot be read falls back to the live listing (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     listOpenPrLabels: () => Promise.reject(new Error("cache unreadable")),
   });
 
@@ -1150,9 +1123,10 @@ Deno.test("scanConflictQueueStalls - a cached listing that cannot be read falls 
 
 Deno.test("scanConflictQueueStalls - without a cached listing it lists every repository, exactly as before (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
   await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     repos: [REPO, "org/other"],
   });
   assertEquals(prListCalls(github.calls), 2);
@@ -1177,10 +1151,11 @@ Deno.test("listedOpenPrs - a row with no labels field is a listing that cannot a
 
 Deno.test("scanConflictQueueStalls - a pre-labels cache entry falls back to the live listing (Issue #2409)", async () => {
   const github = fakeGitHub();
-  const fake = fakeRepair();
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
 
   const scan = await scanConflictQueueStalls({
-    ...scanOptions(github, fake),
+    ...scanOptions(github, abandon, takeover),
     // Exactly how production builds it: the mapper refuses the old row.
     listOpenPrLabels: () => Promise.resolve(listedOpenPrs([{ number: 1 }])),
   });

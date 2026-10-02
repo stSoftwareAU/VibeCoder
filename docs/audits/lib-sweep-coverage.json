@@ -195,6 +195,7 @@
         "worker/deno/lib/conflict_abandon_restart.ts",
         "worker/deno/lib/conflict_issue_context.ts",
         "worker/deno/lib/conflict_takeover.ts",
+        "worker/deno/lib/conflict_takeover_resolvers.ts",
         "worker/deno/lib/container_extension_config.ts",
         "worker/deno/lib/container_image_prune.ts",
         "worker/deno/lib/container_manifest.ts",
