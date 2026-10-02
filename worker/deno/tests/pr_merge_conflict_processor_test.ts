@@ -1130,11 +1130,12 @@ Deno.test("processMergeConflict - an abandon names the label the issue was re-qu
   assertStringIncludes(result.value.summary, "`idle-task`");
 });
 
-Deno.test("processMergeConflict - a spent restart budget asks no human (Issue #2312)", async () => {
-  // The one route out of the spent-budget branch that used to end at a
-  // person. It no longer does: the scan parks the PR on `merge-conflict` and
-  // re-attempts it when the base tip moves, and `needs-human` would take the
-  // PR out of the very lane that clears it.
+Deno.test("processMergeConflict - an abandon declined by a same-PR restart claim asks no human (Issue #3033)", async () => {
+  // Issue #3033: the rung declines `already-restarted` only when a restart
+  // claim on the issue names this very PR — an earlier abandon of it did not
+  // finish. The PR is left open and unlabelled: the scan's budget-spent WARN
+  // names the route, and `needs-human` would take the PR out of the very lane
+  // that reads the claim back.
   const { captured, result } = await runProcessor(
     makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
     makeGitScript({ markersAfterAgent: true }),
@@ -1145,8 +1146,8 @@ Deno.test("processMergeConflict - a spent restart budget asks no human (Issue #2
           reason: {
             kind: "already-restarted",
             issueNumber: 16,
-            samePr: false,
-            restartCount: 2,
+            samePr: true,
+            restartCount: 1,
           },
         }),
     },
@@ -1155,8 +1156,11 @@ Deno.test("processMergeConflict - a spent restart budget asks no human (Issue #2
   assert(result.ok);
   assertEquals(result.value.escalated, false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
-  assertStringIncludes(result.value.summary, "spent its restarts");
-  assertStringIncludes(result.value.summary, "parked");
+  assertStringIncludes(
+    result.value.summary,
+    "restart claim on issue #16 names this PR",
+  );
+  assertStringIncludes(result.value.summary, "left open");
 });
 
 Deno.test("processMergeConflict - an abandon that fails still asks no human (Issue #3032)", async () => {
