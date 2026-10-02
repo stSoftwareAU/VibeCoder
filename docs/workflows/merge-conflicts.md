@@ -175,6 +175,11 @@ progress and stopped on conflicts. Its contract is absolute:
   into `.pr_response_message`; the worker carries that reply verbatim onto the
   PR's conclusion comment, and onto the milestone sync report on the branch
   path. A reviewer audits every call from the comment, without reading the diff.
+- **A superseded change leaves the PR summary.** When the base side already
+  carries part of the PR's change, the agent rewrites the branch's committed
+  `docs/archive/pr-summaries/pr-summary-*.md` so it claims only what the merged
+  diff still carries, stages it with the resolutions, and names the refresh in
+  `.pr_response_message` (Issue #3015).
 - **The agent runs no quality gate.** CI on the pushed merge is the gate on a
   PR — a conflicting PR has had none at all, so that run is usually the first
   time its tests meet current base code — and the worker's type-check gate,

@@ -727,18 +727,30 @@ of your changes, providing permanent documentation of the PR.
 summary is the PR body and the permanent record, so a reader takes every claim
 in it as true of the head commit. Write it last, and whenever a later commit on
 the branch changes what the PR does — a fix after the independent review, a
-retry after a failed check, a resumed attempt — rewrite it, never append to it:
+retry after a failed check, a merge from the base branch, a resumed attempt —
+rewrite it, never append to it:
 
 - Before the last commit, re-read `git diff <base>...HEAD` and rerun the tests
   the summary names, then make every claim match the head: the reproduction
   status, each test's pass/fail result, any "known defect" note, and every
   function, file and helper it names — each must exist at the head and be used
   as described.
+- Re-derive the Summary, Evidence and Acceptance Criteria sections from that
+  diff, not from memory of the run. Every file or behaviour the summary says
+  this PR changes must appear in `git diff <base>...HEAD` — existing at the
+  head is not enough, because a merge from the base branch can bring in the
+  same change and leave this PR's own diff without it. When a design
+  iteration was abandoned, replace its description with the one that
+  shipped.
 - Drop the interim notes from earlier attempts: a superseded approach, a red
   test that is now green, a helper "not imported anywhere" that now is. A
   summary saying the fix is broken or unfinished when the head holds a working,
   tested fix is a wrong record — anyone reading the archive concludes the issue
   is unfixed.
+- A body that contradicts the diff — a claimed file, behaviour or criterion the
+  diff does not carry, or a change the body describes differently from how the
+  diff makes it — is a blocking self-review finding. Fix the summary (or the
+  diff) before raising the PR.
 
 The file MUST contain:
 
