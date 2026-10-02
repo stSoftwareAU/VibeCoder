@@ -299,6 +299,52 @@ Deno.test(
 );
 
 Deno.test(
+  'milestone sync - an unconfirmed landing with an open PR is charged to that PR as a failed pass="sync" attempt (Issue #2998)',
+  async () => {
+    const calls: string[][] = [];
+    /** What `confirmSyncLanding` observes on the milestone tip — deliberately
+     * neither the merge sha nor the PR's own head, so no comparison finds it
+     * contained. */
+    const OBSERVED_SHA = "e".repeat(40);
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [],
+      tipSha: OBSERVED_SHA,
+    };
+    const result = await syncMilestoneBranches(
+      baseDeps(calls, state, () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            message: "merged with conflicts",
+            conflict: {
+              files: ["a.ts"],
+              milestoneSha: MILESTONE_SHA,
+              defaultSha: DEFAULT_SHA,
+              resolution: "auto",
+              mergeSha: TIP_SHA,
+            },
+          },
+        })),
+    );
+    assert(result.ok);
+    assertEquals(result.value.failed, 1);
+
+    const issueComments = calls.filter((c) =>
+      c[0] === "issue" && c[1] === "comment"
+    );
+    assertEquals(issueComments.length, 0, "no issue comment calls");
+
+    const posted = prCommentCalls(calls);
+    assertEquals(posted.length, 1, "exactly one pr comment call");
+    assertEquals(posted[0]![2], "42");
+    const body = posted[0]![posted[0]!.indexOf("--body") + 1] ?? "";
+    assertStringIncludes(body, conflictAttemptMarker(1, "sync", HEAD_SHA));
+    assertStringIncludes(body, conflictFailedMarker(1, "sync", HEAD_SHA));
+  },
+);
+
+Deno.test(
   "milestone sync - comments from untrusted authors do not spend the PR budget (Issue #2998)",
   async () => {
     const calls: string[][] = [];

@@ -1842,6 +1842,21 @@ export async function syncMilestoneBranches(
                 ),
               );
               failed++;
+              // Issue #2998: every sync attempt with an open PR is charged to
+              // the PR's shared tally, even when the landing itself could
+              // not be confirmed.
+              if (headPr) {
+                await recordSyncAttemptOnPr(
+                  repo,
+                  headPr,
+                  "failed",
+                  `the merge ${landing.expectedSha} could not be confirmed ` +
+                    `on the milestone tip (observed ${landing.observedSha}): ` +
+                    `${landing.reason}`,
+                  ghCommandFn,
+                  log,
+                );
+              }
               if (streakPath) {
                 let entry = recordSyncFailure(streaks[streakKey]);
                 if (entry.attemptOpenedAt) {
