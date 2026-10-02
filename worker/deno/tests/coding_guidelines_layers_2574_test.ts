@@ -435,6 +435,8 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "## What To Do",
   "## Workflow Files — `.github/workflows/`",
   "## Working Style",
+  // Issue #3021: the workflow-validator section of prompts/issue/prompt.md.
+  "### A behaviour change extends the workflow validator",
   "### Already resolved → emit the marker, and the worker closes it",
   "### Avoid Running Full E2E Suites",
   "### Base-branch failures",

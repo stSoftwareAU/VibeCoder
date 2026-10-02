@@ -199,6 +199,16 @@ Deno-native path over a Node one, add a one-line entry under a **Deno regression
 avoided** heading in `docs/archive/pr-summaries/pr-summary-*.md` so reviewers
 can see the worker actively chose Deno over Node.
 
+**A `deno.lock` change must trace to a source change.** Tooling run inside
+the checkout — a browser, a one-off `deno run npm:…` — can write its own npm
+entries into the product's `deno.lock`. Before raising a PR, read `git diff
+<base> -- deno.lock`: when the change adds or changes no dependency, restore
+the base lockfile (`git checkout <base> -- deno.lock`); otherwise state in
+the PR summary which import or manifest change pulls in each new entry, and
+drop any entry no source imports — `deno install` does not prune one. Run
+your own one-off tools with `deno run --no-config --no-lock` so they never
+touch the repo's config or lockfile.
+
 **Carve-out — Node-only repos stay Node.** This rule is regression-prevention,
 not migration. Repos with no Deno markers stay on Node, and pre-existing Node
 files inside a Deno repo are not cleaned up by this rule — leave them alone
@@ -1076,6 +1086,15 @@ than a tree scan) and its exit codes on failure. A stub more permissive than the
 real callee masks the contract it stands in for and is a finding. Run the test
 against a real checkout of the callee, or name the contract the stub mirrors in
 the PR summary with a source link to the callee's code or docs.
+
+**A workflow behaviour change extends the workflow validator.** When a change
+alters what a `.github/workflows/*` file does — a new or changed flag, step,
+trigger or setting the job's correctness depends on — extend the repository's
+workflow validator in the same PR, or add one when the repository has none,
+with a positive and a negative test for each new or changed invariant. A flag
+that is load-bearing must be load-bearing in the validator too, not only in
+the README or a code comment: an invariant documented but not validated is a
+blocking self-review finding.
 
 **Do not hardcode to the tests.** Write the implementation to solve the general
 problem, not the specific inputs the tests happen to use. Special-casing a
