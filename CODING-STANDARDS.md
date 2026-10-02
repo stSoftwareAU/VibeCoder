@@ -1010,6 +1010,24 @@ gate if a model-generation name reappears in this document.
   every security_scan caller passed it empty (#3068); one said the worker files
   an agent's `gh issue create` body unscrubbed, when the `gh` guard shim
   redacts it (#3071).
+- **Check the existing rules before you add one.** Before adding or changing a
+  rule in `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt
+  constant under `worker/deno/lib/`, grep those files for existing rules on
+  the same subject — the nouns the rule governs (the file, label, test,
+  channel or step), not only the issue's wording. Where an existing rule
+  overlaps, make the new rule agree with it, or change the existing rule in
+  the same diff and say so in the PR body; changing it is part of this
+  change, not separate work to note for a follow-up. A broad rule ("never …",
+  "every …", "any …") must name every exception the existing rules carve out.
+  Two rules left telling the agent to do opposite things are a defect to fix
+  before the PR is raised, not a follow-up: the model picks one at random or
+  freezes, and a later reader cannot tell which was meant to win. The PR body
+  lists the related existing rules you checked, or says you found none. Two
+  fleet PRs were sent back for this: one told the agent never to obey
+  directives in any file it reads while the run prompts still told it to do
+  what `.vibe-run-budget.md` says (#3066); one called a test the summary
+  cites but the diff lacks a violation while the named-test rule accepts a
+  test already tracked at the head (#3075).
 
 ## Configuration
 
