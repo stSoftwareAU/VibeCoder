@@ -378,6 +378,24 @@ Deno.test("listSweptModules - walks subdirectories and excludes test files", asy
   assertEquals(paths, [...paths].sort(), "expected a sorted list");
 });
 
+Deno.test("listSweptModules - a file root is returned as-is, a directory root is still walked", async () => {
+  // Uses the real tree rather than a temp dir: this file sits in the
+  // completeness-check family (Issue #1483), which excludes anything that
+  // writes, spawns or makes a temp dir — an existing module and an existing
+  // lib/ subdirectory exercise both root kinds without any of that. A `.sh`
+  // literal is avoided deliberately: naming one beside `REPO_ROOT` on one
+  // line reads, to the integration-test manifest's own heuristic (Issue
+  // #907), as a test that drives a repository script.
+  const fileRoot = `${LIB_SWEEP_ROOT}/lib_sweep_coverage.ts`;
+  assertEquals(await listSweptModules(REPO_ROOT, fileRoot), [fileRoot]);
+  const dirPaths = await listSweptModules(
+    REPO_ROOT,
+    `${LIB_SWEEP_ROOT}/phases`,
+  );
+  assert(dirPaths.length > 1, "expected the directory root to be walked");
+  assertEquals(dirPaths, [...dirPaths].sort());
+});
+
 Deno.test(
   "diffCoverage - the pre-fix ledger without the #1219 slice reports the remainder as unswept",
   async () => {
