@@ -576,8 +576,12 @@ Two changes close that window:
   the summary PR merges a milestone early: an open child withholds the arming
   and the gate's own comment is the only one posted, while a refusal nothing
   else explained gets exactly one reason comment naming the sweep retry
-  (Issue #2457). A repository with `skip_auto_merge` set has its summary PR
-  raised and left unarmed, exactly as the sweep already treats it.
+  (Issue #2457). The same gate is also re-gated on each sub-issue's declared
+  dependencies (Issue #3014): a dependency still open, or closed into a
+  different still-open milestone, withholds the summary PR's merge the same
+  way an open child does, until it lands. A repository with `skip_auto_merge`
+  set has its summary PR raised and left unarmed, exactly as the sweep already
+  treats it.
 - **Sweep again once the slots drain.** `runPostScanAutoMerge` in
   [`worker/deno/lib/run_core.ts`](../worker/deno/lib/run_core.ts) repeats the
   sweep at the end of a cycle that did work, catching the paths arming cannot:

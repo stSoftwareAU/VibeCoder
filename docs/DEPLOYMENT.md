@@ -989,6 +989,7 @@ Without an ImgBB API key, screenshots are saved to `docs/evidence/` and the PR i
 # version (do NOT use @latest — a hijacked publish would land
 # silently). Bumps go through Renovate's quarantine.
 deno run \
+    --no-config --no-lock \
     --allow-read --allow-write --allow-net=127.0.0.1,localhost,[::1] --allow-env \
     --deny-env=ANTHROPIC_API_KEY,GH_TOKEN,GITHUB_TOKEN,GITHUB_APP_PRIVATE_KEY,GITHUB_APP_PRIVATE_KEY_PATH,GIT_SSH_COMMAND,VIBE_IMGBB_API_KEY \
     --allow-run --allow-sys \
@@ -1012,7 +1013,11 @@ claude "Take a screenshot of http://localhost:3000"
 > (`~/.ssh`, `~/.config/gh`, `$GH_CONFIG_DIR`, the GitHub App private key)
 > that the otherwise unscoped `--allow-read` would reach. The pin is the canonical knob
 > kept in `worker/deno/setup/screenshot.ts` (`PLAYWRIGHT_MCP_VERSION`);
-> Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades.
+> Renovate's `minimumReleaseAge: 24 hours` quarantine gates upgrades. The
+> generated config also passes `--no-config --no-lock`, because the server
+> runs with the product checkout as its working directory and would
+> otherwise write its own npm entries into that repo's `deno.lock` (Issue
+> #3020).
 
 > **The server process cannot reach cloud metadata (Issue #1386).** The
 > generated config grants the MCP server `--allow-net` and then takes the

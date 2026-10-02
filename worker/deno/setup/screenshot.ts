@@ -669,6 +669,16 @@ export function generateMcpConfig(config: ScreenshotConfig): string {
 
   const args = [
     "run",
+    // Issue #3020: the MCP client spawns this server with the product
+    // checkout as its cwd, so without these flags Deno auto-discovers that
+    // repo's deno.json and writes the npm entries this tooling pulls in
+    // (@playwright/mcp, playwright, playwright-core, fsevents) into the
+    // product's deno.lock — and, with nodeModulesDir: "auto", a node_modules
+    // directory in the clone. Worker tooling is not a product dependency.
+    // The guard shims (gh_guard_shim.ts) already launch with the same two
+    // flags for the same reason.
+    "--no-config",
+    "--no-lock",
     "--allow-read",
     "--allow-write",
     ...(deniedPaths.length > 0
