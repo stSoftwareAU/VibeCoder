@@ -230,6 +230,18 @@ not after a reviewer finds it weeks later.
   updated — and fix any that still describe the old behaviour.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
+- When the change adds or changes a **rule** in a prompt template, coding
+  standard or agent instruction (`prompts/*/prompt.md`,
+  `CODING-STANDARDS.md`, a shared prompt constant under `worker/deno/lib/`,
+  or the repository's equivalents), first grep those files for existing
+  rules on the same subject — the nouns the rule governs (the file, label,
+  test, channel or step), not only the issue's wording. Make the new rule
+  agree with each overlapping rule, or change that rule in the same diff and
+  say so in the PR body; fixing it is part of this change, not a follow-up
+  under **Stay in scope**. A broad rule ("never …", "every …", "any …") names
+  every exception the existing rules carve out. Two rules left telling the
+  agent to do opposite things is a blocking self-review finding. List the
+  related existing rules you checked in the PR body, or say you found none.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
@@ -1071,6 +1083,39 @@ example, what the production adapter actually accepts), or say the fault is
 undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
+
+**A negative test must be able to fail.** An assertion that something does
+*not* happen — not leaked, not carried over, not exported, not called, null
+rather than stale — needs a fixture that contains the forbidden thing: a real
+token to leak, an earlier value to carry over, a caller that would otherwise
+run. A new guard has no base-branch red run to lean on, so before raising the
+PR break the guard on purpose (remove the filter, invert the check, or fill
+from the wrong source), run the test, confirm it goes red, then restore the
+guard. A negative test that stays green without its guard is a blocking
+self-review finding.
+
+**Every outcome of a branch you add needs a test that reaches it.** For each
+new condition, match arm, exit-code check or trait/interface default in the
+diff, list its outcomes (success, absent/empty, error, fail-closed default)
+and name the test that drives each one. A test double that overrides the
+default, or a stub that always returns the same code, does not reach the
+other outcomes. Flip each outcome on purpose (return the lenient value
+instead of the error, treat "absent" as "failed"), run the tests, confirm at
+least one goes red, then restore it. An outcome with no test, or one whose
+flip leaves the suite green, is a blocking self-review finding: add a test
+for it.
+
+**Every changed call site needs a test that goes red without it.** When a
+change threads a new argument, flag or behaviour through more than one
+production caller, a test of the helper, or of some callers, does not cover
+the others. For each call site the diff changes, revert only that caller's
+change (pass the old value, drop the new argument, restore the old filter)
+and confirm at least one test goes red. A test double that bypasses the
+production path (for example, a stub that ignores the filter it is passed, or
+forcing a fallback path) does not count for that path. A changed call site
+whose revert leaves the suite green is a blocking self-review finding: add a
+test through that caller, ideally at the level the linked issue's Failure
+Detection names.
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
