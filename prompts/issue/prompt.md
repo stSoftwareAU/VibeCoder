@@ -141,7 +141,16 @@ guessing — the analysis-only hand-off then routes it to a human.
    you removed — a label, a status sentence, a setting's description — then
    fix every hit, so no manual still describes what the code no longer does.
    Record the sweep as the **Docs sweep** line in the PR summary (see
-   **PR Summary File** below). When the change involves architecture, data
+   **PR Summary File** below).
+   Before new prompt or doc text states how another component behaves —
+   above all an exclusive or negative claim ("the only …", "never …", "the
+   worker does not …") — open the code that implements it and cite that file
+   in the PR summary. A claim about a security control (redaction, guards,
+   sandboxing, dedup) must agree with `SECURITY.md` and
+   `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the
+   discrepancy. A rule that needs no such claim states the rule and the risk
+   it addresses instead (see **Prompt Engineering Guidance** in
+   `CODING-STANDARDS.md`). When the change involves architecture, data
    flow, state transitions, or sequence of events, include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
    `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
@@ -832,7 +841,12 @@ The file MUST contain:
    *not* happen — counts only once you have seen it go red with its guard
    broken on purpose (see **A negative test must be able to fail** in the
    guidelines); one that stays green without its guard is a blocking
-   self-review finding
+   self-review finding. Likewise, every outcome of a branch the diff adds —
+   each new condition, match arm, exit code and interface default — counts
+   only once a named test reaches it and flipping that outcome on purpose
+   turns the suite red (see **Every outcome of a branch you add needs a test
+   that reaches it** in the guidelines); an outcome no test reaches is a
+   blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
