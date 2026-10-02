@@ -30,10 +30,12 @@ not fixed". Closes #3063.
   proves the PR's own change is unchanged; any fix or conflict-resolution
   edit changes that diff
 - If any check cannot be confirmed (a compare error such as a 404 after a
-  force-push, a binary file without a patch, a truncated list of 250+ commits
-  or 300+ files), `ownDiffUnchanged` logs one line to stderr and returns
-  `false`. The PR then gets a fresh review, as it did before, and the pass is
-  never blocked
+  force-push, a modified binary or any other file with no patch and no
+  matching added-blob sha, a truncated list of 250+ commits or 300+ files),
+  `ownDiffUnchanged` logs one line to stderr and returns `false`. An added
+  binary is unchanged when both merge-base diffs list it as `added` with the
+  same blob sha (PR #3079 review). The PR then gets a fresh review when the
+  check fails, as it did before, and the pass is never blocked
 - A latest review in state `DISMISSED` triggers `awaiting-fix` only when the
   skill's own `log.jsonl` has a record for that exact head commit with
   `outcome === "changes_requested"` (PR #3079 review). GitHub's `DISMISSED`

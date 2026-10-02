@@ -250,13 +250,24 @@ interface ComparePr {
   commits: { sha: string; parents: { sha: string }[] }[];
 }
 
+interface CompareFile {
+  filename: string;
+  status: string;
+  previous_filename?: string;
+  patch?: string;
+  sha?: string;
+}
+
 interface CompareFiles {
-  files?: {
-    filename: string;
-    status: string;
-    previous_filename?: string;
-    patch?: string;
-  }[];
+  files?: CompareFile[];
+}
+
+// GitHub omits `patch` for a binary. An added file is the same blob when
+// both sides list it as added with the same sha. A modified binary, a
+// missing sha, or a patch on only one side cannot be confirmed unchanged.
+function sameAddedBlob(fa: CompareFile, fb: CompareFile): boolean {
+  return fa.status === "added" && fb.status === "added" &&
+    typeof fa.sha === "string" && fa.sha.length > 0 && fa.sha === fb.sha;
 }
 
 // A hunk header carries line numbers that shift when the base changes
@@ -301,9 +312,7 @@ export async function ownDiffUnchanged(
     const b = baseToHead.files ?? [];
     if (a.length !== b.length) return false;
     if (a.length >= 300) return false;
-    if (a.some((f) => typeof f.patch !== "string")) return false;
-    if (b.some((f) => typeof f.patch !== "string")) return false;
-    const sortByName = (x: typeof a[number], y: typeof a[number]) =>
+    const sortByName = (x: CompareFile, y: CompareFile) =>
       x.filename < y.filename ? -1 : x.filename > y.filename ? 1 : 0;
     const sortedA = [...a].sort(sortByName);
     const sortedB = [...b].sort(sortByName);
@@ -311,8 +320,19 @@ export async function ownDiffUnchanged(
       const fa = sortedA[i]!;
       const fb = sortedB[i]!;
       if (
-        fa.filename !== fb.filename || fa.status !== fb.status ||
-        fa.previous_filename !== fb.previous_filename ||
+        fa.filename !== fb.filename ||
+        fa.previous_filename !== fb.previous_filename
+      ) {
+        return false;
+      }
+      const aPatch = typeof fa.patch === "string";
+      const bPatch = typeof fb.patch === "string";
+      if (!aPatch || !bPatch) {
+        if (aPatch || bPatch || !sameAddedBlob(fa, fb)) return false;
+        continue;
+      }
+      if (
+        fa.status !== fb.status ||
         normalisePatch(fa.patch!) !== normalisePatch(fb.patch!)
       ) {
         return false;

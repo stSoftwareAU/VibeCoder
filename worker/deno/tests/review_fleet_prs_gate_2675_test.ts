@@ -377,6 +377,7 @@ const compareFiles = (
     status?: string;
     patch?: string;
     previous_filename?: string;
+    sha?: string;
   }[],
 ) =>
   JSON.stringify({
@@ -385,6 +386,7 @@ const compareFiles = (
       status: f.status ?? "modified",
       previous_filename: f.previous_filename,
       ...(f.patch !== undefined ? { patch: f.patch } : {}),
+      ...(f.sha !== undefined ? { sha: f.sha } : {}),
     })),
   });
 
@@ -597,14 +599,21 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
     false,
   );
 
-  // A file with no patch (binary/huge) cannot be confirmed unchanged.
+  // A modified file with no patch (a changed binary) cannot be confirmed
+  // unchanged. An added binary is compared by blob sha instead.
   const { gh: noPatchGh } = fakeGh({
     "repos/o/r/compare/X...head": compareResponse("ahead", [{
       sha: "m1",
       parents: 2,
     }]),
-    "repos/o/r/compare/main...X": compareFiles([{ filename: "a.bin" }]),
-    "repos/o/r/compare/main...head": compareFiles([{ filename: "a.bin" }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "a.bin",
+      status: "modified",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "a.bin",
+      status: "modified",
+    }]),
   });
   assertEquals(
     await ownDiffUnchanged(noPatchGh, "o/r", "main", "X", "head"),
@@ -650,6 +659,67 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
   assertEquals(
     await ownDiffUnchanged(newFileGh, "o/r", "main", "X", "head"),
     false,
+  );
+});
+
+Deno.test("skipReason: an added binary with the same blob sha is awaiting-fix (Issue #3063)", async () => {
+  const png = {
+    filename: "docs/evidence/shot.png",
+    status: "added",
+    sha: "762368ae",
+  };
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([png]),
+    "repos/o/r/compare/main...head": compareFiles([png]),
+  });
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+  });
+  assertEquals(
+    await skipReason(
+      pr,
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+    ),
+    "awaiting-fix",
+  );
+});
+
+Deno.test("skipReason: an added binary whose blob sha changed is a fresh review (Issue #3063)", async () => {
+  const { gh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "docs/evidence/shot.png",
+      status: "added",
+      sha: "762368ae",
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "docs/evidence/shot.png",
+      status: "added",
+      sha: "deadbeef",
+    }]),
+  });
+  const pr = searchPr({
+    headRefOid: "head",
+    baseRefName: "main",
+    reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+  });
+  assertEquals(
+    await skipReason(
+      pr,
+      "nleck",
+      (since) => ownDiffUnchanged(gh, "o/r", "main", since, "head"),
+    ),
+    null,
   );
 });
 
