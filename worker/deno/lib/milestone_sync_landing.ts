@@ -50,13 +50,20 @@ interface SyncPrListRow {
  *
  * Exported so {@link readMilestoneHeadPr} in `milestone_sync_pr_budget.ts`
  * shares this one parser rather than keeping a second copy of it
- * (Issue #2998).
+ * (Issue #2998). A non-array payload throws rather than silently falling
+ * back to an empty list — fail loud so a misshapen `gh` response is caught
+ * at the source instead of being read as "no PRs".
  */
 export function parsePrListRows(raw: string): SyncPrListRow[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
   const parsed: unknown = JSON.parse(trimmed);
-  return Array.isArray(parsed) ? parsed as SyncPrListRow[] : [];
+  if (!Array.isArray(parsed)) {
+    throw new Error(
+      `expected a JSON array from gh pr list, got ${typeof parsed}`,
+    );
+  }
+  return parsed as SyncPrListRow[];
 }
 
 /**

@@ -1973,8 +1973,7 @@ export async function syncMilestoneBranches(
           // the milestone's tracking issue.
           let entry: SyncStreakEntry | undefined;
           if (streakPath) {
-            entry = streaks[streakKey] ?? { count: 0, escalated: false };
-            entry.count++;
+            entry = recordSyncFailure(streaks[streakKey]);
             streaks[streakKey] = entry;
             streaksDirty = true;
           }

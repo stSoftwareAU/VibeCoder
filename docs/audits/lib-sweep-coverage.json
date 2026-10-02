@@ -2397,6 +2397,19 @@
       "paths": [
         "worker/deno/lib/repo_formatters.ts"
       ]
+    },
+    {
+      "issue": 2998,
+      "chunk": "top-up-2998",
+      "title": "top-up: the milestone sync landing check and its per-PR budget",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2998",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_sync_landing.ts, milestone_sync_pr_budget.ts (#2998)",
+      "status": "claimed",
+      "sweptAt": "85952f1169ec6e412dffd691aefd3e2d98787e24",
+      "paths": [
+        "worker/deno/lib/milestone_sync_landing.ts",
+        "worker/deno/lib/milestone_sync_pr_budget.ts"
+      ]
     }
   ],
   "roots": [
