@@ -3136,3 +3136,125 @@ Deno.test("processMergeConflict - an attempt the run ended still logs where its 
   );
   for (const timing of timings) assertEquals(timing.seconds, 5);
 });
+
+// ---------------------------------------------------------------------------
+// Milestone redo routing (Issue #3035)
+// ---------------------------------------------------------------------------
+
+/** Minimal `processorDeps` for calling {@link runAbandonRestart} directly. */
+function makeProcessorDeps(
+  captured: Captured,
+  overrides?: Partial<MergeConflictProcessorDeps>,
+): MergeConflictProcessorDeps {
+  return {
+    logger: makeSilentLogger(),
+    deps: createMockDeps({ github: makeGithub(captured) }),
+    workDir: "/tmp/does-not-matter",
+    workRoot: "/tmp/does-not-matter-root",
+    ...overrides,
+  };
+}
+
+/** A blank {@link Captured} fixture for the direct `runAbandonRestart` tests. */
+function makeEmptyCaptured(): Captured {
+  return {
+    events: [],
+    comments: [],
+    labelsAdded: [],
+    labelsRemoved: [],
+    gitArgs: [],
+    commitAndPushCalls: 0,
+    agentRuns: 0,
+    agentPrompts: [],
+    lockRenewals: [],
+    commentsDeleted: [],
+    emptyCommits: [],
+    pushes: [],
+    resets: [],
+  };
+}
+
+/** A {@link MilestoneRebuilt} outcome fixture with no replays or requeues. */
+function makeMilestoneRebuilt(
+  overrides?: Partial<MilestoneRebuilt>,
+): MilestoneRebuilt {
+  return {
+    outcome: "milestone-rebuilt",
+    milestoneBranch: "milestone/13-fleet-lands-its-own-conflicted-prs",
+    baseBranch: "main",
+    baseSha: "1111111111111111111111111111111111111111",
+    rebuildSha: "2222222222222222222222222222222222222222",
+    replayed: [],
+    skipped: [],
+    requeued: [],
+    delivery: { kind: "pushed" },
+    ...overrides,
+  };
+}
+
+Deno.test("runAbandonRestart - a milestone/** head calls milestoneRebuildFn, never abandonRestartFn", async () => {
+  const input = makeInput({
+    branchName: "milestone/13-fleet-lands-its-own-conflicted-prs",
+  });
+  const milestoneCalls: AbandonRestartRequest[] = [];
+  let abandonRestartCalls = 0;
+  const outcome = makeMilestoneRebuilt();
+
+  const result = await runAbandonRestart(
+    input,
+    makeProcessorDeps({
+      milestoneRebuildFn: (request) => {
+        milestoneCalls.push(request);
+        return Promise.resolve(outcome);
+      },
+      abandonRestartFn: () => {
+        abandonRestartCalls++;
+        return Promise.resolve({
+          outcome: "abandoned",
+          issueNumber: 999,
+          label: { kept: "top-priority" },
+        });
+      },
+    }),
+  );
+
+  assertEquals(result, outcome);
+  assertEquals(milestoneCalls.length, 1);
+  assertEquals(milestoneCalls[0]?.repo, input.repo);
+  assertEquals(milestoneCalls[0]?.prNumber, input.prNumber);
+  assertEquals(milestoneCalls[0]?.branchName, input.branchName);
+  assertEquals(milestoneCalls[0]?.baseBranch, input.baseBranch);
+  assertEquals(abandonRestartCalls, 0);
+});
+
+Deno.test("runAbandonRestart - a non-milestone head calls abandonRestartFn, never milestoneRebuildFn", async () => {
+  const input = makeInput({ branchName: "issue-16-fix" });
+  const abandonCalls: AbandonRestartRequest[] = [];
+  let milestoneCalls = 0;
+
+  const result = await runAbandonRestart(
+    input,
+    makeProcessorDeps({
+      abandonRestartFn: (request) => {
+        abandonCalls.push(request);
+        return Promise.resolve({
+          outcome: "abandoned",
+          issueNumber: 234,
+          label: { kept: "top-priority" },
+        });
+      },
+      milestoneRebuildFn: () => {
+        milestoneCalls++;
+        return Promise.resolve(makeMilestoneRebuilt());
+      },
+    }),
+  );
+
+  assertEquals(result.outcome, "abandoned");
+  assertEquals(abandonCalls.length, 1);
+  assertEquals(abandonCalls[0]?.repo, input.repo);
+  assertEquals(abandonCalls[0]?.prNumber, input.prNumber);
+  assertEquals(abandonCalls[0]?.branchName, input.branchName);
+  assertEquals(abandonCalls[0]?.baseBranch, input.baseBranch);
+  assertEquals(milestoneCalls, 0);
+});
