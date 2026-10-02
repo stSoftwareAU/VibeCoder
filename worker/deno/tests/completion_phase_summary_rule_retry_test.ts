@@ -387,6 +387,34 @@ Deno.test(
 );
 
 Deno.test(
+  "completion - a summary missing both the closure block and the Docs sweep line is asked for both in the one recovery turn (Issue #3085 review)",
+  async () => {
+    // SUMMARY_WITHOUT_BLOCK has no closure block AND no `Docs sweep` line.
+    // The closure gate runs first and used to consume the run's only
+    // recovery turn on its own notice, never mentioning the sweep — the
+    // re-run then blocked at the docs-sweep gate as a second, unrecovered
+    // block. The single retry prompt must now carry both notices.
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_BLOCK,
+      retryWrites: SUMMARY_WITH_BLOCK,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(
+      outcome.prCreateCalls,
+      1,
+      "the PR is raised once both are fixed",
+    );
+    assertStringIncludes(
+      outcome.claudePrompts[0]!,
+      "Acceptance-criteria closure",
+    );
+    assertStringIncludes(outcome.claudePrompts[0]!, "Docs sweep");
+  },
+);
+
+Deno.test(
   "completion - a block on a run that already has a PR is not re-invoked",
   async () => {
     const outcome = await runCompletion({

@@ -1185,17 +1185,27 @@ manual documents it>`.
 (`validateDocsSweep`, `buildDocsSweepGateComment`) runs as a fourth
 summary-rule gate in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
-after the reproduction-status gate, whenever `git diff --name-only
-<base>...HEAD` carries any file that is neither a test (`isTestFilePath`,
-shared with the security-fix gate) nor documentation (`.md`, `.mdx`,
-`.markdown`, `.rst`, `.adoc`, `.txt`, or a `docs/` path segment) — and also
-when the diff cannot be read, fail closed. It blocks a summary with no
-**Docs sweep** line, or a `section:` that is empty or a bare placeholder
-(`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`); `section: none — <reason>` and
-`no hits` are both accepted. It is a summary-rule gate like the other three,
-so the same [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
-gives the agent one more turn before a block with no PR stands, and a branch
-that already carries a PR instead finalises as `summary_incomplete`.
+whenever `git diff --name-only <base>...HEAD` carries any file that is
+neither a test (`isTestFilePath`, shared with the security-fix gate) nor
+documentation (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`, `.txt`, or a
+`docs/` path segment) — and also when the diff cannot be read, fail closed.
+It blocks a summary with no **Docs sweep** line, or a `section:` that is
+empty or a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`);
+`section: none — <reason>` and `no hits` are both accepted. Its verdict is
+computed once, early, so it stands beside — not strictly after — the
+reproduction-status gate: when the closure, independent-review or
+reproduction-status gate blocks the summary first, the docs-sweep verdict is
+folded into that gate's own notice (Issue #3085 review), and only a summary
+that passes all three reaches this gate's own, standalone block.
+
+It is a summary-rule gate like the other three, so the same
+[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
+agent one more turn before a block with no PR stands, and a branch that
+already carries a PR instead finalises as `summary_incomplete`. That one
+turn is shared: a summary missing both an earlier gate's requirement and the
+Docs sweep line is asked for both at once, in the earlier gate's notice,
+rather than losing the sweep to a second, unrecovered block (Issue #3085
+review).
 
 ## 🔧 Changed workflow files are checked before the PR
 
@@ -1285,14 +1295,18 @@ wrote no PR summary, and its PR closed the issue. The rest had to be
 rediscovered by hand and refiled as #2560.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
-gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
-after the closure, independent-review and reproduction-status gates but
-**before** the docs-sweep gate and the PR is raised. That ordering is
-deliberate (Issue #3085 review): on a branch that already carries an open PR,
-a failing summary gate finalises that PR via its own recovery path — and the
-docs-sweep gate is the one of the four that fires on almost every
-code-changing run, so it ran ahead of the guard only long enough to drop the
-degraded-run follow-up and PR-body note whenever a PR already existed:
+gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
+Its place depends on whether the branch already has an open PR (Issue #3085
+review). On an existing-PR branch the guard still runs after the closure,
+independent-review and reproduction-status gates but before the docs-sweep
+gate blocks: a failing summary gate finalises that PR via its own recovery
+path, and the docs-sweep gate is the one of the four that fires on almost
+every code-changing run, so letting it run ahead of the guard dropped the
+degraded-run follow-up and PR-body note whenever a PR already existed. On a
+branch with **no** PR yet, the docs-sweep gate instead pre-empts the guard: a
+follow-up filed there would promise "that run's PR still completes #N on
+merge" for a PR this gate can still prevent from ever being raised, so the
+gate blocks first and the guard never runs:
 
 ```mermaid
 flowchart TD

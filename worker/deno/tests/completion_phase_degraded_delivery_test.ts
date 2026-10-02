@@ -467,3 +467,28 @@ Deno.test("completion - a docs-sweep block on an existing-PR branch still runs t
   );
   assertStringIncludes(outcome.prBodies[0]!, "Degraded run — partial delivery");
 });
+
+Deno.test("completion - a docs-sweep block on a branch with no PR files no follow-up, even after the one in-run recovery retry (Issue #3085 review)", async () => {
+  // No PR exists yet on this branch, so the degraded-run guard's follow-up
+  // would promise a PR ("that run's PR still completes #N on merge") that
+  // this gate can still end the run without ever raising. The short-circuit
+  // must keep the guard from running at all here — on both the first block
+  // and the one in-run recovery retry, since the default mock Claude
+  // invocation changes nothing on the branch.
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_DOCS_SWEEP,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: false,
+  });
+
+  assertEquals(outcome.status, "failure", outcome.reason);
+  assertStringIncludes(outcome.reason ?? "", "Docs sweep");
+  assertEquals(
+    outcome.issueCreates.length,
+    0,
+    "the degraded-run guard must never file a follow-up for a PR that is " +
+      "never raised",
+  );
+  assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
+});

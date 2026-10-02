@@ -12,6 +12,7 @@ import {
   parseDocsSweepLine,
   validateDocsSweep,
 } from "../lib/docs_sweep_gate.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // ---------------------------------------------------------------------------
 // isDocsSweepExemptPath / codeChangingFiles
@@ -236,3 +237,40 @@ Deno.test("buildDocsSweepGateComment - contains the problems and the section sha
   assertStringIncludes(comment, "section:");
   assertStringIncludes(comment, "Docs sweep");
 });
+
+// ---------------------------------------------------------------------------
+// isBarePlaceholder growth (Issue #3085 review) — driven indirectly through
+// validateDocsSweep's `section:` field, since the helper is module-private.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "validateDocsSweep - a bare placeholder with a long trailing-decoration run scales linearly",
+  () => {
+    // `none` followed by a long run of `.` is the exact shape that made
+    // isBarePlaceholder's unanchored `/[.!\s]+$/g` backtrack quadratically —
+    // measured locally at 0.4 s/20k chars, 8 s/80k, 37 s/200k. The cap this
+    // fix adds bounds the regex to a fixed-size slice regardless of input
+    // size, so both runs should cost about the same and both must still
+    // detect the bare placeholder correctly.
+    const buildSummary = (chars: number) =>
+      `**Docs sweep** — section: none${".".repeat(chars)}`;
+
+    const result = assertLinearGrowth(
+      "docs-sweep bare-placeholder trailing-decoration scan",
+      buildSummary,
+      (input) =>
+        validateDocsSweep({
+          changedFiles: CODE_FILES,
+          prSummaryContent: input,
+        }),
+      { baseChars: 20_000 },
+    );
+
+    assertEquals(
+      result.valid,
+      false,
+      "still a bare placeholder, not an explained negative",
+    );
+    assertStringIncludes(result.problems[0]!, "placeholder");
+  },
+);

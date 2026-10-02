@@ -126,6 +126,18 @@ const SECTION_PLACEHOLDER_VALUES = new Set([
 ]);
 
 /**
+ * Cap on the value scanned by `isBarePlaceholder`'s trailing-decoration
+ * regex. Every real placeholder in `SECTION_PLACEHOLDER_VALUES` is a single
+ * short word, so a value longer than this can never equal one after
+ * trimming — capping first bounds the regex to a fixed-size input instead of
+ * letting it run (quadratically, via backtracking on an unanchored trailing
+ * run of `.`/`!`/whitespace) over up to `MAX_SCAN_CHARS` of agent-written,
+ * issue-steered text (Issue #3085 review; CODING-STANDARDS "Guard
+ * super-linearity by behaviour first").
+ */
+const MAX_PLACEHOLDER_SCAN_CHARS = 64;
+
+/**
  * Whether a `section:` value is a bare placeholder rather than an honest
  * negative — `none` alone names nothing, but `none — no manual documents
  * this flag` explains the gap and is accepted.
@@ -133,6 +145,7 @@ const SECTION_PLACEHOLDER_VALUES = new Set([
 function isBarePlaceholder(section: string): boolean {
   const normalised = section
     .trim()
+    .slice(0, MAX_PLACEHOLDER_SCAN_CHARS)
     .replace(/[.!\s]+$/g, "")
     .toLowerCase();
   return SECTION_PLACEHOLDER_VALUES.has(normalised);
