@@ -2404,7 +2404,11 @@ creation:
   when at least one substantive changed file has a UI extension (`.css`,
   `.scss`, `.sass`, `.less`, `.html`, `.htm`, `.jsx`, `.tsx`, `.vue`,
   `.svelte`); issue labels, PR-summary wording and an empty changed-file list
-  no longer count (Issue #2959).
+  no longer count (Issue #2959). The issue prompt's **UI Changes** rule states
+  the same extension list up front, so the agent captures the screenshot
+  before raising the PR rather than on the extra turn (Issue #3019);
+  `screenshot_file_rule_prompt_3019_test.ts` fails when the prompt's list and
+  `UI_FILE_EXTENSIONS` in `screenshot_validation.ts` differ.
 
   ```mermaid
   flowchart TD
@@ -3888,7 +3892,13 @@ both sides' hunks kept) and the result is checked case by case before it is
 staged. A union that would lose a case escalates. Equal case names are not
 enough to take a side, because an assertion changed inside a case with the same
 name is exactly the silent loss (three of the four test files in PR #1557 would
-have lost real coverage by side-taking, one of them silently).
+have lost real coverage by side-taking, one of them silently). For a Rust
+(`.rs`) file, a union that duplicates a `use` declaration both sides edited is
+folded back into one overlapping-item union
+([rust_use_union.ts](../worker/deno/lib/rust_use_union.ts)) before that check
+runs, because rustc rejects the same name imported twice (`error[E0252]`) and
+the gate would otherwise refuse the identical union every sync cycle
+(Issue #3007).
 
 **Every automatic resolution is verified before it is pushed**
 ([milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)):
@@ -5263,6 +5273,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_sync_conflict.ts](../worker/deno/lib/milestone_sync_conflict.ts)                                       | Reports a sync merge that conflicted — the files that collided and both sides' commits — on the cycle it happened                                                                    |
 |                             | [milestone_conflict_triage.ts](../worker/deno/lib/milestone_conflict_triage.ts)                                   | Decides a conflicted sync file by file — superset, duplicate fix, test-file union, both-sides-appended union — and prepares both sides for a human when no rule can settle it                                    |
 |                             | [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)                                         | Reads both sides out of the conflicted index, gathers the per-issue test evidence, union-merges a test file and stages what the triage decided                                        |
+|                             | [rust_use_union.ts](../worker/deno/lib/rust_use_union.ts)                                                         | Folds a textual union's duplicated Rust `use` declarations back into one before the resolution gate checks it (Issue #3007)                                                          |
 |                             | [milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)                                   | Climbs the rungs the triage left: the dependency rules, then the resolution agent, naming the rung that settled each file                                        |
 |                             | [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)                                           | Offers a failed verification back to the agent rung — bounded repair rounds on the same clone, carrying the gate's output — before any human sees it (Issue #1965)                     |
 |                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
