@@ -408,12 +408,14 @@ private budget of two. It is gone: the single source of truth is now
 [`merge_conflict_markers.ts`](../../worker/deno/lib/merge_conflict_markers.ts),
 and it is spent by **every** pass that resolves a conflict on a PR — the
 stale-verdict ladder (`pass="ladder"`), the milestone sync (`pass="sync"`) and
-the takeover rung (`pass="takeover"`). The ladder and the takeover pass
-(`conflict_takeover.ts`, Issue #2999) write attempt markers; the milestone sync
-starts writing them in a later sub-issue of Issue #2965. A legacy marker with
-no `pass=` at all — every marker written
-before this issue — reads as `ladder`, so history already on a PR thread is
-not lost.
+the takeover rung (`pass="takeover"`). All three now write attempt markers:
+the ladder, the takeover pass (`conflict_takeover.ts`, Issue #2999) and, since
+Issue #2998, the sync. The sync writes a marker only when its branch heads an
+open PR — a milestone branch with no open PR still spends the host-local
+ledger in `milestone_sync_failures.json` instead (see
+[MERGE.md](../MERGE.md#the-merge-conflict-attempt-budget)). A legacy marker
+with no `pass=` at all — every marker written before this issue — reads as
+`ladder`, so history already on a PR thread is not lost.
 
 - **The tally lives on the PR, never host-local** (Issue #2919), read by
   `readResolutionAttempts(comments, isTrustedAuthor)`. A marker from an

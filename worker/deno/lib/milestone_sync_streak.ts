@@ -606,6 +606,20 @@ export function recordDefaultSha(
 }
 
 /**
+ * Record one failure of the plain non-conflict streak (Issue #4260),
+ * including a merge whose landing could not be confirmed (Issue #2998) — a
+ * sync that says it merged but cannot be shown to have landed anywhere is not
+ * the success it claims to be, so it counts against the same streak an
+ * ordinary fetch or push failure does.
+ */
+export function recordSyncFailure(
+  entry: SyncStreakEntry | undefined,
+): SyncStreakEntry {
+  const base = entry ?? { count: 0, escalated: false };
+  return { ...base, count: base.count + 1 };
+}
+
+/**
  * Zero the conflict ledger after a successful sync (Issue #1766).
  *
  * Success is the only thing that refills the budget: the conflict this branch
