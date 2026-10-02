@@ -119,6 +119,19 @@ guessing — the analysis-only hand-off then routes it to a human.
      not a shape fitted to the test inputs. Special-casing the values in the
      test — hardcoded returns, branches keyed to a fixture — makes the suite
      green while the feature stays broken for every other input.
+   - **Call the existing owner — never copy it.** Before writing code that
+     formats, orders, ranks, validates or decides something the product
+     already does, find the helper, component or policy that owns it and
+     call it. Open every component or function the issue names — above all
+     in an Implementation section — and grep for the domain term (`rating`,
+     `buy_order`, `Stars`). When the owner is private (`pub(crate)`, not
+     exported), widen its visibility (`pub(crate)` → `pub`, add the export)
+     instead of copying it; that widening is part of this change, not the
+     adjacent refactor **Change Scope** rules out. A hand-made copy drifts
+     from its owner and drops the owner's edge cases. A component the issue
+     says to reuse is a stated requirement: the Spec reviewer judges it as a
+     criterion, and a diff that re-implements it by hand instead of calling
+     it is not `met`.
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
@@ -507,6 +520,8 @@ reviewer its path.
   verdict per stated criterion, plus an `unrequested` entry per change it cannot
   trace to the issue. All four are verdicts and all four are recorded the same
   way, so an `unrequested` entry carries `reviewer: unrequested` like the rest.
+  A helper or component the issue says to reuse counts as a stated criterion:
+  a diff that re-implements it by hand instead of calling it is not `met`.
 - **Standards reviewer** — inputs: the same diff and `CODING-STANDARDS.md`. One
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
