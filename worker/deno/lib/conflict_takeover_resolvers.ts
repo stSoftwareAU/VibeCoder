@@ -128,9 +128,10 @@ async function resolveOnFixBranch(
     "--end-of-options",
     `refs/remotes/origin/${pr.baseRefName}`,
   ]);
-  let conflictDetail = `merge of '${pr.baseRefName}' into '${fixBranch}' conflicted: ${
-    describeResult(merged)
-  }`;
+  let conflictDetail =
+    `merge of '${pr.baseRefName}' into '${fixBranch}' conflicted: ${
+      describeResult(merged)
+    }`;
   if (!(merged.ok && merged.value.code === 0) && agentFn) {
     const finished = await finishConflictedMerge(
       cwd,
@@ -313,7 +314,8 @@ async function finishConflictedMerge(
   if (!unmerged.ok) {
     return {
       resolved: false,
-      detail: `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: ${unmerged.error.message}`,
+      detail:
+        `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: ${unmerged.error.message}`,
     };
   }
   const ladder = await climbConflictLadder({
@@ -334,16 +336,18 @@ async function finishConflictedMerge(
       .join("; ");
     return {
       resolved: false,
-      detail: `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: ${why}`,
+      detail:
+        `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: ${why}`,
     };
   }
   const committed = await run(["commit", "--no-edit"]);
   if (!committed.ok || committed.value.code !== 0) {
     return {
       resolved: false,
-      detail: `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: could not commit the resolved merge: ${
-        describeResult(committed)
-      }`,
+      detail:
+        `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: could not commit the resolved merge: ${
+          describeResult(committed)
+        }`,
     };
   }
   return {

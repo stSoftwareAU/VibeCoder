@@ -58,10 +58,10 @@ import {
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   acquireBranchUpdateLock,
+  type BranchLockRenewalHandle,
   type BranchUpdateLockOptions,
   releaseBranchUpdateLock,
   startBranchUpdateLockRenewal,
-  type BranchLockRenewalHandle,
 } from "./pr_branch_lock.ts";
 import {
   findOpenMilestoneFixPr,
@@ -308,112 +308,116 @@ export async function runConflictTakeover(
   }
 
   try {
-  const attemptNumber = spent + 1;
-  const route = assessment.gated ? "milestone-fix PR" : "ordinary resolve";
-  await postComment(pr, buildAttemptComment(attemptNumber, headSha, route), gh);
-
-  let appliedLabel = false;
-  let outcome: ConflictTakeoverOutcome;
-  try {
-    const labels = await fetchPrLabels(pr.repo, pr.number, gh);
-    appliedLabel = await ensureMergeConflictLabel(
-      pr.repo,
-      pr.number,
-      labels,
-      gh,
-    );
-
-    if (assessment.gated) {
-      const fixBranch = milestoneFixBranchFor(
-        pr.headRefName,
-        pr.number,
-        `takeover-${shortSha(headSha)}`,
-      );
-      const resolution = await deps.resolveOnFixBranch(pr, fixBranch);
-      if (!resolution.resolved) {
-        outcome = {
-          kind: "failed",
-          route: "milestone-fix",
-          detail: resolution.detail,
-        };
-      } else {
-        const raised = await raiseMilestoneFixPr({
-          repo: pr.repo,
-          milestoneBranch: pr.headRefName,
-          milestonePrNumber: pr.number,
-          fixBranch,
-          pass: "merge-conflict resolution",
-        }, milestoneDeps);
-        if (!raised.ok) throw raised.error;
-        outcome = {
-          kind: "fix-pr-raised",
-          fixPr: raised.value,
-          fixBranch,
-        };
-      }
-    } else {
-      const resolution = await deps.resolveViaLadder(pr);
-      outcome = resolution.resolved
-        ? { kind: "resolved" }
-        : { kind: "failed", route: "ladder", detail: resolution.detail };
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const failedBody = [
-      `❌ **Conflict takeover threw** — the takeover raised an error: ${message}`,
-      "",
-      conflictFailedMarker(attemptNumber, "takeover", headSha),
-    ].join("\n");
-    try {
-      await postComment(pr, failedBody, gh);
-    } catch (postError) {
-      const postMessage = postError instanceof Error
-        ? postError.message
-        : String(postError);
-      throw new Error(
-        `runConflictTakeover(${pr.repo}#${pr.number}): the takeover threw ` +
-          `(${message}) and its failed conclusion could not be posted ` +
-          `(${postMessage})`,
-        { cause: error },
-      );
-    }
-    throw error instanceof Error ? error : new Error(String(error));
-  }
-
-  if (outcome.kind === "resolved" || outcome.kind === "fix-pr-raised") {
-    const detail = outcome.kind === "resolved"
-      ? "the base merged into the head cleanly and the head was pushed"
-      : `delivered into the gated head through fix PR ${outcome.fixPr.url}`;
-    await postComment(pr, buildResolvedComment(headSha, detail), gh);
-  } else {
+    const attemptNumber = spent + 1;
+    const route = assessment.gated ? "milestone-fix PR" : "ordinary resolve";
     await postComment(
       pr,
-      buildFailedComment(attemptNumber, headSha, outcome.detail),
+      buildAttemptComment(attemptNumber, headSha, route),
       gh,
     );
-  }
 
-  logger.info(
-    `Conflict takeover for PR #${pr.number} concluded: ${outcome.kind}`,
-    { ...context, outcome: outcome.kind },
-  );
-
-  if (outcome.kind === "resolved" && appliedLabel) {
+    let appliedLabel = false;
+    let outcome: ConflictTakeoverOutcome;
     try {
-      await clearMergeConflictLabel(pr.repo, pr.number, gh);
+      const labels = await fetchPrLabels(pr.repo, pr.number, gh);
+      appliedLabel = await ensureMergeConflictLabel(
+        pr.repo,
+        pr.number,
+        labels,
+        gh,
+      );
+
+      if (assessment.gated) {
+        const fixBranch = milestoneFixBranchFor(
+          pr.headRefName,
+          pr.number,
+          `takeover-${shortSha(headSha)}`,
+        );
+        const resolution = await deps.resolveOnFixBranch(pr, fixBranch);
+        if (!resolution.resolved) {
+          outcome = {
+            kind: "failed",
+            route: "milestone-fix",
+            detail: resolution.detail,
+          };
+        } else {
+          const raised = await raiseMilestoneFixPr({
+            repo: pr.repo,
+            milestoneBranch: pr.headRefName,
+            milestonePrNumber: pr.number,
+            fixBranch,
+            pass: "merge-conflict resolution",
+          }, milestoneDeps);
+          if (!raised.ok) throw raised.error;
+          outcome = {
+            kind: "fix-pr-raised",
+            fixPr: raised.value,
+            fixBranch,
+          };
+        }
+      } else {
+        const resolution = await deps.resolveViaLadder(pr);
+        outcome = resolution.resolved
+          ? { kind: "resolved" }
+          : { kind: "failed", route: "ladder", detail: resolution.detail };
+      }
     } catch (error) {
-      logger.warn(
-        `Conflict takeover: could not clear the 'merge-conflict' label it ` +
-          `applied on PR #${pr.number} — the next scan is the backstop`,
-        {
-          ...context,
-          error: error instanceof Error ? error.message : String(error),
-        },
+      const message = error instanceof Error ? error.message : String(error);
+      const failedBody = [
+        `❌ **Conflict takeover threw** — the takeover raised an error: ${message}`,
+        "",
+        conflictFailedMarker(attemptNumber, "takeover", headSha),
+      ].join("\n");
+      try {
+        await postComment(pr, failedBody, gh);
+      } catch (postError) {
+        const postMessage = postError instanceof Error
+          ? postError.message
+          : String(postError);
+        throw new Error(
+          `runConflictTakeover(${pr.repo}#${pr.number}): the takeover threw ` +
+            `(${message}) and its failed conclusion could not be posted ` +
+            `(${postMessage})`,
+          { cause: error },
+        );
+      }
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+
+    if (outcome.kind === "resolved" || outcome.kind === "fix-pr-raised") {
+      const detail = outcome.kind === "resolved"
+        ? "the base merged into the head cleanly and the head was pushed"
+        : `delivered into the gated head through fix PR ${outcome.fixPr.url}`;
+      await postComment(pr, buildResolvedComment(headSha, detail), gh);
+    } else {
+      await postComment(
+        pr,
+        buildFailedComment(attemptNumber, headSha, outcome.detail),
+        gh,
       );
     }
-  }
 
-  return outcome;
+    logger.info(
+      `Conflict takeover for PR #${pr.number} concluded: ${outcome.kind}`,
+      { ...context, outcome: outcome.kind },
+    );
+
+    if (outcome.kind === "resolved" && appliedLabel) {
+      try {
+        await clearMergeConflictLabel(pr.repo, pr.number, gh);
+      } catch (error) {
+        logger.warn(
+          `Conflict takeover: could not clear the 'merge-conflict' label it ` +
+            `applied on PR #${pr.number} — the next scan is the backstop`,
+          {
+            ...context,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+    }
+
+    return outcome;
   } finally {
     held.renewal?.stop();
     await held.release();

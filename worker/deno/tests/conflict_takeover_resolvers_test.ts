@@ -5,7 +5,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { bindConflictTakeoverResolvers } from "../lib/conflict_takeover_resolvers.ts";
 import {
   type ConflictTakeoverPr,
@@ -360,15 +365,21 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
         return Promise.resolve(JSON.stringify([{ type: "pull_request" }]));
       }
       if (args[0] === "pr" && args[1] === "view") return Promise.resolve("");
-      if (args[0] === "label" && args[1] === "list") return Promise.resolve("[]");
+      if (args[0] === "label" && args[1] === "list") {
+        return Promise.resolve("[]");
+      }
       if (args[0] === "pr" && args[1] === "list") return Promise.resolve("[]");
       if (args[0] === "pr" && args[1] === "create") {
         return Promise.resolve("https://github.com/acme/widgets/pull/7\n");
       }
       if (args[0] === "pr" && args[1] === "comment") return Promise.resolve("");
       if (args[0] === "pr" && args[1] === "merge") return Promise.resolve("");
-      if (args.includes("GET")) return Promise.resolve('{"users":[],"teams":[]}');
-      if (args[0] === "api" && (args.includes("POST") || args.includes("DELETE"))) {
+      if (args.includes("GET")) {
+        return Promise.resolve('{"users":[],"teams":[]}');
+      }
+      if (
+        args[0] === "api" && (args.includes("POST") || args.includes("DELETE"))
+      ) {
         return Promise.resolve("");
       }
       return Promise.resolve("");
@@ -402,7 +413,9 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
     );
 
     assertEquals(outcome.kind, "fix-pr-raised");
-    const created = calls.filter((args) => args[0] === "pr" && args[1] === "create");
+    const created = calls.filter((args) =>
+      args[0] === "pr" && args[1] === "create"
+    );
     assertEquals(created.length, 1);
     assertEquals(created[0]![created[0]!.indexOf("--base") + 1], "milestone/x");
     const fixRef = created[0]![created[0]!.indexOf("--head") + 1]!;
