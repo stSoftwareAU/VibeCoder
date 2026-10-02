@@ -2740,6 +2740,13 @@ Analysis-only / no-PR hand-off for the operator detail.
 
 A `work-on` run that produces no code changes has three possible endings, not
 two. "Already complete" closes the issue; "analysis-only" hands it to a human.
+(Issue #3088: detection no longer requires "no code changes" either — a
+`declared_handoff` phase runs after execute and before `bump_deps` / the
+quality gate / completion, so a run that *did* commit and still declared
+itself `## Blocked:` / time-deferred / needing planning is deferred or handed
+to planning rather than sailing through to a `Closes #N` PR. The commits stay
+on the local branch and are never pushed. See
+[`lib/phases/declared_handoff.ts`](worker/deno/lib/phases/declared_handoff.ts).)
 The third — the run read the code and found the work genuinely blocked on
 another issue — had no ending at all, so it fell through to the analysis-only
 branch: NEAT-AI-Backpropagation#94's correct, well-evidenced

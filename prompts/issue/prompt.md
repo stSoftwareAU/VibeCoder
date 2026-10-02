@@ -257,6 +257,10 @@ apply:
 - Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
   as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
   and hands it to a human.
+- This free-text hand-off is honoured only when the run leaves no commit and
+  no uncommitted change: decide before your first commit, and do not commit
+  if you are handing off, because once you commit the worker raises a PR that
+  closes this issue instead.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -272,7 +276,8 @@ change, and end your final message with this marker on its own line:
 The worker applies `planning` through its audited hand-off, posts your reason
 on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
-goes to a human instead. The marker applies to `work-on` issues only: on any
+goes to a human instead. This marker is honoured even when you have already
+committed — the worker then raises no PR. The marker applies to `work-on` issues only: on any
 other pickup label, or when the issue body carried an image from an untrusted
 author, the worker hands the issue to a human rather than to planning. Sheer
 volume in one coherent change is not a reason:

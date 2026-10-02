@@ -779,6 +779,20 @@ the "no PR" outcome reads as "not done". Without a dedicated exit the worker
 re-picks-up and re-runs the issue indefinitely (the loop, which re-posted
 the same matrix plus an "unable to make code changes" note about five times).
 
+**The structured signals below are honoured even when the run committed code
+(Issue #3088).** A `declared_handoff` phase runs after execute and before
+`bump_deps` / the quality gate / completion, and catches the same `## Blocked:`
+dependency deferral, `vibe-defer-until` time deferral and `vibe-needs-planning`
+marker on a run that also produced a commit — so the worker defers, parks or
+hands to planning instead of raising a PR with `Closes #N` that would close
+the very issue being deferred. The commits stay on the local branch and are
+never pushed. A signal that cannot be honoured (for example a repeat
+deferral) still falls through to the human hand-off below. The free-text
+escape hatch (a follow-up issue + "out of scope" message) remains the one
+hand-off that is honoured only when the run leaves no commit and no
+uncommitted change. See
+[`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
+
 The worker now detects an analysis-only / no-PR issue from **two signals** and
 hands it off cleanly to `needs-human` (the only operational label the worker may
 apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):

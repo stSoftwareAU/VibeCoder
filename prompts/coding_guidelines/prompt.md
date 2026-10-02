@@ -678,7 +678,9 @@ The worker recognises that shape and **defers** the issue: it stays open with
 its discovery label, `Depends on owner/repo#N` is recorded in its body, and the
 dependency gate skips it on every scan until that dependency closes. The
 release comment says `deferred: depends on owner/repo#N`. No human is paged and
-no work is lost.
+no work is lost. This deferral is honoured whether or not you have already
+committed — a commit does not stop the worker from deferring and it raises no
+PR.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the
@@ -874,6 +876,10 @@ this **instead of looping**:
    For PR feedback or CI fix work, write the message to `.pr_response_message`
    in the working directory — the worker posts it as the PR reply. For issue
    work, post the message as a comment on the current issue — and stop there.
+   This free-text hand-off is honoured only when the run leaves no commit and
+   no uncommitted change; once you commit, the worker raises a PR that closes
+   the issue instead, so decide before your first commit and do not commit if
+   you are handing off.
    **Do not close the issue yourself**: the `gh` guard refuses
    `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
    The worker releases its claim and hands the issue to a human
