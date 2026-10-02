@@ -234,6 +234,22 @@ export function conflictRungFailedMarker(
 export const CONFLICT_PARKED_MARKER = "<!-- vibe-merge-conflict-parked";
 
 /**
+ * A no-op watchdog check (Issue #3001 review). A declined abandon and a
+ * reused fix PR post nothing else, so without this the same PR trips again
+ * on every cycle. The `at="…"` is what {@link readLatestStandDownAtMs}
+ * restarts the owner-check clock from.
+ */
+export const CONFLICT_WATCHDOG_CHECKED_MARKER =
+  "<!-- vibe-conflict-watchdog-checked";
+
+/** The marker line for one no-op watchdog check, naming when it ran. */
+export function conflictWatchdogCheckedMarker(atMs: number): string {
+  return `${CONFLICT_WATCHDOG_CHECKED_MARKER} ${
+    standDownAtAttribute(atMs)
+  } -->`;
+}
+
+/**
  * The `at="…"` attribute every stand-down marker carries, naming the moment
  * the stand-down was posted (Issue #2997) — shared by this module's
  * {@link conflictParkedMarker} and `gated_head_guard.ts`'s own markers so the

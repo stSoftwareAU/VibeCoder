@@ -56,6 +56,7 @@ import { getBranchRules, type GhExec } from "./repo_rulesets.ts";
 import {
   CONFLICT_OWNER_CHECK_HOURS,
   CONFLICT_PARKED_MARKER,
+  CONFLICT_WATCHDOG_CHECKED_MARKER,
   standDownAtAttribute,
 } from "./merge_conflict_markers.ts";
 import { conflictCommentAuthor } from "./conflict_marker_trust.ts";
@@ -512,6 +513,7 @@ const STAND_DOWN_MARKER_PREFIXES: readonly string[] = [
   "<!-- vibe-gated-head ",
   "<!-- vibe-milestone-head ",
   CONFLICT_PARKED_MARKER,
+  CONFLICT_WATCHDOG_CHECKED_MARKER,
 ];
 
 /** The epoch ms one comment's own `at="…"`/`created_at` carries, or `undefined`. */

@@ -406,6 +406,49 @@ Deno.test("runConflictTakeover - label absent before is added then removed after
   assert(deletes[0]!.some((a) => a.includes("/labels/merge-conflict")));
 });
 
+Deno.test("runConflictTakeover - a held cross-host lock stands down before any attempt marker", async () => {
+  const fake = makeFakeGh({ gated: false });
+  const deps = makeDeps(fake, {
+    workerId: "host-b",
+    acquireLockFn: () =>
+      Promise.resolve({
+        ok: true,
+        value: { acquired: false, winnerId: "host-a" },
+      }),
+    resolveViaLadder: () => {
+      throw new Error("must not resolve while the lock is held");
+    },
+  });
+
+  const outcome = await runConflictTakeover(nonGatedPr(), deps);
+
+  assertEquals(outcome, { kind: "lock-held", holder: "host-a" });
+  assertEquals(commentsCalls(fake.calls).length, 0);
+});
+
+Deno.test("runConflictTakeover - the cross-host lock is released after the attempt", async () => {
+  const fake = makeFakeGh({ gated: false });
+  let released = 0;
+  const deps = makeDeps(fake, {
+    workerId: "host-a",
+    acquireLockFn: () =>
+      Promise.resolve({
+        ok: true,
+        value: { acquired: true, lockCommentId: 99 },
+      }),
+    releaseLockFn: () => {
+      released++;
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+    startLockRenewalFn: () => ({ stop() {} }),
+  });
+
+  const outcome = await runConflictTakeover(nonGatedPr(), deps);
+
+  assertEquals(outcome.kind, "resolved");
+  assertEquals(released, 1);
+});
+
 Deno.test("runConflictTakeover - empty trustedAuthors rejects before any pr comment", async () => {
   const fake = makeFakeGh({ gated: false });
   const deps = makeDeps(fake, { trustedAuthors: [] });

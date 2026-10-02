@@ -71,6 +71,7 @@ import {
   CONFLICT_OWNER_CHECK_HOURS,
   CONFLICT_RESOLUTION_BUDGET,
   CONFLICT_RESOLVED_MARKER,
+  conflictWatchdogCheckedMarker,
   isConflictHeadSha,
   readParkedBase,
   readResolutionAttempts,
@@ -483,6 +484,11 @@ export interface ConflictStallRepairDeps {
     pr: ConflictTakeoverPr,
     deps: ConflictTakeoverDeps,
   ) => Promise<ConflictTakeoverOutcome>;
+  /**
+   * This host's id for the cross-host PR lock. When set, the takeover
+   * acquires that lock before posting an attempt (Issue #3001 review).
+   */
+  workerId?: string;
 }
 
 /** What {@link repairConflictQueueStall} did. */
@@ -491,9 +497,37 @@ export type ConflictStallRepairAction =
   | "no-longer-stalled"
   | "taken-over"
   | "takeover-declined"
+  | "lock-held"
   | "abandoned"
   | "abandon-declined"
   | "failed";
+
+/**
+ * Post the note that restarts the owner-check clock after a no-op outcome.
+ * A declined abandon and a reused fix PR otherwise leave the thread unchanged,
+ * so the next cycle trips the same PR again.
+ */
+async function postWatchdogChecked(
+  repo: string,
+  prNumber: number,
+  atMs: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<void> {
+  await ghCommandFn([
+    "pr",
+    "comment",
+    String(prNumber),
+    "--repo",
+    repo,
+    "--body",
+    [
+      "The conflict watchdog checked this PR and had nothing new to post, " +
+      "so this note restarts the owner-check clock.",
+      "",
+      conflictWatchdogCheckedMarker(atMs),
+    ].join("\n"),
+  ]);
+}
 
 /** Everything {@link repairConflictQueueStall} needs beyond its seams. */
 export interface ConflictStallRepairOptions extends ConflictStallRepairDeps {
@@ -621,6 +655,9 @@ export async function repairConflictQueueStall(
           trustedAuthors: [...(options.trustedAuthors ?? [])],
           logger,
           ...options.takeoverResolvers,
+          ...(options.workerId !== undefined
+            ? { workerId: options.workerId }
+            : {}),
         },
       );
       if (outcome.kind === "declined-budget") {
@@ -630,6 +667,18 @@ export async function repairConflictQueueStall(
           attemptsSpent: outcome.attemptsSpent,
         });
         return "takeover-declined";
+      }
+      if (outcome.kind === "lock-held") {
+        logger.info(
+          "Merge-conflict stall repair: another host holds the PR lock",
+          { repo, prNumber, lockHolder: outcome.holder },
+        );
+        return "lock-held";
+      }
+      if (outcome.kind === "fix-pr-reused") {
+        // Reusing an open fix PR posts no attempt marker, so the clock
+        // would trip again every cycle. This note restarts it.
+        await postWatchdogChecked(repo, prNumber, options.nowMs, ghCommandFn);
       }
       logger.info("Merge-conflict stall repair: took the conflict over", {
         repo,
@@ -665,13 +714,19 @@ export async function repairConflictQueueStall(
           { repo, prNumber, outcome: outcome.outcome },
         );
         return "abandoned";
-      case "declined":
-        logger.warn("Merge-conflict stall repair: abandon declined", {
-          repo,
-          prNumber,
-          reason: outcome.reason,
-        });
+      case "declined": {
+        // A decline posts nothing on the PR. Restart the clock so the next
+        // cycle does not trip the same steady state again.
+        await postWatchdogChecked(repo, prNumber, options.nowMs, ghCommandFn);
+        const steady = outcome.reason.kind === "already-restarted";
+        const message = steady
+          ? "Merge-conflict stall repair: the hand-off was already posted"
+          : "Merge-conflict stall repair: abandon declined";
+        const fields = { repo, prNumber, reason: outcome.reason };
+        if (steady) logger.info(message, fields);
+        else logger.warn(message, fields);
         return "abandon-declined";
+      }
       case "failed":
         logger.error("Merge-conflict stall repair: abandon failed", {
           repo,
@@ -1168,6 +1223,9 @@ export async function scanConflictQueueStalls(
           ? { takeoverResolvers: options.takeoverResolvers }
           : {}),
         ...(options.takeover ? { takeover: options.takeover } : {}),
+        ...(options.workerId !== undefined
+          ? { workerId: options.workerId }
+          : {}),
       });
     }
     quota.repoDone();

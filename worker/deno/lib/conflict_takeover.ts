@@ -57,6 +57,13 @@ import {
 } from "./pr_merge_conflict_scan.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
+  acquireBranchUpdateLock,
+  type BranchUpdateLockOptions,
+  releaseBranchUpdateLock,
+  startBranchUpdateLockRenewal,
+  type BranchLockRenewalHandle,
+} from "./pr_branch_lock.ts";
+import {
   findOpenMilestoneFixPr,
   milestoneFixBranchFor,
   type MilestoneFixPr,
@@ -116,6 +123,20 @@ export interface ConflictTakeoverDeps {
     fixBranch: string,
   ) => Promise<TakeoverResolution>;
   logger: Logger;
+  /**
+   * This host's id. When set, the takeover takes the same cross-host PR
+   * lock the ladder uses before it posts an attempt, and stands down while
+   * another worker holds it (Issue #3001 review).
+   */
+  workerId?: string;
+  /** Defaults to {@link acquireBranchUpdateLock}. */
+  acquireLockFn?: (
+    options: BranchUpdateLockOptions,
+  ) => ReturnType<typeof acquireBranchUpdateLock>;
+  /** Defaults to {@link releaseBranchUpdateLock}. */
+  releaseLockFn?: typeof releaseBranchUpdateLock;
+  /** Defaults to {@link startBranchUpdateLockRenewal}. */
+  startLockRenewalFn?: typeof startBranchUpdateLockRenewal;
 }
 
 /** What one takeover run did. */
@@ -133,7 +154,9 @@ export type ConflictTakeoverOutcome =
     kind: "failed";
     route: "milestone-fix" | "ladder";
     detail: string;
-  };
+  }
+  /** Another host holds the cross-host PR lock; nothing was posted. */
+  | { kind: "lock-held"; holder: string };
 
 // ---------------------------------------------------------------------------
 // Run
@@ -274,6 +297,17 @@ export async function runConflictTakeover(
     }
   }
 
+  const held = await holdTakeoverLock(pr, deps);
+  if (held.kind === "held-by-other") {
+    logger.info(
+      `Conflict takeover for PR #${pr.number}: standing down, the ` +
+        `cross-host lock is held by ${held.holder}`,
+      { ...context, lockHolder: held.holder },
+    );
+    return { kind: "lock-held", holder: held.holder };
+  }
+
+  try {
   const attemptNumber = spent + 1;
   const route = assessment.gated ? "milestone-fix PR" : "ordinary resolve";
   await postComment(pr, buildAttemptComment(attemptNumber, headSha, route), gh);
@@ -380,4 +414,71 @@ export async function runConflictTakeover(
   }
 
   return outcome;
+  } finally {
+    held.renewal?.stop();
+    await held.release();
+  }
+}
+
+/** Take the ladder's cross-host lock, or report that another host holds it. */
+async function holdTakeoverLock(
+  pr: ConflictTakeoverPr,
+  deps: ConflictTakeoverDeps,
+): Promise<
+  | {
+    kind: "free";
+    release: () => Promise<void>;
+    renewal?: BranchLockRenewalHandle;
+  }
+  | { kind: "held-by-other"; holder: string }
+> {
+  if (deps.workerId === undefined) {
+    return { kind: "free", release: () => Promise.resolve() };
+  }
+
+  const acquire = deps.acquireLockFn ?? acquireBranchUpdateLock;
+  const lock = await acquire({
+    repo: pr.repo,
+    prNumber: pr.number,
+    workerId: deps.workerId,
+    ghCommandFn: deps.gh,
+    note:
+      `🔀 Resolving this PR's merge conflict (worker \`${deps.workerId}\`).`,
+  });
+  if (
+    !lock.ok || !lock.value.acquired ||
+    lock.value.lockCommentId === undefined
+  ) {
+    const holder = lock.ok ? lock.value.winnerId ?? "unknown" : "unknown";
+    return { kind: "held-by-other", holder };
+  }
+
+  const lockCommentId = lock.value.lockCommentId;
+  const releaseFn = deps.releaseLockFn ?? releaseBranchUpdateLock;
+  const startRenewal = deps.startLockRenewalFn ?? startBranchUpdateLockRenewal;
+  const renewal = startRenewal({
+    repo: pr.repo,
+    lockCommentId,
+    workerId: deps.workerId,
+    ghCommandFn: deps.gh,
+    note:
+      `🔀 Resolving this PR's merge conflict (worker \`${deps.workerId}\`).`,
+    onError: (message: string) =>
+      deps.logger.error(`conflict_takeover_lock=renew-failed ${message}`, {
+        repo: pr.repo,
+        prNumber: pr.number,
+      }),
+  });
+
+  return {
+    kind: "free",
+    renewal,
+    release: () =>
+      releaseFn({
+        repo: pr.repo,
+        prNumber: pr.number,
+        lockCommentId,
+        ghCommandFn: deps.gh,
+      }).then(() => undefined),
+  };
 }

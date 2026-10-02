@@ -790,6 +790,60 @@ Deno.test("repairConflictQueueStall - a declined-budget takeover outcome is repo
   assertEquals(action, "takeover-declined");
 });
 
+Deno.test("repairConflictQueueStall - a declined abandon restarts the clock so the next check does not trip", async () => {
+  const declined = fakeAbandon({
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: 7,
+      samePr: true,
+      restartCount: 2,
+    },
+  });
+  const github = fakeGitHub(budgetSpentComments.slice());
+  const stall = detect(observation(10, budgetSpentComments));
+  assert(stall !== null);
+
+  assertEquals(
+    await repairConflictQueueStall(stall, {
+      ghCommandFn: github.gh,
+      logger,
+      isTrustedAuthor,
+      nowMs: NOW,
+      abandon: declined.abandon,
+      acquireLease: declined.acquireLease,
+      trustedAuthors: [FLEET],
+    }),
+    "abandon-declined",
+  );
+  assertEquals(detect(observation(10, github.prComments)), null);
+});
+
+Deno.test("repairConflictQueueStall - a reused fix PR restarts the clock so the next check does not trip", async () => {
+  const github = fakeGitHub();
+  const stall = detect(observation(3));
+  assert(stall !== null);
+  const takeover = fakeTakeover({
+    kind: "fix-pr-reused",
+    fixPr: { number: 9, url: "https://example.test/9", opened: false },
+  });
+
+  assertEquals(
+    await repairConflictQueueStall(stall, {
+      ghCommandFn: github.gh,
+      logger,
+      isTrustedAuthor,
+      nowMs: NOW,
+      acquireLease: () => ({ release: noop }),
+      takeover: takeover.takeover,
+      takeoverResolvers,
+      trustedAuthors: [FLEET],
+    }),
+    "taken-over",
+  );
+  assertEquals(detect(observation(3, github.prComments)), null);
+});
+
 // ---------------------------------------------------------------------------
 // Scan (Issue #1112, #1515, #2409)
 // ---------------------------------------------------------------------------

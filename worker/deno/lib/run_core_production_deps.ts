@@ -2962,6 +2962,7 @@ export async function createProductionRunCoreDeps(
           // the guarded abandon-and-redo rung decline without the fleet's own
           // logins to attribute spend to.
           trustedAuthors: [...trustedAuthors],
+          workerId: getWorkerUniqueId(config.workerName),
           takeoverResolvers: bindConflictTakeoverResolvers({
             checkout: async (repo: string) => {
               const setup = await setupRepo(repo, workDir);
