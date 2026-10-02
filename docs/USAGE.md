@@ -95,7 +95,9 @@ record of an earlier iteration never reaches the archive (Issue #2879). Every
 file or behaviour it claims must appear in `git diff <base>...HEAD` — not merely
 exist at the head, since a merge from the base branch can supersede the change —
 and a summary that contradicts the diff is a blocking self-review finding
-(Issue #3015).
+(Issue #3015). The same holds for every doc the diff adds or edits, each claim
+is re-verified after any merge of the base branch, and a test cited as
+evidence must exist and have run on the final head (Issue #3058).
 
  moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
 so `docs/` root remains a curated table of contents. The worker still checks the

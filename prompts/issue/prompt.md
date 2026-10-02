@@ -545,6 +545,13 @@ A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
 broken.
 
+**A violation this diff introduced blocks the PR — you enforce this one, not
+the gate.** A doc comment the change made wrong, a test the summary cites but
+the diff lacks, a standard breached in a line this PR wrote: fix it in this
+diff before you raise the PR, never list it as standing. Only a departure that
+predates the diff, or one the issue itself requires, may stand, and its
+`reason:` says which.
+
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
@@ -587,6 +594,19 @@ one is broken:
   silent.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria.
+
+Two more rules no gate parses — a reviewer sends the PR back for either:
+
+- **Demonstrate a criterion; do not assert it.** A test named as evidence must
+  exist in the diff (or at the head) and must have been run on the final head;
+  a coverage claim — "every branch", "all rejections" — names the branches its
+  tests exercise, and one untested branch makes it `partial`.
+- **A missing core deliverable is not a PR.** When the thing the issue asks for
+  is `missing`, finish it, or hand off with the planning marker or the escape
+  hatch — a `Closes #{{ISSUE_NUMBER}}` over a missing deliverable closes the
+  issue with the work undone. When a lesser criterion stays `partial` or
+  `missing`, the Summary names it beside the closing keyword instead of
+  describing the issue as resolved.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -768,6 +788,13 @@ rewrite it, never append to it:
   summary saying the fix is broken or unfinished when the head holds a working,
   tested fix is a wrong record — anyone reading the archive concludes the issue
   is unfixed.
+- Hold every doc the diff adds or edits to the same rule — a README or `docs/`
+  page, an audit record or ledger, the doc comment above a changed function.
+  Each assertion it makes (a count, a list of roots, a file, flag or test it
+  names) must match the head code and appear in the diff.
+- After any merge of the base branch into this branch, or on finding the base
+  has advanced, re-run this check: a claim whose subject the merge absorbed is
+  dropped, or the work is redone so the diff carries it again.
 - A body that contradicts the diff — a claimed file, behaviour or criterion the
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
