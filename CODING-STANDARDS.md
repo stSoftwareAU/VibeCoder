@@ -43,10 +43,12 @@ summarise, authorised.
   source files over large monolithic ones.
 - **Avoid over-engineering** — Only make changes that are directly requested or
   clearly necessary. Do not add features, refactor code, or make "improvements"
-  beyond what was asked. Reviewing a diff, flag these three departures
+  beyond what was asked. Reviewing a diff, flag these four departures
   explicitly: a standard-library function reinvented by hand, a dependency
   added when an installed one or the standard library already does the job,
-  and an abstraction with a single implementation.
+  an abstraction with a single implementation, and an in-repo helper,
+  component or policy re-implemented by hand instead of called — when that
+  owner is private, widen its visibility rather than copy it.
 - **Deno TypeScript for new logic** — All new business logic, decision-making,
   and data processing must be implemented in Deno TypeScript (`worker/deno/`),
   not in shell scripts. Shell scripts are for orchestration only (calling Deno

@@ -1001,7 +1001,9 @@ each given the finished diff and nothing from the author's context:
   questions: which requirements are missing or partial, what behaviour is in the
   diff that was not asked for, and which requirements look implemented but are
   implemented wrongly. Its verdicts populate the `## Acceptance Criteria` block,
-  one `reviewer:` verdict per entry.
+  one `reviewer:` verdict per entry. A helper or component the issue says to
+  reuse counts as a stated requirement, so a diff that re-implements it by
+  hand is not `met` (Issue #3084).
 - **Standards reviewer** — inputs the same diff and `CODING-STANDARDS.md`. Its
   findings go under a separate `## Standards Review` heading as `violation`
   entries (with `file:line` and whether the violation was fixed) and the `clean`
