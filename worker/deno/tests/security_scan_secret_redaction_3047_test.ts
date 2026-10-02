@@ -2,11 +2,13 @@
  * Issue #3047: `security_scan` must tell the model never to quote a full
  * secret value in an issue it files.
  *
- * The model files its finding with `gh issue create` directly — the worker
- * does not scrub that body before it is sent to GitHub. Without an explicit
- * redaction rule in the prompt, a finding about a hard-coded credential could
- * reproduce the live secret value in the issue title, body, or a comment,
- * where it is then readable by anyone who can read the repo's issues.
+ * The model files its finding with `gh issue create` directly. The gh guard
+ * shim backstops that call with a shape-based mask (recognised credential
+ * formats only), so without an explicit redaction rule in the prompt, a
+ * finding about a hard-coded credential could still reproduce an unrecognised
+ * secret value — a password, a bespoke key — in the issue title, body, or a
+ * comment, where it is then readable by anyone who can read the repo's
+ * issues.
  *
  * This test reads `prompts/security_scan/prompt.md` through the real
  * `loadPrompt` and checks three scoped slices — the A04 **Secrets** bullet,
@@ -82,7 +84,7 @@ Deno.test("security_scan prompt tells the model to redact secret values in filed
   assert(
     carriesRedactionRule(filingStep),
     "the Phase 4 filing step must repeat the redaction rule, since the " +
-      "model files the gh issue create body as written and the worker " +
-      "does not scrub it:\n" + filingStep,
+      "gh guard shim's backstop only masks recognised credential shapes:\n" +
+      filingStep,
   );
 });

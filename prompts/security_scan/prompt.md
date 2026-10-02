@@ -652,9 +652,10 @@ than duplicating it here.
   title, body, or any comment: cite the secret by `file:line`, never
   its value, and where the value's shape matters show at most its
   first four characters followed by `…` (e.g. `AKIA…`). A filed issue
-  is readable by anyone who can read the repo's issues, and the
-  worker files your `gh issue create` body as written — it does not
-  scrub it.
+  is readable by anyone who can read the repo's issues. Outbound
+  redaction only masks recognised token shapes, so do not rely on it
+  to catch a password or key it does not recognise — follow this
+  rule yourself.
 
 #### A05:2025 — Injection
 
@@ -1777,8 +1778,9 @@ reconcile pass has nothing to repaint.
    including inside `## Trigger` and `## Exploit sketch`. Cite the
    secret by `file:line`, never its value, and where the value's
    shape matters show at most its first four characters followed by
-   `…` (e.g. `ghp_…`). The worker files your `gh issue create` body as
-   written; it does not scrub it.
+   `…` (e.g. `ghp_…`). Outbound redaction only masks recognised token
+   shapes, so do not rely on it to catch a password or key it does
+   not recognise — this rule is the control for those.
 
    The body takes exactly this shape — markers first, each on its own
    line, sections in this order, and only the sections you have evidence
