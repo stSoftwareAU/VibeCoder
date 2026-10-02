@@ -62,6 +62,7 @@ import {
 import {
   CONFLICT_RESOLUTION_BUDGET,
   hasExhaustedConflictAttempts,
+  isConflictAttemptDue as isPrConflictAttemptDue,
   spentConflictAttempts,
 } from "./pr_merge_conflict_scan.ts";
 import { isConflictEscalation } from "./milestone_conflict_triage.ts";
@@ -1608,6 +1609,23 @@ export async function syncMilestoneBranches(
               `${spentConflictAttempts(headPr.attempts)} of ` +
               `${CONFLICT_RESOLUTION_BUDGET} conflict-resolution attempts ` +
               `(Issue #2998)`,
+          );
+          skipped++;
+          continue;
+        }
+        // Issue #2996: a failed attempt on the open PR leaves it to its
+        // owner for the same 2-hour spacing the ladder uses. A retry a few
+        // minutes later would spend the shared budget before the takeover
+        // ever runs.
+        if (
+          headPr &&
+          !isPrConflictAttemptDue(headPr.attempts, headPr.headSha, now())
+        ) {
+          log(
+            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+              `PR #${headPr.number} failed its last conflict attempt ` +
+              `recently and its head has not moved, so the next attempt ` +
+              `waits out the owner check (Issue #2996)`,
           );
           skipped++;
           continue;

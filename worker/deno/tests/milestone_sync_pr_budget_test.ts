@@ -192,6 +192,40 @@ Deno.test(
 );
 
 Deno.test(
+  "milestone sync - a second failure within 2 hours posts no new marker (Issue #2996)",
+  async () => {
+    const calls: string[][] = [];
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [],
+    };
+    let syncs = 0;
+    const syncBranchFn = () => {
+      syncs++;
+      return Promise.resolve({ ok: false as const, error: conflictFailure() });
+    };
+
+    const first = await syncMilestoneBranches(
+      baseDeps(calls, state, syncBranchFn),
+    );
+    assert(first.ok);
+    assertEquals(prCommentCalls(calls).length, 1);
+    assertEquals(syncs, 1);
+
+    const second = await syncMilestoneBranches(
+      baseDeps(calls, state, syncBranchFn),
+    );
+    assert(second.ok);
+    assertEquals(
+      prCommentCalls(calls).length,
+      1,
+      "the owner check holds the next attempt",
+    );
+    assertEquals(syncs, 1, "the conflicting branch is not synced again");
+  },
+);
+
+Deno.test(
   "milestone sync - two prior failed markers on the PR allow exactly one more sync attempt (Issue #2998)",
   async () => {
     const calls: string[][] = [];
