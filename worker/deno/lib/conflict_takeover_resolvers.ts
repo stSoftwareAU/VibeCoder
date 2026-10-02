@@ -18,7 +18,13 @@
 
 import type { Result } from "../types.ts";
 import { type GitCommandOutput, runGitCommand } from "./git_timeout.ts";
-import { updatePrBranch } from "./git_pull.ts";
+import { isPrBranchConflictError, updatePrBranch } from "./git_pull.ts";
+import {
+  climbConflictLadder,
+  listUnmergedPaths,
+  type MilestoneConflictAgentRequest,
+} from "./milestone_conflict_ladder.ts";
+import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
 import {
   assertSafeGitRef,
   buildCheckoutResetBranchArgs,
@@ -40,6 +46,14 @@ export interface ConflictTakeoverResolverDeps {
   updateBranch?: typeof updatePrBranch;
   /** Defaults to `runGitCommand` from git_timeout.ts. */
   runGit?: typeof runGitCommand;
+  /**
+   * The marker-free resolution agent. Called only after a merge conflicts.
+   * Absent, a conflict is aborted and reported unresolved — the takeover
+   * still owns the attempt markers, so this must not post any.
+   */
+  agentFn?: (
+    request: MilestoneConflictAgentRequest & { repo: string },
+  ) => Promise<Result<MergeConflictAgentOutcome>>;
 }
 
 /** Git's own stdout/stderr for a failed command, or the spawn error's message. */
@@ -59,6 +73,7 @@ async function resolveOnFixBranch(
   fixBranch: string,
   checkout: ConflictTakeoverResolverDeps["checkout"],
   runGit: typeof runGitCommand,
+  agentFn: ConflictTakeoverResolverDeps["agentFn"],
 ): Promise<TakeoverResolution> {
   assertSafeGitRef(fixBranch, "fix branch name");
   assertSafeGitRef(pr.headRefName, "PR head branch name");
@@ -113,6 +128,34 @@ async function resolveOnFixBranch(
     "--end-of-options",
     `refs/remotes/origin/${pr.baseRefName}`,
   ]);
+  let conflictDetail = `merge of '${pr.baseRefName}' into '${fixBranch}' conflicted: ${
+    describeResult(merged)
+  }`;
+  if (!(merged.ok && merged.value.code === 0) && agentFn) {
+    const finished = await finishConflictedMerge(
+      cwd,
+      pr,
+      fixBranch,
+      run,
+      agentFn,
+    );
+    if (!finished.resolved) conflictDetail = finished.detail;
+    if (finished.resolved) {
+      const pushed = await run(buildPushArgs("origin", fixBranch));
+      if (!pushed.ok || pushed.value.code !== 0) {
+        return {
+          resolved: false,
+          detail: `'${fixBranch}' resolved '${pr.baseRefName}' but the ` +
+            `push failed: ${describeResult(pushed)}`,
+        };
+      }
+      return {
+        resolved: true,
+        detail: `resolved the conflict on '${fixBranch}' from head ` +
+          `${headSha.slice(0, 12)} with the agent and pushed it`,
+      };
+    }
+  }
   if (merged.ok && merged.value.code === 0) {
     const pushed = await run(buildPushArgs("origin", fixBranch));
     if (!pushed.ok || pushed.value.code !== 0) {
@@ -149,9 +192,7 @@ async function resolveOnFixBranch(
   }
   return {
     resolved: false,
-    detail: `merge of '${pr.baseRefName}' into '${fixBranch}' conflicted: ${
-      describeResult(merged)
-    }`,
+    detail: conflictDetail,
   };
 }
 
@@ -170,23 +211,143 @@ export function bindConflictTakeoverResolvers(
   return {
     resolveViaLadder: async (pr) => {
       const cwd = await deps.checkout(pr.repo);
-      // SIMPLE-ON-PURPOSE: mechanical merge only, no agent — upgrade when
-      // takeovers of genuine conflicts need the resolution agent. This
-      // settles a stale CONFLICTING verdict or a clean merge; a genuine
-      // conflict comes back unresolved and the takeover records a failed
-      // attempt.
       const result = await updateBranch(
         pr.headRefName,
         pr.baseRefName,
         { cwd },
         "conflicting",
       );
-      return {
-        resolved: result.ok,
-        detail: result.ok ? result.value : result.error.message,
-      };
+      if (result.ok) {
+        return { resolved: true, detail: result.value };
+      }
+      // A plain merge aborts a conflict and leaves the branch untouched.
+      // Merge again and let the same agent the processor uses finish it,
+      // still without posting a marker.
+      if (!deps.agentFn || !isPrBranchConflictError(result.error)) {
+        return { resolved: false, detail: result.error.message };
+      }
+      const run = (args: string[]) => runGit(args, { cwd });
+      const merged = await run([
+        "merge",
+        "--no-edit",
+        "--end-of-options",
+        `refs/remotes/origin/${pr.baseRefName}`,
+      ]);
+      if (merged.ok && merged.value.code === 0) {
+        return await pushResolved(run, pr.headRefName, result.error.message);
+      }
+      const finished = await finishConflictedMerge(
+        cwd,
+        pr,
+        pr.headRefName,
+        run,
+        deps.agentFn,
+      );
+      if (!finished.resolved) {
+        await abortMergeIfStarted(run, pr, pr.headRefName);
+        return { resolved: false, detail: finished.detail };
+      }
+      return await pushResolved(
+        run,
+        pr.headRefName,
+        `resolved the conflict on '${pr.headRefName}' with the agent`,
+      );
     },
     resolveOnFixBranch: (pr, fixBranch) =>
-      resolveOnFixBranch(pr, fixBranch, deps.checkout, runGit),
+      resolveOnFixBranch(pr, fixBranch, deps.checkout, runGit, deps.agentFn),
+  };
+}
+
+/** Push a branch that already holds the resolved merge. */
+async function pushResolved(
+  run: (args: string[]) => Promise<Result<GitCommandOutput>>,
+  branch: string,
+  detail: string,
+): Promise<TakeoverResolution> {
+  const pushed = await run(buildPushArgs("origin", branch));
+  if (!pushed.ok || pushed.value.code !== 0) {
+    return {
+      resolved: false,
+      detail: `'${branch}' resolved but the push failed: ${
+        describeResult(pushed)
+      }`,
+    };
+  }
+  return { resolved: true, detail };
+}
+
+/** Abort a merge git actually started. Throws when the abort itself fails. */
+async function abortMergeIfStarted(
+  run: (args: string[]) => Promise<Result<GitCommandOutput>>,
+  pr: ConflictTakeoverPr,
+  branch: string,
+): Promise<void> {
+  const merging = await run([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    "MERGE_HEAD",
+  ]);
+  if (!(merging.ok && merging.value.code === 0)) return;
+  const aborted = await run(["merge", "--abort"]);
+  if (!aborted.ok || aborted.value.code !== 0) {
+    throw new Error(
+      `resolve merge of '${pr.baseRefName}' into '${branch}' failed and ` +
+        `'git merge --abort' failed too: ${describeResult(aborted)}`,
+    );
+  }
+}
+
+/**
+ * Hand a conflicted merge to the rules-then-agent ladder and commit it.
+ * Posts nothing. The caller pushes, or aborts when this returns unresolved.
+ */
+async function finishConflictedMerge(
+  cwd: string,
+  pr: ConflictTakeoverPr,
+  intoBranch: string,
+  run: (args: string[]) => Promise<Result<GitCommandOutput>>,
+  agentFn: NonNullable<ConflictTakeoverResolverDeps["agentFn"]>,
+): Promise<TakeoverResolution> {
+  const unmerged = await listUnmergedPaths({ cwd });
+  if (!unmerged.ok) {
+    return {
+      resolved: false,
+      detail: `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: ${unmerged.error.message}`,
+    };
+  }
+  const ladder = await climbConflictLadder({
+    escalations: unmerged.value.map((path) => ({
+      path,
+      case: "rival-designs" as const,
+      action: "escalate" as const,
+      reason: "both sides changed the file",
+    })),
+    options: { cwd },
+    milestoneBranch: intoBranch,
+    defaultBranch: pr.baseRefName,
+    agentFn: (request) => agentFn({ ...request, repo: pr.repo }),
+  });
+  if (ladder.escalations.length > 0) {
+    const why = ladder.escalations
+      .map((file) => `${file.path}: ${file.reason}`)
+      .join("; ");
+    return {
+      resolved: false,
+      detail: `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: ${why}`,
+    };
+  }
+  const committed = await run(["commit", "--no-edit"]);
+  if (!committed.ok || committed.value.code !== 0) {
+    return {
+      resolved: false,
+      detail: `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: could not commit the resolved merge: ${
+        describeResult(committed)
+      }`,
+    };
+  }
+  return {
+    resolved: true,
+    detail: `resolved the conflict on '${intoBranch}'`,
   };
 }
