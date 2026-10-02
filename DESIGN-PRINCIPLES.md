@@ -777,6 +777,14 @@ values are guarded down to `0` by `getRepoNice()` in
   now closed. `orderCandidatesByNiceTier()` is unchanged: it orders a single
   label stream (the label / planning scans), so its `nice` partition is
   already inside a tier.
+- **Conflict redo substitutes within the chosen repo, after the ladder
+  (Issue #3034).** `selectHighestPriority()` runs the ladder above to pick a
+  repo exactly as described; once a repo is chosen, a merge-conflict redo
+  candidate in that repo (its restart marker author-checked, no open fleet PR,
+  no newer PR referencing it) is returned instead of the ladder's own pick for
+  that repo, ahead of `top-priority` and regardless of the redo's own pickup
+  label, and `selectFairWithinTier()` / `orderCandidatesByNiceTier()` apply the
+  same substitution.
 - **Fair within a tier.** Among repos sharing one `nice` value,
   `selectFairWithinTier()` rotates fairly across equal repos (oldest-first
   within a repo, fair rotation across repos when a `randomFn` is injected), so a

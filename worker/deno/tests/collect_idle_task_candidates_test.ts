@@ -26,11 +26,14 @@ import {
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 import type { WorkerConfig } from "../types.ts";
+import { conflictRestartMarker } from "../lib/conflict_abandon_restart.ts";
 
 interface MockGhData {
   issues?: Record<string, unknown>[];
   timeline?: Record<string, unknown>[];
   issueView?: { title?: string; body?: string };
+  /** Issue #3034: raw REST comment objects for the conflict-redo lookup. */
+  comments?: Record<string, unknown>[];
 }
 
 function createTestCache(): IssueCache {
@@ -74,6 +77,9 @@ function createMockGh(data: MockGhData): (args: string[]) => Promise<string> {
     }
     if (command.includes("timeline")) {
       return Promise.resolve(JSON.stringify(data.timeline ?? []));
+    }
+    if (command.includes("/comments?")) {
+      return Promise.resolve(JSON.stringify(data.comments ?? []));
     }
     return Promise.resolve("[]");
   };
