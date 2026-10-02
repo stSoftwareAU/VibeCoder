@@ -31,7 +31,9 @@ flowchart LR
 - Close the gap where tool-fetched text had no treat-as-data rule;
   tool output carries no boundary marker, so the prompt rule is the only
   signal.
-- One constant, so the wording cannot drift between surfaces.
+- The boundary instruction and every idle scan share
+  `TOOL_OUTPUT_IS_DATA_RULE`. The coding-guidelines section is a hand copy
+  of that constant; a drift test fails if the two wordings diverge.
 
 ### Essential Design Decisions (≤4 bullets)
 
@@ -57,6 +59,7 @@ None.
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildCodingGuidelines - every phase layer carries the tool-output rule (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::runIdleTaskClaude - every idle-task scan prompt carries the tool-output rule (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildIssuePrompt - the tool-output rule excepts the named wind-down file (#3046)`
+  - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::the guidelines tool-output section matches TOOL_OUTPUT_IS_DATA_RULE (#3046)`
 - **Fails before / passes after:** against the base branch (origin/main
   91ebb035) all three fail by assertion (0 passed, 3 failed — the rule text
   is absent); with this change all three pass.
