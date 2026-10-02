@@ -377,7 +377,7 @@ const compareFiles = (
     status?: string;
     patch?: string;
     previous_filename?: string;
-    sha?: string;
+    sha?: string | null;
   }[],
 ) =>
   JSON.stringify({
@@ -725,6 +725,47 @@ Deno.test("ownDiffUnchanged returns false rather than throwing (Issue #3063)", a
   });
   assertEquals(
     await ownDiffUnchanged(newFileGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // An added file with no patch and a null sha cannot be confirmed as the
+  // same blob. `null === null` would pass if sameAddedBlob did not require
+  // a non-empty string sha (Issue #3079).
+  const { gh: nullShaGh } = fakeGh({
+    "repos/o/r/compare/X...head": compareResponse("ahead", [{
+      sha: "m1",
+      parents: 2,
+    }]),
+    "repos/o/r/compare/main...X": compareFiles([{
+      filename: "docs/evidence/shot.png",
+      status: "added",
+      sha: null,
+    }]),
+    "repos/o/r/compare/main...head": compareFiles([{
+      filename: "docs/evidence/shot.png",
+      status: "added",
+      sha: null,
+    }]),
+  });
+  assertEquals(
+    await ownDiffUnchanged(nullShaGh, "o/r", "main", "X", "head"),
+    false,
+  );
+
+  // "ahead" with an empty commit list is not a confirmed merge-only move.
+  // Identical file lists would return true if the zero-commit guard were
+  // removed (Issue #3079).
+  const { gh: emptyCommitsGh } = fakeGh({
+    "repos/o/r/compare/X...head": JSON.stringify({
+      status: "ahead",
+      total_commits: 0,
+      commits: [],
+    }),
+    "repos/o/r/compare/main...X": sameFiles,
+    "repos/o/r/compare/main...head": sameFiles,
+  });
+  assertEquals(
+    await ownDiffUnchanged(emptyCommitsGh, "o/r", "main", "X", "head"),
     false,
   );
 });

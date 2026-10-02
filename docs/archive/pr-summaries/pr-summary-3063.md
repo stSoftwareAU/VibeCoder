@@ -101,7 +101,7 @@ gets a fresh review" and `review-fleet-prs`. Updated
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — tests call real code with injected fakes and no wall-clock waits; the fail-closed returns of `ownDiffUnchanged` that this PR adds each have a case that stays false only because that guard fires (diverged history, a truncated commit list, a file-count mismatch, the 300-file cap, a `previous_filename` mismatch, a `status` mismatch, and a patch-less modified file that shares a blob sha); `SIMPLE-ON-PURPOSE` marker is in the required form; the catch block logs with context and does not hide the error; the docs change ships in the same diff; Australian English throughout. Optional notes (an inline sort comparator, the moved `firstLine`) were not acted on
+- **clean** — tests call real code with injected fakes and no wall-clock waits; the fail-closed returns of `ownDiffUnchanged` that this PR adds each have a case that stays false only because that guard fires (diverged history, a truncated commit list, an empty commit list, a file-count mismatch, the 300-file cap, a `previous_filename` mismatch, a `status` mismatch, a patch-less modified file that shares a blob sha, and an added file whose sha is null); `SIMPLE-ON-PURPOSE` marker is in the required form; the catch block logs with context and does not hide the error; the docs change ships in the same diff; Australian English throughout. Optional notes (an inline sort comparator, the moved `firstLine`) were not acted on
 
 ## Test Plan
 
