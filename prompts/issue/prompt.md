@@ -620,11 +620,17 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   a coverage claim — "every branch", "all rejections" — names the branches its
   tests exercise, and one untested branch makes it `partial`.
 - **A missing core deliverable is not a PR.** When the thing the issue asks for
-  is `missing`, finish it, or hand off with the planning marker or the escape
-  hatch — a `Closes #{{ISSUE_NUMBER}}` over a missing deliverable closes the
-  issue with the work undone. When a lesser criterion stays `partial` or
-  `missing`, the Summary names it beside the closing keyword instead of
-  describing the issue as resolved.
+  is `missing`, finish it. The planning marker and the escape hatch are
+  honoured only while the branch has no commits and no uncommitted changes
+  against the base — the worker's change detection sends any non-empty
+  `git diff <base>...HEAD` straight to the PR path regardless of a marker or
+  follow-up in your output, and the PR body gets `Closes #{{ISSUE_NUMBER}}`
+  appended automatically if your summary omits it. By the time you are
+  closing out acceptance criteria you will usually already have committed
+  work, so a hand-off at this point is not read — finishing the deliverable
+  is the only way to avoid a `Closes #{{ISSUE_NUMBER}}` over work left undone.
+  When a lesser criterion stays `partial` or `missing`, the Summary names it
+  beside the closing keyword instead of describing the issue as resolved.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -809,7 +815,10 @@ rewrite it, never append to it:
 - Hold every doc the diff adds or edits to the same rule — a README or `docs/`
   page, an audit record or ledger, the doc comment above a changed function.
   Each assertion it makes (a count, a list of roots, a file, flag or test it
-  names) must match the head code and appear in the diff.
+  names) must match the head code, and every change it says this PR makes must
+  appear in the diff — but a file or test cited only as existing evidence
+  needs merely to exist at the head, in the diff or already tracked, matching
+  the named-test rule below.
 - After any merge of the base branch into this branch, or on finding the base
   has advanced, re-run this check: a claim whose subject the merge absorbed is
   dropped, or the work is redone so the diff carries it again.
