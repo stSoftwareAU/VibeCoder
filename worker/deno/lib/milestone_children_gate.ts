@@ -42,6 +42,14 @@ import { isMilestoneSyncBranch } from "./milestone_sync_pr.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
+// Issue #3014: layer the declared-dependency hold onto this gate.
+import {
+  describePendingDependency,
+  findPendingMilestoneDependencies,
+  PENDING_DEPENDENCIES_BLOCK_MARKER,
+  type PendingDependency,
+  renderPendingDependenciesBlockComment,
+} from "./milestone_dependency_hold.ts";
 
 // ---------------------------------------------------------------------------
 // Types and constants
@@ -291,10 +299,21 @@ export type SummaryPrMergeDecision =
   | {
     decision: "block";
     reason: "lookup-failed";
+    /** Which read failed, so the PR comment names the right unreadable state. */
+    stage: "open-children" | "declared-dependencies";
     milestoneNumber: number;
     milestoneTitle: string;
     milestoneBranch: string;
     message: string;
+  }
+  | {
+    /** A member issue declares a dependency that has not landed yet (Issue #3014). */
+    decision: "block";
+    reason: "pending-dependencies";
+    milestoneNumber: number;
+    milestoneTitle: string;
+    milestoneBranch: string;
+    dependencies: PendingDependency[];
   };
 
 /** Options for {@link decideSummaryPrMerge}. */
@@ -327,6 +346,11 @@ interface RawMilestone {
  * risk it removes. Once the PR is known to be a milestone summary PR, any
  * failure to read the children blocks: the merge is irreversible, so an
  * unverifiable state is not a licence to proceed.
+ *
+ * Once the open-children set is empty, the gate also checks every member
+ * issue's declared "Depends on #N" references (Issue #3014) — a milestone can
+ * have zero open children yet still assemble a sub-issue whose declared
+ * dependency has not actually landed on the target branch.
  */
 export async function decideSummaryPrMerge(
   options: SummaryPrMergeGateOptions,
@@ -365,23 +389,54 @@ export async function decideSummaryPrMerge(
     return {
       decision: "block",
       reason: "lookup-failed",
+      stage: "open-children",
       milestoneNumber: milestone.number,
       milestoneTitle: milestone.title,
       milestoneBranch: headRefName,
       message: childrenResult.error.message,
     };
   }
-  if (childrenResult.value.length === 0) {
-    return { decision: "allow", reason: "no-open-children" };
+  if (childrenResult.value.length > 0) {
+    return {
+      decision: "block",
+      reason: "open-children",
+      milestoneNumber: milestone.number,
+      milestoneTitle: milestone.title,
+      milestoneBranch: headRefName,
+      children: childrenResult.value,
+    };
   }
-  return {
-    decision: "block",
-    reason: "open-children",
+
+  // Issue #3014: no open children, but a member issue may still declare a
+  // dependency that has not landed on the target branch.
+  const dependenciesResult = await findPendingMilestoneDependencies({
+    repo,
     milestoneNumber: milestone.number,
-    milestoneTitle: milestone.title,
-    milestoneBranch: headRefName,
-    children: childrenResult.value,
-  };
+    ghCommandFn,
+  });
+  if (!dependenciesResult.ok) {
+    return {
+      decision: "block",
+      reason: "lookup-failed",
+      stage: "declared-dependencies",
+      milestoneNumber: milestone.number,
+      milestoneTitle: milestone.title,
+      milestoneBranch: headRefName,
+      message: dependenciesResult.error.message,
+    };
+  }
+  if (dependenciesResult.value.length > 0) {
+    return {
+      decision: "block",
+      reason: "pending-dependencies",
+      milestoneNumber: milestone.number,
+      milestoneTitle: milestone.title,
+      milestoneBranch: headRefName,
+      dependencies: dependenciesResult.value,
+    };
+  }
+
+  return { decision: "allow", reason: "no-open-children" };
 }
 
 /** Read a PR's head branch. Returns null when it cannot be determined. */
@@ -570,6 +625,38 @@ export type OpenChildrenCommentOutcome =
 export async function postOpenChildrenBlockComment(
   options: BlockCommentOptions,
 ): Promise<OpenChildrenCommentOutcome> {
+  const body = renderOpenChildrenBlockComment(
+    options.milestoneTitle,
+    options.children,
+  );
+  return await postMarkerDedupedBlockComment(
+    options,
+    OPEN_CHILDREN_BLOCK_MARKER,
+    body,
+    "milestone open-children",
+    "Issue #3909",
+  );
+}
+
+/**
+ * Shared idempotent comment poster (Issue #3014): read the thread for a
+ * fleet-authored `marker`, post `body` only when it is absent. Factored out
+ * of {@link postOpenChildrenBlockComment} so the declared-dependency hold's
+ * comment can reuse the same de-duplication behaviour.
+ */
+async function postMarkerDedupedBlockComment(
+  options: {
+    repo: string;
+    prNumber: number;
+    ghCommandFn: GhCommandFn;
+    log: (message: string) => void;
+    authorOptions?: AlertDedupAuthorOptions;
+  },
+  marker: string,
+  body: string,
+  description: string,
+  issueRef: string,
+): Promise<OpenChildrenCommentOutcome> {
   const { repo, prNumber, ghCommandFn, log } = options;
 
   let alreadyPosted: boolean;
@@ -577,7 +664,7 @@ export async function postOpenChildrenBlockComment(
     alreadyPosted = await hasFleetAuthoredMarker(
       repo,
       prNumber,
-      OPEN_CHILDREN_BLOCK_MARKER,
+      marker,
       ghCommandFn,
       options.authorOptions ?? {},
       log,
@@ -585,8 +672,8 @@ export async function postOpenChildrenBlockComment(
   } catch (err) {
     log(
       `WARNING: could not read comments on ${repo}#${prNumber} to de-duplicate ` +
-        `the milestone open-children block comment: ` +
-        `${err instanceof Error ? err.message : String(err)} (Issue #3909)`,
+        `the ${description} block comment: ` +
+        `${err instanceof Error ? err.message : String(err)} (${issueRef})`,
     );
     return "unconfirmed";
   }
@@ -595,10 +682,6 @@ export async function postOpenChildrenBlockComment(
     return "already-present";
   }
 
-  const body = renderOpenChildrenBlockComment(
-    options.milestoneTitle,
-    options.children,
-  );
   try {
     await ghCommandFn([
       "pr",
@@ -612,12 +695,47 @@ export async function postOpenChildrenBlockComment(
     return "posted";
   } catch (err) {
     log(
-      `WARNING: failed to post the milestone open-children block comment on ` +
+      `WARNING: failed to post the ${description} block comment on ` +
         `${repo}#${prNumber}: ` +
-        `${err instanceof Error ? err.message : String(err)} (Issue #3909)`,
+        `${err instanceof Error ? err.message : String(err)} (${issueRef})`,
     );
     return "unconfirmed";
   }
+}
+
+/** Options for {@link postPendingDependenciesBlockComment}. */
+export interface PendingDependenciesCommentOptions {
+  repo: string;
+  prNumber: number;
+  milestoneTitle: string;
+  dependencies: readonly PendingDependency[];
+  ghCommandFn: GhCommandFn;
+  log: (message: string) => void;
+  /** Fleet identity inputs for the marker author check (Issue #1249). */
+  authorOptions?: AlertDedupAuthorOptions;
+}
+
+/**
+ * Post the declared-dependency explanatory comment on the held summary PR —
+ * exactly once, deduplicated by {@link PENDING_DEPENDENCIES_BLOCK_MARKER}
+ * (Issue #3014). Mirrors {@link postOpenChildrenBlockComment}.
+ *
+ * @returns which of the three states the PR thread ended in
+ */
+export async function postPendingDependenciesBlockComment(
+  options: PendingDependenciesCommentOptions,
+): Promise<OpenChildrenCommentOutcome> {
+  const body = renderPendingDependenciesBlockComment(
+    options.milestoneTitle,
+    [...options.dependencies],
+  );
+  return await postMarkerDedupedBlockComment(
+    options,
+    PENDING_DEPENDENCIES_BLOCK_MARKER,
+    body,
+    "milestone pending-dependencies",
+    "Issue #3014",
+  );
 }
 
 /** Render the warning log line for a blocked merge (scope item 3). */
@@ -632,6 +750,22 @@ export function renderBlockWarning(
   return `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
     `for milestone #${milestoneNumber} '${milestoneTitle}' — ` +
     `${children.length} open child/children remain: ${numbers} (Issue #3909)`;
+}
+
+/** Render the warning log line for a merge blocked on pending dependencies (Issue #3014). */
+export function renderPendingDependenciesWarning(
+  repo: string,
+  prNumber: number,
+  milestoneNumber: number,
+  milestoneTitle: string,
+  dependencies: readonly PendingDependency[],
+): string {
+  const descriptions = dependencies.map((dep) => describePendingDependency(dep))
+    .join("; ");
+  return `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
+    `for milestone #${milestoneNumber} '${
+      scrubUntrustedText(milestoneTitle)
+    }' — declared dependencies are not merged yet: ${descriptions} (Issue #3014)`;
 }
 
 // ---------------------------------------------------------------------------

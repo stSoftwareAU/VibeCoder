@@ -282,6 +282,7 @@
         "worker/deno/lib/milestone_conflict_ladder.ts",
         "worker/deno/lib/milestone_conflict_triage.ts",
         "worker/deno/lib/milestone_deadlock_rollup.ts",
+        "worker/deno/lib/milestone_dependency_hold.ts",
         "worker/deno/lib/milestone_escalation_target.ts",
         "worker/deno/lib/milestone_gate_wedge.ts",
         "worker/deno/lib/milestone_health.ts",

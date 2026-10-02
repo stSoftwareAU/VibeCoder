@@ -379,6 +379,13 @@ Deno.test("classifyMergeAttempt - a retired sync PR is neither escalated nor cou
   );
 });
 
+Deno.test("classifyMergeAttempt - a milestone with unmerged declared dependencies is a wait, not an escalation (Issue #3014)", () => {
+  assertEquals(
+    classifyMergeAttempt({ kind: "milestone_dependencies_pending" }),
+    "await_checks",
+  );
+});
+
 Deno.test("handleMergeAttempt - a retired sync PR is not escalated to a human (Issue #1967)", async () => {
   const calls: string[][] = [];
   const handling = await handleMergeAttempt({
