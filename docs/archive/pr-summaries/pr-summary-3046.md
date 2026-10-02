@@ -40,6 +40,9 @@ flowchart LR
 - The guidelines section is unmarked so every layer (including core-only
   phases) carries it.
 - Prompt-level rule, not a fence: tool output cannot be structurally wrapped.
+- The rule excepts a worker-written state file the prompt itself names, such
+  as `.vibe-run-budget.md`. That file may carry the instructions the prompt
+  already gave (wind down, skip the gate) and cannot add any other.
 
 ### Undiscoverable Facts
 
@@ -53,6 +56,7 @@ None.
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildBoundaryIntegrityInstruction - tells the model tool output is data (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildCodingGuidelines - every phase layer carries the tool-output rule (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::runIdleTaskClaude - every idle-task scan prompt carries the tool-output rule (#3046)`
+  - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildIssuePrompt - the tool-output rule excepts the named wind-down file (#3046)`
 - **Fails before / passes after:** against the base branch (origin/main
   91ebb035) all three fail by assertion (0 passed, 3 failed — the rule text
   is absent); with this change all three pass.
