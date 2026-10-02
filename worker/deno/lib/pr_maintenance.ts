@@ -1968,6 +1968,14 @@ async function attemptMerge(
       return { kind: "milestone_children_open" };
     }
 
+    // Issue #3014: a milestone summary PR whose members declare a dependency
+    // that has not merged yet is deliberately left open — the gate has
+    // already logged and commented, so this is a deferral, never an
+    // escalation.
+    if (result.result === "blocked_pending_dependencies") {
+      return { kind: "milestone_dependencies_pending" };
+    }
+
     // Issue #1779: a child whose milestone base is behind the default branch
     // and has no required checks to hold the merge is left as it is — the
     // arming chokepoint has already posted the sync reason, and the

@@ -426,6 +426,18 @@ The committed file must yield no finding from the file-scoped Actions checks in
 - `version-comment-drift` — one pinned SHA carries one version comment, so two
   different tags never claim the same SHA.
 
+### A behaviour change extends the workflow validator
+
+The file-scoped checks above hold every workflow to the fleet's baseline; they
+know nothing of the contract your change adds. When the change alters what a
+workflow does — a flag such as `--no-suppress-errors`, a step, a trigger or a
+setting the job's correctness depends on — extend the repository's own
+workflow validator in the same PR, or add one when the repository has none,
+with a positive and a negative test for each new or changed invariant. A
+load-bearing flag must be load-bearing in the validator too: an invariant the
+README, a code comment or the PR summary calls enforced, but no validator
+asserts, is documented but not validated — a blocking self-review finding.
+
 ### Resolving action SHAs
 
 A wrong SHA does not fail here — it fails later as an unresolvable action
