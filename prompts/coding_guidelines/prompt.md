@@ -1087,6 +1087,15 @@ real callee masks the contract it stands in for and is a finding. Run the test
 against a real checkout of the callee, or name the contract the stub mirrors in
 the PR summary with a source link to the callee's code or docs.
 
+**A workflow behaviour change extends the workflow validator.** When a change
+alters what a `.github/workflows/*` file does — a new or changed flag, step,
+trigger or setting the job's correctness depends on — extend the repository's
+workflow validator in the same PR, or add one when the repository has none,
+with a positive and a negative test for each new or changed invariant. A flag
+that is load-bearing must be load-bearing in the validator too, not only in
+the README or a code comment: an invariant documented but not validated is a
+blocking self-review finding.
+
 **Do not hardcode to the tests.** Write the implementation to solve the general
 problem, not the specific inputs the tests happen to use. Special-casing a
 test's values, or branching on them to turn a suite green, is a failure dressed
