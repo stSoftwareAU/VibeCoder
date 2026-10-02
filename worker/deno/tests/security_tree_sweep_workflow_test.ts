@@ -23,6 +23,27 @@ const workflow = await Deno.readTextFile(
   `${ROOT}.github/workflows/security-tree-sweep.yml`,
 );
 
+/**
+ * True only when the text writes the changed-files list NUL-delimited and
+ * unquoted (`-c core.quotePath=false` AND `-z`), and no line writing that
+ * file omits either safeguard (Issue #2776).
+ */
+function writesUnquotedChangedFiles(text: string): boolean {
+  const lines = text.split("\n");
+  const writesTarget = (line: string) =>
+    line.includes('> "$RUNNER_TEMP/changed-files.txt"');
+  const safe = (line: string) =>
+    /-c\s+core\.quotePath=false/.test(line) &&
+    /diff\s+--name-only/.test(line) &&
+    /(^|[\s])-z([\s]|$)/.test(line) &&
+    writesTarget(line);
+  const hasSafeWrite = lines.some(safe);
+  const hasUnsafeWrite = lines.some(
+    (line) => writesTarget(line) && !safe(line),
+  );
+  return hasSafeWrite && !hasUnsafeWrite;
+}
+
 Deno.test("sweep workflow - repository-local: slug from github.repository, no private repository name (Issue #4409)", () => {
   assertStringIncludes(workflow, '--slug "${GITHUB_REPOSITORY}"');
   assert(
@@ -58,12 +79,40 @@ Deno.test("sweep workflow - a PR passes its own changed files; the schedule stay
     workflow,
     "github.event.pull_request.base.sha",
   );
-  assertStringIncludes(workflow, 'git diff --name-only "$BASE_SHA" HEAD');
+  assertStringIncludes(
+    workflow,
+    'git -c core.quotePath=false diff --name-only -z "$BASE_SHA" HEAD',
+  );
   // Only a pull_request run writes the list; the strict mode is the
   // default when no list exists.
   assertStringIncludes(workflow, "if: github.event_name == 'pull_request'");
   assertStringIncludes(workflow, "--changed-files");
   assertStringIncludes(workflow, "changed_files_args=()");
+});
+
+Deno.test("sweep workflow - the changed-files list is NUL-delimited and unquoted (Issue #2776)", () => {
+  assert(
+    writesUnquotedChangedFiles(workflow),
+    "the changed-files list must be written with -c core.quotePath=false and -z",
+  );
+  assert(
+    !writesUnquotedChangedFiles(
+      'git diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"',
+    ),
+    "the old quoted, newline-delimited form must be rejected",
+  );
+  assert(
+    !writesUnquotedChangedFiles(
+      'git diff --name-only -z "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"',
+    ),
+    "-z without core.quotePath=false must be rejected (defence in depth)",
+  );
+  assert(
+    !writesUnquotedChangedFiles(
+      'git -c core.quotePath=false diff --name-only "$BASE_SHA" HEAD > "$RUNNER_TEMP/changed-files.txt"',
+    ),
+    "core.quotePath=false without -z must be rejected (newline-in-path still quoted)",
+  );
 });
 
 Deno.test("sweep workflow - the default baseline path is the file the workflow names and it exists", async () => {
