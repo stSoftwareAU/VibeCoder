@@ -680,6 +680,11 @@ export interface GitHubIssue {
   assignees: string[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * `OPEN` or `CLOSED` when the fetch asked for `state`. Absent on payloads
+   * that predate that field (Issue #3088 review).
+   */
+  state?: "OPEN" | "CLOSED";
 }
 
 /**

@@ -23,6 +23,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { stripCodeSpans } from "./issue_dependencies.ts";
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
 import { assertWorkerCanHandOffToPlanning } from "./worker_label_guard.ts";
@@ -69,7 +70,9 @@ export interface PlanningHandoffRequest {
 export function detectPlanningHandoff(
   output: string,
 ): PlanningHandoffRequest | undefined {
-  const marker = REQUEST_RE.exec(output);
+  // A marker quoted in a code fence or span is the prompt's own template,
+  // not a request (Issue #3088 review). stripCodeSpans drops both.
+  const marker = REQUEST_RE.exec(stripCodeSpans(output));
   if (!marker) return undefined;
   const attr = REASON_RE.exec(marker[1] ?? "");
   const reason = (attr?.[1] ?? attr?.[2] ?? "").trim();

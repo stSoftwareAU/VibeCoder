@@ -34,7 +34,12 @@ export async function workOnIssueDeclaredHandoff(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
-  const outcome = await handOffDeclaredOutcome(ctx, state, deps);
+  const outcome = await handOffDeclaredOutcome(
+    ctx,
+    state,
+    deps,
+    "declared_handoff",
+  );
   if (outcome.result) return outcome.result;
 
   if (outcome.declared) {

@@ -138,6 +138,28 @@ Deno.test("detectPlanningHandoff - an overlong reason is truncated", () => {
   assertEquals(result.reason.length, MAX_PLANNING_REASON_LENGTH);
 });
 
+Deno.test("detectPlanningHandoff - a marker inside a code fence or span is not a request", () => {
+  const fenced = [
+    "```",
+    '<!-- vibe-needs-planning reason="quoted template" -->',
+    "```",
+  ].join("\n");
+  assertEquals(detectPlanningHandoff(fenced), undefined);
+  assertEquals(
+    detectPlanningHandoff(
+      'See `<!-- vibe-needs-planning reason="inline" -->` in the prompt.',
+    ),
+    undefined,
+  );
+  assertEquals(
+    detectPlanningHandoff(
+      fenced +
+        '\n<!-- vibe-needs-planning reason="the real request" -->',
+    ),
+    { reason: "the real request" },
+  );
+});
+
 Deno.test("detectPlanningHandoff - a similarly named marker does not match", () => {
   assertEquals(
     detectPlanningHandoff('<!-- vibe-needs-planningx reason="nope" -->'),

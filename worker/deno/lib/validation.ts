@@ -83,6 +83,8 @@ export interface GhIssueJson {
   assignees: Array<{ login: string }>;
   createdAt: string;
   updatedAt: string;
+  /** Present when `gh issue view` was asked for `state`. */
+  state?: "OPEN" | "CLOSED";
 }
 
 /**
@@ -416,6 +418,13 @@ export function validateGhIssueJson(
   // updatedAt
   if (typeof data.updatedAt !== "string") {
     return fail("updatedAt", `Expected string, got ${typeof data.updatedAt}`);
+  }
+
+  // state is optional: older callers omit it. When present it is OPEN or CLOSED.
+  if (
+    data.state !== undefined && data.state !== "OPEN" && data.state !== "CLOSED"
+  ) {
+    return fail("state", `Expected OPEN or CLOSED, got ${typeof data.state}`);
   }
 
   return ok(data as unknown as GhIssueJson);

@@ -32,7 +32,10 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
-import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
+import {
+  type AnalysisOnlyTrigger,
+  handOffAnalysisOnly,
+} from "../analysis_only_handoff.ts";
 import {
   type BlockedOutcome,
   detectBlockedOutcome,
@@ -106,6 +109,37 @@ export interface DeclaredOutcomeHandoff {
 }
 
 /**
+ * Whether the declared dependency is still open. A committed run is deferred
+ * only while it is; a closed dependency, or a state that cannot be read, does
+ * not suppress the PR (Issue #3088 review).
+ */
+async function dependencyStillOpen(
+  deps: WorkerDeps,
+  repo: string,
+  blocked: BlockedOutcome,
+): Promise<boolean> {
+  const dep = blocked.dependency;
+  const depRepo = dep.repo ?? repo;
+  try {
+    const issue = await deps.github.createClient(deps.logger).getIssue(
+      depRepo,
+      dep.number,
+    );
+    return issue.state === "OPEN";
+  } catch (err) {
+    deps.logger.warn(
+      "Could not read the dependency's state — not deferring a committed run",
+      {
+        repo,
+        dependency: formatDependencyRef(dep),
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    return false;
+  }
+}
+
+/**
  * Detect and, where possible, apply the three declared-outcome signals a
  * `work-on` run's final message can carry: a `## Blocked:` dependency
  * deferral, a `vibe-defer-until` time deferral, and a `vibe-needs-planning`
@@ -115,6 +149,7 @@ export async function handOffDeclaredOutcome(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
+  trigger: AnalysisOnlyTrigger = "no_changes",
 ): Promise<DeclaredOutcomeHandoff> {
   const { repo, issueNumber, githubUser, config } = ctx;
   const logger = deps.logger;
@@ -127,7 +162,28 @@ export async function handOffDeclaredOutcome(
   // by the next scan. The issue stays open with its discovery label, records
   // `Depends on owner/repo#N`, and the dependency gate skips it until the
   // dependency closes.
-  const blocked = detectBlockedOutcome(claudeOutput, { repo, issueNumber });
+  // The committed path (`declared_handoff`) only defers the documented
+  // shape: a `## Blocked:` heading whose `Depends on` / `Blocked by` line
+  // names a dependency that is still open. A passing mention, a
+  // first-reference fallback, or a dependency that has already merged must
+  // not suppress the PR (Issue #3088 review).
+  const committed = trigger === "declared_handoff";
+  let blocked = detectBlockedOutcome(
+    claudeOutput,
+    { repo, issueNumber },
+    committed ? { declaredHeadingOnly: true } : undefined,
+  );
+  if (blocked && committed && !await dependencyStillOpen(deps, repo, blocked)) {
+    logger.info(
+      "Committed run names a dependency that is not open — not deferring",
+      {
+        repo,
+        issueNumber,
+        dependency: formatDependencyRef(blocked.dependency),
+      },
+    );
+    blocked = undefined;
+  }
   // Loop guard: a deferral holds only while the dependency gate skips the
   // issue. Back here on the *same* dependency means it did not hold, and
   // deferring again would spin a fresh agent run on every scan — so the repeat
@@ -274,7 +330,7 @@ export async function handOffDeclaredOutcome(
       issueNumber,
       needsHumanLabel: config.needsHumanLabel,
       githubUser,
-      trigger: "no_changes",
+      trigger,
       logger,
       deps: { ensureLabelExists: deps.github.ensureLabelExists },
     });

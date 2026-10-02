@@ -79,11 +79,12 @@ function comment(id: number, author: string, body: string): GitHubComment {
 function makeClient(
   calls: StubCalls,
   comments: GitHubComment[] = [],
+  dependencyState: "OPEN" | "CLOSED" = "OPEN",
 ): GitHubClient {
   return {
-    getIssue: () =>
+    getIssue: (_repo, number) =>
       Promise.resolve({
-        number: ISSUE,
+        number,
         title: "Example issue",
         body: "Original body.",
         labels: ["work-on"],
@@ -91,6 +92,7 @@ function makeClient(
         assignees: ["testbot"],
         createdAt: "",
         updatedAt: "",
+        state: number === ISSUE ? "OPEN" : dependencyState,
       }),
     getIssueComments: () => Promise.resolve(comments),
     addLabel: (_r, _i, label) => {
@@ -220,6 +222,10 @@ Deno.test(
     assertEquals(result.reason, "analysis_only_handed_off");
     assert(!calls.addLabel.includes("planning"));
     assert(calls.addLabel.includes("needs-human"));
+    assert(calls.postComment.some((c) => c.includes("committed code changes")));
+    assert(
+      !calls.postComment.some((c) => c.includes("produced no code changes")),
+    );
   },
 );
 
@@ -275,5 +281,143 @@ Deno.test(
     assertEquals(result.reason, "analysis_only_handed_off");
     assertEquals(calls.closeIssue, 0);
     assert(calls.addLabel.includes("needs-human"));
+    assert(calls.postComment.some((c) => c.includes("committed code changes")));
+    assert(
+      !calls.postComment.some((c) => c.includes("produced no code changes")),
+    );
+  },
+);
+
+// A finished summary that mentions a merged dependency is not a block.
+Deno.test(
+  "declared_handoff_phase - a completed summary that mentions a merged dependency continues (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+    });
+    const summary = [
+      "- Depends on #560, which has now merged; this change builds on it.",
+      "Blocked-run deferral (#222) is unchanged by this PR.",
+    ].join("\n");
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(summary),
+      deps,
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(calls.postComment, []);
+    assertEquals(calls.editIssue, 0);
+  },
+);
+
+// A real heading with no declaration line must not fall back to the first
+// issue number mentioned in the prose.
+Deno.test(
+  "declared_handoff_phase - a Blocked heading without a declaration line continues (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(
+        "## Blocked: the stub landed with #560\n\nThis builds on it.\n",
+      ),
+      deps,
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(calls.postComment, []);
+  },
+);
+
+// A documented block whose dependency has already closed does not defer.
+Deno.test(
+  "declared_handoff_phase - a closed dependency does not defer a committed run (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls, [], "CLOSED") },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(calls.editIssue, 0);
+    assertEquals(calls.postComment, []);
+  },
+);
+
+// A planning marker quoted in a fence is the template, not a request.
+Deno.test(
+  "declared_handoff_phase - a planning marker inside a code fence continues (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+    });
+    const quoted = [
+      "The prompt's template looks like this:",
+      "```",
+      '<!-- vibe-needs-planning reason="three independent subsystems" -->',
+      "```",
+      "",
+      "Implemented the change.",
+    ].join("\n");
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext({ issueLabels: ["work-on"] }),
+      makeState(quoted),
+      deps,
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(calls.addLabel, []);
+    assertEquals(calls.postComment, []);
+  },
+);
+
+// An exhausted time deferral on a committed run uses the declared_handoff
+// reason, not the no-changes "produced no code changes" text.
+Deno.test(
+  "declared_handoff_phase - an exhausted time deferral names the committed hand-off (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const prior = [1, 2, 3].map((id) =>
+      comment(
+        id,
+        "testbot",
+        `<!-- vibe-time-deferral until="2026-09-0${id}T00:00:00Z" -->`,
+      )
+    );
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls, prior) },
+    });
+    const output =
+      '<!-- vibe-defer-until until="2026-10-20T00:00:00Z" reason="the export has not landed" -->';
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(output),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    if (result.status !== "early_exit") return;
+    assertEquals(result.reason, "analysis_only_handed_off");
+    assert(calls.addLabel.includes("needs-human"));
+    assert(calls.postComment.some((c) => c.includes("committed code changes")));
+    assert(
+      !calls.postComment.some((c) => c.includes("produced no code changes")),
+    );
   },
 );

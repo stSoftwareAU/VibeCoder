@@ -56,6 +56,7 @@ export function parseGhIssueJson(json: GhIssueJson): GitHubIssue {
     assignees: json.assignees.map((a) => a.login),
     createdAt: json.createdAt,
     updatedAt: json.updatedAt,
+    ...(json.state ? { state: json.state } : {}),
   };
 }
 
@@ -674,7 +675,7 @@ export function createGitHubClient(logger: Logger): GitHubClient {
         "--repo",
         repo,
         "--json",
-        "number,title,body,labels,author,assignees,createdAt,updatedAt",
+        "number,title,body,labels,author,assignees,createdAt,updatedAt,state",
       ]);
       const parsed: unknown = JSON.parse(output);
       const validated = validateGhIssueJson(parsed);

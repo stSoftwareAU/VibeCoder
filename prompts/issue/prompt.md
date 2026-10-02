@@ -267,9 +267,11 @@ apply:
   as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
   and hands it to a human.
 - This free-text hand-off is honoured only when the run leaves no commit and
-  no uncommitted change: decide before your first commit, and do not commit
-  if you are handing off, because once you commit the worker raises a PR that
-  closes this issue instead.
+  no uncommitted change: decide before you edit any file, because the worker
+  commits and pushes the working tree periodically and again at the end of
+  the run. Once a file has changed, end with a `## Blocked:` section or the
+  planning marker instead — a free-text hand-off is not read, and the worker
+  raises a PR that closes this issue.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 

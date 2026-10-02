@@ -2752,7 +2752,11 @@ changes" either — a `declared_handoff` phase runs after execute and before
 `bump_deps` / the quality gate / completion, so a run that *did* commit and
 still declared itself `## Blocked:` / time-deferred / needing planning is
 deferred or handed to planning rather than sailing through to a `Closes #N`
-PR. The commits stay on the local branch and are never pushed. See
+PR. The phase itself neither pushes nor raises a PR. With session resume on
+(the default), the execute phase's checkpoint has normally already pushed the
+run's work to the `issue-<N>-…` branch — `execute_phase.ts` calls
+`checkpoints.runNow()`, which commits and pushes through `wip_checkpoint.ts`
+— and the next claim resumes from it. See
 [`lib/phases/declared_handoff.ts`](worker/deno/lib/phases/declared_handoff.ts).
 
 A blocked run is now **deferred**:

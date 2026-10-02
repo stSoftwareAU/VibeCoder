@@ -785,8 +785,12 @@ the same matrix plus an "unable to make code changes" note about five times).
 dependency deferral, `vibe-defer-until` time deferral and `vibe-needs-planning`
 marker on a run that also produced a commit — so the worker defers, parks or
 hands to planning instead of raising a PR with `Closes #N` that would close
-the very issue being deferred. The commits stay on the local branch and are
-never pushed. A signal that cannot be honoured (for example a repeat
+the very issue being deferred. The phase itself neither pushes nor raises a
+PR. With session resume on (the default), the execute phase's checkpoint has
+normally already pushed the run's work to the `issue-<N>-…` branch —
+`execute_phase.ts` calls `checkpoints.runNow()`, which commits and pushes
+through `wip_checkpoint.ts` — and the next claim resumes from it. A signal
+that cannot be honoured (for example a repeat
 deferral) still falls through to the human hand-off below. The free-text
 escape hatch (a follow-up issue + "out of scope" message) remains the one
 hand-off that is honoured only when the run leaves no commit and no
