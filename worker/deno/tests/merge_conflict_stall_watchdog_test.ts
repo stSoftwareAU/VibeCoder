@@ -588,6 +588,14 @@ Deno.test("repairConflictQueueStall - a second trip on an issue already redone t
         labels: issue.labels.map((name) => ({ name })),
       }));
     }
+    // The spent-restart hand-off posts with `gh issue comment`, not the
+    // REST comments endpoint the branch below records.
+    if (args[0] === "issue" && args[1] === "comment") {
+      github.calls.push(args);
+      const body = args[args.indexOf("--body") + 1] ?? "";
+      issue.comments.push(comment(body, 0));
+      return Promise.resolve("");
+    }
     if (path === "") return github.gh(args);
     github.calls.push(args);
     if (args[1] !== "-X") {
