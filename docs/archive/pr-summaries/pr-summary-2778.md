@@ -79,8 +79,10 @@ None.
 
 - **Symptom:** a criterion carrying `<!-- finding-id: X -->` produced a degraded
   follow-up whose body held a live, fleet-authored `finding-id: X` marker.
-- **Status:** verified. The regression test reproduces it against the
-  base-branch code.
+- **Status:** `verified` — the regression test was observed failing against
+  the unfixed code (`FAILED | 27 passed | 1 failed`, with the base-branch
+  `degraded_delivery.ts` restored) and passing after the fix
+  (`ok | 28 passed | 0 failed`).
 - **Regression test:**
   `worker/deno/tests/degraded_delivery_test.ts::buildDegradedFollowUpIssue - #2778: a finding-id marker in a criterion or delivered line is inert`
 
