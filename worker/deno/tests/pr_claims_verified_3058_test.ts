@@ -45,6 +45,8 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "A missing core deliverable is not a PR",
       "git log <base>..HEAD",
       "git diff --stat HEAD",
+      "whatever planning, escape-hatch or blocked/deferral marker",
+      "suspicious-image flag is the exception",
     ]
   ) {
     assertStringIncludes(body, required);
@@ -76,6 +78,7 @@ Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification r
       "every doc the diff adds or edits",
       "the diff itself introduced",
       "core deliverable is `missing`",
+      "regardless of a planning or escape-hatch marker",
     ]
   ) {
     assertStringIncludes(standards, required);

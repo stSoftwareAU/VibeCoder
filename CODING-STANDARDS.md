@@ -960,7 +960,7 @@ is raised, never listed as standing, and a PR whose core deliverable is
 `missing` is not raised over a `Closes #<n>` — finish the work. A hand-off
 (the planning marker or the escape hatch) is honoured only while the branch
 has no commits and no uncommitted changes against the base; once work is
-committed the run is routed to the PR regardless of a hand-off marker, so
+committed the run is routed to the PR regardless of a planning or escape-hatch marker, so
 finishing is the only way to avoid a `Closes #<n>` over undone work
 (Issue #3058). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary

@@ -635,12 +635,14 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   sends the run to the PR path when `git log <base>..HEAD` lists any commit
   (including one a later revert cancels, or a branch commit a base merge
   absorbed) or `git diff --stat HEAD` shows any uncommitted change, whatever
-  marker or follow-up your output carries, and the PR body gets
+  planning, escape-hatch or blocked/deferral marker your output carries (the
+  suspicious-image flag is the exception: it always stops the run, committed
+  work or not), and the PR body gets
   `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
   By the time you are closing out acceptance criteria you will usually already
-  have committed work, so a hand-off at this point is not read — finishing the
-  deliverable is the only way to avoid a `Closes #{{ISSUE_NUMBER}}` over work
-  left undone.
+  have committed work, so a planning, escape-hatch or blocked/deferral
+  hand-off at this point is not read — finishing the deliverable is the only
+  way to avoid a `Closes #{{ISSUE_NUMBER}}` over work left undone.
   When a lesser criterion stays `partial` or `missing`, the Summary names it
   beside the closing keyword instead of describing the issue as resolved.
 
