@@ -14,9 +14,9 @@
  *
  * **The design, in order:**
  *
- * 1. The rebuild starts **detached at the base tip** — a fresh clone of the
- *    base, not a reset of the milestone branch — so nothing of the old,
- *    conflicting history is carried forward by accident.
+ * 1. The rebuild starts **detached at the base tip** — a fresh detached
+ *    checkout of the base tip, not a reset of the milestone branch — so
+ *    nothing of the old, conflicting history is carried forward by accident.
  * 2. Every sub-PR that merged into the milestone branch is replayed, **in
  *    merge order**, by cherry-picking its merge commit onto the rebuild. Merge
  *    order (not PR number, not issue number) is the order history actually
@@ -279,13 +279,13 @@ export function describeMilestoneRebuild(outcome: MilestoneRebuilt): string {
 /** The comment posted once on the milestone PR. */
 export function buildMilestoneRebuildPrComment(
   outcome: MilestoneRebuilt,
-  request: AbandonRestartRequest,
 ): string {
   const deliveryLine = outcome.delivery.kind === "pushed"
     ? `Pushed directly to \`${outcome.milestoneBranch}\`.`
-    : `\`${outcome.milestoneBranch}\` refused the direct push (a ruleset ` +
-      `requires status checks), so the rebuild landed through the ` +
-      `milestone sync PR from \`${outcome.delivery.branch}\`.`;
+    : `\`${outcome.milestoneBranch}\` refused the direct push (a ` +
+      `repository ruleset), so the rebuild was ${
+        outcome.delivery.opened ? "raised" : "updated"
+      } as the milestone sync PR from \`${outcome.delivery.branch}\`, which lands as a merge commit once its checks pass.`;
   const replayedLines = outcome.replayed.length === 0
     ? ["- (none)"]
     : outcome.replayed.map((r) =>
@@ -319,10 +319,10 @@ export function buildMilestoneRebuildPrComment(
     "",
     ...skippedLines,
     "",
-    "No human is needed: every skipped sub-PR's sub-issue is re-queued for a " +
+    "No human is asked: every skipped sub-PR's sub-issue is re-queued for a " +
     `redo on a fresh branch cut from \`${outcome.milestoneBranch}\`'s ` +
-    `current tip, and this \`${request.branchName}\` rebuild carries ` +
-    "no restart cap.",
+    "current tip, and there is no cap on how often a milestone may be " +
+    "rebuilt.",
   ].join("\n");
 }
 
@@ -425,6 +425,14 @@ export async function abandonAndRebuildMilestone(
     subPrs = await listMergedSubPrs(repo, branchName, gh);
   } catch (error) {
     return failed("milestone-sub-prs", errorMessage(error));
+  }
+  if (subPrs.length === 0) {
+    return failed(
+      "milestone-sub-prs",
+      `no merged sub-PRs were found for '${branchName}' — refusing to reset ` +
+        "it to the bare base tip, which would silently drop anything that " +
+        "landed on it another way",
+    );
   }
 
   // --- Step 2: fetch both branches, and start the rebuild at the base tip. -
@@ -674,7 +682,7 @@ export async function abandonAndRebuildMilestone(
       "--repo",
       repo,
       "--body",
-      buildMilestoneRebuildPrComment(outcome, request),
+      buildMilestoneRebuildPrComment(outcome),
     ]);
   } catch (error) {
     return failed("pr-comment", errorMessage(error));

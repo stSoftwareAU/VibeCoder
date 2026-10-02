@@ -61,9 +61,6 @@ import {
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
   abandonAndRebuildMilestone,
-  buildMilestoneRebuildPrComment,
-  buildSubIssueRequeueComment,
-  describeMilestoneRebuild,
   listMergedSubPrs,
   type MilestoneRebuildDeps,
   type MilestoneRebuilt,
@@ -1654,3 +1651,498 @@ Deno.test("exhaustedEscalationRoute - the other-PR decline says what blocked it"
   assertEquals(otherPr.kind, "abandon-declined");
   assertStringIncludes(describeExhaustedRoute(otherPr).join("\n"), "pull/91");
 });
+
+// ---------------------------------------------------------------------------
+// Milestone redo (Issue #3035)
+// ---------------------------------------------------------------------------
+
+const MILESTONE_BRANCH = "milestone/x";
+const MILESTONE_PR_NUMBER = 90;
+const BASE_SHA = "a".repeat(40);
+const REBUILD_SHA = "b".repeat(40);
+
+function milestoneRequest(
+  overrides: Partial<AbandonRestartRequest> = {},
+): AbandonRestartRequest {
+  return {
+    repo: REPO,
+    prNumber: MILESTONE_PR_NUMBER,
+    branchName: MILESTONE_BRANCH,
+    baseBranch: "main",
+    ...overrides,
+  };
+}
+
+function recordingLogger(): Logger & {
+  warnings: Array<{ message: string; context?: LogContext }>;
+  errors: Array<{ message: string; context?: LogContext }>;
+} {
+  const warnings: Array<{ message: string; context?: LogContext }> = [];
+  const errors: Array<{ message: string; context?: LogContext }> = [];
+  const noop = () => {};
+  return {
+    warnings,
+    errors,
+    info: noop,
+    warn: (message: string, context?: LogContext) => {
+      warnings.push({ message, ...(context ? { context } : {}) });
+    },
+    error: (message: string, context?: LogContext) => {
+      errors.push({ message, ...(context ? { context } : {}) });
+    },
+    debug: noop,
+    security: noop,
+    skipReason: noop,
+    timing: noop,
+    scanSummary: noop,
+    workerSummary: noop,
+  };
+}
+
+/** A merged sub-PR row exactly as `gh pr list --json ... mergeCommit` renders it. */
+function subPrRow(args: {
+  number: number;
+  headRefName: string;
+  mergedAt: string;
+  sha: string;
+}) {
+  return {
+    number: args.number,
+    headRefName: args.headRefName,
+    body: "",
+    mergedAt: args.mergedAt,
+    mergeCommit: { oid: args.sha },
+  };
+}
+
+const SHA_11 = "1".repeat(40);
+const SHA_12 = "2".repeat(40);
+const SHA_13 = "3".repeat(40);
+
+interface FakeGhCalls {
+  gh: (args: string[]) => Promise<string>;
+  calls: string[][];
+  issueComments: Record<number, string[]>;
+  reopened: number[];
+}
+
+/** A `gh` fake for the milestone rebuild, scripted per test. */
+function makeMilestoneGh(options: {
+  subPrListing: ReadonlyArray<ReturnType<typeof subPrRow>>;
+  issueStates: Record<number, { state: string; labels: string[] }>;
+}): FakeGhCalls {
+  const calls: string[][] = [];
+  const issueComments: Record<number, string[]> = {};
+  const reopened: number[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify(options.subPrListing));
+    }
+    if (args[0] === "issue" && args[1] === "view") {
+      const number = Number(args[2]);
+      const found = options.issueStates[number];
+      if (!found) return Promise.reject(new Error(`no issue #${number}`));
+      return Promise.resolve(JSON.stringify({
+        state: found.state,
+        labels: found.labels.map((name) => ({ name })),
+      }));
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      const number = Number(args[2]);
+      (issueComments[number] ??= []).push(
+        String(args[args.indexOf("--body") + 1] ?? ""),
+      );
+      return Promise.resolve("");
+    }
+    if (args[0] === "issue" && args[1] === "reopen") {
+      reopened.push(Number(args[2]));
+      return Promise.resolve("");
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      return Promise.resolve("");
+    }
+    return Promise.resolve("");
+  };
+  return { gh, calls, issueComments, reopened };
+}
+
+/** A `git` fake for the milestone rebuild, scripted per test. */
+function makeMilestoneGit(options: {
+  /** sha -> parent count for `rev-list --parents`. */
+  parentCounts?: Record<string, number>;
+  /** shas whose cherry-pick exits non-zero. */
+  failingCherryPicks?: ReadonlySet<string>;
+  pushResult?: { code: number; stdout: string; stderr: string };
+  resetFails?: boolean;
+} = {}): {
+  git: MilestoneRebuildDeps["git"];
+  calls: string[][];
+} {
+  const calls: string[][] = [];
+  const failing = options.failingCherryPicks ?? new Set<string>();
+  const git: MilestoneRebuildDeps["git"] = (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "fetch") {
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    }
+    if (args[0] === "rev-parse" && args.includes("--verify")) {
+      return Promise.resolve({ code: 0, stdout: `${BASE_SHA}\n`, stderr: "" });
+    }
+    if (args[0] === "rev-parse" && args[1] === "HEAD") {
+      return Promise.resolve({
+        code: 0,
+        stdout: `${REBUILD_SHA}\n`,
+        stderr: "",
+      });
+    }
+    if (args[0] === "checkout") {
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    }
+    if (args[0] === "rev-list") {
+      const sha = args[args.length - 1] ?? "";
+      const parents = options.parentCounts?.[sha] ?? 1;
+      const tokens = [sha, ...Array(parents).fill("p")].join(" ");
+      return Promise.resolve({ code: 0, stdout: tokens, stderr: "" });
+    }
+    if (args[0] === "cherry-pick") {
+      const sha = args[args.length - 1] ?? "";
+      if (failing.has(sha)) {
+        return Promise.resolve({
+          code: 1,
+          stdout: "",
+          stderr: `error: could not apply ${sha}`,
+        });
+      }
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    }
+    if (args[0] === "reset") {
+      return Promise.resolve(
+        options.resetFails
+          ? { code: 1, stdout: "", stderr: "could not reset" }
+          : { code: 0, stdout: "", stderr: "" },
+      );
+    }
+    if (args[0] === "merge") {
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    }
+    if (args[0] === "push") {
+      return Promise.resolve(
+        options.pushResult ?? { code: 0, stdout: "", stderr: "" },
+      );
+    }
+    return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+  };
+  return { git, calls };
+}
+
+Deno.test(
+  "abandonAndRebuildMilestone - replays sub-PRs in merge order, skips and re-queues the rest",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: [
+        subPrRow({
+          number: 13,
+          headRefName: "issue-3-c",
+          mergedAt: "2026-01-03T00:00:00Z",
+          sha: SHA_13,
+        }),
+        subPrRow({
+          number: 11,
+          headRefName: "issue-1-a",
+          mergedAt: "2026-01-01T00:00:00Z",
+          sha: SHA_11,
+        }),
+        subPrRow({
+          number: 12,
+          headRefName: "issue-2-b",
+          mergedAt: "2026-01-02T00:00:00Z",
+          sha: SHA_12,
+        }),
+      ],
+      issueStates: {
+        2: { state: "CLOSED", labels: [] },
+      },
+    });
+    const gitFake = makeMilestoneGit({
+      failingCherryPicks: new Set([SHA_12]),
+    });
+
+    const addLabelCalls: Array<[string, number, string]> = [];
+    const logger = recordingLogger();
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+      logger,
+      addLabel: (repo, issueNumber, label) => {
+        addLabelCalls.push([repo, issueNumber, label]);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    });
+
+    assert(outcome.outcome === "milestone-rebuilt");
+    const rebuilt = outcome as MilestoneRebuilt;
+
+    // The rebuild starts detached at the base tip, before any cherry-pick.
+    const checkoutIndex = gitFake.calls.findIndex((a) => a[0] === "checkout");
+    const firstCherryPickIndex = gitFake.calls.findIndex((a) =>
+      a[0] === "cherry-pick"
+    );
+    assert(checkoutIndex >= 0);
+    assert(firstCherryPickIndex > checkoutIndex);
+    assertEquals(gitFake.calls[checkoutIndex], [
+      "checkout",
+      "--detach",
+      BASE_SHA,
+    ]);
+
+    // Cherry-picks attempted in merge order: #11, #12, #13.
+    const pickedShas = gitFake.calls
+      .filter((a) => a[0] === "cherry-pick")
+      .map((a) => a[a.length - 1]);
+    assertEquals(pickedShas, [SHA_11, SHA_12, SHA_13]);
+
+    assertEquals(
+      rebuilt.replayed.map((r) => r.prNumber),
+      [11, 13],
+    );
+    assertEquals(rebuilt.skipped.map((s) => s.prNumber), [12]);
+
+    // Sub-issue #2 is re-queued: marker, reopen, idle-task.
+    const comments = ghFake.issueComments[2] ?? [];
+    assertEquals(comments.length, 1);
+    assertStringIncludes(comments[0]!, CONFLICT_RESTART_MARKER);
+    assertStringIncludes(comments[0]!, `pr="${REPO}#12"`);
+    assertEquals(ghFake.reopened, [2]);
+    assertEquals(addLabelCalls, [[REPO, 2, "idle-task"]]);
+
+    // The logged warn line names the skipped sub-issue.
+    const warned = logger.warnings.map((w) => w.message).join("\n");
+    assertStringIncludes(warned, "#2");
+
+    // The milestone PR comment names #1 and #3 as replayed, #2 as skipped.
+    const prComments = ghFake.calls.filter((a) =>
+      a[0] === "pr" && a[1] === "comment" &&
+      a[2] === String(MILESTONE_PR_NUMBER)
+    );
+    assertEquals(prComments.length, 1);
+    const prCommentBody = String(
+      prComments[0]![prComments[0]!.indexOf("--body") + 1],
+    );
+    assertStringIncludes(prCommentBody, "sub-issue #1");
+    assertStringIncludes(prCommentBody, "sub-issue #3");
+    assertStringIncludes(prCommentBody, "sub-issue #2");
+
+    assertEquals(rebuilt.delivery, { kind: "pushed" });
+
+    const pushCall = gitFake.calls.find((a) => a[0] === "push");
+    assert(pushCall !== undefined);
+    for (const flag of ["--force", "-f", "--force-with-lease"]) {
+      assert(!pushCall!.includes(flag), `push must not carry ${flag}`);
+    }
+
+    for (const call of [...ghFake.calls, ...gitFake.calls]) {
+      assert(
+        !call.join(" ").toLowerCase().includes("needs-human"),
+        `no call should mention needs-human: ${call.join(" ")}`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a ruleset-refused push lands through the sync PR",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: [
+        subPrRow({
+          number: 11,
+          headRefName: "issue-1-a",
+          mergedAt: "2026-01-01T00:00:00Z",
+          sha: SHA_11,
+        }),
+      ],
+      issueStates: {},
+    });
+    const gitFake = makeMilestoneGit({
+      pushResult: {
+        code: 1,
+        stdout: "",
+        stderr: "GH013: Repository rule violations found",
+      },
+    });
+
+    const raiseSyncPrCalls: Array<[string, string, string]> = [];
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+      raiseSyncPr: (repo, milestoneBranch, defaultBranch) => {
+        raiseSyncPrCalls.push([repo, milestoneBranch, defaultBranch]);
+        return Promise.resolve({
+          ok: true,
+          value: { branch: "sync/milestone-x", opened: true },
+        });
+      },
+    });
+
+    assert(outcome.outcome === "milestone-rebuilt");
+    const rebuilt = outcome as MilestoneRebuilt;
+    assertEquals(raiseSyncPrCalls, [[REPO, MILESTONE_BRANCH, "main"]]);
+    assertEquals(rebuilt.delivery, {
+      kind: "sync-pr",
+      branch: "sync/milestone-x",
+      opened: true,
+    });
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a non-gated push failure fails loud, no sub-issue comments",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: [
+        subPrRow({
+          number: 11,
+          headRefName: "issue-1-a",
+          mergedAt: "2026-01-01T00:00:00Z",
+          sha: SHA_11,
+        }),
+      ],
+      issueStates: {},
+    });
+    const gitFake = makeMilestoneGit({
+      pushResult: {
+        code: 1,
+        stdout: "",
+        stderr: "! [rejected] (non-fast-forward)",
+      },
+    });
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+    });
+
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-push");
+    assert(!outcome.message.toLowerCase().includes("needs-human"));
+    assertEquals(Object.keys(ghFake.issueComments).length, 0);
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - an empty sub-PR listing fails loud, no git calls",
+  async () => {
+    const ghFake = makeMilestoneGh({ subPrListing: [], issueStates: {} });
+    const gitFake = makeMilestoneGit();
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+    });
+
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-sub-prs");
+    assertEquals(gitFake.calls.length, 0);
+  },
+);
+
+Deno.test(
+  "listMergedSubPrs - excludes sync branches, sorts by mergedAt, throws on a truncated page",
+  async () => {
+    const listing = [
+      subPrRow({
+        number: 2,
+        headRefName: "issue-2-b",
+        mergedAt: "2026-01-02T00:00:00Z",
+        sha: SHA_12,
+      }),
+      subPrRow({
+        number: 1,
+        headRefName: "issue-1-a",
+        mergedAt: "2026-01-01T00:00:00Z",
+        sha: SHA_11,
+      }),
+      subPrRow({
+        number: 99,
+        headRefName: "sync/milestone-x",
+        mergedAt: "2025-12-31T00:00:00Z",
+        sha: SHA_13,
+      }),
+    ];
+    const gh = (args: string[]): Promise<string> => {
+      if (args[0] === "pr" && args[1] === "list") {
+        return Promise.resolve(JSON.stringify(listing));
+      }
+      return Promise.resolve("[]");
+    };
+    const result = await listMergedSubPrs(REPO, MILESTONE_BRANCH, gh);
+    assertEquals(result.map((r) => r.number), [1, 2]);
+
+    const truncated = Array.from({ length: 200 }, (_, i) =>
+      subPrRow({
+        number: i + 1,
+        headRefName: `issue-${i + 1}-x`,
+        mergedAt: `2026-01-01T00:00:${String(i % 60).padStart(2, "0")}Z`,
+        sha: SHA_11,
+      }));
+    const truncatedGh = (args: string[]): Promise<string> => {
+      if (args[0] === "pr" && args[1] === "list") {
+        return Promise.resolve(JSON.stringify(truncated));
+      }
+      return Promise.resolve("[]");
+    };
+    await assertRejects(
+      () => listMergedSubPrs(REPO, MILESTONE_BRANCH, truncatedGh),
+      Error,
+    );
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a failing reset after a failed pick fails loud",
+  async () => {
+    const ghFake = makeMilestoneGh({
+      subPrListing: [
+        subPrRow({
+          number: 11,
+          headRefName: "issue-1-a",
+          mergedAt: "2026-01-01T00:00:00Z",
+          sha: SHA_11,
+        }),
+      ],
+      issueStates: {},
+    });
+    const gitFake = makeMilestoneGit({
+      failingCherryPicks: new Set([SHA_11]),
+      resetFails: true,
+    });
+
+    const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+      gh: ghFake.gh,
+      git: gitFake.git,
+    });
+
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-rebuild");
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - a non-milestone head is refused with no gh/git mutations",
+  async () => {
+    const ghFake = makeMilestoneGh({ subPrListing: [], issueStates: {} });
+    const gitFake = makeMilestoneGit();
+
+    const outcome = await abandonAndRebuildMilestone(
+      milestoneRequest({ branchName: "issue-5-foo" }),
+      { gh: ghFake.gh, git: gitFake.git },
+    );
+
+    assert(outcome.outcome === "failed");
+    assertEquals(outcome.step, "milestone-rebuild");
+    assertEquals(ghFake.calls.length, 0);
+    assertEquals(gitFake.calls.length, 0);
+  },
+);

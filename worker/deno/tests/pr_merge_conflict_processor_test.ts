@@ -30,7 +30,9 @@ import {
   type MergeConflictProcessorDeps,
   parseUnmergedPaths,
   processMergeConflict,
+  runAbandonRestart,
 } from "../lib/pr_merge_conflict_processor.ts";
+import type { MilestoneRebuilt } from "../lib/conflict_milestone_rebuild.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
