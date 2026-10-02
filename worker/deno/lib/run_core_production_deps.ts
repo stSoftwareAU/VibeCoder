@@ -172,6 +172,7 @@ import {
   scanConflictQueueStalls,
 } from "./merge_conflict_stall_watchdog.ts";
 import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts";
+import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -2972,6 +2973,23 @@ export async function createProductionRunCoreDeps(
                 );
               }
               return setup.message;
+            },
+            agentFn: (request) => {
+              const bound = bindMilestoneConflictAgent({
+                repo: request.repo,
+                grant: { agentAllowed: true },
+                config,
+                logger,
+              });
+              if (!bound) {
+                return Promise.resolve({
+                  ok: false,
+                  error: new Error(
+                    `no resolution agent for ${request.repo}`,
+                  ),
+                });
+              }
+              return bound(request);
             },
           }),
         });

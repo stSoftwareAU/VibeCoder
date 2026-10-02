@@ -5,11 +5,19 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { bindConflictTakeoverResolvers } from "../lib/conflict_takeover_resolvers.ts";
-import type { ConflictTakeoverPr } from "../lib/conflict_takeover.ts";
+import {
+  type ConflictTakeoverPr,
+  runConflictTakeover,
+} from "../lib/conflict_takeover.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
-import type { Result } from "../types.ts";
+import type { Logger, Result } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers — real git repos, mirroring worker/deno/tests/git_pull_conflict_test.ts
@@ -323,4 +331,110 @@ Deno.test("resolveOnFixBranch - a failed base fetch is unresolved and runs no ch
   assertEquals(calls.length, 2, JSON.stringify(calls));
   assertEquals(calls[0]![0], "fetch");
   assertEquals(calls[1]![0], "fetch");
+});
+
+Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #3001)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    const { localPath } = await setupTestRepos(tmpDir);
+
+    await Deno.writeTextFile(`${localPath}/shared.ts`, "base\n");
+    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "Add shared"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+
+    await runGitCommand(["checkout", "-b", "milestone/x"], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/shared.ts`, "head version\n");
+    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "Head change"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "milestone/x"], { cwd: localPath });
+    const headCommit = await headSha(localPath, "milestone/x");
+
+    await runGitCommand(["checkout", "main"], { cwd: localPath });
+    await Deno.writeTextFile(`${localPath}/shared.ts`, "main version\n");
+    await runGitCommand(["add", "shared.ts"], { cwd: localPath });
+    await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
+    await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+
+    const calls: string[][] = [];
+    const gh = (args: string[]): Promise<string> => {
+      calls.push(args);
+      const key = args.join(" ");
+      if (key.includes("/comments?")) return Promise.resolve("[]");
+      if (key.includes("/rules/branches/")) {
+        return Promise.resolve(JSON.stringify([{ type: "pull_request" }]));
+      }
+      if (args[0] === "pr" && args[1] === "view") return Promise.resolve("");
+      if (args[0] === "label" && args[1] === "list") {
+        return Promise.resolve("[]");
+      }
+      if (args[0] === "pr" && args[1] === "list") return Promise.resolve("[]");
+      if (args[0] === "pr" && args[1] === "create") {
+        return Promise.resolve("https://github.com/acme/widgets/pull/7\n");
+      }
+      if (args[0] === "pr" && args[1] === "comment") return Promise.resolve("");
+      if (args[0] === "pr" && args[1] === "merge") return Promise.resolve("");
+      if (args.includes("GET")) {
+        return Promise.resolve('{"users":[],"teams":[]}');
+      }
+      if (
+        args[0] === "api" && (args.includes("POST") || args.includes("DELETE"))
+      ) {
+        return Promise.resolve("");
+      }
+      return Promise.resolve("");
+    };
+
+    const resolvers = bindConflictTakeoverResolvers({
+      checkout: () => Promise.resolve(localPath),
+      agentFn: async (request) => {
+        await Deno.writeTextFile(
+          `${request.workDir}/shared.ts`,
+          "head version\nmain version\n",
+        );
+        await runGitCommand(["add", "shared.ts"], { cwd: request.workDir });
+        return { ok: true, value: { terminated: false } };
+      },
+    });
+
+    const outcome = await runConflictTakeover(
+      makePr({ headSha: headCommit, repo: "acme/widgets", number: 42 }),
+      {
+        gh,
+        trustedAuthors: ["vibe-bot"],
+        logger: {
+          info: () => {},
+          warn: () => {},
+          error: () => {},
+          debug: () => {},
+        } as unknown as Logger,
+        ...resolvers,
+      },
+    );
+
+    assertEquals(outcome.kind, "fix-pr-raised");
+    const created = calls.filter((args) =>
+      args[0] === "pr" && args[1] === "create"
+    );
+    assertEquals(created.length, 1);
+    assertEquals(created[0]![created[0]!.indexOf("--base") + 1], "milestone/x");
+    const fixRef = created[0]![created[0]!.indexOf("--head") + 1]!;
+    const fixed = await runGitCommand(
+      ["show", `origin/${fixRef}:shared.ts`],
+      { cwd: localPath },
+    );
+    assert(
+      fixed.ok && fixed.value.code === 0,
+      fixed.ok ? fixed.value.stderr : fixed.error.message,
+    );
+    assertStringIncludes(fixed.ok ? fixed.value.stdout : "", "head version");
+    assertStringIncludes(fixed.ok ? fixed.value.stdout : "", "main version");
+    const remoteHead = await runGitCommand(
+      ["rev-parse", "refs/heads/milestone/x"],
+      { cwd: `${tmpDir}/remote.git` },
+    );
+    assertEquals(remoteHead.ok && remoteHead.value.stdout.trim(), headCommit);
+  } finally {
+    await cleanup(tmpDir);
+  }
 });
