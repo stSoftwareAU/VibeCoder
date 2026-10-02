@@ -31,6 +31,7 @@ import {
   localLedgerRecords,
   mismatchedTopUpIds,
   parseCoverageLedger,
+  SWEEP_COVERAGE_ROOTS,
   type SweepCoverageLedger,
   type SweepGitRunner,
   SweepLedgerError,
@@ -394,6 +395,11 @@ Deno.test("listSweptModules - a file root is returned as-is, a directory root is
   );
   assert(dirPaths.length > 1, "expected the directory root to be walked");
   assertEquals(dirPaths, [...dirPaths].sort());
+});
+
+Deno.test("the ledger's roots match SWEEP_COVERAGE_ROOTS (Issues #2759, #2760)", () => {
+  const ledger = readRealLedger();
+  assertEquals(ledger.roots, [...SWEEP_COVERAGE_ROOTS]);
 });
 
 Deno.test(

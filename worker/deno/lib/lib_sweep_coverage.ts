@@ -1,7 +1,8 @@
 /**
  * Coverage ledger for the security sweeps of `worker/deno/lib/`,
  * `worker/deno/commands/` and `worker/deno/setup/` (Issue #1609, parents
- * #1219 / #1209).
+ * #1219 / #1209), joined by the `prompts/<type>/prompt.md` templates under
+ * `prompts/` (Issue #2759).
  *
  * The lib/ sweep was cut into sink-organised slices and later top-ups.
  * `commands/` and `setup/` were read under #1218 and #1220 but were never
@@ -26,13 +27,14 @@ export const LIB_SWEEP_LEDGER_PATH = "docs/audits/lib-sweep-coverage.json";
 export const LIB_SWEEP_ROOT = "worker/deno/lib";
 
 /**
- * The three worker/deno trees plus the root-level launcher scripts the
- * ledger now partitions (Issues #1609, #2760).
+ * The three worker/deno trees, the `prompts/` tree and the root-level
+ * launcher scripts the ledger partitions (Issues #1609, #2759, #2760).
  */
 export const SWEEP_COVERAGE_ROOTS = [
   "worker/deno/lib",
   "worker/deno/commands",
   "worker/deno/setup",
+  "prompts",
   "loop.ps1",
   "loop.sh",
   "quality.sh",
@@ -344,6 +346,13 @@ export function parseCoverageLedger(json: string): SweepCoverageLedger {
   };
 }
 
+/**
+ * Split a `git diff --name-only` stdout into non-test owned-file names.
+ *
+ * A `_test.ts` file is never a ledger-owned module, so it is filtered here
+ * rather than relied on to be absent upstream — `prompt.md` has no test-file
+ * convention to exclude (Issue #2759).
+ */
 function splitGitNames(stdout: string): string[] {
   return stdout.split("\n").map((line) => line.trim()).filter((line) =>
     line.length > 0 && !line.endsWith("_test.ts")
@@ -546,12 +555,16 @@ export async function listSweptModulesForRoots(
 }
 
 /**
- * List the non-test TypeScript modules under a directory, repo-relative.
- * If `root` names a file rather than a directory, it is returned as-is —
- * this is how a single root-level launcher script (#2760) is owned.
+ * List the swept files under a directory, repo-relative: non-test TypeScript
+ * modules and `prompt.md` templates (Issue #2759). If `root` names a file
+ * rather than a directory, it is returned as-is — this is how a single
+ * root-level launcher script (#2760) is owned.
  *
  * This is the `find lib -name '*.ts' ! -name '*_test.ts'` of the issue, done
  * without a subprocess so the check runs under the unit-test permission set.
+ * `prompts/<type>/prompt.md` joined the same walk under #2759 — the template
+ * itself is swept, but a sibling file such as `prompts/<type>/buckets/*.md`
+ * is not.
  *
  * @param repoRoot - Absolute path of the repository root.
  * @param root - Repo-relative directory (or file) to walk (defaults to `worker/deno/lib`).
@@ -572,8 +585,10 @@ export async function listSweptModules(
       if (entry.isDirectory) {
         await visit(relPath);
       } else if (
-        entry.isFile && entry.name.endsWith(".ts") &&
-        !entry.name.endsWith("_test.ts")
+        entry.isFile && (
+          (entry.name.endsWith(".ts") && !entry.name.endsWith("_test.ts")) ||
+          entry.name === "prompt.md"
+        )
       ) {
         paths.push(relPath);
       }
