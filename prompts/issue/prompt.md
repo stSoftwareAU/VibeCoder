@@ -656,12 +656,20 @@ issue carries that label.
 
 When creating the PR, include evidence based on the type of change:
 
-- **UI Changes**: Capture a screenshot via Playwright MCP (`browser_navigate`
-  then `browser_take_screenshot` **with an explicit `filename` under
-  `docs/evidence/`**, e.g. `filename: "docs/evidence/issue-123-after.png"` — a
-  call without `filename` writes to a scratch directory outside the repository
-  and cannot be committed). Commit the file and reference it in your PR summary
-  as `![Description](docs/evidence/filename.png)`. Describing visual changes in
+- **UI Changes**: The screenshot gate decides by file extension alone. If your
+  diff touches any file ending in one of these extensions — other than a
+  version-stamp-only bump such as `?v=1.1.28` → `?v=1.1.30` (#2300) — you must
+  capture, commit and reference a screenshot **before** raising the PR,
+  whatever you judge the change to be:
+  `.css` `.scss` `.sass` `.less` `.html` `.htm` `.jsx` `.tsx` `.vue` `.svelte`
+  Labels and PR wording do not change the outcome (#2959); a PR without the
+  screenshot costs an extra round trip. Capture it via Playwright MCP
+  (`browser_navigate` then `browser_take_screenshot` **with an explicit
+  `filename` under `docs/evidence/`**, e.g. `filename:
+  "docs/evidence/issue-123-after.png"` — a call without `filename` writes to a
+  scratch directory outside the repository and cannot be committed). Commit
+  the file and reference it in your PR summary as
+  `![Description](docs/evidence/filename.png)`. Describing visual changes in
   words alone is not sufficient — capture an actual screenshot. On a resumed
   attempt, update the existing PR summary so it references the screenshots you
   captured this time.
@@ -689,9 +697,10 @@ A soft validation gate runs at PR-creation time: it warns on
 broken in-repo image paths and may auto-correct an unambiguous mismatch. Do not
 rely on it — write the correct path the first time so the gate stays quiet.
 
-If the change is purely backend/CLI with no web interface to screenshot, state
-this briefly in the evidence section and explain what was tested instead (e.g.,
-test results, command output).
+If the change is purely backend/CLI, state this briefly in the evidence section
+and explain what was tested instead (e.g., test results, command output). A diff
+that touches a UI file listed under **UI Changes** is never purely backend/CLI,
+however small or non-visual the edit seems.
 
 ## Issue Closure in PR Summary
 
@@ -768,7 +777,8 @@ The file MUST contain:
      run time, and constraints from outside the repo
 3. **Evidence** (based on change type):
    - For UI changes: Include a screenshot (as Markdown image) captured via
-     Playwright MCP
+     Playwright MCP — required whenever the diff touches a file listed under
+     **UI Changes** in PR Raising Requirements
    - For performance changes: Include benchmark results or document why they
      cannot be provided
    - For bug fixes/CLI changes: Reference the tests that verify the fix

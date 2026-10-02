@@ -10,8 +10,15 @@
 
 import { findScreenshotReferences } from "./pr_evidence.ts";
 
-const UI_FILE_EXTENSIONS =
-  /\.(css|scss|sass|less|html|htm|jsx|tsx|vue|svelte)$/i;
+/**
+ * Extensions that make a changed file a UI file (Issue #2959). The issue
+ * prompt states the same list up front (Issue #3019); a drift test pins them.
+ */
+export const UI_FILE_EXTENSIONS: readonly string[] = [
+  "css", "scss", "sass", "less", "html", "htm", "jsx", "tsx", "vue", "svelte",
+];
+
+const UI_FILE_PATTERN = new RegExp(`\\.(${UI_FILE_EXTENSIONS.join("|")})$`, "i");
 
 export interface ScreenshotValidationOptions {
   prSummaryContent: string;
@@ -72,7 +79,7 @@ export function formatBranchEvidenceSection(images: string[]): string {
 
 /** Whether a path's extension marks it as a file that can carry a UI. */
 export function isUiSourceFile(path: string): boolean {
-  return UI_FILE_EXTENSIONS.test(path);
+  return UI_FILE_PATTERN.test(path);
 }
 
 /**
@@ -130,7 +137,7 @@ export function detectUiChanges(
   versionBumpOnlyFiles: ReadonlySet<string> = new Set(),
 ): boolean {
   const substantive = changedFiles.filter((f) => !versionBumpOnlyFiles.has(f));
-  return substantive.some((f) => UI_FILE_EXTENSIONS.test(f));
+  return substantive.some((f) => UI_FILE_PATTERN.test(f));
 }
 
 const SCREENSHOT_FAILURE_MESSAGE = `## Screenshot Evidence Required

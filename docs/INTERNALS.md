@@ -2381,7 +2381,11 @@ creation:
   when at least one substantive changed file has a UI extension (`.css`,
   `.scss`, `.sass`, `.less`, `.html`, `.htm`, `.jsx`, `.tsx`, `.vue`,
   `.svelte`); issue labels, PR-summary wording and an empty changed-file list
-  no longer count (Issue #2959).
+  no longer count (Issue #2959). The issue prompt's **UI Changes** rule states
+  the same extension list up front, so the agent captures the screenshot
+  before raising the PR rather than on the extra turn (Issue #3019);
+  `screenshot_file_rule_prompt_3019_test.ts` fails when the prompt's list and
+  `UI_FILE_EXTENSIONS` in `screenshot_validation.ts` differ.
 
   ```mermaid
   flowchart TD
