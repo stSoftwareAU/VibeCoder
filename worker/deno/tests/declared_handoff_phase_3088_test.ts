@@ -80,10 +80,14 @@ function makeClient(
   calls: StubCalls,
   comments: GitHubComment[] = [],
   dependencyState: "OPEN" | "CLOSED" = "OPEN",
+  lookup: "ok" | "throw" | "no-state" = "ok",
 ): GitHubClient {
   return {
-    getIssue: (_repo, number) =>
-      Promise.resolve({
+    getIssue: (_repo, number) => {
+      if (lookup === "throw") {
+        return Promise.reject(new Error("gh: not found"));
+      }
+      return Promise.resolve({
         number,
         title: "Example issue",
         body: "Original body.",
@@ -92,8 +96,11 @@ function makeClient(
         assignees: ["testbot"],
         createdAt: "",
         updatedAt: "",
-        state: number === ISSUE ? "OPEN" : dependencyState,
-      }),
+        ...(lookup === "no-state"
+          ? {}
+          : { state: number === ISSUE ? "OPEN" : dependencyState }),
+      });
+    },
     getIssueComments: () => Promise.resolve(comments),
     addLabel: (_r, _i, label) => {
       calls.addLabel.push(label);
@@ -419,5 +426,80 @@ Deno.test(
     assert(
       !calls.postComment.some((c) => c.includes("produced no code changes")),
     );
+  },
+);
+
+// A state that cannot be read, or that the payload omits, does not defer.
+Deno.test(
+  "declared_handoff_phase - a dependency lookup that fails does not defer a committed run (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls, [], "OPEN", "throw") },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(calls.postComment, []);
+    assertEquals(calls.addLabel, []);
+    assertEquals(calls.editIssue, 0);
+  },
+);
+
+Deno.test(
+  "declared_handoff_phase - a dependency with no state does not defer a committed run (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () => makeClient(calls, [], "OPEN", "no-state"),
+      },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "continue");
+    assertEquals(calls.postComment, []);
+    assertEquals(calls.addLabel, []);
+    assertEquals(calls.editIssue, 0);
+  },
+);
+
+// A quoted time-deferral marker is the template, not a request to park.
+Deno.test(
+  "declared_handoff_phase - a quoted time-deferral marker continues (Issue #3088)",
+  async () => {
+    const marker =
+      '<!-- vibe-defer-until until="2026-10-20T00:00:00Z" reason="the export has not landed" -->';
+    for (
+      const output of [
+        ["The summary quotes the marker:", "```", marker, "```", ""].join(
+          "\n",
+        ),
+        `The template is \`${marker}\`.`,
+      ]
+    ) {
+      const calls = makeCalls();
+      const deps = createMockDeps({
+        github: { createClient: () => makeClient(calls) },
+      });
+      const result = await workOnIssueDeclaredHandoff(
+        makeContext(),
+        makeState(output),
+        deps,
+      );
+      assertEquals(result.status, "continue");
+      assertEquals(calls.postComment, []);
+      assertEquals(calls.addLabel, []);
+    }
   },
 );

@@ -83,8 +83,12 @@ export interface GhIssueJson {
   assignees: Array<{ login: string }>;
   createdAt: string;
   updatedAt: string;
-  /** Present when `gh issue view` was asked for `state`. */
-  state?: "OPEN" | "CLOSED";
+  /**
+   * Present when `gh issue view` was asked for `state`. Any string `gh`
+   * returns, including `MERGED` when the number is a pull request
+   * (Issue #3088 review).
+   */
+  state?: string;
 }
 
 /**
@@ -420,11 +424,12 @@ export function validateGhIssueJson(
     return fail("updatedAt", `Expected string, got ${typeof data.updatedAt}`);
   }
 
-  // state is optional: older callers omit it. When present it is OPEN or CLOSED.
-  if (
-    data.state !== undefined && data.state !== "OPEN" && data.state !== "CLOSED"
-  ) {
-    return fail("state", `Expected OPEN or CLOSED, got ${typeof data.state}`);
+  // state is optional: older callers omit it. When present it is whatever
+  // string `gh issue view` returned. A merged pull request is `MERGED`, and
+  // rejecting that made every `getIssue` on a merged PR throw (Issue #3088
+  // review). A non-string is still rejected.
+  if (data.state !== undefined && typeof data.state !== "string") {
+    return fail("state", `Expected string, got ${typeof data.state}`);
   }
 
   return ok(data as unknown as GhIssueJson);

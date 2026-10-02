@@ -20,6 +20,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { stripCodeSpans } from "./issue_dependencies.ts";
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
@@ -92,7 +93,10 @@ export function detectTimeDeferral(
   output: string,
   nowMs: number,
 ): TimeDeferralDetection | undefined {
-  const marker = REQUEST_RE.exec(output);
+  // A marker quoted in a fence or an inline span is the template, not a
+  // request. A committed run reads this detector, so a summary that quotes
+  // the marker must not park the run (Issue #3088 review).
+  const marker = REQUEST_RE.exec(stripCodeSpans(output));
   if (!marker) return undefined;
   const body = marker[1] ?? "";
 

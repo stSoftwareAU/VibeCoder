@@ -681,10 +681,11 @@ export interface GitHubIssue {
   createdAt: string;
   updatedAt: string;
   /**
-   * `OPEN` or `CLOSED` when the fetch asked for `state`. Absent on payloads
-   * that predate that field (Issue #3088 review).
+   * Whatever `gh issue view` returned for `state` (`OPEN`, `CLOSED`, or
+   * `MERGED` when the number is a pull request). Absent when the field was
+   * not requested (Issue #3088 review).
    */
-  state?: "OPEN" | "CLOSED";
+  state?: string;
 }
 
 /**

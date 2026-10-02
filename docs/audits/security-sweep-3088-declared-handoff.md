@@ -17,8 +17,12 @@ make `diffCoverage` green on a false record. They are claimed by
 
 ## `worker/deno/lib/phases/declared_handoff.ts`
 
-The only external input is `state.claudeOutput` — the agent's own final
-message, which is untrusted: a prompt-injected run can put anything there.
+The external inputs are `state.claudeOutput` — the agent's own final
+message, which is untrusted: a prompt-injected run can put anything there —
+and, on the committed path, a `getIssue` lookup for the dependency a
+`## Blocked:` line names (`owner/repo#N` taken from that message). The
+lookup's `state` is trusted only as `OPEN` or not: anything else, including
+a missing field or a thrown lookup, does not defer.
 `handOffDeclaredOutcome` runs three detectors over it in a fixed order
 (blocked dependency, time deferral, planning request) and, where one fires,
 hands off through existing, already-audited helpers rather than writing

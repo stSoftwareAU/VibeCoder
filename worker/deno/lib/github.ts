@@ -664,6 +664,10 @@ export async function createGitHubIssuesWithPartialFailures(
  * @param logger - Logger instance for diagnostic output
  * @returns GitHub client instance
  */
+/** Fields `gh issue view` is asked for. `state` stays in the list so a merged pull request is a successful lookup, not a thrown validation error (Issue #3088 review). */
+export const GH_ISSUE_VIEW_JSON_FIELDS =
+  "number,title,body,labels,author,assignees,createdAt,updatedAt,state";
+
 export function createGitHubClient(logger: Logger): GitHubClient {
   return {
     async getIssue(repo: string, issueNumber: number): Promise<GitHubIssue> {
@@ -675,7 +679,7 @@ export function createGitHubClient(logger: Logger): GitHubClient {
         "--repo",
         repo,
         "--json",
-        "number,title,body,labels,author,assignees,createdAt,updatedAt,state",
+        GH_ISSUE_VIEW_JSON_FIELDS,
       ]);
       const parsed: unknown = JSON.parse(output);
       const validated = validateGhIssueJson(parsed);

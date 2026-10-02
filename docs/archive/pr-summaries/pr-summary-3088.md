@@ -39,8 +39,11 @@ had said was unfinished.
 - **Option (b) for the free-text escape hatch.** Prose such as "out of scope"
   is too ambiguous to override committed work, so the prompts now say it is
   honoured only when the run has made no commit.
-- **Commits stay local.** The phase never pushes. The work is left on the
-  local branch, and the run ends with `early_exit`.
+- **The phase itself neither pushes nor raises a PR.** The run ends with
+  `early_exit`. With session resume on (the default), the execute checkpoint
+  has normally already pushed the work to the `issue-<N>-…` branch
+  (`execute_phase.ts` calls `checkpoints.runNow()` through
+  `wip_checkpoint.ts`), and the next claim resumes from it.
 - **Dropping `Closes` was rejected.** A PR without a closing keyword loops
   forever (Issue #520), so the fix stops PR creation rather than editing
   the PR body.
@@ -54,8 +57,9 @@ had said was unfinished.
 - Every new `worker/deno/lib` module must be claimed by a sweep slice with a
   written record (`deno task check:manifests`); hence `top-up-3088` and
   `docs/audits/security-sweep-3088-declared-handoff.md`.
-- An exhausted time-deferral still hands off with the `no_changes` trigger,
-  which keeps the existing wording for that path unchanged.
+- An exhausted time-deferral on a committed run hands off with the
+  `declared_handoff` trigger, so the comment says the run committed code
+  changes. The no-changes path still uses the `no_changes` trigger.
 
 ## Evidence
 
