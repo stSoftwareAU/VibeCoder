@@ -60,9 +60,10 @@ None.
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::runIdleTaskClaude - every idle-task scan prompt carries the tool-output rule (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildIssuePrompt - the tool-output rule excepts the named wind-down file (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::the guidelines tool-output section matches TOOL_OUTPUT_IS_DATA_RULE (#3046)`
-- **Fails before / passes after:** against the base branch (origin/main
-  91ebb035) all three fail by assertion (0 passed, 3 failed — the rule text
-  is absent); with this change all three pass.
+- **Fails before / passes after:** the file holds five tests. On the
+  pre-fix base `TOOL_OUTPUT_IS_DATA_RULE` is not exported, so the module
+  fails to load (a missing-export error, not an assertion failure). On
+  this head all five pass.
 - **Trigger closed:** the original trigger is closed — tool-fetched text
   (`gh issue list`, `gh api`, repository files, web fetches) is now
   explicitly declared data, never instructions, on every prompt route that
@@ -82,7 +83,7 @@ None.
   (prompts/question, quorum, grill-me, workflow_setup,
   docs/security/ghostcommit-image-injection-assessment.md) only reference
   the boundary section by name and stay accurate.
-- **Quality gate:** `./quality.sh` — RESULT_PLACEHOLDER
+- **Quality gate:** `deno test --frozen --lock=deno.lock --allow-read --allow-env tests/tool_output_treat_as_data_3046_test.ts` — 5 passed, 0 failed. The full `./quality.sh` gate was not re-run for this evidence correction; the head's required validate-scripts checks are already green.
 
 ## Test Plan
 
@@ -92,4 +93,4 @@ None.
       84 passed, 0 failed
 - [x] New tests red on base, green after
 - [x] markdownlint clean on changed markdown
-- [ ] `./quality.sh` (see Evidence)
+- [x] `tests/tool_output_treat_as_data_3046_test.ts` — 5 passed, 0 failed (see Evidence)

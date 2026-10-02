@@ -10,8 +10,9 @@
  * text carries no boundary marker, and idle-task scans receive neither
  * coding guidelines nor a boundary block.
  *
- * Asserts on rendered text only; no new symbol is imported, so this fails by
- * assertion on the pre-fix base, not by a type or import error.
+ * Asserts on rendered text. The file imports `TOOL_OUTPUT_IS_DATA_RULE`,
+ * which the pre-fix base does not export, so on that base the module fails
+ * to load rather than failing by assertion.
  *
  * Australian English throughout (behaviour, organisation).
  */
