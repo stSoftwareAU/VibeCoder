@@ -359,9 +359,10 @@ export async function handOffDeclaredOutcome(
     }
   }
 
-  const declared = blocked !== undefined ||
-    timeDeferral?.kind === "valid" ||
-    planningRequest !== undefined;
+  // Note: a valid time-deferral marker never reaches here — every branch of
+  // the `kind === "valid"` handling above returns directly — so `declared`
+  // only needs to account for the blocked and planning signals here.
+  const declared = blocked !== undefined || planningRequest !== undefined;
 
   return { blocked, declared };
 }

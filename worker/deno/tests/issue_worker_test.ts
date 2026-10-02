@@ -3476,6 +3476,69 @@ Deno.test({
 
 Deno.test({
   name:
+    "workOnIssue - a commit-producing run that also declares a blocked hand-off defers instead of completing (Issue #3088)",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext({
+      issueBody: "Implement the parser fix in `src/parser.ts`.",
+    });
+    const deps = createMockDeps({
+      github: {
+        createClient: () => makeStubGhClient(calls),
+      },
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              exitCode: 0,
+              output: [
+                "## Blocked: waiting on the API",
+                "",
+                "The schema change landed in the API repo but is not released yet.",
+                "",
+                "Depends on stSoftwareAU/Other#12",
+              ].join("\n"),
+              timedOut: false,
+            },
+          }),
+      },
+      // Non-empty diff/log output makes the execute phase see the run as
+      // commit-producing (`continue`), not `no_changes` — the scenario
+      // the no-changes phase cannot catch, which is exactly what the
+      // declared-handoff phase exists to cover.
+      git: {
+        runGitCommand: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: "abc1234 Fix the parser",
+              stderr: "",
+            },
+          }),
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      },
+    });
+
+    const result = await workOnIssue(ctx, deps);
+
+    assertEquals(result.success, true);
+    assertEquals(result.phase, "declared_handoff");
+    assertStringIncludes(result.reason ?? "", "deferred: depends on");
+    // Completion / PR creation must NOT have run — no "Closes #N" PR.
+    assertEquals(result.timings["quality_gate"], undefined);
+    assertEquals(result.timings["completion"], undefined);
+  },
+});
+
+Deno.test({
+  name:
     "workOnIssue - suspicious untrusted image flag escalates to needs-human and does not act (Issue #3389)",
   sanitizeOps: false,
   sanitizeResources: false,

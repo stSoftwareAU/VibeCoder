@@ -97,6 +97,7 @@ import { workOnIssueClarityPhase } from "./phases/clarity_assessment_phase.ts";
 import { workOnIssueBaselineQuality } from "./phases/baseline_quality_phase.ts";
 import { workOnIssueExecuteClaude } from "./phases/execute_phase.ts";
 import { workOnIssueHandleNoChanges } from "./phases/handle_no_changes_phase.ts";
+import { workOnIssueDeclaredHandoff } from "./phases/declared_handoff_phase.ts";
 import { workOnIssueQualityGate } from "./phases/quality_gate_remediation_phase.ts";
 import { workOnIssueBumpDeps } from "./phases/bump_deps_phase.ts";
 import { workOnIssueCompletion } from "./phases/completion_phase.ts";
@@ -117,6 +118,7 @@ export {
   workOnIssueBumpDeps,
   workOnIssueClarityPhase,
   workOnIssueCompletion,
+  workOnIssueDeclaredHandoff,
   workOnIssueExecuteClaude,
   workOnIssueHandleNoChanges,
   workOnIssueMergedPrPrecheck,
@@ -747,6 +749,41 @@ async function workOnIssueCore(
         // superseded-by-a-merged-PR stop names the PR that resolved the
         // issue, which cannot be derived from success/reason alone.
         ...(executeResult.outcome ? { outcome: executeResult.outcome } : {}),
+      };
+    }
+
+    // Phase 3.6 — Declared hand-off (Issue #3088)
+    // The no-changes phase above only runs when execute made no commits at
+    // all. A run that DID commit code can still declare a `## Blocked:`
+    // dependency, a `vibe-defer-until` time deferral or a planning request
+    // in its final message — left unchecked, that run would carry straight
+    // through to completion and raise a `Closes #N` PR that closes the very
+    // issue the agent asked to defer or hand off. Catch the same signals
+    // here, after a commit-producing execute, before bump_deps/quality_gate/
+    // completion get a chance to raise that PR.
+    const declaredHandoffResult = await runPhase(
+      "declared_handoff",
+      () => workOnIssueDeclaredHandoff(ctx, state, deps),
+    );
+    if (declaredHandoffResult.status === "failure") {
+      return {
+        success: false,
+        phase: "declared_handoff",
+        reason: declaredHandoffResult.reason,
+        timings,
+      };
+    }
+    if (declaredHandoffResult.status === "early_exit") {
+      const expectedSkip = declaredHandoffResult.expectedSkip === true;
+      return {
+        success: true,
+        ...(expectedSkip ? { expectedSkip: true } : {}),
+        phase: "declared_handoff",
+        reason: declaredHandoffResult.reason,
+        timings,
+        ...(declaredHandoffResult.outcome
+          ? { outcome: declaredHandoffResult.outcome }
+          : {}),
       };
     }
 
