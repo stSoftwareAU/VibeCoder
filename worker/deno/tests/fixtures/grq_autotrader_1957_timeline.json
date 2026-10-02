@@ -8,7 +8,8 @@
   "pr": {
     "number": 1957,
     "head": "milestone/1810-example-milestone",
-    "base": "Develop"
+    "base": "Develop",
+    "headCommittedAt": "2026-09-30T20:00:00Z"
   },
   "commits": {
     "baseRoot": "1957000000000000000000000000000000000a01",
