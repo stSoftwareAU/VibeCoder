@@ -4279,8 +4279,10 @@ Three rules decide what the ledger does, and each is a pure helper:
   rather than `failed`, since the merge itself may well have succeeded, and
   posts no report; `recordSyncFailure` still records it against the failure
   streak, and a `WARNING` names both the expected merge SHA and the observed
-  tip SHA. The cycle counts the branch as **failed**, not synced, and nothing
-  is posted on the PR.
+  tip SHA. The cycle counts the branch as **failed**, not synced. With an
+  open PR on the milestone branch, the attempt is still charged to that PR as
+  a failed `pass="sync"` marker (Issue #2998); with no open PR it concludes
+  the local ledger attempt `not-charged` as above.
 - **A failure paces nothing.** A `failed` conclusion charges one of the three
   attempts and writes no deferral (Issue #2305): the branch is due again on the
   very next cycle, and the budget itself — three runs, then the roll-back — is
