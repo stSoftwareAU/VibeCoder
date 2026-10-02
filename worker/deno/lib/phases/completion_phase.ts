@@ -56,6 +56,10 @@ import {
   validateReproductionStatus,
 } from "../reproduction_status_gate.ts";
 import {
+  buildDocsSweepGateComment,
+  validateDocsSweep,
+} from "../docs_sweep_gate.ts";
+import {
   type BlockedGatePr,
   buildChangedWorkflowGateMessage,
   evaluateChangedWorkflowGate,
@@ -1555,6 +1559,11 @@ async function completionBody(
   // 12-file Rust change read as 62 files including web/*.tsx, and the
   // screenshot gate failed the run.
   let changedFiles: string[] = [];
+  // Set true only on the success branch below — the docs-sweep gate (Issue
+  // #3073) needs to tell "no code files changed" apart from "the diff could
+  // not be read", and the latter must fail closed rather than read as a
+  // docs-free diff.
+  let changedFilesKnown = false;
   const diffResult = comparableBase.ok
     ? await deps.git.runGitCommand(
       ["diff", "--name-only", `${comparableBase.value}...HEAD`],
@@ -1565,6 +1574,7 @@ async function completionBody(
     changedFiles = diffResult.value.stdout.trim().split("\n").filter((f) =>
       f.length > 0
     );
+    changedFilesKnown = true;
   } else {
     logger.warn("Could not determine changed files for screenshot validation");
   }
@@ -2038,6 +2048,37 @@ async function completionBody(
         reproduction.problems[0] ?? "`## Reproduction` block missing"
       }`,
       buildReproductionGateComment(reproduction),
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Docs-sweep gate (Issue #3073).
+  //
+  // The PR-summary contract already asked for a one-line Docs sweep entry,
+  // but nothing checked it: a term-only grep sweep still missed the manual
+  // for the changed surface, and some PRs carried no line at all. When the
+  // diff changes a non-test, non-doc file, the summary must name the manual
+  // `section:` that documents the surface — not merely that a grep ran.
+  // ---------------------------------------------------------------------
+  const docsSweep = validateDocsSweep({
+    changedFiles: changedFilesKnown ? changedFiles : null,
+    prSummaryContent: prBody,
+  });
+  if (docsSweep.applicable && !docsSweep.valid) {
+    logger.warn("Docs-sweep gate blocked PR creation", {
+      changedFilesKnown,
+      codeFiles: docsSweep.codeFiles.length,
+      problems: docsSweep.problems,
+    });
+    return await reportSummaryRuleBlock(
+      `Docs sweep not recorded in the PR summary: ${
+        docsSweep.problems[0] ?? "Docs sweep line missing"
+      }`,
+      buildDocsSweepGateComment(docsSweep),
       ctx,
       state,
       prBody,

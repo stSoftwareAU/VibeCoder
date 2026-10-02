@@ -67,6 +67,8 @@ Did half of it.
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **clean** — Australian English, TDD, fail-loud error handling
+
+**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
 `;
 
 const SUMMARY_COMPLETE = `## Summary
@@ -85,6 +87,8 @@ Did all of it.
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **clean** — Australian English, TDD, fail-loud error handling
+
+**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
 `;
 
 /** Issue #2695 (a): no `## Acceptance Criteria`, no accepted scope. */
@@ -110,7 +114,13 @@ Did a little.
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **clean** — Australian English, TDD, fail-loud error handling
+
+**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
 `;
+
+/** A minimal summary carrying only the Docs sweep line (Issue #3073). */
+const SUMMARY_MINIMAL_WITH_DOCS_SWEEP =
+  "## Summary\n\nFinished the switch.\n\n**Docs sweep** — grep: `opus`; section: `docs/MODEL-AND-CACHING.md#planning`; no hits\n";
 
 const DEGRADED: PhaseClaudeResult[] = [{ fallbackModel: "haiku" }];
 const HEALTHY: PhaseClaudeResult[] = [];
@@ -302,12 +312,12 @@ Deno.test("completion - a degraded run that met every criterion raises the PR wi
 Deno.test("completion - #2543 reproduction (b): a degraded run with no summary on a grill-me issue files no follow-up but says so in the PR (Issue #2695)", async () => {
   const outcome = await runCompletion({
     issueBody: GRILL_ME_ISSUE,
-    summary: null,
+    summary: SUMMARY_MINIMAL_WITH_DOCS_SWEEP,
     claudeRunStats: DEGRADED,
   });
   const healthy = await runCompletion({
     issueBody: GRILL_ME_ISSUE,
-    summary: null,
+    summary: SUMMARY_MINIMAL_WITH_DOCS_SWEEP,
     claudeRunStats: HEALTHY,
   });
 
@@ -331,12 +341,12 @@ Deno.test("completion - #2543 reproduction (b): a degraded run with no summary o
 Deno.test("completion - (a) a degraded run on an issue stating no criteria files no follow-up but says so in the PR (Issue #2695)", async () => {
   const outcome = await runCompletion({
     issueBody: ISSUE_WITHOUT_SCOPE,
-    summary: null,
+    summary: SUMMARY_MINIMAL_WITH_DOCS_SWEEP,
     claudeRunStats: DEGRADED,
   });
   const healthy = await runCompletion({
     issueBody: ISSUE_WITHOUT_SCOPE,
-    summary: null,
+    summary: SUMMARY_MINIMAL_WITH_DOCS_SWEEP,
     claudeRunStats: HEALTHY,
   });
 

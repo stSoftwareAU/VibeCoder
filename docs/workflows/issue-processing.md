@@ -1153,6 +1153,38 @@ flowchart TD
     style X fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+## 📚 Docs sweep on a code change
+
+The issue and pr_feedback prompts have required a grep for the changed term
+since Issue #2952, but a grep for a name that did not change finds nothing, so
+a PR could rewrite what a manual section described while the sweep truthfully
+reported "no hits" (GRQ-AutoTrader#2231, #2239, #2227 — the last raised a PR
+with no **Docs sweep** line at all, after a WIP checkpoint). The prompts now
+also require a grep for the changed surface's own name — a card or page title
+for a UI component, a route for an endpoint, a report or command name for a
+query or read path — even when no name changed, reading any section it finds
+through and fixing every sentence the change makes false; a hit is cleared
+only once the sentence it sits in has been read, never by the file's topic
+matching. The **Docs sweep** line now names the section read, e.g.
+`section: docs/reporting-pwa.md#broker-balance`, or `section: none — <why no
+manual documents it>`.
+
+**The gate.** [`docs_sweep_gate.ts`](../../worker/deno/lib/docs_sweep_gate.ts)
+(`validateDocsSweep`, `buildDocsSweepGateComment`) runs as a fourth
+summary-rule gate in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+after the reproduction-status gate, whenever `git diff --name-only
+<base>...HEAD` carries any file that is neither a test (`isTestFilePath`,
+shared with the security-fix gate) nor documentation (`.md`, `.mdx`,
+`.markdown`, `.rst`, `.adoc`, `.txt`, or a `docs/` path segment) — and also
+when the diff cannot be read, fail closed. It blocks a summary with no
+**Docs sweep** line, or a `section:` that is empty or a bare placeholder
+(`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`); `section: none — <reason>` and
+`no hits` are both accepted. It is a summary-rule gate like the other three,
+so the same [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
+gives the agent one more turn before a block with no PR stands, and a branch
+that already carries a PR instead finalises as `summary_incomplete`.
+
 ## 🔧 Changed workflow files are checked before the PR
 
 Issue #1755 hardens the provisioning path **by construction**: the workflow
@@ -1205,7 +1237,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the three summary gates above, a finding
+Like the security-fix gate and unlike the four summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1290,8 +1322,8 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The three summary gates above — acceptance-criteria closure, independent review,
-reproduction status — sit at the completion phase's PR-creation chokepoint, so
+The four summary gates above — acceptance-criteria closure, independent review,
+reproduction status and docs sweep — sit at the completion phase's PR-creation chokepoint, so
 blocking one normally costs the next attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
@@ -1361,7 +1393,7 @@ closes a `security`-labelled finding without its vulnerability-fix evidence stop
 the run, PR or no PR: that one is not a documentation shortfall. Order is what
 enforces it — a `security` run whose summary also broke a format rule would
 otherwise leave through the first summary gate and never be asked for its
-evidence, so the security gate is now evaluated ahead of all three.
+evidence, so the security gate is now evaluated ahead of all four.
 
 **Satisfy the rule rather than fail it.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
@@ -1437,8 +1469,8 @@ shortfall rather than the number of attempts at it. A recovery invocation the
 worker could not launch at all — a rate limit, a failed spawn — changed nothing
 on the branch, so the original block stands unaltered.
 
-All three summary gates route through it: closure (#518), independent review
-(#663) and reproduction status (#521). The two exceptions above do not — the
+All four summary gates route through it: closure (#518), independent review
+(#663), reproduction status (#521) and docs sweep (#3073). The two exceptions above do not — the
 security-fix and changed-workflow gates report defects in the change, not
 documentation shortfalls, so they still stop the run.
 
