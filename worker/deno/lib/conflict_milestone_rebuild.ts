@@ -60,7 +60,11 @@ import {
   requeueLabelName,
 } from "./conflict_abandon_restart.ts";
 import { isMilestoneHead } from "./gated_head_guard.ts";
-import { assertSafeGitRef } from "./git_ref_args.ts";
+import {
+  assertSafeGitRef,
+  buildFetchTrackingRefArgs,
+  buildPushCreateBranchArgs,
+} from "./git_ref_args.ts";
 import {
   isMilestoneSyncBranch,
   isRuleViolationPush,
@@ -436,16 +440,20 @@ export async function abandonAndRebuildMilestone(
   }
 
   // --- Step 2: fetch both branches, and start the rebuild at the base tip. -
-  const fetch = await git([
-    "fetch",
-    "origin",
-    `+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
-    `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`,
-  ]);
-  if (fetch.code !== 0) {
+  const fetchBase = await git(buildFetchTrackingRefArgs("origin", baseBranch));
+  if (fetchBase.code !== 0) {
     return failed(
       "milestone-rebuild",
-      `could not fetch '${baseBranch}' and '${branchName}': ${fetch.stderr}`,
+      `could not fetch '${baseBranch}': ${fetchBase.stderr}`,
+    );
+  }
+  const fetchBranch = await git(
+    buildFetchTrackingRefArgs("origin", branchName),
+  );
+  if (fetchBranch.code !== 0) {
+    return failed(
+      "milestone-rebuild",
+      `could not fetch '${branchName}': ${fetchBranch.stderr}`,
     );
   }
 
@@ -565,7 +573,9 @@ export async function abandonAndRebuildMilestone(
   const rebuildSha = revParseHead.stdout.trim();
 
   // --- Step 5: deliver. Never a force-push. ---------------------------------
-  const push = await git(["push", "origin", `HEAD:refs/heads/${branchName}`]);
+  const push = await git(
+    buildPushCreateBranchArgs("origin", "HEAD", branchName),
+  );
   let delivery: MilestoneDelivery;
   if (push.code === 0) {
     delivery = { kind: "pushed" };
