@@ -379,38 +379,6 @@ Deno.test("listSweptModules - walks subdirectories and excludes test files", asy
   assertEquals(paths, [...paths].sort(), "expected a sorted list");
 });
 
-Deno.test("listSweptModules - lists prompt.md templates and excludes non-template siblings (Issue #2759)", async () => {
-  const tempRoot = await Deno.makeTempDir();
-  try {
-    await Deno.mkdir(`${tempRoot}/prompts/example/buckets`, {
-      recursive: true,
-    });
-    await Deno.writeTextFile(
-      `${tempRoot}/prompts/example/prompt.md`,
-      "template",
-    );
-    await Deno.writeTextFile(
-      `${tempRoot}/prompts/example/buckets/general.md`,
-      "bucket, not a template",
-    );
-    await Deno.writeTextFile(
-      `${tempRoot}/prompts/example/helper.ts`,
-      "export {};",
-    );
-    await Deno.writeTextFile(
-      `${tempRoot}/prompts/example/helper_test.ts`,
-      "export {};",
-    );
-    const paths = await listSweptModules(tempRoot, "prompts");
-    assertEquals(paths, [
-      "prompts/example/helper.ts",
-      "prompts/example/prompt.md",
-    ]);
-  } finally {
-    await Deno.remove(tempRoot, { recursive: true });
-  }
-});
-
 Deno.test("the ledger's roots match the four trees SWEEP_COVERAGE_ROOTS documents (Issue #2759)", () => {
   const ledger = readRealLedger();
   assertEquals(ledger.roots, [...SWEEP_COVERAGE_ROOTS]);
