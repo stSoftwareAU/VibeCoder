@@ -975,10 +975,9 @@ the issue at `needs-human` (Issue #2277). Every fallback files one
 `merge-fallback` issue recording what happened, linked from the closed PR; a PR
 whose originating issue cannot be found is closed too, and its flag carries
 `idle-task` and the PR's diff summary so the flag *is* the re-do item
-(Issue #2310). Its preconditions,
-its two-restarts-per-issue bound and its exits — including the park that
-follows the second restart (Issue #2312) and the `needs-human` hand-off of an
-issue whose two redos are spent (Issue #2804) — are in
+(Issue #2310). There is no cap on restarts per issue (Issue #3033): every
+redo starts on a fresh branch cut from the base branch's current tip, never
+the abandoned one. Its preconditions and its exits are in
 [the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
 
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`

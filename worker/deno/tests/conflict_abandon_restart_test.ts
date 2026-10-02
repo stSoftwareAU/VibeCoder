@@ -8,10 +8,11 @@
  *    the work permanently, with no undo and no human in the loop. The
  *    precondition is asserted as an *ordering* property, not just an outcome:
  *    no `pr close` may be issued at all.
- * 2. **Two restarts per issue** (Issue #2312). Without the bound this closes a
- *    PR, raises another, closes that one, forever. The marker lives on the
- *    **issue** because the PR identity changes each time round — a PR-keyed
- *    marker passes a single-cycle test and loops in production.
+ * 2. **No restart cap, no needs-human hand-off** (Issue #3033). The marker
+ *    lives on the **issue** because the PR identity changes each time round —
+ *    a PR-keyed marker passes a single-cycle test and loops in production.
+ *    Only a claim naming *this* PR declines: an earlier abandon of it started
+ *    and did not finish.
  * 3. **Partial abandon.** Every step is failed in turn and the resting state
  *    must name the step that stopped it. "PR closed, issue not re-queued" is
  *    the state this exists to keep out of production.
@@ -40,7 +41,6 @@ import {
   exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   findOtherPrsForIssue,
-  MAX_RESTARTS_PER_ISSUE,
   mergeFallbackRunsFromHistory,
   planRequeueLabel,
   requeueLabelName,
@@ -1037,7 +1037,7 @@ Deno.test("buildRestartIssueComment - says the restart number with no cap", () =
     restartNumber: 3,
   });
   assertStringIncludes(body, "restart **3**");
-  assert(!body.includes(" of "), body);
+  assert(!body.includes("restart **3** of"), body);
   assertStringIncludes(body, "no cap");
 });
 
@@ -1406,22 +1406,22 @@ Deno.test("exhaustedEscalationRoute - each non-abandoning outcome maps to its ro
     }).kind,
     "abandon-declined",
   );
-  // Issue #2312: `restart-exhausted` is gone — the rung itself hands a spent
-  // restart budget to a human (Issue #2804), so it maps to the ordinary
-  // declined route.
+  // Issue #3033: there is no restart cap, and no `needs-human` hand-off — a
+  // claim naming a different PR maps to the ordinary declined route and says
+  // nothing closed a budget.
   const spent = exhaustedEscalationRoute({
     outcome: "declined",
     reason: {
       kind: "already-restarted",
       issueNumber: ISSUE_NUMBER,
       samePr: false,
-      restartCount: MAX_RESTARTS_PER_ISSUE,
+      restartCount: 2,
     },
   });
   assertEquals(spent.kind, "abandon-declined");
   assertStringIncludes(
     spent.kind === "abandon-declined" ? spent.detail : "",
-    `spent its ${MAX_RESTARTS_PER_ISSUE} restarts`,
+    "already records 2 restart claim(s)",
   );
   assertEquals(
     exhaustedEscalationRoute({
@@ -1458,12 +1458,12 @@ Deno.test("exhaustedEscalationRoute - a burnt claim on this PR is not a failed r
       kind: "already-restarted",
       issueNumber: ISSUE_NUMBER,
       samePr: false,
-      restartCount: MAX_RESTARTS_PER_ISSUE,
+      restartCount: 2,
     },
   });
   assertStringIncludes(
     replaced.kind === "abandon-declined" ? replaced.detail : "",
-    "no third redo",
+    "next pass decides it again",
   );
 });
 

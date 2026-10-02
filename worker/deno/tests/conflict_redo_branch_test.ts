@@ -51,7 +51,7 @@ Deno.test("#3033 - an unsafe branch attribute value is ignored", () => {
 
 Deno.test("#3033 - a comment with no restart marker is ignored", () => {
   const branches = restartMarkerBranches([
-    comment("just a normal comment, branch=\"issue-12-foo\"", FLEET),
+    comment('just a normal comment, branch="issue-12-foo"', FLEET),
   ]);
   assertEquals(branches, []);
 });

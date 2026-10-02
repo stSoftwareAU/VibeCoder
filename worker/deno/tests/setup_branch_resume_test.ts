@@ -12,7 +12,6 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { workOnIssueSetupBranch } from "../lib/phases/setup_branch_phase.ts";
-import { createBranchName } from "../lib/git_branch.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -480,10 +479,20 @@ Deno.test("#2530 - a shared stream keeps this run on a per-issue session", async
 Deno.test("#3033 - a re-queued redo starts on a fresh branch from the base tip, not the abandoned head", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "issue3033-setup-" });
   try {
-    const ctx = buildContext(workDir, false);
+    // A plain title: the mock `git.createBranchName` does not strip
+    // punctuation the way the real one does, and the marker's `branch`
+    // attribute must be a value {@link restartMarkerBranches} accepts.
+    const ctx = buildContext(workDir, false, {
+      issueTitle: "redo this issue after an abandoned PR",
+    });
     const state = buildState();
     const freshBranches: string[] = [];
-    const derivedBranchName = createBranchName(211, ctx.issueTitle);
+    // The mock `git.createBranchName` (not the real one) is what the phase
+    // actually calls to derive the branch name.
+    const derivedBranchName = createMockDeps({}).git.createBranchName(
+      211,
+      ctx.issueTitle,
+    );
     // The remote lists only the branch the ladder abandoned, which happens to
     // be this issue's title-derived name (it was retitled back to the same
     // slug by the re-queue).

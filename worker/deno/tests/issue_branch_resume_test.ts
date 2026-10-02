@@ -233,6 +233,7 @@ Deno.test("#220 - the resumed branch is named in the log line", () => {
         reason: "persisted",
         candidates: ["issue-211-wip"],
         skipped: [],
+        abandoned: [],
         aheadCount: 1,
       },
       211,
