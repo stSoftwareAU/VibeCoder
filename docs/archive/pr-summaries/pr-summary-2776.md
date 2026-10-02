@@ -51,10 +51,10 @@ real CodeQL run).
 
 Security-fix tests (each fails on base `3a566abe`, passes after the fix):
 
-- `worker/deno/tests/security_tree_sweep_test.ts::sweep: a finding in a non-ASCII changed file blocks the PR run (Issue #2776)` — primary regression: base put the finding in `outOfScopeRows`.
-- `worker/deno/tests/security_tree_sweep_test.ts::sweep: readChangedFiles - a NUL-delimited list keeps non-ASCII and spaced paths verbatim (Issue #2776)` — base read the whole buffer as one entry.
-- `worker/deno/tests/security_tree_sweep_test.ts::sweep: readChangedFiles - a git C-quoted line fails closed (Issue #2776)` — base accepted the quoted line silently.
-- `worker/deno/tests/security_tree_sweep_workflow_test.ts::sweep workflow - the changed-files list is NUL-delimited and unquoted (Issue #2776)` — base workflow lacked `-z`/`core.quotePath=false`; three negative variants (old line, `-z` only, `quotePath` only) are rejected.
+- `worker/deno/tests/security_tree_sweep_test.ts::"sweep: a finding in a non-ASCII changed file blocks the PR run (Issue #2776)"` — primary regression: base put the finding in `outOfScopeRows`.
+- `worker/deno/tests/security_tree_sweep_test.ts::"sweep: readChangedFiles - a NUL-delimited list keeps non-ASCII and spaced paths verbatim (Issue #2776)"` — base read the whole buffer as one entry.
+- `worker/deno/tests/security_tree_sweep_test.ts::"sweep: readChangedFiles - a git C-quoted line fails closed (Issue #2776)"` — base accepted the quoted line silently.
+- `worker/deno/tests/security_tree_sweep_workflow_test.ts::"sweep workflow - the changed-files list is NUL-delimited and unquoted (Issue #2776)"` — base workflow lacked `-z`/`core.quotePath=false`; three negative variants (old line, `-z` only, `quotePath` only) are rejected.
 
 Red on base: library tests `0 passed | 3 failed`; workflow tests 2 failed.
 After: `ok | 66 passed | 0 failed` across both files.
@@ -76,7 +76,7 @@ the list format.
 - **Symptom:** a PR adding an unbaselined finding in `lib/café.ts` passes the
   PR-scoped sweep because the changed-files list holds `"lib/caf\303\251.ts"`.
 - **Status:** verified — reproduced by the regression tests above against base.
-- **Regression test:** `worker/deno/tests/security_tree_sweep_test.ts::sweep: a finding in a non-ASCII changed file blocks the PR run (Issue #2776)`
+- **Regression test:** `worker/deno/tests/security_tree_sweep_test.ts::"sweep: a finding in a non-ASCII changed file blocks the PR run (Issue #2776)"`
 
 ## Test Plan
 
