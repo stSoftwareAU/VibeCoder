@@ -1166,6 +1166,26 @@ applies before the outcome, keeping each on the new path or stating why it
 does not apply, and proving each kept guard with a test that goes red when
 the new branch is moved ahead of it.
 
+**Code that deletes or replaces state proves everything it destroys is
+safe to lose (Issue #3107).** Fleet PRs wrote clone swaps that checked
+only the state they were about. GRQ#5153's promisor path in
+`_grq_shallow_history_reclone_unfiltered` proved the current branch
+matched origin, then replaced the old `.git` and dropped every other
+local branch, the stash and the reflogs. GRQ#5152's feed-repo re-clone
+checked the current branch and a clean tree, then `rm -rf`'d a clone
+holding unpushed commits on another branch that `model_checkin` was due
+to push — although the sibling guard from GRQ#5153 was already on its
+branch. **Bound irreversible actions** covered only commands the agent
+runs, and the #3087 rule needs an existing sibling path. The guidelines
+(with a pointer from **Bound irreversible actions generally**) and the
+issue prompt's Test Plan step now require listing everything the old
+copy holds that the replacement will not — every local branch tip and
+its unpushed commits, the stash, reflogs, untracked and ignored files,
+local config — proving each item safe to lose or refusing the
+operation, calling an existing sibling guard rather than writing a new
+one, a refusal test whose fixture holds that state, and the inventory
+in the PR summary.
+
 **A new test must go red without its change (Issue #3093).** Fleet PRs
 added the regression test a fix or a review asked for, and the test passed
 whether or not the change was there: VibeCoder#3091, #3085 and #3079, and

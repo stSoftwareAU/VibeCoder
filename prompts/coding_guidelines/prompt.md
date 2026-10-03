@@ -981,6 +981,10 @@ over a shared branch, rewrite published history, `rm -rf` a path you did not
 create, or post to a shared external system unless the task explicitly asks for
 it. When an irreversible step is genuinely required, do the reversible part
 first (branch, back up, or commit) and state plainly what you are about to do.
+These are commands you run. Code you write that deletes or replaces state at
+runtime — an `rm -rf`, a clone or `.git` swap, a `git reset --hard` — is held
+to **Code that deletes or replaces state proves everything it destroys is
+safe to lose** under Test Coverage Expectations.
 
 ## Commit Run-Id Trailer
 
@@ -1143,6 +1147,24 @@ ahead of the guard (or remove the guard call) and confirm the test goes red.
 List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
+
+**Code that deletes or replaces state proves everything it destroys is safe
+to lose.** When a change adds code that `rm -rf`s a directory, swaps a new
+clone or `.git` in for an old one, runs `git reset --hard` or `git clean -fdx`,
+or overwrites a file in place, first list everything the old copy holds that
+the replacement will not. For a git clone that is every `refs/heads/*` tip and
+its commits not contained in an origin ref, the stash, the reflogs, untracked
+and ignored files, and local config (branch upstreams, hooks, `extensions.*`).
+Proving only the state the change is about — the current branch equals
+`origin/<branch>` and the working tree is clean — says nothing about the rest.
+For each item, either prove it is safe to lose (for example, every local
+branch tip is an ancestor of an origin ref) or refuse the operation and report
+why. Before writing a new check, search the repo for an existing guard on a
+sibling destructive path (`git grep -n -e 'rm -rf' -e unpushed`) and call it
+rather than copying it. Add a test per refusal whose fixture holds that state
+and asserts it survives. List the inventory in the PR summary, with what is
+guarded and what is accepted as lost. A destructive operation that deletes
+state it never checked is a blocking self-review finding (Issue #3107).
 
 **Every changed call site needs a test that goes red without it.** When a
 change threads a new argument, flag or behaviour through more than one
