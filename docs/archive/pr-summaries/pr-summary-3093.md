@@ -71,10 +71,16 @@ FAILED | 0 passed | 6 failed
 AssertionError: could not locate the new-test-must-go-red rule in CODING-STANDARDS.md
 ```
 
-The test follows the condition this PR adds. None of its 13 pinned phrases
+The test follows the condition this PR adds. None of its 15 pinned phrases
 occurs in the base versions of the four documents (I counted with `git show
 aa441920:<file>`). It also does not pin "blocking self-review finding", which
 those sections already contain.
+
+**Docs sweep** — grep: "A new test must go red without its change",
+"only pins current behaviour", "added to guard a change",
+"quote the failing line in `.pr_response_message`"; section:
+`docs/workflows/issue-processing.md` (A new test must go red without its
+change); files updated: `docs/workflows/issue-processing.md`.
 
 ## Test Plan
 
