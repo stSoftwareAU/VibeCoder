@@ -54,7 +54,8 @@ favour of the rule and the risk it addresses.
 - `deno task test:unit tests/system_behaviour_claims_3072_test.ts
   tests/pr_claims_verified_3058_test.ts tests/new_path_keeps_guards_3087_test.ts`:
   12 passed.
-- `./quality.sh < /dev/null`: see Test Plan.
+- `./quality.sh < /dev/null`: PASSED. Only config integration was skipped (no
+  `.config.json` in the worktree).
 - **Related existing rules checked**:
   - `CODING-STANDARDS.md` → Prompt Engineering Guidance, **Verify a claim about
     another component before you write it**: same rule; the new text points to
