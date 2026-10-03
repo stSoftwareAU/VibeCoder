@@ -23,7 +23,9 @@ export PATH="$PATH:$HOME/.deno/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local
 SKILL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CHECKOUT=$(cd "$SKILL_DIR/../../.." && pwd)
 INTERVAL=300
-ROUND_TIMEOUT=3000 # a hung round must not wedge the loop, nor outlive its token
+# A hung round must not wedge the loop, nor outlive its token. Overridable
+# only so the tests can time a round out without waiting 50 minutes.
+ROUND_TIMEOUT=${REVIEW_FLEET_PRS_ROUND_TIMEOUT:-3000}
 LABEL="au.com.stsoftware.review-fleet-prs"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
@@ -101,10 +103,10 @@ EOF
 }
 
 # One pass: a gate check, then a Claude round if anything is ready.
-# Returns non-zero when the App token or the gate failed; sets $LAST_ERROR to
-# a one-line gist of why, for escalate_result to report.
+# Returns non-zero when the App token, the gate or the Claude round failed;
+# sets $LAST_ERROR to a one-line gist of why, for escalate_result to report.
 pass() {
-  local reviewer=() ready dir prompt minted errfile token_rc gate_rc
+  local reviewer=() ready dir prompt minted errfile token_rc gate_rc round_rc
   LAST_ERROR=""
   errfile="$STATE_DIR/last-error"
   # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
@@ -168,12 +170,29 @@ from $SKILL_DIR and write its input files under $dir. Skip the
 PushNotification step: this session is headless. Finish with the one-line
 round report."
 
-  (cd "$CHECKOUT" && perl -e 'alarm shift; exec @ARGV' "$ROUND_TIMEOUT" \
+  # `exec ... or die`: a bare exec that cannot start `claude` (not on PATH)
+  # falls through and perl exits 0, which would read as a completed round.
+  (cd "$CHECKOUT" && perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
+    "$ROUND_TIMEOUT" \
     claude -p "$prompt" \
     --model claude-opus-5-5 --effort xhigh \
     --allowedTools "Agent" "Read" "Grep" "Glob" "Edit(/$dir/**)" \
     "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
     2>&1) | tee -a "$LOG" "$dir/claude.log"
+  # The round's own status, not tee's: a killed or failed round is a failed
+  # pass, so escalate_result counts it rather than seeing an ok.
+  round_rc=${PIPESTATUS[0]}
+  if [[ $round_rc -eq 142 ]]; then
+    # 128 + SIGALRM: the alarm above killed a hung round.
+    LAST_ERROR="round timed out after ${ROUND_TIMEOUT}s"
+    log "round timed out after ${ROUND_TIMEOUT}s: $dir"
+    return 1
+  fi
+  if [[ $round_rc -ne 0 ]]; then
+    LAST_ERROR="round failed (exit $round_rc): $(last_error_line "$dir/claude.log")"
+    log "round failed (exit $round_rc): $dir"
+    return 1
+  fi
   log "round done: $dir"
 }
 
