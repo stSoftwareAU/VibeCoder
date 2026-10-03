@@ -2544,7 +2544,7 @@
       "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3143",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_feedback_drift_check.ts, test_plan_recount.ts (#3143)",
       "status": "claimed",
-      "sweptAt": "e453649d85bf139ae3d062da20fdc2d1f14757bf",
+      "sweptAt": "b169ace6d5399b89708d8b9b1815cce59bf402cc",
       "paths": [
         "worker/deno/lib/pr_feedback_drift_check.ts",
         "worker/deno/lib/test_plan_recount.ts"
