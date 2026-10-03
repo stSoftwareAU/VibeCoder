@@ -2360,6 +2360,22 @@ async function failNoCommonAncestor(
     { repo, prNumber, branchName, baseBranch, detail },
   );
 
+  const headSha = await readHeadSha(
+    processorDeps.deps.git.runGitCommand,
+    processorDeps.workDir,
+    logger,
+    repo,
+  );
+  if (headSha === null) {
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot record the no-common-ancestor failure for PR #${prNumber}: ` +
+          "the current head SHA could not be read",
+      ),
+    };
+  }
+
   return await failAttempt(
     input,
     processorDeps,
@@ -2369,6 +2385,7 @@ async function failNoCommonAncestor(
       `${detail.split("\n")[0]?.trim() ?? detail}`,
     attemptNumber,
     timer,
+    headSha,
   );
 }
 
