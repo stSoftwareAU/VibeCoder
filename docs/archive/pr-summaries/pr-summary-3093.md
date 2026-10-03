@@ -47,7 +47,12 @@ flowchart LR
 These rules overlap the new one. All of them agree with it, so none needed changing:
 
 - **A negative test must be able to fail** (#3060). The new paragraph names it as the special case for "does not happen" assertions. The #3060 drift test still passes.
-- **A red run counts only against the base branch** (#2924).
+- **A red run counts only against the base branch** (#2924). Its
+  pin-current-behaviour clause is the exception to the new red-run rule: a
+  test that only pins current behaviour, because the fault was unreproduced
+  or already fixed and no production change was made, is expected green on
+  base. The guideline paragraph and the issue-prompt Test Plan step both
+  name that exception.
 - **Every changed call site needs a test that goes red without it** (#3067).
 - **Every outcome of a branch you add needs a test** (#3069).
 - **Documentation-drift tests**, conditions 1–3.

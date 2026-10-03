@@ -327,8 +327,10 @@ in order before the assertion runs, a phrase the section already held before
 the change. Remove the change on purpose (delete the clause, drop the cap,
 restore the old expression), run the test, see it fail, then restore it. A
 new test that stays green without its change is a blocking self-review
-finding. **A negative test must be able to fail** below is this rule for an
-assertion that something does *not* happen.
+finding. A test that only pins current behaviour — the fault was unreproduced
+or already fixed, and no production change was made — is expected green on
+base, and the Test Plan says so. **A negative test must be able to fail**
+below is this rule for an assertion that something does *not* happen.
 
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null

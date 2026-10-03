@@ -38,6 +38,7 @@ const KEY_PHRASES = [
   "a phrase the section already held before the change",
   "see it fail, then restore it",
   "stays green without its change",
+  "only pins current behaviour",
 ];
 
 Deno.test("both surfaces carry the new-test-must-go-red rule (Issue #3093)", async () => {
@@ -150,5 +151,13 @@ Deno.test("issue prompt Test Plan step requires the change-removed red run (Issu
   assert(
     text.includes("stays green without its change"),
     `PR Summary File section is missing the stays-green-without-its-change finding: ${text}`,
+  );
+  assert(
+    text.includes("added to guard a change"),
+    `PR Summary File section is missing the guard-a-change scope: ${text}`,
+  );
+  assert(
+    text.includes("only pins current behaviour"),
+    `PR Summary File section is missing the pin-current-behaviour exception: ${text}`,
   );
 });
