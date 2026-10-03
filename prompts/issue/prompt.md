@@ -159,7 +159,12 @@ guessing — the analysis-only hand-off then routes it to a human.
    command name for a query or read path — even when every name survives the
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
-   never by the file's topic. Record the sweep as the **Docs sweep** line in
+   never by the file's topic.
+   When the change adds a member to an existing set — a field, enum variant,
+   kind, flag or column — also grep for one or two of its existing sibling
+   members: every list of the set those hits find names the new member, or is
+   reworded so it no longer reads as complete.
+   Record the sweep as the **Docs sweep** line in
    the PR summary, naming that section (e.g.
    `section: docs/reporting-pwa.md#broker-balance`, or
    `section: none — <why no manual documents it>`) (see **PR Summary File**
@@ -305,8 +310,20 @@ apply:
 - Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
   as `{{REPO}}#NNN`), and leave the issue open. The worker releases its claim
   and hands it to a human only while the branch has no commits and no
-  uncommitted changes against the base. Once work is committed, this
-  free-text hand-off is not read.
+  uncommitted changes against the base. This free-text hand-off is honoured
+  only when the run leaves no commit and no uncommitted change: decide before
+  you edit any file, because the worker commits and pushes the working tree
+  periodically and again at the end of the run. Once a file has changed, a
+  free-text hand-off is not read. If the work is blocked on an issue that is
+  still open, end with a `## Blocked:` heading and a `Depends on owner/repo#N`
+  (or `Blocked by`) line naming it. A closed or unreadable dependency does not
+  defer; the worker hands the issue to a human and raises no PR. If there is
+  no such issue, this is not a deferral: fix the root cause, or use the
+  escape hatch while the branch has no commits. Do not file a follow-up and
+  depend on it. After a commit, a `Depends on` line that names the follow-up
+  this run filed hands the issue to a human and raises no PR. A bare
+  `## Blocked:` heading
+  does not defer, and the worker would raise a PR that closes this issue.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -319,13 +336,14 @@ change, and end your final message with this marker on its own line:
 <!-- vibe-needs-planning reason="<why it splits — the independent pieces you found>" -->
 ```
 
-The worker applies `planning` through its audited hand-off only while the
-branch has no commits and no uncommitted changes against the base. It posts
+The worker applies `planning` through its audited hand-off, whether or not the
+branch already has commits. It posts
 your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
-goes to a human instead. The marker applies to `work-on` issues only: on any
-other pickup label, or when the issue body carried an image from an untrusted
-author, the worker hands the issue to a human rather than to planning. Sheer
+goes to a human instead. The marker applies to `work-on`
+issues only: on any other pickup label, or when the issue body carried an
+image from an untrusted author, the worker hands the issue to a human rather
+than to planning. Sheer
 volume in one coherent change is not a reason:
 a large PR that lands as one unit is still one PR.
 
@@ -646,7 +664,11 @@ Rules — a gate checks these before the PR is raised, and blocks PR creation wh
 one is broken:
 
 - **Every stated criterion gets an entry.** A criterion you did not touch is
-  `missing`, not omitted.
+  `missing`, not omitted. Write `<criterion>` in the issue's own words — the
+  degraded-run guard matches each entry to its criterion by those words, not
+  by position. A paraphrased entry leaves its criterion unassessed, and a
+  paraphrased `partial` or `missing` entry is still filed as a shortfall
+  under its own wording.
 - **`met` and `partial` must name the evidence** — the file, the test, or the
   test identifier that demonstrates it. "Implemented" with nothing to point at
   is not evidence.
@@ -673,23 +695,26 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   a coverage claim — "every branch", "all rejections" — names the branches its
   tests exercise, and one untested branch makes it `partial`.
 - **A missing core deliverable is not a PR.** When the thing the issue asks for
-  is `missing`, finish it. The planning marker and the escape hatch are
-  honoured only while the branch has no commits and no uncommitted changes —
-  the worker's change detection (`worker/deno/lib/phases/execute_phase.ts`)
-  sends the run to the PR path when `git log <base>..HEAD` lists any commit
-  (including one a later revert cancels, or a branch commit a base merge
-  absorbed) or `git diff --stat HEAD` shows any uncommitted change, whatever
-  planning, escape-hatch or blocked/deferral marker your output carries (the
-  suspicious-image flag is the exception: it always stops the run, committed
-  work or not), and the PR body gets
+  is `missing`, finish it. A free-text escape hatch is honoured only while
+  the branch has no commits and no uncommitted changes — the worker's change
+  detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
+  when `git log <base>..HEAD` lists any commit (including one a later revert
+  cancels, or a branch commit a base merge absorbed) or `git diff --stat HEAD`
+  shows any uncommitted change. A `## Blocked:` heading followed by a
+  `Depends on` or `Blocked by` line naming an open issue, a time deferral, or
+  a planning marker is still read after that commit: the worker defers or
+  hands off and raises no PR (the suspicious-image flag is the exception: it
+  always stops the run, committed work or not). A bare `## Blocked:` heading
+  does not defer. Otherwise the PR body gets
   `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
-  By the time you are closing out acceptance criteria you will usually already
-  have committed work, so a planning, escape-hatch or blocked/deferral
-  hand-off at this point is not read — finishing the deliverable is the only
-  way to avoid a `Closes #{{ISSUE_NUMBER}}` over work left undone.
   When the core deliverable is genuinely blocked on another open issue and
-  work is already committed, record that criterion as `missing` and name the
-  blocking dependency beside the closing keyword.
+  work is already committed, end with a `## Blocked:` heading followed by a
+  `Depends on owner/repo#N` (or `Blocked by`) line naming an issue that is
+  still open. A closed or unreadable dependency does not defer; the worker
+  hands the issue to a human and raises no PR. A follow-up this run filed is
+  not that dependency: depending on it after a commit hands the issue to a
+  human and raises no PR. The worker defers and raises
+  no PR when the dependency is open.
   When a lesser criterion stays `partial` or `missing`, the Summary names it
   beside the closing keyword instead of describing the issue as resolved.
 

@@ -2501,6 +2501,19 @@
       ]
     },
     {
+      "issue": 3088,
+      "chunk": "top-up-3088",
+      "title": "top-up: declared-outcome hand-off on a commit-producing run",
+      "ledger": "docs/audits/security-sweep-3088-declared-handoff.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: phases/declared_handoff.ts, phases/declared_handoff_phase.ts (#3088)",
+      "status": "swept",
+      "sweptAt": "f2be890ba42f48401c7b94e0c35d87febdf888db",
+      "paths": [
+        "worker/deno/lib/phases/declared_handoff.ts",
+        "worker/deno/lib/phases/declared_handoff_phase.ts"
+      ]
+    },
+    {
       "issue": 3124,
       "chunk": "top-up-3124",
       "title": "top-up: the result-placeholder summary gate",
@@ -2510,6 +2523,18 @@
       "sweptAt": "1317839ae5dbc3e89c11535bd5430cf838ee74ce",
       "paths": [
         "worker/deno/lib/result_placeholder_gate.ts"
+      ]
+    },
+    {
+      "issue": 3128,
+      "chunk": "top-up-3128",
+      "title": "top-up: the degraded-run guard's closure-entry criterion matcher",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3128",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: closure_criterion_match.ts (#3128)",
+      "status": "claimed",
+      "sweptAt": "521483190dca4eb2de4976ee494be7f1a7d0e6b1",
+      "paths": [
+        "worker/deno/lib/closure_criterion_match.ts"
       ]
     }
   ],

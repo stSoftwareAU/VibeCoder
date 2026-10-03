@@ -779,6 +779,34 @@ the "no PR" outcome reads as "not done". Without a dedicated exit the worker
 re-picks-up and re-runs the issue indefinitely (the loop, which re-posted
 the same matrix plus an "unable to make code changes" note about five times).
 
+**The structured signals below are honoured even when the run committed code
+(Issue #3088).** A `declared_handoff` phase runs after execute and before
+`bump_deps` / the quality gate / completion. On that committed path a
+`## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
+names a dependency the worker reads as open. A closed dependency, a missing
+`state`, or a lookup that fails does not defer; the run hands off to a human
+and raises no PR. A dependency filed during this run does not defer either:
+the worker reads that from the issue, when its author is this host's login or
+another fleet author and its `createdAt` is at or after the whole run
+started. A later execute attempt does not move that start. That committed
+run hands off to a human and raises no PR. Wording such as
+"out of scope" does not turn an older open dependency into that case. A bullet, or a heading with no declaration line, still
+continues and raises its PR. A
+`vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
+read after a commit, so the worker defers or hands to planning instead of
+raising a PR with `Closes #N`. An invalid or over-horizon deferral, or a
+planning marker with no reason, hands off to a human. A signal the guard
+refuses (a repeat deferral, a planning request without the `work-on` anchor)
+still falls through to the human hand-off below. Before any of those
+hand-offs the phase pushes the branch through `commitAndPushPending`. The
+hand-off is applied only after that push leaves nothing unpushed, so the
+next claim can resume from `issue-<N>-…` whether or not session resume's
+checkpoint already pushed. A failed push applies no hand-off and posts no
+comment naming the branch. The phase raises no PR. The free-text escape hatch (a follow-up issue + "out of scope"
+message) remains the one hand-off that is honoured only when the run leaves
+no commit and no uncommitted change. See
+[`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
+
 The worker now detects an analysis-only / no-PR issue from **two signals** and
 hands it off cleanly to `needs-human` (the only operational label the worker may
 apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):
@@ -1420,10 +1448,10 @@ or recovered:
 flowchart TD
     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
     D -- no --> P["PR as today"]
-    D -- yes --> S{"Every accepted scope<br/>item shown met?"}
+    D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
     S -- yes --> P
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
-    G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
+    G -- yes --> F["File (or reuse and update)<br/>one idle-task follow-up<br/>naming each shortfall"]
     F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
     F -- "gh failed" --> Q{"Branch already<br/>has an open PR?"}
     Q -- no --> X["Run fails, no PR raised"]
@@ -1436,7 +1464,14 @@ flowchart TD
   neither is named whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
-  is a shortfall.
+  is a shortfall. Entries are matched to scope items by their words, not by
+  position (Issue #3128): an entry matching no criterion, or two equally
+  well, does not assess that criterion, so the criterion stays `unassessed`.
+  A `partial` or `missing` entry left that way is still a shortfall, named
+  by its own subject, or by its `reason:` when the subject has no words, so
+  the follow-up is filed. A criterion split across
+  several entries takes the worst of their statuses (`missing` beats
+  `partial` beats `met`).
 - **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).
   An `unassessed` item carries no evidence of a gap, and a follow-up built only
   from those just restated the whole issue as a `Finish #N` ticket no later run
@@ -1450,17 +1485,27 @@ flowchart TD
 - **The follow-up** carries the `idle-task` label — the one work-trigger label
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run
-  on the same issue reuses the open follow-up. It lists what was delivered too,
-  so the next run checks rather than redoes it. Every criterion and delivered
-  line is copied from the untrusted issue body, so its HTML-comment
-  delimiters are neutralised first (`neutraliseAgentMarkers`, Issue #2778):
-  only the worker's own marker is live, and a `finding-id` hidden in a
-  criterion cannot suppress an unrelated finding.
+  on the same issue reuses the open follow-up rather than filing another — and
+  rewrites its body to the later run's shortfalls and delivered items (the
+  marker is kept), so the follow-up never goes stale (Issue #3145). A failed
+  update fails the run just like a failed filing: the caller must not raise a
+  PR that would close the parent with the residue recorded nowhere. It lists
+  what was delivered too, so the next run checks rather than redoes it. Each
+  criterion line is copied
+  from the untrusted issue body, or, for an unmatched or subjectless
+  `partial`/`missing` gap, from the agent-written closure entry (its subject,
+  or its `reason:` when the subject has no words). Delivered lines are copied
+  from the issue body. Both are neutralised by `neutraliseAgentMarkers`
+  before they are copied (Issue #2778): only the worker's own marker is live,
+  and a `finding-id` hidden in a criterion or a closure entry cannot suppress
+  an unrelated finding.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
   survives the merge in the follow-up instead.
-- **A healthy run is untouched**, whatever its summary says, and so is a
-  degraded run that showed every item `met`.
+- **A healthy run is untouched**, whatever its summary says. A degraded run
+  that showed every scope item `met` is left alone only when it reported no
+  unmatched `partial` or `missing` entry. An unmatched entry like that is
+  still a shortfall, and the follow-up is filed.
 - **The "gh failed" branch still fails loud.** When the guard runs from
   `completionBody` after every summary gate has passed, the outcome is
   `pr` plus the block when the branch lookup succeeds and the URL yields a
@@ -1509,6 +1554,11 @@ A degraded run on an existing-PR branch is the exception to `summary_incomplete`
 When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
 The outcome is `pr` + `blocked` naming that PR, so the release comment does not
 report the run as having delivered nothing.
+
+An existing-PR branch whose URL cannot be numbered is a second exception: even
+once the degraded-run guard succeeds, `reportSummaryRuleBlock` fails the run
+*before* recovering or finalising that PR, so neither the body nor the labels
+are rewritten and state never names `#0`. The outcome is `no_pr` (Issue #3139).
 
 **Two gates are deliberate exceptions, and they run first.** The changed-workflow
 file checks above are the second: a workflow file carrying a finding is a defect
@@ -1672,11 +1722,12 @@ The shape is fixed and machine-checked, so the worker owns it:
    independent-review (#663) gate, the model is asked **one constrained
    question** — the verdict as JSON inside a `<closure_verdict>` block: one
    entry per stated criterion (`met` / `partial` / `missing` / `unrequested`,
-   with `evidence` and `reason`), plus the Standards half. The criteria ride
-   inside the run's own untrusted fence, with the boundary-integrity rule
+   with `evidence` and `reason`), plus the Standards half. The criteria, the
+   gate's problems and any re-ask shortfalls — which quote the criteria — all
+   ride inside the run's own untrusted fence, with the boundary-integrity rule
    naming that fence's nonce, and the question runs with file-writing,
-   sub-agent and web tools denied (`CLOSURE_VERDICT_DISALLOWED_TOOLS`, Issue
-   #3111);
+   sub-agent and web tools denied (`CLOSURE_VERDICT_DISALLOWED_TOOLS`, Issues
+   #3111, #3133);
 2. `closure_verdict.ts` renders `## Acceptance Criteria` and
    `## Standards Review` in the `REVIEW_BLOCK_TEMPLATE` shape both validators
    accept, replacing whatever stood under those headings. Every field is

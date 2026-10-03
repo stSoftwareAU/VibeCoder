@@ -71,7 +71,7 @@ export function hasAnalysisOnlyMarker(
 }
 
 /** Which signal triggered the hand-off. */
-export type AnalysisOnlyTrigger = "marker" | "no_changes";
+export type AnalysisOnlyTrigger = "marker" | "no_changes" | "declared_handoff";
 
 /** Injectable dependencies for {@link handOffAnalysisOnly} (testing). */
 export interface HandOffAnalysisOnlyDeps {
@@ -119,6 +119,14 @@ export function buildAnalysisOnlyReason(trigger: AnalysisOnlyTrigger): string {
       "`<!-- analysis-only -->` marker), so `work-on` has no PR to raise as " +
       "its completion signal. Left under `work-on` it would be re-picked-up " +
       "and re-run indefinitely without ever completing."
+    );
+  }
+  if (trigger === "declared_handoff") {
+    return (
+      "`work-on` committed code changes but its final message declared a " +
+      "hand-off (a `## Blocked:` dependency, a defer-until marker or a " +
+      "planning marker) that the worker could not honour, so no PR was " +
+      "raised and a human needs to decide the next step."
     );
   }
   return (

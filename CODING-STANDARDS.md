@@ -962,6 +962,12 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   updated — and fix any that still describe the old behaviour.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
+- **Adding a member owes a docs change too.** When you add a field, enum
+  variant, kind, flag, column or row element to an existing set, grep for one
+  or two **existing sibling members**, not the new one — the new name is in no
+  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
+  manual page or API description that lists the set names the new member in
+  the same change, or is reworded so it no longer reads as complete.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
@@ -1041,12 +1047,15 @@ Standards-review violation the diff itself introduced is fixed before the PR
 is raised, never listed as standing, and a PR whose core deliverable is
 `missing` is not raised over a `Closes #<n>` — finish the work, except when
 the core deliverable is genuinely blocked on another open issue after work
-is committed: then record that criterion as `missing` and name the blocking
-dependency beside the closing keyword. In an issue run, a hand-off (the
-planning marker or the escape hatch) is honoured only while the branch has
-no commits and no uncommitted changes against the base; once work is
-committed the issue run is routed to the PR regardless of a planning or
-escape-hatch marker (Issue #3058). A CI-fix run is the exception: a check
+is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
+(or `Blocked by`) line naming an issue that is still open then defers the
+issue and raises no PR. A closed or unreadable dependency does not defer;
+the committed run hands off to a human and raises no PR.
+In an issue run, a hand-off (the planning marker, a time deferral, or a
+`## Blocked:` dependency) is honoured after a commit as well as before one.
+A free-text escape hatch is honoured only while the branch has no commits
+and no uncommitted changes against the base (Issue #3058, #3088). A CI-fix
+run is the exception: a check
 already red on the base branch still defers on a `Depends on owner/repo#N`
 line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
 in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
@@ -1168,6 +1177,24 @@ gate if a model-generation name reappears in this document.
   what `.vibe-run-budget.md` says (#3066); one called a test the summary
   cites but the diff lacks a violation while the named-test rule accepts a
   test already tracked at the head (#3075).
+- **Scope a rule to the runs it is true for.**
+  `prompts/coding_guidelines/prompt.md` is rendered into every phase that
+  `CODING_GUIDELINES_LAYER_BY_PHASE` (`worker/deno/lib/prompt_builder.ts`)
+  lists for its layer: every phase loads the core layer, and the `code`
+  layer reaches issue, CI-fix, PR-feedback, merge-conflict, custom PR and
+  workflow-setup runs alike, so a layer marker cannot say "issue runs only".
+  Before you add a sentence there about what the worker does (what it reads,
+  honours, defers or ignores), check it against the processor for each run
+  that loads it. If it holds for only some of them, name those runs in the
+  sentence ("In an issue run, …") or move the sentence to that run type's
+  own `prompts/<type>/prompt.md`. Two fleet PRs were sent back for this: one
+  told every run that a `Depends on owner/repo#N` hand-off is not read once
+  work is committed, while a CI-fix run always has commits and
+  `_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts` reads
+  it from `.pr_response_message` (#3075); one said the escape hatch is
+  honoured only when the run leaves no commit, while
+  `worker/deno/lib/pr_feedback_processor.ts` runs `detectEscapeHatch` on
+  `.pr_response_message` whatever the branch holds (#3095).
 
 ## Configuration
 

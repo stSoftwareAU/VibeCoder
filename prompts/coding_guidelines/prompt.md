@@ -242,6 +242,12 @@ not after a reviewer finds it weeks later.
   every exception the existing rules carve out. Two rules left telling the
   agent to do opposite things is a blocking self-review finding. List the
   related existing rules you checked in the PR body, or say you found none.
+- **Adding a member owes a docs change too.** When you add a field, enum
+  variant, kind, flag, column or row element to an existing set, grep for one
+  or two **existing sibling members**, not the new one — the new name is in no
+  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
+  manual page or API description that lists the set names the new member in
+  the same change, or is reworded so it no longer reads as complete.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
@@ -686,18 +692,17 @@ message, in this shape:
 Depends on owner/repo#N
 ```
 
-In an issue run, the worker recognises that shape and **defers** the issue
-only while the branch has no commits and no uncommitted changes against the
-base: it stays open with its discovery label, `Depends on owner/repo#N` is
-recorded in its body, and the dependency gate skips it on every scan until
-that dependency closes. The release comment says
-`deferred: depends on owner/repo#N`. No human is paged and no work is lost.
-Once work is committed, change detection sends the issue run to the PR path
-and this shape is not read. Record the core deliverable as `missing` and
-name the blocking dependency beside the closing keyword. A CI-fix run is the
-exception: `prompts/ci_fix/prompt.md` "Base-branch failures" still ends with
-`Depends on owner/repo#N`, and that line defers a check that is already red
-on the base branch.
+In an issue run, the worker recognises that shape and **defers** the issue: it
+stays open with its discovery label, `Depends on owner/repo#N` is recorded in
+its body, and the dependency gate skips it on every scan until that dependency
+closes. The release comment says `deferred: depends on owner/repo#N`. No human
+is paged and no work is lost. After a commit this deferral is honoured only
+when the `Depends on` / `Blocked by` line names an issue the worker reads as
+still open; a closed or unreadable dependency does not defer, and the worker
+hands the issue to a human and raises no PR. A CI-fix run is the exception
+for a check already red on the base branch: `prompts/ci_fix/prompt.md`
+"Base-branch failures" still ends with
+`Depends on owner/repo#N`, and that line defers that check.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the
@@ -893,6 +898,18 @@ this **instead of looping**:
    For PR feedback or CI fix work, write the message to `.pr_response_message`
    in the working directory — the worker posts it as the PR reply. For issue
    work, post the message as a comment on the current issue — and stop there.
+   In an issue run, this free-text hand-off is honoured only when the run
+   leaves no commit and no uncommitted change. Decide before you edit any
+   file, because the worker commits and pushes the working tree periodically
+   and again at the end of the run. Once a file has changed, a free-text
+   hand-off is not read. In an issue run, if no open issue already blocks
+   the work, this is not a deferral. Do not file a follow-up and name it on
+   a `Depends on` line. After a commit, a `Depends on` line that names the
+   follow-up this run filed hands the issue to a human and raises no PR. A
+   bare `## Blocked:` heading does not defer, and the worker raises a PR
+   that closes the issue. A PR-feedback or CI-fix run
+   keeps using the `.pr_response_message` escape hatch above, including on a
+   branch that already has commits.
    **Do not close the issue yourself**: the `gh` guard refuses
    `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
    The worker releases its claim and hands the issue to a human

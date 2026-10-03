@@ -680,6 +680,12 @@ export interface GitHubIssue {
   assignees: string[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * Whatever `gh issue view` returned for `state` (`OPEN`, `CLOSED`, or
+   * `MERGED` when the number is a pull request). Absent when the field was
+   * not requested (Issue #3088 review).
+   */
+  state?: string;
 }
 
 /**

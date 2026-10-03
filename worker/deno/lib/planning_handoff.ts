@@ -23,6 +23,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { execMarkerOutsideCode } from "./issue_dependencies.ts";
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
 import { assertWorkerCanHandOffToPlanning } from "./worker_label_guard.ts";
@@ -63,13 +64,30 @@ export interface PlanningHandoffRequest {
 }
 
 /**
+ * True when the output carries a `vibe-needs-planning` marker, even with no
+ * usable `reason` (Issue #3088).
+ *
+ * {@link detectPlanningHandoff} ignores a reasonless marker so the run can
+ * fall through to a human. On a committed run that fall-through must still
+ * be a hand-off, not a PR, so the caller needs the marker's presence on its
+ * own. A marker inside a code fence or span is the prompt's template, not a
+ * request.
+ */
+export function hasPlanningRequestMarker(output: string): boolean {
+  return execMarkerOutsideCode(output, REQUEST_RE) !== undefined;
+}
+
+/**
  * Detect a `vibe-needs-planning` request in the run output. A marker without
  * a non-blank `reason` is ignored, so the run falls through to `needs-human`.
  */
 export function detectPlanningHandoff(
   output: string,
 ): PlanningHandoffRequest | undefined {
-  const marker = REQUEST_RE.exec(output);
+  // A marker quoted in a code fence or span is the prompt's own template,
+  // not a request (Issue #3088 review). The probe ignores those, then the
+  // attributes are read from the original so a reason's own backticks stay.
+  const marker = execMarkerOutsideCode(output, REQUEST_RE);
   if (!marker) return undefined;
   const attr = REASON_RE.exec(marker[1] ?? "");
   const reason = (attr?.[1] ?? attr?.[2] ?? "").trim();
@@ -140,6 +158,7 @@ export async function hasPriorPlanningHandoffOnThread(
 export function buildPlanningHandoffComment(
   rawReason: string,
   rawOutputSnippet: string,
+  committedBranch?: string,
 ): string {
   const reason = neutraliseAgentMarkers(rawReason).text;
   const outputSnippet = neutraliseAgentMarkers(rawOutputSnippet).text;
@@ -147,8 +166,12 @@ export function buildPlanningHandoffComment(
   const details = outputSnippet
     ? `<details>\n<summary>Full output</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>\n\n`
     : "";
+  const lead = committedBranch
+    ? `This run committed work on \`${committedBranch}\` and judged the ` +
+      `issue too large for one PR, so the worker has added `
+    : `This issue is too large for one PR, so the worker has added `;
   return `## Handed off to planning\n\n` +
-    `This issue is too large for one PR, so the worker has added ` +
+    lead +
     `\`planning\` to break it into sub-issues. \`work-on\` stays on the ` +
     `issue as the trusted anchor for the hand-off (Issue #2688).\n\n` +
     `**Reason given by the run:**\n\n${quoted}\n\n` +
@@ -180,6 +203,11 @@ export interface PlanningHandoffOptions {
   reason: string;
   outputSnippet: string;
   logger: Logger;
+  /**
+   * Set on a committed run (Issue #3088). The comment then names that
+   * branch, and the outcome phase is `declared_handoff`.
+   */
+  committedBranch?: string;
   deps?: PlanningHandoffDeps;
 }
 
@@ -242,6 +270,7 @@ export async function handOffToPlanning(
       buildPlanningHandoffComment(
         redactSecrets(options.reason),
         options.outputSnippet,
+        options.committedBranch,
       ),
     );
   } catch (error) {
@@ -254,7 +283,7 @@ export async function handOffToPlanning(
   }
 
   const outcome = expectedNoPrOutcome(
-    "handle_no_changes",
+    options.committedBranch ? "declared_handoff" : "handle_no_changes",
     "handed off to planning",
   );
   const releaseClaim = deps?.releaseClaim ?? defaultReleaseClaim;
