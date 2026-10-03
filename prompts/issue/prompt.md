@@ -888,7 +888,15 @@ The file MUST contain:
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding
+   blocking self-review finding. Likewise, a path the diff adds to an outcome
+   an existing path already reaches — an early return, gate, route or direct
+   call that finalises a PR, publishes state, charges an attempt or ends a
+   claim — keeps that path's guards (see **A new path to an existing outcome
+   keeps that outcome's guards** in the guidelines): list each guard kept or
+   excluded with its reason, and a kept guard counts only once a named test
+   reaches the new path with the guard's trigger holding and goes red when
+   the new branch is moved ahead of the guard; a new path that skips a guard
+   with no stated reason is a blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
