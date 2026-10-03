@@ -226,17 +226,17 @@ evidence survive.
   it — one module at a time, not all at the end. Progress then shows in the tree
   and survives a stopped run.
 - **Bound irreversible actions.** `git push --force` (and any history rewrite),
-  `rm -rf`, and deleting a branch or a remote are not routine steps. Prefer the
-  reversible alternative (a normal commit, a revert, a new branch). If one of
-  these genuinely is the only way forward, state the justification in the commit
-  message or PR summary before you run it. Destructive code you *write* — an
-  `rm -rf`, a clone or `.git` swap, a `git reset --hard` that runs later at
-  runtime — is a different case: see **Code that deletes or replaces state
-  proves everything it destroys is safe to lose** in the guidelines. Bypassing
-  the pre-commit gate is **not** on that list and has no justification clause:
-  the guidelines forbid it outright, because a bypass is what lets a staged
-  secret through, and the remedy for a false positive is to fix the allowlist
-  by PR.
+  `rm -rf`, and deleting a branch or a remote are not routine steps. Prefer
+  the reversible alternative (a normal commit, a revert, a new branch). If
+  one of these genuinely is the only way forward, state the justification in
+  the commit message or PR summary before you run it. Destructive code you
+  *write* — an `rm -rf`, a clone or `.git` swap, a `git reset --hard` that
+  runs later at runtime — is a different case: see **Code that deletes or
+  replaces state proves everything it destroys is safe to lose** in the
+  guidelines. Bypassing the pre-commit gate is **not** on that list and has
+  no justification clause: the guidelines forbid it outright, because a
+  bypass is what lets a staged secret through, and the remedy for a false
+  positive is to fix the allowlist by PR.
 - **Delegate sparingly.** A subagent is worth it only for isolated parallel
   exploration too large for this context — surveying an unfamiliar subsystem,
   for example. Routine searches and single-file edits are faster done directly.
