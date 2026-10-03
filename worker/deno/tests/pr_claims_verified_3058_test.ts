@@ -49,6 +49,9 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "whether or not the branch already has commits",
       "suspicious-image flag is the exception",
       "hands it to a human only while the branch has no commits",
+      "Depends on owner/repo#N",
+      "A closed or unreadable dependency does not defer",
+      "A bare `## Blocked:` heading does not defer",
       "The worker defers and raises no PR",
     ]
   ) {
@@ -102,6 +105,8 @@ Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification r
       "the diff itself introduced",
       "core deliverable is `missing`",
       "genuinely blocked on another open issue after work is committed",
+      "Depends on owner/repo#N",
+      "A closed or unreadable dependency does not defer",
       "honoured after a commit as well as before one",
       "In an issue run, a hand-off",
       "A CI-fix run is the exception",

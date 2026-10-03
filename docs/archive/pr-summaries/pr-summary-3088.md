@@ -112,9 +112,14 @@ updated. No `*/README.md` describes the phase list, so none changed.
 - `worker/deno/tests/validation_test.ts`: `validateGhIssueJson` accepts
   `OPEN`, `CLOSED`, `MERGED` and an absent state
 - `worker/deno/tests/planning_handoff_test.ts`: a marker inside a code fence
-  or span is not a request
+  or span is not a request; backtick-quoted identifiers inside the reason
+  are kept
+- `worker/deno/tests/time_deferral_test.ts`: backtick-quoted identifiers
+  inside the reason are kept; a fenced or inline marker is ignored
 - `worker/deno/tests/pr_claims_verified_3058_test.ts`: the issue prompt applies
-  planning whether or not the branch already has commits
+  planning whether or not the branch already has commits, and a committed
+  `## Blocked:` heading defers only with a `Depends on` or `Blocked by` line
+  naming an issue that is still open
 - The existing `handle_no_changes` suites still pass unchanged against the
   refactor.
 - `./quality.sh`

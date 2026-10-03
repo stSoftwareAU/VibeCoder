@@ -20,7 +20,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { stripCodeSpans } from "./issue_dependencies.ts";
+import { execMarkerOutsideCode } from "./issue_dependencies.ts";
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
@@ -95,8 +95,9 @@ export function detectTimeDeferral(
 ): TimeDeferralDetection | undefined {
   // A marker quoted in a fence or an inline span is the template, not a
   // request. A committed run reads this detector, so a summary that quotes
-  // the marker must not park the run (Issue #3088 review).
-  const marker = REQUEST_RE.exec(stripCodeSpans(output));
+  // the marker must not park the run (Issue #3088 review). Attributes are
+  // read from the original text so a reason's own backticks stay.
+  const marker = execMarkerOutsideCode(output, REQUEST_RE);
   if (!marker) return undefined;
   const body = marker[1] ?? "";
 

@@ -293,11 +293,13 @@ apply:
   uncommitted changes against the base. This free-text hand-off is honoured
   only when the run leaves no commit and no uncommitted change: decide before
   you edit any file, because the worker commits and pushes the working tree
-  periodically and again at the end of the run. Once a file has changed, end
-  with a `## Blocked:` section or the planning marker instead — a free-text
-  hand-off is not read. That declared hand-off is still read after a commit,
-  and the worker defers or hands off instead of raising a PR that closes
-  this issue.
+  periodically and again at the end of the run. Once a file has changed, a
+  free-text hand-off is not read. If the work is blocked on an issue that is
+  still open, end with a `## Blocked:` heading and a `Depends on owner/repo#N`
+  (or `Blocked by`) line naming it. A closed or unreadable dependency does not
+  defer. If there is no such issue, name the follow-up you filed on a
+  `Depends on` line, or use the planning marker. A bare `## Blocked:` heading
+  does not defer, and the worker would raise a PR that closes this issue.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -670,14 +672,18 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
   when `git log <base>..HEAD` lists any commit (including one a later revert
   cancels, or a branch commit a base merge absorbed) or `git diff --stat HEAD`
-  shows any uncommitted change. A `## Blocked:` heading, a time deferral, or
+  shows any uncommitted change. A `## Blocked:` heading followed by a
+  `Depends on` or `Blocked by` line naming an open issue, a time deferral, or
   a planning marker is still read after that commit: the worker defers or
   hands off and raises no PR (the suspicious-image flag is the exception: it
-  always stops the run, committed work or not). Otherwise the PR body gets
+  always stops the run, committed work or not). A bare `## Blocked:` heading
+  does not defer. Otherwise the PR body gets
   `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
   When the core deliverable is genuinely blocked on another open issue and
-  work is already committed, end with a `## Blocked:` heading that names the
-  open dependency. The worker defers and raises no PR.
+  work is already committed, end with a `## Blocked:` heading followed by a
+  `Depends on owner/repo#N` (or `Blocked by`) line naming an issue that is
+  still open. A closed or unreadable dependency does not defer. The worker
+  defers and raises no PR.
   When a lesser criterion stays `partial` or `missing`, the Summary names it
   beside the closing keyword instead of describing the issue as resolved.
 

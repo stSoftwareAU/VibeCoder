@@ -23,7 +23,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { stripCodeSpans } from "./issue_dependencies.ts";
+import { execMarkerOutsideCode } from "./issue_dependencies.ts";
 import { expectedNoPrOutcome, type RunOutcome } from "./run_outcome.ts";
 import { releaseClaim as defaultReleaseClaim } from "./claim_release.ts";
 import { assertWorkerCanHandOffToPlanning } from "./worker_label_guard.ts";
@@ -74,9 +74,7 @@ export interface PlanningHandoffRequest {
  * request.
  */
 export function hasPlanningRequestMarker(output: string): boolean {
-  return new RegExp(REQUEST_RE.source, REQUEST_RE.flags).test(
-    stripCodeSpans(output),
-  );
+  return execMarkerOutsideCode(output, REQUEST_RE) !== undefined;
 }
 
 /**
@@ -87,8 +85,9 @@ export function detectPlanningHandoff(
   output: string,
 ): PlanningHandoffRequest | undefined {
   // A marker quoted in a code fence or span is the prompt's own template,
-  // not a request (Issue #3088 review). stripCodeSpans drops both.
-  const marker = REQUEST_RE.exec(stripCodeSpans(output));
+  // not a request (Issue #3088 review). The probe ignores those, then the
+  // attributes are read from the original so a reason's own backticks stay.
+  const marker = execMarkerOutsideCode(output, REQUEST_RE);
   if (!marker) return undefined;
   const attr = REASON_RE.exec(marker[1] ?? "");
   const reason = (attr?.[1] ?? attr?.[2] ?? "").trim();

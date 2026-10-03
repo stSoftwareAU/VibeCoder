@@ -1007,7 +1007,9 @@ Standards-review violation the diff itself introduced is fixed before the PR
 is raised, never listed as standing, and a PR whose core deliverable is
 `missing` is not raised over a `Closes #<n>` — finish the work, except when
 the core deliverable is genuinely blocked on another open issue after work
-is committed: a `## Blocked:` heading then defers the issue and raises no PR.
+is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
+(or `Blocked by`) line naming an issue that is still open then defers the
+issue and raises no PR. A closed or unreadable dependency does not defer.
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits
