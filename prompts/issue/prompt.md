@@ -119,6 +119,18 @@ guessing — the analysis-only hand-off then routes it to a human.
      not a shape fitted to the test inputs. Special-casing the values in the
      test — hardcoded returns, branches keyed to a fixture — makes the suite
      green while the feature stays broken for every other input.
+   - **A gate over text catches the variants and never passes what it
+     skipped.** When the change adds or changes a deterministic gate or
+     matcher over text — a PR summary, Markdown, a diff, closure entries,
+     source code it counts — follow **Writing a gate over text** in
+     `CODING-STANDARDS.md`: an evasion test per realistic variant of each
+     target, run both ways (variants it must still block, look-alikes it
+     must not fire on); a corpus run with false-positive and false-negative
+     counts in the Test Plan where a corpus exists
+     (`docs/archive/pr-summaries/`, the PR's own test files); input it
+     truncates, filters out, cannot parse or skips with `continue` fails
+     closed or is reported as not checked, never a clean pass; and both
+     sides of a comparison normalised the same way.
    - **Call the existing owner — never copy it.** Before writing code that
      formats, orders, ranks, validates or decides something the product
      already does, find the helper, component or policy that owns it and
