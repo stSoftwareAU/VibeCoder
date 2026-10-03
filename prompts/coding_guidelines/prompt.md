@@ -1105,6 +1105,22 @@ least one goes red, then restore it. An outcome with no test, or one whose
 flip leaves the suite green, is a blocking self-review finding: add a test
 for it.
 
+**A new path to an existing outcome keeps that outcome's guards.** When a
+change adds an early return, a new gate or route, or a direct call that
+reaches an outcome an existing path already reaches — finalising or raising a
+PR, publishing UI or state, charging a retry or attempt, ending a claimed
+task — first list every guard and side effect the existing path applies
+before that outcome: the degraded-run guard, ticket and freshness checks,
+spacing and attempt limits, replying to or releasing a claim. For each one,
+either make the new path apply it (or order the new branch after it), or
+state in the PR summary why it does not apply. For each guard the new path
+keeps, add a test that reaches the new path while the guard's trigger
+condition holds and asserts the guard's effect, then move the new branch
+ahead of the guard (or remove the guard call) and confirm the test goes red.
+List the guards kept and excluded in the PR summary. A new path that skips an
+existing path's guard with no stated reason is a blocking self-review finding
+(Issue #3087).
+
 **Every changed call site needs a test that goes red without it.** When a
 change threads a new argument, flag or behaviour through more than one
 production caller, a test of the helper, or of some callers, does not cover

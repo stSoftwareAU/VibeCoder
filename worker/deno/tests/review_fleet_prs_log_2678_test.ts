@@ -14,6 +14,7 @@ import {
   reviewBody,
   sameIssueTitle,
   unrelatedIssueBody,
+  wasChangeRequestAt,
 } from "../../../.claude/skills/review-fleet-prs/review_log.ts";
 
 const review = (over: Partial<FableReview> = {}): FableReview => ({
@@ -205,6 +206,27 @@ Deno.test("previousFindings: only when the PR's latest review sent it back", () 
     [],
   );
   assertEquals(previousFindings([sentBack], "o/r", 2), []);
+});
+
+Deno.test("wasChangeRequestAt: true only for a logged changes_requested record at that exact head (Issue #3079)", () => {
+  const sentBack = record({ headSha: "X", outcome: "changes_requested" });
+  assertEquals(wasChangeRequestAt([sentBack], "o/r", 1, "X"), true);
+  // A dismissed approval is logged as "approved", not a change request.
+  assertEquals(
+    wasChangeRequestAt(
+      [record({ headSha: "X", outcome: "approved" })],
+      "o/r",
+      1,
+      "X",
+    ),
+    false,
+  );
+  // Different head commit, repo, or PR number: no match.
+  assertEquals(wasChangeRequestAt([sentBack], "o/r", 1, "Y"), false);
+  assertEquals(wasChangeRequestAt([sentBack], "o/other", 1, "X"), false);
+  assertEquals(wasChangeRequestAt([sentBack], "o/r", 2, "X"), false);
+  // No log record at all: false, not a crash.
+  assertEquals(wasChangeRequestAt([], "o/r", 1, "X"), false);
 });
 
 Deno.test("parseLog skips a torn last line", () => {
