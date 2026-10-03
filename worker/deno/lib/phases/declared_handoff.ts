@@ -267,11 +267,10 @@ export async function handOffDeclaredOutcome(
   // with no declaration line still continues. A dependency that is closed,
   // merged, missing a state, or unreadable does not defer, but the run stays
   // declared and hands off to a human instead of raising a PR (Issue #3088).
-  // The no-changes path does not consult open/closed state at all — it keeps
-  // its existing behaviour there — but both paths treat a dependency filed by
-  // this fleet during the run the same way: that does not defer, because it
-  // would park a human-only decision on an issue nothing picks up. The issue
-  // record decides that, not wording in the output (Issue #3146).
+  // A dependency this fleet filed during the run does not defer on either
+  // path: that would park a human-only decision on an issue nothing picks
+  // up. The issue record decides that, not wording in the output
+  // (Issue #3146). The no-changes path does not consult open/closed state.
   const committed = trigger === "declared_handoff";
   let blocked = detectBlockedOutcome(
     claudeOutput,
@@ -319,13 +318,10 @@ export async function handOffDeclaredOutcome(
       blockedNotOpen = true;
       blocked = undefined;
     }
-  } else if (blocked && !committed) {
-    // Issue #3146: the no-changes path does not consult open/closed state
-    // (unchanged above), but a dependency this fleet filed during the run is
-    // still not a real deferral here either — keep `blocked` set (so the
-    // "never already resolved" exclusion below still applies) but skip the
-    // deferral itself, exactly as a repeat deferral does, so the caller falls
-    // through to its own analysis-only hand-off.
+  } else if (blocked) {
+    // Issue #3146: keep `blocked` set so the already-resolved exclusion
+    // below still holds, but skip only the deferral, as a repeat deferral
+    // does, so the caller hands off to a human.
     const dependency = await readDeclaredDependency(deps, repo, blocked);
     const filedDuringRun = dependency !== undefined &&
       dependencyFiledDuringThisRun(
