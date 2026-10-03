@@ -491,6 +491,42 @@ Deno.test("completion - a degraded run whose follow-up cannot be filed raises no
   assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
 });
 
+Deno.test("completion - a degraded run that passes every summary gate still names an existing PR when the follow-up cannot be filed (Issue #3092)", async () => {
+  // All four summary gates pass (SUMMARY_PARTIAL), so this is completionBody's
+  // own guard call, not reportSummaryRuleBlock. The agent already opened a PR
+  // during execute. Filing the follow-up fails. The PR stays unfinalised, and
+  // the outcome must still name it.
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+    failIssueCreate: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertStringIncludes(outcome.reason ?? "", "follow-up");
+  assertEquals(
+    outcome.prBodies.length,
+    0,
+    "the existing PR must not be recovered when the follow-up cannot be filed",
+  );
+  assertEquals(outcome.prUrl, EXISTING_PR_URL);
+  assertEquals(outcome.prNumber, 777);
+  const derived = deriveRunOutcome({
+    success: false,
+    phase: "completion",
+    reason: outcome.reason ?? "",
+    prUrl: outcome.prUrl,
+    prNumber: outcome.prNumber,
+  });
+  assertEquals(derived.kind, "pr");
+  if (derived.kind === "pr") {
+    assertEquals(derived.prNumber, 777);
+    assert(derived.blocked, "a live PR is recorded as blocked, not no_pr");
+  }
+});
+
 Deno.test("completion - a docs-sweep block on an existing-PR branch still runs the degraded-delivery guard first (Issue #3085 review)", async () => {
   // The docs-sweep gate (Issue #3073) blocks this summary — it carries no
   // `Docs sweep` line. Previously that gate ran *before* the degraded-run

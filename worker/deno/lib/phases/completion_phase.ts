@@ -2261,7 +2261,18 @@ async function completionBody(
   // branch.
   // ---------------------------------------------------------------------
   const guarded = await applyDegradedDeliveryGuard(ctx, state, prBody, deps);
-  if (!guarded.ok) return guarded.result;
+  if (!guarded.ok) {
+    // The follow-up could not be filed, so nothing is raised or finalised.
+    // An existing PR is still this run's PR: naming it makes the outcome
+    // `pr` + `blocked` instead of `no_pr` over a live PR (Issue #3092).
+    // A branch with no open PR stays unnamed, which is the no-PR failure.
+    const blockedPr = await lookupBlockedGatePr(repo, state.branchName, deps);
+    if (blockedPr) {
+      state.prUrl = blockedPr.url;
+      state.prNumber = blockedPr.number;
+    }
+    return guarded.result;
+  }
   prBody = guarded.prBody;
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),

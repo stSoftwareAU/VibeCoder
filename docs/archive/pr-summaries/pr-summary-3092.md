@@ -123,6 +123,8 @@ New tests in `worker/deno/tests/completion_phase_degraded_delivery_test.ts`:
   branch carries no Degraded run section
 - a degraded run blocked by the independent-review gate whose follow-up cannot
   be filed fails the run without finalising the PR
+- a degraded run that passes every summary gate still names an existing PR
+  when the follow-up cannot be filed (Issue #3092)
 - a degraded run blocked by the independent-review gate on a branch with no PR
   files no follow-up
 
@@ -132,7 +134,8 @@ recovery and keeps every guard the new-PR path applies:
 - **Kept:** degraded follow-up filing, with its label creation and the
   "Degraded run" body prefix (review-gate and closure-gate tests).
 - **Kept:** the fail-loud failure when filing fails, so the PR is not
-  finalised (filing-failure test).
+  finalised and an existing PR is still named (the summary-gate filing-failure
+  test, and the test where every summary gate passes).
 - **Excluded, deliberately:** the no-PR branch skips the guard, because a
   follow-up must not promise a PR that was never raised (no-PR test and the
   #3085 no-PR test).
