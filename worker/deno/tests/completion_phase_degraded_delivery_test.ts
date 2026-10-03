@@ -738,6 +738,25 @@ Deno.test("completion - a degraded run blocked by the independent-review gate wh
   }
 });
 
+Deno.test("completion - a degraded run blocked by the independent-review gate whose follow-up cannot be filed names no PR for an unnumberable PR URL (Issue #3136)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_STANDARDS_REVIEW,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+    failIssueCreate: true,
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/not-a-number",
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertStringIncludes(outcome.reason ?? "", "follow-up");
+  assertEquals(outcome.outcome.kind, "no_pr");
+  assertEquals(outcome.prUrl, undefined);
+  assertEquals(outcome.prNumber, undefined);
+  assertEquals(outcome.prBodies.length, 0);
+  assertEquals(outcome.recoverCalls, 0);
+});
+
 Deno.test("completion - a degraded run blocked by the independent-review gate on a branch with no PR files no follow-up", async () => {
   const outcome = await runCompletion({
     issueBody: ISSUE_WITH_CRITERIA,

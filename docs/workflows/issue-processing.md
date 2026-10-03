@@ -1474,10 +1474,11 @@ flowchart TD
   number, and that PR is neither finalised nor auto-merged (Issue #3092,
   #3119). If that lookup fails, or that URL cannot be numbered, the run
   records `no_pr` rather than naming `#0`. The same guard inside
-  `reportSummaryRuleBlock` names the PR that gate already found, without
-  that number check, so an unnumberable URL is not recorded as `no_pr`
-  there. Issue #3121 is the regression coverage for the `completionBody`
-  cases. See "An exception still has to report the PR it blocked" below.
+  `reportSummaryRuleBlock` names the PR that gate already found only when
+  its URL yields a number; an unnumberable URL records `no_pr` there too
+  (Issue #3136). Issue #3121 is the regression coverage for the
+  `completionBody` cases. See "An exception still has to report the PR it
+  blocked" below.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -1551,9 +1552,11 @@ outcome is `pr` with `prNumber` plus the block when the branch lookup
 succeeds and the URL yields a number. If that lookup fails or that URL
 cannot be numbered, the run records `no_pr` rather than naming `#0`. When
 the same guard runs inside `reportSummaryRuleBlock`, the outcome names the
-PR that gate already found, without that number check. Issue #3121 adds
+PR that gate already found only when its URL yields a number; an
+unnumberable URL records `no_pr` there too (Issue #3136). Issue #3121 adds
 the regression coverage for the `completionBody` call counts, the block's
-phase, the no-PR case and the unnumberable URL.
+phase, the no-PR case and the unnumberable URL; Issue #3136 covers the
+`reportSummaryRuleBlock` unnumberable case.
 
 **Implementation.** `lookupBlockedGatePr` and the gate block in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
