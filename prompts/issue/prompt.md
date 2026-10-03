@@ -162,7 +162,12 @@ guessing — the analysis-only hand-off then routes it to a human.
    command name for a query or read path — even when every name survives the
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
-   never by the file's topic. Record the sweep as the **Docs sweep** line in
+   never by the file's topic.
+   When the change adds a member to an existing set — a field, enum variant,
+   kind, flag or column — also grep for one or two of its existing sibling
+   members: every list of the set those hits find names the new member, or is
+   reworded so it no longer reads as complete.
+   Record the sweep as the **Docs sweep** line in
    the PR summary, naming that section (e.g.
    `section: docs/reporting-pwa.md#broker-balance`, or
    `section: none — <why no manual documents it>`) (see **PR Summary File**
