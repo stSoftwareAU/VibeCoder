@@ -32,5 +32,9 @@ wrapped so a throw never aborts an otherwise-successful run.
 - Tests: `worker/deno/tests/pr_feedback_drift_check_3143_test.ts`,
   `worker/deno/tests/pr_feedback_processor_drift_check_3143_test.ts`,
   `worker/deno/tests/test_plan_recount_3143_test.ts`.
+- `docs/audits/lib-sweep-coverage.json` — top-up slice `top-up-3143`: claims
+  the two new `worker/deno/lib/` modules
+  (`pr_feedback_drift_check.ts`, `test_plan_recount.ts`) so the sweep
+  coverage ledger test stays green.
 
-**Docs sweep** — grep: `pr_feedback_processor`, `pr_feedback_drift_check`, `test_plan_recount`, "drift check", "review-fix", "Test Plan", "recount", "PR feedback" across `README.md`, `docs/` (excluding `docs/archive/`) and `*/README.md`; section: `docs/workflows/pr-feedback.md#the-workers-drift-check-issue-3143` (plus the Process step and `#recount-the-test-plan-after-a-review-fix-issue-3117`); updated: `docs/workflows/pr-feedback.md`, `docs/INTERNALS.md`, `prompts/pr_feedback/prompt.md`. Reviewed and left unchanged: `docs/PROMPTS.md` (pr_feedback row), `docs/INTERNALS.md` migration notes, `docs/REPO-CONTEXT-TRIAL.md` §1.2, `README.md`, `DESIGN-PRINCIPLES.md`, and the `docs/audits/` sweep entries (point-in-time records).
+**Docs sweep** — grep: `pr_feedback_processor`, `pr_feedback_drift_check`, `test_plan_recount`, "drift check", "review-fix", "Test Plan", "recount", "PR feedback" across `README.md`, `docs/` (excluding `docs/archive/`) and `*/README.md`; section: `docs/workflows/pr-feedback.md#the-workers-drift-check-issue-3143` (plus the Process step and `#recount-the-test-plan-after-a-review-fix-issue-3117`); updated: `docs/workflows/pr-feedback.md`, `docs/INTERNALS.md`, `prompts/pr_feedback/prompt.md`. Reviewed and left unchanged: `docs/PROMPTS.md` (pr_feedback row), `docs/INTERNALS.md` migration notes, `docs/REPO-CONTEXT-TRIAL.md` §1.2, `README.md`, `DESIGN-PRINCIPLES.md`. `docs/audits/lib-sweep-coverage.json` gained the `top-up-3143` entry (not "left unchanged") to claim the two new lib modules.
