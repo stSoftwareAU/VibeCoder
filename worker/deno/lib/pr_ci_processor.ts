@@ -409,6 +409,22 @@ export interface CiProcessorDeps {
    * while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
+  /**
+   * Override the PR body refresh after a successful push (Issue #3089).
+   * Injected by tests; production leaves it undefined and gets
+   * {@link syncPrBodyFromSummary}.
+   */
+  syncPrBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Configured worker name, used in the refreshed PR body's footer
+   * (Issue #3089). Omitted → empty string.
+   */
+  workerName?: string;
+  /**
+   * The run's resolved worker GitHub login, used as the refreshed PR body's
+   * footer fallback (Issue #3089). Omitted → falls back to `GITHUB_USER`.
+   */
+  githubUser?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -2031,6 +2047,28 @@ async function _processCiWithHeartbeat(
   // arming it against a head that did not change. The fix PR's own
   // auto-merge is armed separately, inside `raiseMilestoneFixPr`.
   if (hasChanges && pushSucceeded && fixBranch === undefined) {
+    // Refresh the PR body from a rewritten summary file (Issue #3089),
+    // before auto-merge is re-armed — a failed sync must never block it.
+    const syncFn = processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary;
+    await runPrBodySync(
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir ?? "",
+        beforeSha,
+        workerName: processorDeps.workerName ?? "",
+        githubUser: processorDeps.githubUser ??
+          Deno.env.get("GITHUB_USER") ?? "",
+        runId: getRunId(),
+      },
+      {
+        runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+        runGitCommand: deps.git.runGitCommand,
+        logger,
+      },
+      syncFn,
+    );
+
     try {
       // Issue #3909: pass the head branch so the milestone open-children
       // gate needs no extra lookup.
