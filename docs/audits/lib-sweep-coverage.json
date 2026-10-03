@@ -2536,6 +2536,19 @@
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
       ]
+    },
+    {
+      "issue": 3143,
+      "chunk": "top-up-3143",
+      "title": "top-up: the review-fix drift and Test Plan recount checks",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3143",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_feedback_drift_check.ts, test_plan_recount.ts (#3143)",
+      "status": "claimed",
+      "sweptAt": "b169ace6d5399b89708d8b9b1815cce59bf402cc",
+      "paths": [
+        "worker/deno/lib/pr_feedback_drift_check.ts",
+        "worker/deno/lib/test_plan_recount.ts"
+      ]
     }
   ],
   "roots": [
