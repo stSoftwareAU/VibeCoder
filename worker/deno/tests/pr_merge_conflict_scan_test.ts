@@ -2008,7 +2008,7 @@ Deno.test("findConflictingPr - a moved base offers a parked PR again with a fres
 function declinedAbandon(
   issueNumber: number,
   restartCount: number,
-): () => Promise<AbandonRestartOutcome> {
+) {
   return () =>
     Promise.resolve({
       outcome: "declined",
