@@ -118,7 +118,7 @@ whitespace. The count was 0 in both files.
   narrowed shared helper with no callers-checked list"`.
 - After each red run I restored the file and confirmed it matched HEAD with
   `git diff`.
-- `./quality.sh < /dev/null`: QUALITY_RESULT_PLACEHOLDER
+- `./quality.sh < /dev/null`: passed
 
 ## Acceptance Criteria
 
