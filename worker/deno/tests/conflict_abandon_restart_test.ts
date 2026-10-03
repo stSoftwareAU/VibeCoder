@@ -62,7 +62,6 @@ import {
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
   CONFLICT_RESOLUTION_BUDGET,
-  conflictFailedMarker,
   conflictResolvedMarker,
 } from "../lib/merge_conflict_markers.ts";
 import {
