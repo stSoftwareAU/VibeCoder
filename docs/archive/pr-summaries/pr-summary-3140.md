@@ -8,7 +8,7 @@ The CI-fix prompt now fixes a red dependency audit in the PR, even when the base
 flowchart TD
     R[Red CI check] --> A{Dependency audit?<br/>deno/cargo audit, GHSA-/RUSTSEC-}
     A -- yes --> F[Fix in this PR:<br/>patched upgrade or edge removed/replaced]
-    F --> T[Track base failure: Fixes owner/repo#N<br/>in the commit, the reply, and the summary]
+    F --> T[Track base failure: Fixes #N<br/>in the commit, the reply, and the summary]
     F -. no edge can go .-> H[needs-human + comment naming advisory]
     A -- no --> B{Red on base?}
     B -- yes --> D[Defer: Depends on owner/repo#N]
@@ -27,7 +27,7 @@ A red audit blocks every PR in the repo until one PR fixes it. If every PR defer
 
 - "Fixed" means a patched upgrade, or removing or replacing the dependency edge that pulls in the vulnerable package (the stSoftwareAU/GRQ#5157 precedent). `--ignore`/allow-list entries and audit workflow or command edits never count.
 - `needs-human` is limited to the case where no edge can be upgraded, removed or replaced. It is applied together with a reply that names the advisory ID.
-- The tracking-issue search (`--state open`, descriptive labels only) is kept, so the base-branch failure stays visible. `Fixes owner/repo#N` goes in the fixing commit message, the reply, and the committed PR summary. A PR comment does not close the issue.
+- The tracking-issue search (`--state open`, descriptive labels only) is kept, so the base-branch failure stays visible. `Fixes #N` (same-repo) goes in the fixing commit message, the reply, and the committed PR summary. The sweep reads the pull request body only, and only that form.
 - Every other check that is already red on the base branch still defers. The "Base-branch failures" text for those checks is unchanged apart from the new leading exclusion.
 
 ### Undiscoverable Facts
@@ -47,7 +47,7 @@ A red audit blocks every PR in the repo until one PR fixes it. If every PR defer
 3. "Fixed" = patched upgrade, or removed or replaced dependency edge: reviewer: met
 4. Rules out `--ignore`/allow-list entries and audit-workflow edits: reviewer: met
 5. `needs-human` with advisory-naming comment only when no edge can go: reviewer: met
-6. Tracking-issue search-or-file kept; `Fixes owner/repo#N` is in the commit message, the reply, and the PR summary: reviewer: met
+6. Tracking-issue search-or-file kept; `Fixes #N` is in the commit message, the reply, and the PR summary: reviewer: met
 7. "Base-branch failures" excludes audits; other deferral text unchanged: reviewer: met
 8. coding_guidelines and CODING-STANDARDS carry the carve-out, scoped to CI-fix runs: reviewer: met
 9. "A CI-fix run is the exception" preserved: reviewer: met
