@@ -79,9 +79,8 @@ MUST end with, reproduced verbatim (see Phase 4):
    `grep`, `rg`, `ls`, `find`, and structured file readers are
    permitted. Any command that executes repo logic (`bash`, `deno run`,
    `node`, `python`, `make`, `cargo run`, `npm test`, …) is forbidden.
-   The only permitted `gh` calls are `gh issue list` (Phase 4 dedup),
-   `gh label create` (defensive, before filing), and `gh issue create`
-   (filing).
+   The only permitted `gh` calls are `gh label create` (defensive,
+   before filing) and `gh issue create` (filing).
 
    A bucket guide may **nominate read-only language analysers** — the
    `rust` guide nominates `cargo clippy` and `cargo check` — which you
@@ -566,12 +565,12 @@ finding title lower-cased with non-alphanumeric runs replaced by `-`.
 Phase 4 is **outcome-only**: the deliverable is the set of GitHub issues
 filed against the current repository — one per surviving finding. Your
 only output for this phase is the `gh issue create` calls themselves,
-preceded by the dedup lookup below and by any defensive `gh label
-create` the labels need; end the run immediately after the last
-`gh issue create` call. The worker measures
-success by diffing the repo's open `best-practices`-labelled issues
-before and after the run, so anything you print instead of filing is
-invisible to it.
+preceded by the dedup check below (a comparison against the lists above,
+not a `gh` call) and by any defensive `gh label create` the labels need;
+end the run immediately after the last `gh issue create` call. The worker
+measures success by diffing the repo's open `best-practices`-labelled
+issues before and after the run, so anything you print instead of filing
+is invisible to it.
 
 The current working directory is the cloned repository, so every `gh`
 invocation operates on the right repo without an explicit `--repo`
@@ -579,11 +578,14 @@ argument.
 
 For each surviving finding (skip silently if its id is in the suppressed or known-open list):
 
-1. **Re-check the live open-issue list.** Call
-   `gh issue list --state open --label best-practices --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip any finding whose id
-   already has an open issue.
+1. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 2. **File the issue** with `gh issue create` (no `--repo` argument) and
    exactly these labels:
    - `best-practices` (always)

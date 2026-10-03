@@ -102,8 +102,8 @@ the bucket-scoped best-practices template.
 **No linters or test runners are invoked.** The scan is read-only static
 review. It must not execute repo code — no `deno test`, `cargo test`,
 `pytest`, `bats`, `npm test`, etc. The only `gh` calls it makes are
-`gh issue list` (dedup), `gh label create` (defensive), and
-`gh issue create` (file a finding).
+`gh label create` (defensive), `gh issue create` (file a finding), and
+`gh issue edit` (correct an issue just filed).
 
 From v8 onward the prompt opens with the shared
 [Phase 0 — Adapt to the project](IDLE-TASK-FRAMEWORK.md#phase-0--adapt-to-the-project)
