@@ -107,7 +107,10 @@ sequenceDiagram
   - updated `docs/INTERNALS.md` (module table row);
   - updated the three fix-run prompts (do not hand-edit the description; the
     summary file drives it);
-  - no other surface describes the old behaviour.
+  - updated `docs/workflows/ci-fix.md` (happy path, re-sync after the push),
+    `docs/workflows/pr-feedback.md` (keep the PR summary true to the head)
+    and `docs/workflows/merge-conflicts.md` (a superseded change leaves the
+    PR summary).
 
 ## Related existing rules checked
 

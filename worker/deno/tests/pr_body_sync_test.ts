@@ -547,6 +547,11 @@ Deno.test("sync - summary file deleted: skips without editing", async () => {
 Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () => {
   const repoPath = await makeRepo();
   try {
+    await Deno.writeTextFile(
+      `${repoPath}/docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
+      `# PR Summary — Issue #${ISSUE_NUMBER}: new title\n\n` +
+        `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`,
+    );
     const degraded = [
       "## ⚠️ Degraded run — partial delivery",
       "",
@@ -555,37 +560,67 @@ Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () 
       "",
       "- the export",
       "",
-      "",
     ].join("\n");
+    const oldSummary = [
+      `# PR Summary — Issue #${ISSUE_NUMBER}: old title`,
+      "",
+      "Old preamble that must not survive.",
+      "",
+      "## Summary",
+      "",
+      `Original summary. Closes #${ISSUE_NUMBER}.`,
+      "",
+      "---",
+      "",
+      `🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`,
+    ].join("\n");
+    let live = `${degraded}\n${oldSummary}`;
     const ghCalls: GhCall[] = [];
+    const record = stubGh(ghCalls);
     const deps: SyncPrBodyDeps = {
-      runGhCommand: (args) => {
+      runGhCommand: async (args) => {
         if (args[0] === "pr" && args[1] === "view") {
-          return Promise.resolve(viewJson(degraded + baseBody(ISSUE_NUMBER)));
+          return viewJson(live);
         }
-        return stubGh(ghCalls)(args);
+        const out = await record(args);
+        const edited = ghCalls.at(-1)?.bodyFileContent;
+        if (args[0] === "pr" && args[1] === "edit" && edited) live = edited;
+        return out;
       },
       runGitCommand: stubGit([], { diffChanged: true }),
       logger,
     };
+    const input = {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    };
 
-    const result = await syncPrBodyFromSummary(
-      {
-        repo: REPO,
-        prNumber: PR_NUMBER,
-        repoPath,
-        beforeSha: BEFORE_SHA,
-        workerName: "worker-a",
-        githubUser: "ghuser",
-      },
-      deps,
-    );
+    const first = await syncPrBodyFromSummary(input, deps);
+    assert(first.ok);
+    if (first.ok) assertEquals(first.value.status, "updated");
+    const synced = ghCalls[0]?.bodyFileContent ?? "";
+    assert(synced.startsWith("## ⚠️ Degraded run — partial delivery"));
+    assertStringIncludes(synced, "continue in #77");
+    assertStringIncludes(synced, "new title");
+    assertStringIncludes(synced, "Rewritten summary text.");
+    assertEquals(synced.includes("old title"), false);
+    assertEquals(synced.includes("Old preamble that must not survive."), false);
+    assertEquals(synced.includes("Original summary."), false);
 
-    assert(result.ok);
-    const newBody = ghCalls[0]?.bodyFileContent ?? "";
-    assert(newBody.startsWith("## ⚠️ Degraded run — partial delivery"));
-    assertStringIncludes(newBody, "continue in #77");
-    assertStringIncludes(newBody, "Rewritten summary text.");
+    const second = await syncPrBodyFromSummary(input, deps);
+    assert(second.ok);
+    if (second.ok) {
+      assertEquals(second.value, {
+        status: "skipped",
+        reason: "body already current",
+      });
+    }
+    assertEquals(ghCalls.length, 1);
+    assertEquals(live, synced);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

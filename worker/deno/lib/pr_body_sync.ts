@@ -199,10 +199,19 @@ function extractDegradedRunSection(body: string): string {
   const start = body.indexOf(heading);
   if (start === -1) return "";
   if (body.slice(0, start).trim().length > 0) return "";
-  const from = body.slice(start);
-  const next = from.indexOf("\n## ");
-  const block = (next === -1 ? from : from.slice(0, next)).trimEnd();
-  return `${block}\n\n`;
+  // Stop at the next heading of any level. Archived summaries open with an
+  // H1 (`# PR Summary — …`) before `## Summary`, and cutting only at `\n## `
+  // carried that title — and one more copy of it on every later sync.
+  const lines = body.slice(start).split("\n");
+  let end = lines.length;
+  for (let i = 1; i < lines.length; i++) {
+    if (/^#{1,6} /.test(lines[i] ?? "")) {
+      end = i;
+      break;
+    }
+  }
+  const block = lines.slice(0, end).join("\n").trimEnd();
+  return block ? `${block}\n\n` : "";
 }
 
 /**
