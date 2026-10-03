@@ -416,6 +416,199 @@ Deno.test("processPrFeedback - works without workerId (backward compatible)", as
 });
 
 // ============================================================================
+// PR body sync after a successful push (Issue #3089)
+// ============================================================================
+
+/** `captureBranchHead`'s default mock value (see `createMockDeps`). */
+const DEFAULT_MOCK_HEAD_SHA = "0000000000000000000000000000000000000000";
+
+function makeSuccessfulPushDeps(
+  syncPrBodyFn?: PrFeedbackProcessorDeps["syncPrBodyFn"],
+) {
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed the issue", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrGh(),
+  };
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    qualityInstructions: "",
+    syncPrBodyFn,
+  };
+  return processorDeps;
+}
+
+Deno.test("processPrFeedback - syncs the PR body once after a verified push", async () => {
+  const calls: Array<{ prNumber: number; repo: string; beforeSha?: string }> =
+    [];
+  const syncPrBodyFn: PrFeedbackProcessorDeps["syncPrBodyFn"] = (input) => {
+    calls.push({
+      prNumber: input.prNumber,
+      repo: input.repo,
+      beforeSha: input.beforeSha,
+    });
+    return Promise.resolve({
+      ok: true,
+      value: { status: "updated", issueNumber: 42 },
+    });
+  };
+  const processorDeps = makeSuccessfulPushDeps(syncPrBodyFn);
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]?.prNumber, 42);
+  assertEquals(calls[0]?.repo, "org/repo");
+  assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
+});
+
+Deno.test("processPrFeedback - does not sync the PR body when nothing was pushed", async () => {
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "No changes needed", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrGh(),
+  };
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 0,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  let syncCalled = false;
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    syncPrBodyFn: () => {
+      syncCalled = true;
+      return Promise.resolve({
+        ok: true,
+        value: { status: "skipped", reason: "no before-push sha" },
+      });
+    },
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  assertEquals(syncCalled, false);
+});
+
+Deno.test("processPrFeedback - does not sync the PR body on a gated-head fix branch", async () => {
+  const GATED_RULES = JSON.stringify([{ type: "pull_request" }]);
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed the issue", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrGh((args: string[]) => {
+      if (args[0] === "api" && String(args[1]).includes("/rules/branches/")) {
+        return Promise.resolve(GATED_RULES);
+      }
+      return Promise.resolve("");
+    }),
+  };
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  let syncCalled = false;
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    syncPrBodyFn: () => {
+      syncCalled = true;
+      return Promise.resolve({
+        ok: true,
+        value: { status: "updated", issueNumber: 42 },
+      });
+    },
+  };
+
+  const result = await processPrFeedback(
+    makeInput({ branchName: "milestone/4690-gated" }),
+    processorDeps,
+  );
+  assertEquals(result.ok, true);
+  assertEquals(syncCalled, false);
+});
+
+Deno.test("processPrFeedback - a failing PR body sync does not fail the run", async () => {
+  const processorDeps = makeSuccessfulPushDeps(() =>
+    Promise.resolve({ ok: false, error: new Error("gh pr edit boom") })
+  );
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.processed, true);
+    assertEquals(result.value.changesPushed, true);
+  }
+});
+
+// ============================================================================
 // Heartbeat lifecycle — startHeartbeat/stopHeartbeat (Issue #1204)
 // ============================================================================
 

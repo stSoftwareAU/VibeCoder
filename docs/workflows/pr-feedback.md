@@ -186,7 +186,10 @@ other exit is the existing escape hatch above: a filed follow-up issue named in
 `.pr_response_message`. When a finding is fixed, the PR summary text that
 recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
-rule).
+rule). After a verified push to the PR's own head, when that push changed
+`pr-summary-<N>.md`, the worker rebuilds the description from the summary.
+Fix branches are skipped, and only a worker-authored PR is edited. A failed
+sync is logged once at warning and does not fail the run (Issue #3089).
 
 Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 <branch>`, and confirms `origin/<branch>` contains every cited fix commit

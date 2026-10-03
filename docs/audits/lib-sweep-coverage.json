@@ -739,6 +739,7 @@
         "worker/deno/lib/planning_run_aggregation.ts",
         "worker/deno/lib/planning_run_stats.ts",
         "worker/deno/lib/pr_body.ts",
+        "worker/deno/lib/pr_body_sync.ts",
         "worker/deno/lib/pr_branch_checkout.ts",
         "worker/deno/lib/pr_branch_update.ts",
         "worker/deno/lib/pr_check_contexts.ts",
