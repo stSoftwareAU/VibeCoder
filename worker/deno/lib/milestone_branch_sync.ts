@@ -2012,6 +2012,19 @@ export async function syncMilestoneBranches(
               await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
                 .catch(() => undefined);
             }
+            // The attempt was opened before the lock. Leaving it open paces
+            // every issue in the milestone on this host until the PR is due
+            // again (Issue #2965).
+            if (streakPath && streaks[streakKey]?.attemptOpenedAt) {
+              streaks[streakKey] = concludeConflictAttempt(
+                streaks[streakKey]!,
+                "disrupted",
+                "no longer due once the PR lock was held",
+                defaultSha,
+                now(),
+              );
+              streaksDirty = true;
+            }
             skipped++;
             continue;
           }

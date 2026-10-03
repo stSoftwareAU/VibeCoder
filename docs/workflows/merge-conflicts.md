@@ -503,7 +503,10 @@ flowchart TD
   Once it holds the lock the takeover re-reads the thread and stands down
   unless that attempt is still due, including when a failure landed after
   the watchdog's read and before its own. The sync re-reads the same way
-  after it takes the lock. The sync also stands down when the lock
+  after it takes the lock. When that re-read finds the attempt no longer
+  due, the sync closes the local-ledger attempt it opened, as `disrupted`,
+  so the milestone is not paced for the rest of the window. The sync also
+  stands down when the lock
   is already held, when the takeover's own fix PR is open, or when a trusted
   `pass="takeover"` attempt is the newest marker and younger than the lock
   TTL. A stranded older open marker does not skip the PR for the rest of its

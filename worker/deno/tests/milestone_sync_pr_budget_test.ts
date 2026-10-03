@@ -31,6 +31,7 @@ import {
 import { isFleetAuthor } from "../lib/fleet_authors.ts";
 import { spentConflictAttempts } from "../lib/pr_merge_conflict_scan.ts";
 import { milestoneFixPrefixFor } from "../lib/milestone_fix_pr.ts";
+import { milestonePacedUntil } from "../lib/milestone_presync.ts";
 
 const MILESTONE_TITLE = "v1.0";
 const REPO = "owner/repo";
@@ -661,42 +662,55 @@ Deno.test(
 Deno.test(
   "milestone sync re-reads due-ness after the lock and spends nothing when a failure just landed (Issue #2965)",
   async () => {
-    const calls: string[][] = [];
-    const state: GhState = {
-      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
-      prComments: [],
-    };
-    let syncs = 0;
-    let released = 0;
-    const deps = baseDeps(calls, state, () => {
-      syncs++;
-      return Promise.resolve({
-        ok: false as const,
-        error: conflictFailure(),
-      });
-    });
-    deps.acquireHeadLockFn = () => {
-      state.prComments.push({
-        user: { login: FLEET },
-        created_at: new Date().toISOString(),
-        body: [
-          conflictAttemptMarker(1, "takeover", HEAD_SHA),
-          conflictFailedMarker(1, "takeover", HEAD_SHA),
-        ].join("\n"),
-      });
-      return Promise.resolve({
-        acquired: true,
-        release: () => {
-          released++;
-          return Promise.resolve();
-        },
-      });
-    };
+    const dir = await Deno.makeTempDir({ prefix: "issue-2965-stand-down-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const state: GhState = {
+        prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+        prComments: [],
+      };
+      let syncs = 0;
+      let released = 0;
+      const deps = baseDeps(calls, state, () => {
+        syncs++;
+        return Promise.resolve({
+          ok: false as const,
+          error: conflictFailure(),
+        });
+      }, streakPath);
+      deps.acquireHeadLockFn = () => {
+        state.prComments.push({
+          user: { login: FLEET },
+          created_at: new Date().toISOString(),
+          body: [
+            conflictAttemptMarker(1, "takeover", HEAD_SHA),
+            conflictFailedMarker(1, "takeover", HEAD_SHA),
+          ].join("\n"),
+        });
+        return Promise.resolve({
+          acquired: true,
+          release: () => {
+            released++;
+            return Promise.resolve();
+          },
+        });
+      };
 
-    const result = await syncMilestoneBranches(deps);
-    assert(result.ok);
-    assertEquals(syncs, 0);
-    assertEquals(released, 1);
-    assertEquals(prCommentCalls(calls).length, 0);
+      const result = await syncMilestoneBranches(deps);
+      assert(result.ok);
+      assertEquals(syncs, 0);
+      assertEquals(released, 1);
+      assertEquals(prCommentCalls(calls).length, 0);
+      const streaks = await loadSyncStreaks(streakPath);
+      const entry = streaks[syncStreakKey(REPO, MILESTONE_BRANCH)];
+      assertEquals(entry?.attemptOpenedAt, undefined);
+      assertEquals(
+        milestonePacedUntil(streaks, REPO, MILESTONE_TITLE),
+        undefined,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   },
 );
