@@ -394,6 +394,24 @@ List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
 
+**Code that deletes or replaces state proves everything it destroys is safe
+to lose.** When a change adds code that `rm -rf`s a directory, swaps a new
+clone or `.git` in for an old one, runs `git reset --hard` or `git clean -fdx`,
+or overwrites a file in place, first list everything the old copy holds that
+the replacement will not. For a git clone that is every `refs/heads/*` tip and
+its commits not contained in an origin ref, the stash, the reflogs, untracked
+and ignored files, and local config (branch upstreams, hooks, `extensions.*`).
+Proving only the state the change is about — the current branch equals
+`origin/<branch>` and the working tree is clean — says nothing about the rest.
+For each item, either prove it is safe to lose (for example, every local
+branch tip is an ancestor of an origin ref) or refuse the operation and report
+why. Before writing a new check, search the repo for an existing guard on a
+sibling destructive path (`git grep -n -e 'rm -rf' -e unpushed`) and call it
+rather than copying it. Add a test per refusal whose fixture holds that state
+and asserts it survives. List the inventory in the PR summary, with what is
+guarded and what is accepted as lost. A destructive operation that deletes
+state it never checked is a blocking self-review finding (Issue #3107).
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
