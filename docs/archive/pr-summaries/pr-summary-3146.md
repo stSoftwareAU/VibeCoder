@@ -68,7 +68,6 @@ The issue cites `handle_no_changes_phase.ts:182/211`, but that logic moved into
 - **Docs sweep.** Grepped for "filed during" / "this run filed" / "After a
   commit, a". Updated:
   - `DESIGN-PRINCIPLES.md`
-  - `docs/workflows/issue-processing.md`
   - `prompts/issue/prompt.md` (the "Blocked" bullet; the later passage is
     scoped to committed work and stays accurate)
   - `prompts/coding_guidelines/prompt.md`
@@ -76,6 +75,14 @@ The issue cites `handle_no_changes_phase.ts:182/211`, but that logic moved into
   `CODING-STANDARDS.md` holds no copy of this rule. The related rules checked
   were the #3088 committed-run deferral rules and the escape-hatch rule; they
   now agree.
+
+  Review follow-up: the sweep missed the manual's own description of the
+  no-changes deferral — the "Blocked on a dependency — deferral" bullet
+  under "Decision points and exceptions" in
+  `docs/workflows/issue-processing.md:703` — which still said the deferral
+  applied with no exception but the repeat-deferral one. Added the
+  self-filed exception there, next to the repeat-deferral one it already
+  named.
 
 ## Test Plan
 
