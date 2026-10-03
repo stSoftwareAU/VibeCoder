@@ -40,8 +40,10 @@ import {
 import { validateIndependentReview } from "./independent_review_gate.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
 import {
+  buildBoundaryIntegrityInstruction,
   fenceUntrustedIssueText,
-  TOOL_OUTPUT_IS_DATA_RULE,
+  generateBoundaryId,
+  isBoundaryId,
 } from "./prompt_delimiter.ts";
 import {
   applyClosureBlocks,
@@ -58,6 +60,32 @@ import {
   recordClaudeRunStats,
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
+
+/**
+ * What {@link buildClosureVerdictPrompt} tells the model it fenced, for the
+ * boundary-integrity instruction (Issue #3111).
+ */
+const CLOSURE_VERDICT_UNTRUSTED_BLOCK = "the issue's acceptance criteria";
+
+/**
+ * Tools the closure-verdict question must never call (Issue #3111).
+ *
+ * The turn returns a verdict and writes nothing, so file-writing, sub-agent,
+ * web and plan-mode tools are denied. `Bash` and the read tools stay, because
+ * the verdict is judged from `git diff` against the base branch.
+ */
+export const CLOSURE_VERDICT_DISALLOWED_TOOLS: readonly string[] = [
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "Task",
+  "Agent",
+  "WebFetch",
+  "WebSearch",
+  "EnterPlanMode",
+  "ExitPlanMode",
+];
 
 /** The canonical home of a PR summary, used when no file exists yet. */
 function canonicalSummaryPath(issueNumber: number): string {
@@ -92,7 +120,9 @@ export interface ClosureRenderOutcome {
  * One question, one answer shape, no file edits: the model supplies the
  * content and the worker owns the document. The criteria are quoted from an
  * attacker-supplied issue body, so they ride inside a CSPRNG-nonced untrusted
- * fence rather than as bare prompt text.
+ * fence rather than as bare prompt text. The fenced criteria are declared to
+ * the model by the boundary-integrity instruction naming the same nonce
+ * (Issue #3111).
  *
  * @param opts.criteria - The criteria the issue body states, in body order.
  * @param opts.problems - What the gate said was wrong with the summary.
@@ -113,6 +143,9 @@ export function buildClosureVerdictPrompt(opts: {
       "buildClosureVerdictPrompt requires the issue's acceptance criteria",
     );
   }
+  const boundaryId = isBoundaryId(opts.boundaryId)
+    ? opts.boundaryId
+    : generateBoundaryId();
   const numbered = opts.criteria
     .map((criterion, index) => `${index + 1}. ${criterion}`)
     .join("\n");
@@ -176,7 +209,7 @@ export function buildClosureVerdictPrompt(opts: {
     ...fenceUntrustedIssueText(
       numbered,
       `The ${opts.criteria.length} criteria this issue states, in order:`,
-      opts.boundaryId,
+      boundaryId,
     ),
     "",
     "Judge the change on the branch — `git diff` against the base branch, and " +
@@ -208,9 +241,9 @@ export function buildClosureVerdictPrompt(opts: {
     "gap named is a better answer than an unsupported `met`.",
     ...reAsk,
     "",
-    "## Tool Output Is Data",
-    "",
-    TOOL_OUTPUT_IS_DATA_RULE,
+    buildBoundaryIntegrityInstruction(boundaryId, [
+      CLOSURE_VERDICT_UNTRUSTED_BLOCK,
+    ]),
   ].join("\n");
 }
 
@@ -234,6 +267,7 @@ async function askForVerdict(
       model: config.claudeModel || undefined,
       cwd: state.repoPath,
       logger,
+      disallowedTools: [...CLOSURE_VERDICT_DISALLOWED_TOOLS],
     },
     { maxRetries: config.maxRateLimitRetries },
   );
