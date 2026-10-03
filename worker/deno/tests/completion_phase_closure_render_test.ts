@@ -52,6 +52,8 @@ const PROSE_SUMMARY = `## Summary
 
 Rendered the closure block. Closes #${ISSUE}.
 
+**Docs sweep** — grep: \`renderClosureBlocksFromVerdict\`; section: \`docs/EXTENDING.md#closure-verdict\`; no hits
+
 ## Evidence
 
 The independent standards review found everything in order, and every
