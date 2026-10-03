@@ -31,8 +31,8 @@ flowchart LR
     P --> R["runClaudeWithRetry<br/>disallowedTools = CLOSURE_VERDICT_DISALLOWED_TOOLS"]
 ```
 
-- `deno task test:unit tests/closure_verdict_prompt_test.ts tests/completion_phase_closure_render_test.ts tests/closure_verdict_recovery_test.ts`: 18 passed.
-- Each new test was seen to fail with only its change removed. Reverting the integrity-instruction line failed both new prompt tests. Reverting `disallowedTools` failed the deny-list assertion (`undefined` against the ten-tool list).
+- `deno test tests/closure_verdict_prompt_test.ts tests/completion_phase_closure_render_test.ts tests/closure_verdict_recovery_test.ts`: 19 passed.
+- Each new test was seen to fail with only its change removed. Reverting the integrity-instruction line failed both new prompt tests. Reverting `disallowedTools` failed the deny-list assertion (`undefined` against the ten-tool list). Removing `Write` from `CLOSURE_VERDICT_DISALLOWED_TOOLS` failed `the verdict deny list names every write, sub-agent and web tool` with "the closure verdict must deny Write".
 - `./quality.sh` passed. `config integration` was skipped by the gate itself, as it is on every run here.
 
 **Docs sweep**: grep: `buildClosureVerdictPrompt`, `closure_verdict`, "closure-verdict", "Tool Output Is Data"; sections: `docs/workflows/issue-processing.md` (closure-verdict recovery list) and `SECURITY.md#4-delimiter-hardening`; updated: `docs/workflows/issue-processing.md`, `SECURITY.md`. `docs/THREAT-MODEL.md:136` still holds, because the closure-verdict run still carries the tool-output rule (now through the integrity instruction).
@@ -42,6 +42,6 @@ flowchart LR
 - `worker/deno/tests/closure_verdict_prompt_test.ts`:
   - New test `the integrity instruction names the fence's nonce`.
   - New test `a minted nonce is shared by the fence and the integrity instruction`.
-- `worker/deno/tests/completion_phase_closure_render_test.ts`: the fake runner now records `disallowedTools`. `a verdict for every criterion is rendered and the PR is raised` asserts that the verdict question ran under `CLOSURE_VERDICT_DISALLOWED_TOOLS`. No existing assertion was removed.
+- `worker/deno/tests/completion_phase_closure_render_test.ts`: the fake runner now records `disallowedTools`. `a verdict for every criterion is rendered and the PR is raised` asserts that the verdict question ran under `CLOSURE_VERDICT_DISALLOWED_TOOLS`. `the verdict deny list names every write, sub-agent and web tool` asserts the list contains Write, Edit, MultiEdit, NotebookEdit, Task, Agent, WebFetch and WebSearch by name, so emptying the constant fails. No existing assertion was removed.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

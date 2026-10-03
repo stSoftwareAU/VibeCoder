@@ -302,6 +302,29 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 }
 
 Deno.test(
+  "closure render - the verdict deny list names every write, sub-agent and web tool (Issue #3111)",
+  () => {
+    for (
+      const tool of [
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "Task",
+        "Agent",
+        "WebFetch",
+        "WebSearch",
+      ]
+    ) {
+      assert(
+        CLOSURE_VERDICT_DISALLOWED_TOOLS.includes(tool),
+        `the closure verdict must deny ${tool}`,
+      );
+    }
+  },
+);
+
+Deno.test(
   "closure render - a verdict for every criterion is rendered and the PR is raised",
   async () => {
     const outcome = await runCompletion({ covered: CRITERIA.length });
