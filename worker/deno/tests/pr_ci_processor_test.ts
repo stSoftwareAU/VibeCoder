@@ -2674,3 +2674,212 @@ Deno.test("processCiFailure - an ls-remote failure (non-2 exit) stands down inst
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+// ============================================================================
+// PR body sync after a successful push (Issue #3089)
+// ============================================================================
+
+/** `captureBranchHead`'s default mock value (see `createMockDeps`). */
+const DEFAULT_MOCK_HEAD_SHA = "0000000000000000000000000000000000000000";
+
+function makeSuccessfulCiPushDeps(
+  tmpDir: string,
+  syncPrBodyFn?: CiProcessorDeps["syncPrBodyFn"],
+): CiProcessorDeps {
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrGh(),
+  };
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  return {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    stateDir: `${tmpDir}/.ci_check_state`,
+    workDir: tmpDir,
+    workRoot: tmpDir,
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    syncPrBodyFn,
+  };
+}
+
+Deno.test("processCiFailure - syncs the PR body once after a verified push", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const calls: Array<{ prNumber: number; repo: string; beforeSha?: string }> =
+      [];
+    const syncPrBodyFn: CiProcessorDeps["syncPrBodyFn"] = (input) => {
+      calls.push({
+        prNumber: input.prNumber,
+        repo: input.repo,
+        beforeSha: input.beforeSha,
+      });
+      return Promise.resolve({
+        ok: true,
+        value: { status: "updated", issueNumber: 42 },
+      });
+    };
+    const processorDeps = makeSuccessfulCiPushDeps(tmpDir, syncPrBodyFn);
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]?.prNumber, 42);
+    assertEquals(calls[0]?.repo, "org/repo");
+    assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - does not sync the PR body when nothing was pushed", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    let syncCalled = false;
+    const syncPrBodyFn: CiProcessorDeps["syncPrBodyFn"] = () => {
+      syncCalled = true;
+      return Promise.resolve({
+        ok: true,
+        value: { status: "updated", issueNumber: 42 },
+      });
+    };
+    const processorDeps = makeSuccessfulCiPushDeps(tmpDir, syncPrBodyFn);
+    processorDeps.deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: { runGhCommand: openPrGh() },
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 0,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(syncCalled, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - does not sync the PR body on a gated-head fix branch", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-ci-sync-gated-" });
+  try {
+    let syncCalled = false;
+    const syncPrBodyFn: CiProcessorDeps["syncPrBodyFn"] = () => {
+      syncCalled = true;
+      return Promise.resolve({
+        ok: true,
+        value: { status: "updated", issueNumber: 42 },
+      });
+    };
+    const ghCalls: string[][] = [];
+    const processorDeps = makeSuccessfulCiPushDeps(tmpDir, syncPrBodyFn);
+    processorDeps.stateDir = `${tmpDir}/.ci_check_state`;
+    processorDeps.deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: makeGatedFixGh(ghCalls, {
+          prCreate: () =>
+            Promise.resolve("https://github.com/org/repo/pull/9010"),
+        }),
+      },
+      git: {
+        runGitCommand: ((args: string[]) => {
+          if (args[0] === "ls-remote") {
+            return Promise.resolve({
+              ok: true,
+              value: { code: 2, stdout: "", stderr: "" },
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          });
+        }) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const result = await processCiFailure(
+      makeInput({
+        repo: "org/repo",
+        prNumber: GATED_PR_NUMBER,
+        branchName: GATED_MILESTONE_HEAD,
+        checkRunId: "ci-sync-gated-1",
+      }),
+      processorDeps,
+    );
+
+    assertEquals(result.ok, true);
+    assertEquals(syncCalled, false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a failing PR body sync does not fail the run", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const processorDeps = makeSuccessfulCiPushDeps(
+      tmpDir,
+      () => Promise.resolve({ ok: false, error: new Error("gh pr edit boom") }),
+    );
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.processed, true);
+      assertEquals(result.value.changesPushed, true);
+    }
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

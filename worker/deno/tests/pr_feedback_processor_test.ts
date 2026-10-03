@@ -422,7 +422,9 @@ Deno.test("processPrFeedback - works without workerId (backward compatible)", as
 /** `captureBranchHead`'s default mock value (see `createMockDeps`). */
 const DEFAULT_MOCK_HEAD_SHA = "0000000000000000000000000000000000000000";
 
-function makeSuccessfulPushDeps(syncPrBodyFn?: PrFeedbackProcessorDeps["syncPrBodyFn"]) {
+function makeSuccessfulPushDeps(
+  syncPrBodyFn?: PrFeedbackProcessorDeps["syncPrBodyFn"],
+) {
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: (() =>
       Promise.resolve({

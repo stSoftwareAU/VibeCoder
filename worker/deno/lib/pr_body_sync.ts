@@ -214,6 +214,17 @@ export async function syncPrBodyFromSummary(
     };
   }
 
+  // The CI processor passes workDir ?? "" — an empty path would make git
+  // and the summary read run against the worker's own cwd.
+  if (input.repoPath.trim().length === 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `No checkout path for PR #${input.prNumber} — cannot read its summary file`,
+      ),
+    };
+  }
+
   let view: PrViewJson;
   try {
     const raw = await deps.runGhCommand([

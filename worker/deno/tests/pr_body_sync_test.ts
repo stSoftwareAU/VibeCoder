@@ -473,6 +473,35 @@ Deno.test("sync - carries over the milestone section and bump-skip note from the
   }
 });
 
+Deno.test("sync - empty repoPath: returns an error without calling gh", async () => {
+  const ghCalls: GhCall[] = [];
+  const gitCalls: string[][] = [];
+  const deps: SyncPrBodyDeps = {
+    runGhCommand: stubGh(ghCalls),
+    runGitCommand: stubGit(gitCalls),
+    logger,
+  };
+
+  const result = await syncPrBodyFromSummary(
+    {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath: "",
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    },
+    deps,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, `PR #${PR_NUMBER}`);
+    assertStringIncludes(result.error.message, "No checkout path");
+  }
+  assertEquals(ghCalls.length, 0);
+});
+
 Deno.test("sync - summary file deleted: skips without editing", async () => {
   const repoPath = await makeRepo({ withSummary: false });
   try {
