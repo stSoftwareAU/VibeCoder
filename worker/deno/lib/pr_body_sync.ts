@@ -33,7 +33,10 @@ import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
 } from "./screenshot_validation.ts";
-import { convertEvidenceImagesToRawUrls, findScreenshotReferences } from "./pr_evidence.ts";
+import {
+  convertEvidenceImagesToRawUrls,
+  findScreenshotReferences,
+} from "./pr_evidence.ts";
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
 
@@ -234,7 +237,10 @@ export async function syncPrBodyFromSummary(
 
   const issueNumber = issueNumberFromMarker(view.body ?? "");
   if (issueNumber === undefined) {
-    return { ok: true, value: { status: "skipped", reason: "no worker marker" } };
+    return {
+      ok: true,
+      value: { status: "skipped", reason: "no worker marker" },
+    };
   }
 
   if (!input.beforeSha) {
@@ -278,7 +284,7 @@ export async function syncPrBodyFromSummary(
     };
   }
 
-  const changedFiles = view.files.map((f) => f.path);
+  const changedFiles = (view.files ?? []).map((f) => f.path);
   const summaryContent = summaryResult.value.content;
 
   let extraSections = "";
@@ -309,7 +315,9 @@ export async function syncPrBodyFromSummary(
     ["rev-parse", "HEAD"],
     { cwd: input.repoPath },
   );
-  const headSha = headShaResult.ok ? headShaResult.value.stdout.trim() : undefined;
+  const headSha = headShaResult.ok
+    ? headShaResult.value.stdout.trim()
+    : undefined;
 
   body = await finalisePrBodyImages(
     body,
@@ -349,15 +357,20 @@ export async function syncPrBodyFromSummary(
     return {
       ok: false,
       error: new Error(
-        `Failed to update PR #${input.prNumber} body: ${(err as Error).message}`,
+        `Failed to update PR #${input.prNumber} body: ${
+          (err as Error).message
+        }`,
       ),
     };
   } finally {
     if (tmpPath) {
       try {
         await Deno.remove(tmpPath);
-      } catch {
-        // Best-effort cleanup — a leaked temp file is not worth failing the run for.
+      } catch (e) {
+        logger.warn("Could not remove PR body temp file", {
+          path: tmpPath,
+          error: (e as Error).message,
+        });
       }
     }
   }
@@ -368,4 +381,31 @@ export async function syncPrBodyFromSummary(
     issueNumber,
   });
   return { ok: true, value: { status: "updated", issueNumber } };
+}
+
+/**
+ * Call {@link syncPrBodyFromSummary} (or an injected stand-in) and log the
+ * outcome, without ever failing the caller's run (Issue #3089).
+ *
+ * Shared by the three fix-run processors (feedback, CI, merge-conflict) so
+ * each one does not duplicate the "call, then log success or failure"
+ * boilerplate.
+ */
+export async function runPrBodySync(
+  input: SyncPrBodyInput,
+  deps: SyncPrBodyDeps,
+  syncFn: typeof syncPrBodyFromSummary = syncPrBodyFromSummary,
+): Promise<void> {
+  const syncResult = await syncFn(input, deps);
+  if (!syncResult.ok) {
+    deps.logger.error("PR body sync failed (Issue #3089)", {
+      prNumber: input.prNumber,
+      error: syncResult.error.message,
+    });
+  } else {
+    deps.logger.info("PR body sync", {
+      prNumber: input.prNumber,
+      ...syncResult.value,
+    });
+  }
 }

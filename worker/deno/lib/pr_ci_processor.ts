@@ -88,6 +88,8 @@ import {
 } from "./push_claim_verification.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
+import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
+import { getRunId } from "./run_id.ts";
 import {
   buildAutoFixCapSummary,
   computeFailureSignature,

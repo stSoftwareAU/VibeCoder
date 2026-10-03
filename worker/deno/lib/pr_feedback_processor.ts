@@ -74,6 +74,8 @@ import { verifyFollowUpIssueExists } from "./escape_hatch_verify.ts";
 import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
 import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
+import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
+import { getRunId } from "./run_id.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -255,6 +257,17 @@ export interface PrFeedbackProcessorDeps {
    * while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
+  /**
+   * Override the PR body refresh after a successful push (Issue #3089).
+   * Injected by tests; production leaves it undefined and gets
+   * {@link syncPrBodyFromSummary}.
+   */
+  syncPrBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Configured worker name, used in the refreshed PR body's footer
+   * (Issue #3089). Omitted → empty string.
+   */
+  workerName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1086,31 @@ async function _processFeedbackWithHeartbeat(
         finalUnpushedCount: finalUnpushedCount ?? "not measured",
       });
     }
+  }
+
+  // Refresh the PR body from a rewritten summary file (Issue #3089). Only
+  // on the PR's own branch — a fix branch's push is not yet visible on the
+  // PR head, so there is nothing to refresh until the fix PR lands.
+  if (pushSucceeded && hasChanges && fixBranch === undefined) {
+    const syncFn = processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary;
+    await runPrBodySync(
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir,
+        beforeSha,
+        workerName: processorDeps.workerName ?? "",
+        githubUser: processorDeps.githubUser ??
+          Deno.env.get("GITHUB_USER") ?? "",
+        runId: getRunId(),
+      },
+      {
+        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
+        runGitCommand: deps.git.runGitCommand,
+        logger,
+      },
+      syncFn,
+    );
   }
 
   // Read .pr_response_message if Claude created one (Issue #1458).

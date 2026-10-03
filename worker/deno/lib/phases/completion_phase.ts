@@ -39,11 +39,7 @@ import {
   isVersionBumpOnly,
   validateScreenshotEvidence,
 } from "../screenshot_validation.ts";
-import {
-  convertEvidenceImagesToRawUrls,
-  findScreenshotReferences,
-} from "../pr_evidence.ts";
-import { resolveImagePaths } from "../image_path_resolver.ts";
+import { findScreenshotReferences } from "../pr_evidence.ts";
 import {
   buildClosureGateComment,
   validateAcceptanceClosure,
