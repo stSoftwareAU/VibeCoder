@@ -121,10 +121,6 @@ import { sanitiseIssueText } from "./conflict_intent_context.ts";
 import { addLabelToIssue } from "./label_operations.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
-import {
-  getLabelColour,
-  getLabelDescription,
-} from "../setup/label_definitions.ts";
 
 // ---------------------------------------------------------------------------
 // Marker
