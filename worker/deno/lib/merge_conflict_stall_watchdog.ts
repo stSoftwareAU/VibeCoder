@@ -1,38 +1,46 @@
 /**
- * Watchdog for a merge-conflict queue that stalled before its first attempt
- * (Issue #1112).
+ * The merge-conflict stall watchdog (Issue #3001, part of #2965).
  *
- * `docs/workflows/merge-conflicts.md` already records the "nothing stalls
- * unowned" rule: a PR out of attempt budget with no `needs-human` is escalated
- * by the next scan, so a missed escalation at the *end* of the ladder cannot
- * leave a PR silent. Nothing covered a stall *before the first attempt*, which
- * is the case that actually happened — NEAT-AI-Ockham#116 carried
- * `merge-conflict` for over three hours while nothing followed.
+ * This is the **single 2-hour owner check** on a `merge-conflict` queue.
+ * Earlier shapes of this module layered an 8-hour label-age stall on top of
+ * the ladder's own per-head wait and a two-trip rerun-then-abandon sequence;
+ * that duplicated the ladder's `CONFLICT_OWNER_CHECK_HOURS` wait (two hours,
+ * `merge_conflict_markers.ts`) with a second, longer clock the ladder knew
+ * nothing about. This module now **is** that clock, for every reason a PR can
+ * go quiet, not just the ladder's.
  *
- * Whatever suppressed the pass that time — a rate-limit pause, a dead
- * launcher, a lane that never came round — the observable was the same: the
- * label went on, and nothing followed. So this watchdog detects the **shape**
- * rather than any one cause, and the next novel cause produces a visible
- * record instead of silence.
+ * The clock starts at the LATEST of four events (see
+ * {@link conflictStallClockStart}):
  *
- * The detection signal is deliberately unlike every other guard in this
- * subsystem: it keys on **wall-clock time since the label was applied**, read
- * from the PR's `labeled` timeline event, not on attempt records. An
- * attempt-based guard cannot fire here, because the failure mode is that no
- * attempt record exists.
+ * - the `merge-conflict` label going on;
+ * - the newest trusted stand-down (`readLatestStandDownAtMs`,
+ *   `gated_head_guard.ts`) — the gated-head and park waits both write one;
+ * - the newest trusted resolution attempt (`readResolutionAttempts`,
+ *   `merge_conflict_markers.ts`) — any pass's attempt or conclusion marker;
+ * - the PR's head moving (`headChangedAtMs`) — a fresh push is itself
+ *   evidence something is happening.
  *
- * Two boundaries the rest of this subsystem depends on:
+ * Two hours after the latest of those with nothing since, the queue has
+ * stalled, and this watchdog **fixes forward**: while the shared
+ * {@link CONFLICT_RESOLUTION_BUDGET} remains it runs the conflict takeover
+ * pass (`conflict_takeover.ts`); once the budget is spent it closes the PR
+ * and redoes its work through `abandonAndRestart`, using the **guarded**
+ * `{ kind: "merge-conflict" }` reason — never `stalled`, which is exempt from
+ * the budget guard and belongs to a different caller.
  *
- * - **It never applies `needs-human`.** A mechanical stall is work, not a
- *   decision, and that label is a cross-subsystem veto (Issue #569) — the
- *   conflict scan skips any PR carrying it, so applying it here would remove
- *   the PR from the very lane that could clear it. It files no issue and adds
- *   no label either (Issue #2803): a stall is repaired, not reported.
- * - **It never starts an attempt.** Forcing one from a watchdog would race the
- *   ordinary pass and manufacture the disrupted-attempt state the workflow
- *   works hard to avoid. The first trip clears the ladder's per-head wait so
- *   the ordinary pass reruns the ladder once; a second trip closes the PR and
- *   redoes its work through `abandonAndRestart`.
+ * A PR parked on an unmoved base tip (Issue #2312) is not escalated — but
+ * only while the budget remains. A parked PR whose budget is spent still
+ * trips: parking defers a decision the fleet can still act on, not one it has
+ * run out of road for.
+ *
+ * Two invariants this module keeps, carried over unchanged:
+ *
+ * - **It never applies `needs-human` itself.** Only `abandonAndRestart`'s own
+ *   restarts-spent hand-off does, once an issue's redos are exhausted
+ *   (Issue #2804) — applying it here would remove the PR from the very lane
+ *   that could still clear it (Issue #569).
+ * - **It files no issue and adds no label of its own** (Issue #2803). A
+ *   stall is repaired, not reported.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -46,15 +54,13 @@ import {
   type AbandonRestartRequest,
 } from "./conflict_abandon_restart.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
+import { updateIssueComment } from "./marker_comment_pages.ts";
 import { getLabelLastAddInfoComplete } from "./issue_query.ts";
 import {
   acquireMaintenanceRepoLease,
   type RepoLease,
 } from "./maintenance_lane.ts";
 import {
-  CONFLICT_ATTEMPT_MARKER,
-  CONFLICT_FAILED_MARKER,
-  CONFLICT_RESOLVED_MARKER,
   type ConflictPrDecision,
   conflictPrKey,
   conflictReasonOperands,
@@ -62,42 +68,38 @@ import {
   MERGE_CONFLICT_LABEL,
 } from "./pr_merge_conflict_scan.ts";
 import {
-  CONFLICT_RUNG_FAILED_MARKER,
+  CONFLICT_FAILED_MARKER,
+  CONFLICT_OWNER_CHECK_HOURS,
+  CONFLICT_RESOLUTION_BUDGET,
+  CONFLICT_RESOLVED_MARKER,
+  CONFLICT_WATCHDOG_CHECKED_MARKER,
+  conflictWatchdogCheckedMarker,
+  isConflictHeadSha,
   readParkedBase,
+  readResolutionAttempts,
+  spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
+import { readLatestStandDownAtMs } from "./gated_head_guard.ts";
+import {
+  type ConflictTakeoverDeps,
+  type ConflictTakeoverOutcome,
+  type ConflictTakeoverPr,
+  runConflictTakeover,
+} from "./conflict_takeover.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/**
- * Hours a PR may carry `merge-conflict` with nothing concluding before the
- * queue is called stalled.
- *
- * Eight hours is this watchdog's own window (Issue #2305 removed the
- * post-attempt cooldown it used to be derived from). Hours can pass with no
- * attempt for entirely ordinary reasons — a busy lane, a held lease — so the
- * bound is the window a healthy queue cannot plausibly exceed.
- */
-export const DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS = 8;
-
-/**
- * Marker opening the first-trip comment (Issue #2803).
- *
- * It records that the ladder was rerun once for this stall, so the next check
- * that still finds the stall abandons rather than trips again. It shares no
- * literal with the `vibe-merge-conflict-` vocabulary, so the ladder and the
- * attempt budget never read it, and it is **not** progress: the stall clock
- * keeps running through it, or the second trip could never fire (#2802).
- */
-export const CONFLICT_STALL_REPAIR_MARKER = "<!-- vibe-conflict-stall-repair";
-
 /** Label whose presence means a human already owns the PR. */
 const NEEDS_HUMAN_LABEL = "needs-human";
 
 /** The only `mergeable` state that is a merge-conflict queue. */
 const CONFLICTING_STATE = "CONFLICTING";
+
+/** The 2-hour owner-check window, in milliseconds. */
+const OWNER_CHECK_WINDOW_MS = CONFLICT_OWNER_CHECK_HOURS * 3600_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -134,10 +136,19 @@ export interface ConflictStallObservation {
   /**
    * The base branch's tip sha (Issue #2312). Compared against the park
    * marker's own base: a parked PR is not a stall while its base has not
-   * moved. Absent means the listing did not carry one, and an unknown base
-   * can never match a park — the stall is then judged the ordinary way.
+   * moved and the shared budget is not spent. Absent means the listing did
+   * not carry one, and an unknown base can never match a park — the stall is
+   * then judged the ordinary way.
    */
   baseRefOid?: string;
+  /** The PR's live head sha, lowercased comparisons are the caller's job. */
+  headRefOid?: string;
+  /**
+   * Epoch milliseconds the head last changed, when known. Absent means
+   * unknown — never treated as "just now" or "never", simply left out of the
+   * clock-start computation.
+   */
+  headChangedAtMs?: number;
 }
 
 /** A merge-conflict queue that has stopped moving on one PR. */
@@ -148,19 +159,27 @@ export interface ConflictQueueStall {
   labelledAtMs: number;
   /** How long the label has been on, in milliseconds. */
   labelAgeMs: number;
-  /**
-   * Epoch milliseconds the stall clock started: the label event, or the most
-   * recent attempt conclusion after it — whichever is later.
-   */
+  /** Epoch milliseconds the stall clock started (the latest of four events). */
   stalledSinceMs: number;
   /** How long nothing has happened, in milliseconds. */
   stalledMs: number;
-  /** Epoch milliseconds of the last concluded attempt, when there was one. */
-  lastConclusionAtMs?: number;
+  /** Which of the four events started the clock. */
+  clockStart: "label" | "stand-down" | "attempt" | "head-change";
+  /** Epoch milliseconds of the newest trusted stand-down, when there was one. */
+  standDownAtMs?: number;
+  /** Epoch milliseconds of the newest trusted resolution attempt, when there was one. */
+  lastAttemptAtMs?: number;
+  /** Epoch milliseconds the head last changed, when known. */
+  headChangedAtMs?: number;
+  /** The PR's live head sha, when known. */
+  headRefOid?: string;
+  /** Failed attempts spent against the shared budget (Issue #2996). */
+  attemptsSpent: number;
+  /** True once {@link CONFLICT_RESOLUTION_BUDGET} is exhausted. */
+  budgetSpent: boolean;
   /**
    * True when an attempt opened and never concluded — the disrupted case. It
-   * is still a stall: the disruption bound has not fired either, so nothing
-   * is moving the PR.
+   * is still a stall: nothing is moving the PR either way.
    */
   openAttempt: boolean;
   /** Skip reasons recorded for the PR this cycle (Issue #1109). */
@@ -173,8 +192,6 @@ export interface DetectConflictStallOptions {
   nowMs: number;
   /** Whether a comment author is one of the fleet's own. */
   isTrustedAuthor: (login: string) => boolean;
-  /** Hours before a labelled PR with no conclusion is called stalled. */
-  thresholdHours?: number;
   /** Label meaning a human owns the PR. Defaults to `needs-human`. */
   needsHumanLabel?: string;
 }
@@ -208,62 +225,29 @@ function commentBody(raw: unknown): string | undefined {
   return typeof body === "string" ? body : undefined;
 }
 
-/** What the PR's thread says has happened since the label went on. */
-interface StallSignals {
-  /**
-   * Epoch milliseconds of the most recent conclusion — merged, or judged and
-   * failed — since the label went on, when there is one.
-   */
-  lastConclusionAtMs?: number;
-  /** An attempt opened after the most recent conclusion. */
-  openAttempt: boolean;
-  /**
-   * Epoch milliseconds of the newest first-trip marker since the most recent
-   * conclusion, when the ladder has already been rerun for this stall.
-   */
-  tripAtMs?: number;
-  /**
-   * The base tip the newest park marker names, when the PR is parked
-   * (Issue #2312). A park is the opposite of the silence this watchdog looks
-   * for — it is the record that says *why* nothing is happening — so it
-   * suppresses the stall, but only while the base tip it names is still the
-   * PR's base. Once that tip moves the scan owes the PR an attempt again, and
-   * the ordinary clock applies.
-   */
-  parkedBase?: string;
-}
-
 /**
- * Read the three signals out of the PR's own thread.
+ * The newest trusted park marker's base, since the label, cleared by a later
+ * trusted resolved/failed conclusion (Issue #2312).
  *
- * Every signal requires a **trusted author**. A comment body is text anybody
- * may write on a public repository, and each of these signals *suppresses* the
- * watchdog — so trusting a forged one buys silence, which is the outcome this
- * watchdog exists to remove. (`hasOpenDeferralNotice` is author-blind about
- * conclusions for the opposite reason: there, a forged marker only causes an
- * extra comment.)
- *
- * A conclusion restarts everything after it: an attempt that opened before it
- * is no longer open, and a trip posted before it belonged to the stall that
- * conclusion ended.
+ * A park is the opposite of the silence this watchdog looks for — it is the
+ * record that says *why* nothing is happening — so it suppresses the stall,
+ * but only while nothing has concluded since. A conclusion means the PR was
+ * un-parked and worked on, so the park no longer describes what is happening.
  *
  * @param comments - Raw REST comment objects, oldest first.
  * @param sinceMs - The label event; comments older than it belong to a
  *   previous conflict and say nothing about this one.
  */
-function readStallSignals(
+function readParkedBaseSince(
   comments: readonly unknown[],
   sinceMs: number,
   isTrustedAuthor: (login: string) => boolean,
-): StallSignals {
-  const signals: StallSignals = { openAttempt: false };
-
+): string | undefined {
+  let parkedBase: string | undefined;
   for (const raw of comments) {
     const body = commentBody(raw);
     if (body === undefined) continue;
     const createdAtMs = commentCreatedAtMs(raw);
-    // An undated comment cannot be placed relative to the label, so it is not
-    // allowed to suppress anything.
     if (createdAtMs === undefined || createdAtMs < sinceMs) continue;
     const author = commentAuthor(raw);
     if (author === undefined || !isTrustedAuthor(author)) continue;
@@ -272,31 +256,94 @@ function readStallSignals(
       body.includes(CONFLICT_RESOLVED_MARKER) ||
       body.includes(CONFLICT_FAILED_MARKER)
     ) {
-      if (
-        signals.lastConclusionAtMs === undefined ||
-        createdAtMs > signals.lastConclusionAtMs
-      ) {
-        signals.lastConclusionAtMs = createdAtMs;
-      }
-      // Everything before this conclusion belongs to the stall it ended.
-      signals.openAttempt = false;
-      delete signals.tripAtMs;
-      delete signals.parkedBase;
+      parkedBase = undefined;
       continue;
     }
-    if (body.includes(CONFLICT_ATTEMPT_MARKER)) signals.openAttempt = true;
-    // A trip is recorded but never counted as progress: it leaves the clock.
-    if (body.includes(CONFLICT_STALL_REPAIR_MARKER)) {
-      signals.tripAtMs = Math.max(signals.tripAtMs ?? createdAtMs, createdAtMs);
-    }
-    // Read through the marker module rather than by substring: the base sha is
-    // the whole signal, and a marker whose sha cannot be read must not park
-    // the watchdog on a value nothing can ever match (Issue #2312).
+    // Read through the marker module rather than by substring: the base sha
+    // is the whole signal, and a marker whose sha cannot be read must not
+    // park the watchdog on a value nothing can ever match (Issue #2312).
     const park = readParkedBase([raw]);
-    if (park !== null) signals.parkedBase = park.base;
+    if (park !== null) parkedBase = park.base;
+  }
+  return parkedBase;
+}
+
+/** What {@link conflictStallClockStart} found started the clock. */
+export interface ConflictStallClockStart {
+  /** Epoch milliseconds the clock starts counting from. */
+  startMs: number;
+  /** Which event was latest. */
+  cause: "label" | "stand-down" | "attempt" | "head-change";
+  /** The newest trusted stand-down's time, when there was one. */
+  standDownAtMs?: number;
+  /** The newest trusted resolution attempt's time, when there was one. */
+  lastAttemptAtMs?: number;
+}
+
+/**
+ * The stall clock's start: the LATEST of the label event, the newest trusted
+ * stand-down, the newest trusted resolution attempt, and the head's last
+ * change — shared by {@link detectConflictQueueStall} and the under-lease
+ * re-check in {@link repairConflictQueueStall} so both agree on when the
+ * clock last reset.
+ *
+ * A `headChangedAtMs` that is not finite or that lies in the future
+ * (`> nowMs`) is ignored — a future-dated commit (clock skew, a forged
+ * timestamp) must not postpone the trip forever. This watchdog fails towards
+ * acting, never towards silence.
+ *
+ * @param comments - Raw REST comment objects, oldest first.
+ * @param labelledAtMs - Epoch milliseconds the `merge-conflict` label went on.
+ * @param headChangedAtMs - Epoch milliseconds the head last changed, when
+ *   known.
+ * @param nowMs - Current time, epoch milliseconds.
+ * @param isTrustedAuthor - Predicate a comment's `user.login` must pass for
+ *   its marker to move the clock at all — a forged marker must not buy
+ *   silence.
+ */
+export function conflictStallClockStart(
+  comments: readonly unknown[],
+  labelledAtMs: number,
+  headChangedAtMs: number | undefined,
+  nowMs: number,
+  isTrustedAuthor: (login: string) => boolean,
+): ConflictStallClockStart {
+  const standDownAtMs = readLatestStandDownAtMs(comments, isTrustedAuthor);
+  const attempts = readResolutionAttempts(comments, isTrustedAuthor);
+  let lastAttemptAtMs: number | undefined;
+  for (const attempt of attempts) {
+    if (attempt.atMs === undefined) continue;
+    if (lastAttemptAtMs === undefined || attempt.atMs > lastAttemptAtMs) {
+      lastAttemptAtMs = attempt.atMs;
+    }
+  }
+  const validHeadChangedAtMs =
+    headChangedAtMs !== undefined && Number.isFinite(headChangedAtMs) &&
+      headChangedAtMs <= nowMs
+      ? headChangedAtMs
+      : undefined;
+
+  let startMs = labelledAtMs;
+  let cause: ConflictStallClockStart["cause"] = "label";
+  if (standDownAtMs !== undefined && standDownAtMs > startMs) {
+    startMs = standDownAtMs;
+    cause = "stand-down";
+  }
+  if (lastAttemptAtMs !== undefined && lastAttemptAtMs > startMs) {
+    startMs = lastAttemptAtMs;
+    cause = "attempt";
+  }
+  if (validHeadChangedAtMs !== undefined && validHeadChangedAtMs > startMs) {
+    startMs = validHeadChangedAtMs;
+    cause = "head-change";
   }
 
-  return signals;
+  return {
+    startMs,
+    cause,
+    ...(standDownAtMs !== undefined ? { standDownAtMs } : {}),
+    ...(lastAttemptAtMs !== undefined ? { lastAttemptAtMs } : {}),
+  };
 }
 
 /**
@@ -304,12 +351,12 @@ function readStallSignals(
  *
  * Returns `null` for every PR that is legitimately not a stall: parked behind
  * `needs-human`, closed, not in the queue at all, of unknown label age, inside
- * the threshold, moved by a concluded attempt, or parked on an unmoved base tip (Issue #2312).
+ * the {@link CONFLICT_OWNER_CHECK_HOURS} window, moved by a trusted stand-down
+ * / attempt / head change, or parked on an unmoved base tip while the shared
+ * budget remains (Issue #2312).
  *
  * An attempt that opened and never concluded still counts as a stall — the
- * disruption bound has not fired either, so nothing is moving the PR. Keying
- * on "any attempt marker exists" instead of "a *conclusion* exists" would miss
- * exactly that shape, which is the real GRQ#4408 case.
+ * disruption bound has not fired either, so nothing is moving the PR.
  */
 export function detectConflictQueueStall(
   observation: ConflictStallObservation,
@@ -318,7 +365,6 @@ export function detectConflictQueueStall(
   const {
     nowMs,
     isTrustedAuthor,
-    thresholdHours = DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS,
     needsHumanLabel = NEEDS_HUMAN_LABEL,
   } = options;
 
@@ -335,164 +381,76 @@ export function detectConflictQueueStall(
   if (labelledAtMs === undefined || !Number.isFinite(labelledAtMs)) return null;
 
   const labelAgeMs = nowMs - labelledAtMs;
-  // The clock can never start before the label, so a label inside the
-  // threshold is not a stall whatever the thread says — and the caller may
-  // skip reading the thread at all on the strength of it.
-  if (labelAgeMs < thresholdHours * 3600_000) return null;
+  // The clock can never start before the label, so a label inside the window
+  // is not a stall whatever the thread says — and the caller may skip reading
+  // the thread at all on the strength of it.
+  if (labelAgeMs < OWNER_CHECK_WINDOW_MS) return null;
 
-  const signals = readStallSignals(
+  const attempts = readResolutionAttempts(
     observation.comments,
-    labelledAtMs,
     isTrustedAuthor,
   );
-  // Issue #2312: a parked PR is not a stalled one. The park marker is what
-  // *follows* the label — the fleet saying it has spent this issue's restarts
-  // and is waiting on the base tip, not going quiet — so escalating it would
-  // report a mechanical failure that did not happen. The suppression is
-  // deliberately narrow: it holds only while the PR's base is still the sha
-  // the marker names, so a park the scan should already have re-attempted is
-  // still caught by the ordinary clock.
-  //
-  // A base tip that could not be read therefore resolves the *opposite* way
-  // here to the way it resolves in the scan, and on purpose: each component
-  // fails towards saying something. The scan will not spend an agent run on a
-  // merge it cannot tell has changed, and this watchdog will not go silent on
-  // a PR it cannot tell is still waiting.
-  if (
-    signals.parkedBase !== undefined &&
-    signals.parkedBase === observation.baseRefOid?.trim().toLowerCase()
-  ) {
-    return null;
+  const attemptsSpent = spentConflictAttempts(attempts);
+  const budgetSpent = attemptsSpent >= CONFLICT_RESOLUTION_BUDGET;
+
+  // Issue #2312: a parked PR is not a stalled one, but only while the shared
+  // budget remains — a parked PR with the budget spent has nowhere left to
+  // park, and still trips.
+  if (!budgetSpent) {
+    const parkedBase = readParkedBaseSince(
+      observation.comments,
+      labelledAtMs,
+      isTrustedAuthor,
+    );
+    if (
+      parkedBase !== undefined &&
+      parkedBase === observation.baseRefOid?.trim().toLowerCase()
+    ) {
+      return null;
+    }
   }
 
-  // A conclusion puts the PR back in the ordinary ladder and starts a fresh
-  // clock: the stall being measured is the silence *since* the last thing that
-  // happened, not since the label. Without this, one failed attempt in hour
-  // two buys permanent silence for a PR that then never gets its second — a
-  // queue nothing else watches, because its budget is not spent either.
-  const stalledSinceMs = signals.lastConclusionAtMs ?? labelledAtMs;
-  const stalledMs = nowMs - stalledSinceMs;
-  if (stalledMs < thresholdHours * 3600_000) return null;
+  const clock = conflictStallClockStart(
+    observation.comments,
+    labelledAtMs,
+    observation.headChangedAtMs,
+    nowMs,
+    isTrustedAuthor,
+  );
+  const stalledMs = nowMs - clock.startMs;
+  if (stalledMs < OWNER_CHECK_WINDOW_MS) return null;
+
+  const lastAttempt = attempts[attempts.length - 1];
 
   return {
     repo: observation.repo,
     prNumber: observation.prNumber,
     labelledAtMs,
     labelAgeMs,
-    stalledSinceMs,
+    stalledSinceMs: clock.startMs,
     stalledMs,
-    ...(signals.lastConclusionAtMs !== undefined
-      ? { lastConclusionAtMs: signals.lastConclusionAtMs }
+    clockStart: clock.cause,
+    ...(clock.standDownAtMs !== undefined
+      ? { standDownAtMs: clock.standDownAtMs }
       : {}),
-    openAttempt: signals.openAttempt,
+    ...(clock.lastAttemptAtMs !== undefined
+      ? { lastAttemptAtMs: clock.lastAttemptAtMs }
+      : {}),
+    ...(observation.headChangedAtMs !== undefined
+      ? { headChangedAtMs: observation.headChangedAtMs }
+      : {}),
+    ...(observation.headRefOid !== undefined
+      ? { headRefOid: observation.headRefOid }
+      : {}),
+    attemptsSpent,
+    budgetSpent,
+    openAttempt: lastAttempt?.outcome === "open",
     skipReasons: observation.skipReasons ?? [],
   };
 }
 
 // ---------------------------------------------------------------------------
-// What the repair says
-// ---------------------------------------------------------------------------
-
-/** Render a duration in whole hours, floored — never rounded up. */
-function formatHours(ms: number): string {
-  const hours = Math.floor(ms / 3600_000);
-  return `${hours} hour${hours === 1 ? "" : "s"}`;
-}
-
-/** One skip reason, as `kind (operand=value, …)`. */
-function describeSkipReason(reason: ConflictSkipReason): string {
-  const operands = Object.entries(conflictReasonOperands(reason))
-    .map(([key, value]) => `${key}=${String(value)}`)
-    .join(", ");
-  return operands.length > 0
-    ? `\`${reason.kind}\` (${operands})`
-    : `\`${reason.kind}\``;
-}
-
-/**
- * The stall as one clause completing "This PR …" — what the second trip's
- * permanent comments quote. The first trip's full report is already on the PR.
- */
-export function buildConflictStallDetail(stall: ConflictQueueStall): string {
-  const since = stall.lastConclusionAtMs === undefined
-    ? "with no resolution attempt concluding"
-    : `with nothing since its last attempt concluded ${
-      formatHours(stall.stalledMs)
-    } ago`;
-  return `has carried \`${MERGE_CONFLICT_LABEL}\` for ` +
-    `${formatHours(stall.labelAgeMs)} ${since}`;
-}
-
-/** Why this PR's queue is being reported as stalled. */
-export function buildConflictStallReason(stall: ConflictQueueStall): string {
-  const lines = [
-    `${stall.repo}#${stall.prNumber} has carried \`${MERGE_CONFLICT_LABEL}\` ` +
-    `since ${new Date(stall.labelledAtMs).toISOString()} — ` +
-    `${formatHours(stall.labelAgeMs)} — and still conflicts with its base.`,
-  ];
-
-  lines.push(
-    "",
-    stall.lastConclusionAtMs === undefined
-      ? "No resolution attempt has reached a conclusion in that time: no " +
-        "resolved marker and no failure marker on the PR."
-      : `The last attempt concluded at ${
-        new Date(stall.lastConclusionAtMs).toISOString()
-      } and nothing has happened in the ${
-        formatHours(stall.stalledMs)
-      } since — no further attempt, no conclusion.`,
-  );
-
-  lines.push(
-    "",
-    stall.openAttempt
-      ? "An attempt did open and then went silent, so it was never judged — " +
-        "and the disrupted-attempt bound has not fired either. The queue is " +
-        "stalled either way."
-      : "No attempt is open, so the attempt budget is untouched and the " +
-        "branch is exactly as its author pushed it.",
-  );
-
-  if (stall.skipReasons.length > 0) {
-    lines.push(
-      "",
-      "**Skip reasons recorded for it** (Issue #1109)",
-      "",
-      ...stall.skipReasons.map((reason) => `- ${describeSkipReason(reason)}`),
-    );
-  } else {
-    lines.push(
-      "",
-      "No skip reason was recorded for it this cycle, which is itself the " +
-        "signal: the pass reached no decision about this PR at all.",
-    );
-  }
-
-  return lines.join("\n");
-}
-
-/**
- * The first-trip comment posted on the PR (Issue #2803).
- *
- * It opens with {@link CONFLICT_STALL_REPAIR_MARKER}, which is what makes the
- * second check abandon rather than trip again: the marker lives on the PR, so
- * every host reads it, and a conclusion after it clears it.
- */
-export function buildConflictStallComment(stall: ConflictQueueStall): string {
-  return [
-    `${CONFLICT_STALL_REPAIR_MARKER} trip="1" -->`,
-    "⏳ **Merge-conflict queue stalled — rerunning the conflict ladder once**",
-    "",
-    buildConflictStallReason(stall),
-    "",
-    "The ladder's wait marker for this head has been cleared so the next " +
-    "conflict pass tries again. If the PR is still stalled at the next " +
-    "check, it is closed and its originating issue is redone.",
-  ].join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Repair (Issue #2803)
+// Repair — fix forward (Issue #3001)
 // ---------------------------------------------------------------------------
 
 /** Injected seams for {@link repairConflictQueueStall}. */
@@ -514,16 +472,112 @@ export interface ConflictStallRepairDeps {
   ) => Promise<AbandonRestartOutcome>;
   /** Extra seams passed through to `abandonAndRestart`. */
   abandonDeps?: Partial<AbandonRestartDeps>;
+  /**
+   * The two resolvers `runConflictTakeover` needs — production wires these in
+   * `run_core_production_deps.ts`. Undefined with the budget still remaining
+   * is a configuration error, not a silent skip.
+   */
+  takeoverResolvers?: Pick<
+    ConflictTakeoverDeps,
+    "resolveViaLadder" | "resolveOnFixBranch"
+  >;
+  /** The takeover run itself. Defaults to {@link runConflictTakeover}; injected by tests. */
+  takeover?: (
+    pr: ConflictTakeoverPr,
+    deps: ConflictTakeoverDeps,
+  ) => Promise<ConflictTakeoverOutcome>;
+  /**
+   * This host's id for the cross-host PR lock. When set, the takeover
+   * acquires that lock before posting an attempt (Issue #3001 review).
+   */
+  workerId?: string;
+  /**
+   * Handler deadline. Passed into the takeover so a cycle that cannot cover
+   * an agent run declines with no marker (Issue #2965).
+   */
+  deadlineEpochMs?: number;
 }
 
 /** What {@link repairConflictQueueStall} did. */
 export type ConflictStallRepairAction =
   | "skipped-lease-held"
-  | "first-trip"
-  | "awaiting-second-check"
+  | "no-longer-stalled"
+  | "taken-over"
+  | "takeover-declined"
+  | "lock-held"
   | "abandoned"
   | "abandon-declined"
   | "failed";
+
+/**
+ * The id of the newest trusted watchdog-checked note, when the thread has one.
+ *
+ * Restarting the clock edits that note. Posting another every window leaves
+ * a comment on the PR until a human acts (Issue #2965).
+ */
+function trustedWatchdogCheckedCommentId(
+  comments: readonly unknown[],
+  isTrustedAuthor: (login: string) => boolean,
+): number | undefined {
+  for (let index = comments.length - 1; index >= 0; index--) {
+    const raw = comments[index];
+    if (typeof raw !== "object" || raw === null) continue;
+    const row = raw as {
+      id?: unknown;
+      body?: unknown;
+      user?: { login?: unknown };
+    };
+    if (
+      typeof row.body !== "string" ||
+      !row.body.includes(CONFLICT_WATCHDOG_CHECKED_MARKER)
+    ) {
+      continue;
+    }
+    const login = row.user?.login;
+    if (typeof login !== "string" || !isTrustedAuthor(login)) continue;
+    if (typeof row.id === "number" && Number.isInteger(row.id) && row.id > 0) {
+      return row.id;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Restart the owner-check clock after a no-op outcome.
+ *
+ * A declined abandon and a reused fix PR otherwise leave the thread unchanged,
+ * so the next cycle trips the same PR again. The first check posts the note.
+ * Later checks edit that same note's `at=` rather than adding another comment.
+ */
+async function postWatchdogChecked(
+  repo: string,
+  prNumber: number,
+  atMs: number,
+  comments: readonly unknown[],
+  isTrustedAuthor: (login: string) => boolean,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<void> {
+  const body = [
+    "The conflict watchdog checked this PR and had nothing new to post, " +
+    "so this note restarts the owner-check clock.",
+    "",
+    conflictWatchdogCheckedMarker(atMs),
+  ].join("\n");
+  const existing = trustedWatchdogCheckedCommentId(comments, isTrustedAuthor);
+  if (existing !== undefined) {
+    await updateIssueComment(repo, existing, body, ghCommandFn);
+    return;
+  }
+  await ghCommandFn([
+    "pr",
+    "comment",
+    String(prNumber),
+    "--repo",
+    repo,
+    "--body",
+    body,
+  ]);
+}
 
 /** Everything {@link repairConflictQueueStall} needs beyond its seams. */
 export interface ConflictStallRepairOptions extends ConflictStallRepairDeps {
@@ -531,50 +585,28 @@ export interface ConflictStallRepairOptions extends ConflictStallRepairDeps {
   isTrustedAuthor: (login: string) => boolean;
   /** Current time, epoch milliseconds. */
   nowMs: number;
-  /** Hours between the first trip and the second check. */
-  thresholdHours?: number;
-}
-
-/** The raw comment's numeric id, when it has one. */
-function commentId(raw: unknown): number | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const id = (raw as { id?: unknown }).id;
-  return typeof id === "number" && Number.isSafeInteger(id) && id > 0
-    ? id
-    : undefined;
-}
-
-/** True for a fleet-authored `rung="abandon"` failure marker — the wait. */
-function isAbandonWaitMarker(
-  raw: unknown,
-  isTrustedAuthor: (login: string) => boolean,
-): boolean {
-  const body = commentBody(raw);
-  if (body === undefined) return false;
-  const start = body.indexOf(CONFLICT_RUNG_FAILED_MARKER);
-  if (start < 0) return false;
-  const author = commentAuthor(raw);
-  if (author === undefined || !isTrustedAuthor(author)) return false;
-  const end = body.indexOf("-->", start);
-  const segment = body.slice(start, end < 0 ? undefined : end);
-  return /\brung="abandon"/.test(segment);
 }
 
 /**
- * Repair a stalled queue in two trips (Issue #2803).
+ * Repair a stalled queue by fixing it forward (Issue #3001).
  *
- * The first trip records itself on the PR, then deletes the ladder's
- * fleet-authored `rung="abandon"` failure markers — the per-head wait — so the
- * ordinary conflict pass climbs the ladder once more. The second trip, when a
- * later check still finds the stall a full threshold after the first, closes
- * the PR and redoes its work through `abandonAndRestart`, whose re-queue label
- * is the issue's own, else `idle-task` — never `work-on`.
+ * Under the maintenance lease, re-reads the PR's thread and live head sha: if
+ * the head has moved since detection, or the clock recomputed from the fresh
+ * thread no longer clears the owner-check window, another host already acted
+ * and this call reports `"no-longer-stalled"` rather than double up.
  *
- * It files no issue, adds no label and never applies `needs-human` — nor does
- * the rung it hands off to: there is no restart cap and no needs-human
- * hand-off for this route, however many times the issue has already been
- * redone (Issue #3033). It never throws: every failure is logged and
- * reported as `failed`, and the next pass retries.
+ * While the shared {@link CONFLICT_RESOLUTION_BUDGET} remains, it runs the
+ * conflict takeover pass (`conflict_takeover.ts`) — the takeover's own
+ * attempt marker is what re-arms this clock, so no separate trip marker is
+ * needed. Once the budget is spent, it closes the PR and redoes its work
+ * through `abandonAndRestart`, using the **guarded** `{ kind: "merge-conflict" }`
+ * reason, which the shared budget still bounds — never `stalled`, which is
+ * exempt from that guard.
+ *
+ * It never applies `needs-human` itself — only `abandonAndRestart`'s own
+ * restarts-spent hand-off does — and it files no issue and adds no label of
+ * its own. It never throws: every failure is logged and reported as
+ * `"failed"`, and the next pass retries.
  */
 export async function repairConflictQueueStall(
   stall: ConflictQueueStall,
@@ -595,56 +627,8 @@ export async function repairConflictQueueStall(
   }
 
   try {
-    // Re-read under the lease: another pass may have tripped since detection.
+    // Re-read under the lease: another pass may have acted since detection.
     const comments = await fetchIssueCommentPages(repo, prNumber, ghCommandFn);
-    const { tripAtMs } = readStallSignals(
-      comments,
-      stall.labelledAtMs,
-      isTrustedAuthor,
-    );
-
-    if (tripAtMs === undefined) {
-      // The trip marker first: a failure after it still leaves the second
-      // check armed, whereas a cleared wait with no record would loop.
-      await ghCommandFn([
-        "pr",
-        "comment",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--body",
-        buildConflictStallComment(stall),
-      ]);
-      for (const raw of comments) {
-        if (!isAbandonWaitMarker(raw, isTrustedAuthor)) continue;
-        const id = commentId(raw);
-        if (id === undefined) continue;
-        await ghCommandFn([
-          "api",
-          "-X",
-          "DELETE",
-          `repos/${repo}/issues/comments/${id}`,
-        ]);
-      }
-      logger.warn(
-        "Merge-conflict queue stalled — rerunning the conflict ladder once",
-        { repo, prNumber, stalledMs: stall.stalledMs },
-      );
-      return "first-trip";
-    }
-
-    const thresholdMs =
-      (options.thresholdHours ?? DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS) *
-      3600_000;
-    if (options.nowMs - tripAtMs < thresholdMs) {
-      logger.info(
-        "Merge-conflict stall repair: ladder rerun pending — awaiting the " +
-          "second check",
-        { repo, prNumber, tripAtMs },
-      );
-      return "awaiting-second-check";
-    }
-
     const view = JSON.parse(
       await ghCommandFn([
         "pr",
@@ -653,14 +637,132 @@ export async function repairConflictQueueStall(
         "--repo",
         repo,
         "--json",
-        "headRefName,baseRefName",
+        "headRefName,baseRefName,headRefOid",
       ]),
-    ) as { headRefName?: unknown; baseRefName?: unknown };
+    ) as { headRefName?: unknown; baseRefName?: unknown; headRefOid?: unknown };
     if (
       typeof view.headRefName !== "string" ||
-      typeof view.baseRefName !== "string"
+      typeof view.baseRefName !== "string" ||
+      typeof view.headRefOid !== "string"
     ) {
-      throw new Error("`gh pr view` returned no head or base branch name");
+      throw new Error(
+        "`gh pr view` returned no head branch, base branch or head sha",
+      );
+    }
+
+    if (
+      stall.headRefOid !== undefined &&
+      stall.headRefOid.trim().toLowerCase() !==
+        view.headRefOid.trim().toLowerCase()
+    ) {
+      logger.info(
+        "Merge-conflict stall repair: the head moved since detection — " +
+          "no longer stalled",
+        { repo, prNumber },
+      );
+      return "no-longer-stalled";
+    }
+
+    const clock = conflictStallClockStart(
+      comments,
+      stall.labelledAtMs,
+      stall.headChangedAtMs,
+      options.nowMs,
+      isTrustedAuthor,
+    );
+    if (options.nowMs - clock.startMs < OWNER_CHECK_WINDOW_MS) {
+      logger.info(
+        "Merge-conflict stall repair: another host already acted — " +
+          "no longer stalled",
+        { repo, prNumber },
+      );
+      return "no-longer-stalled";
+    }
+
+    const attempts = readResolutionAttempts(comments, isTrustedAuthor);
+    const attemptsSpent = spentConflictAttempts(attempts);
+    const budgetSpent = attemptsSpent >= CONFLICT_RESOLUTION_BUDGET;
+
+    if (!budgetSpent) {
+      if (options.takeoverResolvers === undefined) {
+        throw new Error(
+          "repairConflictQueueStall: the shared budget remains but no " +
+            "takeoverResolvers were injected — refusing to silently skip " +
+            `the takeover for ${repo}#${prNumber}`,
+        );
+      }
+      const takeover = options.takeover ?? runConflictTakeover;
+      const outcome = await takeover(
+        {
+          repo,
+          number: prNumber,
+          headRefName: view.headRefName,
+          baseRefName: view.baseRefName,
+          headSha: view.headRefOid,
+        },
+        {
+          gh: ghCommandFn,
+          trustedAuthors: [...(options.trustedAuthors ?? [])],
+          logger,
+          ...options.takeoverResolvers,
+          ...(options.workerId !== undefined
+            ? { workerId: options.workerId }
+            : {}),
+          ...(options.deadlineEpochMs !== undefined
+            ? { deadlineEpochMs: options.deadlineEpochMs }
+            : {}),
+          nowMs: options.nowMs,
+        },
+      );
+      if (outcome.kind === "declined-budget") {
+        logger.warn("Merge-conflict stall repair: takeover declined", {
+          repo,
+          prNumber,
+          attemptsSpent: outcome.attemptsSpent,
+        });
+        return "takeover-declined";
+      }
+      if (outcome.kind === "declined-time") {
+        logger.info(
+          "Merge-conflict stall repair: the handler time left cannot cover " +
+            "a takeover agent, so no attempt was posted",
+          { repo, prNumber },
+        );
+        return "takeover-declined";
+      }
+      if (outcome.kind === "no-longer-due") {
+        logger.info(
+          "Merge-conflict stall repair: the attempt tally changed after " +
+            "the lock was taken, so this pass posts nothing",
+          { repo, prNumber },
+        );
+        return "no-longer-stalled";
+      }
+      if (outcome.kind === "lock-held") {
+        logger.info(
+          "Merge-conflict stall repair: another host holds the PR lock",
+          { repo, prNumber, lockHolder: outcome.holder },
+        );
+        return "lock-held";
+      }
+      if (outcome.kind === "fix-pr-reused") {
+        // Reusing an open fix PR posts no attempt marker, so the clock
+        // would trip again every cycle. This note restarts it.
+        await postWatchdogChecked(
+          repo,
+          prNumber,
+          options.nowMs,
+          comments,
+          isTrustedAuthor,
+          ghCommandFn,
+        );
+      }
+      logger.info("Merge-conflict stall repair: took the conflict over", {
+        repo,
+        prNumber,
+        outcome: outcome.kind,
+      });
+      return "taken-over";
     }
 
     const abandon = options.abandon ?? abandonAndRestart;
@@ -671,11 +773,7 @@ export async function repairConflictQueueStall(
         branchName: view.headRefName,
         baseBranch: view.baseRefName,
         prComments: comments,
-        reason: {
-          kind: "stalled",
-          detail: buildConflictStallDetail(stall),
-          tried: "ladder-rerun",
-        },
+        reason: { kind: "merge-conflict" },
       },
       {
         gh: ghCommandFn,
@@ -688,18 +786,31 @@ export async function repairConflictQueueStall(
       case "abandoned":
       case "closed-without-issue":
         logger.warn(
-          "Merge-conflict queue still stalled after the ladder rerun — " +
+          "Merge-conflict queue still stalled with its budget spent — " +
             "abandoned and redone",
           { repo, prNumber, outcome: outcome.outcome },
         );
         return "abandoned";
-      case "declined":
-        logger.warn("Merge-conflict stall repair: abandon declined", {
+      case "declined": {
+        // A decline posts nothing on the PR. Restart the clock so the next
+        // cycle does not trip the same steady state again.
+        await postWatchdogChecked(
           repo,
           prNumber,
-          reason: outcome.reason,
-        });
+          options.nowMs,
+          comments,
+          isTrustedAuthor,
+          ghCommandFn,
+        );
+        const steady = outcome.reason.kind === "already-restarted";
+        const message = steady
+          ? "Merge-conflict stall repair: the hand-off was already posted"
+          : "Merge-conflict stall repair: abandon declined";
+        const fields = { repo, prNumber, reason: outcome.reason };
+        if (steady) logger.info(message, fields);
+        else logger.warn(message, fields);
         return "abandon-declined";
+      }
       case "failed":
         logger.error("Merge-conflict stall repair: abandon failed", {
           repo,
@@ -733,8 +844,6 @@ export interface ConflictStallScanOptions extends ConflictStallRepairDeps {
   isTrustedAuthor: (login: string) => boolean;
   /** Clock override (epoch milliseconds). */
   nowMs?: () => number;
-  /** Hours before a labelled PR with no conclusion is called stalled. */
-  thresholdHours?: number;
   /** Label meaning a human owns the PR. Defaults to `needs-human`. */
   needsHumanLabel?: string;
   /** This cycle's per-PR decisions, so the comment can name them (#1109). */
@@ -747,12 +856,12 @@ export interface ConflictStallScanOptions extends ConflictStallRepairDeps {
    * The open-PR listing the scan already holds for a repository, with labels
    * (Issue #2409).
    *
-   * Without it this watchdog cost one GraphQL call per monitored repository on
-   * **every cycle** — `20×[pr list --json --label --repo --state]` every ~3
-   * minutes, per host, almost always to learn "none" — and the fleet was
-   * spending its hourly GitHub quota in ~25 minutes. A stall is
-   * {@link DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS} hours long, so learning that
-   * a PR gained the label one cache lifetime late costs nothing.
+   * Without it this watchdog cost one GraphQL call per monitored repository
+   * on **every cycle** — `20×[pr list --json --label --repo --state]` every
+   * ~3 minutes, per host, almost always to learn "none" — and the fleet was
+   * spending its hourly GitHub quota in ~25 minutes. The stall window is
+   * {@link CONFLICT_OWNER_CHECK_HOURS} hours, so learning that a PR gained
+   * the label one cache lifetime late costs nothing.
    *
    * It is only a **gate**. When it shows a labelled PR the live listing is
    * still taken, because the merge state and base tip the watchdog acts on
@@ -838,15 +947,18 @@ interface LabelledPr {
   mergeableState?: string;
   /** The base tip, for the park comparison (Issue #2312). */
   baseRefOid?: string;
+  /** The PR's live head sha, for the clock-start computation. */
+  headRefOid?: string;
 }
 
 /**
- * Fields the label listing asks for — the live state rides along with it, and
- * so does the base tip a park marker is compared against (Issue #2312).
+ * Fields the label listing asks for — the live state rides along with it,
+ * and so do the base tip a park marker is compared against (Issue #2312) and
+ * the head sha the clock-start computation reads a commit date for.
  */
-const STALL_PR_FIELDS = "number,labels,mergeable,baseRefOid";
+const STALL_PR_FIELDS = "number,labels,mergeable,baseRefOid,headRefOid";
 
-/** Parse `gh pr list --json number,labels,mergeable,baseRefOid` output. */
+/** Parse `gh pr list --json number,labels,mergeable,baseRefOid,headRefOid` output. */
 function parseLabelledPrs(raw: string): LabelledPr[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
@@ -860,6 +972,7 @@ function parseLabelledPrs(raw: string): LabelledPr[] {
       labels?: unknown;
       mergeable?: unknown;
       baseRefOid?: unknown;
+      headRefOid?: unknown;
     };
     if (typeof record.number !== "number") continue;
     const labels: string[] = [];
@@ -879,6 +992,9 @@ function parseLabelledPrs(raw: string): LabelledPr[] {
         : {}),
       ...(typeof record.baseRefOid === "string" && record.baseRefOid.length > 0
         ? { baseRefOid: record.baseRefOid }
+        : {}),
+      ...(typeof record.headRefOid === "string" && record.headRefOid.length > 0
+        ? { headRefOid: record.headRefOid }
         : {}),
     });
   }
@@ -968,8 +1084,47 @@ async function resolveMergeableState(
 }
 
 /**
- * One pass: every open PR carrying `merge-conflict`, checked for a stalled
- * queue and repaired in two trips if it has one.
+ * The epoch ms a commit's own committer date, read via `gh api`, or
+ * `undefined` when it could not be read or parsed.
+ *
+ * A failure here must never suppress the watchdog — it fails towards acting,
+ * not towards silence — so the caller leaves `headChangedAtMs` unset and the
+ * clock still starts from whichever other event is latest.
+ */
+async function commitCommittedAtMs(
+  repo: string,
+  sha: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  logger: Logger,
+): Promise<number | undefined> {
+  try {
+    const raw = await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${sha}`,
+      "--jq",
+      ".commit.committer.date",
+    ]);
+    const parsed = Date.parse(raw.trim());
+    if (Number.isFinite(parsed)) return parsed;
+    logger.warn(
+      "Merge-conflict stall watchdog: head commit date did not parse — " +
+        "head-change is left unknown this pass",
+      { repo, sha, raw: raw.trim() },
+    );
+    return undefined;
+  } catch (error) {
+    logger.warn(
+      "Merge-conflict stall watchdog: head commit date could not be read — " +
+        "head-change is left unknown this pass",
+      { repo, sha, error: errorMessage(error) },
+    );
+    return undefined;
+  }
+}
+
+/**
+ * One pass: every open PR carrying `merge-conflict`, checked against the
+ * 2-hour owner-check window and fixed forward if it has stalled.
  *
  * Best-effort per repository and per PR — a listing or a lookup that fails is
  * logged loudly and the pass continues, because a watchdog must never be the
@@ -987,7 +1142,6 @@ export async function scanConflictQueueStalls(
     logger,
     isTrustedAuthor,
     nowMs = () => Date.now(),
-    thresholdHours,
     needsHumanLabel,
     decisions,
     isRepoAllowed,
@@ -1079,22 +1233,34 @@ export async function scanConflictQueueStalls(
           ? undefined
           : lastAdd.addedAt * 1000;
         // The stall clock can never start before the label, so a label inside
-        // the threshold cannot be a stall — and the thread, which is the
+        // the window cannot be a stall — and the thread, which is the
         // expensive read, is never fetched for one.
         if (
           labelledAtMs !== undefined &&
-          now - labelledAtMs <
-            (thresholdHours ?? DEFAULT_CONFLICT_STALL_THRESHOLD_HOURS) *
-              3600_000
+          now - labelledAtMs < OWNER_CHECK_WINDOW_MS
         ) {
           continue;
         }
+
+        let headChangedAtMs: number | undefined;
+        const headRefOid = pr.headRefOid?.trim().toLowerCase();
+        if (headRefOid !== undefined && isConflictHeadSha(headRefOid)) {
+          headChangedAtMs = await commitCommittedAtMs(
+            repo,
+            headRefOid,
+            ghCommandFn,
+            logger,
+          );
+        }
+
         observation = {
           repo,
           prNumber: pr.number,
           labels: pr.labels,
           mergeableState,
           ...(pr.baseRefOid !== undefined ? { baseRefOid: pr.baseRefOid } : {}),
+          ...(headRefOid !== undefined ? { headRefOid } : {}),
+          ...(headChangedAtMs !== undefined ? { headChangedAtMs } : {}),
           ...(labelledAtMs !== undefined ? { labelledAtMs } : {}),
           comments: await fetchIssueCommentPages(repo, pr.number, ghCommandFn),
           skipReasons: skipReasonsFor(decisions, repo, pr.number),
@@ -1120,25 +1286,37 @@ export async function scanConflictQueueStalls(
       const stall = detectConflictQueueStall(observation, {
         nowMs: now,
         isTrustedAuthor,
-        ...(thresholdHours !== undefined ? { thresholdHours } : {}),
         ...(needsHumanLabel !== undefined ? { needsHumanLabel } : {}),
       });
       if (stall === null) continue;
       stalls.push(stall);
 
       // Never throws — it logs its own outcome, and the next pass retries.
+      // `now` classified the stall. The repair's clock is read here, so a
+      // takeover earlier in this pass cannot leave the next one measuring
+      // against the scan start (Issue #2965).
+      const repairNow = nowMs();
       await repairConflictQueueStall(stall, {
         ghCommandFn,
         logger,
         isTrustedAuthor,
-        nowMs: now,
-        ...(thresholdHours !== undefined ? { thresholdHours } : {}),
+        nowMs: repairNow,
         ...(options.trustedAuthors !== undefined
           ? { trustedAuthors: options.trustedAuthors }
           : {}),
         ...(options.acquireLease ? { acquireLease: options.acquireLease } : {}),
         ...(options.abandon ? { abandon: options.abandon } : {}),
         ...(options.abandonDeps ? { abandonDeps: options.abandonDeps } : {}),
+        ...(options.takeoverResolvers
+          ? { takeoverResolvers: options.takeoverResolvers }
+          : {}),
+        ...(options.takeover ? { takeover: options.takeover } : {}),
+        ...(options.workerId !== undefined
+          ? { workerId: options.workerId }
+          : {}),
+        ...(options.deadlineEpochMs !== undefined
+          ? { deadlineEpochMs: options.deadlineEpochMs }
+          : {}),
       });
     }
     quota.repoDone();
