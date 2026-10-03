@@ -345,6 +345,22 @@ least one goes red, then restore it. An outcome with no test, or one whose
 flip leaves the suite green, is a blocking self-review finding: add a test
 for it.
 
+**A new path to an existing outcome keeps that outcome's guards.** When a
+change adds an early return, a new gate or route, or a direct call that
+reaches an outcome an existing path already reaches — finalising or raising a
+PR, publishing UI or state, charging a retry or attempt, ending a claimed
+task — first list every guard and side effect the existing path applies
+before that outcome: the degraded-run guard, ticket and freshness checks,
+spacing and attempt limits, replying to or releasing a claim. For each one,
+either make the new path apply it (or order the new branch after it), or
+state in the PR summary why it does not apply. For each guard the new path
+keeps, add a test that reaches the new path while the guard's trigger
+condition holds and asserts the guard's effect, then move the new branch
+ahead of the guard (or remove the guard call) and confirm the test goes red.
+List the guards kept and excluded in the PR summary. A new path that skips an
+existing path's guard with no stated reason is a blocking self-review finding
+(Issue #3087).
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
@@ -404,7 +420,9 @@ blocking self-review finding (Issue #3021).
   needs a test that goes red without it** above. Each outcome of a branch you
   add needs its own test, and a test double that overrides a default or stubs
   past the branch does not count — see **Every outcome of a branch you add
-  needs a test that reaches it** above.
+  needs a test that reaches it** above. A new early return or route to an
+  outcome an existing path reaches keeps that path's guards — see **A new
+  path to an existing outcome keeps that outcome's guards** above.
 
 Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an

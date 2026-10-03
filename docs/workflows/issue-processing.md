@@ -1152,6 +1152,20 @@ argument. The guidelines and the issue prompt's Test Plan step now require
 reverting each changed call site on its own and seeing a test go red; a call
 site whose revert leaves the suite green is a blocking self-review finding.
 
+**A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
+Fleet PRs added a second route to an outcome the code already reached, and the
+new route skipped a guard the old one applied: VibeCoder#3085 ran
+`reportSummaryRuleBlock` before the degraded-delivery guard in
+`completion_phase.ts`; VibeCoder#2909 added an `if (!prepared.ok)` early return
+after `claimPrComment` that neither replied nor released the claim;
+VibeCoder#3065's milestone sync skipped `isConflictAttemptDue`; and
+GRQ-AutoTrader#2279's `publishBusy` skipped the freshness tracker's ticket
+check. The guidelines, the issue prompt's Test Plan step and the PR-feedback
+prompt now require listing every guard and side effect the existing path
+applies before the outcome, keeping each on the new path or stating why it
+does not apply, and proving each kept guard with a test that goes red when
+the new branch is moved ahead of it.
+
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
 learn what the real tool does, so fleet PRs guessed and built the fake from
