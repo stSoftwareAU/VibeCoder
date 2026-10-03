@@ -73,59 +73,119 @@ function isClosingFence(line: string, opener: FenceLine): boolean {
     parsed.rest.trim() === "";
 }
 
+/**
+ * Pair inline code spans inside one paragraph. A run of N backticks closes
+ * at the next run of exactly N, and that span may contain a line break.
+ * A run with no closer is literal text. CommonMark does not let a span
+ * cross a blank line, so the caller passes one paragraph at a time.
+ */
+function splitInlineSpans(
+  block: string,
+): Array<{ value: string; inCode: boolean }> {
+  const runs: Array<{ index: number; length: number }> = [];
+  const runRe = /`+/g;
+  let found: RegExpExecArray | null;
+  while ((found = runRe.exec(block)) !== null) {
+    runs.push({ index: found.index, length: found[0].length });
+  }
+
+  const segments: Array<{ value: string; inCode: boolean }> = [];
+  let cursor = 0;
+  let r = 0;
+  while (r < runs.length) {
+    const open = runs[r]!;
+    if (open.index > cursor) {
+      segments.push({ value: block.slice(cursor, open.index), inCode: false });
+    }
+    let closeAt = -1;
+    for (let k = r + 1; k < runs.length; k++) {
+      if (runs[k]!.length === open.length) {
+        closeAt = k;
+        break;
+      }
+    }
+    if (closeAt === -1) {
+      const end = open.index + open.length;
+      segments.push({ value: block.slice(open.index, end), inCode: false });
+      cursor = end;
+      r++;
+      continue;
+    }
+    const close = runs[closeAt]!;
+    const end = close.index + close.length;
+    segments.push({ value: block.slice(open.index, end), inCode: true });
+    cursor = end;
+    r = closeAt + 1;
+  }
+  if (cursor < block.length) {
+    segments.push({ value: block.slice(cursor), inCode: false });
+  }
+  return segments;
+}
+
 function splitOutsideCode(
   text: string,
 ): Array<{ value: string; inCode: boolean }> {
   const segments: Array<{ value: string; inCode: boolean }> = [];
   const lines = text.split(/(?<=\n)/); // keep line terminators attached
   let i = 0;
-  let cursor = "";
+  let fenceCursor = "";
+  let paragraph = "";
   let inFence = false;
   let opener: FenceLine | null = null;
 
-  function flushCursor(inCode: boolean) {
-    if (cursor.length > 0) segments.push({ value: cursor, inCode });
-    cursor = "";
+  function pushSegment(value: string, inCode: boolean) {
+    if (value.length === 0) return;
+    const last = segments[segments.length - 1];
+    if (last && last.inCode === inCode) last.value += value;
+    else segments.push({ value, inCode });
+  }
+
+  function flushParagraph() {
+    if (paragraph.length === 0) return;
+    for (const segment of splitInlineSpans(paragraph)) {
+      pushSegment(segment.value, segment.inCode);
+    }
+    paragraph = "";
   }
 
   while (i < lines.length) {
     const line = lines[i]!;
     const fenceMatch = parseFenceLine(line);
     if (fenceMatch && !inFence) {
-      flushCursor(false);
+      flushParagraph();
       inFence = true;
       opener = fenceMatch;
-      cursor += line;
+      fenceCursor += line;
       i++;
       continue;
     }
     if (inFence && opener && isClosingFence(line, opener)) {
-      cursor += line;
-      flushCursor(true);
+      fenceCursor += line;
+      pushSegment(fenceCursor, true);
+      fenceCursor = "";
       inFence = false;
       opener = null;
       i++;
       continue;
     }
     if (inFence) {
-      cursor += line;
+      fenceCursor += line;
       i++;
       continue;
     }
-    // Outside a fence: split the line itself on inline backtick spans.
-    const INLINE_CODE_RE = /`[^`\n]*`/g;
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = INLINE_CODE_RE.exec(line)) !== null) {
-      cursor += line.slice(lastIndex, match.index);
-      flushCursor(false);
-      segments.push({ value: match[0], inCode: true });
-      lastIndex = match.index + match[0].length;
+    // A blank line ends the paragraph, so a code span cannot cross it.
+    if (line.trim() === "") {
+      flushParagraph();
+      pushSegment(line, false);
+      i++;
+      continue;
     }
-    cursor += line.slice(lastIndex);
+    paragraph += line;
     i++;
   }
-  flushCursor(inFence);
+  if (inFence) pushSegment(fenceCursor, true);
+  else flushParagraph();
   return segments;
 }
 

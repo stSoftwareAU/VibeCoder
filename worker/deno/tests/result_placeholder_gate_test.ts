@@ -53,6 +53,23 @@ Deno.test("findResultPlaceholders - a longer fence is not closed by a shorter on
   assertEquals(replaceResultPlaceholders(text, "[result not reported]"), text);
 });
 
+Deno.test("findResultPlaceholders - a bare token after a wrapped code span is reported", () => {
+  const text =
+    "- One test (`runClaudeWithRetry - a SIGKILLed agent's\n  surviving descendant`): QUALITY_RESULT_PLACEHOLDER, and `deno lint` passes.\n";
+  assertEquals(findResultPlaceholders(text), ["QUALITY_RESULT_PLACEHOLDER"]);
+  assertEquals(
+    replaceResultPlaceholders(text, "[result not reported]"),
+    "- One test (`runClaudeWithRetry - a SIGKILLed agent's\n  surviving descendant`): [result not reported], and `deno lint` passes.\n",
+  );
+});
+
+Deno.test("findResultPlaceholders - a backtick-quoted token after a wrapped span is not reported", () => {
+  const text =
+    "- Test `readPrResponseMessage - a\n  bare token` is green and `REDACTION_PLACEHOLDER` stays quoted.\n";
+  assertEquals(findResultPlaceholders(text), []);
+  assertEquals(replaceResultPlaceholders(text, "[result not reported]"), text);
+});
+
 Deno.test("findResultPlaceholders - finds a bare token in prose", () => {
   const text = "- Full `./quality.sh`: QUALITY_RESULT_PLACEHOLDER";
   assertEquals(findResultPlaceholders(text), ["QUALITY_RESULT_PLACEHOLDER"]);

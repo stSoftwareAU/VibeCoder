@@ -18,7 +18,7 @@ carried the token now says "result not recorded". Closes #3124.
 ### Intent and Rationale
 
 - A placeholder is a fill-in-later promise; when the fill-in never happens the reader cannot tell it apart from a reported result. Prompt rules prevent it, the standard makes it a review finding, and the worker gate catches what slips through.
-- The gate pattern is the issue's regex, `\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b`, matched only outside fenced blocks and inline code spans, so a summary may still quote the token when describing it.
+- The gate pattern is the issue's regex, `\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b`, matched only outside fenced blocks and inline code spans, so a summary may still quote the token when describing it. A span may wrap onto the next line of the same paragraph; a blank line ends the paragraph, so the span does not cross it. An opening run of N backticks closes at the next run of exactly N, and a run with no closer is literal text.
 
 ### Essential Design Decisions
 
@@ -103,6 +103,11 @@ in 5m43s, serial in 1m27s.
   characters is omitted). Fences:
   `findResultPlaceholders - a list-item fence is code, and replace leaves it unchanged`
   and `findResultPlaceholders - a longer fence is not closed by a shorter one inside it`.
+  Wrapped spans:
+  `findResultPlaceholders - a bare token after a wrapped code span is reported`
+  (replace changes only that token) and
+  `findResultPlaceholders - a backtick-quoted token after a wrapped span is not reported`
+  (`replaceResultPlaceholders` returns the input byte-identical).
 - `worker/deno/tests/completion_phase_result_placeholder_test.ts`: a
   placeholder alone blocks PR creation through the one recovery turn; folded
   into the docs-sweep block; folded into an earlier gate
