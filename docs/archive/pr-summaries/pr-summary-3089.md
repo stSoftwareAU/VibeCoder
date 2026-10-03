@@ -44,12 +44,14 @@ single source of truth, and the description is regenerated from it.
   the live body, the sync skips, so a human-authored description is never
   overwritten.
 - **Sections that exist only on the live body are kept.** The `## Milestone`
-  section and the dependency-bump-skip note are copied from the current body,
-  because they come from creation-time state the fix run does not have.
+  section, the leading `## ⚠️ Degraded run —` block, and the
+  dependency-bump-skip note are copied from the current body, because they
+  come from creation-time state the fix run does not have.
 - **No-op when the body is identical.** No edit call is made.
 - **Fails loudly but does not block.** The sync returns a `Result`, and
-  `runPrBodySync` logs a failure with `logger.error`. A stale description is not
-  worth failing a fix that was already pushed, but the fault is never swallowed.
+  `runPrBodySync` logs that failure once, at warning. A stale description is
+  not worth failing a fix that was already pushed, but the fault is never
+  swallowed.
 - **Not run on gated-head fix branches** (`fixBranch` set). In that case the
   push goes to a separate branch, not the PR head.
 

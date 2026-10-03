@@ -8,6 +8,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assemblePrBody,
+  runPrBodySync,
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
 } from "../lib/pr_body_sync.ts";
@@ -541,4 +542,83 @@ Deno.test("sync - summary file deleted: skips without editing", async () => {
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
+});
+
+Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const degraded = [
+      "## ⚠️ Degraded run — partial delivery",
+      "",
+      "This run was degraded (served by a fallback model) and did not show " +
+      "every accepted scope item as met. The outstanding items continue in #77:",
+      "",
+      "- the export",
+      "",
+      "",
+    ].join("\n");
+    const ghCalls: GhCall[] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(degraded + baseBody(ISSUE_NUMBER)));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit([], { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assert(newBody.startsWith("## ⚠️ Degraded run — partial delivery"));
+    assertStringIncludes(newBody, "continue in #77");
+    assertStringIncludes(newBody, "Rewritten summary text.");
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("runPrBodySync - a failed sync warns once and does not fail the caller", async () => {
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const counting: Logger = {
+    ...logger,
+    warn: (message) => warnings.push(message),
+    error: (message) => errors.push(message),
+  };
+  await runPrBodySync(
+    {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath: "/tmp/unused",
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    },
+    {
+      runGhCommand: () => Promise.resolve(""),
+      runGitCommand: stubGit([]),
+      logger: counting,
+    },
+    () =>
+      Promise.resolve({
+        ok: false,
+        error: new Error("gh pr edit failed"),
+      }),
+  );
+  assertEquals(warnings, ["PR body sync failed (Issue #3089)"]);
+  assertEquals(errors, []);
 });

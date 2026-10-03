@@ -3,7 +3,8 @@
  *
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
- * sections — evidence, milestone, bump note, footer). A review-fix run that
+ * sections — evidence, milestone, the leading degraded-run section, bump
+ * note, footer). A review-fix run that
  * rewrites that summary file and pushes new commits never touched the PR
  * body again, so a reviewer reading the description kept seeing the
  * original summary while the diff underneath it changed.
@@ -186,6 +187,25 @@ function extractBumpSkipNote(body: string): string {
 }
 
 /**
+ * The leading degraded-run section PR creation prepends (Issue #2562).
+ *
+ * It exists only on the live body — the summary file does not carry it — so
+ * a rebuild that starts from the summary would otherwise drop it. Only a
+ * block that opens the body counts; a later mention is the summary quoting
+ * the phrase.
+ */
+function extractDegradedRunSection(body: string): string {
+  const heading = "## ⚠️ Degraded run —";
+  const start = body.indexOf(heading);
+  if (start === -1) return "";
+  if (body.slice(0, start).trim().length > 0) return "";
+  const from = body.slice(start);
+  const next = from.indexOf("\n## ");
+  const block = (next === -1 ? from : from.slice(0, next)).trimEnd();
+  return `${block}\n\n`;
+}
+
+/**
  * Refresh a PR's body from its (possibly rewritten) summary file.
  *
  * A review-fix run rewrites `docs/archive/pr-summaries/pr-summary-<N>.md`
@@ -335,6 +355,7 @@ export async function syncPrBodyFromSummary(
     { repoPath: input.repoPath, githubRepo: input.repo, headSha },
     logger,
   );
+  body = extractDegradedRunSection(view.body ?? "") + body;
 
   if (body.trim() === (view.body ?? "").trim()) {
     return {
@@ -360,11 +381,6 @@ export async function syncPrBodyFromSummary(
       tmpPath,
     ]);
   } catch (err) {
-    logger.error("Failed to update PR body from refreshed summary", {
-      repo: input.repo,
-      prNumber: input.prNumber,
-      error: (err as Error).message,
-    });
     return {
       ok: false,
       error: new Error(
@@ -409,7 +425,7 @@ export async function runPrBodySync(
 ): Promise<void> {
   const syncResult = await syncFn(input, deps);
   if (!syncResult.ok) {
-    deps.logger.error("PR body sync failed (Issue #3089)", {
+    deps.logger.warn("PR body sync failed (Issue #3089)", {
       prNumber: input.prNumber,
       error: syncResult.error.message,
     });
