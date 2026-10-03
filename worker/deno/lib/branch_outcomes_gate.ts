@@ -403,9 +403,12 @@ function evaluateApplicable(
     }
     if (missingTests.length > 0) {
       problems.push(
-        `the \`Branch outcomes:\` list names a test that does not exist at the head: ${
-          missingTests.join(", ")
-        }`,
+        `the \`Branch outcomes:\` list names a test that does not exist at ` +
+          `the head: ${
+            missingTests.join(", ")
+          } — test paths are checked relative to the repository root ` +
+          `(e.g. \`worker/deno/tests/foo_test.ts\`, not \`tests/foo_test.ts\`), ` +
+          `not to the directory a test command runs from`,
       );
     }
   }
@@ -450,8 +453,11 @@ export function buildBranchOutcomesGateComment(
     "4. A review-fix commit must re-enumerate EVERY branch its own rework " +
     "adds and refresh the list to the current head — not only the branches " +
     "a review finding named.",
-    "5. Every test path named in the list must exist at the head; a " +
-    "fabricated or stale citation blocks the PR.",
+    "5. Every test path named in the list must exist at the head, named " +
+    "relative to the **repository root** (e.g. `worker/deno/tests/foo_test.ts`, " +
+    "not `tests/foo_test.ts`, even when the test command itself runs from a " +
+    "subdirectory such as `worker/deno`) — a fabricated, stale, or " +
+    "wrongly-relative citation blocks the PR.",
     "",
     "Add a `Branch outcomes` list to " +
     "`docs/archive/pr-summaries/pr-summary-<issue>.md` in this shape:",
@@ -474,6 +480,12 @@ export function buildBranchOutcomesGateComment(
 /**
  * Look up which of the named test paths exist at `HEAD`, via
  * `git --literal-pathspecs ls-tree -r --name-only HEAD -- <paths...>`.
+ *
+ * `runGit` is invoked with the repository root as its working directory, so
+ * every path in `paths` is resolved relative to the repository root — a
+ * citation such as `tests/foo_test.ts` for a test actually at
+ * `worker/deno/tests/foo_test.ts` reads as missing (Issue #3160), even though
+ * `git ls-files tests/foo_test.ts` run from `worker/deno` would find it.
  *
  * Paths come from untrusted PR-summary text but are passed as argv entries
  * after `--`, never interpolated into a shell, and `--literal-pathspecs`

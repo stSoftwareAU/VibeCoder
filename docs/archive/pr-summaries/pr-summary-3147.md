@@ -32,6 +32,25 @@ This change makes the enumeration a recorded, checked artefact:
   recovery turn. `foldInDocsSweep` is renamed `foldInLateSummaryGates`, and
   it folds the branch-outcomes verdict into an earlier gate's block too.
 
+A third PR #3160 review round found two classes of gap, both fixed:
+
+- Three branches had no test reaching them: the `!changedFilesKnown` arm of
+  `branchOutcomesApplicable` (`completion_phase.ts:2145`), the `./`-strip and
+  leading-`/` skips in `namedTestPaths` (`branch_outcomes_gate.ts:210, 237,
+  239`), and the three fail-open caps `MAX_ENTRIES`, `MAX_TOKEN_CHARS` and
+  `MAX_NAMED_TEST_PATHS`. Each is now covered and confirmed red with its arm
+  removed (see Test Plan).
+- `lookupTestsAtHead` resolves every named path relative to the **repository
+  root** (it runs from `state.repoPath`), but the guidance it sends agents to
+  — **A named test must exist** — checks with `git ls-files <path>`, which
+  resolves relative to the current directory; this repo's own test command
+  runs from `worker/deno`. `CODING-STANDARDS.md`, `prompts/coding_guidelines/
+  prompt.md`, `prompts/pr_feedback/prompt.md` and `prompts/issue/prompt.md`
+  now say test paths must be relative to the repository root, and the gate's
+  missing-test message and remediation comment (item 5) say so too, so a
+  run blocked on this is told why its own `git ls-files` check from
+  `worker/deno` passed.
+
 Closes #3147.
 
 ## Test Plan
@@ -83,14 +102,36 @@ Closes #3147.
   `deno test -A tests/lib_sweep_coverage_test.ts tests/lib_sweep_coverage_prompt_listing_test.ts tests/sweep_drift_command_test.ts`
   gave 45 passed, 0 failed. The tests that read
   `docs/workflows/issue-processing.md` gave 41 passed, 0 failed.
+- A third PR #3160 review round added, to `branch_outcomes_gate_test.ts`:
+  a `./`-prefixed citation is normalised and an absolute-path token is
+  dropped (the `./` strip and the two leading-`/` skips in `namedTestPaths`
+  had no test); `MAX_ENTRIES`, `MAX_TOKEN_CHARS` and `MAX_NAMED_TEST_PATHS`
+  are each pinned by a case that exceeds the cap; and the missing-test
+  problem message and `buildBranchOutcomesGateComment` both now assert they
+  name the repository-root requirement. Each new case was confirmed red
+  with its arm removed — removing all three normalisation arms, or any one
+  of the three caps, failed the corresponding new test while the rest of
+  the suite stayed green. To `completion_phase_branch_outcomes_test.ts`: a
+  case mocks `diff --name-only <base>...HEAD` failing while the
+  changed-workflow gate's own `--diff-filter=ACMR` diff still succeeds,
+  with a summary naming an existing test — the one scenario that reaches
+  the `!changedFilesKnown` arm of `branchOutcomesApplicable`. Confirmed red
+  (status `failure` instead of `continue`) with that arm removed.
 - `deno test --allow-all tests/branch_outcomes_gate_test.ts
   tests/completion_phase_branch_outcomes_test.ts
-  tests/branch_outcomes_record_3147_test.ts` (final head, after the PR #3160
-  review fixes): 45 passed, 0 failed.
+  tests/branch_outcomes_record_3147_test.ts` (final head, after the third
+  PR #3160 review round): 52 passed, 0 failed.
 - `./quality.sh` (final head): PASSED (with skipped checks — `config
   integration` skipped, deno/`.config.json` unavailable in this
   environment).
 
 ## Evidence
 
-**Docs sweep** — grep: `foldInDocsSweep`, `foldInLateSummaryGates`, `branch_outcomes_gate`, `Branch outcomes`, `summary_rule_gate_retry`, `docs_sweep_gate`, `result_placeholder_gate`, "five summary gates", "all five", "summary-rule gate", "placeholder-token gate"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147` (new), plus the docs-sweep gate, degraded-delivery guard, "A summary shortfall after the PR is not a failed run", security-gate-ordering and in-run recovery passages of the same file; updated: `docs/workflows/issue-processing.md` (the remaining "five summary gates" / "all five" counts are now six, and the docs-sweep gate's "standalone block" is now the late gates' combined block), `docs/audits/lib-sweep-coverage.json` (top-up-3147 slice). Reviewed and left unchanged: `docs/CONFIGURATION.md` (its placeholder mention covers the PR-reply chokepoint, which this change does not touch) and `docs/audits/security-sweep-2189-summary-rule-gate-retry.md` (a dated audit of #2189).
+**Docs sweep** — grep: `foldInDocsSweep`, `foldInLateSummaryGates`, `branch_outcomes_gate`, `Branch outcomes`, `summary_rule_gate_retry`, `docs_sweep_gate`, `result_placeholder_gate`, `lookupTestsAtHead`, "relative to the repository root", "five summary gates", "all five", "summary-rule gate", "placeholder-token gate"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`, plus the docs-sweep gate, degraded-delivery guard, "A summary shortfall after the PR is not a failed run", security-gate-ordering and in-run recovery passages of the same file; updated (third PR #3160 review round): that section now says the `git ls-tree` lookup runs from the repository root, so a named path must itself be repository-root-relative. Reviewed and left unchanged: `docs/CONFIGURATION.md` (its placeholder mention covers the PR-reply chokepoint, which this change does not touch) and `docs/audits/security-sweep-2189-summary-rule-gate-retry.md` (a dated audit of #2189).
+
+**Branch outcomes:** none added — this round's production change
+(`worker/deno/lib/branch_outcomes_gate.ts`) only edits message and
+doc-comment text (the missing-test problem message, the gate comment's item
+5, and `lookupTestsAtHead`'s doc comment); it adds no new condition, match
+arm or exit path. The round's substantive work is test coverage for
+branches that already existed but that no test reached — see Test Plan.

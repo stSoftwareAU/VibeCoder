@@ -1366,7 +1366,10 @@ be read, fail closed. It blocks a summary with no `Branch outcomes:` list
 followed by one list item per outcome naming `path:line`, the outcome, the
 test that reaches it, and that flipping it went red), an empty one, a bare
 placeholder (`tbd`, `n/a`, …), or one that names a test-file path not
-tracked at HEAD — checked with `git ls-tree` on HEAD; a failed lookup also
+tracked at HEAD — checked with `git ls-tree` on HEAD, run from the
+repository root, so a named path must itself be relative to the repository
+root (`worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`) even though
+the test command runs from `worker/deno` (Issue #3160); a failed lookup also
 blocks, fail closed. A test identifier with no test-file path (for example a
 Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
 none added` is accepted when the diff adds no branch.

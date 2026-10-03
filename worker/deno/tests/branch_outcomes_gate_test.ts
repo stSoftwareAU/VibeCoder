@@ -125,6 +125,56 @@ Deno.test("namedTestPaths - duplicate citations are deduplicated", () => {
   assertEquals(namedTestPaths(record), ["worker/deno/tests/foo_test.ts"]);
 });
 
+// PR #3160 review: the `./` strip (normaliseToken) and the leading-`/` skips
+// had no test — removing all three left 45/45 pre-existing tests green.
+Deno.test("namedTestPaths - a ./-prefixed citation is normalised, dropping the ./", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:**\n" +
+      "- success — ./worker/deno/tests/foo_test.ts::case\n",
+  );
+  assertEquals(namedTestPaths(record), ["worker/deno/tests/foo_test.ts"]);
+});
+
+Deno.test("namedTestPaths - an absolute-path token is not returned", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:**\n" +
+      "- success — /worker/deno/tests/foo_test.ts::case\n",
+  );
+  assertEquals(namedTestPaths(record), []);
+});
+
+// ---------------------------------------------------------------------------
+// Fail-open caps (PR #3160 review): MAX_ENTRIES, MAX_TOKEN_CHARS and
+// MAX_NAMED_TEST_PATHS had no test either.
+// ---------------------------------------------------------------------------
+
+Deno.test("parseBranchOutcomes - more than 100 entries are capped at 100", () => {
+  const lines = Array.from(
+    { length: 105 },
+    (_, i) => `- worker/deno/tests/foo_test.ts::case${i}`,
+  ).join("\n");
+  const record = parseBranchOutcomes(`**Branch outcomes:**\n${lines}\n`);
+  assertEquals(record.entries.length, 100);
+});
+
+Deno.test("namedTestPaths - a token over 300 chars is skipped", () => {
+  const longPath = `worker/deno/tests/${"a".repeat(300)}_test.ts`;
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:**\n" +
+      `- success — ${longPath}::case — also worker/deno/tests/foo_test.ts::case\n`,
+  );
+  assertEquals(namedTestPaths(record), ["worker/deno/tests/foo_test.ts"]);
+});
+
+Deno.test("namedTestPaths - more than 50 named test paths are capped at 50", () => {
+  const entries = Array.from(
+    { length: 60 },
+    (_, i) => `- worker/deno/tests/foo${i}_test.ts::case`,
+  ).join("\n");
+  const record = parseBranchOutcomes(`**Branch outcomes:**\n${entries}\n`);
+  assertEquals(namedTestPaths(record).length, 50);
+});
+
 // ---------------------------------------------------------------------------
 // validateBranchOutcomes
 // ---------------------------------------------------------------------------
@@ -149,6 +199,20 @@ Deno.test("validateBranchOutcomes - a test absent from testsAtHead blocks and is
   });
   assertEquals(result.valid, false);
   assertEquals(result.missingTests, ["worker/deno/tests/missing_test.ts"]);
+});
+
+// PR #3160 review: the missing-test message must say paths are checked
+// relative to the repository root, or a run that self-checked with
+// `git ls-files <path>` from a subdirectory (e.g. `worker/deno`) is blocked
+// with no clue why its own check passed.
+Deno.test("validateBranchOutcomes - the missing-test message names the repository-root requirement", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- success — worker/deno/tests/missing_test.ts::does not exist\n",
+    testsAtHead: new Set(["worker/deno/tests/other_test.ts"]),
+  });
+  assertStringIncludes(result.problems[0]!, "repository root");
 });
 
 Deno.test("validateBranchOutcomes - testsAtHead null with named tests blocks (fail closed)", () => {
@@ -257,6 +321,7 @@ Deno.test("buildBranchOutcomesGateComment - names the problem and the required s
   const comment = buildBranchOutcomesGateComment(result);
   assertStringIncludes(comment, "Branch outcomes not recorded");
   assertStringIncludes(comment, "none added");
+  assertStringIncludes(comment, "repository root");
 });
 
 // ---------------------------------------------------------------------------

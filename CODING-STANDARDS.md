@@ -421,11 +421,15 @@ state it never checked is a blocking self-review finding (Issue #3107).
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
-file in the PR's diff or already tracked at the head. Before raising the PR,
-check each named path with `git ls-files <path>`; a named-but-absent test is a
-blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist. A test cited as evidence
-is also run on the final head and its result reported, and a coverage claim
+file in the PR's diff or already tracked at the head, named **relative to the
+repository root** — `worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`,
+even when the repository's own test command runs from a subdirectory such as
+`worker/deno` (Issue #3160). Before raising the PR, check each named path
+with `git ls-files <path>` run **from the repository root**; a
+named-but-absent test is a blocking self-review finding — add the test or
+drop the claim, and never commit an anchor that references a test that does
+not exist. A test cited as evidence is also run on the final head and its
+result reported, and a coverage claim
 names the branches its tests exercise — "every branch" with one branch
 untested is an over-claim (Issue #3058). An unresolved placeholder where a
 result belongs — an unfilled ALL-CAPS `..._PLACEHOLDER` token left where

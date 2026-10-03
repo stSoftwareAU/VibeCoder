@@ -970,8 +970,10 @@ The file MUST contain:
    a result. If a gate was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or
-   under Evidence must exist at the head — in the diff or already tracked;
-   check each path with `git ls-files <path>` before raising the PR. A
+   under Evidence must exist at the head — in the diff or already tracked —
+   named relative to the repository root, not to the directory a test
+   command runs from; check each path with `git ls-files <path>` from the
+   repository root before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
    test that does not exist. For every existing test the diff edits, list each

@@ -144,6 +144,14 @@ interface Scenario {
   existingTestsAtHeadAfterRetry?: string[];
   /** Make the `ls-tree` lookup fail (non-zero exit), simulating an unverifiable lookup. */
   lsTreeFails?: boolean;
+  /**
+   * Make the plain `diff --name-only <base>...HEAD` call fail (non-zero
+   * exit) while the changed-workflow gate's own
+   * `--diff-filter=ACMR` diff still succeeds — the one scenario that
+   * exercises the `!changedFilesKnown` arm of `branchOutcomesApplicable`
+   * (PR #3160 review).
+   */
+  changedFilesDiffFails?: boolean;
   /** Issue labels. Defaults to a non-bug enhancement. */
   issueLabels?: string[];
 }
@@ -219,6 +227,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
+          // The changed-workflow gate (Issue #1859) runs its own
+          // `--diff-filter=ACMR` diff, independent of the plain diff that
+          // feeds `changedFiles`/`changedFilesKnown` — keep it healthy even
+          // when `changedFilesDiffFails` breaks the other one.
+          if (cmdArgs.includes("--diff-filter=ACMR")) return ok("");
+          if (scenario.changedFilesDiffFails) return ok("", 1);
           return ok(scenario.changedFiles);
         }
         if (cmdArgs[0] === "--literal-pathspecs" && cmdArgs[1] === "ls-tree") {
@@ -466,5 +480,29 @@ Deno.test(
     assertStringIncludes(outcome.reason ?? "", "Branch outcomes not recorded");
     assertStringIncludes(outcome.comments[0]!, "Docs sweep missing");
     assertStringIncludes(outcome.comments[0]!, "Branch outcomes not recorded");
+  },
+);
+
+// (j) PR #3160 review: deleting the `!changedFilesKnown ||` arm of
+// `branchOutcomesApplicable` left all pre-existing tests here green, because
+// every fixture's plain diff succeeds. Only an unreadable changed-files diff
+// reaches that arm, and the gate must still pass a summary that names a real
+// test — `validateBranchOutcomes` treats `changedFiles: null` as always
+// applicable regardless of this outer short-circuit, so without the arm the
+// HEAD lookup it depends on is skipped and every named test reads as
+// missing.
+Deno.test(
+  "completion - an unreadable changed-files diff with a Branch outcomes list naming an existing test still raises the PR",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_EXISTING_TEST,
+      changedFiles: "crates/report/src/decisions.rs",
+      changedFilesDiffFails: true,
+      existingTestsAtHead: [EXISTING_TEST],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.comments.length, 0);
   },
 );

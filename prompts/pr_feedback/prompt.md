@@ -68,8 +68,9 @@ test that reaches it** in the guidelines) over every branch the fix commit
 itself adds — a new refusal arm, a parse-failure path, an unreadable-file
 path — not only the one the finding named. Refresh the summary's
 `Branch outcomes:` list to the head rather than leaving the first round's
-entries standing; every test it names must exist at the head (see
-**A named test must exist** in the guidelines).
+entries standing; every test it names must exist at the head, as a path
+relative to the repository root — not to the directory a test command runs
+from (see **A named test must exist** in the guidelines).
 
 **Verify a claim about another component before you write it.** When a finding says prompt, doc or PR-summary text misdescribes how another component behaves, open the code that implements that behaviour before you write the replacement, and cite the file and the function or line in `.pr_response_message` — and in the PR summary when it repeats the claim. A replacement written from the finding's wording alone is a new unverified claim, and the next review sends it back. The same applies to any new statement your fix adds about how another component behaves, above all an exclusive or negative claim ("the only …", "any …", "never …", "the worker does not …"). A claim about a security control (redaction, guards, sandboxing, dedup) must agree with `SECURITY.md` and `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the discrepancy. When the text does not need the claim, drop it: state the rule and the risk it addresses (see **Prompt Engineering Guidance** in `CODING-STANDARDS.md`).
 

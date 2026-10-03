@@ -1217,10 +1217,13 @@ helper with no callers-checked list is a blocking self-review finding
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
-file in the PR's diff or already tracked at the head. Before raising the PR,
-check each named path with `git ls-files <path>`; a named-but-absent test is a
-blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist.
+file in the PR's diff or already tracked at the head, named **relative to the
+repository root** — `worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`,
+even when the repository's own test command runs from a subdirectory such as
+`worker/deno`. Before raising the PR, check each named path with `git
+ls-files <path>` run **from the repository root**; a named-but-absent test
+is a blocking self-review finding — add the test or drop the claim, and
+never commit an anchor that references a test that does not exist.
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's
