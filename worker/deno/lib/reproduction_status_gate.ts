@@ -67,9 +67,12 @@ export interface ReproductionGateResult {
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
+// The colon sits inside the optional group so the two `\s*` runs either side
+// of it cannot split ambiguously — a tail of `\s*:?\s*$` is quadratic on a
+// long run of trailing whitespace (Issue #3164).
 /** A `## Reproduction` (or `## Reproduction Status`) heading, any level. */
 const REPRODUCTION_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+reproduction(\s+status)?\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+reproduction(\s+status)?(?:\s*:)?\s*$/i;
 
 /** Any markdown heading — the section boundary. */
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
@@ -81,14 +84,20 @@ const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+(?:\[[ xX~]?\]\s*)?/;
  * The block's labelled fields. Hardcoded patterns only — a `new RegExp()`
  * built from an argument is a ReDoS surface Semgrep blocks on.
  */
+// No `\s*` between the separator and the capture: that gap plus the trailing
+// `(.*)$` is quadratic on a hostile run of whitespace (Issue #3164) — the
+// leading whitespace this drops is stripped by `fieldValue`'s own `.trim()`
+// at the use site, so the accepted set is unchanged.
 const FIELD_PATTERNS = {
-  symptom: /^symptom\s*[:\-–—]\s*(.*)$/i,
-  status: /^(?:reproduction\s+)?status\s*[:\-–—]\s*(.*)$/i,
-  regressionTest: /^(?:regression\s+)?test\s*[:\-–—]\s*(.*)$/i,
+  symptom: /^symptom\s*[:\-–—](.*)$/i,
+  status: /^(?:reproduction\s+)?status\s*[:\-–—](.*)$/i,
+  regressionTest: /^(?:regression\s+)?test\s*[:\-–—](.*)$/i,
 } as const;
 
+// Same overlap, same fix: the capture's leading whitespace is trimmed at its
+// use sites below (Issue #3164).
 /** The reason a downgraded status carries, wherever it sits in the block. */
-const REASON_RE = /reason\s*[:\-–—]\s*(.*)$/i;
+const REASON_RE = /reason\s*[:\-–—](.*)$/i;
 
 /**
  * The fail-before / pass-after observation `verified` requires. Matches

@@ -638,6 +638,24 @@ simply no longer waits out a stopwatch to do it.
 - **Do not** reduce iteration counts to make a "performance test" fast enough
   to pass as a unit test. If you need to confirm performance, write a benchmark
   and include the results in the PR summary.
+- **Vet every regex that reads untrusted text, one hostile case per
+  pattern** — every regex a change adds or edits that runs on untrusted or
+  agent-written text (an issue body or comment, an agent-written PR summary, a
+  diff) gets its own check, not one per module. Look for two quantifiers that
+  can match the same characters with only optional tokens between them —
+  `\s*:?\s*$`, `\s*[:-]\s*(.+)$`, `[.!\s]+$`, `\s*(.*)$` — followed by anything
+  that can fail: on a long run of the shared character the engine tries every
+  split between them, and the cost grows quadratically or worse. A lone `\r`
+  is enough to make `(.*)$` fail, because `\s` matches it and `.` does not.
+  Remove the overlap: trim first and drop the redundant quantifier, make the
+  classes disjoint or put a required token between them (`(?:\s*:)?\s*$`), or
+  cap the run. Then add one hostile case per pattern — a long run of the
+  shared character followed by a character the pattern rejects — driven
+  through the function that applies it. A parser with several patterns needs
+  a case for each: PRs #3085 and #3160 each added a hostile test for the one
+  pattern the author had in mind, while a sibling pattern in the same module,
+  over the same text, was still quadratic and cost another review round
+  (Issue #3164).
 - **Guard super-linearity by behaviour first** — catastrophic backtracking on
   an adversarial input of any real size does not cost a little more than some
   threshold, it never returns. So the first form to reach for is not a

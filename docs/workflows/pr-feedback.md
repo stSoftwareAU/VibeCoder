@@ -200,7 +200,7 @@ have. This complements the worker's own final-mile push verification described
 in **The final mile** below, which re-checks the push at the git level after
 the agent runs.
 
-#### Fix the defect everywhere it lives (Issues #3086, #3114)
+#### Fix the defect everywhere it lives (Issues #3086, #3114, #3164)
 
 A finding's file, line, repro and suggested fix are one example of a defect,
 not its full extent. The pr_feedback prompt tells the agent to fix the
@@ -232,6 +232,14 @@ were fixed. Re-reviews had kept raising findings as "only partly fixed"
 because the fix stopped at the named locations (VibeCoder#3066, #3068, #3065,
 GRQ-AutoTrader#2210, #2220); another instance of the class left in the
 head is now a blocking self-review finding.
+
+Issue #3164 applies the rule to a backtracking regex. When a finding names a
+regex that backtracks quadratically, the agent checks every other regex in
+the same module for the same shape — two quantifiers that can match the same
+characters with only optional tokens between them — and gives each its own
+hostile case before pushing. PR #3085 needed a third review round because its
+fix capped the one flagged pattern and left a sibling pattern in the same file
+with the same defect.
 
 #### Recount the Test Plan after a review fix (Issue #3117)
 

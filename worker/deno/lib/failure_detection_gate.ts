@@ -47,11 +47,20 @@ export interface FailureDetectionOffender {
 export type GateLogger = Pick<Logger, "info" | "warn">;
 
 // A markdown heading line reading "Failure Detection" (any heading level).
-const HEADING_RE = /^\s{0,3}#{1,6}\s+failure\s+detection\s*:?\s*$/i;
+// The colon sits inside the optional group so the two `\s*` runs either side
+// of it cannot split ambiguously — a tail of `\s*:?\s*$` is quadratic on a
+// long run of trailing whitespace (Issue #3164).
+const HEADING_RE = /^\s{0,3}#{1,6}\s+failure\s+detection(?:\s*:)?\s*$/i;
 
 // A bolded inline label, e.g. "**Failure detection:** A new test ...".
+// Both optional colons are grouped with their preceding `\s*` so no two
+// adjacent whitespace runs can split a hostile input ambiguously; the trailing
+// `\s*` before the capture is dropped too (a lone `\r` after it made the old
+// `(.*)$` tail fail, which combined with the first overlap was cubic) — any
+// leading whitespace left in the capture is trimmed at each use site
+// (Issue #3164).
 const BOLD_LABEL_RE =
-  /^\s{0,3}\*\*\s*failure\s+detection\s*:?\s*\*\*\s*:?\s*(.*)$/i;
+  /^\s{0,3}\*\*\s*failure\s+detection(?:\s*:)?\s*\*\*(?:\s*:)?(.*)$/i;
 
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
@@ -88,7 +97,7 @@ function extractSection(
 
     const boldMatch = line.match(BOLD_LABEL_RE);
     if (boldMatch) {
-      const collected: string[] = [boldMatch[1] ?? ""];
+      const collected: string[] = [(boldMatch[1] ?? "").trimStart()];
       for (let j = i + 1; j < lines.length; j++) {
         const next = lines[j]!;
         if (

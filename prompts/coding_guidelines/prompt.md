@@ -602,6 +602,17 @@ separate.
   inflates both readings and stays green, which is exactly what an absolute
   budget cannot do (Issue #530). Compare two readings of the same work; never
   a reading against a constant.
+- **Vet every regex that reads untrusted text, one hostile case per
+  pattern.** Each regex a change adds or edits that runs on untrusted or
+  agent-written text (an issue body, an agent-written PR summary, a diff) gets
+  its own check. Look for two quantifiers that can match the same characters
+  with only optional tokens between them — `\s*:?\s*$`, `\s*[:-]\s*(.+)$`,
+  `[.!\s]+$`, `\s*(.*)$` — and remove the overlap: trim first and drop the
+  redundant quantifier, make the classes disjoint or put a required token
+  between them, or cap the run. Then add one hostile case per pattern: a long
+  run of the shared character followed by a character the pattern rejects. A
+  parser with several patterns needs a case for each, not one per module
+  (Issue #3164).
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and include the results
   in the PR summary.

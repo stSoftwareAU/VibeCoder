@@ -61,14 +61,18 @@ export interface AcceptanceClosureResult {
 }
 
 // A markdown heading reading "Acceptance Criteria" (any heading level).
+// The colon sits inside the optional group so the two `\s*` runs either side
+// of it cannot split ambiguously — a tail of `\s*:?\s*$` is quadratic on a
+// long run of trailing whitespace (Issue #3164).
 const ACCEPTANCE_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+acceptance\s+criteria(?:\s*:)?\s*$/i;
 
 // A grill-me "Accepted scope so far" heading (Issue #2562). Grill-me states the
 // scope it settled under this heading rather than "Acceptance Criteria", so an
 // issue refined by grill-me carried no criteria as far as this gate could see.
+// Same tail shape as above, same reason (Issue #3164).
 const ACCEPTED_SCOPE_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?(?:\s*:)?\s*$/i;
 
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
@@ -199,9 +203,13 @@ function statusOf(entry: string): ClosureEntry["status"] | null {
 
 // Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
 // is a ReDoS surface Semgrep blocks on, and only these two labels exist.
+// No `\s*` between the separator and the capture: that gap plus the trailing
+// `(.*)$` is quadratic on a hostile run of whitespace (Issue #3164) — the
+// leading whitespace this drops is stripped by `hasFilledLabel`'s own
+// `replace` below, so the accepted set is unchanged.
 const LABEL_PATTERNS = {
-  evidence: /evidence\s*[:\-—]\s*(.*)$/i,
-  reason: /reason\s*[:\-—]\s*(.*)$/i,
+  evidence: /evidence\s*[:\-—](.*)$/i,
+  reason: /reason\s*[:\-—](.*)$/i,
 } as const;
 
 /** Whether a labelled field (`evidence:`, `reason:`) is present and filled. */

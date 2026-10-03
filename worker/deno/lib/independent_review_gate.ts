@@ -98,11 +98,15 @@ export interface IndependentReviewResult {
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
+// The colon sits inside the optional group so the two `\s*` runs either side
+// of it cannot split ambiguously — a tail of `\s*:?\s*$` is quadratic on a
+// long run of trailing whitespace (Issue #3164).
 /** A `## Acceptance Criteria` heading, any level. */
-const SPEC_HEADING_RE = /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*:?\s*$/i;
+const SPEC_HEADING_RE = /^\s{0,3}#{1,6}\s+acceptance\s+criteria(?:\s*:)?\s*$/i;
 
 /** A `## Standards Review` heading, any level. */
-const STANDARDS_HEADING_RE = /^\s{0,3}#{1,6}\s+standards\s+review\s*:?\s*$/i;
+const STANDARDS_HEADING_RE =
+  /^\s{0,3}#{1,6}\s+standards\s+review(?:\s*:)?\s*$/i;
 
 /** Any markdown heading — the section boundary. */
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
