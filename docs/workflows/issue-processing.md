@@ -1550,6 +1550,11 @@ When its follow-up cannot be filed, the run fails and the PR is left unfinalised
 The outcome is `pr` + `blocked` naming that PR, so the release comment does not
 report the run as having delivered nothing.
 
+An existing-PR branch whose URL cannot be numbered is a second exception: even
+once the degraded-run guard succeeds, `reportSummaryRuleBlock` fails the run
+*before* recovering or finalising that PR, so neither the body nor the labels
+are rewritten and state never names `#0`. The outcome is `no_pr` (Issue #3139).
+
 **Two gates are deliberate exceptions, and they run first.** The changed-workflow
 file checks above are the second: a workflow file carrying a finding is a defect
 in the change, so it stops the run PR or no PR, exactly as the security gate
