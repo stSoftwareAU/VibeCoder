@@ -489,6 +489,11 @@ export interface ConflictStallRepairDeps {
    * acquires that lock before posting an attempt (Issue #3001 review).
    */
   workerId?: string;
+  /**
+   * Handler deadline. Passed into the takeover so a cycle that cannot cover
+   * an agent run declines with no marker (Issue #2965).
+   */
+  deadlineEpochMs?: number;
 }
 
 /** What {@link repairConflictQueueStall} did. */
@@ -658,6 +663,10 @@ export async function repairConflictQueueStall(
           ...(options.workerId !== undefined
             ? { workerId: options.workerId }
             : {}),
+          ...(options.deadlineEpochMs !== undefined
+            ? { deadlineEpochMs: options.deadlineEpochMs }
+            : {}),
+          nowMs: options.nowMs,
         },
       );
       if (outcome.kind === "declined-budget") {
@@ -666,6 +675,14 @@ export async function repairConflictQueueStall(
           prNumber,
           attemptsSpent: outcome.attemptsSpent,
         });
+        return "takeover-declined";
+      }
+      if (outcome.kind === "declined-time") {
+        logger.info(
+          "Merge-conflict stall repair: the handler time left cannot cover " +
+            "a takeover agent, so no attempt was posted",
+          { repo, prNumber },
+        );
         return "takeover-declined";
       }
       if (outcome.kind === "lock-held") {
@@ -1225,6 +1242,9 @@ export async function scanConflictQueueStalls(
         ...(options.takeover ? { takeover: options.takeover } : {}),
         ...(options.workerId !== undefined
           ? { workerId: options.workerId }
+          : {}),
+        ...(options.deadlineEpochMs !== undefined
+          ? { deadlineEpochMs: options.deadlineEpochMs }
           : {}),
       });
     }

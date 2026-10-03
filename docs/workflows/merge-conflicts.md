@@ -471,9 +471,12 @@ flowchart TD
   An unreadable fix-PR listing fails loud rather than reading as "none".
 - Then posts an attempt marker `pass="takeover"` with the head sha, e.g.
   `<!-- vibe-coder:merge-conflict-attempt n="2" pass="takeover" head="abc1234" -->`,
-  before any work. The production agent grant is
-  `takeoverAgentTimeoutSeconds`, the lesser of `claudeTimeout` and the
-  handler time still left (Issue #1693).
+  before any work. Before that post, `grantAgentRun` declines with no marker
+  when the handler time left, less the attempt overhead, is under the drain's
+  20-minute floor: a shorter grant times the agent out, and a timeout is a
+  charged failure (Issues #1693, #2305). When the run does start, the grant
+  is `takeoverAgentTimeoutSeconds`, the lesser of `claudeTimeout` and the
+  handler time still left.
 - Every milestone head (the worker must not push to it, GH013 or not): names
   a side branch with `milestoneFixBranchFor`
   (`milestone-fix/<leaf>/pr-<N>-takeover-<sha12>`), resolves and pushes only
@@ -494,10 +497,16 @@ flowchart TD
   and removes it only when it added it in that run and the ordinary route
   resolved the conflict. A label a human or another pass applied is never
   removed; on the milestone route the label stays until the fix PR lands.
-- The milestone sync stands down while this pass owns the head: the
-  cross-host PR lock is held, a trusted `pass="takeover"` attempt is still
-  open, or the takeover's own fix PR is open (Issue #2965). At the 2-hour
-  mark only one of the two passes spends an attempt.
+- The milestone sync takes the same cross-host PR lock before it merges and
+  releases it afterwards, so a takeover that becomes due while the merge is
+  still running finds the lock held and posts nothing (Issue #2965). The
+  sync also stands down when the lock is already held, when the takeover's
+  own fix PR is open, or when a trusted `pass="takeover"` attempt is the
+  newest marker and younger than the lock TTL. A stranded older open marker
+  does not skip the PR for the rest of its life. A lock comment counts only
+  when a fleet account wrote it, and a fix PR from a fork or from an author
+  outside the fleet is not this pass's fix PR. At the 2-hour mark only the
+  pass that holds the lock spends an attempt.
 
 ```mermaid
 flowchart TD

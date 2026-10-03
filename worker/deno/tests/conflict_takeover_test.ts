@@ -24,7 +24,14 @@ import {
   CONFLICT_RESOLVED_MARKER,
   conflictAttemptMarker,
   conflictFailedMarker,
+  readResolutionAttempts,
 } from "../lib/merge_conflict_markers.ts";
+import {
+  DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
+  DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
+} from "../lib/merge_conflict_drain.ts";
+import { spentConflictAttempts } from "../lib/pr_merge_conflict_scan.ts";
+import { isFleetAuthor } from "../lib/fleet_authors.ts";
 
 const REPO = "org/repo";
 const TRUSTED = "vibe-bot";
@@ -65,7 +72,13 @@ function gatedPr(): ConflictTakeoverPr {
 interface FakeGhOptions {
   comments?: unknown[];
   gated?: boolean;
-  openFixPr?: { number: number; url: string; headRefName: string } | null;
+  openFixPr?: {
+    number: number;
+    url: string;
+    headRefName: string;
+    isCrossRepository?: boolean;
+    author?: { login: string };
+  } | null;
   prCreateUrl?: string;
   labelsOnPr?: string[];
 }
@@ -237,6 +250,8 @@ Deno.test("runConflictTakeover - an already-open fix PR is reused, nothing attem
       number: 77,
       url: "https://github.com/org/repo/pull/77",
       headRefName: "milestone-fix/2965-x/pr-48-takeover-abc",
+      isCrossRepository: false,
+      author: { login: TRUSTED },
     },
   });
   let ladderCalled = false;
@@ -548,4 +563,86 @@ Deno.test("takeoverAgentTimeoutSeconds is the time the handler still has", () =>
     3600,
   );
   assertEquals(takeoverAgentTimeoutSeconds(now + 400, 3600, now), 1);
+});
+
+Deno.test("runConflictTakeover - less than the agent floor left spends no budget (Issue #2965)", async () => {
+  const now = 1_700_000_000_000;
+  const fake = makeFakeGh({ gated: false });
+  const deps = makeDeps(fake, {
+    deadlineEpochMs: now + DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT +
+      DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS - 1,
+    nowMs: now,
+    resolveViaLadder: () => {
+      throw new Error("must not start an agent the cycle cannot cover");
+    },
+  });
+
+  const outcome = await runConflictTakeover(nonGatedPr(), deps);
+
+  assertEquals(outcome.kind, "declined-time");
+  assertEquals(commentsCalls(fake.calls).length, 0);
+});
+
+Deno.test("runConflictTakeover - a mid-sync lock at the 2-hour mark spends no further attempt (Issue #2965)", async () => {
+  const dueAgo = new Date(Date.now() - (2 * 60 + 1) * 60 * 1000).toISOString();
+  const comments = [
+    trustedComment(
+      [
+        conflictAttemptMarker(1, "sync", HEAD_SHA),
+        conflictFailedMarker(1, "sync", HEAD_SHA),
+      ].join("\n"),
+    ),
+  ];
+  (comments[0] as { created_at: string }).created_at = dueAgo;
+  const fake = makeFakeGh({ gated: false, comments });
+  const deps = makeDeps(fake, {
+    workerId: "host-b",
+    acquireLockFn: () =>
+      Promise.resolve({
+        ok: true,
+        value: { acquired: false, winnerId: "sync-host" },
+      }),
+    resolveViaLadder: () => {
+      throw new Error("must not resolve while the sync holds the lock");
+    },
+  });
+
+  const outcome = await runConflictTakeover(nonGatedPr(), deps);
+
+  assertEquals(outcome, { kind: "lock-held", holder: "sync-host" });
+  assertEquals(commentsCalls(fake.calls).length, 0);
+  assertEquals(
+    spentConflictAttempts(
+      readResolutionAttempts(
+        comments,
+        (login) => isFleetAuthor(login, [TRUSTED]),
+      ),
+    ),
+    1,
+  );
+});
+
+Deno.test("runConflictTakeover - a fork takeover fix PR is not reused (Issue #2965)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: {
+      number: 77,
+      url: "https://github.com/org/repo/pull/77",
+      headRefName: "milestone-fix/2965-x/pr-48-takeover-abc",
+      isCrossRepository: true,
+      author: { login: TRUSTED },
+    },
+  });
+  let fixCalled = false;
+  const deps = makeDeps(fake, {
+    resolveOnFixBranch: () => {
+      fixCalled = true;
+      return Promise.resolve({ resolved: true, detail: "fixed" });
+    },
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), deps);
+
+  assertEquals(outcome.kind, "fix-pr-raised");
+  assert(fixCalled);
 });

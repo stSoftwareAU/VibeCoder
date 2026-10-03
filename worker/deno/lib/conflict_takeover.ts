@@ -71,6 +71,7 @@ import {
   type MilestoneFixPrDeps,
   raiseMilestoneFixPr,
 } from "./milestone_fix_pr.ts";
+import { grantAgentRun } from "./milestone_branch_sync.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -164,6 +165,15 @@ export interface ConflictTakeoverDeps {
   releaseLockFn?: typeof releaseBranchUpdateLock;
   /** Defaults to {@link startBranchUpdateLockRenewal}. */
   startLockRenewalFn?: typeof startBranchUpdateLockRenewal;
+  /**
+   * Handler deadline. When set, the takeover declines with no marker unless
+   * the time left covers the drain's agent floor ({@link grantAgentRun}).
+   * A grant shorter than that floor times the agent out, and a timeout is a
+   * charged failure (Issue #2305).
+   */
+  deadlineEpochMs?: number;
+  /** Clock for {@link deadlineEpochMs}. Defaults to `Date.now`. */
+  nowMs?: number;
 }
 
 /** What one takeover run did. */
@@ -192,7 +202,12 @@ export type ConflictTakeoverOutcome =
     detail: string;
   }
   /** Another host holds the cross-host PR lock; nothing was posted. */
-  | { kind: "lock-held"; holder: string };
+  | { kind: "lock-held"; holder: string }
+  /**
+   * The handler time left cannot cover an agent run. Nothing was posted,
+   * so the next cycle can try once the budget is there.
+   */
+  | { kind: "declined-time" };
 
 // ---------------------------------------------------------------------------
 // Run
@@ -363,7 +378,7 @@ export async function runConflictTakeover(
       pr.repo,
       pr.headRefName,
       pr.number,
-      milestoneDeps,
+      { ...milestoneDeps, fleetAuthors: trustedAuthors },
       "takeover-",
     );
     if (!existing.ok) throw existing.error;
@@ -375,6 +390,21 @@ export async function runConflictTakeover(
         { ...context, fixPrNumber: existing.value.number },
       );
       return { kind: "fix-pr-reused", fixPr: existing.value };
+    }
+  }
+
+  if (deps.deadlineEpochMs !== undefined) {
+    const grant = grantAgentRun({
+      deadlineEpochMs: deps.deadlineEpochMs,
+      nowMs: deps.nowMs ?? Date.now(),
+    });
+    if (!grant.agentAllowed) {
+      logger.info(
+        `Conflict takeover declined for PR #${pr.number}: the handler ` +
+          `time left cannot cover an agent run, so no attempt is posted`,
+        context,
+      );
+      return { kind: "declined-time" };
     }
   }
 

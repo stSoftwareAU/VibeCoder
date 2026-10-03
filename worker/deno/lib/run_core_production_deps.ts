@@ -172,7 +172,12 @@ import {
   scanConflictQueueStalls,
 } from "./merge_conflict_stall_watchdog.ts";
 import { takeoverAgentTimeoutSeconds } from "./conflict_takeover.ts";
-import { activeBranchUpdateLockHolder } from "./pr_branch_lock.ts";
+import {
+  acquireBranchUpdateLock,
+  prUpdateLockIsHeld,
+  releaseBranchUpdateLock,
+  startBranchUpdateLockRenewal,
+} from "./pr_branch_lock.ts";
 import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
@@ -385,6 +390,7 @@ import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
   isFleetAuthor,
+  resolveEffectiveFleetPrAuthors,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -2966,6 +2972,9 @@ export async function createProductionRunCoreDeps(
           // logins to attribute spend to.
           trustedAuthors: [...trustedAuthors],
           workerId: getWorkerUniqueId(config.workerName),
+          ...(opts?.deadlineEpochMs !== undefined
+            ? { deadlineEpochMs: opts.deadlineEpochMs }
+            : {}),
           takeoverResolvers: bindConflictTakeoverResolvers({
             checkout: async (repo: string) => {
               const setup = await setupRepo(repo, workDir);
@@ -6214,14 +6223,70 @@ async function syncMilestoneBranchesFn(
       }),
     // Issue #2965: a takeover that already holds the PR lock owns the head.
     // The sync stands down rather than spending a second attempt beside it.
-    prUpdateLockHeldFn: async (repo, prNumber) => {
-      const holder = await activeBranchUpdateLockHolder({
-        repo,
-        prNumber,
+    prUpdateLockHeldFn: (repo, prNumber) =>
+      prUpdateLockIsHeld(repo, prNumber, {
         ghCommandFn: runGhCommand,
         log: (message: string) => logger.warn(message),
+        authorOptions: {
+          fleetAuthors: resolveEffectiveFleetPrAuthors(
+            config.fleetPrAuthors,
+            config.serviceAccounts,
+          ),
+        },
+      }),
+    acquireHeadLockFn: async (repo, prNumber) => {
+      const workerId = getWorkerUniqueId(config.workerName);
+      const lock = await acquireBranchUpdateLock({
+        repo,
+        prNumber,
+        workerId,
+        ghCommandFn: runGhCommand,
+        authorOptions: {
+          fleetAuthors: resolveEffectiveFleetPrAuthors(
+            config.fleetPrAuthors,
+            config.serviceAccounts,
+          ),
+        },
+        log: (message: string) => logger.warn(message),
+        note: `🔀 Syncing the milestone branch (worker \`${workerId}\`).`,
       });
-      return holder !== null;
+      if (
+        !lock.ok || !lock.value.acquired ||
+        lock.value.lockCommentId === undefined
+      ) {
+        return { acquired: false, release: () => Promise.resolve() };
+      }
+      const lockCommentId = lock.value.lockCommentId;
+      const renewal = startBranchUpdateLockRenewal({
+        repo,
+        lockCommentId,
+        workerId,
+        ghCommandFn: runGhCommand,
+        note: `🔀 Syncing the milestone branch (worker \`${workerId}\`).`,
+        onError: (message: string) =>
+          logger.warn(
+            `milestone_sync_lock=renew-failed ${message}`,
+            { repo, prNumber },
+          ),
+      });
+      return {
+        acquired: true,
+        release: async () => {
+          renewal.stop();
+          await releaseBranchUpdateLock({
+            repo,
+            prNumber,
+            lockCommentId,
+            ghCommandFn: runGhCommand,
+          });
+        },
+      };
+    },
+    dedupAuthors: {
+      fleetAuthors: resolveEffectiveFleetPrAuthors(
+        config.fleetPrAuthors,
+        config.serviceAccounts,
+      ),
     },
     releaseSyncClaimFn: async (repo, milestoneBranch) => {
       const released = await releaseMilestoneSyncClaim(milestoneBranch, {

@@ -500,6 +500,8 @@ Deno.test(
         number: 77,
         url: "https://github.com/owner/repo/pull/77",
         headRefName: `${prefix}takeover-abc`,
+        isCrossRepository: false,
+        author: { login: FLEET },
       }]),
     };
     let syncs = 0;
@@ -522,6 +524,132 @@ Deno.test(
       baseDeps(calls, state, syncBranchFn),
     );
     assert(proceeded.ok);
+    assertEquals(syncs, 1);
+  },
+);
+
+Deno.test(
+  "milestone sync proceeds when an open takeover marker is stale or superseded (Issue #2965)",
+  async () => {
+    const calls: string[][] = [];
+    const longAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const dueAgo = new Date(Date.now() - (2 * 60 + 1) * 60 * 1000)
+      .toISOString();
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [
+        {
+          user: { login: FLEET },
+          created_at: longAgo,
+          body: conflictAttemptMarker(1, "takeover", HEAD_SHA),
+        },
+        {
+          user: { login: FLEET },
+          created_at: dueAgo,
+          body: conflictAttemptMarker(2, "takeover", HEAD_SHA),
+        },
+        {
+          user: { login: FLEET },
+          created_at: dueAgo,
+          body: conflictFailedMarker(2, "takeover", HEAD_SHA),
+        },
+      ],
+    };
+    let syncs = 0;
+    const result = await syncMilestoneBranches(
+      baseDeps(calls, state, () => {
+        syncs++;
+        return Promise.resolve({
+          ok: false as const,
+          error: conflictFailure(),
+        });
+      }),
+    );
+    assert(result.ok);
+    assertEquals(
+      syncs,
+      1,
+      "a superseded open takeover marker does not own the head",
+    );
+  },
+);
+
+Deno.test(
+  "milestone sync takes the PR lock before merging and spends nothing when it is held (Issue #2965)",
+  async () => {
+    const calls: string[][] = [];
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [dueFailure("sync")],
+    };
+    const order: string[] = [];
+    let syncs = 0;
+    const deps = baseDeps(calls, state, () => {
+      order.push("sync");
+      syncs++;
+      return Promise.resolve({ ok: false as const, error: conflictFailure() });
+    });
+    deps.acquireHeadLockFn = () => {
+      order.push("lock");
+      return Promise.resolve({
+        acquired: false,
+        release: () => Promise.resolve(),
+      });
+    };
+
+    const held = await syncMilestoneBranches(deps);
+    assert(held.ok);
+    assertEquals(syncs, 0);
+    assertEquals(order, ["lock"]);
+    assertEquals(prCommentCalls(calls).length, 0);
+
+    order.length = 0;
+    deps.acquireHeadLockFn = () => {
+      order.push("lock");
+      return Promise.resolve({
+        acquired: true,
+        release: () => {
+          order.push("unlock");
+          return Promise.resolve();
+        },
+      });
+    };
+    const ran = await syncMilestoneBranches(deps);
+    assert(ran.ok);
+    assertEquals(syncs, 1);
+    assertEquals(order[0], "lock");
+    assertEquals(order[1], "sync");
+    assertEquals(order.at(-1), "unlock");
+  },
+);
+
+Deno.test(
+  "milestone sync ignores a fork takeover fix PR (Issue #2965)",
+  async () => {
+    const prefix = milestoneFixPrefixFor(MILESTONE_BRANCH, 42);
+    const calls: string[][] = [];
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [dueFailure("sync")],
+      basePrListRaw: JSON.stringify([{
+        number: 77,
+        url: "https://github.com/owner/repo/pull/77",
+        headRefName: `${prefix}takeover-abc`,
+        isCrossRepository: true,
+        author: { login: FLEET },
+      }]),
+    };
+    let syncs = 0;
+    const result = await syncMilestoneBranches(
+      baseDeps(calls, state, () => {
+        syncs++;
+        return Promise.resolve({
+          ok: false as const,
+          error: conflictFailure(),
+        });
+      }),
+    );
+    assert(result.ok);
     assertEquals(syncs, 1);
   },
 );

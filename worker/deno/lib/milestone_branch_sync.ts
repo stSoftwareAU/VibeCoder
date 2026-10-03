@@ -61,6 +61,7 @@ import {
   recordSyncAttemptOnPr,
 } from "./milestone_sync_pr_budget.ts";
 import { findOpenMilestoneFixPr } from "./milestone_fix_pr.ts";
+import { DEFAULT_LOCK_TTL_SECONDS } from "./pr_branch_lock.ts";
 import {
   CONFLICT_RESOLUTION_BUDGET,
   hasExhaustedConflictAttempts,
@@ -336,9 +337,23 @@ export interface MilestoneBranchSyncDeps {
    * Whether another host holds the cross-host PR lock (Issue #2965).
    *
    * True means the conflict takeover already owns this PR, so the sync
-   * leaves it alone. Omitted: no lock is consulted.
+   * leaves it alone. Omitted: no lock is consulted. Production wires
+   * {@link prUpdateLockIsHeld}, which ignores a lock the fleet did not post.
    */
   prUpdateLockHeldFn?: (repo: string, prNumber: number) => Promise<boolean>;
+  /**
+   * Take the same cross-host PR lock before merging an open milestone PR
+   * (Issue #2965).
+   *
+   * The takeover becomes due at the same moment this pass does. Without the
+   * lock, a takeover that starts while this merge is still running spends a
+   * second attempt in the same window. `acquired: false` means another host
+   * holds it and this pass spends nothing. Omitted: no lock is taken.
+   */
+  acquireHeadLockFn?: (
+    repo: string,
+    prNumber: number,
+  ) => Promise<{ acquired: boolean; release: () => Promise<void> }>;
   /**
    * Optional self-heal event sink (Issue #4260). Production wires
    * `emitSelfHealEventAuto` so every failed sync leaves a forensic
@@ -1310,11 +1325,29 @@ export function recordSuccess(
 /**
  * Whether the conflict takeover already owns this milestone PR (Issue #2965).
  *
- * An open takeover attempt, the takeover's own fix PR, or the cross-host PR
- * lock means a second pass must not spend the shared budget beside it.
- * A listing that cannot be read stands down for this cycle: guessing that
- * no takeover is running is how two hosts spend the same attempt.
+ * The cross-host PR lock, the takeover's own fix PR, or a takeover attempt
+ * that is still the newest marker and younger than the lock TTL. An older
+ * open marker is stranded — the reader only closes the newest open attempt,
+ * and a failed withdrawal leaves one open for good — so it must not skip
+ * this PR for the rest of its life. A listing that cannot be read stands
+ * down for this cycle: guessing that no takeover is running is how two
+ * hosts spend the same attempt.
  */
+function freshOpenTakeover(
+  attempts: readonly {
+    outcome: string;
+    pass: string;
+    atMs: number | undefined;
+  }[],
+  nowMs: number,
+): boolean {
+  const newest = attempts[attempts.length - 1];
+  if (newest === undefined) return false;
+  if (newest.outcome !== "open" || newest.pass !== "takeover") return false;
+  if (newest.atMs === undefined) return false;
+  return nowMs - newest.atMs < DEFAULT_LOCK_TTL_SECONDS * 1000;
+}
+
 async function takeoverOwnsHead(
   repo: string,
   milestoneBranch: string,
@@ -1322,12 +1355,9 @@ async function takeoverOwnsHead(
   ghCommandFn: GhCommandFn,
   deps: MilestoneBranchSyncDeps,
   log: (message: string) => void,
+  nowMs: number,
 ): Promise<boolean> {
-  if (
-    headPr.attempts.some((attempt) =>
-      attempt.outcome === "open" && attempt.pass === "takeover"
-    )
-  ) {
+  if (freshOpenTakeover(headPr.attempts, nowMs)) {
     return true;
   }
   if (deps.prUpdateLockHeldFn) {
@@ -1343,11 +1373,16 @@ async function takeoverOwnsHead(
       return true;
     }
   }
+  const fleetAuthors = deps.dedupAuthors?.fleetAuthors;
   const openFix = await findOpenMilestoneFixPr(
     repo,
     milestoneBranch,
     headPr.number,
-    { gh: ghCommandFn, log },
+    {
+      gh: ghCommandFn,
+      log,
+      ...(fleetAuthors ? { fleetAuthors } : {}),
+    },
     "takeover-",
   );
   if (!openFix.ok) {
@@ -1707,6 +1742,7 @@ export async function syncMilestoneBranches(
             ghCommandFn,
             deps,
             log,
+            now(),
           )
         ) {
           log(
@@ -1888,6 +1924,66 @@ export async function syncMilestoneBranches(
             : {}),
         });
         const agentAllowed = grant.agentAllowed;
+
+        // Issue #2965: hold the cross-host PR lock across the merge. A
+        // takeover that becomes due in the same window finds the lock held
+        // and posts no attempt of its own. A lock we cannot take means the
+        // takeover already owns this head, so this pass spends nothing.
+        let releaseHeadLock: (() => Promise<void>) | undefined;
+        if (headPr && deps.acquireHeadLockFn) {
+          let held: { acquired: boolean; release: () => Promise<void> };
+          try {
+            held = await deps.acquireHeadLockFn(repo, headPr.number);
+          } catch (error) {
+            log(
+              `WARNING: Could not take the PR lock for #${headPr.number} in ` +
+                `${repo} — skipping the sync this cycle (Issue #2965): ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+            );
+            if (streakPath && streaks[streakKey]?.attemptOpenedAt) {
+              streaks[streakKey] = concludeConflictAttempt(
+                streaks[streakKey]!,
+                "disrupted",
+                "the PR lock could not be taken",
+                defaultSha,
+                now(),
+              );
+              streaksDirty = true;
+            }
+            if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+              await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+                .catch(() => undefined);
+            }
+            skipped++;
+            continue;
+          }
+          if (!held.acquired) {
+            log(
+              `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                `PR #${headPr.number} lock is held, so the takeover owns ` +
+                `this attempt (Issue #2965)`,
+            );
+            if (streakPath && streaks[streakKey]?.attemptOpenedAt) {
+              streaks[streakKey] = concludeConflictAttempt(
+                streaks[streakKey]!,
+                "disrupted",
+                "another host holds the cross-host PR lock",
+                defaultSha,
+                now(),
+              );
+              streaksDirty = true;
+            }
+            if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+              await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+                .catch(() => undefined);
+            }
+            skipped++;
+            continue;
+          }
+          releaseHeadLock = held.release;
+        }
+
         // Issue #2215: named before it starts, so a slow merge or check is
         // never a silent gap in the log.
         log(
@@ -1913,6 +2009,9 @@ export async function syncMilestoneBranches(
               : grant,
           );
         } finally {
+          if (releaseHeadLock) {
+            await releaseHeadLock().catch(() => undefined);
+          }
           // The claim guards the sync, not the outcome: it is released on
           // every path out so a sibling can take the next attempt.
           if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
