@@ -46,6 +46,7 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "git log <base>..HEAD",
       "git diff --stat HEAD",
       "a planning marker is still read after that commit",
+      "whether or not the branch already has commits",
       "suspicious-image flag is the exception",
       "hands it to a human only while the branch has no commits",
       "The worker defers and raises no PR",

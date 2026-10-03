@@ -400,6 +400,7 @@ export async function handOffDeclaredOutcome(
       reason: planningRequest.reason,
       outputSnippet: publishableSnippet(claudeOutput),
       logger,
+      ...(committed ? { committedBranch: state.branchName } : {}),
       deps: { ensureLabelExists: deps.github.ensureLabelExists },
     });
     if (handoff.applied) {

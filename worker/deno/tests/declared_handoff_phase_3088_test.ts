@@ -221,6 +221,13 @@ Deno.test(
     assert(
       calls.postComment.some((c) => c.includes(buildPlanningHandoffMarker())),
     );
+    assert(
+      calls.postComment.some((c) => c.includes("issue-3088-declared-handoff")),
+    );
+    assertEquals(result.outcome?.kind, "no_pr_expected");
+    if (result.outcome?.kind === "no_pr_expected") {
+      assertEquals(result.outcome.phase, "declared_handoff");
+    }
   },
 );
 

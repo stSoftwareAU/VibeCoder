@@ -310,12 +310,11 @@ change, and end your final message with this marker on its own line:
 <!-- vibe-needs-planning reason="<why it splits — the independent pieces you found>" -->
 ```
 
-The worker applies `planning` through its audited hand-off only while the
-branch has no commits and no uncommitted changes against the base. It posts
+The worker applies `planning` through its audited hand-off, whether or not the
+branch already has commits. It posts
 your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
-goes to a human instead. This marker is honoured even when you have already
-committed — the worker then raises no PR. The marker applies to `work-on`
+goes to a human instead. The marker applies to `work-on`
 issues only: on any other pickup label, or when the issue body carried an
 image from an untrusted author, the worker hands the issue to a human rather
 than to planning. Sheer

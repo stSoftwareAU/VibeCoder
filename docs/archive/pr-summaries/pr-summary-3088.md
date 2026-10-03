@@ -49,8 +49,10 @@ had said was unfinished.
   the PR body.
 - **A declared signal whose guard refuses it** (a repeat deferral, a planning
   request without the anchor label) still hands off to a human through
-  `handOffAnalysisOnly` with the `declared_handoff` trigger. It never falls
-  through to a PR.
+  `handOffAnalysisOnly` with the `declared_handoff` trigger. A `## Blocked:`
+  heading on a committed run defers only when its `Depends on` / `Blocked by`
+  line names a dependency the worker reads as open. A closed or unreadable
+  dependency does not defer, and the run raises its PR.
 
 ### Undiscoverable Facts
 
@@ -86,13 +88,33 @@ updated. No `*/README.md` describes the phase list, so none changed.
 
 - `worker/deno/tests/declared_handoff_phase_3088_test.ts`
   - blocked output defers
-  - planning marker with anchor hands off to planning
+  - planning marker with anchor hands off to planning (comment names the
+    branch; outcome phase is `declared_handoff`)
   - planning marker without anchor hands off to a human
   - plain summary output continues without any writes
   - a repeat blocked deferral hands off to a human
+  - a completed summary that mentions a merged dependency continues
+  - a Blocked heading without a declaration line continues
+  - a closed dependency does not defer a committed run
+  - a planning marker inside a code fence continues
+  - an exhausted time deferral names the committed hand-off
+  - a dependency lookup that fails does not defer a committed run
+  - a dependency with no state does not defer a committed run
+  - a quoted time-deferral marker continues
+  - an over-horizon defer marker hands off, no PR
+  - a reasonless planning marker hands off, no PR
+  - a valid time deferral names the committed branch
 - `worker/deno/tests/issue_worker_test.ts`: "workOnIssue - a commit-producing
   run that also declares a blocked hand-off defers instead of completing
   (Issue #3088)"
+- `worker/deno/tests/github_test.ts`: `parseGhIssueJson` carries `state`
+  through, including `MERGED`; `getIssue` asks `gh` for `state`
+- `worker/deno/tests/validation_test.ts`: `validateGhIssueJson` accepts
+  `OPEN`, `CLOSED`, `MERGED` and an absent state
+- `worker/deno/tests/planning_handoff_test.ts`: a marker inside a code fence
+  or span is not a request
+- `worker/deno/tests/pr_claims_verified_3058_test.ts`: the issue prompt applies
+  planning whether or not the branch already has commits
 - The existing `handle_no_changes` suites still pass unchanged against the
   refactor.
 - `./quality.sh`
@@ -107,8 +129,10 @@ updated. No `*/README.md` describes the phase list, so none changed.
 - [x] Output encoding: comments reuse the existing hand-off helpers.
 - [x] Authorisation: the planning hand-off stays gated on the human-applied
       anchor label and the untrusted-image gate.
-- [x] Error handling: there is no silent fallback; a refused signal hands off
-      to a human.
+- [x] Error handling: a guard that refuses a declared signal (a repeat
+      deferral, planning without the anchor) hands off to a human. A closed
+      or unreadable dependency does not defer; the committed run raises its
+      PR.
 - [x] Dependencies: none added.
 - [x] Path confinement: not applicable.
 </content>

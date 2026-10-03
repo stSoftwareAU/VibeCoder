@@ -781,20 +781,24 @@ the same matrix plus an "unable to make code changes" note about five times).
 
 **The structured signals below are honoured even when the run committed code
 (Issue #3088).** A `declared_handoff` phase runs after execute and before
-`bump_deps` / the quality gate / completion, and catches the same `## Blocked:`
-dependency deferral, `vibe-defer-until` time deferral and `vibe-needs-planning`
-marker on a run that also produced a commit — so the worker defers, parks or
-hands to planning instead of raising a PR with `Closes #N` that would close
-the very issue being deferred. The phase itself neither pushes nor raises a
-PR. With session resume on (the default), the execute phase's checkpoint has
-normally already pushed the run's work to the `issue-<N>-…` branch —
-`execute_phase.ts` calls `checkpoints.runNow()`, which commits and pushes
-through `wip_checkpoint.ts` — and the next claim resumes from it. A signal
-that cannot be honoured (for example a repeat
-deferral) still falls through to the human hand-off below. The free-text
-escape hatch (a follow-up issue + "out of scope" message) remains the one
-hand-off that is honoured only when the run leaves no commit and no
-uncommitted change. See
+`bump_deps` / the quality gate / completion. On that committed path a
+`## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
+names a dependency the worker reads as open. A bullet, a heading with no
+declaration line, a closed dependency, a missing `state`, or a lookup that
+fails does not defer, and the run continues and raises its PR. A
+`vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
+read after a commit, so the worker defers or hands to planning instead of
+raising a PR with `Closes #N`. An invalid or over-horizon deferral, or a
+planning marker with no reason, hands off to a human. A signal the guard
+refuses (a repeat deferral, a planning request without the `work-on` anchor)
+still falls through to the human hand-off below. The phase itself neither
+pushes nor raises a PR. With session resume on (the default), the execute
+phase's checkpoint has normally already pushed the run's work to the
+`issue-<N>-…` branch — `execute_phase.ts` calls `checkpoints.runNow()`, which
+commits and pushes through `wip_checkpoint.ts` — and the next claim resumes
+from it. The free-text escape hatch (a follow-up issue + "out of scope"
+message) remains the one hand-off that is honoured only when the run leaves
+no commit and no uncommitted change. See
 [`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
 
 The worker now detects an analysis-only / no-PR issue from **two signals** and

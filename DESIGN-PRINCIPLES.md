@@ -2749,10 +2749,13 @@ branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
 
 **Committed runs too (Issue #3088).** Detection no longer requires "no code
 changes" either — a `declared_handoff` phase runs after execute and before
-`bump_deps` / the quality gate / completion, so a run that *did* commit and
-still declared itself `## Blocked:` / time-deferred / needing planning is
-deferred or handed to planning rather than sailing through to a `Closes #N`
-PR. The phase itself neither pushes nor raises a PR. With session resume on
+`bump_deps` / the quality gate / completion. On that path a `## Blocked:`
+heading defers only when its `Depends on` or `Blocked by` line names a
+dependency the worker reads as open. A closed or unreadable dependency does
+not defer, and the run raises its PR. A time deferral or a planning marker
+is still honoured after a commit, so the worker defers or hands to planning
+rather than sailing through to a `Closes #N` PR. The phase itself neither
+pushes nor raises a PR. With session resume on
 (the default), the execute phase's checkpoint has normally already pushed the
 run's work to the `issue-<N>-…` branch — `execute_phase.ts` calls
 `checkpoints.runNow()`, which commits and pushes through `wip_checkpoint.ts`

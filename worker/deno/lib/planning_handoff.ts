@@ -159,6 +159,7 @@ export async function hasPriorPlanningHandoffOnThread(
 export function buildPlanningHandoffComment(
   rawReason: string,
   rawOutputSnippet: string,
+  committedBranch?: string,
 ): string {
   const reason = neutraliseAgentMarkers(rawReason).text;
   const outputSnippet = neutraliseAgentMarkers(rawOutputSnippet).text;
@@ -166,8 +167,12 @@ export function buildPlanningHandoffComment(
   const details = outputSnippet
     ? `<details>\n<summary>Full output</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>\n\n`
     : "";
+  const lead = committedBranch
+    ? `This run committed work on \`${committedBranch}\` and judged the ` +
+      `issue too large for one PR, so the worker has added `
+    : `This issue is too large for one PR, so the worker has added `;
   return `## Handed off to planning\n\n` +
-    `This issue is too large for one PR, so the worker has added ` +
+    lead +
     `\`planning\` to break it into sub-issues. \`work-on\` stays on the ` +
     `issue as the trusted anchor for the hand-off (Issue #2688).\n\n` +
     `**Reason given by the run:**\n\n${quoted}\n\n` +
@@ -199,6 +204,11 @@ export interface PlanningHandoffOptions {
   reason: string;
   outputSnippet: string;
   logger: Logger;
+  /**
+   * Set on a committed run (Issue #3088). The comment then names that
+   * branch, and the outcome phase is `declared_handoff`.
+   */
+  committedBranch?: string;
   deps?: PlanningHandoffDeps;
 }
 
@@ -261,6 +271,7 @@ export async function handOffToPlanning(
       buildPlanningHandoffComment(
         redactSecrets(options.reason),
         options.outputSnippet,
+        options.committedBranch,
       ),
     );
   } catch (error) {
@@ -273,7 +284,7 @@ export async function handOffToPlanning(
   }
 
   const outcome = expectedNoPrOutcome(
-    "handle_no_changes",
+    options.committedBranch ? "declared_handoff" : "handle_no_changes",
     "handed off to planning",
   );
   const releaseClaim = deps?.releaseClaim ?? defaultReleaseClaim;
