@@ -130,32 +130,12 @@ Deno.test("closure verdict prompt - a delimiter forged in the issue body is scru
 function insideFence(prompt: string, needle: string, id: string): boolean {
   const needleIndex = prompt.indexOf(needle);
   if (needleIndex < 0) return false;
-
-  const beginRe = new RegExp(
-    `---BEGIN UNTRUSTED USER CONTENT BOUNDARY_${id}---`,
-    "g",
-  );
-  const endRe = new RegExp(
-    `---END UNTRUSTED USER CONTENT BOUNDARY_${id}---`,
-    "g",
-  );
-
-  let lastBegin = -1;
-  for (const match of prompt.matchAll(beginRe)) {
-    if (match.index! < needleIndex) lastBegin = match.index!;
-  }
+  const begin = `---BEGIN UNTRUSTED USER CONTENT BOUNDARY_${id}---`;
+  const end = `---END UNTRUSTED USER CONTENT BOUNDARY_${id}---`;
+  const lastBegin = prompt.lastIndexOf(begin, needleIndex);
   if (lastBegin < 0) return false;
-
-  let endBetween = false;
-  let nextEnd = -1;
-  for (const match of prompt.matchAll(endRe)) {
-    if (match.index! > lastBegin && match.index! < needleIndex) {
-      endBetween = true;
-    }
-    if (match.index! > needleIndex && nextEnd < 0) nextEnd = match.index!;
-  }
-
-  return !endBetween && nextEnd >= 0;
+  const endAfterBegin = prompt.indexOf(end, lastBegin);
+  return endAfterBegin > needleIndex;
 }
 
 Deno.test("closure verdict prompt - a delimiter forged in a gate problem is scrubbed and fenced", () => {
