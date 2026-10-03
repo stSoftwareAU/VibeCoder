@@ -3,9 +3,10 @@
  *
  * The summary gates at the completion phase's PR-creation chokepoint —
  * acceptance-criteria closure (#518), independent two-axis review (#663), bug
- * reproduction status (#521), the docs-sweep line (#3073) and the
- * result-placeholder gate (#3124) — check a *document*, not the code. When
- * the run had already raised its own PR,
+ * reproduction status (#521), the docs-sweep line (#3073), the
+ * result-placeholder gate (#3124) and the branch-outcomes list (#3147) —
+ * check a *document*, not the code. When the run had already raised its own
+ * PR,
  * `reportSummaryRuleBlock` (#1140) recovers:
  * the PR is finalised and the run reports `summary_incomplete`. With no PR the
  * block posted its remediation comment and ended the run, so the next run — a

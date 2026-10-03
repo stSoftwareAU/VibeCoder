@@ -1,13 +1,13 @@
 /**
- * Integration tests for the PR-summary result-placeholder gate running in
- * the LIVE completion phase (Issue #3124).
+ * Integration tests for the PR-summary branch-outcomes gate running in the
+ * LIVE completion phase (Issue #3147).
  *
- * A fill-in-later token such as `QUALITY_RESULT_PLACEHOLDER` left where a
- * command's actual result belongs used to sail through PR creation
- * unchecked. These tests drive `workOnIssueCompletion` and assert on the
- * observable outcome (whether `gh pr create` was invoked, whether the in-run
- * recovery fired, whether the block was folded with another gate's), not on
- * how the gate is called.
+ * "Every outcome of a branch you add needs a test that reaches it" (rule
+ * #3069) was prose only — nothing checked a `Branch outcomes:` list even
+ * existed, let alone that a test it named was real. These tests drive
+ * `workOnIssueCompletion` and assert on the observable outcome (whether
+ * `gh pr create` was invoked, whether the in-run recovery fired, whether the
+ * block was folded with another gate's), not on how the gate is called.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -22,130 +22,79 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
 const REPO = "stSoftwareAU/VibeCoder";
-const ISSUE = 3124;
-const PR_URL = `https://github.com/${REPO}/pull/4211`;
+const ISSUE = 3147;
+const PR_URL = `https://github.com/${REPO}/pull/4311`;
+const EXISTING_TEST = "worker/deno/tests/completion_phase_branch_outcomes_test.ts";
+const MISSING_TEST = "worker/deno/tests/does_not_exist_test.ts";
 
 const ISSUE_BODY = `## Problem
 
-Nothing checks the PR summary for a left-over result placeholder.
+Nothing checks the PR summary for a \`Branch outcomes:\` list.
 `;
 
-/** A clean summary, with a Docs sweep line already answered, with a bare placeholder token. */
-const SUMMARY_WITH_BARE_TOKEN = `## Summary
+const DOCS_SWEEP_LINE =
+  "**Docs sweep** — grep: `BrokerBalance`; section: `docs/reporting-api.md#decisions-report`; no hits";
+
+function summaryWith(branchOutcomesBlock: string): string {
+  return `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
-
-**Branch outcomes:** none added
-
-- Full \`./quality.sh\`: QUALITY_RESULT_PLACEHOLDER
+${DOCS_SWEEP_LINE}
+${branchOutcomesBlock}
 
 ## Test Plan
 
-- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
+- \`${EXISTING_TEST}\`
 `;
+}
 
-/** The same summary once the token has been replaced with the actual outcome. */
-const SUMMARY_WITH_TOKEN_RESOLVED = `## Summary
+/** (a) Docs sweep present, no Branch outcomes list at all. */
+const SUMMARY_NO_BRANCH_OUTCOMES = summaryWith("");
 
-Changed the broker balance card. Closes #${ISSUE}.
+/** (b) Branch outcomes list names a test that does not exist at the head. */
+const SUMMARY_WITH_MISSING_TEST = summaryWith(
+  `
+**Branch outcomes:**
+- \`crates/report/src/decisions.rs:42\` — error — \`${MISSING_TEST}::rejects bad input\``,
+);
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+/** (c) Branch outcomes list names only an existing test. */
+const SUMMARY_WITH_EXISTING_TEST = summaryWith(
+  `
+**Branch outcomes:**
+- \`crates/report/src/decisions.rs:42\` — error — \`${EXISTING_TEST}::rejects bad input\``,
+);
 
-**Branch outcomes:** none added
-
-- Full \`./quality.sh\`: passed
-
-## Test Plan
-
-- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
-`;
-
-/** A clean summary mentioning the token name only inside backticks (discussion, not a result). */
-const SUMMARY_WITH_BACKTICK_ONLY_TOKEN = `## Summary
-
-Changed the broker balance card. Closes #${ISSUE}.
-
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
-
-**Branch outcomes:** none added
-
-- Full \`./quality.sh\`: passed. The template placeholder for this line is \`QUALITY_RESULT_PLACEHOLDER\`, now filled in.
-
-## Test Plan
-
-- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
-`;
-
-/** A summary carrying a bare token AND missing the docs-sweep line entirely. */
-const SUMMARY_WITH_TOKEN_AND_NO_DOCS_SWEEP = `## Summary
-
-Changed the broker balance card. Closes #${ISSUE}.
-
-- Full \`./quality.sh\`: QUALITY_RESULT_PLACEHOLDER
-
-## Test Plan
-
-- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
-`;
+/** (d) Honest negative. */
+const SUMMARY_NONE_ADDED = summaryWith(`
+**Branch outcomes:** none added`);
 
 /**
- * A bug-labelled summary: the docs sweep is answered, but the reproduction
- * block is missing and a bare placeholder stands in for the gate result.
- * The reproduction gate is the earlier block, so the placeholder folds into it.
+ * (g) A bug-labelled summary missing BOTH the `## Reproduction` block AND
+ * the `Branch outcomes:` list.
  */
-const SUMMARY_BUG_MISSING_REPRO_WITH_TOKEN = `## Summary
+const SUMMARY_BUG_MISSING_BOTH = summaryWith("");
 
-Changed the broker balance card. Closes #${ISSUE}.
-
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
-
-**Branch outcomes:** none added
-
-- Full \`./quality.sh\`: QUALITY_RESULT_PLACEHOLDER
-
-## Test Plan
-
-- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
-`;
-
-/** The same bug summary once both the reproduction block and the token are fixed. */
+/** (g) The same bug summary with both gaps fixed. */
 const SUMMARY_BUG_BOTH_FIXED = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+${DOCS_SWEEP_LINE}
 
-**Branch outcomes:** none added
-
-- Full \`./quality.sh\`: passed
+**Branch outcomes:**
+- \`crates/report/src/decisions.rs:42\` — error — \`${EXISTING_TEST}::rejects bad input\`
 
 ## Reproduction
 
 - **symptom** — the broker balance card showed a stale figure after a refill
 - **status** — \`not-run\` — reason: the fault needs a live broker the container cannot reach
-- **regression test** — \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
+- **regression test** — \`${EXISTING_TEST}\`
 
 ## Test Plan
 
-- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
-`;
-
-/** The same summary once BOTH the docs-sweep line and the token have been fixed. */
-const SUMMARY_WITH_BOTH_FIXED = `## Summary
-
-Changed the broker balance card. Closes #${ISSUE}.
-
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
-
-**Branch outcomes:** none added
-
-- Full \`./quality.sh\`: passed
-
-## Test Plan
-
-- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
+- \`${EXISTING_TEST}\`
 `;
 
 function stubClient(comments: string[]): GitHubClient {
@@ -174,9 +123,13 @@ interface Scenario {
   retryWrites?: string;
   /** The branch's changed files, as `git diff --name-only` reports them. */
   changedFiles: string;
-  /** Whether the run's branch already carries an open PR. */
-  prExistsForBranch?: boolean;
-  /** Issue labels. Defaults to a non-bug enhancement, so only the placeholder gate applies. */
+  /** Test paths `ls-tree` reports as existing at HEAD. */
+  existingTestsAtHead?: string[];
+  /** Test paths `ls-tree` reports as existing at HEAD, for the retry's lookup. */
+  existingTestsAtHeadAfterRetry?: string[];
+  /** Make the `ls-tree` lookup fail (non-zero exit), simulating an unverifiable lookup. */
+  lsTreeFails?: boolean;
+  /** Issue labels. Defaults to a non-bug enhancement. */
   issueLabels?: string[];
 }
 
@@ -188,7 +141,7 @@ interface Outcome {
   comments: string[];
 }
 
-/** Drive the live completion phase over a (possibly) blocked result-placeholder gate. */
+/** Drive the live completion phase over a (possibly) blocked branch-outcomes gate. */
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   const workDir = await Deno.makeTempDir();
@@ -202,6 +155,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const comments: string[] = [];
   let prCreateCalls = 0;
   let claudeCalls = 0;
+  let retried = false;
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -209,7 +163,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const ctx: IssueContext = {
     repo: REPO,
     issueNumber: ISSUE,
-    issueTitle: "Check the result-placeholder gate",
+    issueTitle: "Check the branch-outcomes gate",
     issueBody: ISSUE_BODY,
     issueLabels: scenario.issueLabels ?? ["enhancement", "work-on"],
     issueComments: "",
@@ -217,7 +171,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     config,
   };
   const state: PhaseState = {
-    branchName: `issue-${ISSUE}-result-placeholder`,
+    branchName: `issue-${ISSUE}-branch-outcomes`,
     baseBranch: "main",
     defaultBranch: "main",
     repoPath,
@@ -243,14 +197,22 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       runGitCommand: (
         cmdArgs: string[],
       ): Promise<Result<{ code: number; stdout: string; stderr: string }>> => {
-        const ok = (stdout: string) =>
+        const ok = (stdout: string, code = 0) =>
           Promise.resolve({
             ok: true as const,
-            value: { code: 0, stdout, stderr: "" },
+            value: { code, stdout, stderr: "" },
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok(scenario.changedFiles);
+        }
+        if (cmdArgs[0] === "--literal-pathspecs" && cmdArgs[1] === "ls-tree") {
+          if (scenario.lsTreeFails) return ok("", 1);
+          const existing = retried
+            ? scenario.existingTestsAtHeadAfterRetry ??
+              scenario.existingTestsAtHead ?? []
+            : scenario.existingTestsAtHead ?? [];
+          return ok(existing.join("\n"));
         }
         return ok("");
       },
@@ -260,6 +222,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         claudeCalls++;
         if (scenario.retryWrites !== undefined) {
           Deno.writeTextFileSync(summaryPath, scenario.retryWrites);
+          retried = true;
         }
         return Promise.resolve({
           ok: true as const,
@@ -283,11 +246,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
       findExistingPrForBranch: () =>
-        Promise.resolve(
-          scenario.prExistsForBranch
-            ? { ok: true as const, value: PR_URL }
-            : { ok: false as const, error: new Error("none") },
-        ),
+        Promise.resolve({ ok: false as const, error: new Error("none") }),
       recoverExistingPr: () =>
         Promise.resolve({ ok: true, value: "recovered" }),
       finalisePr: () =>
@@ -317,43 +276,49 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   };
 }
 
+// (a)
 Deno.test(
-  "completion - a bare result-placeholder token blocks PR creation and posts a comment",
+  "completion - a code diff with no Branch outcomes list blocks PR creation",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITH_BARE_TOKEN,
+      summary: SUMMARY_NO_BRANCH_OUTCOMES,
       changedFiles: "crates/report/src/decisions.rs",
     });
 
     assertEquals(outcome.status, "failure");
     assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "placeholder");
+    assertStringIncludes(outcome.reason ?? "", "Branch outcomes");
     assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
+    assertStringIncludes(outcome.comments[0]!, "Branch outcomes not recorded");
   },
 );
 
+// (b)
 Deno.test(
-  "completion - a token mentioned only inside backticks is not blocked",
+  "completion - a Branch outcomes list naming a test absent from HEAD blocks, naming the missing path",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITH_BACKTICK_ONLY_TOKEN,
+      summary: SUMMARY_WITH_MISSING_TEST,
       changedFiles: "crates/report/src/decisions.rs",
+      existingTestsAtHead: [EXISTING_TEST],
     });
 
-    assertEquals(outcome.status, "continue");
-    assertEquals(outcome.prCreateCalls, 1);
-    assertEquals(outcome.claudeCalls, 0, "no recovery invocation needed");
-    assertEquals(outcome.comments.length, 0);
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(outcome.reason ?? "", MISSING_TEST);
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.comments[0]!, MISSING_TEST);
   },
 );
 
+// (c)
 Deno.test(
-  "completion - a clean summary with no placeholder token is not blocked",
+  "completion - a Branch outcomes list naming only an existing test raises the PR",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITH_TOKEN_RESOLVED,
+      summary: SUMMARY_WITH_EXISTING_TEST,
       changedFiles: "crates/report/src/decisions.rs",
+      existingTestsAtHead: [EXISTING_TEST],
     });
 
     assertEquals(outcome.status, "continue");
@@ -363,50 +328,60 @@ Deno.test(
   },
 );
 
+// (d)
 Deno.test(
-  "completion - a bare token folds with the docs-sweep gate into one recovery turn",
+  "completion - 'none added' raises the PR",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITH_TOKEN_AND_NO_DOCS_SWEEP,
-      retryWrites: SUMMARY_WITH_BOTH_FIXED,
+      summary: SUMMARY_NONE_ADDED,
       changedFiles: "crates/report/src/decisions.rs",
     });
 
-    // Both gates fail on the first pass; the docs-sweep gate runs first in
-    // the pipeline, so the fold is observed through its block, naming the
-    // placeholder token too, and recovers in exactly one turn.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.comments.length, 0);
+  },
+);
+
+// (e)
+Deno.test(
+  "completion - a docs-only diff with no Branch outcomes list raises the PR",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_NO_BRANCH_OUTCOMES,
+      changedFiles: "docs/guide.md",
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.comments.length, 0);
+  },
+);
+
+// (f)
+Deno.test(
+  "completion - in-run recovery: the first block, then a fixed retry summary, raises the PR after one claude call",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_NO_BRANCH_OUTCOMES,
+      retryWrites: SUMMARY_WITH_EXISTING_TEST,
+      changedFiles: "crates/report/src/decisions.rs",
+      existingTestsAtHead: [EXISTING_TEST],
+      existingTestsAtHeadAfterRetry: [EXISTING_TEST],
+    });
+
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
     assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
   },
 );
 
+// (g)
 Deno.test(
-  "completion - a bare token AND a missing docs-sweep line are both named in the one block (no earlier gate failing)",
+  "completion - a bug issue missing BOTH the Reproduction block and the Branch outcomes list names both in one block",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITH_TOKEN_AND_NO_DOCS_SWEEP,
-      changedFiles: "crates/report/src/decisions.rs",
-    });
-
-    // Neither the closure, review nor reproduction gates apply here, so this
-    // is caught by the standalone docs-sweep block — which must fold in the
-    // placeholder verdict too, so the one recovery turn is told about both.
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
-    assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(outcome.reason ?? "", "Docs sweep");
-    assertStringIncludes(outcome.reason ?? "", "placeholder");
-    assertStringIncludes(outcome.comments[0]!, "Docs sweep");
-    assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
-  },
-);
-
-Deno.test(
-  "completion - a bare token folds into the reproduction gate's one block (Issue #3124)",
-  async () => {
-    const outcome = await runCompletion({
-      summary: SUMMARY_BUG_MISSING_REPRO_WITH_TOKEN,
+      summary: SUMMARY_BUG_MISSING_BOTH,
       issueLabels: ["bug", "work-on"],
       changedFiles: "crates/report/src/decisions.rs",
     });
@@ -415,41 +390,43 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 0);
     assertEquals(outcome.comments.length, 1);
     assertStringIncludes(outcome.reason ?? "", "Reproduction");
-    assertStringIncludes(outcome.reason ?? "", "QUALITY_RESULT_PLACEHOLDER");
+    assertStringIncludes(outcome.reason ?? "", "Branch outcomes");
     assertStringIncludes(outcome.comments[0]!, "Reproduction");
-    assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
+    assertStringIncludes(outcome.comments[0]!, "Branch outcomes not recorded");
   },
 );
 
 Deno.test(
-  "completion - a recovery fixing the reproduction block and the placeholder raises the PR once (Issue #3124)",
+  "completion - a recovery fixing both the Reproduction block and the Branch outcomes list raises the PR once",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_BUG_MISSING_REPRO_WITH_TOKEN,
+      summary: SUMMARY_BUG_MISSING_BOTH,
       retryWrites: SUMMARY_BUG_BOTH_FIXED,
       issueLabels: ["bug", "work-on"],
       changedFiles: "crates/report/src/decisions.rs",
+      existingTestsAtHead: [EXISTING_TEST],
+      existingTestsAtHeadAfterRetry: [EXISTING_TEST],
     });
 
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
     assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
-    assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
   },
 );
 
+// (h)
 Deno.test(
-  "completion - the recovery replacing the token with the actual outcome raises the PR",
+  "completion - a failed ls-tree lookup with named tests blocks (fail closed)",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITH_BARE_TOKEN,
-      retryWrites: SUMMARY_WITH_TOKEN_RESOLVED,
+      summary: SUMMARY_WITH_EXISTING_TEST,
       changedFiles: "crates/report/src/decisions.rs",
+      lsTreeFails: true,
     });
 
-    assertEquals(outcome.status, "continue");
-    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
-    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(outcome.reason ?? "", "Branch outcomes");
+    assertStringIncludes(outcome.comments[0]!, "could not confirm");
   },
 );

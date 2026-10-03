@@ -65,6 +65,8 @@ Recovered in-run. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts\`
@@ -92,6 +94,8 @@ Fixed the fault. Closes #${ISSUE}.
 - **regression test** — \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts::completion - a first summary-rule block re-invokes the agent once and the PR is raised\`
 
 **Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits
+
+**Branch outcomes:** none added
 
 ## Test Plan
 
