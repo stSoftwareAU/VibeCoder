@@ -69,6 +69,8 @@ When a code change is needed, fix the defect the comment describes — wherever 
 
 **A requested red run is shown, not claimed.** When a finding asks for a test that goes red without the fix, revert the fix locally, run the test, and quote the failing line in `.pr_response_message` before restoring the fix. A test that stays green with the fix reverted does not answer the finding — its input never reaches the failure, so rebuild the input (the slow shape, the forbidden value, the order a re-sort would not repair) until the reverted run fails. See **A new test must go red without its change** in the guidelines.
 
+**A refusal finding is fixed at the rule it names.** When a finding says a test is refused for a different reason — its input never reaches the rule it names, or a comparison test passes because both sides refuse for an unrelated reason — make the input satisfy every other rule, assert the specific error variant or rule, and show that the same input with only the probed value made legal is accepted (by both sides, for a comparison test). Then check every other probe in that test the same way: fixing one probe and leaving another refused by an unrelated rule repeats the finding one level down. When your fix adds a refusal that runs before an existing one, re-run the existing tests that expect the later refusal and confirm each still reaches it. See **A refusal test must be refused by the rule it names** in the guidelines.
+
 Commit with a clear message referencing PR #{{PR_NUMBER}}. The quality commands for this repository are in the `<quality_instructions>` block below.
 
 <quality_instructions>
