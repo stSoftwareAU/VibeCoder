@@ -73,6 +73,7 @@ import {
   parseLadderState,
 } from "./conflict_verdict_ladder.ts";
 import {
+  commentsAfterConflictPark,
   CONFLICT_RESOLUTION_BUDGET,
   conflictAttemptMarker,
   conflictFailedMarker,
@@ -1098,8 +1099,12 @@ async function freshAttemptUnderLock(
     };
   }
 
+  // The scan starts a fresh budget after a park once the base has moved
+  // (Issue #2312). Counting the whole thread here would always find that
+  // spent budget and stand the retry down.
+  const trustedComments = partitionConflictComments(comments, trusted).trusted;
   const attempts = readResolutionAttempts(
-    comments,
+    commentsAfterConflictPark(trustedComments),
     (login) => isFleetAuthor(login, [...trusted]),
   );
   const now = processorDeps.nowMsFn?.() ?? Date.now();

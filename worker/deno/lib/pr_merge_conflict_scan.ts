@@ -52,6 +52,7 @@ import { standDownNextStepLines } from "./gated_head_guard.ts";
 import { isCiFixEscalationOnly } from "./conflict_needs_human_gate.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import {
+  commentsAfterConflictPark,
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_OWNER_CHECK_HOURS,
@@ -1794,7 +1795,7 @@ export async function findConflictingPr(
       // The thread is narrowed, not just the tally: everything before the park
       // belongs to a merge against a base that no longer exists, so an abandon
       // from here must not quote it back as what *this* conflict recorded.
-      prComments = prComments.slice(park.index + 1);
+      prComments = commentsAfterConflictPark(prComments);
       history = parseConflictAttempts(prComments);
       attempts = readResolutionAttempts(
         prComments,

@@ -504,7 +504,10 @@ flowchart TD
   unless that attempt is still due, including when a failure landed after
   the watchdog's read and before its own. The sync re-reads the same way
   after it takes the lock, and the ladder does the same before it posts its
-  attempt marker, taking the attempt number from that fresh tally. When that
+  attempt marker, taking the attempt number from that fresh tally. That
+  tally, like the scan's, starts after the newest trusted park marker, so a
+  parked PR whose base has moved is retried with a fresh budget rather than
+  stood down for the failures that belonged to the old base. When that
   re-read finds the attempt no longer
   due, the sync closes the local-ledger attempt it opened, as `disrupted`,
   so the milestone is not paced for the rest of the window. The sync also

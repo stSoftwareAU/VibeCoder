@@ -47,6 +47,7 @@ import {
   conflictAttemptMarker,
   conflictFailedMarker,
   conflictNudgeMarker,
+  conflictParkedMarker,
   conflictRebaseMarker,
   conflictRungFailedMarker,
 } from "../lib/merge_conflict_markers.ts";
@@ -1378,6 +1379,60 @@ Deno.test("processMergeConflict - a failure that lands before the lock spends no
     false,
   );
   assertEquals(released, 1);
+});
+
+Deno.test("processMergeConflict - a parked PR whose base moved starts a fresh budget under the lock", async () => {
+  // Issue #2312: the scan offers a parked PR again once its base moves, with
+  // attemptCount 0. The failures before the park belong to the old base, so
+  // the under-lock re-read must not treat that spent budget as still spent.
+  const head = "b".repeat(40);
+  const parkedBase = "c".repeat(40);
+  const failed = (n: number) => ({
+    body: conflictFailedMarker(n, "ladder", head),
+    author: "vibe-coder",
+    createdAt: "2026-10-03T00:00:00Z",
+  });
+  const thread = [
+    failed(1),
+    failed(2),
+    failed(3),
+    {
+      body: conflictParkedMarker(parkedBase),
+      author: "vibe-coder",
+      createdAt: "2026-10-03T01:00:00Z",
+    },
+  ];
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 0 }),
+    makeGitScript(),
+    {
+      workerId: "worker-a",
+      trustedAuthors: ["vibe-coder"],
+      acquireLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { acquired: true, lockCommentId: 9 },
+        })) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+      releaseLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: undefined,
+        })) as unknown as MergeConflictProcessorDeps["releaseLockFn"],
+    },
+    {
+      threadComments: thread,
+      prHeadState: { headRefOid: head, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(result.ok);
+  if (result.ok) assertEquals(result.value.processed, true);
+  assert(
+    captured.comments.some((body) =>
+      body.includes(`attempt 1 of ${CONFLICT_RESOLUTION_BUDGET}`)
+    ),
+    "the post-park attempt is number 1, not a stand-down",
+  );
 });
 
 Deno.test("processMergeConflict - a PR locked by another worker is left alone", async () => {

@@ -335,6 +335,24 @@ export function readParkedBase(
   return found;
 }
 
+/**
+ * The comments that count toward the current conflict's budget.
+ *
+ * A park marker ends the previous merge. Failures before it belong to a
+ * base that no longer exists, so a retry after that base moves starts from
+ * a fresh budget (Issue #2312). The scan and the under-lock re-read both
+ * use this, so they cannot disagree about which comments count.
+ *
+ * **Only safe on a thread already reduced to the fleet's own comments.**
+ */
+export function commentsAfterConflictPark(
+  comments: readonly unknown[],
+): readonly unknown[] {
+  const park = readParkedBase(comments);
+  if (park === null) return comments;
+  return comments.slice(park.index + 1);
+}
+
 // ---------------------------------------------------------------------------
 // The shared resolution budget (Issue #2996)
 // ---------------------------------------------------------------------------
