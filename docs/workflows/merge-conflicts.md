@@ -500,8 +500,10 @@ flowchart TD
 - The milestone sync takes the same cross-host PR lock before it merges and
   holds it until its attempt marker is posted, so a takeover that becomes
   due in that window finds the lock held and posts nothing (Issue #2965).
-  Once it holds the lock the takeover re-reads the tally and stands down if
-  an attempt landed while it waited. The sync also stands down when the lock
+  Once it holds the lock the takeover re-reads the thread and stands down
+  unless that attempt is still due, including when a failure landed after
+  the watchdog's read and before its own. The sync re-reads the same way
+  after it takes the lock. The sync also stands down when the lock
   is already held, when the takeover's own fix PR is open, or when a trusted
   `pass="takeover"` attempt is the newest marker and younger than the lock
   TTL. A stranded older open marker does not skip the PR for the rest of its

@@ -1983,6 +1983,38 @@ export async function syncMilestoneBranches(
             continue;
           }
           releaseHeadLock = held.release;
+          // The due-ness check above ran before the lock. A takeover can
+          // post its marker in that gap. Re-read under the lock and stand
+          // down when the attempt is no longer due (Issue #2965).
+          const freshHead = await readMilestoneHeadPr(
+            repo,
+            milestone.milestoneBranch,
+            ghCommandFn,
+            log,
+            deps.dedupAuthors ?? {},
+          );
+          const stillDue = freshHead !== null &&
+            !hasExhaustedConflictAttempts(freshHead.attempts) &&
+            isPrConflictAttemptDue(
+              freshHead.attempts,
+              freshHead.headSha,
+              now(),
+            );
+          if (!stillDue) {
+            log(
+              `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                `PR #${headPr.number} is no longer due once the lock is ` +
+                `held (Issue #2965)`,
+            );
+            await releaseHeadLock().catch(() => undefined);
+            releaseHeadLock = undefined;
+            if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+              await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+                .catch(() => undefined);
+            }
+            skipped++;
+            continue;
+          }
         }
 
         // Issue #2215: named before it starts, so a slow merge or check is

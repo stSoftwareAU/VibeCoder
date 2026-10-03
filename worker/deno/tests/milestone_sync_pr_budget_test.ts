@@ -657,3 +657,46 @@ Deno.test(
     assertEquals(syncs, 1);
   },
 );
+
+Deno.test(
+  "milestone sync re-reads due-ness after the lock and spends nothing when a failure just landed (Issue #2965)",
+  async () => {
+    const calls: string[][] = [];
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [],
+    };
+    let syncs = 0;
+    let released = 0;
+    const deps = baseDeps(calls, state, () => {
+      syncs++;
+      return Promise.resolve({
+        ok: false as const,
+        error: conflictFailure(),
+      });
+    });
+    deps.acquireHeadLockFn = () => {
+      state.prComments.push({
+        user: { login: FLEET },
+        created_at: new Date().toISOString(),
+        body: [
+          conflictAttemptMarker(1, "takeover", HEAD_SHA),
+          conflictFailedMarker(1, "takeover", HEAD_SHA),
+        ].join("\n"),
+      });
+      return Promise.resolve({
+        acquired: true,
+        release: () => {
+          released++;
+          return Promise.resolve();
+        },
+      });
+    };
+
+    const result = await syncMilestoneBranches(deps);
+    assert(result.ok);
+    assertEquals(syncs, 0);
+    assertEquals(released, 1);
+    assertEquals(prCommentCalls(calls).length, 0);
+  },
+);

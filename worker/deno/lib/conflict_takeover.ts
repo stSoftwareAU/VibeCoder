@@ -53,6 +53,7 @@ import {
   clearMergeConflictLabel,
   ensureMergeConflictLabel,
   fetchPrLabels,
+  isConflictAttemptDue,
   spentConflictAttempts,
 } from "./pr_merge_conflict_scan.ts";
 import { assessGatedHead, isMilestoneHead } from "./gated_head_guard.ts";
@@ -447,6 +448,18 @@ export async function runConflictTakeover(
       logger.info(
         `Conflict takeover for PR #${pr.number}: standing down, an attempt ` +
           `landed while this pass waited for the lock`,
+        context,
+      );
+      return { kind: "no-longer-due" };
+    }
+    // The baseline above can already contain a marker the watchdog had not
+    // seen when it decided this PR was due. A fresh failure on the same head
+    // is not due for another two hours (Issue #2965).
+    const now = deps.nowMs ?? Date.now();
+    if (!isConflictAttemptDue(freshAttempts, headSha, now)) {
+      logger.info(
+        `Conflict takeover for PR #${pr.number}: standing down, the latest ` +
+          `failure on this head is still inside the owner-check window`,
         context,
       );
       return { kind: "no-longer-due" };

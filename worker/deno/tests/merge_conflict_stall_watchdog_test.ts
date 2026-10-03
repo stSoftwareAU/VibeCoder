@@ -1325,3 +1325,64 @@ Deno.test("scanConflictQueueStalls - a pre-labels cache entry falls back to the 
   assertEquals(prListCalls(github.calls), 1);
   assertEquals(scan.length, 1);
 });
+
+Deno.test("repairConflictQueueStall - a sync failure that lands after the due read posts no takeover (Issue #2965)", async () => {
+  const stall = detect(observation(3, [], { headRefOid: HEAD_SHA }));
+  assert(stall !== null);
+  let commentReads = 0;
+  const calls: string[][] = [];
+  const failure = comment(
+    [
+      conflictAttemptMarker(1, "sync", HEAD_SHA),
+      conflictFailedMarker(1, "sync", HEAD_SHA),
+    ].join("\n"),
+    1 / 60,
+  );
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const [verb, noun] = args;
+    if (verb === "api" && args[1]?.includes("/comments")) {
+      commentReads++;
+      if (args[1].includes("page=") && !args[1].includes("page=1")) {
+        return Promise.resolve("[]");
+      }
+      return Promise.resolve(
+        commentReads === 1 ? "[]" : JSON.stringify([failure]),
+      );
+    }
+    if (verb === "pr" && noun === "view") {
+      if (args.includes("--jq")) {
+        return Promise.resolve(`${MERGE_CONFLICT_LABEL}\n`);
+      }
+      return Promise.resolve(JSON.stringify({
+        headRefName: "issue-7-branch",
+        baseRefName: "main",
+        headRefOid: HEAD_SHA,
+      }));
+    }
+    return Promise.resolve("");
+  };
+
+  const action = await repairConflictQueueStall(stall!, {
+    ghCommandFn: gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    acquireLease: () => ({ release: noop }),
+    trustedAuthors: [FLEET],
+    takeoverResolvers: {
+      resolveViaLadder: () => {
+        throw new Error("must not resolve once a fresh failure is on the head");
+      },
+      resolveOnFixBranch: () => {
+        throw new Error("must not resolve once a fresh failure is on the head");
+      },
+    },
+  });
+
+  assertEquals(action, "no-longer-stalled");
+  assertEquals(
+    postedComments(calls).filter((body) => body.includes('pass="takeover"')),
+    [],
+  );
+});
