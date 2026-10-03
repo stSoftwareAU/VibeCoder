@@ -3,6 +3,7 @@ import {
   buildRemovedAssertionGateComment,
   findRemovedAssertions,
   findTestPlanSection,
+  pathsFromRenameStatus,
   removedAssertionDiffArgs,
   removedAssertionRenameSidesArgs,
   testFilesFromRenameSidesList,
@@ -561,6 +562,20 @@ Deno.test("testFilesFromRenameSidesList keeps both sides of a rename and drops a
     "tests/old_test.rs",
     "tests/new_test.rs",
   ]);
+});
+
+Deno.test("pathsFromRenameStatus includes both sides when the old path is the test file", () => {
+  const parsed = pathsFromRenameStatus(
+    "R100\0tests/moved_test.rs\0src/moved.rs\0",
+  );
+  assertEquals(parsed.pathspec, ["tests/moved_test.rs", "src/moved.rs"]);
+  assertEquals(parsed.testFiles, ["tests/moved_test.rs"]);
+});
+
+Deno.test("pathsFromRenameStatus keeps an unquoted non-ASCII test path", () => {
+  const parsed = pathsFromRenameStatus("M\0tests/café_test.rs\0");
+  assertEquals(parsed.testFiles, ["tests/café_test.rs"]);
+  assertEquals(parsed.pathspec, ["tests/café_test.rs"]);
 });
 
 Deno.test("a renamed test file that drops an assertion is still reported", async () => {

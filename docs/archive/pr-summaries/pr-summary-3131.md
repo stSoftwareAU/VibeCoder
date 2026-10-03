@@ -90,6 +90,7 @@ Related existing rules checked: `CODING-STANDARDS.md` TDD step 3, and `prompts/i
 
 - Added `worker/deno/tests/removed_assertion_gate_test.ts` (21 tests), passed.
 - A later review: the pathspec is both sides of a rename (`git diff --name-only -z --no-renames`), and a real git test renames a test file, drops `assert_eq!(rows[0].name, "BBB")`, and checks the gate blocks. Only the new path hides that assertion.
+- A later review: applicability follows `git diff --name-status -z --find-renames`, not the rename-collapsed `--name-only` list. A test file renamed to `src/moved.rs` that drops an assertion, with no `## Test Plan`, blocks and raises no PR. Both sides are in the pathspec. An unquoted `tests/café_test.rs` stays a test path.
 - Added `worker/deno/tests/completion_phase_removed_assertion_test.ts` (7 tests), passed. Red-checks:
   - With the standalone gate block disabled, the block, recovery and missing-heading tests went red.
   - With the removed-assertion verdict dropped from the closure fold, the fold test went red.

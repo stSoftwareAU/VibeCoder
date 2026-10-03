@@ -98,6 +98,80 @@ export function testFilesFromRenameSidesList(stdout: string): string[] {
   return files;
 }
 
+/**
+ * Rename pairs for the pathspec: `-z` so paths are unquoted, and
+ * `--find-renames` so a rename is one record with both paths.
+ */
+export function removedAssertionRenameStatusArgs(base: string): string[] {
+  return [
+    "diff",
+    "--name-status",
+    "-z",
+    "--find-renames",
+    `${base}...HEAD`,
+  ];
+}
+
+/** Pathspec and test-file sides parsed from {@link removedAssertionRenameStatusArgs}. */
+export interface RenameStatusPaths {
+  /** Both sides when either is a test file, so `--find-renames` can pair them. */
+  pathspec: string[];
+  /** Sides that are test files. These decide whether the gate applies. */
+  testFiles: string[];
+}
+
+/**
+ * Parse `git diff --name-status -z`. A rename or copy whose old or new path
+ * is a test file contributes both paths to the pathspec. A quoted
+ * `--name-only` list is not used: it hides a non-ASCII path and a rename
+ * whose only test-file side is the old name.
+ */
+export function pathsFromRenameStatus(stdout: string): RenameStatusPaths {
+  const parts = stdout.split("\0");
+  const pathspec: string[] = [];
+  const testFiles: string[] = [];
+  const seenSpec = new Set<string>();
+  const seenTest = new Set<string>();
+  const addSpec = (path: string) => {
+    if (!path || seenSpec.has(path)) return;
+    seenSpec.add(path);
+    pathspec.push(path);
+  };
+  const addTest = (path: string) => {
+    if (!isTestFilePath(path) || seenTest.has(path)) return;
+    seenTest.add(path);
+    testFiles.push(path);
+  };
+
+  let i = 0;
+  while (i < parts.length) {
+    const status = parts[i];
+    if (!status) break;
+    i++;
+    const code = status[0];
+    if (code === "R" || code === "C") {
+      const oldPath = parts[i] ?? "";
+      const newPath = parts[i + 1] ?? "";
+      i += 2;
+      if (isTestFilePath(oldPath) || isTestFilePath(newPath)) {
+        addSpec(oldPath);
+        addSpec(newPath);
+        addTest(oldPath);
+        addTest(newPath);
+      }
+      continue;
+    }
+    const path = parts[i] ?? "";
+    i++;
+    if (isTestFilePath(path)) {
+      addSpec(path);
+      addTest(path);
+    }
+  }
+
+  return { pathspec, testFiles };
+}
+
 export function removedAssertionDiffArgs(
   base: string,
   testFiles?: readonly string[],

@@ -63,9 +63,9 @@ import {
 import {
   buildRemovedAssertionGateComment,
   MAX_DIFF_CHARS as REMOVED_ASSERTION_MAX_DIFF_CHARS,
+  pathsFromRenameStatus,
   removedAssertionDiffArgs,
-  removedAssertionRenameSidesArgs,
-  testFilesFromRenameSidesList,
+  removedAssertionRenameStatusArgs,
   validateRemovedAssertions,
 } from "../removed_assertion_gate.ts";
 import {
@@ -2104,9 +2104,11 @@ async function completionBody(
   // known, the diff is scoped to the test files via a pathspec, so a large
   // unrelated hunk (a lockfile, a fixture, generated data) elsewhere in the
   // branch can never push a test file's own patch past the read cap. That
-  // pathspec is both sides of every rename (`--name-only -z --no-renames`),
-  // not the rename-collapsed changed-files list: a pathspec of only the new
-  // name hides the removed lines.
+  // pathspec comes from `git diff --name-status -z --find-renames`, not the
+  // rename-collapsed `--name-only` list. `-z` leaves a non-ASCII path
+  // unquoted. When either side of a rename is a test file, both sides are
+  // in the pathspec so git can still pair the rename. The gate applies
+  // from those test-file sides, not from the quoted `--name-only` list.
   // A patch that cannot be read — the git command failed, or the scoped
   // patch still reached the cap — is not a silent pass: it is logged loudly
   // and `testDiff` stays `null`, so `validateRemovedAssertions` still
@@ -2114,16 +2116,17 @@ async function completionBody(
   // rule cannot run.
   // ---------------------------------------------------------------------
   let removedAssertionTestFiles: string[] = [];
+  let removedAssertionPathspec: string[] = [];
   let removedAssertionSidesKnown = !changedFilesKnown;
   if (comparableBase.ok && changedFilesKnown) {
     const sidesResult = await deps.git.runGitCommand(
-      removedAssertionRenameSidesArgs(comparableBase.value),
+      removedAssertionRenameStatusArgs(comparableBase.value),
       { cwd: state.repoPath },
     );
     if (sidesResult.ok && sidesResult.value.code === 0) {
-      removedAssertionTestFiles = testFilesFromRenameSidesList(
-        sidesResult.value.stdout,
-      );
+      const parsed = pathsFromRenameStatus(sidesResult.value.stdout);
+      removedAssertionTestFiles = parsed.testFiles;
+      removedAssertionPathspec = parsed.pathspec;
       removedAssertionSidesKnown = true;
     } else {
       logger.warn(
@@ -2142,7 +2145,7 @@ async function completionBody(
     const testDiffResult = await deps.git.runGitCommand(
       removedAssertionDiffArgs(
         comparableBase.value,
-        removedAssertionTestFiles,
+        removedAssertionPathspec,
       ),
       { cwd: state.repoPath },
     );
@@ -2196,7 +2199,9 @@ async function completionBody(
   // computing it here and folding it in costs nothing.
   // ---------------------------------------------------------------------
   const removedAssertions = validateRemovedAssertions({
-    changedFiles: changedFilesKnown ? changedFiles : null,
+    changedFiles: changedFilesKnown
+      ? [...changedFiles, ...removedAssertionTestFiles]
+      : null,
     testDiff,
     prSummaryContent: prBody,
   });

@@ -127,6 +127,12 @@ interface Scenario {
   retryWrites?: string;
   /** The branch's changed files, as `git diff --name-only` reports them. */
   changedFiles: string;
+  /**
+   * `git diff --name-status -z` stdout. Defaults to one `M` record per
+   * changed file. Set this when the rename-collapsed name list and the
+   * sides list disagree.
+   */
+  renameStatus?: string;
   /** The test-file-only unified diff (`removedAssertionDiffArgs`'s output). */
   testDiff?: string;
   /** When true, the test-file diff read fails (non-zero exit). */
@@ -226,6 +232,22 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             });
           }
           return ok(scenario.testDiff ?? "");
+        }
+        if (
+          cmdArgs[0] === "diff" && cmdArgs.includes("--name-status") &&
+          cmdArgs.includes("-z")
+        ) {
+          if (scenario.renameStatus !== undefined) {
+            return ok(scenario.renameStatus);
+          }
+          const paths = scenario.changedFiles.split("\n").filter((path) =>
+            path.length > 0
+          );
+          return ok(
+            paths.length > 0
+              ? `${paths.map((path) => `M\0${path}`).join("\0")}\0`
+              : "",
+          );
         }
         if (
           cmdArgs[0] === "diff" && cmdArgs.includes("--name-only") &&
@@ -472,7 +494,32 @@ Deno.test(
   },
 );
 
-// --- (i) Patch at the read cap is unreadable, never silently truncated -----
+// --- (i) Rename-collapsed list hides the test file (PR #3148 review) -------
+
+Deno.test(
+  "completion - a test file renamed out of the test directory still blocks when an assertion is dropped",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_HEADING,
+      changedFiles: "src/moved.rs",
+      renameStatus: "R100\0tests/moved_test.rs\0src/moved.rs\0",
+      testDiff: SCORE_DIFF,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertStringIncludes(outcome.reason ?? "", "Test Plan");
+    const args = outcome.testDiffArgs ?? [];
+    const pathspecIndex = args.indexOf("--");
+    assert(pathspecIndex !== -1, "pathspec separator must be present");
+    assertEquals(args.slice(pathspecIndex + 1), [
+      "tests/moved_test.rs",
+      "src/moved.rs",
+    ]);
+  },
+);
+
+// --- (j) Patch at the read cap is unreadable, never silently truncated -----
 // (PR #3148 review: a large unrelated hunk pushing a test file's own patch
 // past MAX_DIFF_CHARS used to pass with testDiffKnown=true and removed:0.)
 

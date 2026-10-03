@@ -1344,11 +1344,13 @@ whenever `git diff --name-only <base>...HEAD` lists a test file
 also when that list cannot be read, fail closed. It then blocks a summary
 with no `## Test Plan` heading.
 
-It lists both sides of every rename with
-`git diff --name-only -z --no-renames <base>...HEAD` (NUL-separated, so a
-non-ASCII path is not quoted into a pathspec that matches nothing), keeps
-the test files, and reads
-`git diff --unified=0 --find-renames --diff-filter=AMRD <base>...HEAD -- <those test files>`.
+It decides whether the gate applies from
+`git diff --name-status -z --find-renames <base>...HEAD` (NUL-separated, so
+a non-ASCII path is not quoted into a pathspec that matches nothing), not
+from the rename-collapsed `git diff --name-only` list. A rename or copy
+whose old or new path is a test file contributes both paths, so a test
+file renamed to `src/moved.rs` is still a test-file change. It then reads
+`git diff --unified=0 --find-renames --diff-filter=AMRD <base>...HEAD -- <those paths>`.
 Deleted test files are in that patch. A pathspec of only a rename's new
 name is not used: that would show the file as brand-new and hide the
 removed lines. For those test files it collects removed lines that start an assertion statement
