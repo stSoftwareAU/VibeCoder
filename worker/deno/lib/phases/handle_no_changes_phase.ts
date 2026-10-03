@@ -5,7 +5,10 @@
  * verified it was already resolved and cited the evidence (Issue #241), posts
  * a partial answer if useful text was produced (question disguised as issue),
  * or reports a detailed failure otherwise. Output that names files to change is
- * a failed implementation, not analysis, so it is retried (Issue #2687). Single responsibility: classify the
+ * a failed implementation, not analysis, so it is retried (Issue #2687) —
+ * except when the run is blocked on a dependency this fleet filed during the
+ * same run, which hands off unconditionally rather than retrying or deferring
+ * on a later run (Issue #3146). Single responsibility: classify the
  * "no changes" outcome and communicate it back to GitHub.
  *
  * Extracted from worker/deno/lib/issue_worker.ts (Issue #1527).
@@ -121,6 +124,62 @@ async function retryDescribedCodeChange(
 }
 
 /**
+ * Post the "Partial Answer" comment and hand the issue off to a human
+ * (Issue #2849): applies `needs-human` + a paired explanation comment and
+ * releases the worker's claim. Shared by the normal textual-output path and
+ * the self-filed-dependency short-circuit (Issue #3146) — the latter must
+ * hand off on detection regardless of whether the output also happens to
+ * describe a code change or is short, rather than falling through to the
+ * described-code-change retry or the "no useful output" failure.
+ */
+async function postPartialAnswerAndHandOff(
+  ctx: IssueContext,
+  deps: WorkerDeps,
+  claudeOutput: string,
+): Promise<PhaseResult> {
+  const { repo, issueNumber, githubUser, config } = ctx;
+  const logger = deps.logger;
+  logger.info(
+    "Claude produced text output but no code changes, posting partial answer",
+  );
+
+  const ghClient = deps.github.createClient(logger);
+  try {
+    const outputSnippet = publishableSnippet(claudeOutput);
+    const questionLabel = config.questionLabel;
+    const labelHint = questionLabel
+      ? `\n\nIf you would like a full answer rather than code changes, a trusted reviewer can add the \`${questionLabel}\` label to this issue. The worker does not add this label itself — operational labels added by the worker are stripped by the security layer (Issue #1475).`
+      : "";
+    const comment =
+      `## Partial Answer\n\nI was unable to make code changes for this issue, but here is what I found:\n\n<details>\n<summary>Claude's output</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>\n\nThis issue looks analysis-only (no PR to raise), so I am handing it back to a human rather than re-running it.${labelHint}`;
+    await ghClient.postComment(repo, issueNumber, comment);
+    // Note: do NOT add the question label here. Operational labels added by
+    // the worker's service account are rejected by the trusted-label
+    // security layer and produce confusing [UNTRUSTED_LABEL_CHANGE] log
+    // lines (Issue #1475). A trusted human can add the label themselves.
+  } catch (err) {
+    logger.warn("Failed to post partial answer", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Clean hand-off: apply `needs-human` + paired comment and release the
+  // claim. Best-effort and non-fatal (Issue #2849).
+  await handOffAnalysisOnly({
+    ghClient,
+    repo,
+    issueNumber,
+    needsHumanLabel: config.needsHumanLabel,
+    githubUser,
+    trigger: "no_changes",
+    logger,
+    deps: { ensureLabelExists: deps.github.ensureLabelExists },
+  });
+
+  return { status: "early_exit", reason: "analysis_only_handed_off" };
+}
+
+/**
  * Handle the case where Claude made no code changes.
  *
  * Detects whether the issue was already complete, posts partial
@@ -132,7 +191,7 @@ export async function workOnIssueHandleNoChanges(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
-  const { repo, issueNumber, githubUser, config } = ctx;
+  const { repo, issueNumber, githubUser } = ctx;
   const logger = deps.logger;
   const claudeOutput = state.claudeOutput;
 
@@ -144,7 +203,7 @@ export async function workOnIssueHandleNoChanges(
   // exclusion.
   const declaredOutcome = await handOffDeclaredOutcome(ctx, state, deps);
   if (declaredOutcome.result) return declaredOutcome.result;
-  const { blocked } = declaredOutcome;
+  const { blocked, selfFiledDependency } = declaredOutcome;
 
   // Check whether the run verified the issue was already resolved (Issue #519,
   // tightened by Issue #241). Detection is the explicit
@@ -281,6 +340,22 @@ export async function workOnIssueHandleNoChanges(
   const truncationElapsed = state.executeStartTime > 0
     ? Math.round((Date.now() - state.executeStartTime) / 1000)
     : 0;
+  // Issue #3146: a dependency this fleet filed during the run hands off on
+  // this run, before the usage-limit and interrupted-run checks. Both return
+  // a retryable failure, and a retry starts a new run, so the follow-up's
+  // createdAt is then before runStartTime and the next run defers onto it.
+  // detectRunInterrupted is a wording guess ("not finished"), which ordinary
+  // blocked text matches. A finished Depends on line naming a self-filed
+  // issue is the stronger signal, so it also wins over a usage-limit retry.
+  if (selfFiledDependency) {
+    logger.info(
+      "No-changes run depends on a self-filed dependency — handing off to " +
+        "a human on this run instead of retrying or deferring on a later " +
+        "one (Issue #3146)",
+      { repo, issueNumber },
+    );
+    return await postPartialAnswerAndHandOff(ctx, deps, claudeOutput);
+  }
   if (detectUsageLimit(claudeOutput)) {
     logger.warn("Claude hit the subscription usage limit mid-run (no changes)");
     return {
@@ -361,56 +436,14 @@ export async function workOnIssueHandleNoChanges(
       }
     }
 
-    logger.info(
-      "Claude produced text output but no code changes, posting partial answer",
-    );
-
     // Issue #2849: a no-code-change run on a `work-on` issue is the
     // post-run "analysis-only / no-PR" signal. `work-on` treats a raised
     // PR as its completion signal, so without an explicit hand-off the
-    // issue is re-picked-up and re-run indefinitely (the #2834 loop). We
-    // post the partial answer (Claude's analysis — the deliverable for an
-    // analysis-only issue) AND hand the issue off to `needs-human` so it
-    // stops looping. The hand-off applies `needs-human` + a paired
-    // explanation comment (Issue #1471) and releases the worker's claim;
-    // it is NOT a `failed` outcome — the task did its job. Output that
-    // describes a code change never reaches here (Issue #2687, above). The existing
-    // `failed-once` → `failed` ladder remains the fallback loop guard for
-    // the no-useful-output path below.
-    const ghClient = deps.github.createClient(logger);
-    try {
-      const outputSnippet = publishableSnippet(claudeOutput);
-      const questionLabel = config.questionLabel;
-      const labelHint = questionLabel
-        ? `\n\nIf you would like a full answer rather than code changes, a trusted reviewer can add the \`${questionLabel}\` label to this issue. The worker does not add this label itself — operational labels added by the worker are stripped by the security layer (Issue #1475).`
-        : "";
-      const comment =
-        `## Partial Answer\n\nI was unable to make code changes for this issue, but here is what I found:\n\n<details>\n<summary>Claude's output</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>\n\nThis issue looks analysis-only (no PR to raise), so I am handing it back to a human rather than re-running it.${labelHint}`;
-      await ghClient.postComment(repo, issueNumber, comment);
-      // Note: do NOT add the question label here. Operational labels added by
-      // the worker's service account are rejected by the trusted-label
-      // security layer and produce confusing [UNTRUSTED_LABEL_CHANGE] log
-      // lines (Issue #1475). A trusted human can add the label themselves.
-    } catch (err) {
-      logger.warn("Failed to post partial answer", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    // Clean hand-off: apply `needs-human` + paired comment and release the
-    // claim. Best-effort and non-fatal (Issue #2849).
-    await handOffAnalysisOnly({
-      ghClient,
-      repo,
-      issueNumber,
-      needsHumanLabel: config.needsHumanLabel,
-      githubUser,
-      trigger: "no_changes",
-      logger,
-      deps: { ensureLabelExists: deps.github.ensureLabelExists },
-    });
-
-    return { status: "early_exit", reason: "analysis_only_handed_off" };
+    // issue is re-picked-up and re-run indefinitely (the #2834 loop). Output
+    // that describes a code change never reaches here (Issue #2687, above).
+    // The existing `failed-once` → `failed` ladder remains the fallback loop
+    // guard for the no-useful-output path below.
+    return await postPartialAnswerAndHandOff(ctx, deps, claudeOutput);
   }
 
   const elapsedSeconds = state.executeStartTime > 0
