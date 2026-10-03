@@ -23,6 +23,11 @@ import { buildDeferralMarker } from "../lib/blocked_deferral.ts";
 import { buildPlanningHandoffMarker } from "../lib/planning_handoff.ts";
 
 const REPO = "stSoftwareAU/Example";
+
+/** A deferral that stays in the future on whatever day the suite runs. */
+const FUTURE_UNTIL = new Date(Date.now() + 2 * 86_400_000)
+  .toISOString()
+  .replace(/\.\d{3}Z$/, "Z");
 const ISSUE = 3088;
 const DEP = "stSoftwareAU/Other#12";
 
@@ -410,7 +415,7 @@ Deno.test(
       github: { createClient: () => makeClient(calls, prior) },
     });
     const output =
-      '<!-- vibe-defer-until until="2026-10-20T00:00:00Z" reason="the export has not landed" -->';
+      `<!-- vibe-defer-until until="${FUTURE_UNTIL}" reason="the export has not landed" -->`;
 
     const result = await workOnIssueDeclaredHandoff(
       makeContext(),
@@ -479,7 +484,7 @@ Deno.test(
   "declared_handoff_phase - a quoted time-deferral marker continues (Issue #3088)",
   async () => {
     const marker =
-      '<!-- vibe-defer-until until="2026-10-20T00:00:00Z" reason="the export has not landed" -->';
+      `<!-- vibe-defer-until until="${FUTURE_UNTIL}" reason="the export has not landed" -->`;
     for (
       const output of [
         ["The summary quotes the marker:", "```", marker, "```", ""].join(
