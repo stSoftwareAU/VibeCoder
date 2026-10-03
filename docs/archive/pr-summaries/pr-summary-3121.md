@@ -26,13 +26,16 @@ cross-references in the operator manual. Closes #3121.
   `completion`). An optional `prUrl` overrides the URL
   `findExistingPrForBranch` reports, so the unnumberable case does not need a
   new lookup.
-- The manual additions state the conditions. The outcome is `pr` plus the
-  block when the branch lookup succeeds and the URL yields a number. If the
-  lookup fails, or the URL cannot be numbered, the run records `no_pr`
-  rather than naming `#0`. The behaviour is credited to Issue #3092
-  (#3119). Issue #3121 is the regression coverage. The flowchart node still
-  reads "Run fails, no PR raised", with the "Branch already has an open PR?"
-  split from #3119.
+- The manual additions scope the unnumberable-URL rule to the guard call
+  `completionBody` makes after every summary gate has passed. There, the
+  outcome is `pr` plus the block when the lookup succeeds and the URL
+  yields a number, and `no_pr` rather than `#0` when the lookup fails or
+  the URL cannot be numbered. The same guard inside `reportSummaryRuleBlock`
+  names the PR that gate already found, without that number check. The
+  behaviour is credited to Issue #3092 (#3119). Issue #3121 is the
+  regression coverage for the `completionBody` cases. The flowchart node
+  still reads "Run fails, no PR raised", with the "Branch already has an
+  open PR?" split from #3119.
 - The failure log is unchanged. It still reads "failing the run without
   finalising a PR" and carries `error` only.
 
@@ -49,15 +52,18 @@ flowchart TD
   T --> A["Open PR: outcome pr, blocked.phase completion,<br/>recoverCalls 0, prCreateCalls 0"]
   T --> B["No PR on the branch: outcome no_pr"]
   T --> C["Unnumberable URL: outcome no_pr"]
-  T --> D["Manual states when the outcome is pr and when it is no_pr"]
+  T --> D["Manual scopes the unnumberable-URL rule to completionBody"]
 ```
 
 **Docs sweep**: grep: `rather than naming`, `Issue #3092`, `Issue #3121`;
 section: `docs/workflows/issue-processing.md` ("A degraded run never closes an
 issue as complete", and "An exception still has to report the PR it blocked");
-updated: `docs/workflows/issue-processing.md`. Each section states the lookup
-conditions and credits the behaviour to Issue #3092 (#3119). Issue #3121 is
-named only for the regression coverage. The flowchart node is not renamed.
+updated: `docs/workflows/issue-processing.md`. Each section scopes the
+unnumberable-URL rule to `completionBody` after every summary gate has
+passed, and says `reportSummaryRuleBlock` names the PR it already found
+without that number check. The behaviour is credited to Issue #3092
+(#3119). Issue #3121 is named only for the `completionBody` regression
+coverage. The flowchart node is not renamed.
 
 The open-PR naming itself is already asserted on main by "completion - a
 degraded run that passes every summary gate still names an existing PR when
