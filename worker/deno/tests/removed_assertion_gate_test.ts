@@ -1,0 +1,342 @@
+import { assert, assertEquals, assertFalse } from "@std/assert";
+import {
+  buildRemovedAssertionGateComment,
+  findRemovedAssertions,
+  findTestPlanSection,
+  removedAssertionDiffArgs,
+  validateRemovedAssertions,
+} from "../lib/removed_assertion_gate.ts";
+
+Deno.test("removedAssertionDiffArgs builds the expected git diff invocation", () => {
+  assertEquals(removedAssertionDiffArgs("main"), [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--unified=0",
+    "--find-renames",
+    "--diff-filter=AMR",
+    "main...HEAD",
+  ]);
+});
+
+// --- Issue's verification case -------------------------------------------
+
+const SCORE_DIFF = [
+  "diff --git a/crates/api/tests/decisions.rs b/crates/api/tests/decisions.rs",
+  "index abc123..def456 100644",
+  "--- a/crates/api/tests/decisions.rs",
+  "+++ b/crates/api/tests/decisions.rs",
+  "@@ -40,1 +40,0 @@ fn scores_are_rated() {",
+  '-    assert_eq!(record.score.to_string(), "-0.5");',
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions finds the removed assert_eq! statement", () => {
+  const removed = findRemovedAssertions(SCORE_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.file, "crates/api/tests/decisions.rs");
+  assertEquals(
+    removed[0]!.text,
+    'assert_eq!(record.score.to_string(), "-0.5");',
+  );
+});
+
+Deno.test("validateRemovedAssertions blocks when the Test Plan does not name the removed assertion", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: ["crates/api/tests/decisions.rs"],
+    testDiff: SCORE_DIFF,
+    prSummaryContent: "## Summary\n\nChanged scoring to a rating.\n",
+  });
+  assertFalse(result.valid);
+  assertEquals(result.unaccounted.length, 1);
+  assert(
+    result.problems.some((p) =>
+      p.includes("assert_eq!") && p.includes("decisions.rs")
+    ),
+  );
+});
+
+Deno.test("validateRemovedAssertions passes when the Test Plan names the removed assertion and its reason", () => {
+  const summary = [
+    "## Test Plan",
+    "",
+    "- Removed from `crates/api/tests/decisions.rs`: " +
+    '`assert_eq!(record.score.to_string(), "-0.5")` — #2253 changes the ' +
+    "score to a rating, so the old value is untrue",
+    "",
+  ].join("\n");
+  const result = validateRemovedAssertions({
+    changedFiles: ["crates/api/tests/decisions.rs"],
+    testDiff: SCORE_DIFF,
+    prSummaryContent: summary,
+  });
+  assert(result.valid);
+  assertEquals(result.unaccounted.length, 0);
+  assertEquals(result.problems, []);
+});
+
+// --- Missing Test Plan heading entirely -----------------------------------
+
+const NOOP_TEST_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -10,0 +11,1 @@",
+  '+  console.log("noop");',
+  "",
+].join("\n");
+
+Deno.test("validateRemovedAssertions blocks when no Test Plan heading exists even with no removed assertions", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: ["worker/deno/tests/foo_test.ts"],
+    testDiff: NOOP_TEST_DIFF,
+    prSummaryContent: "## Summary\n\nTidy a log line.\n",
+  });
+  assertFalse(result.valid);
+  assertEquals(result.removed.length, 0);
+  assert(result.problems.some((p) => p.includes("Test Plan")));
+});
+
+Deno.test("validateRemovedAssertions passes when a Test Plan heading exists with no removed assertions", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: ["worker/deno/tests/foo_test.ts"],
+    testDiff: NOOP_TEST_DIFF,
+    prSummaryContent: "## Test Plan\n\nNo assertions were removed.\n",
+  });
+  assert(result.valid);
+});
+
+// --- Applicability -----------------------------------------------------
+
+Deno.test("validateRemovedAssertions is not applicable when no changed file is a test file", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: ["src/lib.rs", "README.md"],
+    testDiff: null,
+    prSummaryContent: "",
+  });
+  assertFalse(result.applicable);
+  assert(result.valid);
+  assertEquals(result.problems, []);
+});
+
+Deno.test("validateRemovedAssertions applies (fails closed) when changedFiles is null", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: null,
+    testDiff: null,
+    prSummaryContent: "## Summary\n\nNo Test Plan here.\n",
+  });
+  assert(result.applicable);
+  assertFalse(result.changedFilesKnown);
+  assertFalse(result.valid);
+  assert(result.problems.some((p) => p.includes("Test Plan")));
+});
+
+Deno.test("validateRemovedAssertions passes with testDiff null when a Test Plan is present", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: ["worker/deno/tests/foo_test.ts"],
+    testDiff: null,
+    prSummaryContent: "## Test Plan\n\nSomething.\n",
+  });
+  assert(result.valid);
+  assertFalse(result.testDiffKnown);
+  assertEquals(result.removed, []);
+});
+
+// --- Multi-line removed assertion -----------------------------------------
+
+const MULTILINE_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -20,4 +20,0 @@",
+  "-  assertEquals(",
+  "-    a,",
+  "-    b,",
+  "-  );",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions joins a multi-line removed assertEquals into one statement", () => {
+  const removed = findRemovedAssertions(MULTILINE_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.text, "assertEquals( a, b, );");
+});
+
+Deno.test("validateRemovedAssertions accounts for a multi-line removed assertion named compactly in the Test Plan", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: ["worker/deno/tests/foo_test.ts"],
+    testDiff: MULTILINE_DIFF,
+    prSummaryContent:
+      "## Test Plan\n\n- Removed `assertEquals(a, b)` — no longer applicable.\n",
+  });
+  assert(result.valid);
+  assertEquals(result.unaccounted, []);
+});
+
+// --- Moved / reformatted assertion ----------------------------------------
+
+const MOVED_REWRAPPED_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -5,1 +5,4 @@",
+  "-  assertEquals(result.code, 0);",
+  "+  assertEquals(",
+  "+    result.code,",
+  "+    0,",
+  "+  );",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions excludes an assertion that was only re-wrapped", () => {
+  const removed = findRemovedAssertions(MOVED_REWRAPPED_DIFF);
+  assertEquals(removed, []);
+});
+
+const MOVED_REINDENTED_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -5,1 +5,1 @@",
+  "-  assertEquals(result.code, 0);",
+  "+    assertEquals(result.code, 0);",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions excludes an assertion that was only re-indented", () => {
+  const removed = findRemovedAssertions(MOVED_REINDENTED_DIFF);
+  assertEquals(removed, []);
+});
+
+// --- Non-test files and non-assertion lines --------------------------------
+
+const NON_TEST_FILE_DIFF = [
+  "diff --git a/src/lib.rs b/src/lib.rs",
+  "index 111..222 100644",
+  "--- a/src/lib.rs",
+  "+++ b/src/lib.rs",
+  "@@ -5,1 +5,0 @@",
+  "-    assert_eq!(x, 1);",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions ignores a removed assertion in a non-test file", () => {
+  assertEquals(findRemovedAssertions(NON_TEST_FILE_DIFF), []);
+});
+
+const EXCLUDED_FORMS_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -1,3 +0,0 @@",
+  "-  debug_assert!(invariant_holds());",
+  '-  let name = maybe.expect("present");',
+  "-  // assertEquals(old, 1);",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions excludes debug_assert!, .expect(), and a commented-out assertion", () => {
+  assertEquals(findRemovedAssertions(EXCLUDED_FORMS_DIFF), []);
+});
+
+const CROSS_ECOSYSTEM_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -1,3 +0,0 @@",
+  "-  expect(x).toBe(1);",
+  "-  assert x == 1",
+  "-  self.assertEqual(a, b)",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions detects Jest expect(), Python assert, and self.assertEqual()", () => {
+  const removed = findRemovedAssertions(CROSS_ECOSYSTEM_DIFF);
+  assertEquals(removed.length, 3);
+  const texts = removed.map((a) => a.text);
+  assert(texts.includes("expect(x).toBe(1);"));
+  assert(texts.includes("assert x == 1"));
+  assert(texts.includes("self.assertEqual(a, b)"));
+});
+
+// --- A removed SQL comment line is not mistaken for a diff header ----------
+
+const SQL_COMMENT_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.sql.test.ts b/worker/deno/tests/foo_test.sql.test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.sql.test.ts",
+  "+++ b/worker/deno/tests/foo_test.sql.test.ts",
+  "@@ -1,3 +0,0 @@",
+  "--- this is a removed sql comment, not a diff header",
+  "-  assertEquals(total, 5);",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions treats a removed `-- comment` line inside a hunk as content, not a header", () => {
+  const removed = findRemovedAssertions(SQL_COMMENT_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.file, "worker/deno/tests/foo_test.sql.test.ts");
+  assertEquals(removed[0]!.text, "assertEquals(total, 5);");
+});
+
+// --- findTestPlanSection ----------------------------------------------------
+
+Deno.test("findTestPlanSection finds the heading and stops at the next heading of equal rank", () => {
+  const summary = [
+    "## Summary",
+    "stuff",
+    "## Test Plan",
+    "- Removed `foo()`.",
+    "## Docs sweep",
+    "n/a",
+  ].join("\n");
+  const section = findTestPlanSection(summary);
+  assert(section.present);
+  assert(section.body.includes("Removed `foo()`."));
+  assertFalse(section.body.includes("Docs sweep"));
+});
+
+Deno.test("findTestPlanSection is absent when no Test Plan heading exists", () => {
+  const section = findTestPlanSection("## Summary\n\nNo plan here.\n");
+  assertFalse(section.present);
+  assertEquals(section.body, "");
+});
+
+// --- buildRemovedAssertionGateComment ---------------------------------------
+
+Deno.test("buildRemovedAssertionGateComment names the headline and the unaccounted assertion text", () => {
+  const result = validateRemovedAssertions({
+    changedFiles: ["crates/api/tests/decisions.rs"],
+    testDiff: SCORE_DIFF,
+    prSummaryContent: "## Summary\n\nNo plan.\n",
+  });
+  const comment = buildRemovedAssertionGateComment(result);
+  assert(comment.includes("Removed test assertions not accounted for"));
+  assert(comment.includes('assert_eq!(record.score.to_string(), "-0.5");'));
+});
+
+Deno.test("buildRemovedAssertionGateComment uses a longer fence when the content contains a backtick run", () => {
+  const trickyDiff = [
+    "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+    "index 111..222 100644",
+    "--- a/worker/deno/tests/foo_test.ts",
+    "+++ b/worker/deno/tests/foo_test.ts",
+    "@@ -1,1 +0,0 @@",
+    '-  assertEquals(describe("```fenced```"), 1);',
+    "",
+  ].join("\n");
+  const result = validateRemovedAssertions({
+    changedFiles: ["worker/deno/tests/foo_test.ts"],
+    testDiff: trickyDiff,
+    prSummaryContent: "## Summary\n\nNo plan.\n",
+  });
+  assertEquals(result.unaccounted.length, 1);
+  const comment = buildRemovedAssertionGateComment(result);
+  assert(comment.includes("````text"));
+});
