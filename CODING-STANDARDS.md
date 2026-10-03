@@ -342,6 +342,20 @@ from the wrong source), run the test, confirm it goes red, then restore the
 guard. A negative test that stays green without its guard is a blocking
 self-review finding.
 
+**A refusal test must be refused by the rule it names.** A test that
+expects an input to be refused, rejected or answered with `false` or an
+error must assert the specific error variant or rule, not only that an
+error occurred or which field it mentions. Its input must satisfy every
+other rule, so only the rule under test can refuse it: show that the same
+input with only the probed value made legal is accepted. A test that
+compares two refusers (schema against loader, client against server) must
+also assert that the on-target base value is accepted by both sides, so
+agreement on an unrelated refusal cannot pass. When a change adds a
+refusal that runs before an existing one (a new boundary check, a
+retired-field list, a stricter parse, a fake that throws), re-run the
+existing tests that expect the later refusal and confirm each still
+reaches it; one that now stops earlier is a blocking self-review finding.
+
 **Every changed call site needs a test that goes red without it.** When a
 change threads a new argument, flag or behaviour through more than one
 production caller, a test of the helper, or of some callers, does not cover
