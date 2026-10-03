@@ -200,7 +200,7 @@ have. This complements the worker's own final-mile push verification described
 in **The final mile** below, which re-checks the push at the git level after
 the agent runs.
 
-#### Fix the defect everywhere it lives (Issue #3086)
+#### Fix the defect everywhere it lives (Issues #3086, #3114)
 
 A finding's file, line, repro and suggested fix are one example of a defect,
 not its full extent. The pr_feedback prompt tells the agent to fix the
@@ -217,6 +217,21 @@ creep. Where a finding gave a repro, the agent also tries its obvious
 variants and adds a test for each path that differs, and
 `.pr_response_message` names, per finding, the other paths and copies it
 checked.
+
+Issue #3114 widened the rule from paths and copies to the whole defect
+class. A finding's locations are examples, not the list: before
+committing, the agent states the defect as a class — the false claim, the
+missing guard or rule, the uncovered order of a race, the stale clock —
+and finds every instance of it in the head. That covers every caller or
+builder of the same shape, test names as well as code comments and docs,
+each order of the parties to a race and every window between their
+steps, and every later iteration of a loop that reads a time budget.
+Each instance is fixed or rebutted with the reason, and
+`.pr_response_message` says what was searched and which other instances
+were fixed. Re-reviews had kept raising findings as "only partly fixed"
+because the fix stopped at the named locations (VibeCoder#3066, #3068, #3065,
+GRQ-AutoTrader#2210, #2220); another instance of the class left in the
+head is now a blocking self-review finding.
 
 #### Recount the Test Plan after a review fix (Issue #3117)
 
