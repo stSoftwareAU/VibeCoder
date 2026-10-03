@@ -896,10 +896,12 @@ this **instead of looping**:
    leaves no commit and no uncommitted change. Decide before you edit any
    file, because the worker commits and pushes the working tree periodically
    and again at the end of the run. Once a file has changed, a free-text
-   hand-off is not read. In an issue run, name the follow-up you filed on a
-   `Depends on owner/repo#N` line under a `## Blocked:` heading, or use the
-   planning marker. A bare `## Blocked:` heading does not defer, and the
-   worker raises a PR that closes the issue. A PR-feedback or CI-fix run
+   hand-off is not read. In an issue run, if no open issue already blocks
+   the work, this is not a deferral. Do not file a follow-up and name it on
+   a `Depends on` line. After a commit, a `Depends on` line that names the
+   follow-up this run filed hands the issue to a human and raises no PR. A
+   bare `## Blocked:` heading does not defer, and the worker raises a PR
+   that closes the issue. A PR-feedback or CI-fix run
    keeps using the `.pr_response_message` escape hatch above, including on a
    branch that already has commits.
    **Do not close the issue yourself**: the `gh` guard refuses

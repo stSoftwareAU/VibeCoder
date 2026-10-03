@@ -42,6 +42,8 @@ import {
   detectBlockedOutcome,
   formatDependencyRef,
 } from "../blocked_outcome.ts";
+import { detectEscapeHatch } from "../escape_hatch.ts";
+import { parseFollowUpIssueRef } from "../escape_hatch_label_strip.ts";
 import {
   deferBlockedIssue,
   hasPriorDeferralOnThread,
@@ -185,6 +187,29 @@ export interface DeclaredOutcomeHandoff {
 }
 
 /**
+ * Whether the declared dependency is the follow-up this same output filed.
+ *
+ * The escape-hatch strip already resolves that reference. Depending on it
+ * after a commit is not a real deferral: the follow-up has no pickup label,
+ * so the issue would sit until nothing closes it. The run stays declared
+ * and hands off to a human instead (Issue #3088).
+ */
+function dependencyIsSelfFiledFollowUp(
+  output: string,
+  repo: string,
+  blocked: BlockedOutcome,
+): boolean {
+  const detection = detectEscapeHatch(output, repo);
+  if (!detection.invoked || !detection.issueRef) return false;
+  const filed = parseFollowUpIssueRef(detection.issueRef, repo);
+  if (!filed) return false;
+  const dep = blocked.dependency;
+  const depRepo = (dep.repo ?? repo).toLowerCase();
+  return filed.issueNumber === dep.number &&
+    filed.repo.toLowerCase() === depRepo;
+}
+
+/**
  * Whether the declared dependency is still open. A committed run is deferred
  * only while it is. A closed dependency, or a state that cannot be read, does
  * not defer, but the run stays declared and hands off to a human.
@@ -244,6 +269,8 @@ export async function handOffDeclaredOutcome(
   // with no declaration line still continues. A dependency that is closed,
   // merged, missing a state, or unreadable does not defer, but the run stays
   // declared and hands off to a human instead of raising a PR (Issue #3088).
+  // A dependency that is the follow-up this same output filed does not defer
+  // either: that would park a human-only decision on an issue nothing picks up.
   const committed = trigger === "declared_handoff";
   let blocked = detectBlockedOutcome(
     claudeOutput,
@@ -251,7 +278,24 @@ export async function handOffDeclaredOutcome(
     committed ? { declaredHeadingOnly: true } : undefined,
   );
   let blockedNotOpen = false;
-  if (blocked && committed && !await dependencyStillOpen(deps, repo, blocked)) {
+  if (
+    blocked && committed &&
+    dependencyIsSelfFiledFollowUp(claudeOutput, repo, blocked)
+  ) {
+    logger.info(
+      "Committed run depends on a follow-up it filed — not deferring, " +
+        "handing off to a human",
+      {
+        repo,
+        issueNumber,
+        dependency: formatDependencyRef(blocked.dependency),
+      },
+    );
+    blockedNotOpen = true;
+    blocked = undefined;
+  } else if (
+    blocked && committed && !await dependencyStillOpen(deps, repo, blocked)
+  ) {
     logger.info(
       "Committed run names a dependency that is not open — not deferring, " +
         "handing off to a human",

@@ -51,7 +51,8 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "hands it to a human only while the branch has no commits",
       "Depends on owner/repo#N",
       "A closed or unreadable dependency does not defer",
-      "name the follow-up you filed on a `Depends on owner/repo#N` line under a `## Blocked:` heading",
+      "Do not file a follow-up and depend on it",
+      "A follow-up this run filed is not that dependency",
       "A bare `## Blocked:` heading does not defer",
       "The worker defers and raises no PR",
     ]
@@ -89,6 +90,7 @@ Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and
       "hands the issue to a human (`needs-human`) only while the branch has no commits",
       "In an issue run, this free-text hand-off is honoured only when the run leaves no commit",
       "A PR-feedback or CI-fix run keeps using the `.pr_response_message` escape hatch",
+      "Do not file a follow-up and name it on a `Depends on` line",
     ]
   ) {
     assertStringIncludes(guidelines, required);

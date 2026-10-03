@@ -59,7 +59,9 @@ had said was unfinished.
   heading on a committed run defers only when its `Depends on` / `Blocked by`
   line names a dependency the worker reads as open. A closed or unreadable
   dependency does not defer; the committed run hands off to a human and
-  raises no PR.
+  raises no PR. A `Depends on` line that names the follow-up this same
+  output filed does not defer either: the committed run hands off to a
+  human and raises no PR.
 
 ### Undiscoverable Facts
 

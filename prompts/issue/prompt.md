@@ -313,8 +313,10 @@ apply:
   still open, end with a `## Blocked:` heading and a `Depends on owner/repo#N`
   (or `Blocked by`) line naming it. A closed or unreadable dependency does not
   defer; the worker hands the issue to a human and raises no PR. If there is
-  no such issue, name the follow-up you filed on a `Depends on owner/repo#N`
-  line under a `## Blocked:` heading, or use the planning marker. A bare
+  no such issue, this is not a deferral: fix the root cause, or use the
+  escape hatch while the branch has no commits. Do not file a follow-up and
+  depend on it. After a commit, a `Depends on` line that names the follow-up
+  this run filed hands the issue to a human and raises no PR. A bare
   `## Blocked:` heading
   does not defer, and the worker would raise a PR that closes this issue.
 
@@ -700,7 +702,9 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   work is already committed, end with a `## Blocked:` heading followed by a
   `Depends on owner/repo#N` (or `Blocked by`) line naming an issue that is
   still open. A closed or unreadable dependency does not defer; the worker
-  hands the issue to a human and raises no PR. The worker defers and raises
+  hands the issue to a human and raises no PR. A follow-up this run filed is
+  not that dependency: depending on it after a commit hands the issue to a
+  human and raises no PR. The worker defers and raises
   no PR when the dependency is open.
   When a lesser criterion stays `partial` or `missing`, the Summary names it
   beside the closing keyword instead of describing the issue as resolved.

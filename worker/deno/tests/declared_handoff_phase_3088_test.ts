@@ -368,6 +368,34 @@ Deno.test(
   },
 );
 
+// Depending on the follow-up this same output filed is not a deferral.
+// The committed run hands off to a human and raises no PR.
+Deno.test(
+  "declared_handoff_phase - a dependency this run filed hands off and raises no PR (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls, [], "OPEN") },
+    });
+    const output = [
+      "## Blocked: the product decision is only a human's to make",
+      "",
+      "Filed a follow-up issue stSoftwareAU/Example#560 because this is out of scope.",
+      "",
+      "Depends on stSoftwareAU/Example#560",
+    ].join("\n");
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(output),
+      deps,
+    );
+
+    assertHumanHandoff(result, calls);
+    assertEquals(calls.editIssue, 0);
+  },
+);
+
 // A documented block whose dependency has already closed does not defer.
 // The committed run still hands off to a human and raises no PR.
 Deno.test(
