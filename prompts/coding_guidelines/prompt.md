@@ -242,6 +242,12 @@ not after a reviewer finds it weeks later.
   every exception the existing rules carve out. Two rules left telling the
   agent to do opposite things is a blocking self-review finding. List the
   related existing rules you checked in the PR body, or say you found none.
+- **Adding a member owes a docs change too.** When you add a field, enum
+  variant, kind, flag, column or row element to an existing set, grep for one
+  or two **existing sibling members**, not the new one — the new name is in no
+  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
+  manual page or API description that lists the set names the new member in
+  the same change, or is reworded so it no longer reads as complete.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
