@@ -1445,11 +1445,13 @@ flowchart TD
   survives the merge in the follow-up instead.
 - **A healthy run is untouched**, whatever its summary says, and so is a
   degraded run that showed every item `met`.
-- **The "gh failed" branch still fails loud, but the outcome names a live
-  PR** when the run's branch already has one (Issue #3121) — the same lookup
-  the changed-workflow gate below performs. The PR is neither finalised nor
-  auto-merged; the run still fails. See "An exception still has to report the
-  PR it blocked" below.
+- **The "gh failed" branch still fails loud.** When the branch lookup
+  succeeds and the PR URL yields a number, the outcome is `pr` plus the
+  block, and that PR is neither finalised nor auto-merged (Issue #3092,
+  #3119). If the lookup fails, or the URL cannot be numbered, the run
+  records `no_pr` rather than naming `#0`. Issue #3121 is the regression
+  coverage for those cases. See "An exception still has to report the PR it
+  blocked" below.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -1515,11 +1517,14 @@ finding outstanding" is now countable apart from "delivered nothing"
 PR-then-later-step failure, not only this gate's.
 
 The degraded-run guard (see "A degraded run never closes an issue as
-complete" above) follows the same rule: when it cannot file the follow-up
-recording a degraded run's undelivered scope, and the run's branch already
-carries an open PR, the run still fails and that PR is neither finalised nor
-auto-merged, but the outcome is `pr` with `prNumber` plus the block, never
-`no_pr` (Issue #3121).
+complete" above) follows the same rule when it cannot file the follow-up
+that records a degraded run's undelivered scope (Issue #3092, #3119). The
+run still fails, and the PR is neither finalised nor auto-merged. The
+outcome is `pr` with `prNumber` plus the block when the branch lookup
+succeeds and the URL yields a number. If the lookup fails or the URL cannot
+be numbered, the run records `no_pr` rather than naming `#0`. Issue #3121
+adds the regression coverage for the call counts, the block's phase, the
+no-PR case and the unnumberable URL.
 
 **Implementation.** `lookupBlockedGatePr` and the gate block in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),

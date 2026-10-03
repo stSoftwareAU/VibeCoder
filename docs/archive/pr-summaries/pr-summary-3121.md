@@ -26,9 +26,13 @@ cross-references in the operator manual. Closes #3121.
   `completion`). An optional `prUrl` overrides the URL
   `findExistingPrForBranch` reports, so the unnumberable case does not need a
   new lookup.
-- The manual additions point at that existing rule and cite Issue #3121. They
-  do not rename the flowchart. The node still reads "Run fails, no PR raised",
-  with the "Branch already has an open PR?" split from #3119.
+- The manual additions state the conditions. The outcome is `pr` plus the
+  block when the branch lookup succeeds and the URL yields a number. If the
+  lookup fails, or the URL cannot be numbered, the run records `no_pr`
+  rather than naming `#0`. The behaviour is credited to Issue #3092
+  (#3119). Issue #3121 is the regression coverage. The flowchart node still
+  reads "Run fails, no PR raised", with the "Branch already has an open PR?"
+  split from #3119.
 - The failure log is unchanged. It still reads "failing the run without
   finalising a PR" and carries `error` only.
 
@@ -45,15 +49,15 @@ flowchart TD
   T --> A["Open PR: outcome pr, blocked.phase completion,<br/>recoverCalls 0, prCreateCalls 0"]
   T --> B["No PR on the branch: outcome no_pr"]
   T --> C["Unnumberable URL: outcome no_pr"]
-  T --> D["Manual cites Issue #3121 beside the #3119 rule"]
+  T --> D["Manual states when the outcome is pr and when it is no_pr"]
 ```
 
-**Docs sweep**: grep: `Issue #3121`, `the outcome names a live`, `never no_pr`;
+**Docs sweep**: grep: `rather than naming`, `Issue #3092`, `Issue #3121`;
 section: `docs/workflows/issue-processing.md` ("A degraded run never closes an
 issue as complete", and "An exception still has to report the PR it blocked");
-updated: `docs/workflows/issue-processing.md`. Each section gains a paragraph
-that cites Issue #3121 and restates the rule #3119 already documents. The
-flowchart node is not renamed.
+updated: `docs/workflows/issue-processing.md`. Each section states the lookup
+conditions and credits the behaviour to Issue #3092 (#3119). Issue #3121 is
+named only for the regression coverage. The flowchart node is not renamed.
 
 The open-PR naming itself is already asserted on main by "completion - a
 degraded run that passes every summary gate still names an existing PR when
@@ -86,5 +90,5 @@ the unnumberable-URL test are the extra cases.
 | File | Change |
 | --- | --- |
 | `worker/deno/tests/completion_phase_degraded_delivery_test.ts` | Harness counts and outcome derivation; three Issue #3121 tests |
-| `docs/workflows/issue-processing.md` | Two cross-references citing Issue #3121 |
+| `docs/workflows/issue-processing.md` | Two cross-references stating the lookup conditions |
 | `docs/archive/pr-summaries/pr-summary-3121.md` | This summary |
