@@ -33,7 +33,7 @@ const KEY_PHRASES = [
   "apply the stricter rule at the new call site",
   "an existing caller still accepts its real inputs",
   "List the callers checked in the PR summary",
-  "blocking self-review finding",
+  "A narrowed shared helper with no callers-checked list",
 ];
 
 Deno.test("both surfaces carry the narrowing-a-shared-helper rule (Issue #3100)", async () => {
