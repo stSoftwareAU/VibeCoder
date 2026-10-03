@@ -55,6 +55,19 @@ function subjectOf(entry: ClosureEntry): string {
   return subject.trim();
 }
 
+/**
+ * What an unmatched gap is named by. A real subject wins. An entry that
+ * jumps straight to `reviewer:` or `reason:` has none, so the reason text
+ * is the name a follow-up can still cite.
+ */
+function gapSubject(entry: ClosureEntry): string {
+  const subject = subjectOf(entry);
+  if (subject.length > 0) return subject;
+  const reason = entry.text.match(/\breason\s*[:\-—]\s*([\s\S]+)$/i);
+  const named = reason?.[1]?.trim() ?? "";
+  return named.length > 0 ? named : entry.text.trim();
+}
+
 /** Worst of two statuses — `missing` > `partial` > `met`. */
 function worseOf(a: CriterionStatus, b: CriterionStatus): CriterionStatus {
   const rank: Record<CriterionStatus, number> = {
@@ -72,9 +85,11 @@ function worseOf(a: CriterionStatus, b: CriterionStatus): CriterionStatus {
  * An entry matches a criterion when one word set is a subset of the other.
  * Among the criteria an entry matches, only the one with the strictly
  * highest Jaccard similarity is assigned the entry; a tie across different
- * criteria leaves the entry unassigned (ambiguous). `unrequested` entries,
- * and entries whose subject has no words, are skipped. A criterion assigned
- * no entry is `undefined`; one assigned several takes their worst status.
+ * criteria leaves the entry unassigned (ambiguous). `unrequested` entries
+ * are skipped. An entry whose subject has no words cannot match a criterion;
+ * a `partial` or `missing` one is still kept, named by its `reason:` when it
+ * has one. A criterion assigned no entry is `undefined`; one assigned
+ * several takes their worst status.
  *
  * A `partial` or `missing` entry that matches nothing, or ties, is not
  * dropped: it is returned in `unassignedGaps` so the degraded-run guard can
@@ -102,7 +117,15 @@ export function matchClosureEntries(
   for (const entry of entries) {
     if (entry.status === "unrequested") continue;
     const subjectWordSet = words(subjectOf(entry));
-    if (subjectWordSet.size === 0) continue;
+    if (subjectWordSet.size === 0) {
+      if (entry.status === "partial" || entry.status === "missing") {
+        unassignedGaps.push({
+          status: entry.status,
+          subject: gapSubject(entry),
+        });
+      }
+      continue;
+    }
 
     let bestScore = -1;
     let bestIndex = -1;
@@ -125,7 +148,7 @@ export function matchClosureEntries(
       if (entry.status === "partial" || entry.status === "missing") {
         unassignedGaps.push({
           status: entry.status,
-          subject: subjectOf(entry),
+          subject: gapSubject(entry),
         });
       }
       continue;

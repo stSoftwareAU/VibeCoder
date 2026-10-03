@@ -37,7 +37,7 @@
  * one equally well, does not assess that item, so it reads `unassessed`; one
  * split across several entries takes their worst status. A `partial` or
  * `missing` entry left unassigned is still a shortfall, named by its own
- * subject. A scope item is
+ * subject, or by its `reason:` when the subject has no words. A scope item is
  * delivered only when it is matched to a `met` entry (and nothing worse); a
  * `partial` or `missing` match, or no match at all, is a shortfall. A
  * degraded run on an issue that states no scope names the issue itself as
@@ -87,7 +87,11 @@ export type ShortfallStatus = "partial" | "missing" | "unassessed";
 
 /** One accepted scope item a degraded run did not show as met. */
 export interface DegradedShortfall {
-  /** The scope item, as the issue states it. */
+  /**
+   * The scope item, as the issue states it. A gap the closure block left
+   * unmatched carries the entry's own subject instead — its `reason:` when
+   * that subject has no words.
+   */
   criterion: string;
   /** `partial`/`missing` as the summary said, or `unassessed` when it said nothing. */
   status: ShortfallStatus;
@@ -195,7 +199,8 @@ export function degradedFollowUpFindingId(parentNumber: number): string {
 
 /** One markdown bullet per shortfall. */
 function shortfallLines(shortfalls: readonly DegradedShortfall[]): string[] {
-  // `criterion` is copied from the issue body, which is untrusted, into a
+  // `criterion` is the issue's scope item, or the closure entry's subject
+  // for an unmatched gap. Either is untrusted, and it is copied into a
   // fleet-authored idle-task issue whose own finding-id marker
   // `findOpenIssueByFindingId` trusts for dedup — Issue #2778.
   return shortfalls.map((s) =>

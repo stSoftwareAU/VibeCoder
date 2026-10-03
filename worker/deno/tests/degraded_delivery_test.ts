@@ -487,6 +487,29 @@ Deno.test("degradedNeedsFollowUp - (b) stated criteria all unassessed files no f
   assertEquals(degradedNeedsFollowUp(verdict), false);
 });
 
+Deno.test("degradedNeedsFollowUp - a missing entry with no subject still files a follow-up (Issue #3128)", () => {
+  const prBody = `## Acceptance Criteria
+
+- **met** — the router sends planning to opus — evidence: \`router.ts\` — reviewer: met
+- **missing** — reviewer: missing — reason: the docs table still says sonnet
+- **met** — the release floor is 1.9.0 — evidence: \`Cargo.toml\` — reviewer: met
+`;
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody,
+  });
+
+  assertEquals(degradedNeedsFollowUp(verdict), true);
+  assert(
+    verdict.shortfalls.some((s) =>
+      s.status === "missing" &&
+      s.criterion.includes("docs table still says sonnet")
+    ),
+    "the reason names the gap when the entry has no subject",
+  );
+});
+
 Deno.test("degradedNeedsFollowUp - a reworded in-order missing entry still files a follow-up (Issue #3128)", () => {
   const prBody = `## Acceptance Criteria
 

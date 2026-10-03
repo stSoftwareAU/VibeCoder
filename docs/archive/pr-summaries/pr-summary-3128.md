@@ -86,6 +86,9 @@ flowchart LR
     follow-up (Issue #3128)` — an in-order `missing` entry that paraphrases
     its criterion still makes `degradedNeedsFollowUp` true, and the follow-up
     names that subject.
+  - `degradedNeedsFollowUp - a missing entry with no subject still files a
+    follow-up (Issue #3128)` — `**missing** — reviewer: missing — reason: …`
+    has no subject words and is still a shortfall, named by that reason.
 - `worker/deno/tests/closure_criterion_match_test.ts` (10 tests):
   - Matching: out of order; abbreviated subset; superset with extra words.
   - Rejection: no match and an ambiguous tie both leave the criterion

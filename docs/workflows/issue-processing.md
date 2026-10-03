@@ -1424,7 +1424,8 @@ flowchart TD
   position (Issue #3128): an entry matching no criterion, or two equally
   well, does not assess that criterion, so the criterion stays `unassessed`.
   A `partial` or `missing` entry left that way is still a shortfall, named
-  by its own subject, so the follow-up is filed. A criterion split across
+  by its own subject, or by its `reason:` when the subject has no words, so
+  the follow-up is filed. A criterion split across
   several entries takes the worst of their statuses (`missing` beats
   `partial` beats `met`).
 - **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).

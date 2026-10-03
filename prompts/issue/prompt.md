@@ -648,7 +648,9 @@ one is broken:
 - **Every stated criterion gets an entry.** A criterion you did not touch is
   `missing`, not omitted. Write `<criterion>` in the issue's own words — the
   degraded-run guard matches each entry to its criterion by those words, not
-  by position, so a paraphrased entry counts as unassessed.
+  by position. A paraphrased entry leaves its criterion unassessed, and a
+  paraphrased `partial` or `missing` entry is still filed as a shortfall
+  under its own wording.
 - **`met` and `partial` must name the evidence** — the file, the test, or the
   test identifier that demonstrates it. "Implemented" with nothing to point at
   is not evidence.
