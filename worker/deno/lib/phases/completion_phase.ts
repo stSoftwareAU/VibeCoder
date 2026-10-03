@@ -57,6 +57,10 @@ import {
   validateDocsSweep,
 } from "../docs_sweep_gate.ts";
 import {
+  buildResultPlaceholderGateComment,
+  findResultPlaceholders,
+} from "../result_placeholder_gate.ts";
+import {
   type BlockedGatePr,
   buildChangedWorkflowGateMessage,
   evaluateChangedWorkflowGate,
@@ -2100,16 +2104,41 @@ async function completionBody(
     docsSweep.problems[0] ?? "Docs sweep line missing"
   }`;
 
-  /** Fold the docs-sweep verdict into an earlier gate's block, when it also fails. */
+  // ---------------------------------------------------------------------
+  // Result-placeholder verdict, computed early alongside the docs-sweep one
+  // (Issue #3124), for the same reason: `recoverFromSummaryRuleBlock` only
+  // gets one recovery turn per run, so a summary that both fails an earlier
+  // gate AND still carries a fill-in-later token (e.g.
+  // `QUALITY_RESULT_PLACEHOLDER`) where a command's result belongs must be
+  // told about both in that one turn — `findResultPlaceholders` is pure, so
+  // computing it here and folding it in costs nothing.
+  // ---------------------------------------------------------------------
+  const placeholderTokens = findResultPlaceholders(prBody);
+  const placeholderBlocked = placeholderTokens.length > 0;
+  const placeholderReason = `Unfilled result placeholder in the PR summary: ${
+    placeholderTokens.join(", ")
+  }`;
+
+  /** Fold the docs-sweep and result-placeholder verdicts into an earlier gate's block, when either also fails. */
   function foldInDocsSweep(
     reason: string,
     comment: string,
   ): { reason: string; comment: string } {
-    if (!docsSweepBlocked) return { reason, comment };
-    return {
-      reason: `${reason}; ${docsSweepReason}`,
-      comment: `${comment}\n\n---\n\n${buildDocsSweepGateComment(docsSweep)}`,
-    };
+    let foldedReason = reason;
+    let foldedComment = comment;
+    if (docsSweepBlocked) {
+      foldedReason = `${foldedReason}; ${docsSweepReason}`;
+      foldedComment = `${foldedComment}\n\n---\n\n${
+        buildDocsSweepGateComment(docsSweep)
+      }`;
+    }
+    if (placeholderBlocked) {
+      foldedReason = `${foldedReason}; ${placeholderReason}`;
+      foldedComment = `${foldedComment}\n\n---\n\n${
+        buildResultPlaceholderGateComment(placeholderTokens)
+      }`;
+    }
+    return { reason: foldedReason, comment: foldedComment };
   }
 
   // ---------------------------------------------------------------------
@@ -2244,9 +2273,49 @@ async function completionBody(
       codeFiles: docsSweep.codeFiles.length,
       problems: docsSweep.problems,
     });
+    // Issue #3124: fold the placeholder verdict in too, so a summary that
+    // fails both the docs sweep and the placeholder gate gets told about
+    // both in this one recovery turn, not just the one caught first.
+    const folded = placeholderBlocked
+      ? {
+        reason: `${docsSweepReason}; ${placeholderReason}`,
+        comment: `${buildDocsSweepGateComment(docsSweep)}\n\n---\n\n${
+          buildResultPlaceholderGateComment(placeholderTokens)
+        }`,
+      }
+      : {
+        reason: docsSweepReason,
+        comment: buildDocsSweepGateComment(docsSweep),
+      };
     return await reportSummaryRuleBlock(
-      docsSweepReason,
-      buildDocsSweepGateComment(docsSweep),
+      folded.reason,
+      folded.comment,
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Result-placeholder gate (Issue #3124).
+  //
+  // A fill-in-later token such as `QUALITY_RESULT_PLACEHOLDER` left in the
+  // summary where a command's actual result belongs reads as "the gate was
+  // run" to anyone who does not know the fleet's internal scaffolding, when
+  // nothing was actually reported. Blocked the same way as the docs-sweep
+  // gate immediately above: `reportSummaryRuleBlock` applies the
+  // degraded-run delivery guard itself against any existing PR before it
+  // recovers and finalises that PR, so this gate does not need to run after
+  // the guard either.
+  // ---------------------------------------------------------------------
+  if (placeholderBlocked) {
+    logger.warn("Result-placeholder gate blocked PR creation", {
+      tokens: placeholderTokens,
+    });
+    return await reportSummaryRuleBlock(
+      placeholderReason,
+      buildResultPlaceholderGateComment(placeholderTokens),
       ctx,
       state,
       prBody,

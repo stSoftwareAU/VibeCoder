@@ -1295,6 +1295,21 @@ Docs sweep line is asked for both at once, in the earlier gate's notice,
 rather than losing the sweep to a second, unrecovered block (Issue #3085
 review).
 
+## 🚫 A leftover placeholder token blocks the summary
+
+A fleet PR could leave a literal fill-in-later token — e.g.
+`QUALITY_RESULT_PLACEHOLDER` — where the quality-gate result belonged,
+because nothing checked the summary for a bare ALL-CAPS token the agent
+never resolved (Issue #3124).
+[`result_placeholder_gate.ts`](../../worker/deno/lib/result_placeholder_gate.ts)
+blocks PR creation when the PR summary contains a token matching
+`\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b`; a token inside a backtick code span or a
+fenced code block is ignored, so an identifier mentioned in code is never
+flagged. Like the docs-sweep gate it is folded into the earlier summary
+gates' own notice when one of those blocks first, and it gets the same
+single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
+turn — a second block fails the run.
+
 ## 🔧 Changed workflow files are checked before the PR
 
 Issue #1755 hardens the provisioning path **by construction**: the workflow
@@ -1347,7 +1362,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the four summary gates above, a finding
+Like the security-fix gate and unlike the five summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1385,8 +1400,9 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the four summary-rule gates — closure,
-independent review, reproduction status and docs sweep — still pre-empts the
+with **no** PR yet, each of the five summary-rule gates — closure,
+independent review, reproduction status, docs sweep and the placeholder-token
+gate — still pre-empts the
 guard: a follow-up filed there would promise "that run's PR still
 completes #N on merge" for a PR any of those gates can still prevent from ever being
 raised, so whichever gate blocks first fails the run and the guard never
@@ -1396,7 +1412,7 @@ comment is posted but before that gate's recovery finalises the PR. Before
 Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
 because that gate ran after the guard; the closure, independent-review and
 reproduction-status gates ran ahead of the guard and skipped it. Once all
-four gates pass, `completionBody` runs the same guard once more — via the
+five gates pass, `completionBody` runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
 
@@ -1459,8 +1475,8 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The four summary gates above — acceptance-criteria closure, independent review,
-reproduction status and docs sweep — sit at the completion phase's PR-creation chokepoint, so
+The five summary gates above — acceptance-criteria closure, independent review,
+reproduction status, docs sweep and the placeholder-token gate — sit at the completion phase's PR-creation chokepoint, so
 blocking one normally costs the next attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
@@ -1550,7 +1566,7 @@ closes a `security`-labelled finding without its vulnerability-fix evidence stop
 the run, PR or no PR: that one is not a documentation shortfall. Order is what
 enforces it — a `security` run whose summary also broke a format rule would
 otherwise leave through the first summary gate and never be asked for its
-evidence, so the security gate is now evaluated ahead of all four.
+evidence, so the security gate is now evaluated ahead of all five.
 
 **Satisfy the rule rather than fail it.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
@@ -1626,8 +1642,9 @@ shortfall rather than the number of attempts at it. A recovery invocation the
 worker could not launch at all — a rate limit, a failed spawn — changed nothing
 on the branch, so the original block stands unaltered.
 
-All four summary gates route through it: closure (#518), independent review
-(#663), reproduction status (#521) and docs sweep (#3073). The two exceptions above do not — the
+All five summary gates route through it: closure (#518), independent review
+(#663), reproduction status (#521), docs sweep (#3073) and the placeholder-token
+gate (#3124). The two exceptions above do not — the
 security-fix and changed-workflow gates report defects in the change, not
 documentation shortfalls, so they still stop the run.
 
