@@ -206,7 +206,7 @@ async function readDeclaredDependency(
     );
   } catch (err) {
     deps.logger.warn(
-      "Could not read the dependency's state — not deferring a committed run",
+      "Could not read the dependency's state",
       {
         repo,
         dependency: formatDependencyRef(dep),
@@ -267,9 +267,11 @@ export async function handOffDeclaredOutcome(
   // with no declaration line still continues. A dependency that is closed,
   // merged, missing a state, or unreadable does not defer, but the run stays
   // declared and hands off to a human instead of raising a PR (Issue #3088).
-  // A dependency filed by this fleet during the run does not defer either:
-  // that would park a human-only decision on an issue nothing picks up. The
-  // issue record decides that, not wording in the output.
+  // The no-changes path does not consult open/closed state at all — it keeps
+  // its existing behaviour there — but both paths treat a dependency filed by
+  // this fleet during the run the same way: that does not defer, because it
+  // would park a human-only decision on an issue nothing picks up. The issue
+  // record decides that, not wording in the output (Issue #3146).
   const committed = trigger === "declared_handoff";
   let blocked = detectBlockedOutcome(
     claudeOutput,
@@ -282,6 +284,7 @@ export async function handOffDeclaredOutcome(
     serviceAccounts: config.serviceAccounts ?? [],
   });
   let blockedNotOpen = false;
+  let selfFiledDependency = false;
   if (blocked && committed) {
     const dependency = await readDeclaredDependency(deps, repo, blocked);
     const open = dependency?.state === "OPEN";
@@ -316,6 +319,32 @@ export async function handOffDeclaredOutcome(
       blockedNotOpen = true;
       blocked = undefined;
     }
+  } else if (blocked && !committed) {
+    // Issue #3146: the no-changes path does not consult open/closed state
+    // (unchanged above), but a dependency this fleet filed during the run is
+    // still not a real deferral here either — keep `blocked` set (so the
+    // "never already resolved" exclusion below still applies) but skip the
+    // deferral itself, exactly as a repeat deferral does, so the caller falls
+    // through to its own analysis-only hand-off.
+    const dependency = await readDeclaredDependency(deps, repo, blocked);
+    const filedDuringRun = dependency !== undefined &&
+      dependencyFiledDuringThisRun(
+        dependency,
+        fleetAuthors,
+        state.runStartTime ?? state.executeStartTime,
+      );
+    if (filedDuringRun) {
+      logger.info(
+        "No-changes run depends on an issue this run filed — not deferring, " +
+          "handing off to a human",
+        {
+          repo,
+          issueNumber,
+          dependency: formatDependencyRef(blocked.dependency),
+        },
+      );
+      selfFiledDependency = true;
+    }
   }
   // Loop guard: a deferral holds only while the dependency gate skips the
   // issue. Back here on the *same* dependency means it did not hold, and
@@ -344,7 +373,7 @@ export async function handOffDeclaredOutcome(
       },
     );
   }
-  if (blocked && !repeatDeferral) {
+  if (blocked && !repeatDeferral && !selfFiledDependency) {
     if (committed) {
       const failed = await pushCommittedBranchForHandoff(state, deps);
       if (failed) return { blocked, declared: true, result: failed };

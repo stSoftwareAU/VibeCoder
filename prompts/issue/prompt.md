@@ -320,8 +320,9 @@ apply:
   defer; the worker hands the issue to a human and raises no PR. If there is
   no such issue, this is not a deferral: fix the root cause, or use the
   escape hatch while the branch has no commits. Do not file a follow-up and
-  depend on it. After a commit, a `Depends on` line that names the follow-up
-  this run filed hands the issue to a human and raises no PR. A bare
+  depend on it: a `Depends on` line that names the follow-up this run filed
+  hands the issue to a human instead of deferring, whether or not the
+  branch has commits. A bare
   `## Blocked:` heading
   does not defer, and the worker would raise a PR that closes this issue.
 

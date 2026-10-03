@@ -785,11 +785,14 @@ the same matrix plus an "unable to make code changes" note about five times).
 `## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
 names a dependency the worker reads as open. A closed dependency, a missing
 `state`, or a lookup that fails does not defer; the run hands off to a human
-and raises no PR. A dependency filed during this run does not defer either:
-the worker reads that from the issue, when its author is this host's login or
-another fleet author and its `createdAt` is at or after the whole run
-started. A later execute attempt does not move that start. That committed
-run hands off to a human and raises no PR. Wording such as
+and raises no PR. A dependency filed during this run does not defer either,
+on either path: the worker reads that from the issue, when its author is this
+host's login or another fleet author and its `createdAt` is at or after the
+whole run started. A later execute attempt does not move that start. A
+committed run hands off to a human and raises no PR; a no-changes run falls
+through to this same analysis-only hand-off instead (Issue #3146) — the
+no-changes path does not consult open/closed state at all, but a self-filed
+dependency is excluded there too. Wording such as
 "out of scope" does not turn an older open dependency into that case. A bullet, or a heading with no declaration line, still
 continues and raises its PR. A
 `vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
