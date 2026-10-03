@@ -32,10 +32,13 @@ import { orderByPreference } from "../lib/conflict_queue_order.ts";
 import {
   type ConflictingPr,
   conflictPrKey,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
   hasExhaustedConflictAttempts,
   parseConflictAttempts,
 } from "../lib/pr_merge_conflict_scan.ts";
+import {
+  CONFLICT_RESOLUTION_BUDGET,
+  readResolutionAttempts,
+} from "../lib/merge_conflict_markers.ts";
 import type { LogContext, Logger } from "../types.ts";
 
 const WORK_DIR = "/work";
@@ -631,10 +634,21 @@ Deno.test("drain visibility - five deferrals spend neither budget", async () => 
   assertEquals(history.pendingAttempt, false);
   assertEquals(target.attemptCount, 0);
   assertEquals(target.disruptedCount, 0);
+
+  // The shared budget's own reader, over the same thread — not a fabricated
+  // empty list — so authorship is what is exercised here, not assumed away.
+  const attempts = readResolutionAttempts(
+    thread.bodiesFor("org/held", 1).map((c) => ({
+      ...c,
+      user: { login: FLEET },
+    })),
+    (login) => login === FLEET,
+  );
+  assertEquals(attempts.length, 0);
   assertEquals(
-    hasExhaustedConflictAttempts(history.count, DEFAULT_MAX_CONFLICT_ATTEMPTS),
+    hasExhaustedConflictAttempts(attempts, CONFLICT_RESOLUTION_BUDGET),
     false,
-    "both attempts must still be available after five deferrals",
+    "the whole shared budget must still be available after five deferrals",
   );
 });
 
