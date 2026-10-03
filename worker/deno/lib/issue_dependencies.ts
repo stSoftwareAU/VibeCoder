@@ -172,9 +172,11 @@ export function execMarkerOutsideCode(
   output: string,
   re: RegExp,
 ): RegExpExecArray | undefined {
-  const probe = new RegExp(re.source, re.flags).exec(maskCodeSpans(output));
+  const probe = re.exec(maskCodeSpans(output));
+  re.lastIndex = 0;
   if (!probe) return undefined;
-  const at = new RegExp(re.source, re.flags).exec(output.slice(probe.index));
+  const at = re.exec(output.slice(probe.index));
+  re.lastIndex = 0;
   if (!at || at.index !== 0) return undefined;
   return at;
 }
