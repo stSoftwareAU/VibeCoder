@@ -62,6 +62,7 @@ import {
 } from "../result_placeholder_gate.ts";
 import {
   buildRemovedAssertionGateComment,
+  MAX_DIFF_CHARS as REMOVED_ASSERTION_MAX_DIFF_CHARS,
   removedAssertionDiffArgs,
   validateRemovedAssertions,
 } from "../removed_assertion_gate.ts";
@@ -2095,21 +2096,40 @@ async function completionBody(
   // test files the branch touches, which no other gate needs — so it is
   // only read when the gate could possibly apply (an unknown changed-files
   // list fails closed and must apply regardless; a known list only applies
-  // when some changed file is a test file). A patch that cannot be read is
-  // not a silent pass: it is logged loudly and `testDiff` stays `null`, so
-  // `validateRemovedAssertions` still enforces the `## Test Plan` heading
-  // rule even though the per-assertion rule cannot run.
+  // when some changed file is a test file). When the changed-files list IS
+  // known, the diff is scoped to just those test files via a pathspec, so a
+  // large unrelated hunk (a lockfile, a fixture, generated data) elsewhere
+  // in the branch can never push a test file's own patch past the read cap.
+  // A patch that cannot be read — the git command failed, or the scoped
+  // patch still reached the cap — is not a silent pass: it is logged loudly
+  // and `testDiff` stays `null`, so `validateRemovedAssertions` still
+  // enforces the `## Test Plan` heading rule even though the per-assertion
+  // rule cannot run.
   // ---------------------------------------------------------------------
+  const removedAssertionTestFiles = changedFilesKnown
+    ? changedFiles.filter((file) => isTestFilePath(file))
+    : [];
   const removedAssertionGateCouldApply = !changedFilesKnown ||
-    changedFiles.some((file) => isTestFilePath(file));
+    removedAssertionTestFiles.length > 0;
   let testDiff: string | null = null;
   if (comparableBase.ok && removedAssertionGateCouldApply) {
     const testDiffResult = await deps.git.runGitCommand(
-      removedAssertionDiffArgs(comparableBase.value),
+      removedAssertionDiffArgs(
+        comparableBase.value,
+        removedAssertionTestFiles,
+      ),
       { cwd: state.repoPath },
     );
     if (testDiffResult.ok && testDiffResult.value.code === 0) {
-      testDiff = testDiffResult.value.stdout;
+      if (
+        testDiffResult.value.stdout.length >= REMOVED_ASSERTION_MAX_DIFF_CHARS
+      ) {
+        logger.warn(
+          "The test-file diff for the removed-assertion gate reached the read cap — treating it as unreadable rather than scanning a silently truncated patch",
+        );
+      } else {
+        testDiff = testDiffResult.value.stdout;
+      }
     } else {
       logger.warn(
         "Could not read the test-file diff for the removed-assertion gate — only the Test Plan heading rule applies",

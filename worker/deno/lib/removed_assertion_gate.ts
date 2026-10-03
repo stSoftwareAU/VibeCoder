@@ -31,8 +31,13 @@
 import { isTestFilePath } from "./security_fix_gate.ts";
 import { codeFenceFor, scrubUntrustedText } from "./prompt_delimiter.ts";
 
-/** Cap on the diff text scanned (defence in depth; untrusted input). */
-const MAX_DIFF_CHARS = 2_000_000;
+/**
+ * Cap on the diff text scanned (defence in depth; untrusted input). Exported
+ * so a caller that reads the patch itself (`completion_phase.ts`) can detect
+ * a patch at or past the cap and treat it as unreadable, rather than letting
+ * this module silently scan only the first `MAX_DIFF_CHARS` of it.
+ */
+export const MAX_DIFF_CHARS = 2_000_000;
 
 /** Cap on a single diff line scanned for an assertion match. */
 const MAX_LINE_CHARS = 4_000;
@@ -49,17 +54,37 @@ const MAX_DISPLAY_CHARS = 300;
 /** Cap on the PR summary text scanned for the Test Plan section. */
 const MAX_SUMMARY_SCAN_CHARS = 200_000;
 
-/** `git diff` args for the test-file patch this gate reads (single source of truth). */
-export function removedAssertionDiffArgs(base: string): string[] {
-  return [
+/**
+ * `git diff` args for the test-file patch this gate reads (single source of
+ * truth). `--diff-filter=AMRD` includes deletions: a deleted test file (or
+ * one renamed and rewritten below git's rename-similarity threshold, which
+ * git reports as a delete plus an add) must still surface its removed
+ * assertions, not just the heading rule.
+ *
+ * `testFiles`, when given and non-empty, scopes the diff to those paths via
+ * a `--` pathspec — the caller passes the changed-files list's test files so
+ * this never has to read the whole branch diff just to find the test-file
+ * hunks within it. The paths are attacker-controlled (the branch under
+ * review), so they are placed after a literal `--` and never shell-expanded
+ * (this runs through `runGitCommand`'s argv, not a shell).
+ */
+export function removedAssertionDiffArgs(
+  base: string,
+  testFiles?: readonly string[],
+): string[] {
+  const args = [
     "diff",
     "--no-color",
     "--no-ext-diff",
     "--unified=0",
     "--find-renames",
-    "--diff-filter=AMR",
+    "--diff-filter=AMRD",
     `${base}...HEAD`,
   ];
+  if (testFiles && testFiles.length > 0) {
+    args.push("--", ...testFiles);
+  }
+  return args;
 }
 
 /** A removed assertion statement found in an existing test file's diff. */
@@ -315,9 +340,19 @@ function extractAssertionsFromBlock(block: DiffBlock): RemovedAssertion[] {
 export function findRemovedAssertions(diffText: string): RemovedAssertion[] {
   const { removedBlocks, addedBlocks } = parseTestFileBlocks(diffText);
 
-  const addedCanonicals = addedBlocks.map((block) =>
-    canonicalise(block.lines.join(""))
-  );
+  // Moved assertions are matched by canonical *equality* against assertions
+  // actually re-extracted from the added blocks — never by substring
+  // containment against the whole added block's text. Containment let a
+  // comment prefix (`// assertEquals(a, b);`) or a loosened condition
+  // (`assert total == 5 or total == 6`) "contain" the removed assertion's
+  // canonical text, so a commented-out or loosened assertion was wrongly
+  // treated as moved rather than removed.
+  const addedCanonicals = new Set<string>();
+  for (const block of addedBlocks) {
+    for (const assertion of extractAssertionsFromBlock(block)) {
+      addedCanonicals.add(assertion.canonical);
+    }
+  }
 
   const candidates: RemovedAssertion[] = [];
   for (const block of removedBlocks) {
@@ -328,8 +363,7 @@ export function findRemovedAssertions(diffText: string): RemovedAssertion[] {
   const result: RemovedAssertion[] = [];
   for (const candidate of candidates) {
     if (
-      candidate.canonical !== "" &&
-      addedCanonicals.some((added) => added.includes(candidate.canonical))
+      candidate.canonical !== "" && addedCanonicals.has(candidate.canonical)
     ) {
       continue;
     }
@@ -480,9 +514,19 @@ function evaluateApplicable(
 
   if (testDiffKnown) {
     removed = findRemovedAssertions(testDiff!);
+    // Matched against both the unescaped-markdown canonical and the raw
+    // (un-unescaped) canonical of the Test Plan body. A removed assertion's
+    // canonical form keeps its own backslashes verbatim (it is code, not
+    // markdown), so `\.` inside a copied-verbatim regex or escaped string
+    // must still match once the markdown-escape pass turns the Test Plan's
+    // own `\.` into `.` — checking the raw body too is what lets the
+    // verbatim copy the prompt asks for actually match.
     const planCanonical = canonicaliseTestPlanBody(testPlan.body);
+    const planCanonicalRaw = canonicalise(testPlan.body);
     unaccounted = removed.filter(
-      (assertion) => !planCanonical.includes(assertion.canonical),
+      (assertion) =>
+        !planCanonical.includes(assertion.canonical) &&
+        !planCanonicalRaw.includes(assertion.canonical),
     );
     if (unaccounted.length > 0) {
       problems.push(

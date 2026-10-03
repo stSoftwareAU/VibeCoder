@@ -14,7 +14,40 @@ Deno.test("removedAssertionDiffArgs builds the expected git diff invocation", ()
     "--no-ext-diff",
     "--unified=0",
     "--find-renames",
-    "--diff-filter=AMR",
+    "--diff-filter=AMRD",
+    "main...HEAD",
+  ]);
+});
+
+Deno.test("removedAssertionDiffArgs includes deletions in the diff filter", () => {
+  assert(removedAssertionDiffArgs("main").includes("--diff-filter=AMRD"));
+});
+
+Deno.test("removedAssertionDiffArgs scopes the diff to the given test files with a pathspec", () => {
+  assertEquals(
+    removedAssertionDiffArgs("main", ["worker/deno/tests/foo_test.ts"]),
+    [
+      "diff",
+      "--no-color",
+      "--no-ext-diff",
+      "--unified=0",
+      "--find-renames",
+      "--diff-filter=AMRD",
+      "main...HEAD",
+      "--",
+      "worker/deno/tests/foo_test.ts",
+    ],
+  );
+});
+
+Deno.test("removedAssertionDiffArgs omits the pathspec when no test files are given", () => {
+  assertEquals(removedAssertionDiffArgs("main", []), [
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--unified=0",
+    "--find-renames",
+    "--diff-filter=AMRD",
     "main...HEAD",
   ]);
 });
@@ -175,6 +208,38 @@ Deno.test("validateRemovedAssertions accounts for a multi-line removed assertion
   assertEquals(result.unaccounted, []);
 });
 
+// --- Regex-escaped assertion named verbatim in the Test Plan (PR #3148
+// review: canonicaliseTestPlanBody undid markdown escapes like `\.` before
+// matching, but the removed assertion's own canonical keeps its backslashes
+// — a regex literal copied verbatim then failed to match) ------------------
+
+const REGEX_ESCAPE_DIFF = [
+  "diff --git a/worker/deno/tests/version_test.ts b/worker/deno/tests/version_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/version_test.ts",
+  "+++ b/worker/deno/tests/version_test.ts",
+  "@@ -5,1 +5,0 @@",
+  "-  assertMatch(version, /^v\\d+\\.\\d+$/);",
+  "",
+].join("\n");
+
+Deno.test("validateRemovedAssertions matches a regex-escaped assertion named verbatim in the Test Plan", () => {
+  const summary = [
+    "## Test Plan",
+    "",
+    "- Removed `assertMatch(version, /^v\\d+\\.\\d+$/);` — version format " +
+    "check no longer applies",
+    "",
+  ].join("\n");
+  const result = validateRemovedAssertions({
+    changedFiles: ["worker/deno/tests/version_test.ts"],
+    testDiff: REGEX_ESCAPE_DIFF,
+    prSummaryContent: summary,
+  });
+  assert(result.valid);
+  assertEquals(result.unaccounted, []);
+});
+
 // --- Moved / reformatted assertion ----------------------------------------
 
 const MOVED_REWRAPPED_DIFF = [
@@ -210,6 +275,95 @@ const MOVED_REINDENTED_DIFF = [
 Deno.test("findRemovedAssertions excludes an assertion that was only re-indented", () => {
   const removed = findRemovedAssertions(MOVED_REINDENTED_DIFF);
   assertEquals(removed, []);
+});
+
+// --- Commented-out / loosened assertions are removed, not moved (PR #3148
+// review: the old substring-containment "moved" check let a comment prefix
+// or a loosened condition "contain" the removed assertion's text) ----------
+
+const COMMENTED_OUT_TS_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -5,1 +5,1 @@",
+  "-  assertEquals(a, b);",
+  "+  // assertEquals(a, b);",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions reports a TS assertion that was only commented out", () => {
+  const removed = findRemovedAssertions(COMMENTED_OUT_TS_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.text, "assertEquals(a, b);");
+});
+
+const COMMENTED_OUT_RUST_DIFF = [
+  "diff --git a/crates/api/tests/decisions.rs b/crates/api/tests/decisions.rs",
+  "index 111..222 100644",
+  "--- a/crates/api/tests/decisions.rs",
+  "+++ b/crates/api/tests/decisions.rs",
+  "@@ -5,1 +5,1 @@",
+  "-    assert_eq!(a, b);",
+  "+    // assert_eq!(a, b);",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions reports a Rust assert_eq! that was only commented out", () => {
+  const removed = findRemovedAssertions(COMMENTED_OUT_RUST_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.text, "assert_eq!(a, b);");
+});
+
+const CONDITION_WRAPPED_DIFF = [
+  "diff --git a/worker/deno/tests/foo_test.ts b/worker/deno/tests/foo_test.ts",
+  "index 111..222 100644",
+  "--- a/worker/deno/tests/foo_test.ts",
+  "+++ b/worker/deno/tests/foo_test.ts",
+  "@@ -5,1 +5,1 @@",
+  "-  assertEquals(a, b);",
+  "+  if (false) assertEquals(a, b);",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions reports an assertion that was wrapped in an always-false condition", () => {
+  const removed = findRemovedAssertions(CONDITION_WRAPPED_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.text, "assertEquals(a, b);");
+});
+
+const LOOSENED_PYTHON_OR_DIFF = [
+  "diff --git a/tests/test_total.py b/tests/test_total.py",
+  "index 111..222 100644",
+  "--- a/tests/test_total.py",
+  "+++ b/tests/test_total.py",
+  "@@ -5,1 +5,1 @@",
+  "-assert total == 5",
+  "+assert total == 5 or total == 6",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions reports a Python assertion loosened with 'or'", () => {
+  const removed = findRemovedAssertions(LOOSENED_PYTHON_OR_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.text, "assert total == 5");
+});
+
+const LOOSENED_PYTHON_DIGIT_DIFF = [
+  "diff --git a/tests/test_total.py b/tests/test_total.py",
+  "index 111..222 100644",
+  "--- a/tests/test_total.py",
+  "+++ b/tests/test_total.py",
+  "@@ -5,1 +5,1 @@",
+  "-assert total == 5",
+  "+assert total == 50",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions reports a Python assertion loosened to a number that extends the old one", () => {
+  const removed = findRemovedAssertions(LOOSENED_PYTHON_DIGIT_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.text, "assert total == 5");
 });
 
 // --- Non-test files and non-assertion lines --------------------------------
@@ -284,6 +438,59 @@ Deno.test("findRemovedAssertions treats a removed `-- comment` line inside a hun
   assertEquals(removed[0]!.file, "worker/deno/tests/foo_test.sql.test.ts");
   assertEquals(removed[0]!.text, "assertEquals(total, 5);");
 });
+
+// --- Deleted / rewritten-rename test files still surface removed assertions
+// (PR #3148 review: `--diff-filter=AMR` dropped deletions entirely, so a
+// deleted test file's assertions — and the delete half of a rename
+// rewritten below git's rename-similarity threshold — were invisible) -----
+
+const DELETED_TEST_FILE_DIFF = [
+  "diff --git a/tests/gone_test.rs b/tests/gone_test.rs",
+  "deleted file mode 100644",
+  "index abc123..000000",
+  "--- a/tests/gone_test.rs",
+  "+++ /dev/null",
+  "@@ -1,2 +0,0 @@",
+  "-fn test_thing() {",
+  "-    assert_eq!(1, 1);",
+  "-}",
+  "",
+].join("\n");
+
+Deno.test("findRemovedAssertions reports an assertion from a wholly deleted test file", () => {
+  const removed = findRemovedAssertions(DELETED_TEST_FILE_DIFF);
+  assertEquals(removed.length, 1);
+  assertEquals(removed[0]!.file, "tests/gone_test.rs");
+  assertEquals(removed[0]!.text, "assert_eq!(1, 1);");
+});
+
+const RENAME_BELOW_SIMILARITY_DIFF = [
+  "diff --git a/tests/old_test.rs b/tests/old_test.rs",
+  "deleted file mode 100644",
+  "index abc123..000000",
+  "--- a/tests/old_test.rs",
+  "+++ /dev/null",
+  "@@ -1,1 +0,0 @@",
+  "-    assert_eq!(2, 2);",
+  "diff --git a/tests/new_test.rs b/tests/new_test.rs",
+  "new file mode 100644",
+  "index 000000..def456",
+  "--- /dev/null",
+  "+++ b/tests/new_test.rs",
+  "@@ -0,0 +1,1 @@",
+  "+    assert_eq!(3, 3);",
+  "",
+].join("\n");
+
+Deno.test(
+  "findRemovedAssertions reports the removed assertion when a rename rewritten below the similarity threshold is reported as delete+add",
+  () => {
+    const removed = findRemovedAssertions(RENAME_BELOW_SIMILARITY_DIFF);
+    assertEquals(removed.length, 1);
+    assertEquals(removed[0]!.file, "tests/old_test.rs");
+    assertEquals(removed[0]!.text, "assert_eq!(2, 2);");
+  },
+);
 
 // --- findTestPlanSection ----------------------------------------------------
 

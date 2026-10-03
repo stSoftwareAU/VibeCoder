@@ -14,13 +14,14 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { MAX_DIFF_CHARS } from "../lib/removed_assertion_gate.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334456";
 const REPO = "stSoftwareAU/VibeCoder";
@@ -140,6 +141,9 @@ interface Outcome {
   claudeCalls: number;
   prCreateCalls: number;
   comments: string[];
+  warnings: string[];
+  /** argv of the `git diff` call the gate used to read the test-file patch. */
+  testDiffArgs?: string[];
 }
 
 /** Drive the live completion phase over a (possibly) blocked removed-assertion gate. */
@@ -154,8 +158,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   await Deno.writeTextFile(summaryPath, scenario.summary);
 
   const comments: string[] = [];
+  const warnings: string[] = [];
   let prCreateCalls = 0;
   let claudeCalls = 0;
+  let testDiffArgs: string[] | undefined;
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -183,6 +189,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   };
 
   const deps = createMockDeps({
+    logger: {
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+    },
     github: {
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
@@ -205,8 +216,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (
           cmdArgs[0] === "diff" && cmdArgs.includes("--unified=0") &&
-          cmdArgs.includes("--diff-filter=AMR")
+          cmdArgs.includes("--diff-filter=AMRD")
         ) {
+          testDiffArgs = cmdArgs;
           if (scenario.testDiffFails) {
             return Promise.resolve({
               ok: true as const,
@@ -276,6 +288,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     claudeCalls,
     prCreateCalls,
     comments,
+    warnings,
+    testDiffArgs,
   };
 }
 
@@ -414,6 +428,63 @@ Deno.test(
     assertStringIncludes(
       outcome.comments[0]!,
       "Removed test assertions not accounted for",
+    );
+  },
+);
+
+// --- (h) Diff scoped to just the changed test files (PR #3148 review) ------
+
+/** SUMMARY_WITH_ASSERTION plus a Docs sweep line, so a changed non-test
+ * source file (`crates/api/src/lib.rs`) does not also trip that gate. */
+const SUMMARY_WITH_ASSERTION_AND_DOCS_SWEEP = SUMMARY_WITH_ASSERTION +
+  "\n**Docs sweep** — grep: `score`; section: none — internal scoring " +
+  "logic isn't documented; no hits\n";
+
+Deno.test(
+  "completion - the removed-assertion diff is scoped to just the changed test files",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_ASSERTION_AND_DOCS_SWEEP,
+      changedFiles: "crates/api/src/lib.rs\ncrates/api/tests/decisions.rs",
+      testDiff: SCORE_DIFF,
+    });
+
+    assertEquals(outcome.status, "continue");
+    const args = outcome.testDiffArgs ?? [];
+    const pathspecIndex = args.indexOf("--");
+    assert(pathspecIndex !== -1, "pathspec separator must be present");
+    assertEquals(args.slice(pathspecIndex + 1), [
+      "crates/api/tests/decisions.rs",
+    ]);
+    assert(
+      !args.includes("crates/api/src/lib.rs"),
+      "the non-test file must not be part of the pathspec",
+    );
+  },
+);
+
+// --- (i) Patch at the read cap is unreadable, never silently truncated -----
+// (PR #3148 review: a large unrelated hunk pushing a test file's own patch
+// past MAX_DIFF_CHARS used to pass with testDiffKnown=true and removed:0.)
+
+Deno.test(
+  "completion - a test-file diff at the read cap is treated as unreadable rather than silently truncated",
+  async () => {
+    const hugeDiff = "x".repeat(MAX_DIFF_CHARS) + "\n" + SCORE_DIFF;
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_ASSERTION,
+      changedFiles: "crates/api/tests/decisions.rs",
+      testDiff: hugeDiff,
+    });
+
+    // Treated as unreadable: only the Test Plan heading rule applies, and
+    // SUMMARY_WITHOUT_ASSERTION already carries that heading, so the run
+    // proceeds rather than silently passing with a false removed:0.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assert(
+      outcome.warnings.some((w) => w.includes("read cap")),
+      "a warning must be logged when the patch is treated as unreadable",
     );
   },
 );
