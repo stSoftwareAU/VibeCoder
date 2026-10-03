@@ -130,6 +130,36 @@ Deno.test("findOpenMilestoneFixPr - finds a matching open fix PR", async () => {
   assert(calls.some((a) => a[1] === "list"));
 });
 
+Deno.test("findOpenMilestoneFixPr - a takeover discriminator ignores a CI fix PR (Issue #2965)", async () => {
+  const prefix = milestoneFixPrefixFor(MILESTONE, 42);
+  const { gh } = fakeGh({
+    list: () =>
+      JSON.stringify([
+        {
+          number: 901,
+          url: "https://x/pr/901",
+          headRefName: `${prefix}ci-abc`,
+        },
+        {
+          number: 902,
+          url: "https://x/pr/902",
+          headRefName: `${prefix}takeover-abc`,
+        },
+      ]),
+  });
+  const anyFix = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, { gh });
+  const takeover = await findOpenMilestoneFixPr(
+    REPO,
+    MILESTONE,
+    42,
+    { gh },
+    "takeover-",
+  );
+  assert(anyFix.ok && takeover.ok);
+  assertEquals(anyFix.value?.number, 901);
+  assertEquals(takeover.value?.number, 902);
+});
+
 Deno.test("findOpenMilestoneFixPr - returns null when nothing matches", async () => {
   const { gh } = fakeGh({ list: () => "[]" });
   const result = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, { gh });
