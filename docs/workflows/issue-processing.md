@@ -1360,7 +1360,7 @@ raised, so whichever gate blocks first fails the run and the guard never
 runs. On an existing-PR branch the guard instead runs from inside
 `reportSummaryRuleBlock` itself (Issue #3092), after whichever gate's own
 comment is posted but before that gate's recovery finalises the PR. Before
-#3092 only the docs-sweep gate took the guard on an existing-PR branch,
+Issue #3092 only the docs-sweep gate took the guard on an existing-PR branch,
 because that gate ran after the guard; the closure, independent-review and
 reproduction-status gates ran ahead of the guard and skipped it. Once all
 four gates pass, `completionBody` runs the same guard once more — via the
