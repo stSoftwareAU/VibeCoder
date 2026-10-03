@@ -186,6 +186,19 @@ export interface DeclaredOutcomeHandoff {
    * straight through to completion (Issue #3088).
    */
   declared: boolean;
+  /**
+   * True when the blocked match was excluded because the dependency was
+   * filed by this fleet during the current run (Issue #3146). Only set
+   * alongside `blocked` on the no-changes trigger — the committed path
+   * clears `blocked` instead (via its own `blockedNotOpen` exclusion) and
+   * already hands off through `declared`. The no-changes caller must hand
+   * off on this detection directly rather than falling through to its
+   * described-code-change retry or short-output failure: both return a
+   * `failure` with no `needs-human`, and on the very next run the same
+   * follow-up falls outside the run-scoped self-filed window, so the issue
+   * defers onto a follow-up nothing picks up (Issue #3146 review).
+   */
+  selfFiledDependency?: boolean;
 }
 
 /**
@@ -599,5 +612,5 @@ export async function handOffDeclaredOutcome(
   const declared = blocked !== undefined || planningRequest !== undefined ||
     timeDeferral?.kind === "invalid" || planningMarker || blockedNotOpen;
 
-  return { blocked, declared };
+  return { blocked, declared, selfFiledDependency };
 }

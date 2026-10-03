@@ -619,6 +619,57 @@ Depends on ${DEP}
   },
 );
 
+// Issue #3146 (review of PR #3159): a self-filed blocked run whose output
+// also names a file to change must still hand off on this run, not retry
+// through `detectDescribedCodeChange`'s normal failed-once → failed ladder
+// — a retry drops the self-filed signal, since the next run's `createdAt`
+// no longer satisfies `runStartTime`, and the issue defers onto a
+// follow-up nothing picks up.
+Deno.test(
+  "handle_no_changes_phase - a self-filed dependency hands off even when the " +
+    "output also describes a code change (Issue #3146)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(calls, "Original body.", [], {
+            author: "testbot",
+            createdAt: "2026-10-03T10:05:00Z",
+            state: "OPEN",
+          }),
+      },
+    });
+    const output = `## Blocked: needs a product decision
+
+This needs a human product decision before any fix can land. Once that is
+decided, update \`src/validate.rs\` to apply the new rule.
+
+Depends on ${DEP}
+`;
+    const state = makeState(output);
+    state.runStartTime = Date.parse("2026-10-03T10:00:00Z");
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext(),
+      state,
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
+    assert(calls.addLabel.includes("needs-human"));
+    assertEquals(calls.closeIssue, 0);
+    assert(
+      !calls.editIssue.some((e) => (e.body ?? "").includes("Depends on")),
+      "a self-filed dependency must not be recorded as a real deferral",
+    );
+  },
+);
+
 Deno.test("hasPriorDeferral matches only the same dependency", () => {
   const comments = `Some chatter\n\n${buildDeferralMarker(DEP)}\n`;
   assert(hasPriorDeferral(comments, DEP));

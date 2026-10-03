@@ -2758,8 +2758,11 @@ does not defer either, on either path: the worker reads that from the
 issue, when its author is this host's login or another fleet author and
 its `createdAt` is at or after the whole run started. A later execute
 attempt does not move that start. A committed run hands off to a human and
-raises no PR; a no-changes run falls through to the analysis-only hand-off
-instead (Issue #3146). Wording such as "out of scope" does not turn an
+raises no PR; a no-changes run hands off the same way, straight to the
+analysis-only hand-off — bypassing the described-code-change retry and the
+short-output failure below it, both of which would otherwise return a
+`failure` with no `needs-human` and leave the next run to defer onto a
+follow-up nothing picks up (Issue #3146). Wording such as "out of scope" does not turn an
 older open dependency into that case. A bullet, or a heading with no
 `Depends on` / `Blocked by` line, still continues and raises its PR. A time
 deferral or a planning marker is still honoured after a commit, so the worker
