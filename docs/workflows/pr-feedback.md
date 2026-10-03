@@ -186,7 +186,10 @@ other exit is the existing escape hatch above: a filed follow-up issue named in
 `.pr_response_message`. When a finding is fixed, the PR summary text that
 recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
-rule).
+rule). After a verified push to the PR's own head, when that push changed
+`pr-summary-<N>.md`, the worker rebuilds the description from the summary.
+Fix branches are skipped, and only a worker-authored PR is edited. A failed
+sync is logged once at warning and does not fail the run (Issue #3089).
 
 Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 <branch>`, and confirms `origin/<branch>` contains every cited fix commit
@@ -197,7 +200,7 @@ have. This complements the worker's own final-mile push verification described
 in **The final mile** below, which re-checks the push at the git level after
 the agent runs.
 
-#### Fix the defect everywhere it lives (Issue #3086)
+#### Fix the defect everywhere it lives (Issues #3086, #3114)
 
 A finding's file, line, repro and suggested fix are one example of a defect,
 not its full extent. The pr_feedback prompt tells the agent to fix the
@@ -214,6 +217,35 @@ creep. Where a finding gave a repro, the agent also tries its obvious
 variants and adds a test for each path that differs, and
 `.pr_response_message` names, per finding, the other paths and copies it
 checked.
+
+Issue #3114 widened the rule from paths and copies to the whole defect
+class. A finding's locations are examples, not the list: before
+committing, the agent states the defect as a class — the false claim, the
+missing guard or rule, the uncovered order of a race, the stale clock —
+and finds every instance of it in the head. That covers every caller or
+builder of the same shape, test names as well as code comments and docs,
+each order of the parties to a race and every window between their
+steps, and every later iteration of a loop that reads a time budget.
+Each instance is fixed or rebutted with the reason, and
+`.pr_response_message` says what was searched and which other instances
+were fixed. Re-reviews had kept raising findings as "only partly fixed"
+because the fix stopped at the named locations (VibeCoder#3066, #3068, #3065,
+GRQ-AutoTrader#2210, #2220); another instance of the class left in the
+head is now a blocking self-review finding.
+
+#### Recount the Test Plan after a review fix (Issue #3117)
+
+A review fix that adds, removes or renames a test changes the archived PR
+summary's Test Plan, even when nothing else in the summary moves. The
+pr_feedback prompt's "keep the PR summary true to the head" rule tells the
+agent to recount from the head: the list of tests, every per-file test count
+and every quoted total ("N tests", "N passed", "N pinned phrases"),
+re-running the commands the summary cites on the final head so the figures
+are that run's. A number is never carried over from the earlier iteration.
+Review-fix heads had edited the summary in the same push yet left a stale
+count or test list (VibeCoder#3075, #3105, #3108). The PR-body sync
+(Issue #3089) copies such a count faithfully, so the recount has to land
+in the summary file itself.
 
 #### Verify a claim about another component before rewriting it (Issue #3090)
 

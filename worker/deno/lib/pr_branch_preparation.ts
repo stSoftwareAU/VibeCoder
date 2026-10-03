@@ -20,6 +20,10 @@ import { redactSecrets } from "./secret_redaction.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { PR_RESPONSE_MESSAGE_FILE } from "./worker_state_paths.ts";
 import {
+  findResultPlaceholders,
+  replaceResultPlaceholders,
+} from "./result_placeholder_gate.ts";
+import {
   assertSafeGitRef,
   buildCheckoutArgs,
   buildFetchArgs,
@@ -212,10 +216,25 @@ export function prResponseMessagePath(workDir: string): string {
  * consumers read through, and the defusal is logged rather than swallowed.
  * The worker's own marker is appended afterwards and still parses normally.
  *
+ * Result-placeholder backstop (Issue #3124): a fill-in-later token such as
+ * `QUALITY_RESULT_PLACEHOLDER`, left where a command's actual result
+ * belongs, reads as "the gate was run" to a reader who does not know the
+ * fleet's internal vocabulary — when nothing was actually reported.
+ * `pr_feedback_processor.ts` gets one in-run recovery turn to fix this
+ * before the message is ever read back here; this is the fail-loud
+ * backstop for every one of the four reply consumers (PR feedback, CI fix,
+ * merge-conflict agent, milestone conflict ladder) that read through this
+ * one chokepoint. Any bare (outside-code) placeholder token still present
+ * after redaction/neutralisation is replaced with the visible text
+ * `[result not reported]` so the public reply states plainly that the
+ * result was not reported, rather than carrying the token forward, and the
+ * substitution is logged loudly at error level naming the token(s).
+ *
  * @param workDir - Working directory where Claude runs.
- * @param logger - Optional logger, so a defused marker is reported loudly.
- * @returns Trimmed, secret-redacted, marker-inert file contents, or
- *          `undefined` if the file is missing or empty.
+ * @param logger - Optional logger, so a defused marker — or an unreported
+ *   result placeholder — is reported loudly.
+ * @returns Trimmed, secret-redacted, marker-inert, placeholder-free file
+ *          contents, or `undefined` if the file is missing or empty.
  */
 export async function readPrResponseMessage(
   workDir: string | undefined,
@@ -244,6 +263,22 @@ export async function readPrResponseMessage(
           `fleet marker (names seen: ${
             neutralised.names.join(", ") || "none"
           })`,
+      );
+    }
+    // Fail-loud backstop (Issue #3124): a bare result-placeholder token must
+    // never reach a public PR comment as if it were a reported outcome.
+    const placeholders = findResultPlaceholders(neutralised.text);
+    if (placeholders.length > 0) {
+      logger?.error(
+        `Unresolved result-placeholder token(s) in ${PR_RESPONSE_MESSAGE_FILE} ` +
+          `(Issue #3124) — replacing with "[result not reported]" rather ` +
+          `than posting the token(s) as if they were a reported result: ${
+            placeholders.join(", ")
+          }`,
+      );
+      return replaceResultPlaceholders(
+        neutralised.text,
+        "[result not reported]",
       );
     }
     return neutralised.text;

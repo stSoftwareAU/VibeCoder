@@ -39,6 +39,10 @@ function conflict(
     milestoneSha: "68e2065a403efc022cfde9a8574d71f18ed2e6a4",
     defaultSha: "7e75ebb286a816729bd7ab750166bf8e0179f0af",
     resolution,
+    // The stub's `api repos/...` branch always answers "abc1234 subject"
+    // (Issue #2998) — this is the same sha, so `confirmSyncLanding` reads
+    // the merge as landed on the milestone tip rather than unconfirmed.
+    mergeSha: "abc1234",
   };
 }
 
@@ -105,7 +109,7 @@ function ghStub(thread: Thread) {
 
 Deno.test("escalateSyncConflict - a resolved conflict on a closed planning issue posts the notice there without reopening, labelling, or 'needs a human' (Issue #2214)", async () => {
   const stub = ghStub({ state: "CLOSED", labels: [], comments: [] });
-  const posted = await escalateSyncConflict(
+  const report = await escalateSyncConflict(
     REPO,
     MILESTONE,
     conflict("auto"),
@@ -114,7 +118,7 @@ Deno.test("escalateSyncConflict - a resolved conflict on a closed planning issue
     DEDUP_AUTHORS,
   );
 
-  assertEquals(posted, true);
+  assertEquals(report.posted, true);
   assertEquals(stub.reopens(), [], "the closed planning issue stays closed");
   assertEquals(stub.added(), [], "no label on a success");
   const body = stub.body();
@@ -143,7 +147,7 @@ Deno.test("escalateSyncConflict - a resolved conflict clears the needs-human an 
       },
     ],
   });
-  const posted = await escalateSyncConflict(
+  const report = await escalateSyncConflict(
     REPO,
     MILESTONE,
     conflict("auto"),
@@ -152,7 +156,7 @@ Deno.test("escalateSyncConflict - a resolved conflict clears the needs-human an 
     DEDUP_AUTHORS,
   );
 
-  assertEquals(posted, true);
+  assertEquals(report.posted, true);
   assertEquals(stub.removed(), ["needs-human"]);
   assertStringIncludes(stub.body(), "is cleared: the branch has synced");
   assertEquals(stub.added(), []);
@@ -183,7 +187,7 @@ Deno.test("escalateSyncConflict - a needs-human that no sync escalation put ther
 
 Deno.test("escalateSyncConflict - a resolution nobody chose posts its record on the closed parent without reopening or labelling it either (Issue #2226)", async () => {
   const stub = ghStub({ state: "CLOSED", labels: [], comments: [] });
-  const posted = await escalateSyncConflict(
+  const report = await escalateSyncConflict(
     REPO,
     MILESTONE,
     conflict("theirs"),
@@ -192,7 +196,7 @@ Deno.test("escalateSyncConflict - a resolution nobody chose posts its record on 
     DEDUP_AUTHORS,
   );
 
-  assertEquals(posted, true);
+  assertEquals(report.posted, true);
   assertEquals(stub.reopens(), [], "the ladder acts on it, not a person");
   assertEquals(stub.added(), []);
   const body = stub.body();
