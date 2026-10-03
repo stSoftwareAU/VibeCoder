@@ -46,6 +46,8 @@ Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - \`worker/deno/tests/completion_phase_docs_sweep_test.ts\`

@@ -983,8 +983,10 @@ The file MUST contain:
    a result. If a gate was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or
-   under Evidence must exist at the head — in the diff or already tracked;
-   check each path with `git ls-files <path>` before raising the PR. A
+   under Evidence must exist at the head — in the diff or already tracked —
+   named relative to the repository root, not to the directory a test
+   command runs from; check each path with `git ls-files <path>` from the
+   repository root before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
    test that does not exist. For every existing test the diff edits, list each
@@ -1010,7 +1012,15 @@ The file MUST contain:
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. Likewise, a path the diff adds to an outcome
+   blocking self-review finding. The Test Plan carries this enumeration as a
+   `Branch outcomes:` list — one line per outcome naming `path:line`, the
+   outcome, the test that reaches it, and that flipping it went red — or
+   `Branch outcomes: none added` when the diff adds no branch. When the diff
+   changes non-test, non-doc files, the worker blocks PR creation without
+   that line: it asks for it once more if this is the run's first summary
+   block, or records the shortfall against a PR the run already raised. A
+   named test that does not exist at the head is the same blocking finding as
+   above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct
    call that finalises a PR, publishes state, charges an attempt or ends a
    claim — keeps that path's guards (see **A new path to an existing outcome
@@ -1100,4 +1110,8 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Test Plan
 
 - Added tests for button alignment in `tests/button.test.js`
+
+**Branch outcomes:**
+
+- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `tests/button.test.js::keeps the buttons in one row` — flipping `flex-wrap: nowrap` back to `wrap` turned it red
 ```

@@ -32,6 +32,8 @@ Fixed the leap-year branch. Closes #521.
 
 **Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - Added \`worker/deno/tests/date_parser_test.ts::parses a leap day\`
@@ -50,6 +52,8 @@ Fixed the leap-year branch. Closes #521.
 
 **Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - Added \`worker/deno/tests/date_parser_test.ts::parses a leap day\`
@@ -67,6 +71,8 @@ Fixed the leap-year branch. Closes #521.
 - **regression test** — \`worker/deno/tests/date_parser_test.ts::parses a leap day\`
 
 **Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits
+
+**Branch outcomes:** none added
 
 ## Test Plan
 

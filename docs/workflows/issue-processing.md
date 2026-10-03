@@ -1173,6 +1173,9 @@ require each outcome of a branch the diff adds — condition, match arm, exit
 code, interface default — to have a named test that reaches it, checked by
 flipping the outcome on purpose and seeing the suite go red; a test double
 that overrides the default or always returns the same code does not count.
+The worker now checks this at completion time rather than trusting the
+prompt alone — see
+[A branch outcome with no recorded test blocks the summary](#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147).
 
 **Every changed call site needs a test that goes red without it (Issue #3067).**
 A test of a shared helper, or of some of its callers, does not cover the
@@ -1318,7 +1321,9 @@ computed once, early, so it stands beside — not strictly after — the
 reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
 folded into that gate's own notice (Issue #3085 review), and only a summary
-that passes all three reaches this gate's own, standalone block.
+that passes all three reaches the late summary gates' own block, which reports
+every one of docs sweep, the placeholder-token gate and the branch-outcomes
+gate that fails, at once (Issue #3147).
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
@@ -1343,6 +1348,48 @@ flagged. Like the docs-sweep gate it is folded into the earlier summary
 gates' own notice when one of those blocks first, and it gets the same
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
 turn — a second block fails the run.
+
+## 🌳 A branch outcome with no recorded test blocks the summary (Issue #3147)
+
+Fleet PRs kept shipping a new branch no test reached, and review-fix runs
+closed out an untested-branch finding by adding the test it named while
+their own rework opened new untested branches of its own (GRQ-AutoTrader#2368),
+or named a test that did not exist (VibeCoder#3132). The enumeration the
+guidelines already required — Issue #3069, above — stayed prose: nothing
+checked that the PR summary actually carried it, or that a named test was
+real.
+
+**The gate.**
+[`branch_outcomes_gate.ts`](../../worker/deno/lib/branch_outcomes_gate.ts)
+runs as a summary-rule gate in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+with the same applicability test as the docs-sweep gate: whenever
+`git diff --name-only <base>...HEAD` carries any file that is neither a test
+(`isTestFilePath`) nor documentation (`.md`, `.mdx`, `.markdown`, `.rst`,
+`.adoc`, `.txt`, or a `docs/` path segment) — and also when the diff cannot
+be read, fail closed. It blocks a summary with no `Branch outcomes:` list
+(a `Branch outcomes:` line, bold or plain, or a `Branch outcomes` heading,
+followed by one list item per outcome naming `path:line`, the outcome, the
+test that reaches it, and that flipping it went red), an empty one, a bare
+placeholder (`tbd`, `n/a`, …), or one that names a test-file path not
+tracked at HEAD — checked with `git ls-tree` on HEAD, run from the
+repository root, so a named path must itself be relative to the repository
+root (`worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`) even though
+the test command runs from `worker/deno` (Issue #3160); a failed lookup also
+blocks, fail closed. A test identifier with no test-file path (for example a
+Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
+none added` is accepted when the diff adds no branch.
+
+It is a summary-rule gate like docs sweep and the placeholder-token gate: its
+verdict is folded into an earlier summary gate's own notice when that one
+blocks first, it shares the single
+[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn, and
+a second block fails the run — a branch that already carries a PR finalises
+as `summary_incomplete` through `reportSummaryRuleBlock`. The gate runs in
+the issue-run completion phase only; a pr_feedback run instead re-enumerates
+every branch its own fix commits add and refreshes the committed summary's
+`Branch outcomes:` list to the head, rather than leaving the first round's
+entries standing (`prompts/pr_feedback/prompt.md`).
 
 ## 🔧 Changed workflow files are checked before the PR
 
@@ -1396,7 +1443,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the five summary gates above, a finding
+Like the security-fix gate and unlike the six summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1434,9 +1481,9 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the five summary-rule gates — closure,
-independent review, reproduction status, docs sweep and the placeholder-token
-gate — still pre-empts the
+with **no** PR yet, each of the six summary-rule gates — closure,
+independent review, reproduction status, docs sweep, the placeholder-token
+gate and the branch-outcomes gate — still pre-empts the
 guard: a follow-up filed there would promise "that run's PR still
 completes #N on merge" for a PR any of those gates can still prevent from ever being
 raised, so whichever gate blocks first fails the run and the guard never
@@ -1446,7 +1493,7 @@ comment is posted but before that gate's recovery finalises the PR. Before
 Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
 because that gate ran after the guard; the closure, independent-review and
 reproduction-status gates ran ahead of the guard and skipped it. Once all
-five gates pass, `completionBody` runs the same guard once more — via the
+six gates pass, `completionBody` runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
 
@@ -1526,8 +1573,9 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The five summary gates above — acceptance-criteria closure, independent review,
-reproduction status, docs sweep and the placeholder-token gate — sit at the completion phase's PR-creation chokepoint, so
+The six summary gates above — acceptance-criteria closure, independent review,
+reproduction status, docs sweep, the placeholder-token gate and the
+branch-outcomes gate — sit at the completion phase's PR-creation chokepoint, so
 blocking one normally costs the next attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
@@ -1622,7 +1670,7 @@ closes a `security`-labelled finding without its vulnerability-fix evidence stop
 the run, PR or no PR: that one is not a documentation shortfall. Order is what
 enforces it — a `security` run whose summary also broke a format rule would
 otherwise leave through the first summary gate and never be asked for its
-evidence, so the security gate is now evaluated ahead of all five.
+evidence, so the security gate is now evaluated ahead of all six.
 
 **Satisfy the rule rather than fail it.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
@@ -1700,10 +1748,11 @@ shortfall rather than the number of attempts at it. A recovery invocation the
 worker could not launch at all — a rate limit, a failed spawn — changed nothing
 on the branch, so the original block stands unaltered.
 
-All five summary gates route through it: closure (#518), independent review
-(#663), reproduction status (#521), docs sweep (#3073) and the placeholder-token
-gate (#3124). The two exceptions above do not — the
-security-fix and changed-workflow gates report defects in the change, not
+All six summary gates route through it: closure (#518), independent review
+(#663), reproduction status (#521), docs sweep (#3073), the placeholder-token
+gate (#3124) and the branch-outcomes gate (#3147). The two exceptions above
+do not — the security-fix and changed-workflow gates report defects in the
+change, not
 documentation shortfalls, so they still stop the run.
 
 **Implementation.**

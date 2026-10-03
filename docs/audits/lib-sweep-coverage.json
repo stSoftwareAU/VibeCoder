@@ -2536,6 +2536,18 @@
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
       ]
+    },
+    {
+      "issue": 3147,
+      "chunk": "top-up-3147",
+      "title": "top-up: the branch-outcomes summary gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3147",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: branch_outcomes_gate.ts (#3147)",
+      "status": "claimed",
+      "sweptAt": "0310f44ea7c6b41f00b90574e315afa40361b844",
+      "paths": [
+        "worker/deno/lib/branch_outcomes_gate.ts"
+      ]
     }
   ],
   "roots": [

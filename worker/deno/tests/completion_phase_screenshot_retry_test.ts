@@ -54,7 +54,7 @@ async function makeRepo(issueNumber: number): Promise<string> {
   await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
   await Deno.writeTextFile(
     `${root}/docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
-    `## Summary\nA UI change with no screenshot reference.\n\n**Docs sweep** — grep: \`index.html\`; section: \`docs/EXTENDING.md#ui\`; no hits\n`,
+    `## Summary\nA UI change with no screenshot reference.\n\n**Docs sweep** — grep: \`index.html\`; section: \`docs/EXTENDING.md#ui\`; no hits\n\n**Branch outcomes:** none added\n`,
   );
   return root;
 }
