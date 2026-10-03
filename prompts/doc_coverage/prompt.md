@@ -128,11 +128,10 @@ instruction.
    guard on the Phase 4 label block is the one sanctioned shell
    construct in this template — it runs no repo logic, only swallows a
    duplicate-label error.
-   The only `gh` calls you may make are `gh issue list` (for dedup
-   lookups), `gh label create` (defensively, before filing),
-   `gh issue create` (to file findings), and `gh issue edit` (Phase 4
-   only, and only to correct an issue you just filed — see the
-   verification step at the end of Phase 4).
+   The only `gh` calls you may make are `gh label create` (defensively,
+   before filing), `gh issue create` (to file findings), and
+   `gh issue edit` (Phase 4 only, and only to correct an issue you just
+   filed — see the verification step at the end of Phase 4).
 3. **Must prefer reading more code over guessing.** When a finding's
    applicability depends on context you have not yet read, open the
    file. If you cannot resolve the question by reading more, drop the
@@ -525,11 +524,14 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 1. **Re-check the dedup lists** declared in the **Inputs** section.
    Skip the finding silently if its stable id appears in either the
    suppressed list or the known-open list.
-2. **Re-check the live open-issue list.** Before filing, call
-   `gh issue list --state open --label doc-coverage --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip any finding whose id
-   already has an open issue.
+2. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 3. **File the issue.** Call `gh issue create` (no `--repo` argument)
    with these labels:
    - `doc-coverage` (always)

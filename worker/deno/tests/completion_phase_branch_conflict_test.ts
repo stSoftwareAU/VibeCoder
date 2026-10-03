@@ -224,7 +224,7 @@ Deno.test(
     });
     await Deno.writeTextFile(
       `${repoPath}/docs/archive/pr-summaries/pr-summary-2459.md`,
-      "## Summary\n\nBranch conflict resolution. Closes #2459.\n",
+      "## Summary\n\nBranch conflict resolution. Closes #2459.\n\n**Docs sweep** — grep: `rebase`; section: `docs/EXTENDING.md#merge-conflicts`; no hits\n",
     );
 
     try {
@@ -273,7 +273,7 @@ Deno.test(
     });
     await Deno.writeTextFile(
       `${repoPath}/docs/archive/pr-summaries/pr-summary-2459.md`,
-      "## Summary\n\nBranch conflict resolution. Closes #2459.\n",
+      "## Summary\n\nBranch conflict resolution. Closes #2459.\n\n**Docs sweep** — grep: `rebase`; section: `docs/EXTENDING.md#merge-conflicts`; no hits\n",
     );
 
     try {
