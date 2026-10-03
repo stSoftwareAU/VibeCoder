@@ -1162,6 +1162,23 @@ contains the forbidden thing and a run with the guard broken on purpose that
 goes red; a negative test that stays green without its guard is a blocking
 self-review finding.
 
+**A refusal test must be refused by the rule it names (Issue #3162).** A
+test that only checks *that* an input was refused passes on a refusal from
+any rule. Fleet PRs were sent back for exactly that: GRQ-AutoTrader#2386's
+schema/loader agreement test probed fields both sides refused for a
+missing companion field, so nothing was compared, and its review-fix push
+left an off-step probe refused by a cross-field rule, hiding a real
+`multipleOf` drift; GRQ-AutoTrader#2393 added a retired-field check that
+now refuses an untouched test's input at the write boundary before it
+reaches the `EquityRequired` rule the test is named for; and in
+VibeCoder#3079 a fake that threw led to the `false` the test expected. The
+guidelines, the issue prompt's Test Plan step and the pr_feedback prompt
+now require asserting the specific error variant or rule, an input that
+satisfies every other rule (the same input with only the probed value made
+legal is accepted, by both sides for a comparison test), and a re-run of
+the existing later-refusal tests whenever a change adds an earlier
+refusal.
+
 **Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
 also sent back for a new branch with one outcome no test reached: a
 stale-remote guard whose stubs all returned `ls-remote` exit 0, so
