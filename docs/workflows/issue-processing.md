@@ -1451,6 +1451,16 @@ flowchart TD
   survives the merge in the follow-up instead.
 - **A healthy run is untouched**, whatever its summary says, and so is a
   degraded run that showed every item `met`.
+- **The "gh failed" branch still fails loud.** When the guard runs from
+  `completionBody` after every summary gate has passed, the outcome is
+  `pr` plus the block when the branch lookup succeeds and the URL yields a
+  number, and that PR is neither finalised nor auto-merged (Issue #3092,
+  #3119). If that lookup fails, or that URL cannot be numbered, the run
+  records `no_pr` rather than naming `#0`. The same guard inside
+  `reportSummaryRuleBlock` names the PR that gate already found, without
+  that number check, so an unnumberable URL is not recorded as `no_pr`
+  there. Issue #3121 is the regression coverage for the `completionBody`
+  cases. See "An exception still has to report the PR it blocked" below.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -1514,6 +1524,19 @@ The outcome kind is what downstream health reporting counts, so "delivered, one
 finding outstanding" is now countable apart from "delivered nothing"
 (Issue #1947). `deriveRunOutcome` attaches the block to **any**
 PR-then-later-step failure, not only this gate's.
+
+The degraded-run guard (see "A degraded run never closes an issue as
+complete" above) follows the same rule when it cannot file the follow-up
+that records a degraded run's undelivered scope (Issue #3092, #3119). The
+run still fails, and the PR is neither finalised nor auto-merged. When the
+guard runs from `completionBody` after every summary gate has passed, the
+outcome is `pr` with `prNumber` plus the block when the branch lookup
+succeeds and the URL yields a number. If that lookup fails or that URL
+cannot be numbered, the run records `no_pr` rather than naming `#0`. When
+the same guard runs inside `reportSummaryRuleBlock`, the outcome names the
+PR that gate already found, without that number check. Issue #3121 adds
+the regression coverage for the `completionBody` call counts, the block's
+phase, the no-PR case and the unnumberable URL.
 
 **Implementation.** `lookupBlockedGatePr` and the gate block in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
