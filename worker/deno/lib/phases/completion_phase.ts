@@ -547,9 +547,19 @@ async function reportSummaryRuleBlock(
   if (!guarded.ok) {
     // The follow-up could not be filed, so the PR stays unfinalised — but it
     // is still the run's PR. Naming it here is what makes the outcome `pr`
-    // + `blocked` instead of `no_pr` over a live PR (Issue #2044).
-    state.prUrl = prUrl;
-    state.prNumber = prNumberFromUrl(prUrl);
+    // + `blocked` instead of `no_pr` over a live PR (Issue #2044). An
+    // unnumberable URL names no PR instead (Issue #3136).
+    const prNumber = prNumberFromUrl(prUrl);
+    if (prNumber > 0) {
+      state.prUrl = prUrl;
+      state.prNumber = prNumber;
+    } else {
+      logger.warn(
+        "Could not read a PR number from the existing PR URL — the " +
+          "summary-rule block names no PR rather than naming #0",
+        { repo, issueNumber, prUrl },
+      );
+    }
     return guarded.result;
   }
   const recovered = await recoverAndFinaliseExistingPr(
