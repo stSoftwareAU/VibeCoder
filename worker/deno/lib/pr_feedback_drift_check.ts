@@ -363,20 +363,41 @@ export function buildDriftRecoveryPrompt(opts: {
     blocks.push("the Docs sweep problems");
   }
 
-  lines.push(
-    "Do exactly this, and nothing else:",
-    "",
-    "1. Rewrite each listed sentence, in the file it was quoted from, so " +
-      "it is true of the head — or remove it.",
-    "2. Recount the Test Plan from the head: re-derive the counts the " +
-      "summary quotes and fix any that disagree.",
-    "3. Fix the `Docs sweep` line so it names the manual `section:` that " +
-      "documents the changed surface.",
-    `4. Change no code — this is a documentation fix only. Commit the ` +
+  // Only the steps for what this turn actually found are numbered — a
+  // mismatch-only recovery must not be asked to touch a Docs sweep line it
+  // was never told was wrong (Issue #3143 review).
+  const steps: string[] = [];
+  if (opts.findings.length > 0) {
+    steps.push(
+      "Rewrite each listed sentence, in the file it was quoted from, so " +
+        "it is true of the head — or remove it.",
+    );
+  }
+  if (opts.mismatches.length > 0) {
+    steps.push(
+      "Recount the Test Plan from the head: re-derive the counts the " +
+        "summary quotes and fix any that disagree.",
+    );
+  }
+  if (opts.docsSweepProblems.length > 0) {
+    steps.push(
+      "Fix the `Docs sweep` line so it names the manual `section:` that " +
+        "documents the changed surface.",
+    );
+  }
+  steps.push(
+    "Change no code — this is a documentation fix only. Commit the " +
       `change, referencing PR #${opts.prNumber}.`,
-    "5. If a listed finding is wrong — the sentence is not actually made " +
+  );
+  steps.push(
+    "If a listed finding is wrong — the sentence is not actually made " +
       "false by this push — leave the sentence as it is and say so, with " +
       "why, in `.pr_response_message`.",
+  );
+
+  lines.push("Do exactly this, and nothing else:", "");
+  steps.forEach((step, index) => lines.push(`${index + 1}. ${step}`));
+  lines.push(
     "",
     "Anything you leave unchanged is reported to the PR as a reply.",
     "",
@@ -413,14 +434,23 @@ function flatten(text: string): string {
  * neutralises those, so none is written here in the first place.
  */
 export function formatDriftResidual(residual: DriftResidual): string {
+  const hasHits = residual.findings.length > 0 ||
+    residual.mismatches.length > 0 ||
+    residual.docsSweepProblems.length > 0;
+
   const lines: string[] = [];
   lines.push("### Drift check (Issue #3143)");
   lines.push("");
-  lines.push(
-    "The worker's drift check found text that this push leaves " +
-      "contradicting the head, and the recovery turn did not change it:",
-  );
-  lines.push("");
+  // When there is nothing but an unavailable model pass, the "found text…"
+  // intro would claim a hit that was never actually found — say only that
+  // the pass could not be run.
+  if (hasHits) {
+    lines.push(
+      "The worker's drift check found text this push leaves out of step " +
+        "with the code, still unresolved after its one recovery attempt:",
+    );
+    lines.push("");
+  }
 
   if (residual.findings.length > 0) {
     for (const f of residual.findings) {
@@ -601,14 +631,17 @@ async function appendResidualToResponseMessage(
   }
   if (existing !== undefined) {
     await Deno.writeTextFile(path, `${existing}\n\n${section}`);
-  } else {
-    await Deno.writeTextFile(
-      path,
-      "I've pushed a fix for this feedback, but the worker's drift check " +
-        "found text it leaves out of step with the code — see below.\n\n" +
-        section,
-    );
+    return;
   }
+  const hasHits = residual.findings.length > 0 ||
+    residual.mismatches.length > 0 ||
+    residual.docsSweepProblems.length > 0;
+  const lead = hasHits
+    ? "I've pushed a fix for this feedback, but the worker's drift check " +
+      "found text it leaves out of step with the code — see below."
+    : "I've pushed a fix for this feedback. The worker's drift check " +
+      "could not check it fully — see below.";
+  await Deno.writeTextFile(path, `${lead}\n\n${section}`);
 }
 
 /** Cap on files sent into the drift question (Issue #3143). */
@@ -766,8 +799,17 @@ export async function runPrFeedbackDriftCheck(
             { repo, prNumber },
           );
         } else {
+          // A finding's `file` is model output. Reading it unconditionally
+          // would let a finding naming `../../etc/x` (or any repo file the
+          // question was never asked about) read outside the set of files
+          // this turn actually checked — so only a file that is exactly one
+          // of `files` is ever read, before or after recovery (Issue #3143
+          // review).
           for (const finding of parsed.value) {
-            const content = await readIfExists(repoPath, finding.file);
+            const isCheckedFile = files.includes(finding.file);
+            const content = isCheckedFile
+              ? await readIfExists(repoPath, finding.file)
+              : undefined;
             const foundBefore = content !== undefined &&
               sentenceFoundIn(finding.sentence, content);
             findingsWithStatus.push({ finding, foundBefore });

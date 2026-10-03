@@ -258,10 +258,10 @@ summary, a manual or a prompt describing the **old** behaviour
 (VibeCoder#3134, #3095, #3132). After the agent's turn — and after the
 existing result-placeholder reply retry (Issue #3124) — and before the
 comment is marked processed and the worker's own final-mile commit-and-push,
-the worker runs a deterministic **drift check** on the push itself: the
-working-tree diff against the branch head captured before the agent ran,
-plus any untracked files. The check is skipped when there is no before-run
-head, or the push changed nothing.
+the worker runs a **drift check** on the push itself: the working-tree diff
+against the branch head captured before the agent ran, plus any untracked
+files. The check is skipped when there is no before-run head, or the push
+changed nothing.
 
 Three checks run, each only when it applies:
 
@@ -286,8 +286,12 @@ Any hit gets **one** recovery turn: the agent, with full tools, is asked to
 rewrite the listed sentences, recount the Test Plan and fix the Docs sweep
 line, without changing code. The checks are then re-run; a prose finding
 counts as fixed only when its quoted sentence was present before the
-recovery turn and is gone after it. Whatever still remains — including a
-model pass that returned no verdict — is appended to
+recovery turn and is gone after it — a finding whose file was not one of
+the files the question was asked about is never read back, so it stays
+reported regardless of the recovery turn. A model pass that returns no
+verdict is not a hit and does not trigger a recovery turn on its own; it
+goes straight to the reply note. Whatever remains after the recovery turn —
+plus a model pass that returned no verdict — is appended to
 `.pr_response_message` under `### Drift check (Issue #3143)`, so it reaches
 the PR reply instead of being pushed silently.
 
@@ -296,10 +300,13 @@ flowchart TD
     A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
+    H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
     H -- yes --> R["One recovery turn"]
     R --> C["Re-check"]
-    C --> M["Residual appended to<br/>.pr_response_message"]
-    M --> P
+    C --> L{"Anything left?"}
+    L -- yes --> N
+    L -- no --> P
+    N --> P
 ```
 
 #### Verify a claim about another component before rewriting it (Issue #3090)
