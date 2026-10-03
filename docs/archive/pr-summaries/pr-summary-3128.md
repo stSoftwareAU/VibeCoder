@@ -14,10 +14,9 @@ Closes #3128
 ```mermaid
 flowchart LR
     E["Closure entry<br/>(subject words)"] --> M{"Word sets:<br/>one a subset<br/>of the other?"}
-    M -- no --> U["criterion stays<br/>unassessed"]
-    M -- yes --> J{"Unique highest<br/>Jaccard score?"}
-    J -- tie --> U
-    J -- yes --> C["assign to criterion<br/>(several entries →<br/>worst status wins)"]
+    M -- "no or a tie,<br/>and met" --> U["criterion stays<br/>unassessed"]
+    M -- "no or a tie,<br/>and partial/missing" --> G["own shortfall,<br/>follow-up filed"]
+    M -- "unique match" --> C["assign to criterion<br/>(several entries →<br/>worst status wins)"]
 ```
 
 ## Spec
@@ -31,24 +30,34 @@ flowchart LR
     other. That covers abbreviated entries and entries with extra words.
   - The entry goes to the criterion with the strictly highest Jaccard score.
     A tie leaves the entry unassigned.
-  - `unrequested` entries and entries with an empty subject are ignored.
+  - `unrequested` entries are ignored. An empty-subject `met` entry matches
+    nothing. An empty-subject `partial` or `missing` entry is kept in
+    `unassignedGaps`, named by its `reason:`.
   - When several entries match one criterion, the worst status wins
     (`missing` > `partial` > `met`).
   - A criterion that no entry matches returns `undefined`, so it stays
     `unassessed`.
   - A `partial` or `missing` entry that matches nothing, or ties, is not
     dropped. `matchClosureEntries` returns it in `unassignedGaps`, and the
-    guard records that subject as its own shortfall, so the follow-up is
-    still filed.
+    guard records that subject — or its `reason:` when the subject has no
+    words — as its own shortfall, so the follow-up is still filed.
 - `worker/deno/lib/degraded_delivery.ts` now uses `matchClosureEntries` in
   place of the positional read, and its module doc is updated to match.
 
 ## Evidence
 
-- **Red on base:** with the positional read restored, both new
-  `degraded_delivery_test.ts` tests fail. The reorder test showed `delivered`
-  holding the docs and floor criteria instead of router and docs (28 passed,
-  1 failed for the reorder case on its own).
+- **Red on base:** with the positional read restored, these
+  `degraded_delivery_test.ts` tests fail:
+  - `assessDegradedDelivery - #3128: closure entries out of order are matched
+    by content, not position`. On its own that case was 28 passed, 1 failed,
+    with `delivered` holding the docs and floor criteria instead of router
+    and docs.
+  - `assessDegradedDelivery - #3128: a criterion split across a met and a
+    missing entry reads missing`.
+  - `degradedNeedsFollowUp - a reworded in-order missing entry still files a
+    follow-up (Issue #3128)`.
+  - `degradedNeedsFollowUp - a missing entry with no subject still files a
+    follow-up (Issue #3128)`.
 - **Green:** `deno task test:unit tests/degraded_delivery_test.ts
   tests/closure_criterion_match_test.ts` passes.
 - **Gate:** `./quality.sh < /dev/null` returned `Result: PASSED (with skipped
@@ -95,5 +104,7 @@ flowchart LR
     unassessed.
   - Split criteria: met plus missing reads `missing`; met plus partial reads
     `partial`.
-  - Ignored entries: `unrequested` entries and an empty subject.
+  - Ignored entries: `unrequested` entries, and a `met` entry with an empty
+    subject. An empty-subject `partial` or `missing` entry is an unassigned
+    gap, named by its `reason:`.
   - Markdown, punctuation and case do not affect matching.

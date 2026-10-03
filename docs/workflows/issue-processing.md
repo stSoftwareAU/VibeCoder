@@ -1442,11 +1442,14 @@ flowchart TD
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run
   on the same issue reuses the open follow-up. It lists what was delivered too,
-  so the next run checks rather than redoes it. Every criterion and delivered
-  line is copied from the untrusted issue body, so its HTML-comment
-  delimiters are neutralised first (`neutraliseAgentMarkers`, Issue #2778):
-  only the worker's own marker is live, and a `finding-id` hidden in a
-  criterion cannot suppress an unrelated finding.
+  so the next run checks rather than redoes it. Each criterion line is copied
+  from the untrusted issue body, or, for an unmatched or subjectless
+  `partial`/`missing` gap, from the agent-written closure entry (its subject,
+  or its `reason:` when the subject has no words). Delivered lines are copied
+  from the issue body. Both are neutralised by `neutraliseAgentMarkers`
+  before they are copied (Issue #2778): only the worker's own marker is live,
+  and a `finding-id` hidden in a criterion or a closure entry cannot suppress
+  an unrelated finding.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
   survives the merge in the follow-up instead.
