@@ -228,9 +228,9 @@ and every quoted total ("N tests", "N passed", "N pinned phrases"),
 re-running the commands the summary cites on the final head so the figures
 are that run's. A number is never carried over from the earlier iteration.
 Review-fix heads had edited the summary in the same push yet left a stale
-count or test list (VibeCoder#3075, #3105, #3108). The PR-body sync (Issue
-#3089) copies such a count faithfully, so the recount has to land in the
-summary file itself.
+count or test list (VibeCoder#3075, #3105, #3108). The PR-body sync
+(Issue #3089) copies such a count faithfully, so the recount has to land
+in the summary file itself.
 
 #### Verify a claim about another component before rewriting it (Issue #3090)
 
