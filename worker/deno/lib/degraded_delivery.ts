@@ -18,7 +18,7 @@
  * flowchart TD
  *     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(same verdict as the<br/>run-stats comment)"}
  *     D -- no --> P["PR as today"]
- *     D -- yes --> S{"Every accepted scope<br/>item shown met?"}
+ *     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
  *     S -- yes --> P
  *     S -- no --> G{"Any shortfall<br/>partial or missing?"}
  *     G -- yes --> F["File (or reuse) one follow-up<br/>naming each shortfall"]
@@ -234,7 +234,8 @@ export function buildDegradedFollowUpIssue(args: {
     `Auto-filed by the Vibe Coder (Issue #2562): the implementation run for ` +
     `#${parentNumber} was **degraded** — ${
       verdict.reason ?? "served by a fallback model"
-    } — and did not show every accepted scope item as met. That run's PR ` +
+    } — and did not show every accepted scope item as met, or reported a ` +
+    `gap of its own. That run's PR ` +
     `still completes #${parentNumber} on merge; the outstanding scope ` +
     `continues here so it is not lost with it.`,
     "",
@@ -324,7 +325,8 @@ export function buildDegradedPrSection(
     "",
     `This run was degraded (${
       verdict.reason ?? "served by a fallback model"
-    }) and did not show every accepted scope item as met. The outstanding ` +
+    }) and did not show every accepted scope item as met, or reported a ` +
+    `gap of its own. The outstanding ` +
     `items continue in #${followUpNumber}:`,
     "",
     ...shortfallLines(verdict.shortfalls),

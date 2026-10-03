@@ -67,8 +67,13 @@ flowchart LR
 - **Sweep coverage:** the new module is registered as a `claimed` slice,
   `top-up-3128`, in `docs/audits/lib-sweep-coverage.json`, following the
   `top-up-2998` and `top-up-2999` precedent.
-- **Docs sweep:** I grepped for `assessDegradedDelivery`, `closure block` and
-  `unassessed` and updated four places:
+- **Docs sweep** — grep: `assessDegradedDelivery`, "closure block",
+  "unassessed"; section: `docs/workflows/issue-processing.md` (the
+  degraded-run delivery guard bullets); updated:
+  `docs/workflows/issue-processing.md`, `prompts/issue/prompt.md`,
+  `worker/deno/lib/degraded_delivery.ts` (module doc),
+  `docs/audits/security-sweep-2562-degraded-delivery.md`.
+  The same read updated four places:
   - `docs/workflows/issue-processing.md`: the degraded-run "Delivered" bullet
     now describes word matching, `unassessed` for unmatched or ambiguous
     entries, and worst-status-wins for a split criterion.
@@ -102,6 +107,10 @@ flowchart LR
   - `degradedNeedsFollowUp - a missing entry with no subject still files a
     follow-up (Issue #3128)` — `**missing** — reviewer: missing — reason: …`
     has no subject words and is still a shortfall, named by that reason.
+  - `degradedNeedsFollowUp - an unmatched missing entry files a follow-up
+    even when every criterion is met (Issue #3128)` — three verbatim `met`
+    entries plus one extra `missing` entry still make
+    `degradedNeedsFollowUp` true, and the follow-up names that gap.
 - `worker/deno/tests/closure_criterion_match_test.ts` (12 tests):
   - Matching: out of order; abbreviated subset; superset with extra words.
   - Rejection: no match and an ambiguous tie both leave the criterion

@@ -218,6 +218,41 @@ Deno.test("assessDegradedDelivery - #3128: a criterion split across a met and a 
   ]);
 });
 
+Deno.test("degradedNeedsFollowUp - an unmatched missing entry files a follow-up even when every criterion is met (Issue #3128)", () => {
+  const prBody = `${SUMMARY_ALL_MET}
+- **missing** — the changelog entry — reviewer: missing — reason: the changelog still says the old floor
+`;
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody,
+  });
+
+  assertEquals(verdict.delivered.length, 3);
+  assertEquals(degradedNeedsFollowUp(verdict), true);
+  assert(
+    verdict.shortfalls.some((s) =>
+      s.status === "missing" && s.criterion.includes("changelog entry")
+    ),
+    "the unmatched gap is named on the follow-up",
+  );
+  const followUp = buildDegradedFollowUpIssue({
+    parentNumber: 3128,
+    parentTitle: "match closure entries",
+    verdict,
+    runId: "test",
+  });
+  assertStringIncludes(followUp.body, "changelog entry");
+  assertStringIncludes(
+    followUp.body,
+    "did not show every accepted scope item as met, or reported a gap of its own",
+  );
+  assertStringIncludes(
+    buildDegradedPrSection(verdict, 99),
+    "did not show every accepted scope item as met, or reported a gap of its own",
+  );
+});
+
 Deno.test("assessDegradedDelivery - a degraded run that met every criterion has no shortfall", () => {
   const verdict = assessDegradedDelivery({
     claudeResults: HAIKU_FALLBACK,

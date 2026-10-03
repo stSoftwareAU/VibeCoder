@@ -1420,7 +1420,7 @@ or recovered:
 flowchart TD
     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
     D -- no --> P["PR as today"]
-    D -- yes --> S{"Every accepted scope<br/>item shown met?"}
+    D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
     S -- yes --> P
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
     G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
@@ -1469,8 +1469,10 @@ flowchart TD
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
   survives the merge in the follow-up instead.
-- **A healthy run is untouched**, whatever its summary says, and so is a
-  degraded run that showed every item `met`.
+- **A healthy run is untouched**, whatever its summary says. A degraded run
+  that showed every scope item `met` is left alone only when it reported no
+  unmatched `partial` or `missing` entry. An unmatched entry like that is
+  still a shortfall, and the follow-up is filed.
 - **The "gh failed" branch still fails loud.** When the guard runs from
   `completionBody` after every summary gate has passed, the outcome is
   `pr` plus the block when the branch lookup succeeds and the URL yields a
