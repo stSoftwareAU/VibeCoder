@@ -46,6 +46,10 @@ import {
   resumeIssueBranch,
 } from "../issue_branch_resume.ts";
 import {
+  freshRedoBranchName,
+  loadAbandonedBranches,
+} from "../conflict_redo_branch.ts";
+import {
   anticipatedProviderId,
   preferredStreamProviderId,
   primeStreamSession,
@@ -579,6 +583,16 @@ export async function workOnIssueSetupBranch(
       baseBranch: state.baseBranch,
       ...(persisted ? { persistedBranch: persisted.branch } : {}),
       gitOptions: { cwd: repoPath },
+      // Issue #3033: a redo must never resume the branch the merge-conflict
+      // ladder abandoned. `pushCapableAuthors` is the same fleet-maintenance
+      // set the abandon rung itself trusts restart markers from.
+      loadAbandonedBranches: () =>
+        loadAbandonedBranches(
+          repo,
+          issueNumber,
+          deps.github.runGhCommand,
+          pushCapableAuthors,
+        ),
     },
     {
       listRemoteIssueBranches: deps.git.listRemoteIssueBranches,
@@ -664,6 +678,26 @@ export async function workOnIssueSetupBranch(
         branch: state.branchName,
       });
     }
+  } else if (resumeOutcome.abandoned.length > 0) {
+    // Issue #3033: every candidate was a branch the merge-conflict ladder
+    // abandoned — resuming none of them is correct, but the fresh branch this
+    // run cuts below must not collide with one, or the push races the
+    // abandoned PR's own (closed, undeleted) head.
+    const freshBranch = freshRedoBranchName(
+      state.branchName,
+      resumeOutcome.abandoned,
+    );
+    logger.info(
+      "Starting this redo on a fresh branch — its title-derived name was " +
+        "abandoned by an earlier merge-conflict restart (Issue #3033)",
+      {
+        repo,
+        issueNumber,
+        abandoned: resumeOutcome.abandoned,
+        branchName: freshBranch,
+      },
+    );
+    state.branchName = freshBranch;
   }
 
   // Join the issue's stream conversation (Issue #2333). The per-issue

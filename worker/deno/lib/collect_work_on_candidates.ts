@@ -49,6 +49,7 @@ import type {
   SkipReason,
 } from "./issue_finder_logger.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
+import { classifyConflictRedo } from "./conflict_redo_candidate.ts";
 import { extractMilestonePriority } from "./milestone_priority.ts";
 import type { DependencyBlocker, IssueFetcher } from "./issue_dependencies.ts";
 import {
@@ -665,6 +666,16 @@ export async function collectWorkOnCandidates(
     // Issue #2164: an eligible work-on issue is the original serialisation
     // signal — the repo has real higher-tier work, so the lower tiers wait.
     suppressingCount++;
+    // Issue #3034: a merge-conflict redo is the next pickup in its repo.
+    const conflictRedo = await classifyConflictRedo({
+      repo,
+      issue,
+      openPRs: repoPRs,
+      closedPRs: repoClosedPRs,
+      trustedAuthors: pushCapableAuthors,
+      ghFn,
+      cache: options.cache,
+    });
     candidates.push({
       repo,
       number: issue.number,
@@ -675,6 +686,7 @@ export async function collectWorkOnCandidates(
       labelIndex: 99,
       source: "work-on",
       milestonePriority: extractMilestonePriority(issue.labels),
+      ...(conflictRedo ? { conflictRedo } : {}),
     });
   }
 
