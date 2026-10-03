@@ -2512,6 +2512,14 @@ emits nothing is billed for four hours per rung of the retry and model-fallback
 ladder. Explicit per-call values still win; the wrapper only fills in an omitted
 bound.
 
+`runIdleTaskClaude` also appends the shared `TOOL_OUTPUT_IS_DATA_RULE` from
+[`worker/deno/lib/prompt_delimiter.ts`](../worker/deno/lib/prompt_delimiter.ts)
+to every prompt it runs (Issue #3046): an idle-task scan's prompt carries none
+of the `coding_guidelines` layers or the per-invocation boundary block that
+issue/PR prompts get, so without the wrapper's reminder a scan would read
+`gh` output, repository files and other tool output with no treat-as-data
+rule at all.
+
 ```mermaid
 flowchart LR
     T["Idle-task template"] --> W["runIdleTaskClaude"]
