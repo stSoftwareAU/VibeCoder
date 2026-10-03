@@ -87,7 +87,7 @@ the list is empty for this run.
    package registry, so a check that would need registry metadata is out
    of scope — see "Registry-dependent checks" in Phase 2. The only
    permitted `gh` calls are `gh issue list` (Phase 1 prior-sweep-record
-   inventory, Phase 4 dedup),
+   inventory),
    `gh label create` (Phase 4 defensive label creation, before filing),
    `gh issue create` (Phase 4 filing) and `gh issue edit` (Phase 4
    exit-check correction of an issue this run just filed — labels, body,
@@ -1717,11 +1717,14 @@ reconcile pass has nothing to repaint.
 
 ### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
-1. **Re-check the live open-issue list.** Call
-   `gh issue list --state open --label security --search "SEC- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: SEC-… -->` marker. Skip any finding whose id already
-   has an open issue.
+1. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 2. **Honour only governed in-source suppression markers.** A marker
    waives a real security finding, so it counts only when it records who
    waived it, until when, and why. When the file at

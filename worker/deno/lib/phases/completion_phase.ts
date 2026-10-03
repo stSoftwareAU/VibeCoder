@@ -53,6 +53,10 @@ import {
   validateReproductionStatus,
 } from "../reproduction_status_gate.ts";
 import {
+  buildDocsSweepGateComment,
+  validateDocsSweep,
+} from "../docs_sweep_gate.ts";
+import {
   type BlockedGatePr,
   buildChangedWorkflowGateMessage,
   evaluateChangedWorkflowGate,
@@ -1552,6 +1556,11 @@ async function completionBody(
   // 12-file Rust change read as 62 files including web/*.tsx, and the
   // screenshot gate failed the run.
   let changedFiles: string[] = [];
+  // Set true only on the success branch below — the docs-sweep gate (Issue
+  // #3073) needs to tell "no code files changed" apart from "the diff could
+  // not be read", and the latter must fail closed rather than read as a
+  // docs-free diff.
+  let changedFilesKnown = false;
   const diffResult = comparableBase.ok
     ? await deps.git.runGitCommand(
       ["diff", "--name-only", `${comparableBase.value}...HEAD`],
@@ -1562,6 +1571,7 @@ async function completionBody(
     changedFiles = diffResult.value.stdout.trim().split("\n").filter((f) =>
       f.length > 0
     );
+    changedFilesKnown = true;
   } else {
     logger.warn("Could not determine changed files for screenshot validation");
   }
@@ -1930,6 +1940,41 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
+  // Docs-sweep verdict, computed early (Issue #3085 review).
+  //
+  // `recoverFromSummaryRuleBlock` only re-invokes the agent on a run's FIRST
+  // summary-rule block; a second block in the same run just fails. The
+  // docs-sweep gate itself runs last (below, after the degraded-run guard),
+  // so a summary that also fails an earlier gate used to consume that one
+  // recovery turn on the earlier gate alone — the agent was never told about
+  // the sweep, fixed only what it was asked, and failed on the second,
+  // never-recovered block. `validateDocsSweep` is pure (no side effects), so
+  // computing it here and folding its comment into whichever gate blocks
+  // first costs nothing and lets the single recovery turn ask for everything
+  // that is actually missing.
+  // ---------------------------------------------------------------------
+  const docsSweep = validateDocsSweep({
+    changedFiles: changedFilesKnown ? changedFiles : null,
+    prSummaryContent: prBody,
+  });
+  const docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
+  const docsSweepReason = `Docs sweep not recorded in the PR summary: ${
+    docsSweep.problems[0] ?? "Docs sweep line missing"
+  }`;
+
+  /** Fold the docs-sweep verdict into an earlier gate's block, when it also fails. */
+  function foldInDocsSweep(
+    reason: string,
+    comment: string,
+  ): { reason: string; comment: string } {
+    if (!docsSweepBlocked) return { reason, comment };
+    return {
+      reason: `${reason}; ${docsSweepReason}`,
+      comment: `${comment}\n\n---\n\n${buildDocsSweepGateComment(docsSweep)}`,
+    };
+  }
+
+  // ---------------------------------------------------------------------
   // Acceptance-criteria closure gate (Issue #518).
   //
   // The planner writes a `## Acceptance Criteria` checklist into every
@@ -1947,11 +1992,15 @@ async function completionBody(
       criteria: closure.criteria.length,
       problems: closure.problems,
     });
-    return await reportSummaryRuleBlock(
+    const folded = foldInDocsSweep(
       `Acceptance criteria not closed out in the PR summary: ${
         closure.problems[0] ?? "closure block missing"
       }`,
       buildClosureGateComment(closure),
+    );
+    return await reportSummaryRuleBlock(
+      folded.reason,
+      folded.comment,
       ctx,
       state,
       prBody,
@@ -1981,11 +2030,15 @@ async function completionBody(
       standardsEntries: review.standardsEntries.length,
       problems: review.problems,
     });
-    return await reportSummaryRuleBlock(
+    const folded = foldInDocsSweep(
       `Independent Spec/Standards review not reported in the PR summary: ${
         review.problems[0] ?? "review blocks missing"
       }`,
       buildIndependentReviewComment(review),
+    );
+    return await reportSummaryRuleBlock(
+      folded.reason,
+      folded.comment,
       ctx,
       state,
       prBody,
@@ -2014,16 +2067,56 @@ async function completionBody(
       status: reproduction.block.status,
       problems: reproduction.problems,
     });
-    return await reportSummaryRuleBlock(
+    const folded = foldInDocsSweep(
       `Reproduction status not recorded in the PR summary: ${
         reproduction.problems[0] ?? "`## Reproduction` block missing"
       }`,
       buildReproductionGateComment(reproduction),
+    );
+    return await reportSummaryRuleBlock(
+      folded.reason,
+      folded.comment,
       ctx,
       state,
       prBody,
       deps,
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // Docs-sweep gate, no-existing-PR short-circuit (Issue #3085 review).
+  //
+  // The degraded-run guard below files an idle-task follow-up whose body
+  // promises "that run's PR still completes #N on merge". On a branch with
+  // no PR yet, a docs-sweep block can still end the run with no PR raised at
+  // all — recovery may add nothing, or may not run at all when a degraded
+  // run is a rate-limit fallback — leaving that follow-up's promise false and
+  // the parent issue back in the queue alongside it. An existing PR has no
+  // such risk (`reportSummaryRuleBlock` only ever finalises or fails loud for
+  // it), so only the no-PR branch pre-empts the guard; an existing PR still
+  // lets the guard run first, as the comment on the gate below explains.
+  // ---------------------------------------------------------------------
+  if (docsSweepBlocked) {
+    const existingPrForDocsSweep = await deps.pr.findExistingPrForBranch(
+      repo,
+      state.branchName,
+    );
+    if (!existingPrForDocsSweep.ok) {
+      logger.warn(
+        "Docs-sweep gate blocked PR creation before any PR existed — " +
+          "skipping the degraded-run guard rather than file a follow-up for " +
+          "a PR that will not be raised",
+        { changedFilesKnown, codeFiles: docsSweep.codeFiles.length },
+      );
+      return await reportSummaryRuleBlock(
+        docsSweepReason,
+        buildDocsSweepGateComment(docsSweep),
+        ctx,
+        state,
+        prBody,
+        deps,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -2099,6 +2192,44 @@ async function completionBody(
       },
     );
     prBody = buildDegradedNoFollowUpSection(degradedDelivery) + prBody;
+  }
+
+  // ---------------------------------------------------------------------
+  // Docs-sweep gate (Issue #3073).
+  //
+  // The PR-summary contract already asked for a one-line Docs sweep entry,
+  // but nothing checked it: a term-only grep sweep still missed the manual
+  // for the changed surface, and some PRs carried no line at all. When the
+  // diff changes a non-test, non-doc file, the summary must name the manual
+  // `section:` that documents the surface — not merely that a grep ran.
+  //
+  // Issue #3085 (review): this gate must run after the degraded-run delivery
+  // guard above. The guard files the follow-up and prefixes the PR body
+  // *before* any gate is allowed to call reportSummaryRuleBlock, which on an
+  // existing-PR branch finalises that PR via recoverAndFinaliseExistingPr —
+  // arming auto-merge and returning early. Gating here first would let a
+  // degraded run's follow-up and PR-body note go unrecorded whenever the
+  // branch already had an open PR. The no-existing-PR case was already
+  // short-circuited above, before the guard ran, so this is reached only
+  // when an existing PR means the guard's follow-up stays truthful. The
+  // verdict itself was computed once, earlier, so every earlier gate's
+  // recovery turn could ask for it too — it is reused here rather than
+  // recomputed.
+  // ---------------------------------------------------------------------
+  if (docsSweepBlocked) {
+    logger.warn("Docs-sweep gate blocked PR creation", {
+      changedFilesKnown,
+      codeFiles: docsSweep.codeFiles.length,
+      problems: docsSweep.problems,
+    });
+    return await reportSummaryRuleBlock(
+      docsSweepReason,
+      buildDocsSweepGateComment(docsSweep),
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
   }
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),
