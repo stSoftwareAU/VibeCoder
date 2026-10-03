@@ -179,7 +179,11 @@ progress and stopped on conflicts. Its contract is absolute:
   carries part of the PR's change, the agent rewrites the branch's committed
   `docs/archive/pr-summaries/pr-summary-*.md` so it claims only what the merged
   diff still carries, stages it with the resolutions, and names the refresh in
-  `.pr_response_message` (Issue #3015).
+  `.pr_response_message` (Issue #3015). After a verified push to the PR's own
+  head, when that push changed `pr-summary-<N>.md`, the worker rebuilds the
+  PR description from the summary. Fix branches are skipped, and only a
+  worker-authored PR is edited. A failed sync is logged once at warning and
+  does not fail the run (Issue #3089).
 - **The agent runs no quality gate.** CI on the pushed merge is the gate on a
   PR — a conflicting PR has had none at all, so that run is usually the first
   time its tests meet current base code — and the worker's type-check gate,

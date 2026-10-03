@@ -3115,3 +3115,72 @@ Deno.test("processMergeConflict - an attempt the run ended still logs where its 
   );
   for (const timing of timings) assertEquals(timing.seconds, 5);
 });
+
+// ---------------------------------------------------------------------------
+// PR body sync after a successful push (Issue #3089)
+// ---------------------------------------------------------------------------
+
+Deno.test("processMergeConflict - syncs the PR body once after a verified push", async () => {
+  const calls: Array<{ prNumber: number; repo: string; beforeSha?: string }> =
+    [];
+  const syncPrBodyFn: MergeConflictProcessorDeps["syncPrBodyFn"] = (input) => {
+    calls.push({
+      prNumber: input.prNumber,
+      repo: input.repo,
+      beforeSha: input.beforeSha,
+    });
+    return Promise.resolve({
+      ok: true,
+      value: { status: "updated", issueNumber: 42 },
+    });
+  };
+
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    { syncPrBodyFn },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]?.prNumber, 48);
+  assertEquals(calls[0]?.repo, "org/repo");
+  assertEquals(calls[0]?.beforeSha, "1111111111111111111111111111111111111111");
+});
+
+Deno.test("processMergeConflict - does not sync the PR body when nothing was merged", async () => {
+  let syncCalled = false;
+  const syncPrBodyFn: MergeConflictProcessorDeps["syncPrBodyFn"] = () => {
+    syncCalled = true;
+    return Promise.resolve({
+      ok: true,
+      value: { status: "updated", issueNumber: 42 },
+    });
+  };
+
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ ancestorCode: 1 }),
+    { syncPrBodyFn },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(syncCalled, false);
+});
+
+Deno.test("processMergeConflict - a failing PR body sync does not fail the run", async () => {
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    {
+      syncPrBodyFn: () =>
+        Promise.resolve({ ok: false, error: new Error("gh pr edit boom") }),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(result.value.escalated, false);
+});
