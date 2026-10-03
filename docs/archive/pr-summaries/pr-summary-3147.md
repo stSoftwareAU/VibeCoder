@@ -153,90 +153,100 @@ diff that adds the enumeration artefact itself must not say it added no
 branch). Covers every branch `completion_phase.ts` and
 `branch_outcomes_gate.ts` add across this PR, not only this round's commits:
 
-- `worker/deno/lib/phases/completion_phase.ts:2145` — `branchOutcomesApplicable`
-  true via `!changedFilesKnown` (diff unreadable) —
+- `worker/deno/lib/phases/completion_phase.ts` — the
+  `branchOutcomesApplicable` short-circuit, including the unreadable-diff
+  arm and the not-applicable `: []` arm, was deleted this round. The parse
+  and `lookupTestsAtHead` always run. An empty path list returns an empty
+  set and does not call git. After the deletion,
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - an unreadable changed-files diff with a Branch outcomes list naming an existing test still raises the PR`
-  — confirmed red with that arm removed (status `failure` instead of
-  `continue`; see Test Plan).
-- `worker/deno/lib/phases/completion_phase.ts:2146` — applicable via
-  `codeChangingFiles(changedFiles).length > 0` —
-  `tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
-- `completion_phase.ts:2147-2149` — not applicable → `[]` named tests (no
-  git lookup needed) —
-  `tests/completion_phase_branch_outcomes_test.ts::completion - a docs-only diff with no Branch outcomes list raises the PR`.
-- `completion_phase.ts:2150-2155` — named tests present → `lookupTestsAtHead`
-  called, vs none named → `new Set()` with no git call —
-  `tests/completion_phase_branch_outcomes_test.ts::completion - 'none added' raises the PR`
-  (no-call path) and
-  `::completion - a Branch outcomes list naming only an existing test raises the PR`
-  (call path).
+  still returned `continue`, and
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a docs-only diff with no Branch outcomes list raises the PR`
+  still raised the PR. The empty-list `new Set()` ternary was deleted in
+  the same edit;
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - 'none added' raises the PR`
+  and
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a Branch outcomes list naming only an existing test raises the PR`
+  both still passed.
+- `worker/deno/lib/phases/completion_phase.ts` — a code diff with no list
+  still blocks inside `validateBranchOutcomes` —
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
+  This round's run of that test passed; the outer `codeChangingFiles` check
+  it used to cite is gone.
 - `completion_phase.ts:2191-2196` — `branchOutcomesBlocked` folded into an
   earlier gate's comment/reason —
-  `tests/completion_phase_branch_outcomes_test.ts::completion - a code diff missing BOTH the Docs sweep line and the Branch outcomes list names both in one block (Issue #3160)`
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a code diff missing BOTH the Docs sweep line and the Branch outcomes list names both in one block (Issue #3160)`
   — confirmed red against the reviewer's `branchOutcomesBlocked &&
   reasons.length === 0` mutation at `completion_phase.ts:2350` (see Test
   Plan).
 - `completion_phase.ts:2350-2358` — the late-gate block's own
   `branchOutcomesBlocked` arm (single-gate failure, no fold) —
-  `tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
 - `worker/deno/lib/branch_outcomes_gate.ts:346` —
   `validateBranchOutcomes` with `changedFiles === null` —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - changedFiles null is applicable (fail closed)`.
 - `branch_outcomes_gate.ts:351` — `codeFiles.length === 0` → not
   applicable —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - a non-code diff (docs + test files only) is not applicable`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a non-code diff (docs + test files only) is not applicable`.
 - `branch_outcomes_gate.ts:378` — `!record.present` → problem —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - missing list blocks when the diff changes code`.
-- `branch_outcomes_gate.ts:385` — `record.noneDeclared` → valid —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - 'none added' passes`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - missing list blocks when the diff changes code`.
+- `worker/deno/lib/branch_outcomes_gate.ts` — the dedicated
+  `record.noneDeclared` early-valid arm was removed. `none added` stays on
+  the record body, so the empty-list check does not fire, and
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - 'none added' passes`
+  passed after that removal. Dropping the body as well made that test fail
+  (`valid` was false).
 - `branch_outcomes_gate.ts:387` — empty entries and empty body → problem —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - an empty list blocks`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an empty list blocks`.
 - `branch_outcomes_gate.ts:391` — bare placeholder → problem —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare placeholder blocks`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare placeholder blocks`.
 - `branch_outcomes_gate.ts:395` — named tests present, `testsAtHead ===
   null` → problem (fail closed) —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - testsAtHead null with named tests blocks (fail closed)`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - testsAtHead null with named tests blocks (fail closed)`.
 - `branch_outcomes_gate.ts:399-412` — a named test missing at HEAD →
   problem —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - a test absent from testsAtHead blocks and is named in missingTests`;
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a test absent from testsAtHead blocks and is named in missingTests`;
   all present → valid —
-  `::validateBranchOutcomes - all named tests present passes`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - all named tests present passes`.
 - `branch_outcomes_gate.ts:210` — `./`-prefix stripped by `normaliseToken` —
-  `branch_outcomes_gate_test.ts::namedTestPaths - a ./-prefixed citation is normalised, dropping the ./`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - a ./-prefixed citation is normalised, dropping the ./`.
 - `branch_outcomes_gate.ts:238` — post-normalisation absolute-path token
   dropped —
-  `branch_outcomes_gate_test.ts::namedTestPaths - an absolute-path token is not returned`
+  `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - an absolute-path token is not returned`
   and
-  `::namedTestPaths - a .//-prefixed citation normalises to an absolute path and is dropped`
+  `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - a .//-prefixed citation normalises to an absolute path and is dropped`
   — confirmed red this round with the guard loosened to `if (!token)
   continue;` (36 passed, 2 failed; see Test Plan). The redundant raw-token
   skip this finding was about (then line 237) is deleted — it was dead code,
   never reached by an input the line-238 guard did not already catch.
 - `branch_outcomes_gate.ts:197` / `236` — `MAX_TOKEN_CHARS` cap —
-  `branch_outcomes_gate_test.ts::namedTestPaths - a token over 300 chars is skipped`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - a token over 300 chars is skipped`.
 - `branch_outcomes_gate.ts:200` / `245` — `MAX_NAMED_TEST_PATHS` cap —
-  `branch_outcomes_gate_test.ts::namedTestPaths - more than 50 named test paths are capped at 50`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - more than 50 named test paths are capped at 50`.
 - `branch_outcomes_gate.ts` `collectEntries`/`capEntry` — `MAX_ENTRIES` cap —
-  `branch_outcomes_gate_test.ts::parseBranchOutcomes - more than 100 entries are capped at 100`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - more than 100 entries are capped at 100`.
 - `branch_outcomes_gate.ts:227` — the inline body is scanned when
   `!record.noneDeclared && record.body` —
-  `branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline body naming a missing test blocks (Issue #3160)`
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline body naming a missing test blocks (Issue #3160)`
   and
-  `::validateBranchOutcomes - an inline body naming an existing test passes (Issue #3160)`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline body naming an existing test passes (Issue #3160)`.
 - `branch_outcomes_gate.ts:501` — `lookupTestsAtHead` with `paths.length
   === 0` → empty set, no git call —
-  `branch_outcomes_gate_test.ts::lookupTestsAtHead - empty paths returns an empty set without calling git`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - empty paths returns an empty set without calling git`.
 - `branch_outcomes_gate.ts:513` — `!result.ok` or non-zero exit → `null`
   (fail closed) —
-  `branch_outcomes_gate_test.ts::lookupTestsAtHead - a failed git invocation returns null`
-  and `::lookupTestsAtHead - a non-zero exit returns null`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - a failed git invocation returns null`
+  and `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - a non-zero exit returns null`.
 - `branch_outcomes_gate.ts:515-520` — success → parsed path set —
-  `branch_outcomes_gate_test.ts::lookupTestsAtHead - parses stdout lines into the returned set`.
+  `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - parses stdout lines into the returned set`.
 
-Each listed outcome was confirmed red with its arm removed or its guard
-loosened, as recorded against the corresponding change in the Test Plan
-entries above (third and fourth PR #3160 review rounds); the `.//`-prefix
-case was reverified this round (see above).
+This round's flip results are on the lines above for the arms that were
+deleted. Earlier lines name the test that reaches the branch. They do not
+repeat a red-run that was not re-run this round. Three new tests in
+`worker/deno/tests/branch_outcomes_gate_test.ts` cover a wrapped inline
+entry, prose that wraps before the list, and an earlier bullet that must
+not hide a later list. Each expects the invented path in `missingTests`.
+The file passed 41/41 after the parser change, and the completion file
+passed 11/11 after the two arms were deleted.
 
 ## Evidence
 

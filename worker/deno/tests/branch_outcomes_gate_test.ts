@@ -73,14 +73,14 @@ Deno.test("parseBranchOutcomes - 'none added' is recognised as an honest negativ
   assertEquals(record.entries, []);
 });
 
-Deno.test("parseBranchOutcomes - first match wins", () => {
+Deno.test("parseBranchOutcomes - a later header is still collected", () => {
   const record = parseBranchOutcomes(
     "**Branch outcomes:** none added\n\n" +
       "**Branch outcomes:**\n- entry one\n",
   );
   assert(record.present);
-  assert(record.noneDeclared);
-  assertEquals(record.entries, []);
+  assertEquals(record.noneDeclared, false);
+  assertEquals(record.entries, ["entry one"]);
 });
 
 Deno.test("parseBranchOutcomes - absent header reports not present", () => {
@@ -273,6 +273,45 @@ Deno.test("validateBranchOutcomes - an inline body naming an existing test passe
   });
   assert(result.valid);
   assertEquals(result.missingTests, []);
+});
+
+const INVENTED = "worker/deno/tests/invented_test.ts";
+
+Deno.test("validateBranchOutcomes - a wrapped inline entry still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:** the new arm is reached by\n" +
+      `${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - prose that wraps before the list still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent:
+      "**Branch outcomes:** list in its Test Plan. Each line names path:line, the\n" +
+      "test that reaches it.\n" +
+      `- ${INVENTED}::name — flip red\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - an earlier Branch outcomes bullet does not hide a later list", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "- Branch outcomes: see the Test Plan.\n" +
+      "## Test Plan\n" +
+      "**Branch outcomes:**\n" +
+      `- ${INVENTED}::name — flip red\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
 });
 
 Deno.test("validateBranchOutcomes - 'none added' passes", () => {

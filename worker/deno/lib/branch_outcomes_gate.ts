@@ -98,55 +98,77 @@ function startsWithNone(body: string): boolean {
 }
 
 /**
- * Parse the first `Branch outcomes` header out of a PR summary, and the list
- * of entries that follows it. First match wins.
+ * Parse every `Branch outcomes` header in a PR summary. The first mention
+ * does not decide alone: a later header's list is still collected, and the
+ * lines an inline header wraps onto stay part of its body so a path on the
+ * next line is still checked.
  */
 export function parseBranchOutcomes(
   prSummaryContent: string,
 ): BranchOutcomesRecord {
   const raw = (prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS);
   const lines = raw.split(LINE_TERMINATOR_RE);
+  const entries: string[] = [];
+  const bodyParts: string[] = [];
+  let present = false;
+  let onlyNone = true;
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i]!;
     const stripped = stripDecoration(rawLine);
-
     const inlineMatch = stripped.match(BRANCH_OUTCOMES_PREFIX_RE);
-    if (inlineMatch) {
-      const body = stripped.slice(inlineMatch[0].length).trim();
-      const noneDeclared = startsWithNone(body);
-      const headerIndent = LIST_MARKER_RE.test(rawLine)
-        ? leadingIndent(rawLine)
-        : -1;
-      const entries = noneDeclared
-        ? []
-        : collectEntries(lines, i + 1, headerIndent);
-      return { present: true, noneDeclared, body, entries };
+    const heading = BRANCH_OUTCOMES_HEADING_RE.test(stripped);
+    if (!inlineMatch && !heading) continue;
+
+    present = true;
+    const body = inlineMatch
+      ? stripped.slice(inlineMatch[0].length).trim()
+      : "";
+    if (startsWithNone(body)) {
+      if (body) bodyParts.push(body);
+      continue;
     }
 
-    if (BRANCH_OUTCOMES_HEADING_RE.test(stripped)) {
-      const entries = collectEntries(lines, i + 1, -1);
-      return { present: true, noneDeclared: false, body: "", entries };
+    onlyNone = false;
+    if (body) bodyParts.push(body);
+    const headerIndent = inlineMatch && LIST_MARKER_RE.test(rawLine)
+      ? leadingIndent(rawLine)
+      : -1;
+    const collected = collectEntries(lines, i + 1, headerIndent);
+    for (const entry of collected.entries) {
+      if (entries.length >= MAX_ENTRIES) break;
+      entries.push(entry);
     }
+    if (collected.bodyExtra) bodyParts.push(collected.bodyExtra);
+    i = collected.nextIndex - 1;
   }
 
-  return { present: false, noneDeclared: false, body: "", entries: [] };
+  return {
+    present,
+    noneDeclared: present && onlyNone,
+    body: bodyParts.join(" "),
+    entries,
+  };
 }
 
-/** Parse the entries that follow a `Branch outcomes` header. */
+/** Entries and wrapped body text that follow one `Branch outcomes` header. */
 function collectEntries(
   lines: string[],
   startIndex: number,
   headerIndent: number,
-): string[] {
+): { entries: string[]; bodyExtra: string; nextIndex: number } {
   const entries: string[] = [];
+  const wrap: string[] = [];
   let sawBlank = false;
+  let wrapping = true;
+  let j = startIndex;
 
-  for (let j = startIndex; j < lines.length; j++) {
+  for (; j < lines.length; j++) {
     const line = lines[j]!;
 
     if (line.trim() === "") {
       sawBlank = true;
+      wrapping = false;
       continue;
     }
     if (HEADING_RE.test(line)) break;
@@ -154,15 +176,14 @@ function collectEntries(
     const indent = leadingIndent(line);
     if (LIST_MARKER_RE.test(line)) {
       if (indent <= headerIndent) break;
+      wrapping = false;
       if (entries.length >= MAX_ENTRIES) break;
       entries.push(capEntry(stripDecoration(line)));
       sawBlank = false;
       continue;
     }
 
-    // Non-list text: a continuation of the previous entry only when it
-    // directly follows one with no intervening blank line and is indented
-    // past the header.
+    // A continuation of the previous entry, indented past the header.
     if (!sawBlank && entries.length > 0 && indent > headerIndent) {
       const lastIndex = entries.length - 1;
       entries[lastIndex] = capEntry(
@@ -171,10 +192,17 @@ function collectEntries(
       continue;
     }
 
+    // Lines an inline header wraps onto, before the first list item.
+    if (entries.length === 0 && wrapping) {
+      wrap.push(stripDecoration(line));
+      continue;
+    }
+
+    if (entries.length === 0) continue;
     break;
   }
 
-  return entries;
+  return { entries, bodyExtra: wrap.join(" ").trim(), nextIndex: j };
 }
 
 /** Cap one entry's length. */
@@ -382,8 +410,6 @@ function evaluateApplicable(
     problems.push(
       `the PR summary carries no \`Branch outcomes:\` list, but the diff changes ${diffDescription}`,
     );
-  } else if (record.noneDeclared) {
-    // Valid — an honest negative.
   } else if (record.entries.length === 0 && record.body.trim() === "") {
     problems.push(
       "the `Branch outcomes:` list names no outcomes — list each outcome the diff adds, or write `Branch outcomes: none added`",

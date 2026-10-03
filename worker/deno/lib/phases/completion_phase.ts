@@ -54,7 +54,6 @@ import {
 } from "../reproduction_status_gate.ts";
 import {
   buildDocsSweepGateComment,
-  codeChangingFiles,
   validateDocsSweep,
 } from "../docs_sweep_gate.ts";
 import {
@@ -2142,17 +2141,15 @@ async function completionBody(
   // test path — otherwise there is nothing to confirm and an empty set is
   // used, which is `valid` for a record with no named tests.
   // ---------------------------------------------------------------------
-  const branchOutcomesApplicable = !changedFilesKnown ||
-    codeChangingFiles(changedFiles).length > 0;
-  const branchOutcomesNamedTests = branchOutcomesApplicable
-    ? namedTestPaths(parseBranchOutcomes(prBody))
-    : [];
-  const testsAtHead = branchOutcomesNamedTests.length > 0
-    ? await lookupTestsAtHead(
-      branchOutcomesNamedTests,
-      (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
-    )
-    : new Set<string>();
+  // The not-applicable `: []` arm and the empty-list `new Set()` arm both
+  // left the suite green when removed. `lookupTestsAtHead` already returns
+  // an empty set without calling git when there is nothing to confirm, and
+  // a docs-only diff is not applicable inside `validateBranchOutcomes`.
+  const branchOutcomesNamedTests = namedTestPaths(parseBranchOutcomes(prBody));
+  const testsAtHead = await lookupTestsAtHead(
+    branchOutcomesNamedTests,
+    (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
+  );
   const branchOutcomes = validateBranchOutcomes({
     changedFiles: changedFilesKnown ? changedFiles : null,
     prSummaryContent: prBody,
