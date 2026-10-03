@@ -1052,6 +1052,32 @@ follow-up issue. Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
+**Prose about the PR's own change** is where that rule breaks most often: a
+sentence states the new behaviour more simply than the code implements it —
+it drops a condition the code checks, names a trigger the code does not have,
+or says a cost cannot happen when the code makes it happen. For each sentence
+the diff adds or edits in a doc, prompt, doc comment or PR summary that says
+**when** the change's behaviour happens or **what it costs**:
+
+1. Open the code that decides it and list every condition and every path that
+   reaches it. The sentence names each condition, or scopes itself explicitly
+   to the path it describes.
+2. An absolute word — "only", "never", "always", "any", "automatically",
+   "exactly as before" — needs a line of head code that guarantees it. With no
+   such line, rewrite the sentence.
+3. When the change moves a cost (a download, a retry, a push, a fallback) from
+   one path to another, the doc says where the cost now lands.
+4. A sentence about history ("before this fix, X skipped Y") is checked
+   against the base-branch code, not reconstructed from memory.
+
+Fleet PRs sent back for this: a doc said an 8.2 GB tarball "only reappears
+when the remote symlink moves", when the PR's own code downloads it again
+whenever the extracted tree is wiped (GRQ#5158); a prompt said a `## Blocked:`
+heading defers, when the code defers only on a `Depends on`/`Blocked by` line
+naming an issue it reads as open (VibeCoder#3095); a section said a script
+"runs automatically" after a fetch that never calls it (GRQ#5153)
+(Issue #3120).
+
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
 GitHub and often tells the story better than prose.
