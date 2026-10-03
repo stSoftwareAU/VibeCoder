@@ -55,7 +55,7 @@ async function runCompletion(
   });
   await Deno.writeTextFile(
     `${repoPath}/docs/archive/pr-summaries/pr-summary-565.md`,
-    "## Summary\n\nBanner. Closes #565.\n",
+    "## Summary\n\nBanner. Closes #565.\n\n**Docs sweep** — grep: `banner`; section: `docs/EXTENDING.md#branding`; no hits\n",
   );
   const config = buildDefaultWorkerConfig();
   const ctx: IssueContext = {
