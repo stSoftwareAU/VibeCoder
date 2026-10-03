@@ -215,6 +215,21 @@ variants and adds a test for each path that differs, and
 `.pr_response_message` names, per finding, the other paths and copies it
 checked.
 
+#### Verify a claim about another component before rewriting it (Issue #3090)
+
+When a finding says prompt, doc or PR-summary text misdescribes how another
+component behaves, the pr_feedback prompt tells the agent to open the code
+that implements that behaviour before writing the replacement, and to cite the
+file and function or line in `.pr_response_message` (and in the PR summary
+when it repeats the claim). The same applies to any new statement a fix adds
+about another component, above all an exclusive or negative one ("the only
+…", "any …", "never …", "the worker does not …"); security-control claims
+must agree with `SECURITY.md` and `docs/THREAT-MODEL.md`, and a claim the text
+does not need is dropped in favour of stating the rule and its risk. This is
+the fix-run form of the Issue #3072 rule in **Prompt Engineering Guidance**
+(`CODING-STANDARDS.md`): review fixes had replaced a false claim with a new
+unverified one (VibeCoder#3075, #3068).
+
 #### The final mile — did the push actually land?
 
 Every Claude-driven phase ends with a commit-and-push, and the worker only
