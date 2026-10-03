@@ -91,9 +91,15 @@ returns `continue`; this branch has no declared-handoff phase):
 - `prompts/ci_fix/prompt.md` — "Base-branch failures" still ends with
   `Depends on owner/repo#N` on a committed PR branch. The Blocked rule and
   `CODING-STANDARDS.md` name that CI-fix deferral as the exception.
+- `prompts/ci_fix/prompt.md` — "Escape Hatch" is honoured on a committed PR
+  branch when `.pr_response_message` names a follow-up issue.
+- `prompts/pr_feedback/prompt.md` — "Escape Hatch" is the same committed-branch
+  exit: a filed follow-up named in `.pr_response_message`.
 - `CODING-STANDARDS.md` — a core deliverable genuinely blocked on another
   open issue after work is committed is recorded as `missing`, with the
-  dependency named beside the closing keyword.
+  dependency named beside the closing keyword. The hand-off sentence is
+  limited to an issue run, and names both Escape Hatches as honoured on a
+  committed PR branch.
 
 **Docs sweep (review round)** — grep: `must match the head code and appear`,
 "every doc the diff adds or edits", `finish the work or hand it off`,

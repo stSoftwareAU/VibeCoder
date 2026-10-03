@@ -102,7 +102,10 @@ Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification r
       "core deliverable is `missing`",
       "genuinely blocked on another open issue after work is committed",
       "regardless of a planning or escape-hatch marker",
+      "In an issue run, a hand-off",
       "A CI-fix run is the exception",
+      "prompts/pr_feedback/prompt.md",
+      ".pr_response_message",
     ]
   ) {
     assertStringIncludes(standards, required);
