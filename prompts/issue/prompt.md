@@ -997,7 +997,14 @@ The file MUST contain:
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. Likewise, a path the diff adds to an outcome
+   blocking self-review finding. The Test Plan carries this enumeration as a
+   `Branch outcomes:` list — one line per outcome naming `path:line`, the
+   outcome, the test that reaches it, and that flipping it went red — or
+   `Branch outcomes: none added` when the diff adds no branch. When the diff
+   changes non-test, non-doc files, the worker will not raise the PR without
+   that line: it asks for it once more, and a second miss fails the run. A
+   named test that does not exist at the head is the same blocking finding as
+   above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct
    call that finalises a PR, publishes state, charges an attempt or ends a
    claim — keeps that path's guards (see **A new path to an existing outcome
@@ -1087,4 +1094,8 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Test Plan
 
 - Added tests for button alignment in `tests/button.test.js`
+
+**Branch outcomes:**
+
+- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `tests/button.test.js::keeps the buttons in one row` — flipping `flex-wrap: nowrap` back to `wrap` turned it red
 ```

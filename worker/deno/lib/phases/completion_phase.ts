@@ -54,12 +54,20 @@ import {
 } from "../reproduction_status_gate.ts";
 import {
   buildDocsSweepGateComment,
+  codeChangingFiles,
   validateDocsSweep,
 } from "../docs_sweep_gate.ts";
 import {
   buildResultPlaceholderGateComment,
   findResultPlaceholders,
 } from "../result_placeholder_gate.ts";
+import {
+  buildBranchOutcomesGateComment,
+  lookupTestsAtHead,
+  namedTestPaths,
+  parseBranchOutcomes,
+  validateBranchOutcomes,
+} from "../branch_outcomes_gate.ts";
 import {
   type BlockedGatePr,
   buildChangedWorkflowGateMessage,
@@ -2123,8 +2131,45 @@ async function completionBody(
     placeholderTokens.join(", ")
   }`;
 
-  /** Fold the docs-sweep and result-placeholder verdicts into an earlier gate's block, when either also fails. */
-  function foldInDocsSweep(
+  // ---------------------------------------------------------------------
+  // Branch-outcomes verdict, computed early alongside the docs-sweep and
+  // result-placeholder ones (Issue #3147), for the same reason: a summary
+  // that fails an earlier gate AND leaves the "every outcome of a branch you
+  // add needs a test that reaches it" list (rule #3069) missing, empty, or
+  // naming a test that does not exist must be told about all of it in the
+  // one recovery turn `recoverFromSummaryRuleBlock` grants. The HEAD lookup
+  // only runs when the gate is applicable and the summary actually names a
+  // test path — otherwise there is nothing to confirm and an empty set is
+  // used, which is `valid` for a record with no named tests.
+  // ---------------------------------------------------------------------
+  const branchOutcomesApplicable = !changedFilesKnown ||
+    codeChangingFiles(changedFiles).length > 0;
+  const branchOutcomesNamedTests = branchOutcomesApplicable
+    ? namedTestPaths(parseBranchOutcomes(prBody))
+    : [];
+  const testsAtHead = branchOutcomesNamedTests.length > 0
+    ? await lookupTestsAtHead(
+      branchOutcomesNamedTests,
+      (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
+    )
+    : new Set<string>();
+  const branchOutcomes = validateBranchOutcomes({
+    changedFiles: changedFilesKnown ? changedFiles : null,
+    prSummaryContent: prBody,
+    testsAtHead,
+  });
+  const branchOutcomesBlocked = branchOutcomes.applicable &&
+    !branchOutcomes.valid;
+  const branchOutcomesReason = `Branch outcomes not recorded in the PR summary: ${
+    branchOutcomes.problems[0] ?? "Branch outcomes list missing"
+  }`;
+
+  /**
+   * Fold the docs-sweep, result-placeholder and branch-outcomes verdicts
+   * into an earlier gate's block, when any also fails (Issue #3147 — renamed
+   * from `foldInDocsSweep` when the branch-outcomes gate joined the fold).
+   */
+  function foldInLateSummaryGates(
     reason: string,
     comment: string,
   ): { reason: string; comment: string } {
@@ -2140,6 +2185,12 @@ async function completionBody(
       foldedReason = `${foldedReason}; ${placeholderReason}`;
       foldedComment = `${foldedComment}\n\n---\n\n${
         buildResultPlaceholderGateComment(placeholderTokens)
+      }`;
+    }
+    if (branchOutcomesBlocked) {
+      foldedReason = `${foldedReason}; ${branchOutcomesReason}`;
+      foldedComment = `${foldedComment}\n\n---\n\n${
+        buildBranchOutcomesGateComment(branchOutcomes)
       }`;
     }
     return { reason: foldedReason, comment: foldedComment };
@@ -2163,7 +2214,7 @@ async function completionBody(
       criteria: closure.criteria.length,
       problems: closure.problems,
     });
-    const folded = foldInDocsSweep(
+    const folded = foldInLateSummaryGates(
       `Acceptance criteria not closed out in the PR summary: ${
         closure.problems[0] ?? "closure block missing"
       }`,
@@ -2201,7 +2252,7 @@ async function completionBody(
       standardsEntries: review.standardsEntries.length,
       problems: review.problems,
     });
-    const folded = foldInDocsSweep(
+    const folded = foldInLateSummaryGates(
       `Independent Spec/Standards review not reported in the PR summary: ${
         review.problems[0] ?? "review blocks missing"
       }`,
@@ -2238,7 +2289,7 @@ async function completionBody(
       status: reproduction.block.status,
       problems: reproduction.problems,
     });
-    const folded = foldInDocsSweep(
+    const folded = foldInLateSummaryGates(
       `Reproduction status not recorded in the PR summary: ${
         reproduction.problems[0] ?? "`## Reproduction` block missing"
       }`,

@@ -1147,7 +1147,14 @@ other outcomes. Flip each outcome on purpose (return the lenient value
 instead of the error, treat "absent" as "failed"), run the tests, confirm at
 least one goes red, then restore it. An outcome with no test, or one whose
 flip leaves the suite green, is a blocking self-review finding: add a test
-for it.
+for it. When the run writes or refreshes a PR summary, record the
+enumeration as a `Branch outcomes:` list in its Test Plan — one line per
+outcome naming `path:line`, the outcome, the test that reaches it, and that
+flipping it went red — or `Branch outcomes: none added` when the diff adds
+no branch; every test it names must exist at the head (see **A named test
+must exist**). A fix to an existing PR re-enumerates every branch its own
+commits add, not only those a review finding named, and refreshes the list
+to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
