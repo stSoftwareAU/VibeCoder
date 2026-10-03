@@ -1354,8 +1354,8 @@ gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_ph
 Its place depends on whether the branch already has an open PR. On a branch
 with **no** PR yet, each of the four summary-rule gates — closure,
 independent review, reproduction status and docs sweep — still pre-empts the
-guard: a follow-up filed there would promise "that run's PR still completes
-#N on merge" for a PR any of those gates can still prevent from ever being
+guard: a follow-up filed there would promise "that run's PR still
+completes #N on merge" for a PR any of those gates can still prevent from ever being
 raised, so whichever gate blocks first fails the run and the guard never
 runs. On an existing-PR branch the guard instead runs from inside
 `reportSummaryRuleBlock` itself (Issue #3092), after whichever gate's own
