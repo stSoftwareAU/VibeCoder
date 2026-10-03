@@ -2762,12 +2762,16 @@ heading defers only when its `Depends on` or `Blocked by` line names a
 dependency the worker reads as open. A closed dependency, a missing `state`,
 or a lookup that fails does not defer; the committed run hands off to a
 human (`needs-human`) and raises no PR. A dependency filed during this run
-does not defer either: the worker reads that from the issue, when its author
-is this host's login or another fleet author and its `createdAt` is at or
-after the whole run started. A later execute attempt does not move that
-start. That committed run hands off to a human and raises
-no PR. Wording such as "out of scope" does not turn an older open dependency
-into that case. A bullet, or a heading with no
+does not defer either, on either path: the worker reads that from the
+issue, when its author is this host's login or another fleet author and
+its `createdAt` is at or after the whole run started. A later execute
+attempt does not move that start. A committed run hands off to a human and
+raises no PR; a no-changes run hands off the same way, straight to the
+analysis-only hand-off — bypassing the usage-limit and interrupted-run
+retries, the described-code-change retry, and the short-output failure,
+each of which would otherwise return a `failure` with no `needs-human` and
+leave the next run to defer onto a follow-up nothing picks up (Issue #3146). Wording such as "out of scope" does not turn an
+older open dependency into that case. A bullet, or a heading with no
 `Depends on` / `Blocked by` line, still continues and raises its PR. A time
 deferral or a planning marker is still honoured after a commit, so the worker
 defers or hands to planning rather than sailing through to a `Closes #N` PR. Before any of those
@@ -3045,6 +3049,12 @@ everything the existing outcomes already covered. A run that raised a mergeable
 PR is never recorded `failure` for a summary-format shortfall alone, and its
 issue stays attached to that PR instead of going back in the queue. With **no**
 PR the gate blocks exactly as before: that is what a pre-PR gate is for.
+
+The run's first summary-rule block gets the one in-run recovery turn whether
+or not the agent already raised the PR itself from inside the execute phase
+(Issue #3163): a PR the agent raised itself is not finalised or auto-merged
+until that turn has run. A block that survives that turn — the run's
+second — finalises an existing PR as before.
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

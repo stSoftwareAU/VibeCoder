@@ -186,6 +186,19 @@ export interface DeclaredOutcomeHandoff {
    * straight through to completion (Issue #3088).
    */
   declared: boolean;
+  /**
+   * True when the blocked match was excluded because the dependency was
+   * filed by this fleet during the current run (Issue #3146). Only set
+   * alongside `blocked` on the no-changes trigger — the committed path
+   * clears `blocked` instead (via its own `blockedNotOpen` exclusion) and
+   * already hands off through `declared`. The no-changes caller must hand
+   * off on this detection directly rather than falling through to its
+   * described-code-change retry or short-output failure: both return a
+   * `failure` with no `needs-human`, and on the very next run the same
+   * follow-up falls outside the run-scoped self-filed window, so the issue
+   * defers onto a follow-up nothing picks up (Issue #3146 review).
+   */
+  selfFiledDependency?: boolean;
 }
 
 /**
@@ -206,7 +219,7 @@ async function readDeclaredDependency(
     );
   } catch (err) {
     deps.logger.warn(
-      "Could not read the dependency's state — not deferring a committed run",
+      "Could not read the dependency's state",
       {
         repo,
         dependency: formatDependencyRef(dep),
@@ -267,9 +280,10 @@ export async function handOffDeclaredOutcome(
   // with no declaration line still continues. A dependency that is closed,
   // merged, missing a state, or unreadable does not defer, but the run stays
   // declared and hands off to a human instead of raising a PR (Issue #3088).
-  // A dependency filed by this fleet during the run does not defer either:
-  // that would park a human-only decision on an issue nothing picks up. The
-  // issue record decides that, not wording in the output.
+  // A dependency this fleet filed during the run does not defer on either
+  // path: that would park a human-only decision on an issue nothing picks
+  // up. The issue record decides that, not wording in the output
+  // (Issue #3146). The no-changes path does not consult open/closed state.
   const committed = trigger === "declared_handoff";
   let blocked = detectBlockedOutcome(
     claudeOutput,
@@ -282,6 +296,7 @@ export async function handOffDeclaredOutcome(
     serviceAccounts: config.serviceAccounts ?? [],
   });
   let blockedNotOpen = false;
+  let selfFiledDependency = false;
   if (blocked && committed) {
     const dependency = await readDeclaredDependency(deps, repo, blocked);
     const open = dependency?.state === "OPEN";
@@ -316,6 +331,29 @@ export async function handOffDeclaredOutcome(
       blockedNotOpen = true;
       blocked = undefined;
     }
+  } else if (blocked) {
+    // Issue #3146: keep `blocked` set so the already-resolved exclusion
+    // below still holds, but skip only the deferral, as a repeat deferral
+    // does, so the caller hands off to a human.
+    const dependency = await readDeclaredDependency(deps, repo, blocked);
+    const filedDuringRun = dependency !== undefined &&
+      dependencyFiledDuringThisRun(
+        dependency,
+        fleetAuthors,
+        state.runStartTime ?? state.executeStartTime,
+      );
+    if (filedDuringRun) {
+      logger.info(
+        "No-changes run depends on an issue this run filed — not deferring, " +
+          "handing off to a human",
+        {
+          repo,
+          issueNumber,
+          dependency: formatDependencyRef(blocked.dependency),
+        },
+      );
+      selfFiledDependency = true;
+    }
   }
   // Loop guard: a deferral holds only while the dependency gate skips the
   // issue. Back here on the *same* dependency means it did not hold, and
@@ -344,7 +382,7 @@ export async function handOffDeclaredOutcome(
       },
     );
   }
-  if (blocked && !repeatDeferral) {
+  if (blocked && !repeatDeferral && !selfFiledDependency) {
     if (committed) {
       const failed = await pushCommittedBranchForHandoff(state, deps);
       if (failed) return { blocked, declared: true, result: failed };
@@ -574,5 +612,5 @@ export async function handOffDeclaredOutcome(
   const declared = blocked !== undefined || planningRequest !== undefined ||
     timeDeferral?.kind === "invalid" || planningMarker || blockedNotOpen;
 
-  return { blocked, declared };
+  return { blocked, declared, selfFiledDependency };
 }

@@ -718,8 +718,8 @@ gitGraph
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
-- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
-- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins. See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run hands off straight to the analysis-only hand-off rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
+- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. Two overrides still win over this retry: an explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker, and a `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run — that case hands off to `needs-human` on this same run instead of retrying (Issue #3146). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
@@ -803,12 +803,18 @@ the same matrix plus an "unable to make code changes" note about five times).
 `## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
 names a dependency the worker reads as open. A closed dependency, a missing
 `state`, or a lookup that fails does not defer; the run hands off to a human
-and raises no PR. A dependency filed during this run does not defer either:
-the worker reads that from the issue, when its author is this host's login or
-another fleet author and its `createdAt` is at or after the whole run
-started. A later execute attempt does not move that start. That committed
-run hands off to a human and raises no PR. Wording such as
-"out of scope" does not turn an older open dependency into that case. A bullet, or a heading with no declaration line, still
+and raises no PR. A dependency filed during this run does not defer
+either, on either path: the worker reads that from the issue, when its
+author is this host's login or another fleet author and its `createdAt`
+is at or after the whole run started. A later execute attempt does not
+move that start. A committed run hands off to a human and raises no PR; a
+no-changes run hands off the same way, straight to the analysis-only
+hand-off below — bypassing the usage-limit and interrupted-run retries, the
+described-code-change retry, and the short-output failure, each of which
+would otherwise return a `failure` with no `needs-human` and leave the next
+run to defer onto a follow-up nothing picks up (Issue #3146). Wording such as "out of scope" does not turn an older open
+dependency into that case. A bullet, or a heading with no declaration
+line, still
 continues and raises its PR. A
 `vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
 read after a commit, so the worker defers or hands to planning instead of
@@ -1174,6 +1180,23 @@ contains the forbidden thing and a run with the guard broken on purpose that
 goes red; a negative test that stays green without its guard is a blocking
 self-review finding.
 
+**A refusal test must be refused by the rule it names (Issue #3162).** A
+test that only checks *that* an input was refused passes on a refusal from
+any rule. Fleet PRs were sent back for exactly that: GRQ-AutoTrader#2386's
+schema/loader agreement test probed fields both sides refused for a
+missing companion field, so nothing was compared, and its review-fix push
+left an off-step probe refused by a cross-field rule, hiding a real
+`multipleOf` drift; GRQ-AutoTrader#2393 added a retired-field check that
+now refuses an untouched test's input at the write boundary before it
+reaches the `EquityRequired` rule the test is named for; and in
+VibeCoder#3079 a fake that threw led to the `false` the test expected. The
+guidelines, the issue prompt's Test Plan step and the pr_feedback prompt
+now require asserting the specific error variant or rule, an input that
+satisfies every other rule (the same input with only the probed value made
+legal is accepted, by both sides for a comparison test), and a re-run of
+the existing later-refusal tests whenever a change adds an earlier
+refusal.
+
 **Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
 also sent back for a new branch with one outcome no test reached: a
 stale-remote guard whose stubs all returned `ls-remote` exit 0, so
@@ -1334,12 +1357,12 @@ that passes all three reaches this gate's own, standalone block.
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
-agent one more turn before a block with no PR stands, and a branch that
-already carries a PR instead finalises as `summary_incomplete`. That one
-turn is shared: a summary missing both an earlier gate's requirement and the
-Docs sweep line is asked for both at once, in the earlier gate's notice,
-rather than losing the sweep to a second, unrecovered block (Issue #3085
-review).
+agent one more turn on the run's first block, whether or not the branch
+already carries a PR (Issue #3163); only a second block on an existing-PR
+branch finalises as `summary_incomplete`. That one turn is shared: a summary
+missing both an earlier gate's requirement and the Docs sweep line is asked
+for both at once, in the earlier gate's notice, rather than losing the sweep
+to a second, unrecovered block (Issue #3085 review).
 
 ## 🚫 A leftover placeholder token blocks the summary
 
@@ -1559,14 +1582,18 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists and a summary rule is unmet, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
-With **no** PR for the run's branch the run recovers in-run before the block
-stands — see [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
-below. Either way the gate's remediation comment is posted, so the shortfall is
-on the issue thread rather than only in one host's log.
+The run's **first** summary-rule block recovers in-run before it stands,
+whether or not the run's branch already carries a PR (Issue #3163) — see
+[the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
+An existing PR is not finalised, labelled or auto-merged across that turn;
+only a block that survives the recovery (the run's second such block) on an
+existing-PR branch finalises as `summary_incomplete`. Either way the gate's
+remediation comment is posted, so the shortfall is on the issue thread rather
+than only in one host's log.
 
 A degraded run on an existing-PR branch is the exception to `summary_incomplete`.
 When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
@@ -1657,12 +1684,12 @@ flowchart TD
     WF -->|"finding or unreadable"| F2
     WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}
     G -->|yes| PR["gh pr create"]
-    G -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
-    Q -->|no| R{"First summary-rule block<br/>of this run?"}
-    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242)"]
+    G -->|no| R{"First summary-rule block<br/>of this run?"}
+    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
+    R -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
+    Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -1705,12 +1732,30 @@ now recover the way the security-fix gate does
 4. whatever the recovery produced is committed on the issue branch;
 5. the quality gate runs again over the changed tree, then the completion gates.
 
-A run that satisfies the gate on the re-run raises its PR. A **second** block in
-the same run fails exactly as a block did before, with the comment already on
-the thread — the same verdict is never posted twice, so the thread records the
-shortfall rather than the number of attempts at it. A recovery invocation the
-worker could not launch at all — a rate limit, a failed spawn — changed nothing
-on the branch, so the original block stands unaltered.
+A run that satisfies the gate on the re-run raises its PR, or, when the run's
+branch already carried a PR from the execute phase, updates and finalises that
+same PR — no second PR is opened. A **second** block in the same run is not
+recovered again: with no PR it fails exactly as a block did before, with the
+comment already on the thread; on an existing-PR branch that PR is finalised
+as `summary_incomplete` (Issue #1140). The same verdict is never posted
+twice, so the thread records the shortfall rather than the number of attempts
+at it. A recovery invocation the worker could not launch at all — a rate
+limit, a failed spawn — changed nothing on the branch: with no PR the
+original block stands unaltered; with an existing PR, completion re-runs and
+that block finalises the PR as `summary_incomplete` rather than failing the
+run over a live PR and returning the issue to the claimable pool for a
+sibling host to redo finished work (Issue #1140).
+
+**Issue #3163.** Before this, a block on a branch that already carried a
+PR — raised by the agent itself from inside the execute phase — skipped the
+recovery turn entirely and finalised that PR as `summary_incomplete`
+straight from the gate comment. VibeCoder#3155, #3158 and #3159 all shipped
+this way: the gate comment landed on the issue seconds after the agent's own
+PR, with no chance to fix the summary, and #3159 went out still describing
+the old no-changes deferral in this manual. The run's first block now always
+takes the one recovery turn, whichever kind of branch it is on; a block that
+survives that turn is handled as before: finalised as `summary_incomplete`
+when a PR exists, failed when none does.
 
 All five summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073) and the placeholder-token
