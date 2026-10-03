@@ -345,12 +345,31 @@ least one goes red, then restore it. An outcome with no test, or one whose
 flip leaves the suite green, is a blocking self-review finding: add a test
 for it.
 
+**A new path to an existing outcome keeps that outcome's guards.** When a
+change adds an early return, a new gate or route, or a direct call that
+reaches an outcome an existing path already reaches — finalising or raising a
+PR, publishing UI or state, charging a retry or attempt, ending a claimed
+task — first list every guard and side effect the existing path applies
+before that outcome: the degraded-run guard, ticket and freshness checks,
+spacing and attempt limits, replying to or releasing a claim. For each one,
+either make the new path apply it (or order the new branch after it), or
+state in the PR summary why it does not apply. For each guard the new path
+keeps, add a test that reaches the new path while the guard's trigger
+condition holds and asserts the guard's effect, then move the new branch
+ahead of the guard (or remove the guard call) and confirm the test goes red.
+List the guards kept and excluded in the PR summary. A new path that skips an
+existing path's guard with no stated reason is a blocking self-review finding
+(Issue #3087).
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
 check each named path with `git ls-files <path>`; a named-but-absent test is a
 blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist.
+an anchor that references a test that does not exist. A test cited as evidence
+is also run on the final head and its result reported, and a coverage claim
+names the branches its tests exercise — "every branch" with one branch
+untested is an over-claim (Issue #3058).
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's
@@ -401,7 +420,9 @@ blocking self-review finding (Issue #3021).
   needs a test that goes red without it** above. Each outcome of a branch you
   add needs its own test, and a test double that overrides a default or stubs
   past the branch does not count — see **Every outcome of a branch you add
-  needs a test that reaches it** above.
+  needs a test that reaches it** above. A new early return or route to an
+  outcome an existing path reaches keeps that path's guards — see **A new
+  path to an existing outcome keeps that outcome's guards** above.
 
 Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an
@@ -936,9 +957,11 @@ for every PR summary — containing:
 3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
-   Always add a one-line **Docs sweep** — the grep terms searched and the
-   doc files updated, or `no hits` (see
-   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)).
+   Always add a one-line **Docs sweep** — the grep terms searched, the doc
+   files updated, and the manual `section:` read for the changed surface, or
+   `no hits` (see
+   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
+   worker refuses to raise a PR whose diff changes code with no such line.
 4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
@@ -949,7 +972,26 @@ files) matches the head. Every file or behaviour the summary says the PR changes
 must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
 from the base branch can supersede the change — and an abandoned iteration's
 description is replaced by the one that shipped. A summary that contradicts the
-diff is a blocking self-review finding. Any later commit on the branch — a
+diff is a blocking self-review finding. The same holds for every doc the diff
+adds or edits — a README or `docs/` page, an audit record, the doc comment
+above a changed function: each assertion it makes must match the head code.
+After any merge of the base branch into the branch, re-verify each claim; one
+whose subject the merge absorbed is dropped, or the work redone. A
+Standards-review violation the diff itself introduced is fixed before the PR
+is raised, never listed as standing, and a PR whose core deliverable is
+`missing` is not raised over a `Closes #<n>` — finish the work, except when
+the core deliverable is genuinely blocked on another open issue after work
+is committed: then record that criterion as `missing` and name the blocking
+dependency beside the closing keyword. In an issue run, a hand-off (the
+planning marker or the escape hatch) is honoured only while the branch has
+no commits and no uncommitted changes against the base; once work is
+committed the issue run is routed to the PR regardless of a planning or
+escape-hatch marker (Issue #3058). A CI-fix run is the exception: a check
+already red on the base branch still defers on a `Depends on owner/repo#N`
+line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
+in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
+honoured on a committed PR branch when `.pr_response_message` names a
+follow-up issue. Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
