@@ -431,6 +431,87 @@ Deno.test("fileDegradedFollowUp - reuses the open follow-up for the same parent"
   assert(!calls.some((c) => c[1] === "create"), "must not file a second one");
 });
 
+Deno.test("fileDegradedFollowUp - #3145: a reused follow-up is brought up to date with the later run's shortfalls", async () => {
+  const calls: string[][] = [];
+  const oldBody = [
+    `<!-- finding-id: ${degradedFollowUpFindingId(42)} -->`,
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- **missing** — An old criterion the first run missed.",
+  ].join("\n");
+  const existing = JSON.stringify([{
+    number: 70,
+    body: oldBody,
+    author: { login: "vibe-bot" },
+  }]);
+  const verdict = degradedVerdict();
+  const result = await fileDegradedFollowUp({
+    repo: "o/r",
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict,
+    runId: "vibe-test-3145a",
+    dedupAuthors: FLEET,
+    gh: (args) => {
+      calls.push(args);
+      if (args[1] === "list") return Promise.resolve(existing);
+      if (args[1] === "edit") return Promise.resolve("");
+      return Promise.reject(new Error(`unexpected gh call: ${args[1]}`));
+    },
+  });
+  assertEquals(result, { ok: true, value: { number: 70, reused: true } });
+  assert(!calls.some((c) => c[1] === "create"), "must not file a second one");
+  const edits = calls.filter((c) => c[1] === "edit");
+  assertEquals(edits.length, 1);
+  const edit = edits[0]!;
+  assertEquals(edit[0], "issue");
+  assertEquals(edit[1], "edit");
+  assertEquals(edit[2], "70");
+  assertEquals(edit[3], "--repo");
+  assertEquals(edit[4], "o/r");
+  const bodyIndex = edit.indexOf("--body");
+  assert(bodyIndex !== -1, "edit must carry --body");
+  const body = edit[bodyIndex + 1]!;
+  const expected = buildDegradedFollowUpIssue({
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict,
+    runId: "vibe-test-3145a",
+  }).body;
+  assertEquals(body, expected);
+  assertStringIncludes(body, "The docs table lists opus for planning.");
+  assertStringIncludes(body, `finding-id: ${degradedFollowUpFindingId(42)}`);
+  assertStringIncludes(body, "vibe-test-3145a");
+  assert(
+    !body.includes("An old criterion the first run missed."),
+    "the stale shortfall must not survive the update",
+  );
+});
+
+Deno.test("fileDegradedFollowUp - #3145: a reused follow-up that cannot be updated is an error, not a silent pass", async () => {
+  const existing = JSON.stringify([{
+    number: 70,
+    body: `<!-- finding-id: ${degradedFollowUpFindingId(42)} -->`,
+    author: { login: "vibe-bot" },
+  }]);
+  const result = await fileDegradedFollowUp({
+    repo: "o/r",
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict: degradedVerdict(),
+    runId: "vibe-test-3145b",
+    dedupAuthors: FLEET,
+    gh: (args) =>
+      args[1] === "list"
+        ? Promise.resolve(existing)
+        : Promise.reject(new Error("HTTP 502")),
+  });
+  assertEquals(result.ok, false);
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "#70");
+});
+
 Deno.test("fileDegradedFollowUp - a failed create is an error, not a silent pass", async () => {
   const result = await fileDegradedFollowUp({
     repo: "o/r",
