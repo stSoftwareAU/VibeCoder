@@ -76,3 +76,11 @@ once nothing is left unpushed. A failed push returns that failure and posts
 no comment. The phase never raises a pull request. A path with no declared
 signal returns `{ status: "continue" }` and leaves `bump_deps` →
 `quality_gate` → `completion` to open the PR.
+
+## sweptAt
+
+`sweptAt` stays `f2be890ba42f48401c7b94e0c35d87febdf888db`, which is on
+`main`. The push this reading covers is only on this branch. Issue #2754
+forbids recording a branch commit as `sweptAt`: squash-merge deletes it, and
+`sweep-drift` then fails on a missing object. The ledger is repointed with
+`git merge-base origin/main HEAD` once that commit is on `main`.
