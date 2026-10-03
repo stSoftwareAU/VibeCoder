@@ -2248,6 +2248,8 @@ export async function createProductionRunCoreDeps(
             repoConfigs: config.repoConfig,
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
+            // Issue #3089: feeds the refreshed PR body's footer.
+            workerName: config.workerName,
           },
         );
 
@@ -2493,6 +2495,9 @@ export async function createProductionRunCoreDeps(
             fleetLogins: resolveFleetMaintenanceAuthorSet(fleetPrAuthorInput),
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
+            // Issue #3089: feed the refreshed PR body's footer.
+            workerName: config.workerName,
+            githubUser,
           },
         );
 
@@ -2886,6 +2891,9 @@ export async function createProductionRunCoreDeps(
             // Issue #1247: the abandon rung reads its restart bound off comment
             // markers, so it needs to know whose markers count.
             trustedAuthors,
+            // Issue #3089: feed the refreshed PR body's footer.
+            workerName: config.workerName,
+            githubUser,
           });
 
           if (!result.ok) {

@@ -75,7 +75,8 @@ flowchart TD
    - Create a `.pr_response_message` file summarising the fix
 7. **Quality gate** — If Claude made changes, the worker runs quality checks (`./quality.sh` or the repository's custom quality command). If quality fails, Claude is retried once.
 8. **Commit and push** — Changes are committed with the message `Fix CI failure ($check_name) for PR #$pr_number` and pushed.
-9. **Reply** — The worker posts a comment on the PR with the fix summary from `.pr_response_message`, or a generic message if none was provided.
+9. **Re-sync the description** — After that push is verified on the PR's own head, and only when the push changed `docs/archive/pr-summaries/pr-summary-<N>.md`, the worker rebuilds the PR description from the summary. Fix branches are skipped, and only a PR the worker authored is edited. A failed sync is logged once at warning and does not fail the run (Issue #3089).
+10. **Reply** — The worker posts a comment on the PR with the fix summary from `.pr_response_message`, or a generic message if none was provided.
 
 ## 🔁 The reproduction loop before the fix
 

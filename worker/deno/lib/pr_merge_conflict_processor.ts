@@ -65,6 +65,7 @@ import {
 import { assertPushTargetAllowed, resolvePreFlightSpec } from "./git_push.ts";
 import { buildPushArgs } from "./git_ref_args.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
+import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
 import {
@@ -270,6 +271,22 @@ export interface MergeConflictProcessorDeps {
    * seconds never reads a wall clock.
    */
   nowMsFn?: () => number;
+  /**
+   * Override the PR body refresh after a successful push (Issue #3089).
+   * Injected by tests; production leaves it undefined and gets
+   * {@link syncPrBodyFromSummary}.
+   */
+  syncPrBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Configured worker name, used in the refreshed PR body's footer
+   * (Issue #3089). Omitted → empty string.
+   */
+  workerName?: string;
+  /**
+   * The run's resolved worker GitHub login, used as the refreshed PR body's
+   * footer fallback (Issue #3089). Omitted → falls back to `GITHUB_USER`.
+   */
+  githubUser?: string;
 }
 
 /** What the human must do when the worker gives up on a conflict. */
@@ -1475,6 +1492,29 @@ async function resolveConflict(
       timer,
     );
   }
+
+  // Refresh the PR body from a rewritten summary file (Issue #3089), now
+  // that the merge is verified on the PR's own branch. A failed sync must
+  // never fail an otherwise-resolved conflict.
+  const syncFn = processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary;
+  await runPrBodySync(
+    {
+      repo,
+      prNumber,
+      repoPath: workDir,
+      beforeSha: headBeforeMerge ?? undefined,
+      workerName: processorDeps.workerName ?? "",
+      githubUser: processorDeps.githubUser ??
+        Deno.env.get("GITHUB_USER") ?? "",
+      runId: getRunId(),
+    },
+    {
+      runGhCommand: deps.github.runGhCommand,
+      runGitCommand: run,
+      logger,
+    },
+    syncFn,
+  );
 
   const detail = await agentReply();
   try {
