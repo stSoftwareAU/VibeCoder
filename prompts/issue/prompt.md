@@ -934,7 +934,17 @@ The file MUST contain:
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
    merged or reranked
-7. **Test Plan**: List the tests added or modified. Every test named here or
+7. **Test Plan**: List the tests added or modified. Write a result line only
+   after the command has run on the final head, and state the actual outcome
+   (passed, or failed with its first error) — never write a placeholder token
+   to fill in later. The worker catches an unfilled ALL-CAPS ..._PLACEHOLDER
+   token written outside backticks and code blocks — for example
+   SOMETHING_PLACEHOLDER in prose. It blocks PR creation, or records the
+   shortfall against a PR the run already raised. A token inside backticks or
+   a code block is not caught, and it is still never acceptable in place of
+   a result. If a gate was not run, say so plainly with the
+   `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
+   above describes. Every test named here or
    under Evidence must exist at the head — in the diff or already tracked;
    check each path with `git ls-files <path>` before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
@@ -990,6 +1000,12 @@ flowchart LR
     A[Issue] --> B[Plan] --> C[PR]
 ```
 ````
+
+Every evidence or result line in the skeleton below — the `./quality.sh`
+verdict under Acceptance Criteria, the Reproduction status, the Test Plan
+entry — follows the rule under **Test Plan** above: write it only after the
+check has actually run against the head, with its real outcome, never a
+placeholder token.
 
 This is the shape your own `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md`
 should take — these sections, in this order (the `## Reproduction` block only for
