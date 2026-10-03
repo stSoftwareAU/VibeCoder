@@ -1152,6 +1152,19 @@ argument. The guidelines and the issue prompt's Test Plan step now require
 reverting each changed call site on its own and seeing a test go red; a call
 site whose revert leaves the suite green is a blocking self-review finding.
 
+**Narrowing a shared helper changes every caller (Issue #3100).** A
+stricter validator added for one new call site also rejects values its
+existing callers legitimately pass. Fleet PRs narrowed a shared helper and
+broke callers they never checked: VibeCoder#2881 made `assertSafeGitRef`
+reject `feature/-wip`, a valid branch name an existing caller passes; and
+VibeCoder#3095 made `validateGhIssueJson` reject `MERGED`, a state `gh`
+really returns. The guidelines now require listing the helper's existing
+callers and the real values each can receive, checked against the tool's
+actual output; keeping the shared helper as it was and applying the stricter
+rule at the new call site when any caller can pass a rejected value;
+otherwise adding a test that an existing caller still accepts its real
+inputs; and listing the callers checked in the PR summary.
+
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
 new route skipped a guard the old one applied: VibeCoder#3085 ran
