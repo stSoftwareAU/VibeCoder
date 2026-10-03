@@ -20,6 +20,7 @@ import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { deriveRunOutcome } from "../lib/run_outcome.ts";
 
 const SHA = "9a8b7c6d5e4f30291827364554637281900fedcb";
 const ISSUE = 518;
@@ -216,6 +217,9 @@ interface Outcome {
   reason?: string;
   issueCreates: string[][];
   prBodies: string[];
+  /** Set when the run recorded an existing PR on its state (Issue #2044). */
+  prUrl?: string;
+  prNumber?: number;
 }
 
 const EXISTING_PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/777";
@@ -343,6 +347,8 @@ async function runCompletion(opts: {
       : undefined,
     issueCreates,
     prBodies,
+    prUrl: state.prUrl,
+    prNumber: state.prNumber,
   };
 }
 
@@ -605,6 +611,20 @@ Deno.test("completion - a degraded run blocked by the independent-review gate wh
     0,
     "the PR must not be recovered/finalised when the follow-up cannot be filed",
   );
+  assertEquals(outcome.prUrl, EXISTING_PR_URL);
+  assertEquals(outcome.prNumber, 777);
+  const derived = deriveRunOutcome({
+    success: false,
+    phase: "completion",
+    reason: outcome.reason ?? "",
+    prUrl: outcome.prUrl,
+    prNumber: outcome.prNumber,
+  });
+  assertEquals(derived.kind, "pr");
+  if (derived.kind === "pr") {
+    assertEquals(derived.prNumber, 777);
+    assert(derived.blocked, "a live PR is recorded as blocked, not no_pr");
+  }
 });
 
 Deno.test("completion - a degraded run blocked by the independent-review gate on a branch with no PR files no follow-up", async () => {

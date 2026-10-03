@@ -543,7 +543,14 @@ async function reportSummaryRuleBlock(
     { repo, issueNumber, prUrl, reason },
   );
   const guarded = await applyDegradedDeliveryGuard(ctx, state, prBody, deps);
-  if (!guarded.ok) return guarded.result;
+  if (!guarded.ok) {
+    // The follow-up could not be filed, so the PR stays unfinalised — but it
+    // is still the run's PR. Naming it here is what makes the outcome `pr`
+    // + `blocked` instead of `no_pr` over a live PR (Issue #2044).
+    state.prUrl = prUrl;
+    state.prNumber = prNumberFromUrl(prUrl);
+    return guarded.result;
+  }
   const recovered = await recoverAndFinaliseExistingPr(
     prUrl,
     ctx,
@@ -591,12 +598,13 @@ async function reportSummaryRuleBlock(
  *
  * Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
  *
- * Issue #3092: called both from the gate chokepoint below for a run that has
- * not yet raised a PR, and from `reportSummaryRuleBlock`'s existing-PR
- * branch, immediately before it recovers and finalises that PR — so every
- * summary-rule gate records the degraded follow-up before the PR that would
- * close the issue is finalised, not only the three gates that happened to
- * run ahead of this guard in source order.
+ * Issue #3092: also called from `reportSummaryRuleBlock`'s existing-PR
+ * branch, immediately before it recovers and finalises that PR. Before
+ * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
+ * because that gate ran after the guard; the closure, independent-review
+ * and reproduction-status gates ran ahead of it and skipped it. The call
+ * in `completionBody` runs once all four gates pass, whether the PR is
+ * then raised or recovered.
  *
  * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
  *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
@@ -640,7 +648,7 @@ async function applyDegradedDeliveryGuard(
       // Raising the PR now would close the issue with the residue recorded
       // nowhere — the exact silent loss this guard exists to stop.
       logger.error(
-        "Degraded run: could not file the follow-up for its undelivered scope — no PR raised",
+        "Degraded run: could not file the follow-up for its undelivered scope — failing the run without finalising a PR",
         { error: followUp.error.message },
       );
       return {

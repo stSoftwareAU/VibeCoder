@@ -59,7 +59,8 @@ Otherwise, merging the PR closes the issue and the undelivered scope is lost.
 - **The no-PR branch still files nothing.** This keeps the #3085 review
   decision: no follow-up for a PR that was never raised.
 - **Filing fails loud.** When the follow-up cannot be filed, the run fails and
-  the PR is not finalised. This matches the existing new-PR behaviour.
+  the PR is not finalised. The existing PR is still named on the run state, so
+  the outcome is `pr` + `blocked` rather than `no_pr` over a live PR.
 
 ### Undiscoverable Facts
 

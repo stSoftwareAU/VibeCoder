@@ -1359,14 +1359,13 @@ completes #N on merge" for a PR any of those gates can still prevent from ever b
 raised, so whichever gate blocks first fails the run and the guard never
 runs. On an existing-PR branch the guard instead runs from inside
 `reportSummaryRuleBlock` itself (Issue #3092), after whichever gate's own
-comment is posted but before that gate's recovery finalises the PR — so
-every gate takes the guard with it uniformly, rather than only the gates
-ahead of one fixed point in the chokepoint (the ordering VibeCoder#3085
-first established, and VibeCoder#3092 found still let the docs-sweep gate
-skip the guard on an existing-PR branch because that gate ran after the
-guard's one inline call site). Once all four gates pass, the same guard
-runs once more — via the shared `applyDegradedDeliveryGuard` helper — ahead
-of raising a brand new PR:
+comment is posted but before that gate's recovery finalises the PR. Before
+#3092 only the docs-sweep gate took the guard on an existing-PR branch,
+because that gate ran after the guard; the closure, independent-review and
+reproduction-status gates ran ahead of the guard and skipped it. Once all
+four gates pass, `completionBody` runs the same guard once more — via the
+shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
+or recovered:
 
 ```mermaid
 flowchart TD
@@ -1435,7 +1434,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists and a summary rule is unmet | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists and a summary rule is unmet, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -1443,6 +1442,11 @@ With **no** PR for the run's branch the run recovers in-run before the block
 stands — see [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
 below. Either way the gate's remediation comment is posted, so the shortfall is
 on the issue thread rather than only in one host's log.
+
+A degraded run on an existing-PR branch is the exception to `summary_incomplete`.
+When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
+The outcome is `pr` + `blocked` naming that PR, so the release comment does not
+report the run as having delivered nothing.
 
 **Two gates are deliberate exceptions, and they run first.** The changed-workflow
 file checks above are the second: a workflow file carrying a finding is a defect
