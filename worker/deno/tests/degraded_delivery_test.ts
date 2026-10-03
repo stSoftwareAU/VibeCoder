@@ -148,6 +148,75 @@ Deno.test("assessDegradedDelivery - a degraded run names each criterion short of
   ]);
 });
 
+/** Same three criteria as SUMMARY_PARTIAL, but entries reordered and the
+ * floor entry split out, so a positional match would misattribute every
+ * status (Issue #3128). */
+const SUMMARY_REORDERED = `## Summary
+
+Did some of it.
+
+## Acceptance Criteria
+
+- **missing** — the release floor is 1.9.0 — reviewer: missing — reason: ran out of turns
+- **met** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: met
+- **met** — the docs table lists opus for planning — evidence: \`docs/MODEL-AND-CACHING.md\` — reviewer: met
+`;
+
+Deno.test("assessDegradedDelivery - #3128: closure entries out of order are matched by content, not position", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: SUMMARY_REORDERED,
+  });
+  assertEquals(verdict.delivered, [
+    "The router sends planning to opus.",
+    "The docs table lists opus for planning.",
+  ]);
+  assertEquals(verdict.shortfalls, [
+    { criterion: "The release floor is 1.9.0.", status: "missing" },
+  ]);
+
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict,
+    runId: "vibe-test-reorder",
+  });
+  assertStringIncludes(issue.body, "The release floor is 1.9.0.");
+  assertStringIncludes(issue.body, "The router sends planning to opus.");
+  const deliveredSection = issue.body.split("## Already delivered")[1]!;
+  assert(!deliveredSection.includes("The release floor is 1.9.0."));
+});
+
+/** The first criterion split across a `met` entry and a `missing` entry; the
+ * other two keep their own separate entries (Issue #3128). */
+const SUMMARY_SPLIT_CRITERION = `## Summary
+
+Did some of it.
+
+## Acceptance Criteria
+
+- **met** — the router sends planning to opus for the eight planning phases — evidence: \`lib/config_defaults.ts\` — reviewer: met
+- **missing** — the router sends planning to opus for the ninth phase — reviewer: missing — reason: forgot one
+- **met** — the docs table lists opus for planning — evidence: \`docs/MODEL-AND-CACHING.md\` — reviewer: met
+- **met** — the release floor is 1.9.0 — evidence: \`.release-floor\` — reviewer: met
+`;
+
+Deno.test("assessDegradedDelivery - #3128: a criterion split across a met and a missing entry reads missing", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: SUMMARY_SPLIT_CRITERION,
+  });
+  assertEquals(verdict.shortfalls, [
+    { criterion: "The router sends planning to opus.", status: "missing" },
+  ]);
+  assertEquals(verdict.delivered, [
+    "The docs table lists opus for planning.",
+    "The release floor is 1.9.0.",
+  ]);
+});
+
 Deno.test("assessDegradedDelivery - a degraded run that met every criterion has no shortfall", () => {
   const verdict = assessDegradedDelivery({
     claudeResults: HAIKU_FALLBACK,

@@ -31,11 +31,15 @@
  * The degraded verdict is the one {@link buildDegradationReport} gives the
  * run-stats comment, so the two can never disagree about a run — except that
  * a previous generation of the requested tier (a stale container) does not
- * count here: the run was not handed to a fallback model. A scope item
- * is delivered only when the PR summary's closure block marks it `met`; a
- * `partial` or `missing` entry, or no entry at all, is a shortfall. A degraded
- * run on an issue that states no scope names the issue itself as unverified,
- * since there is nothing narrower to name.
+ * count here: the run was not handed to a fallback model. Closure entries are
+ * matched to scope items by their words, not by their position in the list
+ * (Issue #3128): an entry that matches no scope item, or matches more than
+ * one equally well, assesses nothing, so that item reads `unassessed`; one
+ * split across several entries takes their worst status. A scope item is
+ * delivered only when it is matched to a `met` entry (and nothing worse); a
+ * `partial` or `missing` match, or no match at all, is a shortfall. A
+ * degraded run on an issue that states no scope names the issue itself as
+ * unverified, since there is nothing narrower to name.
  *
  * Only a `partial` or `missing` shortfall files a follow-up (Issue #2695). An
  * `unassessed` item carries no evidence of a gap — the run said nothing about
@@ -59,6 +63,7 @@ import {
   extractAcceptedScope,
   parseClosureEntries,
 } from "./acceptance_criteria_gate.ts";
+import { matchClosureStatuses } from "./closure_criterion_match.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { IMPLEMENTATION_RUN_STATS_PHASE } from "./issue_run_stats_comment.ts";
 import {
@@ -141,15 +146,18 @@ export function assessDegradedDelivery(args: {
 
   const stated = extractAcceptedScope(args.issueBody);
   const scope = stated.length > 0 ? stated : [UNSTATED_SCOPE_ITEM];
-  // The closure block carries one assessment per criterion, in criterion
-  // order; `unrequested` entries describe the diff, not the scope.
-  const assessments = parseClosureEntries(args.prBody)
-    .filter((entry) => entry.status !== "unrequested");
+  // Closure entries are matched to criteria by their words, not by list
+  // position (Issue #3128): an entry that matches no criterion, or more than
+  // one equally well, assesses nothing, so its criterion is `unassessed`; a
+  // criterion split across several entries takes their worst status.
+  const matched = stated.length > 0
+    ? matchClosureStatuses(stated, parseClosureEntries(args.prBody))
+    : [];
 
   const delivered: string[] = [];
   const shortfalls: DegradedShortfall[] = [];
   scope.forEach((criterion, index) => {
-    const status = stated.length > 0 ? assessments[index]?.status : undefined;
+    const status = stated.length > 0 ? matched[index] : undefined;
     if (status === "met") {
       delivered.push(criterion);
     } else if (status === "partial" || status === "missing") {

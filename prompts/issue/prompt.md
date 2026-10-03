@@ -646,7 +646,9 @@ Rules — a gate checks these before the PR is raised, and blocks PR creation wh
 one is broken:
 
 - **Every stated criterion gets an entry.** A criterion you did not touch is
-  `missing`, not omitted.
+  `missing`, not omitted. Write `<criterion>` in the issue's own words — the
+  degraded-run guard matches each entry to its criterion by those words, not
+  by position, so a paraphrased entry counts as unassessed.
 - **`met` and `partial` must name the evidence** — the file, the test, or the
   test identifier that demonstrates it. "Implemented" with nothing to point at
   is not evidence.

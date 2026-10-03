@@ -1420,7 +1420,11 @@ flowchart TD
   neither is named whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
-  is a shortfall.
+  is a shortfall. Entries are matched to scope items by their words, not by
+  position (Issue #3128): an entry matching no criterion, or two equally
+  well, assesses nothing, so that criterion counts as `unassessed`. A
+  criterion split across several entries takes the worst of their statuses
+  (`missing` beats `partial` beats `met`).
 - **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).
   An `unassessed` item carries no evidence of a gap, and a follow-up built only
   from those just restated the whole issue as a `Finish #N` ticket no later run
