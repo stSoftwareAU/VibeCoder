@@ -1,48 +1,47 @@
 /**
- * Tests for the "defect as a class" rule (Issue #3114).
- *
- * Review-fix runs repeatedly fixed only the locations a finding listed and
- * left other instances of the same defect class live in the head — other
- * builders of the same shape, the other order of a race, later iterations
- * of the same loop, and the same claim repeated in test names — so the
- * re-review raised the finding again as only partly fixed
+ * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
+ * Issue #3114 — review-fix runs repeatedly fixed only the locations a
+ * finding listed and left other instances of the same defect class live in
+ * the head — other builders of the same shape, the other order of a race,
+ * later iterations of the same loop, and the same claim repeated in test
+ * names — so the re-review raised the finding again as only partly fixed
  * (VibeCoder#3066, #3068, #3065, GRQ-AutoTrader#2210, #2220). Issue #3114
  * extends the Issue #3086 rule to require stating the defect as a class and
  * checking every other instance of that class, not only the one the finding
  * named.
  *
- * The assertions run against the current template, so a later edit that
- * drops the rule fails in CI.
+ * This pins a prompt rule the code cannot express: the pr_feedback prompt and
+ * its operator manual must both keep carrying the sharpened wording, so a
+ * later edit that drops or waters it down fails here rather than silently.
+ *
+ * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { assert } from "@std/assert";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+const PARAGRAPH_START =
+  "**Fix the defect everywhere it lives, not only where the finding points.**";
 
-async function load(type: string): Promise<string> {
-  const result = await loadPrompt(type, PROMPTS_DIR);
-  assertEquals(result.ok, true, `${type} failed to load`);
-  if (!result.ok) throw new Error(`${type} failed to load`);
-  return result.value;
+function defectClassParagraph(sectionText: string): string {
+  const start = sectionText.indexOf(PARAGRAPH_START);
+  assert(start >= 0, "could not locate the 'fix the defect everywhere' rule");
+  const end = sectionText.indexOf("\n\n", start);
+  const paragraph = end >= 0
+    ? sectionText.slice(start, end)
+    : sectionText.slice(start);
+  return flat(paragraph).trim().toLowerCase();
 }
 
-function lower(text: string): string {
-  return text.toLowerCase();
-}
-
-Deno.test("pr_feedback - states the defect as a class and checks every other instance of it", async () => {
-  const body = lower(await load("pr_feedback"));
-
-  const marker =
-    "**fix the defect everywhere it lives, not only where the finding points.**";
-  const start = body.indexOf(marker);
-  assert(start !== -1, "expected the 'fix the defect everywhere' paragraph");
-  const end = body.indexOf("\n\n", start);
-  const paragraph = end === -1 ? body.slice(start) : body.slice(start, end);
+Deno.test("pr_feedback Making Changes states the defect as a class (Issue #3114)", async () => {
+  const making = section(
+    await readRepoDoc("prompts/pr_feedback/prompt.md"),
+    "Making Changes",
+  );
+  const paragraph = defectClassParagraph(making);
 
   for (
-    const required of [
+    const phrase of [
       "a finding's locations are examples, not the list",
       "state the defect as a class",
       "every caller or builder of the same shape",
@@ -55,33 +54,69 @@ Deno.test("pr_feedback - states the defect as a class and checks every other ins
       "another instance of the class left in the head is a blocking self-review finding",
     ]
   ) {
-    assertStringIncludes(paragraph, required);
+    assert(
+      paragraph.includes(phrase),
+      `Making Changes is missing "${phrase}" from the defect-class rule: ${paragraph}`,
+    );
   }
 });
 
-Deno.test("pr_feedback - Change Scope names another caller and another order of the same race", async () => {
-  const body = lower(await load("pr_feedback"));
-
-  const start = body.indexOf("## change scope");
-  assert(start !== -1, "expected a '## Change Scope' section");
-  const next = body.indexOf("\n## ", start + 1);
-  const section = next === -1 ? body.slice(start) : body.slice(start, next);
+Deno.test("pr_feedback Change Scope names another caller and another order of the same race (Issue #3114)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Change Scope",
+    ),
+  ).toLowerCase();
 
   for (
-    const required of [
+    const phrase of [
       "another caller of the same shape",
       "another order of the same race",
     ]
   ) {
-    assertStringIncludes(section, required);
+    assert(
+      text.includes(phrase),
+      `Change Scope is missing "${phrase}": ${text}`,
+    );
   }
 });
 
-Deno.test("pr_feedback - the reply names which other instances were fixed", async () => {
-  const body = lower(await load("pr_feedback"));
+Deno.test("pr_feedback Response Message names which other instances were fixed (Issue #3114)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Response Message",
+    ),
+  ).toLowerCase();
 
-  assertStringIncludes(
-    body,
-    "for each finding the other paths and copies you checked and which other instances you fixed",
+  assert(
+    text.includes(
+      "for each finding the other paths and copies you checked and which other instances you fixed",
+    ),
+    `Response Message is missing the "which other instances you fixed" wording: ${text}`,
   );
+});
+
+Deno.test("pr-feedback operator manual pins the Issue #3114 defect-class rule", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("docs/workflows/pr-feedback.md"),
+      "Fix the defect everywhere it lives",
+    ),
+  ).toLowerCase();
+
+  for (
+    const phrase of [
+      "issue #3114",
+      "a finding's locations are examples, not the list",
+      "every caller or builder of the same shape",
+      "blocking self-review finding",
+    ]
+  ) {
+    assert(
+      text.includes(phrase),
+      `pr-feedback.md operator manual is missing "${phrase}": ${text}`,
+    );
+  }
 });
