@@ -58,8 +58,8 @@ do":
 
 **No linters, package managers, or repo code are invoked.** The scan is
 read-only static review. The only `gh` calls it makes are
-`gh issue list` (dedup), `gh label create` (defensive),
-`gh issue create` (file a finding), and the read-only repository
+`gh label create` (defensive), `gh issue create` (file a finding),
+`gh issue edit` (correct an issue just filed), and the read-only repository
 visibility lookup `gh repo view <owner>/<repo> --json visibility` (or
 `gh api repos/{owner}/{repo} --jq .visibility`) used by the
 [public-only / GHAS gate](#public-only--ghas-gate). It never edits a
