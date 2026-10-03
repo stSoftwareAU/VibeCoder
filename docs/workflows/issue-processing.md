@@ -1016,6 +1016,14 @@ each given the finished diff and nothing from the author's context:
   comment calls load-bearing that the repository's workflow validator does
   not assert.
 
+**A violation the diff introduced blocks the PR.** A Standards finding in a
+line this PR wrote — a doc comment the change made wrong, a cited test that
+exists neither in the diff nor at the head — is fixed in the same diff before
+the PR is raised; only a departure that predates the diff, or one the issue
+requires, may stand with a
+`reason:` saying which. The run enforces this rule itself; the gate does not
+parse it (Issue #3058).
+
 **The reviewer challenges; it does not silently win.** A reviewer that saw only
 the diff is sometimes wrong about a criterion satisfied by code it could not
 see, so the run may depart from its verdict — but only out loud, keeping the

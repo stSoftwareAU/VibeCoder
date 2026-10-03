@@ -366,7 +366,10 @@ Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
 check each named path with `git ls-files <path>`; a named-but-absent test is a
 blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist.
+an anchor that references a test that does not exist. A test cited as evidence
+is also run on the final head and its result reported, and a coverage claim
+names the branches its tests exercise — "every branch" with one branch
+untested is an over-claim (Issue #3058).
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's
@@ -969,7 +972,26 @@ files) matches the head. Every file or behaviour the summary says the PR changes
 must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
 from the base branch can supersede the change — and an abandoned iteration's
 description is replaced by the one that shipped. A summary that contradicts the
-diff is a blocking self-review finding. Any later commit on the branch — a
+diff is a blocking self-review finding. The same holds for every doc the diff
+adds or edits — a README or `docs/` page, an audit record, the doc comment
+above a changed function: each assertion it makes must match the head code.
+After any merge of the base branch into the branch, re-verify each claim; one
+whose subject the merge absorbed is dropped, or the work redone. A
+Standards-review violation the diff itself introduced is fixed before the PR
+is raised, never listed as standing, and a PR whose core deliverable is
+`missing` is not raised over a `Closes #<n>` — finish the work, except when
+the core deliverable is genuinely blocked on another open issue after work
+is committed: then record that criterion as `missing` and name the blocking
+dependency beside the closing keyword. In an issue run, a hand-off (the
+planning marker or the escape hatch) is honoured only while the branch has
+no commits and no uncommitted changes against the base; once work is
+committed the issue run is routed to the PR regardless of a planning or
+escape-hatch marker (Issue #3058). A CI-fix run is the exception: a check
+already red on the base branch still defers on a `Depends on owner/repo#N`
+line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
+in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
+honoured on a committed PR branch when `.pr_response_message` names a
+follow-up issue. Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
