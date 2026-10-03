@@ -68,6 +68,21 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 const CLOSURE_VERDICT_UNTRUSTED_BLOCK = "the issue's acceptance criteria";
 
 /**
+ * What {@link buildClosureVerdictPrompt} tells the model it fenced for the
+ * gate's problems, for the boundary-integrity instruction. They quote the
+ * issue's acceptance criteria, so they are attacker-supplied too (Issue #3133).
+ */
+const CLOSURE_VERDICT_PROBLEMS_BLOCK =
+  "the gate's problems with the PR summary";
+
+/**
+ * What {@link buildClosureVerdictPrompt} tells the model it fenced for the
+ * re-ask's shortfalls, for the boundary-integrity instruction. They quote the
+ * issue's acceptance criteria, so they are attacker-supplied too (Issue #3133).
+ */
+const CLOSURE_VERDICT_SHORTFALLS_BLOCK = "the previous verdict's shortfalls";
+
+/**
  * Tools the closure-verdict question must never call (Issue #3111).
  *
  * The turn returns a verdict and writes nothing, so file-writing, sub-agent,
@@ -120,9 +135,10 @@ export interface ClosureRenderOutcome {
  * One question, one answer shape, no file edits: the model supplies the
  * content and the worker owns the document. The criteria are quoted from an
  * attacker-supplied issue body, so they ride inside a CSPRNG-nonced untrusted
- * fence rather than as bare prompt text. The fenced criteria are declared to
- * the model by the boundary-integrity instruction naming the same nonce
- * (Issue #3111).
+ * fence rather than as bare prompt text (Issue #3111). The gate's problems and
+ * any re-ask shortfalls also quote those criteria, so they ride inside the
+ * same fence nonce too (Issue #3133). The fenced blocks are declared to the
+ * model by the boundary-integrity instruction naming the same nonce.
  *
  * @param opts.criteria - The criteria the issue body states, in body order.
  * @param opts.problems - What the gate said was wrong with the summary.
@@ -186,20 +202,25 @@ export function buildClosureVerdictPrompt(opts: {
     2,
   );
 
-  const reAsk = opts.shortfalls && opts.shortfalls.length > 0
+  const hasShortfalls = Boolean(opts.shortfalls && opts.shortfalls.length > 0);
+  const reAsk = hasShortfalls
     ? [
       "",
-      "Your previous verdict was short. Fix exactly this and answer again:",
-      "",
-      ...opts.shortfalls.map((s) => `- ${s}`),
+      ...fenceUntrustedIssueText(
+        opts.shortfalls!.map((s) => `- ${s}`).join("\n"),
+        "Your previous verdict was short. Fix exactly this and answer again:",
+        boundaryId,
+      ),
     ]
     : [];
 
   return [
-    `The PR summary for ${opts.repo}#${opts.issueNumber} does not close out ` +
-    `this issue's acceptance criteria, so the PR cannot be raised:`,
-    "",
-    ...opts.problems.map((p) => `- ${p}`),
+    ...fenceUntrustedIssueText(
+      opts.problems.map((p) => `- ${p}`).join("\n"),
+      `The PR summary for ${opts.repo}#${opts.issueNumber} does not close ` +
+        `out this issue's acceptance criteria, so the PR cannot be raised:`,
+      boundaryId,
+    ),
     "",
     "**This turn writes no files and changes no code.** The worker renders " +
     "the `## Acceptance Criteria` and `## Standards Review` blocks itself, " +
@@ -242,7 +263,9 @@ export function buildClosureVerdictPrompt(opts: {
     ...reAsk,
     "",
     buildBoundaryIntegrityInstruction(boundaryId, [
+      CLOSURE_VERDICT_PROBLEMS_BLOCK,
       CLOSURE_VERDICT_UNTRUSTED_BLOCK,
+      ...(hasShortfalls ? [CLOSURE_VERDICT_SHORTFALLS_BLOCK] : []),
     ]),
   ].join("\n");
 }
