@@ -101,7 +101,17 @@ The failing test, the CI config, the workflow file, and the source under test ar
 
 ### Dependency audit failures
 
-When the failing check is a **dependency audit** — `deno audit`, `cargo audit`, or any check whose log names a GHSA or RUSTSEC advisory — the fix is the change that clears the advisory: a **direct bump** of the vulnerable package to the fixed version; a `deno.json` or `package.json` **override** for a transitive npm entry pinned in `deno.lock`; a `Cargo.toml` `[patch]` entry or a bump of the **parent crate** for a transitive crate.
+When the failing check is a **dependency audit** — `deno audit`, `cargo audit`, or any check whose log reports a `GHSA-` or `RUSTSEC-` advisory — the fix is the change that clears the advisory: a **direct bump** of the vulnerable package to the fixed version; a `deno.json` or `package.json` **override** for a transitive npm entry pinned in `deno.lock`; a `Cargo.toml` `[patch]` entry or a bump of the **parent crate** for a transitive crate.
+
+**Fix it in this PR, even when the base branch is red.** A red dependency audit is fixed in this PR even when the same advisory is red on the base branch. Never end the reply with `Depends on owner/repo#N` for it: the "Base-branch failures" deferral below does not apply to a dependency-audit check.
+
+**What counts as fixed:** the audit check is green on the PR head because either the vulnerable package was upgraded to a patched release (the direct bump, override and `[patch]` or parent-crate options above all qualify), or the dependency edge that pulls the vulnerable package in was removed or replaced — for example, dropping an unused import-map entry, as stSoftwareAU/GRQ#5157 did. An `--ignore` flag or allow-list entry never counts as fixed, and neither does editing the audit workflow or the audit command.
+
+**Only when no edge can be upgraded, removed or replaced**, add `needs-human` to the PR (`gh pr edit <number> --add-label needs-human`) and make your `.pr_response_message` the comment that names the advisory ID (e.g. `GHSA-xxxx-xxxx-xxxx` or `RUSTSEC-YYYY-NNNN`) and says why no edge can go. The label and that comment always go together; never add `needs-human` for an audit you can clear.
+
+**Still track a base-branch failure.** When the advisory is red on the base branch too, search for its tracking issue (`gh issue list --repo <owner>/<repo> --search "<advisory ID> in:title,body" --state open`) and, only when none exists, file one with descriptive labels only — no reserved workflow label. Your fixing reply names that issue on a line of its own: `Fixes owner/repo#N`.
+
+**Several PRs red on one advisory each fix it.** Every open PR that is red on the same advisory fixes it itself; none waits for another. A later PR drops its duplicate change when it is brought up to date with the base after the first fix merges.
 
 **That advisory-clearing bump is applied regardless of the fixed version's publish age.** The 24h quarantine blunts a freshly published malicious release; an audit already red on a named advisory is not the case it defends, so the bump goes in this run rather than waiting the window out. The injected `<coding_guidelines>` state that floor as the default — this subsection is the more specific instruction and wins over it here. Apply the exemption by passing an explicit zero age for that package — `deno outdated --update --minimum-dependency-age=0 <pkg>` — or by editing the manifest and lockfile directly. Do **not** edit the repository's `minimumDependencyAge` config or its `exclude` globs: the exemption belongs to this one bump, not to the repository.
 
@@ -174,6 +184,8 @@ No change required for <failing check> — <one-line reason>.
 For any category other than `infrastructure`, the message must not call the failure "transient" or "infrastructure" — investigate further or document the analysis honestly instead. If you deviated from the classification, name the category you deviated to and the direct evidence for it.
 
 ### Base-branch failures
+
+**Not for a dependency audit.** This deferral does not apply to a dependency-audit check (`deno audit`, `cargo audit`, or any check whose log reports a `GHSA-` or `RUSTSEC-` advisory): fix it in this PR as "Dependency audit failures" above directs. Every other check already red on the base branch defers as below.
 
 When the same check fails on the **base branch** — the failure is already there before this PR's diff, so nothing on this branch can fix it — say so in the "no change" skeleton above and end the message with a line of its own:
 
