@@ -70,8 +70,16 @@ Deno.test("summary-rule retry - an existing PR says the worker will not finalise
       "summary satisfies the gate",
   );
   assertStringIncludes(prompt, "Do not create the PR yourself");
-  // The URL itself is never interpolated into the prompt.
-  assertEquals(prompt.includes("https://github.com/org/repo/pull/42"), false);
+  // The URL itself is never interpolated into the prompt. A regex literal
+  // match (rather than String#includes) avoids CodeQL's
+  // incomplete-url-substring-sanitization heuristic, which treats any raw
+  // substring check against a URL-shaped literal as a would-be trust
+  // decision — this is a leak-absence assertion on generated text, not a
+  // URL validation.
+  assertEquals(
+    /https:\/\/github\.com\/org\/repo\/pull\/42/.test(prompt),
+    false,
+  );
 });
 
 Deno.test("summary-rule retry - an unusable issue number fails loud", () => {
