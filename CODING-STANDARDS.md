@@ -354,6 +354,19 @@ whose revert leaves the suite green is a blocking self-review finding: add a
 test through that caller, ideally at the level the linked issue's Failure
 Detection names.
 
+**Narrowing a shared helper changes every caller.** Before a helper that
+other code already calls starts rejecting, throwing on or dropping a value it
+used to accept (a validator, type guard, allowed-value set, required field,
+ref/name check), list its existing callers and the real values each can
+receive. Check those values against the tool or API's actual output, not its
+documentation's happy path (see **Observe the real tool before you rely on
+it**). If any existing caller can legitimately pass a value the new rule
+rejects, keep the shared helper as it was and apply the stricter rule at the
+new call site. Otherwise add a test showing an existing caller still accepts
+its real inputs. List the callers checked in the PR summary. A narrowed shared
+helper with no callers-checked list is a blocking self-review finding
+(Issue #3100).
+
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
 diff, list its outcomes (success, absent/empty, error, fail-closed default)
@@ -1038,6 +1051,32 @@ honoured on a committed PR branch when `.pr_response_message` names a
 follow-up issue. Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
+
+**Prose about the PR's own change** is where that rule breaks most often: a
+sentence states the new behaviour more simply than the code implements it —
+it drops a condition the code checks, names a trigger the code does not have,
+or says a cost cannot happen when the code makes it happen. For each sentence
+the diff adds or edits in a doc, prompt, doc comment or PR summary that says
+**when** the change's behaviour happens or **what it costs**:
+
+1. Open the code that decides it and list every condition and every path that
+   reaches it. The sentence names each condition, or scopes itself explicitly
+   to the path it describes.
+2. An absolute word — "only", "never", "always", "any", "automatically",
+   "exactly as before" — needs a line of head code that guarantees it. With no
+   such line, rewrite the sentence.
+3. When the change moves a cost (a download, a retry, a push, a fallback) from
+   one path to another, the doc says where the cost now lands.
+4. A sentence about history ("before this fix, X skipped Y") is checked
+   against the base-branch code, not reconstructed from memory.
+
+Fleet PRs sent back for this: a doc said an 8.2 GB tarball "only reappears
+when the remote symlink moves", when the PR's own code downloads it again
+whenever the extracted tree is wiped (GRQ#5158); a prompt said a `## Blocked:`
+heading defers, when the code defers only on a `Depends on`/`Blocked by` line
+naming an issue it reads as open (VibeCoder#3095); a section said a script
+"runs automatically" after a fetch that never calls it (GRQ#5153)
+(Issue #3120).
 
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on

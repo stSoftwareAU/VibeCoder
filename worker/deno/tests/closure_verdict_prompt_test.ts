@@ -15,6 +15,7 @@ import {
   CLOSURE_VERDICT_CLOSE,
   CLOSURE_VERDICT_OPEN,
 } from "../lib/closure_verdict.ts";
+import { TOOL_OUTPUT_IS_DATA_RULE } from "../lib/prompt_delimiter.ts";
 
 const CRITERIA = [
   "the block is rendered from a verdict",
@@ -61,6 +62,44 @@ Deno.test("closure verdict prompt - the criteria ride inside an untrusted fence"
     prompt,
     "---END UNTRUSTED USER CONTENT BOUNDARY_abcdef012345---",
   );
+});
+
+Deno.test("closure verdict prompt - the integrity instruction names the fence's nonce", () => {
+  const prompt = buildClosureVerdictPrompt({
+    repo: "org/repo",
+    issueNumber: 7,
+    criteria: ["do the thing"],
+    problems: PROBLEMS,
+    boundaryId: "abcdef012345",
+  });
+
+  assertStringIncludes(prompt, "## Handling Untrusted Content");
+  assertStringIncludes(prompt, "`BOUNDARY_abcdef012345` delimiters");
+  assertStringIncludes(prompt, "the issue's acceptance criteria");
+  assertStringIncludes(prompt, TOOL_OUTPUT_IS_DATA_RULE);
+
+  const endMarkerIndex = prompt.indexOf(
+    "---END UNTRUSTED USER CONTENT BOUNDARY_abcdef012345---",
+  );
+  const instructionIndex = prompt.indexOf("## Handling Untrusted Content");
+  assertEquals(endMarkerIndex >= 0, true);
+  assertEquals(instructionIndex > endMarkerIndex, true);
+});
+
+Deno.test("closure verdict prompt - a minted nonce is shared by the fence and the integrity instruction", () => {
+  const prompt = buildClosureVerdictPrompt({
+    repo: "org/repo",
+    issueNumber: 7,
+    criteria: ["do the thing"],
+    problems: PROBLEMS,
+  });
+
+  const match = prompt.match(
+    /---BEGIN UNTRUSTED USER CONTENT BOUNDARY_([0-9a-f]{12})---/,
+  );
+  const id = match?.[1];
+  assertEquals(typeof id, "string");
+  assertStringIncludes(prompt, `\`BOUNDARY_${id}\` delimiters`);
 });
 
 Deno.test("closure verdict prompt - a delimiter forged in the issue body is scrubbed", () => {

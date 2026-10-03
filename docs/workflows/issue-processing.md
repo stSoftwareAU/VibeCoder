@@ -1152,6 +1152,19 @@ argument. The guidelines and the issue prompt's Test Plan step now require
 reverting each changed call site on its own and seeing a test go red; a call
 site whose revert leaves the suite green is a blocking self-review finding.
 
+**Narrowing a shared helper changes every caller (Issue #3100).** A
+stricter validator added for one new call site also rejects values its
+existing callers legitimately pass. Fleet PRs narrowed a shared helper and
+broke callers they never checked: VibeCoder#2881 made `assertSafeGitRef`
+reject `feature/-wip`, a valid branch name an existing caller passes; and
+VibeCoder#3095 made `validateGhIssueJson` reject `MERGED`, a state `gh`
+really returns. The guidelines now require listing the helper's existing
+callers and the real values each can receive, checked against the tool's
+actual output; keeping the shared helper as it was and applying the stricter
+rule at the new call site when any caller can pass a rejected value;
+otherwise adding a test that an existing caller still accepts its real
+inputs; and listing the callers checked in the PR summary.
+
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
 new route skipped a guard the old one applied: VibeCoder#3085 ran
@@ -1371,17 +1384,21 @@ rediscovered by hand and refiled as #2560.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
-Its place depends on whether the branch already has an open PR (Issue #3085
-review). On an existing-PR branch the guard still runs after the closure,
-independent-review and reproduction-status gates but before the docs-sweep
-gate blocks: a failing summary gate finalises that PR via its own recovery
-path, and the docs-sweep gate is the one of the four that fires on almost
-every code-changing run, so letting it run ahead of the guard dropped the
-degraded-run follow-up and PR-body note whenever a PR already existed. On a
-branch with **no** PR yet, the docs-sweep gate instead pre-empts the guard: a
-follow-up filed there would promise "that run's PR still completes #N on
-merge" for a PR this gate can still prevent from ever being raised, so the
-gate blocks first and the guard never runs:
+Its place depends on whether the branch already has an open PR. On a branch
+with **no** PR yet, each of the four summary-rule gates — closure,
+independent review, reproduction status and docs sweep — still pre-empts the
+guard: a follow-up filed there would promise "that run's PR still
+completes #N on merge" for a PR any of those gates can still prevent from ever being
+raised, so whichever gate blocks first fails the run and the guard never
+runs. On an existing-PR branch the guard instead runs from inside
+`reportSummaryRuleBlock` itself (Issue #3092), after whichever gate's own
+comment is posted but before that gate's recovery finalises the PR. Before
+Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
+because that gate ran after the guard; the closure, independent-review and
+reproduction-status gates ran ahead of the guard and skipped it. Once all
+four gates pass, `completionBody` runs the same guard once more — via the
+shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
+or recovered:
 
 ```mermaid
 flowchart TD
@@ -1392,7 +1409,9 @@ flowchart TD
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
     G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
     F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
-    F -- "gh failed" --> X["Run fails, no PR —<br/>nothing closes the issue"]
+    F -- "gh failed" --> Q{"Branch already<br/>has an open PR?"}
+    Q -- no --> X["Run fails, no PR raised"]
+    Q -- yes --> Y["Run fails, PR left unfinalised<br/>(auto-merge not armed);<br/>outcome pr + blocked"]
     G -- "no — all unassessed" --> N["No follow-up; PR body opens with a<br/>'Degraded run — no follow-up filed'<br/>section saying why"]
 ```
 
@@ -1450,7 +1469,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists and a summary rule is unmet | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists and a summary rule is unmet, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -1458,6 +1477,11 @@ With **no** PR for the run's branch the run recovers in-run before the block
 stands — see [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
 below. Either way the gate's remediation comment is posted, so the shortfall is
 on the issue thread rather than only in one host's log.
+
+A degraded run on an existing-PR branch is the exception to `summary_incomplete`.
+When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
+The outcome is `pr` + `blocked` naming that PR, so the release comment does not
+report the run as having delivered nothing.
 
 **Two gates are deliberate exceptions, and they run first.** The changed-workflow
 file checks above are the second: a workflow file carrying a finding is a defect
@@ -1605,7 +1629,11 @@ The shape is fixed and machine-checked, so the worker owns it:
    independent-review (#663) gate, the model is asked **one constrained
    question** — the verdict as JSON inside a `<closure_verdict>` block: one
    entry per stated criterion (`met` / `partial` / `missing` / `unrequested`,
-   with `evidence` and `reason`), plus the Standards half;
+   with `evidence` and `reason`), plus the Standards half. The criteria ride
+   inside the run's own untrusted fence, with the boundary-integrity rule
+   naming that fence's nonce, and the question runs with file-writing,
+   sub-agent and web tools denied (`CLOSURE_VERDICT_DISALLOWED_TOOLS`, Issue
+   #3111);
 2. `closure_verdict.ts` renders `## Acceptance Criteria` and
    `## Standards Review` in the `REVIEW_BLOCK_TEMPLATE` shape both validators
    accept, replacing whatever stood under those headings. Every field is
