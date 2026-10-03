@@ -1376,7 +1376,9 @@ flowchart TD
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
     G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
     F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
-    F -- "gh failed" --> X["Run fails, no PR —<br/>nothing closes the issue"]
+    F -- "gh failed" --> Q{"Branch already<br/>has an open PR?"}
+    Q -- no --> X["Run fails, no PR raised"]
+    Q -- yes --> Y["Run fails, PR left unfinalised<br/>(auto-merge not armed);<br/>outcome pr + blocked"]
     G -- "no — all unassessed" --> N["No follow-up; PR body opens with a<br/>'Degraded run — no follow-up filed'<br/>section saying why"]
 ```
 
