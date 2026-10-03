@@ -1001,8 +1001,9 @@ The file MUST contain:
    `Branch outcomes:` list — one line per outcome naming `path:line`, the
    outcome, the test that reaches it, and that flipping it went red — or
    `Branch outcomes: none added` when the diff adds no branch. When the diff
-   changes non-test, non-doc files, the worker will not raise the PR without
-   that line: it asks for it once more, and a second miss fails the run. A
+   changes non-test, non-doc files, the worker blocks PR creation without
+   that line: it asks for it once more if this is the run's first summary
+   block, or records the shortfall against a PR the run already raised. A
    named test that does not exist at the head is the same blocking finding as
    above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct

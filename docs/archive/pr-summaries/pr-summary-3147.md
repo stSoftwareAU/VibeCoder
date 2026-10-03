@@ -17,7 +17,8 @@ This change makes the enumeration a recorded, checked artefact:
   outcome, the test that reaches it, and that flipping the outcome went red.
   A diff that adds no branch writes `Branch outcomes: none added`.
 - `prompts/issue/prompt.md` names that list in the Test Plan step, says the
-  worker will not raise the PR without it, and adds an example to the
+  worker blocks PR creation without it on the no-PR path (or records the
+  shortfall against a PR the run already raised), and adds an example to the
   skeleton summary.
 - `prompts/pr_feedback/prompt.md` requires a fix to re-enumerate every branch
   its own commits add and to refresh the list to the head.
@@ -36,13 +37,26 @@ Closes #3147.
 ## Test Plan
 
 - `worker/deno/tests/branch_outcomes_gate_test.ts`: parsing, validation and
-  HEAD lookup of the `Branch outcomes:` list.
+  HEAD lookup of the `Branch outcomes:` list. PR #3160 review added two cases
+  for the inline (same-line) body shape, the one form `namedTestPaths`' body
+  arm reaches and the only shape with no prior coverage: a missing named test
+  blocks and is listed in `missingTests`, and an existing named test passes.
+  Confirmed red with the body arm (`branch_outcomes_gate.ts:221`) removed.
 - `worker/deno/tests/completion_phase_branch_outcomes_test.ts`: the gate
   wired into the completion phase, including the fold into earlier gates'
-  blocks.
+  blocks. PR #3160 review added a case for a code diff missing BOTH the Docs
+  sweep line and the Branch outcomes list, asserting one comment naming both.
+  Confirmed red against the reviewer's `branchOutcomesBlocked && reasons.length
+  === 0` mutation at `completion_phase.ts:2350`, with the other nine tests in
+  the file staying green under that same mutation.
 - `worker/deno/tests/branch_outcomes_record_3147_test.ts`: a
   documentation-drift test that pins the rule in `CODING-STANDARDS.md` and in
-  the coding_guidelines, issue and pr_feedback prompts.
+  the coding_guidelines, issue and pr_feedback prompts. PR #3160 review: the
+  pinned phrase for `prompts/issue/prompt.md` was itself wrong on the
+  existing-PR path (`reportSummaryRuleBlock` never adds to
+  `state.summaryRuleBlocks` there, so `workOnIssueCompletion` never re-asks);
+  both the prompt sentence and the pinned phrase now read "the worker blocks
+  PR creation without that line" and name the existing-PR outcome.
 - Existing completion-phase tests were updated for the new gate's git lookup.
 - `docs/audits/lib-sweep-coverage.json` now registers
   `branch_outcomes_gate.ts` as a top-up slice. Without it,
@@ -50,6 +64,10 @@ Closes #3147.
   `deno test -A tests/lib_sweep_coverage_test.ts tests/lib_sweep_coverage_prompt_listing_test.ts tests/sweep_drift_command_test.ts`
   gave 45 passed, 0 failed. The tests that read
   `docs/workflows/issue-processing.md` gave 41 passed, 0 failed.
+- `deno test --allow-all tests/branch_outcomes_gate_test.ts
+  tests/completion_phase_branch_outcomes_test.ts
+  tests/branch_outcomes_record_3147_test.ts` (final head, after the PR #3160
+  review fixes): 39 passed, 0 failed.
 
 ## Evidence
 

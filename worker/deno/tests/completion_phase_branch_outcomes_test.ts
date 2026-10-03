@@ -77,6 +77,20 @@ const SUMMARY_NONE_ADDED = summaryWith(`
  */
 const SUMMARY_BUG_MISSING_BOTH = summaryWith("");
 
+/**
+ * (i) A code-diff summary missing BOTH the `Docs sweep` line AND the
+ * `Branch outcomes:` list — unlike (a), which still carries the Docs sweep
+ * line (`summaryWith` always includes it).
+ */
+const SUMMARY_MISSING_DOCS_SWEEP_AND_BRANCH_OUTCOMES = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+## Test Plan
+
+- \`${EXISTING_TEST}\`
+`;
+
 /** (g) The same bug summary with both gaps fixed. */
 const SUMMARY_BUG_BOTH_FIXED = `## Summary
 
@@ -429,5 +443,28 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 0);
     assertStringIncludes(outcome.reason ?? "", "Branch outcomes");
     assertStringIncludes(outcome.comments[0]!, "could not confirm");
+  },
+);
+
+// (i) PR #3160 review: `reportSummaryRuleBlock` is only reached once per late
+// gate that fails, in a single folded call — a regression that dropped the
+// branch-outcomes problem whenever docs-sweep (or the placeholder gate) also
+// failed would still leave every other test here green, because none of them
+// combine two late gates on the one summary.
+Deno.test(
+  "completion - a code diff missing BOTH the Docs sweep line and the Branch outcomes list names both in one block (Issue #3160)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_MISSING_DOCS_SWEEP_AND_BRANCH_OUTCOMES,
+      changedFiles: "crates/report/src/decisions.rs",
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.reason ?? "", "Docs sweep not recorded");
+    assertStringIncludes(outcome.reason ?? "", "Branch outcomes not recorded");
+    assertStringIncludes(outcome.comments[0]!, "Docs sweep missing");
+    assertStringIncludes(outcome.comments[0]!, "Branch outcomes not recorded");
   },
 );

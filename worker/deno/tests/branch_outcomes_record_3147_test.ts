@@ -8,7 +8,7 @@
  * and the coding_guidelines prompt must both now require the enumeration to
  * be recorded as a `Branch outcomes:` list in the PR summary's Test Plan (or
  * `Branch outcomes: none added`); the issue prompt's Test Plan step must name
- * that list and say the worker will not raise the PR without it; the issue
+ * that list and say the worker blocks PR creation without it; the issue
  * prompt's skeleton summary must carry a `Branch outcomes:` example; and the
  * pr_feedback prompt must require a fix to re-enumerate every branch its own
  * commits add and refresh the list.
@@ -90,7 +90,7 @@ Deno.test("issue prompt Test Plan step names the Branch outcomes: list and its g
     const phrase of [
       "Branch outcomes:",
       "Branch outcomes: none added",
-      "the worker will not raise the PR without that line",
+      "the worker blocks PR creation without that line",
     ]
   ) {
     assert(

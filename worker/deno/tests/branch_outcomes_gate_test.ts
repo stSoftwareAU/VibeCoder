@@ -171,6 +171,32 @@ Deno.test("validateBranchOutcomes - all named tests present passes", () => {
   assertEquals(result.missingTests, []);
 });
 
+// An inline (same-line) body — no list follows the header — is the one shape
+// that only `namedTestPaths`' body arm reaches (PR #3160 review): a one-line
+// `Branch outcomes:` summary naming a test that does not exist must still be
+// caught, or the gate's own invented-test case (VibeCoder#3132) slips through.
+Deno.test("validateBranchOutcomes - an inline body naming a missing test blocks (Issue #3160)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent:
+      "**Branch outcomes:** `src/foo.ts:12` — error — `worker/deno/tests/made_up_test.ts::x`\n",
+    testsAtHead: new Set(["worker/deno/tests/other_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, ["worker/deno/tests/made_up_test.ts"]);
+});
+
+Deno.test("validateBranchOutcomes - an inline body naming an existing test passes (Issue #3160)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent:
+      "**Branch outcomes:** `src/foo.ts:12` — error — `worker/deno/tests/foo_test.ts::x`\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+  assertEquals(result.missingTests, []);
+});
+
 Deno.test("validateBranchOutcomes - 'none added' passes", () => {
   const result = validateBranchOutcomes({
     changedFiles: ["web/src/Foo.tsx"],
