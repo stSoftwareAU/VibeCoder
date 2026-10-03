@@ -1178,6 +1178,19 @@ whose revert leaves the suite green is a blocking self-review finding: add a
 test through that caller, ideally at the level the linked issue's Failure
 Detection names.
 
+**Narrowing a shared helper changes every caller.** Before a helper that
+other code already calls starts rejecting, throwing on or dropping a value it
+used to accept (a validator, type guard, allowed-value set, required field,
+ref/name check), list its existing callers and the real values each can
+receive. Check those values against the tool or API's actual output, not its
+documentation's happy path (see **Observe the real tool before you rely on
+it**). If any existing caller can legitimately pass a value the new rule
+rejects, keep the shared helper as it was and apply the stricter rule at the
+new call site. Otherwise add a test showing an existing caller still accepts
+its real inputs. List the callers checked in the PR summary. A narrowed shared
+helper with no callers-checked list is a blocking self-review finding
+(Issue #3100).
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
