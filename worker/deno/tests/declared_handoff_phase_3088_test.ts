@@ -612,3 +612,85 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "declared_handoff_phase - a committed deferral pushes the branch before the comment, even with session resume off (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const order: string[] = [];
+    const deps = createMockDeps({
+      github: {
+        createClient: () => {
+          const client = makeClient(calls);
+          const post = client.postComment.bind(client);
+          client.postComment = (repo, issue, body) => {
+            order.push("comment");
+            return post(repo, issue, body);
+          };
+          return client;
+        },
+      },
+      git: {
+        commitAndPushPending: () => {
+          order.push("push");
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+              finalUnpushedSource: "remote-head" as const,
+            },
+          });
+        },
+      },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext({
+        config: {
+          ...buildDefaultWorkerConfig(),
+          enableSessionResume: false,
+        },
+      }),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    assertEquals(order[0], "push");
+    assert(order.includes("comment"));
+    assert(
+      calls.postComment.some((c) => c.includes("issue-3088-declared-handoff")),
+    );
+  },
+);
+
+Deno.test(
+  "declared_handoff_phase - a failed push applies no deferral and names no branch (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+      git: {
+        commitAndPushPending: () =>
+          Promise.resolve({
+            ok: false as const,
+            error: new Error("push rejected"),
+          }),
+      },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "failure");
+    assertEquals(calls.postComment.length, 0);
+    if (result.status === "failure") {
+      assert(!result.reason.includes("issue-3088-declared-handoff"));
+    }
+  },
+);

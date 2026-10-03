@@ -27,7 +27,10 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
-import { handOffDeclaredOutcome } from "./declared_handoff.ts";
+import {
+  handOffDeclaredOutcome,
+  pushCommittedBranchForHandoff,
+} from "./declared_handoff.ts";
 
 export async function workOnIssueDeclaredHandoff(
   ctx: IssueContext,
@@ -43,6 +46,8 @@ export async function workOnIssueDeclaredHandoff(
   if (outcome.result) return outcome.result;
 
   if (outcome.declared) {
+    const failed = await pushCommittedBranchForHandoff(state, deps);
+    if (failed) return failed;
     const logger = deps.logger;
     await handOffAnalysisOnly({
       ghClient: deps.github.createClient(logger),

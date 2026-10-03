@@ -79,6 +79,44 @@ export function publishableSnippet(claudeOutput: string): string {
 }
 
 /**
+ * Push the run's branch before a committed hand-off (Issue #3088).
+ *
+ * The execute checkpoint only pushes when session resume is on, and a failed
+ * checkpoint push does not stop the run. Deferring after that names a branch
+ * the next claim cannot see, and `checkout -B` from base then discards the
+ * local commits. The hand-off is applied only once this push leaves nothing
+ * unpushed. A failure posts no comment.
+ */
+export async function pushCommittedBranchForHandoff(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<PhaseResult | undefined> {
+  const pushed = await deps.git.commitAndPushPending(
+    state.branchName,
+    "Preserve committed work before a declared hand-off",
+    { cwd: state.repoPath },
+  );
+  const stillUnpushed = pushed.ok && pushed.value.finalUnpushedCount > 0;
+  if (!pushed.ok || stillUnpushed) {
+    deps.logger.warn(
+      "Declared hand-off not applied — the committed branch could not be pushed",
+      {
+        branch: state.branchName,
+        error: pushed.ok
+          ? `${pushed.value.finalUnpushedCount} commit(s) still unpushed`
+          : pushed.error.message,
+      },
+    );
+    return {
+      status: "failure",
+      reason:
+        "committed work could not be pushed before the declared hand-off, so no hand-off was applied",
+    };
+  }
+  return undefined;
+}
+
+/**
  * Result of {@link handOffDeclaredOutcome}.
  */
 export interface DeclaredOutcomeHandoff {
@@ -213,6 +251,10 @@ export async function handOffDeclaredOutcome(
     );
   }
   if (blocked && !repeatDeferral) {
+    if (committed) {
+      const failed = await pushCommittedBranchForHandoff(state, deps);
+      if (failed) return { blocked, declared: true, result: failed };
+    }
     const result = await deferBlockedIssue({
       ghClient: blockedClient!,
       repo,
@@ -279,6 +321,10 @@ export async function handOffDeclaredOutcome(
       logger,
     });
     if (history.length < MAX_TIME_DEFERRALS) {
+      if (committed) {
+        const failed = await pushCommittedBranchForHandoff(state, deps);
+        if (failed) return { blocked, declared: true, result: failed };
+      }
       const result = await deferIssueUntil({
         ghClient,
         repo,
@@ -316,6 +362,10 @@ export async function handOffDeclaredOutcome(
         "deferring again",
       { repo, issueNumber, priorCount: history.length },
     );
+    if (committed) {
+      const failed = await pushCommittedBranchForHandoff(state, deps);
+      if (failed) return { blocked, declared: true, result: failed };
+    }
     try {
       await ghClient.postComment(
         repo,
@@ -392,6 +442,10 @@ export async function handOffDeclaredOutcome(
       untrustedImages: planningImageGate.imageCount,
     });
   } else if (planningRequest) {
+    if (committed) {
+      const failed = await pushCommittedBranchForHandoff(state, deps);
+      if (failed) return { blocked, declared: true, result: failed };
+    }
     const handoff = await handOffToPlanning({
       ghClient: planningClient!,
       repo,

@@ -791,12 +791,12 @@ read after a commit, so the worker defers or hands to planning instead of
 raising a PR with `Closes #N`. An invalid or over-horizon deferral, or a
 planning marker with no reason, hands off to a human. A signal the guard
 refuses (a repeat deferral, a planning request without the `work-on` anchor)
-still falls through to the human hand-off below. The phase itself neither
-pushes nor raises a PR. With session resume on (the default), the execute
-phase's checkpoint has normally already pushed the run's work to the
-`issue-<N>-…` branch — `execute_phase.ts` calls `checkpoints.runNow()`, which
-commits and pushes through `wip_checkpoint.ts` — and the next claim resumes
-from it. The free-text escape hatch (a follow-up issue + "out of scope"
+still falls through to the human hand-off below. Before any of those
+hand-offs the phase pushes the branch through `commitAndPushPending`. The
+hand-off is applied only after that push leaves nothing unpushed, so the
+next claim can resume from `issue-<N>-…` whether or not session resume's
+checkpoint already pushed. A failed push applies no hand-off and posts no
+comment naming the branch. The phase raises no PR. The free-text escape hatch (a follow-up issue + "out of scope"
 message) remains the one hand-off that is honoured only when the run leaves
 no commit and no uncommitted change. See
 [`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).

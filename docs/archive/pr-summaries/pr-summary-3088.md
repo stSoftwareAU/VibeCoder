@@ -104,6 +104,9 @@ updated. No `*/README.md` describes the phase list, so none changed.
   - an over-horizon defer marker hands off, no PR
   - a reasonless planning marker hands off, no PR
   - a valid time deferral names the committed branch
+  - a committed deferral pushes the branch before the comment, even with
+    session resume off
+  - a failed push applies no deferral and names no branch
 - `worker/deno/tests/issue_worker_test.ts`: "workOnIssue - a commit-producing
   run that also declares a blocked hand-off defers instead of completing
   (Issue #3088)"
