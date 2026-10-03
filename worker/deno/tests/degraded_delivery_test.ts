@@ -148,9 +148,10 @@ Deno.test("assessDegradedDelivery - a degraded run names each criterion short of
   ]);
 });
 
-/** Same three criteria as SUMMARY_PARTIAL, but entries reordered and the
- * floor entry split out, so a positional match would misattribute every
- * status (Issue #3128). */
+/** Same three criteria as SUMMARY_PARTIAL, but the entries appear in a
+ * different order from the criteria — floor missing first, then router met,
+ * then docs met — so a positional match would misattribute every status
+ * (Issue #3128). */
 const SUMMARY_REORDERED = `## Summary
 
 Did some of it.
