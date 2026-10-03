@@ -603,9 +603,11 @@ async function reportSummaryRuleBlock(
  * #2543 a Haiku-fallback run shipped one of seven accepted changes and its
  * PR closed the issue with the rest recorded nowhere. The PR is still raised
  * (the work is kept, and a PR that does not close its issue loops — #520),
- * but every accepted scope item not shown `met` is filed as an `idle-task`
+ * but every accepted scope item not shown `met`, and any unmatched
+ * `partial` or `missing` closure entry, is filed as an `idle-task`
  * follow-up the fleet picks up, and the PR body names the gap. A healthy
- * run, or a degraded one that met everything, is untouched.
+ * run is untouched. A degraded run that met every scope item is left alone
+ * only when it reported no unmatched `partial` or `missing` entry.
  *
  * Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
  *
@@ -668,7 +670,7 @@ async function applyDegradedDeliveryGuard(
           status: "failure",
           reason:
             `Degraded run (${degradedDelivery.reason}) left ${degradedDelivery.shortfalls.length} ` +
-            `accepted scope item(s) short of met, and the follow-up recording them ` +
+            `shortfall(s) (scope items short of met, or gaps the run reported), and the follow-up recording them ` +
             `could not be filed: ${followUp.error.message}`,
         },
       };
@@ -2330,9 +2332,11 @@ async function completionBody(
   // #2543 a Haiku-fallback run shipped one of seven accepted changes and its
   // PR closed the issue with the rest recorded nowhere. The PR is still raised
   // (the work is kept, and a PR that does not close its issue loops — #520),
-  // but every accepted scope item not shown `met` is filed as an `idle-task`
+  // but every accepted scope item not shown `met`, and any unmatched
+  // `partial` or `missing` closure entry, is filed as an `idle-task`
   // follow-up the fleet picks up, and the PR body names the gap. A healthy
-  // run, or a degraded one that met everything, is untouched.
+  // run is untouched. A degraded run that met every scope item is left alone
+  // only when it reported no unmatched `partial` or `missing` entry.
   //
   // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
   // Issue #3092: extracted to `applyDegradedDeliveryGuard` so this same
