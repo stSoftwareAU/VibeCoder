@@ -908,8 +908,8 @@ this **instead of looping**:
    and again at the end of the run. Once a file has changed, a free-text
    hand-off is not read. In an issue run, if no open issue already blocks
    the work, this is not a deferral. Do not file a follow-up and name it on
-   a `Depends on` line. After a commit, a `Depends on` line that names the
-   follow-up this run filed hands the issue to a human and raises no PR. A
+   a `Depends on` line: that hands the issue to a human instead of deferring,
+   whether or not the branch has commits. A
    bare `## Blocked:` heading does not defer, and the worker raises a PR
    that closes the issue. A PR-feedback or CI-fix run
    keeps using the `.pr_response_message` escape hatch above, including on a
