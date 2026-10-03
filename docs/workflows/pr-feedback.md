@@ -194,7 +194,8 @@ Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 is never reported as "addressed"; if the push fails, the reply says so and
 names the finding as still open rather than claiming a fix origin does not
 have. This complements the worker's own final-mile push verification described
-next, which re-checks the push at the git level after the agent runs.
+in **The final mile** below, which re-checks the push at the git level after
+the agent runs.
 
 #### Fix the defect everywhere it lives (Issue #3086)
 
