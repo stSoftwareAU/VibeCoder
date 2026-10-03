@@ -27,7 +27,7 @@ import {
   type SyncStreakEntry,
   trackingIssueFromMilestoneTitle,
 } from "../lib/milestone_sync_streak.ts";
-import { DEFAULT_MAX_CONFLICT_ATTEMPTS } from "../lib/pr_merge_conflict_scan.ts";
+import { CONFLICT_RESOLUTION_BUDGET } from "../lib/merge_conflict_markers.ts";
 import {
   type MilestoneBranchSyncDeps,
   syncMilestoneBranches,
@@ -303,11 +303,11 @@ Deno.test("conflict ledger - a moved tip never refills the budget (Issue #1766)"
   assertEquals(same.lastSyncedDefaultSha, "sha-x");
 });
 
-Deno.test("conflict ledger - two runs, and the PR ladder's own budget (Issue #2305)", () => {
-  assertEquals(MILESTONE_CONFLICT_ATTEMPT_BUDGET, 2);
+Deno.test("conflict ledger - shared budget, and the PR ladder's own budget (Issue #2305)", () => {
+  assertEquals(MILESTONE_CONFLICT_ATTEMPT_BUDGET, 3);
   assertEquals(
     MILESTONE_CONFLICT_ATTEMPT_BUDGET,
-    DEFAULT_MAX_CONFLICT_ATTEMPTS,
+    CONFLICT_RESOLUTION_BUDGET,
     "one constant, two ladders — they cannot drift apart",
   );
 });

@@ -11,6 +11,12 @@
  * Real git repositories throughout — a bare remote, a clone, a milestone
  * branch and a default branch that has moved on.
  *
+ * The tests below (Issue #2998) cover the landing check that sits between
+ * "the sync says it merged" and "the report goes out": a merge that cannot
+ * be confirmed on the milestone tip, or held by an open sync PR, must never
+ * be reported as landed — and must never be silently read as a success,
+ * either.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
@@ -18,7 +24,22 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
-import { buildConflictEscalationComment } from "../lib/milestone_sync_conflict.ts";
+import {
+  buildConflictEscalationComment,
+  type MilestoneSyncConflict,
+} from "../lib/milestone_sync_conflict.ts";
+import type { SyncLanding } from "../lib/milestone_sync_landing.ts";
+import {
+  type ActiveMilestone,
+  escalateSyncConflict,
+  type GhCommandFn,
+  type MilestoneBranchSyncDeps,
+  syncMilestoneBranches,
+} from "../lib/milestone_branch_sync.ts";
+import {
+  loadSyncStreaks,
+  milestoneSyncStreakPath,
+} from "../lib/milestone_sync_streak.ts";
 
 async function git(
   args: string[],
@@ -254,6 +275,11 @@ Deno.test(
         defaultBranch: "main",
         conflict,
         tips: [],
+        landing: {
+          kind: "tip",
+          branch: "milestone/1558",
+          sha: conflict.mergeSha ?? "unknown",
+        },
       });
       assertStringIncludes(comment, timings);
     } finally {
@@ -266,11 +292,17 @@ Deno.test(
   "buildConflictEscalationComment - both reports carry the timings line, and omit it when there is none (Issue #2308)",
   () => {
     const line = "Timings (host `mel-01`): deepen 3s · rules 1s · agent 212s";
+    const landing: SyncLanding = {
+      kind: "tip",
+      branch: "milestone/1558",
+      sha: "bbb",
+    };
     const base = {
       repo: "org/repo",
       milestoneBranch: "milestone/1558",
       defaultBranch: "main",
       tips: [],
+      landing,
     };
 
     // The success notice — every file settled by a rung of the ladder.
@@ -314,5 +346,348 @@ Deno.test(
       },
     });
     assertEquals(untimed.includes("Timings (host"), false);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// The landing check between "the sync says it merged" and "the report goes
+// out" (Issue #2998).
+// ---------------------------------------------------------------------------
+
+const REPO = "owner/repo";
+const MILESTONE_TITLE = "#2998 Landing confirmation";
+const MILESTONE_BRANCH = "milestone/2998-landing-confirmation";
+const MILESTONE_BRANCH_TIP = "cccccccccccccccccccccccccccccccccccccccc";
+const DEFAULT_SHA = "dddddddddddddddddddddddddddddddddddddddd";
+const MERGE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1";
+const OTHER_TIP_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/** The sync conflict fixture every landing test resolves to. */
+function makeConflict(): MilestoneSyncConflict {
+  return {
+    files: ["worker/deno/lib/scan_content.ts"],
+    milestoneSha: MILESTONE_BRANCH_TIP,
+    defaultSha: DEFAULT_SHA,
+    resolution: "theirs",
+    mergeSha: MERGE_SHA,
+  };
+}
+
+/**
+ * A fake `gh` CLI standing in for every call the landing check and the
+ * surrounding sync make (Issue #2998), recording every call it answers.
+ *
+ * - The milestone listing and default-branch resolution, as every sync test
+ *   needs them.
+ * - The milestone branch probe (`repos/.../branches/<branch>`), answering the
+ *   branch exists.
+ * - The milestone head PR lookup (`pr list --head <branch>`, no `--base`),
+ *   answering there is none — `readMilestoneHeadPr` must see an empty list
+ *   or the sync takes a different path entirely.
+ * - The landing's own tip read (`repos/.../commits/<branch>`), configurable
+ *   per test via `opts.tipSha` / `opts.tipThrows`.
+ * - The landing's compare call (`repos/.../compare/<a>...<b>`), configurable
+ *   via `opts.compareStatus`.
+ * - The landing's open-sync-PR listing (`pr list --head <sync-branch>
+ *   --base <branch>`), configurable via `opts.syncPrListJson`.
+ * - Any other commit lookup (the escalation's "both sides" tips) answers
+ *   with the sha it was asked for, so a report still names both commits.
+ */
+function fakeGhCommandFn(
+  calls: string[][],
+  opts: {
+    milestoneTitle: string;
+    tipSha?: string;
+    tipThrows?: boolean;
+    compareStatus?: string;
+    syncPrListJson?: string;
+  },
+): GhCommandFn {
+  return (args: string[]): Promise<string> => {
+    calls.push(args);
+    const key = args.join(" ");
+    if (key.includes(`repos/${REPO}/milestones`)) {
+      return Promise.resolve(
+        JSON.stringify([{ title: opts.milestoneTitle, number: 1 }]),
+      );
+    }
+    if (key.includes("default_branch")) return Promise.resolve("main");
+    if (args[1] === `repos/${REPO}/branches/${MILESTONE_BRANCH}`) {
+      return Promise.resolve(MILESTONE_BRANCH_TIP);
+    }
+    if (args[1] === `repos/${REPO}/commits/${MILESTONE_BRANCH}`) {
+      if (opts.tipThrows) {
+        return Promise.reject(new Error("the milestone tip is unreachable"));
+      }
+      return Promise.resolve(`${opts.tipSha ?? MERGE_SHA} some subject`);
+    }
+    if (args[1]?.startsWith(`repos/${REPO}/commits/`)) {
+      const ref = args[1].slice(`repos/${REPO}/commits/`.length);
+      return Promise.resolve(`${ref} some subject`);
+    }
+    if (args[1]?.startsWith(`repos/${REPO}/compare/`)) {
+      return Promise.resolve(opts.compareStatus ?? "diverged");
+    }
+    if (args[0] === "pr" && args[1] === "list") {
+      if (args.includes("--base")) {
+        return Promise.resolve(opts.syncPrListJson ?? "[]");
+      }
+      // `readMilestoneHeadPr`'s own lookup (no `--base`): no open head PR.
+      return Promise.resolve("[]");
+    }
+    return Promise.resolve("");
+  };
+}
+
+/** Sync deps whose merge conflicted and whose landing is confirmed as above. */
+function makeDeps(
+  calls: string[][],
+  logs: string[],
+  streakPath: string,
+  opts: {
+    tipSha?: string;
+    tipThrows?: boolean;
+    compareStatus?: string;
+    syncPrListJson?: string;
+  },
+): MilestoneBranchSyncDeps {
+  return {
+    repos: [REPO],
+    ghCommandFn: fakeGhCommandFn(calls, {
+      milestoneTitle: MILESTONE_TITLE,
+      ...opts,
+    }),
+    syncBranchFn: () =>
+      Promise.resolve({
+        ok: true as const,
+        value: {
+          message: "Issue #605: Auto-resolved merge conflicts",
+          conflict: makeConflict(),
+        },
+      }),
+    log: (message: string) => logs.push(message),
+    streakPath,
+  };
+}
+
+const commentCalls = (calls: string[][]): string[][] =>
+  calls.filter((c) => c[0] === "issue" && c[1] === "comment");
+
+const streakKey = `${REPO}|${MILESTONE_BRANCH}`;
+
+Deno.test(
+  "milestone sync - a merge the tip does not contain posts no report, logs both SHAs and counts a failure (Issue #2998)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-2998-report-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const logs: string[] = [];
+
+      const result = await syncMilestoneBranches(
+        makeDeps(calls, logs, streakPath, {
+          tipSha: OTHER_TIP_SHA,
+          compareStatus: "diverged",
+          syncPrListJson: "[]",
+        }),
+      );
+
+      assert(result.ok);
+      assertEquals(
+        result.value.failed,
+        1,
+        "the unconfirmed landing is a failure",
+      );
+      assertEquals(result.value.synced, 0, "nothing is counted as landed");
+      assertEquals(
+        commentCalls(calls).length,
+        0,
+        "nothing is reported until the landing is confirmed",
+      );
+      assert(
+        logs.some((line) =>
+          line.includes(MERGE_SHA) && line.includes(OTHER_TIP_SHA)
+        ),
+        `expected a logged line naming both SHAs, got: ${JSON.stringify(logs)}`,
+      );
+
+      const streaks = await loadSyncStreaks(streakPath);
+      assertEquals(streaks[streakKey]?.count, 1);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "milestone sync - a merge on the tip reports it landed on the branch at its sha (Issue #2998)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-2998-tip-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const logs: string[] = [];
+
+      const result = await syncMilestoneBranches(
+        makeDeps(calls, logs, streakPath, {
+          tipSha: MERGE_SHA,
+        }),
+      );
+
+      assert(result.ok);
+      assertEquals(result.value.synced, 1);
+      const comments = commentCalls(calls);
+      assertEquals(comments.length, 1);
+      const body = comments[0]![comments[0]!.length - 1] ?? "";
+      assertStringIncludes(
+        body,
+        `landed on \`${MILESTONE_BRANCH}\` at \`${MERGE_SHA}\``,
+      );
+      assert(
+        !body.includes("pushed"),
+        "the report must not claim the merge was pushed",
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "milestone sync - a merge the tip has moved ahead of still reports it landed on the branch (Issue #2998)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-2998-ahead-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const logs: string[] = [];
+
+      const result = await syncMilestoneBranches(
+        makeDeps(calls, logs, streakPath, {
+          tipSha: OTHER_TIP_SHA,
+          compareStatus: "ahead",
+        }),
+      );
+
+      assert(result.ok);
+      assertEquals(result.value.synced, 1);
+      const comments = commentCalls(calls);
+      assertEquals(comments.length, 1);
+      const body = comments[0]![comments[0]!.length - 1] ?? "";
+      assertStringIncludes(
+        body,
+        `landed on \`${MILESTONE_BRANCH}\` at \`${MERGE_SHA}\``,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "milestone sync - a merge held by an open sync PR reports in sync PR #N (Issue #2998)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-2998-syncpr-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const logs: string[] = [];
+
+      const result = await syncMilestoneBranches(
+        makeDeps(calls, logs, streakPath, {
+          tipSha: OTHER_TIP_SHA,
+          compareStatus: "diverged",
+          syncPrListJson: JSON.stringify([
+            { number: 77, headRefOid: MERGE_SHA },
+          ]),
+        }),
+      );
+
+      assert(result.ok);
+      assertEquals(result.value.synced, 1);
+      const comments = commentCalls(calls);
+      assertEquals(comments.length, 1);
+      const body = comments[0]![comments[0]!.length - 1] ?? "";
+      assertStringIncludes(body, "in sync PR #77");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "milestone sync - an unreadable tip posts no report and records a failure (Issue #2998)",
+  async () => {
+    const dir = await Deno.makeTempDir({ prefix: "issue-2998-unreadable-" });
+    try {
+      const streakPath = milestoneSyncStreakPath(dir);
+      const calls: string[][] = [];
+      const logs: string[] = [];
+
+      const result = await syncMilestoneBranches(
+        makeDeps(calls, logs, streakPath, {
+          tipThrows: true,
+        }),
+      );
+
+      assert(result.ok);
+      assertEquals(result.value.failed, 1);
+      assertEquals(result.value.synced, 0);
+      assertEquals(
+        commentCalls(calls).length,
+        0,
+        "an unreadable tip must never be reported as a landing",
+      );
+
+      const streaks = await loadSyncStreaks(streakPath);
+      assertEquals(streaks[streakKey]?.count, 1);
+
+      assert(
+        logs.some((line) =>
+          line.startsWith("WARNING:") && line.includes(MERGE_SHA)
+        ),
+        `expected a WARNING log naming ${MERGE_SHA}, got: ${
+          JSON.stringify(logs)
+        }`,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "escalateSyncConflict - confirms the landing itself when none is supplied, and reports nothing when it cannot (Issue #2998)",
+  async () => {
+    const calls: string[][] = [];
+    const logs: string[] = [];
+    const ghCommandFn = fakeGhCommandFn(calls, {
+      milestoneTitle: MILESTONE_TITLE,
+      tipSha: OTHER_TIP_SHA,
+      compareStatus: "diverged",
+      syncPrListJson: "[]",
+    });
+    const milestone: ActiveMilestone = {
+      milestoneTitle: MILESTONE_TITLE,
+      milestoneNumber: 1,
+      milestoneBranch: MILESTONE_BRANCH,
+      defaultBranch: "main",
+    };
+
+    const report = await escalateSyncConflict(
+      REPO,
+      milestone,
+      makeConflict(),
+      ghCommandFn,
+      (message: string) => logs.push(message),
+    );
+
+    assertEquals(report.posted, false);
+    assertEquals(report.landing.kind, "unconfirmed");
+    assertEquals(
+      commentCalls(calls).length,
+      0,
+      "an unconfirmed landing must post nothing",
+    );
   },
 );

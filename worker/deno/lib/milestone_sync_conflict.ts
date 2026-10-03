@@ -19,6 +19,7 @@
 import type { GhCommandFn } from "./milestone_branch_sync.ts";
 import { describeDecisionRung } from "./milestone_conflict_triage.ts";
 import type { FileDecision } from "./milestone_conflict_triage.ts";
+import type { SyncLanding } from "./milestone_sync_landing.ts";
 
 /** One repair round the verification failure sent back to the agent rung. */
 export interface GateRepairRound {
@@ -142,6 +143,13 @@ export interface MilestoneSyncConflict {
    * says which rung spent them. Absent when nothing was timed.
    */
   timings?: string;
+  /**
+   * The merge commit the sync produced (Issue #2998), read straight after the
+   * push. Absent when it could not be read — a sync that cannot name its own
+   * merge cannot have that merge's landing confirmed, so the report is held
+   * back rather than posted on an assumption.
+   */
+  mergeSha?: string;
 }
 
 /** Outcome of a milestone sync merge. */
@@ -272,10 +280,25 @@ export interface ConflictEscalation {
   defaultBranch: string;
   conflict: MilestoneSyncConflict;
   tips: BranchTip[];
+  /**
+   * Where the merge this escalation reports was confirmed to have landed
+   * (Issue #2998). Required: a report is only ever built once the landing is
+   * confirmed, never on the strength of the sync merely saying it pushed.
+   */
+  landing: SyncLanding;
+}
+
+/** Name where a confirmed merge landed, in one sentence (Issue #2998). */
+export function describeSyncLanding(landing: SyncLanding): string {
+  return landing.kind === "tip"
+    ? `landed on \`${landing.branch}\` at \`${landing.sha}\``
+    : `is in sync PR #${landing.prNumber}`;
 }
 
 /**
- * Body of the comment posted the moment a sync merge conflicts.
+ * Body of the comment posted once a sync merge conflicts **and its landing
+ * is confirmed** (Issue #2998) — on the milestone tip itself, or held by an
+ * open sync PR. Never built for a merge whose landing could not be confirmed.
  *
  * It says what landed, so nobody re-runs the merge to find out; it names the
  * files and both sides' commits, so the reader can diff each side; and it
@@ -328,7 +351,8 @@ export function buildConflictEscalationComment(
       `rung of the ladder — the triage, the dependency rules, then the ` +
       `resolution agent (Issues #1559, #1777). The merged tree passed the ` +
       `repository's own check, its manifest check and its unit suite before ` +
-      `it was pushed — a red tree would have been rolled back instead.\n\n` +
+      `it landed — a red tree would have been rolled back instead. The ` +
+      `merge ${describeSyncLanding(e.landing)}.\n\n` +
       `${
         decisions || "- (no decision was recorded)"
       }${judgements}${repairNote}\n\n` +
@@ -351,8 +375,9 @@ export function buildConflictEscalationComment(
   return `## Milestone sync merged with conflicts — check what was overwritten\n\n` +
     `Merging \`${e.defaultBranch}\` into \`${e.milestoneBranch}\` in ` +
     `\`${e.repo}\` conflicted, and was ${how} so the branch keeps moving ` +
-    `(Issue #1558). The merge **was pushed** — this is a report, not a ` +
-    `blocked sync.\n\n` +
+    `(Issue #1558). The merge **${
+      describeSyncLanding(e.landing)
+    }** — this is a report, not a blocked sync.\n\n` +
     `Conflicting files:\n\n${files}\n\n` +
     `${describeBranchTips(e.tips)}\n\n` +
     `Check each file above against the milestone side's commit: where both ` +
