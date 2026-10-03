@@ -55,6 +55,7 @@ import {
 import {
   detectPlanningHandoff,
   handOffToPlanning,
+  hasPlanningRequestMarker,
   hasPriorPlanningHandoffOnThread,
 } from "../planning_handoff.ts";
 import { gatePlanningHandoff } from "../image_conclusion_gate.ts";
@@ -221,6 +222,7 @@ export async function handOffDeclaredOutcome(
       outputSnippet: publishableSnippet(claudeOutput),
       logger,
       deps: { ensureLabelExists: deps.github.ensureLabelExists },
+      ...(committed ? { committedBranch: state.branchName } : {}),
     });
     logger.info("Blocked on a dependency — deferred instead of closing", {
       repo,
@@ -253,8 +255,10 @@ export async function handOffDeclaredOutcome(
   );
   if (timeDeferral?.kind === "invalid") {
     logger.warn(
-      "Time-deferral marker present but invalid — falling through to " +
-        "normal handling",
+      committed
+        ? "Time-deferral marker present but invalid — handing off to a human"
+        : "Time-deferral marker present but invalid — falling through to " +
+          "normal handling",
       { repo, issueNumber, why: timeDeferral.why },
     );
   } else if (timeDeferral?.kind === "valid") {
@@ -283,6 +287,7 @@ export async function handOffDeclaredOutcome(
         request: timeDeferral.request,
         priorCount: history.length,
         logger,
+        ...(committed ? { committedBranch: state.branchName } : {}),
       });
       logger.info(
         "Data not there yet — deferred until the requested time instead of " +
@@ -415,10 +420,14 @@ export async function handOffDeclaredOutcome(
     }
   }
 
-  // Note: a valid time-deferral marker never reaches here — every branch of
-  // the `kind === "valid"` handling above returns directly — so `declared`
-  // only needs to account for the blocked and planning signals here.
-  const declared = blocked !== undefined || planningRequest !== undefined;
+  // A valid time deferral never reaches here — every `kind === "valid"`
+  // branch above returns. An invalid marker, and a planning marker with no
+  // usable reason, still count: on the committed path those must hand off
+  // rather than raise a PR (Issue #3088). The no-changes caller ignores
+  // `declared` and keeps its own fall-through.
+  const planningMarker = !blocked && hasPlanningRequestMarker(claudeOutput);
+  const declared = blocked !== undefined || planningRequest !== undefined ||
+    timeDeferral?.kind === "invalid" || planningMarker;
 
   return { blocked, declared };
 }

@@ -305,6 +305,11 @@ export interface DeferIssueUntilOptions {
   priorCount: number;
   logger: Logger;
   deps?: DeferIssueUntilDeps;
+  /**
+   * The branch a committed run already pushed (Issue #3088). When set, the
+   * comment names it and the outcome phase is `declared_handoff`.
+   */
+  committedBranch?: string;
 }
 
 /** What {@link deferIssueUntil} did. */
@@ -318,11 +323,16 @@ export interface DeferIssueUntilResult {
 function buildDeferralComment(
   request: TimeDeferralRequest,
   priorCount: number,
+  committedBranch?: string,
 ): string {
   const reason = redactSecrets(neutraliseAgentMarkers(request.reason).text);
   const deferralNumber = priorCount + 1;
+  const lead = committedBranch
+    ? `This run committed work on \`${committedBranch}\` and reported the ` +
+      `data it needs is not there yet, `
+    : `No code changes: this run reported the data it needs is not there yet, `;
   return `## Deferred until ${request.until}\n\n` +
-    `No code changes: this run reported the data it needs is not there yet, ` +
+    lead +
     `so the issue stays open and keeps its discovery label. The worker ` +
     `skips this issue until ${request.until} and then re-runs it ` +
     `automatically — no human action is needed yet.\n\n` +
@@ -352,6 +362,7 @@ export async function deferIssueUntil(
     priorCount,
     logger,
     deps,
+    committedBranch,
   } = options;
   const releaseClaim = deps?.releaseClaim ?? defaultReleaseClaim;
 
@@ -359,7 +370,7 @@ export async function deferIssueUntil(
     await ghClient.postComment(
       repo,
       issueNumber,
-      buildDeferralComment(request, priorCount),
+      buildDeferralComment(request, priorCount, committedBranch),
     );
   } catch (err) {
     logger.error("Failed to post the time-deferral comment", {
@@ -395,7 +406,7 @@ export async function deferIssueUntil(
   }
 
   const outcome = expectedNoPrOutcome(
-    "handle_no_changes",
+    committedBranch ? "declared_handoff" : "handle_no_changes",
     `deferred until ${request.until}`,
   );
   await releaseClaim(ghClient, repo, issueNumber, githubUser, logger, {

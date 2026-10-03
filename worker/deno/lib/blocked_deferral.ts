@@ -176,6 +176,11 @@ export interface DeferBlockedIssueOptions {
   outputSnippet: string;
   logger: Logger;
   deps?: DeferBlockedIssueDeps;
+  /**
+   * The branch a committed run already pushed (Issue #3088). When set, the
+   * comment names it and the outcome phase is `declared_handoff`.
+   */
+  committedBranch?: string;
 }
 
 /** How the deferral was recorded so the dependency gate can see it. */
@@ -201,9 +206,18 @@ export function buildDeferralComment(
   blocked: BlockedOutcome,
   ref: string,
   outputSnippet: string,
+  /**
+   * Set on a committed run (Issue #3088). The comment then names that
+   * branch instead of saying no code changed.
+   */
+  committedBranch?: string,
 ): string {
+  const lead = committedBranch
+    ? `This run committed work on \`${committedBranch}\` and reported the ` +
+      `work blocked on another issue, `
+    : `No code changes: this run reported the work blocked on another issue, `;
   return `## Deferred — blocked on ${ref}\n\n` +
-    `No code changes: this run reported the work blocked on another issue, ` +
+    lead +
     `so the issue stays open and keeps its discovery label. ` +
     `\`Depends on ${ref}\` is recorded below, and the dependency gate skips ` +
     `this issue until ${ref} closes — no human action is needed.\n\n` +
@@ -275,6 +289,7 @@ export async function deferBlockedIssue(
     outputSnippet,
     logger,
     deps,
+    committedBranch,
   } = options;
   const releaseClaim = deps?.releaseClaim ?? defaultReleaseClaim;
   const ref = formatDependencyRef(blocked.dependency);
@@ -284,7 +299,7 @@ export async function deferBlockedIssue(
     await ghClient.postComment(
       repo,
       issueNumber,
-      buildDeferralComment(blocked, ref, outputSnippet),
+      buildDeferralComment(blocked, ref, outputSnippet, committedBranch),
     );
   } catch (err) {
     logger.warn("Failed to post the deferral comment", {
@@ -359,7 +374,7 @@ export async function deferBlockedIssue(
   }
 
   const outcome = expectedNoPrOutcome(
-    "handle_no_changes",
+    committedBranch ? "declared_handoff" : "handle_no_changes",
     buildDeferralSummary(ref),
   );
   await releaseClaim(ghClient, repo, issueNumber, githubUser, logger, {

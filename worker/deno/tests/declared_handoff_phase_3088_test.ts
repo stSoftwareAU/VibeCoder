@@ -184,6 +184,17 @@ Deno.test(
     assert(result.reason.startsWith("deferred: depends on"), result.reason);
     assertEquals(calls.closeIssue, 0);
     assert(calls.postComment.some((c) => c.includes(buildDeferralMarker(DEP))));
+    assert(
+      !calls.postComment.some((c) => c.includes("No code changes")),
+      "a committed deferral must name the branch, not claim no code changed",
+    );
+    assert(
+      calls.postComment.some((c) => c.includes("issue-3088-declared-handoff")),
+    );
+    assertEquals(result.outcome?.kind, "no_pr_expected");
+    if (result.outcome?.kind === "no_pr_expected") {
+      assertEquals(result.outcome.phase, "declared_handoff");
+    }
   },
 );
 
@@ -505,6 +516,92 @@ Deno.test(
       assertEquals(result.status, "continue");
       assertEquals(calls.postComment, []);
       assertEquals(calls.addLabel, []);
+    }
+  },
+);
+
+/** A date past the 30-day horizon, computed so the suite never hard-codes one. */
+const OVER_HORIZON_UNTIL = new Date(Date.now() + 31 * 86_400_000)
+  .toISOString()
+  .replace(/\.\d{3}Z$/, "Z");
+
+function assertHumanHandoff(
+  result: Awaited<ReturnType<typeof workOnIssueDeclaredHandoff>>,
+  calls: StubCalls,
+): void {
+  assertEquals(result.status, "early_exit");
+  if (result.status !== "early_exit") return;
+  assertEquals(result.reason, "analysis_only_handed_off");
+  assert(calls.addLabel.includes("needs-human"));
+  assertEquals(calls.closeIssue, 0);
+}
+
+Deno.test(
+  "declared_handoff_phase - an over-horizon defer marker hands off, no PR (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+    });
+    const output =
+      `<!-- vibe-defer-until until="${OVER_HORIZON_UNTIL}" reason="the export lands later" -->`;
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(output),
+      deps,
+    );
+
+    assertHumanHandoff(result, calls);
+  },
+);
+
+Deno.test(
+  "declared_handoff_phase - a reasonless planning marker hands off, no PR (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState("<!-- vibe-needs-planning -->"),
+      deps,
+    );
+
+    assertHumanHandoff(result, calls);
+  },
+);
+
+Deno.test(
+  "declared_handoff_phase - a valid time deferral names the committed branch (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+    });
+    const output =
+      `<!-- vibe-defer-until until="${FUTURE_UNTIL}" reason="the export has not landed" -->`;
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(output),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    if (result.status !== "early_exit") return;
+    assert(result.reason.startsWith("deferred: until "), result.reason);
+    assert(
+      !calls.postComment.some((c) => c.includes("No code changes")),
+    );
+    assert(
+      calls.postComment.some((c) => c.includes("issue-3088-declared-handoff")),
+    );
+    assertEquals(result.outcome?.kind, "no_pr_expected");
+    if (result.outcome?.kind === "no_pr_expected") {
+      assertEquals(result.outcome.phase, "declared_handoff");
     }
   },
 );

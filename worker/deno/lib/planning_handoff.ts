@@ -64,6 +64,22 @@ export interface PlanningHandoffRequest {
 }
 
 /**
+ * True when the output carries a `vibe-needs-planning` marker, even with no
+ * usable `reason` (Issue #3088).
+ *
+ * {@link detectPlanningHandoff} ignores a reasonless marker so the run can
+ * fall through to a human. On a committed run that fall-through must still
+ * be a hand-off, not a PR, so the caller needs the marker's presence on its
+ * own. A marker inside a code fence or span is the prompt's template, not a
+ * request.
+ */
+export function hasPlanningRequestMarker(output: string): boolean {
+  return new RegExp(REQUEST_RE.source, REQUEST_RE.flags).test(
+    stripCodeSpans(output),
+  );
+}
+
+/**
  * Detect a `vibe-needs-planning` request in the run output. A marker without
  * a non-blank `reason` is ignored, so the run falls through to `needs-human`.
  */
