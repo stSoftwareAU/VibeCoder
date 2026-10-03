@@ -174,7 +174,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the
    discrepancy. A rule that needs no such claim states the rule and the risk
    it addresses instead (see **Prompt Engineering Guidance** in
-   `CODING-STANDARDS.md`). Before adding or changing a rule in
+   `CODING-STANDARDS.md`). Hold prose about this PR's own change to the code
+   that decides it: for each sentence the diff adds or edits that says
+   **when** the new behaviour happens or **what it costs**, list every
+   condition and every path in the head code that reaches it, and name each
+   condition or scope the sentence to the path it describes. An absolute
+   word ("only", "never", "always", "any", "automatically", "exactly as
+   before") needs a line of head code that guarantees it, or the sentence is
+   rewritten; a change that moves a cost (a download, a retry, a push, a
+   fallback) says where the cost now lands; and a sentence about history
+   ("before this fix, X skipped Y") is checked against the base-branch code
+   (see **Prose about the PR's own change** in `CODING-STANDARDS.md`). Before
+   adding or changing a rule in
    `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
    under `worker/deno/lib/`, grep those files for existing rules on the same
    subject — the nouns the rule governs, not only the issue's wording — and
