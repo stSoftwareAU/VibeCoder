@@ -605,6 +605,71 @@ Some unrelated prose.
 });
 
 // ---------------------------------------------------------------------------
+// Worker-owned state files must never be treated as a code change
+// (Issue #3143 review): `.pr_response_message`, written by the agent at the
+// prompts' request, lands untracked in a repo with no `.*` ignore rule.
+// ---------------------------------------------------------------------------
+
+Deno.test("runPrFeedbackDriftCheck - a docs-only push that also drops .pr_response_message (untracked, no ignore rule) makes no model call and reports clean", async () => {
+  const { dir, beforeSha } = await setupDocsOnlyBaseline(undefined);
+  try {
+    await writeFile(dir, "docs/notes.md", "Some updated notes.\n");
+    // The agent's reply file, written at the clone root per the prompts'
+    // instructions — untracked, since this repo has no `.*` ignore rule.
+    await Deno.writeTextFile(
+      `${dir}/.pr_response_message`,
+      "I've pushed a fix for this feedback.",
+    );
+
+    const calls: AgentCall[] = [];
+    const runAgent = makeRunAgent([], calls);
+
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runAgent,
+        logger: noopLogger(),
+      },
+    );
+
+    assertEquals(calls.length, 0);
+    assertEquals(outcome.status, "clean");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runPrFeedbackDriftCheck - a push whose only file is .pr_response_message is skipped as unchanged", async () => {
+  const { dir, beforeSha } = await setupDocsOnlyBaseline(undefined);
+  try {
+    await Deno.writeTextFile(
+      `${dir}/.pr_response_message`,
+      "I've pushed a fix for this feedback.",
+    );
+
+    const calls: AgentCall[] = [];
+    const runAgent = makeRunAgent([], calls);
+
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runAgent,
+        logger: noopLogger(),
+      },
+    );
+
+    assertEquals(calls.length, 0);
+    assertEquals(outcome.status, "skipped");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Skipped cases.
 // ---------------------------------------------------------------------------
 

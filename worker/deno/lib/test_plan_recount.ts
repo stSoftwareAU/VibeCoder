@@ -26,25 +26,166 @@ export function isCountableTestPath(path: string): boolean {
   return /(?:_test|\.test|\.spec)\.(?:ts|tsx|js|jsx|mjs|mts)$/.test(path);
 }
 
-/** Count test declarations in a test file's source. */
-export function countTestDeclarations(source: string): number {
+/**
+ * Replace comments, string/template literals and regex literals with
+ * whitespace, left to right, tracking escapes and `${...}` interpolation
+ * depth inside template literals (Issue #3143 review).
+ *
+ * A declaration-shaped fixture embedded in a string or template literal — a
+ * test file that quotes `Deno.test(...)` source as a sample input, or an
+ * assertion message containing "it (" — must never be counted as a real
+ * declaration. A plain regex over the raw source cannot tell the two apart;
+ * this single-pass scanner can, because it tracks literal boundaries rather
+ * than matching text wherever it appears.
+ */
+function stripNonCode(source: string): string {
+  let out = "";
+  let i = 0;
+  let prev = "";
+  const n = source.length;
+  while (i < n) {
+    const c = source[i]!;
+    const c2 = i + 1 < n ? source[i + 1]! : "";
+
+    if (c === "/" && c2 === "/") {
+      while (i < n && source[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && c2 === "*") {
+      i += 2;
+      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const quote = c;
+      i++;
+      while (i < n && source[i] !== quote) {
+        i += source[i] === "\\" ? 2 : 1;
+      }
+      i++;
+      out += " ";
+      prev = quote;
+      continue;
+    }
+    if (c === "`") {
+      i++;
+      let depth = 0;
+      while (i < n) {
+        if (source[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (source[i] === "`" && depth === 0) {
+          i++;
+          break;
+        }
+        if (source[i] === "$" && source[i + 1] === "{") {
+          depth++;
+          i += 2;
+          continue;
+        }
+        if (source[i] === "}" && depth > 0) {
+          depth--;
+          i++;
+          continue;
+        }
+        i++;
+      }
+      out += " ";
+      prev = "`";
+      continue;
+    }
+    // Regex literal, only after a token that cannot end an expression
+    // (operator, opening bracket, or start of input) — distinguishes
+    // `const re = /foo/;` from a division `a / b` (same heuristic common
+    // tokenizers use; a missed case merely falls back to the old,
+    // over-counting behaviour rather than mis-stripping real code).
+    if (c === "/" && /^[([{,;:!&|?=~^%+\-*]?$/.test(prev)) {
+      let j = i + 1;
+      let inClass = false;
+      let closed = false;
+      while (j < n && source[j] !== "\n") {
+        if (source[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (source[j] === "[") inClass = true;
+        else if (source[j] === "]") inClass = false;
+        else if (source[j] === "/" && !inClass) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (closed) {
+        let k = j + 1;
+        while (k < n && /[a-z]/i.test(source[k]!)) k++;
+        out += " ";
+        i = k;
+        prev = "/";
+        continue;
+      }
+    }
+
+    out += c;
+    if (!/\s/.test(c)) prev = c;
+    i++;
+  }
+  return out;
+}
+
+/** Declaration counts: every declaration, and only the ones `deno test` runs. */
+export interface TestDeclarationCounts {
+  /** Every `Deno.test`/`it` declaration, including `.ignore`/`.skip`. */
+  total: number;
+  /** Declarations `deno test` actually runs — `.ignore`/`.skip` excluded. */
+  runnable: number;
+}
+
+/** Modifiers that `deno test` leaves out of its "N passed" figure. */
+const DENO_SKIPPED_MODIFIERS = new Set(["ignore"]);
+const IT_SKIPPED_MODIFIERS = new Set(["ignore", "skip"]);
+
+function countCalls(
+  text: string,
+  re: RegExp,
+  skippedModifiers: ReadonlySet<string>,
+): TestDeclarationCounts {
+  let total = 0;
+  let runnable = 0;
+  for (const m of text.matchAll(re)) {
+    total++;
+    if (!skippedModifiers.has(m[1] ?? "")) runnable++;
+  }
+  return { total, runnable };
+}
+
+/**
+ * Count test declarations in a test file's source, both the total and the
+ * subset `deno test` actually runs.
+ */
+export function countTestDeclarationsDetailed(
+  source: string,
+): TestDeclarationCounts {
   const capped = source.slice(0, MAX_SCAN_CHARS);
+  const code = stripNonCode(capped);
 
-  // Strip block comments first, then any line whose trimmed start is `//`
-  // (an inline `//` is left alone so URLs embedded in strings survive).
-  const withoutBlockComments = capped.replace(/\/\*[\s\S]*?\*\//g, "");
-  const withoutLineComments = withoutBlockComments
-    .split("\n")
-    .map((line) => (line.trim().startsWith("//") ? "" : line))
-    .join("\n");
+  const denoTestRe = /\bDeno\.test(?:\.(only|ignore))?\s*\(/g;
+  const itRe = /(?<![\w.$])it(?:\.(only|ignore|skip))?\s*\(/g;
 
-  const denoTestRe = /\bDeno\.test(?:\.(?:only|ignore))?\s*\(/g;
-  const itRe = /(?<![\w.$])it(?:\.(?:only|ignore|skip))?\s*\(/g;
+  const deno = countCalls(code, denoTestRe, DENO_SKIPPED_MODIFIERS);
+  const it = countCalls(code, itRe, IT_SKIPPED_MODIFIERS);
 
-  const denoCount = [...withoutLineComments.matchAll(denoTestRe)].length;
-  const itCount = [...withoutLineComments.matchAll(itRe)].length;
+  return {
+    total: deno.total + it.total,
+    runnable: deno.runnable + it.runnable,
+  };
+}
 
-  return denoCount + itCount;
+/** Count test declarations in a test file's source (every declaration). */
+export function countTestDeclarations(source: string): number {
+  return countTestDeclarationsDetailed(source).total;
 }
 
 /**
@@ -100,7 +241,7 @@ export interface TestPlanMismatch {
 
 function resolveToken(
   token: string,
-  headCounts: ReadonlyMap<string, number>,
+  headCounts: ReadonlyMap<string, TestDeclarationCounts>,
 ): string | undefined {
   const matches: string[] = [];
   for (const key of headCounts.keys()) {
@@ -113,15 +254,17 @@ function resolveToken(
 
 const TOKEN_RE =
   /[A-Za-z0-9_./-]+(?:_test|\.test|\.spec)\.(?:ts|tsx|js|jsx|mjs|mts)/g;
-const CLAIM_RE = /(?<![\w.])(\d{1,5})\s+(?:tests?|passed)\b/gi;
+// Captures the claim word too: a "passed" figure is what `deno test` actually
+// ran (`.ignore`/`.skip` excluded); a "tests" figure is every declaration.
+const CLAIM_RE = /(?<![\w.])(\d{1,5})\s+(tests?|passed)\b/gi;
 
 export function findTestPlanMismatches(opts: {
   summary: string;
   /**
-   * Repo-relative path → declarations counted at the head, for the PR's
-   * changed test files only (count > 0).
+   * Repo-relative path → declaration counts at the head, for the PR's
+   * changed test files only (total > 0).
    */
-  headCounts: ReadonlyMap<string, number>;
+  headCounts: ReadonlyMap<string, TestDeclarationCounts>;
 }): TestPlanMismatch[] {
   const section = extractTestPlanSection(opts.summary);
   const results: TestPlanMismatch[] = [];
@@ -144,15 +287,24 @@ export function findTestPlanMismatches(opts: {
     }
     if (hasUnknownToken) continue;
 
-    const claims = [...rawLine.matchAll(CLAIM_RE)].map((m) => Number(m[1]));
-    if (claims.length === 0) continue;
+    const claimMatches = [...rawLine.matchAll(CLAIM_RE)];
+    if (claimMatches.length === 0) continue;
+    const claims = claimMatches.map((m) => Number(m[1]));
     const uniqueClaims = new Set(claims);
     if (uniqueClaims.size > 1) continue;
+    // A "passed" figure never includes a skipped declaration; mixing a
+    // "passed" claim with a "tests" claim on the same line is ambiguous.
+    const words = new Set(
+      claimMatches.map((m) => (m[2] ?? "").toLowerCase()),
+    );
+    const isPassedClaim = words.has("passed");
+    if (isPassedClaim && words.size > 1) continue;
 
     const claimed = claims[0] as number;
     let actual = 0;
     for (const key of resolvedKeys) {
-      actual += opts.headCounts.get(key) ?? 0;
+      const counts = opts.headCounts.get(key);
+      actual += counts ? (isPassedClaim ? counts.runnable : counts.total) : 0;
     }
 
     if (claimed !== actual) {

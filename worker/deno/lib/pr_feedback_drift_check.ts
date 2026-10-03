@@ -52,11 +52,13 @@ import {
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
 import {
-  countTestDeclarations,
+  countTestDeclarationsDetailed,
   describeTestPlanMismatch,
   findTestPlanMismatches,
   isCountableTestPath,
+  type TestDeclarationCounts,
 } from "./test_plan_recount.ts";
+import { isWorkerStatePath } from "./worker_state_paths.ts";
 import type { Logger, Result } from "../types.ts";
 
 /**
@@ -571,14 +573,14 @@ async function loadSummaries(
 async function computeHeadCounts(
   repoPath: string,
   prFiles: readonly string[],
-): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
+): Promise<Map<string, TestDeclarationCounts>> {
+  const map = new Map<string, TestDeclarationCounts>();
   for (const path of prFiles) {
     if (!isCountableTestPath(path)) continue;
     const content = await readIfExists(repoPath, path);
     if (content === undefined) continue;
-    const count = countTestDeclarations(content);
-    if (count > 0) map.set(path, count);
+    const counts = countTestDeclarationsDetailed(content);
+    if (counts.total > 0) map.set(path, counts);
   }
   return map;
 }
@@ -586,7 +588,7 @@ async function computeHeadCounts(
 /** The deterministic checks' problems, given the current summaries and head counts. */
 function collect(
   summaries: readonly LoadedSummary[],
-  headCounts: ReadonlyMap<string, number>,
+  headCounts: ReadonlyMap<string, TestDeclarationCounts>,
   prFiles: readonly string[],
   changesBehaviour: boolean,
 ): { mismatches: string[]; docsSweepProblems: string[] } {
@@ -684,7 +686,12 @@ export async function runPrFeedbackDriftCheck(
     );
     return { status: "skipped", reason: "could not read this push's diff" };
   }
-  const pushFiles = uniq([...diffNames, ...untracked]);
+  // Worker-owned state files (`.pr_response_message`, heartbeat markers)
+  // land untracked in a repo with no `.*` ignore rule; they are never a code
+  // change this check should react to (Issue #3143 review).
+  const pushFiles = uniq(
+    [...diffNames, ...untracked].filter((f) => !isWorkerStatePath(f)),
+  );
   if (pushFiles.length === 0) {
     logger.warn("Drift check skipped — this push changed nothing", {
       repo,
