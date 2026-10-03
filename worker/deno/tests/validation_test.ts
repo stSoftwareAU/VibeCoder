@@ -63,6 +63,27 @@ Deno.test("validation - validateGhIssueJson accepts null body from gh CLI", () =
   }
 });
 
+Deno.test("validation - validateGhIssueJson accepts OPEN, CLOSED, MERGED and an absent state (Issue #3088)", () => {
+  const base = {
+    number: 1,
+    title: "State",
+    body: "x",
+    labels: [],
+    author: { login: "user" },
+    assignees: [],
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T00:00:00Z",
+  };
+  for (const state of ["OPEN", "CLOSED", "MERGED", undefined]) {
+    const input = state === undefined ? base : { ...base, state };
+    const result = validateGhIssueJson(input);
+    assertEquals(result.ok, true, String(state));
+    if (result.ok) assertEquals(result.value.state, state);
+  }
+  const rejected = validateGhIssueJson({ ...base, state: 1 });
+  assertEquals(rejected.ok, false);
+});
+
 Deno.test("validation - validateGhIssueJson rejects non-object input", () => {
   const result = validateGhIssueJson("not an object");
   assertEquals(result.ok, false);

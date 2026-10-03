@@ -779,6 +779,34 @@ the "no PR" outcome reads as "not done". Without a dedicated exit the worker
 re-picks-up and re-runs the issue indefinitely (the loop, which re-posted
 the same matrix plus an "unable to make code changes" note about five times).
 
+**The structured signals below are honoured even when the run committed code
+(Issue #3088).** A `declared_handoff` phase runs after execute and before
+`bump_deps` / the quality gate / completion. On that committed path a
+`## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
+names a dependency the worker reads as open. A closed dependency, a missing
+`state`, or a lookup that fails does not defer; the run hands off to a human
+and raises no PR. A dependency filed during this run does not defer either:
+the worker reads that from the issue, when its author is this host's login or
+another fleet author and its `createdAt` is at or after the whole run
+started. A later execute attempt does not move that start. That committed
+run hands off to a human and raises no PR. Wording such as
+"out of scope" does not turn an older open dependency into that case. A bullet, or a heading with no declaration line, still
+continues and raises its PR. A
+`vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
+read after a commit, so the worker defers or hands to planning instead of
+raising a PR with `Closes #N`. An invalid or over-horizon deferral, or a
+planning marker with no reason, hands off to a human. A signal the guard
+refuses (a repeat deferral, a planning request without the `work-on` anchor)
+still falls through to the human hand-off below. Before any of those
+hand-offs the phase pushes the branch through `commitAndPushPending`. The
+hand-off is applied only after that push leaves nothing unpushed, so the
+next claim can resume from `issue-<N>-…` whether or not session resume's
+checkpoint already pushed. A failed push applies no hand-off and posts no
+comment naming the branch. The phase raises no PR. The free-text escape hatch (a follow-up issue + "out of scope"
+message) remains the one hand-off that is honoured only when the run leaves
+no commit and no uncommitted change. See
+[`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
+
 The worker now detects an analysis-only / no-PR issue from **two signals** and
 hands it off cleanly to `needs-human` (the only operational label the worker may
 apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):

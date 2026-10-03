@@ -55,6 +55,13 @@ const BLOCKED_SECTION_RE =
   /^[ \t]*(?:[-*+]\s+)?(?:#{1,6}\s*)?(?:\*\*|__)?(?:blocked|depends\s+on)\b/i;
 
 /**
+ * A markdown heading that opens a `## Blocked:` section. The committed path
+ * accepts only this documented shape, not a bullet or a passing mention
+ * (Issue #3088 review).
+ */
+const BLOCKED_HEADING_RE = /^[ \t]*#{1,6}\s+(?:\*\*|__)?blocked\b/i;
+
+/**
  * A line that *declares* the dependency — `Depends on …` / `Blocked by …`
  * (Issue #1634).
  *
@@ -199,12 +206,17 @@ function boundReason(reason: string): string {
  *
  * @param output - The agent's stdout for the run.
  * @param self - The issue being worked, so it is never its own dependency.
+ * @param options.declaredHeadingOnly - Committed-path shape. Only a
+ *   `## Blocked:` heading opens a section, and only a `Depends on` /
+ *   `Blocked by` line names the dependency. The first-reference fallback
+ *   does not defer a run that already committed (Issue #3088 review).
  * @returns The blocked outcome, or `undefined` when the output is not
  *   blocked-shaped.
  */
 export function detectBlockedOutcome(
   output: string,
   self: { repo: string; issueNumber: number },
+  options?: { declaredHeadingOnly?: boolean },
 ): BlockedOutcome | undefined {
   if (!output.trim()) return undefined;
 
@@ -212,7 +224,10 @@ export function detectBlockedOutcome(
   const fenced = fencedLines(lines);
   for (let i = 0; i < lines.length; i++) {
     if (fenced[i]) continue;
-    if (!BLOCKED_SECTION_RE.test(lines[i]!)) continue;
+    const opener = options?.declaredHeadingOnly
+      ? BLOCKED_HEADING_RE
+      : BLOCKED_SECTION_RE;
+    if (!opener.test(lines[i]!)) continue;
     const section = blockedSection(lines, i);
     // The section is quoted back verbatim, but references are read from the
     // code-stripped text: a `Depends on #5` inside a fenced example is
@@ -222,12 +237,21 @@ export function detectBlockedOutcome(
       dep.number === self.issueNumber &&
       (dep.repo === undefined || sameRepo(dep.repo, self.repo));
     const dependencies = referencesIn(stripped).filter((dep) => !isSelf(dep));
+    const declared = declaredDependency(stripped, isSelf);
+    if (options?.declaredHeadingOnly) {
+      if (!declared) continue;
+      return {
+        dependency: declared,
+        dependencies,
+        reason: boundReason(section),
+      };
+    }
     const first = dependencies[0];
     if (!first) continue;
     return {
       // The declared dependency wins; the first reference is the fallback for
       // a section that never states one (Issue #1634).
-      dependency: declaredDependency(stripped, isSelf) ?? first,
+      dependency: declared ?? first,
       dependencies,
       reason: boundReason(section),
     };
