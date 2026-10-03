@@ -288,8 +288,10 @@ apply:
   `needs-human` included, is removed after creation, so name `needs-human` in
   the comment instead.
 - Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
-  as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
-  and hands it to a human.
+  as `{{REPO}}#NNN`), and leave the issue open. The worker releases its claim
+  and hands it to a human only while the branch has no commits and no
+  uncommitted changes against the base. Once work is committed, this
+  free-text hand-off is not read.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -302,8 +304,9 @@ change, and end your final message with this marker on its own line:
 <!-- vibe-needs-planning reason="<why it splits — the independent pieces you found>" -->
 ```
 
-The worker applies `planning` through its audited hand-off, posts your reason
-on the issue, and the planning run breaks it into sub-issues. `reason` is
+The worker applies `planning` through its audited hand-off only while the
+branch has no commits and no uncommitted changes against the base. It posts
+your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
 goes to a human instead. The marker applies to `work-on` issues only: on any
 other pickup label, or when the issue body carried an image from an untrusted
@@ -597,6 +600,14 @@ A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
 broken.
 
+**A violation this diff introduced blocks the PR — you enforce this one, not
+the gate.** A doc comment the change made wrong, a test the summary cites that
+exists neither in the diff nor at the head, a standard breached in a line this
+PR wrote: fix it in this diff before you raise the PR, never list it as
+standing. Only a departure that predates the diff, or one the issue itself
+requires, may stand, and its
+`reason:` says which.
+
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
@@ -639,6 +650,33 @@ one is broken:
   silent.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria.
+
+Two more rules no gate parses — a reviewer sends the PR back for either:
+
+- **Demonstrate a criterion; do not assert it.** A test named as evidence must
+  exist in the diff (or at the head) and must have been run on the final head;
+  a coverage claim — "every branch", "all rejections" — names the branches its
+  tests exercise, and one untested branch makes it `partial`.
+- **A missing core deliverable is not a PR.** When the thing the issue asks for
+  is `missing`, finish it. The planning marker and the escape hatch are
+  honoured only while the branch has no commits and no uncommitted changes —
+  the worker's change detection (`worker/deno/lib/phases/execute_phase.ts`)
+  sends the run to the PR path when `git log <base>..HEAD` lists any commit
+  (including one a later revert cancels, or a branch commit a base merge
+  absorbed) or `git diff --stat HEAD` shows any uncommitted change, whatever
+  planning, escape-hatch or blocked/deferral marker your output carries (the
+  suspicious-image flag is the exception: it always stops the run, committed
+  work or not), and the PR body gets
+  `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
+  By the time you are closing out acceptance criteria you will usually already
+  have committed work, so a planning, escape-hatch or blocked/deferral
+  hand-off at this point is not read — finishing the deliverable is the only
+  way to avoid a `Closes #{{ISSUE_NUMBER}}` over work left undone.
+  When the core deliverable is genuinely blocked on another open issue and
+  work is already committed, record that criterion as `missing` and name the
+  blocking dependency beside the closing keyword.
+  When a lesser criterion stays `partial` or `missing`, the Summary names it
+  beside the closing keyword instead of describing the issue as resolved.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -828,6 +866,16 @@ rewrite it, never append to it:
   summary saying the fix is broken or unfinished when the head holds a working,
   tested fix is a wrong record — anyone reading the archive concludes the issue
   is unfixed.
+- Hold every doc the diff adds or edits to the same rule — a README or `docs/`
+  page, an audit record or ledger, the doc comment above a changed function.
+  Each assertion it makes (a count, a list of roots, a file, flag or test it
+  names) must match the head code, and every change it says this PR makes must
+  appear in the diff — but a file or test cited only as existing evidence
+  needs merely to exist at the head, in the diff or already tracked, matching
+  the named-test rule below.
+- After any merge of the base branch into this branch, or on finding the base
+  has advanced, re-run this check: a claim whose subject the merge absorbed is
+  dropped, or the work is redone so the diff carries it again.
 - A body that contradicts the diff — a claimed file, behaviour or criterion the
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
@@ -880,7 +928,13 @@ The file MUST contain:
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. A negative test — one asserting something does
+   and name that test. Every new test added to guard a change (a fix, a new
+   guard, a new rule) counts only once you have seen it go red with only its
+   change removed (see **A new test must go red without its change** in the
+   guidelines); one that stays green without its change is a blocking
+   self-review finding. A test that only pins current behaviour, because the
+   fault was unreproduced or already fixed and no production change was made,
+   is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard
    broken on purpose (see **A negative test must be able to fail** in the
    guidelines); one that stays green without its guard is a blocking

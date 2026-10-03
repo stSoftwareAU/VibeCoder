@@ -183,7 +183,7 @@ Rule 5 bans keyword checks over documentation; this subsection is the one
 exception, and the `worker/deno/tests/*_docs_test.ts` suites are what it exists
 for. They are the only guard on a documented rule, switch name or rendered line
 drifting away from the code that produces it, so such a suite stays — but it
-earns its place by meeting all three conditions:
+earns its place by meeting all four conditions:
 
 1. **Section-scoped.** Read the page with `readRepoDoc` and narrow it with
    `section` from `worker/deno/tests/support/markdown_docs.ts`, which masks
@@ -200,6 +200,12 @@ earns its place by meeting all three conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
+4. **The pinned phrase occurs only in the rule being added.** A phrase the
+   section already held before the change stays green when the new rule is
+   deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
+   issue prompt already carried. Check the phrase is absent from the base
+   branch's version of that section, or delete the new rule and confirm the
+   test goes red.
 
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
@@ -312,6 +318,20 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A new test must go red without its change.** A test added to guard a
+change — a regression test a fix or a review asks for, a documentation-drift
+test, a growth guard — must go red when only that change is removed. A test
+whose input never reaches the failure passes either way: a fake that throws
+into a catch that returns the expected value, a fixture that a re-sort puts
+in order before the assertion runs, a phrase the section already held before
+the change. Remove the change on purpose (delete the clause, drop the cap,
+restore the old expression), run the test, see it fail, then restore it. A
+new test that stays green without its change is a blocking self-review
+finding. A test that only pins current behaviour — the fault was unreproduced
+or already fixed, and no production change was made — is expected green on
+base, and the Test Plan says so. **A negative test must be able to fail**
+below is this rule for an assertion that something does *not* happen.
+
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
 rather than stale — needs a fixture that contains the forbidden thing: a real
@@ -366,7 +386,10 @@ Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
 check each named path with `git ls-files <path>`; a named-but-absent test is a
 blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist.
+an anchor that references a test that does not exist. A test cited as evidence
+is also run on the final head and its result reported, and a coverage claim
+names the branches its tests exercise — "every branch" with one branch
+untested is an over-claim (Issue #3058).
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's
@@ -426,7 +449,9 @@ or refactor with the supported behaviour intact. If so, justify it as an
 explicit contract or leave it out. Ask a negative assertion the opposite
 question too: would it fail if the guard it protects were removed? If not,
 its fixture lacks the forbidden value — see **A negative test must be able to
-fail** above. See Playwright's
+fail** above. Ask every new test the same question of its change: would it
+fail if only that change were removed? See **A new test must go red without
+its change** above. See Playwright's
 [user-visible testing guidance](https://playwright.dev/docs/best-practices)
 and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
 
@@ -531,7 +556,11 @@ simply no longer waits out a stopwatch to do it.
   replaced it went red on a loaded laptop reading 30 ms against 355 ms for work
   that is linear. **A fleet of unlike machines under unlike loads has no budget
   and no ratio that means the same thing twice**, and a flaky gate teaches
-  everyone to re-run rather than read the result.
+  everyone to re-run rather than read the result. Whichever form guards it,
+  build the test from the input shape that was slow, and run it against the
+  unfixed pattern to see it hang or fail the growth check before counting it:
+  Issue #3085's growth test fed dots that ran to the end of the value, which
+  never backtracks, when the input that does is dots followed by `x`.
 - **If, and only if, no observable output distinguishes the two, guard by
   shape rather than by clock** — catastrophic backtracking has no wrong output,
   only a runtime one, so such a test must measure. Use
@@ -969,7 +998,26 @@ files) matches the head. Every file or behaviour the summary says the PR changes
 must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
 from the base branch can supersede the change — and an abandoned iteration's
 description is replaced by the one that shipped. A summary that contradicts the
-diff is a blocking self-review finding. Any later commit on the branch — a
+diff is a blocking self-review finding. The same holds for every doc the diff
+adds or edits — a README or `docs/` page, an audit record, the doc comment
+above a changed function: each assertion it makes must match the head code.
+After any merge of the base branch into the branch, re-verify each claim; one
+whose subject the merge absorbed is dropped, or the work redone. A
+Standards-review violation the diff itself introduced is fixed before the PR
+is raised, never listed as standing, and a PR whose core deliverable is
+`missing` is not raised over a `Closes #<n>` — finish the work, except when
+the core deliverable is genuinely blocked on another open issue after work
+is committed: then record that criterion as `missing` and name the blocking
+dependency beside the closing keyword. In an issue run, a hand-off (the
+planning marker or the escape hatch) is honoured only while the branch has
+no commits and no uncommitted changes against the base; once work is
+committed the issue run is routed to the PR regardless of a planning or
+escape-hatch marker (Issue #3058). A CI-fix run is the exception: a check
+already red on the base branch still defers on a `Depends on owner/repo#N`
+line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
+in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
+honoured on a committed PR branch when `.pr_response_message` names a
+follow-up issue. Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
