@@ -31,8 +31,12 @@ import type {
   PhaseState,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
+import type { GitHubIssue } from "../../types.ts";
 import { buildDeclaredHandoffWipCommitMessage } from "../wip_checkpoint.ts";
-import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
+import {
+  isFleetAuthor,
+  resolveFleetMaintenanceAuthorSet,
+} from "../fleet_authors.ts";
 import {
   type AnalysisOnlyTrigger,
   handOffAnalysisOnly,
@@ -42,8 +46,6 @@ import {
   detectBlockedOutcome,
   formatDependencyRef,
 } from "../blocked_outcome.ts";
-import { detectEscapeHatch } from "../escape_hatch.ts";
-import { parseFollowUpIssueRef } from "../escape_hatch_label_strip.ts";
 import {
   deferBlockedIssue,
   hasPriorDeferralOnThread,
@@ -187,46 +189,21 @@ export interface DeclaredOutcomeHandoff {
 }
 
 /**
- * Whether the declared dependency is the follow-up this same output filed.
- *
- * The escape-hatch strip already resolves that reference. Depending on it
- * after a commit is not a real deferral: the follow-up has no pickup label,
- * so the issue would sit until nothing closes it. The run stays declared
- * and hands off to a human instead (Issue #3088).
+ * The declared dependency's issue, or `undefined` when it cannot be read.
+ * A committed run defers only while that issue is still open.
  */
-function dependencyIsSelfFiledFollowUp(
-  output: string,
-  repo: string,
-  blocked: BlockedOutcome,
-): boolean {
-  const detection = detectEscapeHatch(output, repo);
-  if (!detection.invoked || !detection.issueRef) return false;
-  const filed = parseFollowUpIssueRef(detection.issueRef, repo);
-  if (!filed) return false;
-  const dep = blocked.dependency;
-  const depRepo = (dep.repo ?? repo).toLowerCase();
-  return filed.issueNumber === dep.number &&
-    filed.repo.toLowerCase() === depRepo;
-}
-
-/**
- * Whether the declared dependency is still open. A committed run is deferred
- * only while it is. A closed dependency, or a state that cannot be read, does
- * not defer, but the run stays declared and hands off to a human.
- */
-async function dependencyStillOpen(
+async function readDeclaredDependency(
   deps: WorkerDeps,
   repo: string,
   blocked: BlockedOutcome,
-): Promise<boolean> {
+): Promise<GitHubIssue | undefined> {
   const dep = blocked.dependency;
   const depRepo = dep.repo ?? repo;
   try {
-    const issue = await deps.github.createClient(deps.logger).getIssue(
+    return await deps.github.createClient(deps.logger).getIssue(
       depRepo,
       dep.number,
     );
-    return issue.state === "OPEN";
   } catch (err) {
     deps.logger.warn(
       "Could not read the dependency's state — not deferring a committed run",
@@ -236,8 +213,27 @@ async function dependencyStillOpen(
         error: err instanceof Error ? err.message : String(err),
       },
     );
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * Whether the dependency was filed by this fleet during the current run.
+ *
+ * The decision is the issue record, not the run's prose: the author is this
+ * host's login or another fleet author, and `createdAt` is at or after the
+ * run started. Depending on that issue after a commit is not a real
+ * deferral — the follow-up has no pickup label — so the run stays declared
+ * and hands off to a human (Issue #3088).
+ */
+function dependencyFiledDuringThisRun(
+  issue: GitHubIssue,
+  fleetAuthors: readonly string[],
+  executeStartTime: number,
+): boolean {
+  if (!isFleetAuthor(issue.author, [...fleetAuthors])) return false;
+  const createdMs = Date.parse(issue.createdAt);
+  return Number.isFinite(createdMs) && createdMs >= executeStartTime;
 }
 
 /**
@@ -269,44 +265,55 @@ export async function handOffDeclaredOutcome(
   // with no declaration line still continues. A dependency that is closed,
   // merged, missing a state, or unreadable does not defer, but the run stays
   // declared and hands off to a human instead of raising a PR (Issue #3088).
-  // A dependency that is the follow-up this same output filed does not defer
-  // either: that would park a human-only decision on an issue nothing picks up.
+  // A dependency filed by this fleet during the run does not defer either:
+  // that would park a human-only decision on an issue nothing picks up. The
+  // issue record decides that, not wording in the output.
   const committed = trigger === "declared_handoff";
   let blocked = detectBlockedOutcome(
     claudeOutput,
     { repo, issueNumber },
     committed ? { declaredHeadingOnly: true } : undefined,
   );
+  const fleetAuthors = resolveFleetMaintenanceAuthorSet({
+    githubUser,
+    fleetPrAuthors: config.fleetPrAuthors ?? [],
+    serviceAccounts: config.serviceAccounts ?? [],
+  });
   let blockedNotOpen = false;
-  if (
-    blocked && committed &&
-    dependencyIsSelfFiledFollowUp(claudeOutput, repo, blocked)
-  ) {
-    logger.info(
-      "Committed run depends on a follow-up it filed — not deferring, " +
-        "handing off to a human",
-      {
-        repo,
-        issueNumber,
-        dependency: formatDependencyRef(blocked.dependency),
-      },
-    );
-    blockedNotOpen = true;
-    blocked = undefined;
-  } else if (
-    blocked && committed && !await dependencyStillOpen(deps, repo, blocked)
-  ) {
-    logger.info(
-      "Committed run names a dependency that is not open — not deferring, " +
-        "handing off to a human",
-      {
-        repo,
-        issueNumber,
-        dependency: formatDependencyRef(blocked.dependency),
-      },
-    );
-    blockedNotOpen = true;
-    blocked = undefined;
+  if (blocked && committed) {
+    const dependency = await readDeclaredDependency(deps, repo, blocked);
+    const open = dependency?.state === "OPEN";
+    const filedDuringRun = dependency !== undefined &&
+      dependencyFiledDuringThisRun(
+        dependency,
+        fleetAuthors,
+        state.executeStartTime,
+      );
+    if (filedDuringRun && open) {
+      logger.info(
+        "Committed run depends on an issue this run filed — not deferring, " +
+          "handing off to a human",
+        {
+          repo,
+          issueNumber,
+          dependency: formatDependencyRef(blocked.dependency),
+        },
+      );
+      blockedNotOpen = true;
+      blocked = undefined;
+    } else if (!open) {
+      logger.info(
+        "Committed run names a dependency that is not open — not deferring, " +
+          "handing off to a human",
+        {
+          repo,
+          issueNumber,
+          dependency: formatDependencyRef(blocked.dependency),
+        },
+      );
+      blockedNotOpen = true;
+      blocked = undefined;
+    }
   }
   // Loop guard: a deferral holds only while the dependency gate skips the
   // issue. Back here on the *same* dependency means it did not hold, and
@@ -397,11 +404,7 @@ export async function handOffDeclaredOutcome(
       // Fleet-wide, not this host alone (Issue #2933 review): a sibling
       // host's park comments must count too, or the bound becomes
       // MAX_TIME_DEFERRALS per login rather than per issue.
-      fleetAuthors: resolveFleetMaintenanceAuthorSet({
-        githubUser,
-        fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
-        serviceAccounts: ctx.config.serviceAccounts ?? [],
-      }),
+      fleetAuthors,
       fallbackComments: ctx.issueComments,
       logger,
     });

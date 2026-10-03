@@ -88,20 +88,23 @@ function makeClient(
   comments: GitHubComment[] = [],
   dependencyState: "OPEN" | "CLOSED" = "OPEN",
   lookup: "ok" | "throw" | "no-state" = "ok",
+  dependencyAuthor = "human",
+  dependencyCreatedAt = "",
 ): GitHubClient {
   return {
     getIssue: (_repo, number) => {
       if (lookup === "throw") {
         return Promise.reject(new Error("gh: not found"));
       }
+      const dependency = number !== ISSUE;
       return Promise.resolve({
         number,
         title: "Example issue",
         body: "Original body.",
         labels: ["work-on"],
-        author: "human",
+        author: dependency ? dependencyAuthor : "human",
         assignees: ["testbot"],
-        createdAt: "",
+        createdAt: dependency ? dependencyCreatedAt : "",
         updatedAt: "",
         ...(lookup === "no-state"
           ? {}
@@ -368,21 +371,32 @@ Deno.test(
   },
 );
 
-// Depending on the follow-up this same output filed is not a deferral.
-// The committed run hands off to a human and raises no PR.
+// Depending on an issue this run filed is not a deferral, even when the
+// output names the current issue before the follow-up. The committed run
+// hands off to a human and raises no PR.
 Deno.test(
   "declared_handoff_phase - a dependency this run filed hands off and raises no PR (Issue #3088)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
-      github: { createClient: () => makeClient(calls, [], "OPEN") },
+      github: {
+        createClient: () =>
+          makeClient(
+            calls,
+            [],
+            "OPEN",
+            "ok",
+            "testbot",
+            "2026-10-03T11:00:00Z",
+          ),
+      },
     });
     const output = [
-      "## Blocked: the product decision is only a human's to make",
+      "## Blocked: Issue #3088 needs a product decision",
       "",
-      "Filed a follow-up issue stSoftwareAU/Example#560 because this is out of scope.",
+      "Filed a follow-up issue #560 for the decision.",
       "",
-      "Depends on stSoftwareAU/Example#560",
+      "Depends on #560",
     ].join("\n");
 
     const result = await workOnIssueDeclaredHandoff(
@@ -393,6 +407,108 @@ Deno.test(
 
     assertHumanHandoff(result, calls);
     assertEquals(calls.editIssue, 0);
+  },
+);
+
+// Follow-up wording around a dependency that already existed does not turn
+// a real open block into a human hand-off.
+Deno.test(
+  "declared_handoff_phase - an older open dependency still defers when the output says it is tracked separately (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(calls, [], "OPEN", "ok", "human", "2020-01-01T00:00:00Z"),
+      },
+    });
+    const output = [
+      "## Blocked: waiting on the API",
+      "",
+      "The endpoint work is tracked separately in stSoftwareAU/Other#12, which is still open.",
+      "This is out of scope until that issue closes.",
+      "",
+      `Depends on ${DEP}`,
+    ].join("\n");
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(output),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    if (result.status !== "early_exit") return;
+    assert(result.reason.startsWith("deferred: depends on"), result.reason);
+    assertEquals(calls.editIssue, 1);
+    assert(!calls.addLabel.includes("needs-human"));
+  },
+);
+
+// A sibling fleet login that filed the dependency during this run is the
+// same case as this host filing it.
+Deno.test(
+  "declared_handoff_phase - a dependency a fleet author filed during this run hands off (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(
+            calls,
+            [],
+            "OPEN",
+            "ok",
+            "sibling-bot",
+            "2026-10-03T11:00:00Z",
+          ),
+      },
+    });
+    const config = buildDefaultWorkerConfig();
+    config.fleetPrAuthors = ["sibling-bot"];
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext({ config }),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertHumanHandoff(result, calls);
+    assertEquals(calls.editIssue, 0);
+  },
+);
+
+// A fleet-authored dependency that predates the run is a real block.
+Deno.test(
+  "declared_handoff_phase - a fleet-authored dependency created before this run still defers (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(
+            calls,
+            [],
+            "OPEN",
+            "ok",
+            "testbot",
+            "2020-01-01T00:00:00Z",
+          ),
+      },
+    });
+    const state = makeState(BLOCKED_OUTPUT);
+    state.executeStartTime = Date.parse("2026-10-03T12:00:00Z");
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      state,
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    if (result.status !== "early_exit") return;
+    assert(result.reason.startsWith("deferred: depends on"), result.reason);
+    assert(!calls.addLabel.includes("needs-human"));
   },
 );
 

@@ -59,9 +59,11 @@ had said was unfinished.
   heading on a committed run defers only when its `Depends on` / `Blocked by`
   line names a dependency the worker reads as open. A closed or unreadable
   dependency does not defer; the committed run hands off to a human and
-  raises no PR. A `Depends on` line that names the follow-up this same
-  output filed does not defer either: the committed run hands off to a
-  human and raises no PR.
+  raises no PR. A dependency the worker reads as filed during this run —
+  its author is this host's login or another fleet author, and it was
+  created at or after the run started — does not defer either: the
+  committed run hands off to a human and raises no PR. Wording in the
+  output does not decide that.
 
 ### Undiscoverable Facts
 
@@ -93,7 +95,8 @@ and raises a PR).
 `prompts/issue/prompt.md` and `prompts/coding_guidelines/prompt.md` were
 updated. DESIGN-PRINCIPLES says a closed dependency, a missing `state`, or a
 lookup that fails does not defer: the committed run hands off to a human and
-raises no PR. The coding-guidelines deferral, after a commit, is honoured
+raises no PR. It also says a dependency filed during this run — a fleet
+author, created at or after the run started — does not defer. The coding-guidelines deferral, after a commit, is honoured
 only when the named issue is still open. No `*/README.md` describes the phase
 list, so none changed.
 
@@ -108,6 +111,10 @@ list, so none changed.
   - a repeat blocked deferral hands off to a human
   - a completed summary that mentions a merged dependency continues
   - a Blocked heading without a declaration line continues
+  - a dependency this run filed hands off and raises no PR
+  - an older open dependency still defers when the output says it is tracked separately
+  - a dependency a fleet author filed during this run hands off
+  - a fleet-authored dependency created before this run still defers
   - a closed dependency hands off and raises no PR
   - a planning marker inside a code fence continues
   - an exhausted time deferral names the committed hand-off

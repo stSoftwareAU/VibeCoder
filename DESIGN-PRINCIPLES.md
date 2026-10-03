@@ -2753,7 +2753,12 @@ changes" either — a `declared_handoff` phase runs after execute and before
 heading defers only when its `Depends on` or `Blocked by` line names a
 dependency the worker reads as open. A closed dependency, a missing `state`,
 or a lookup that fails does not defer; the committed run hands off to a
-human (`needs-human`) and raises no PR. A bullet, or a heading with no
+human (`needs-human`) and raises no PR. A dependency filed during this run
+does not defer either: the worker reads that from the issue, when its author
+is this host's login or another fleet author and its `createdAt` is at or
+after the run started, and that committed run hands off to a human and raises
+no PR. Wording such as "out of scope" does not turn an older open dependency
+into that case. A bullet, or a heading with no
 `Depends on` / `Blocked by` line, still continues and raises its PR. A time
 deferral or a planning marker is still honoured after a commit, so the worker
 defers or hands to planning rather than sailing through to a `Closes #N` PR. Before any of those
