@@ -44,11 +44,30 @@ import {
 import {
   buildConflictEscalationComment,
   describeBranchTips,
+  describeSyncLanding,
   type MilestoneSyncConflict,
   type MilestoneSyncOutcome,
   resolveBranchTips,
   UNRESOLVED_SHA,
 } from "./milestone_sync_conflict.ts";
+import {
+  confirmSyncLanding,
+  describeUnconfirmedLanding,
+  type LandingCheck,
+} from "./milestone_sync_landing.ts";
+import {
+  type MilestoneHeadPr,
+  readMilestoneHeadPr,
+  recordSyncAttemptOnPr,
+} from "./milestone_sync_pr_budget.ts";
+import { findOpenMilestoneFixPr } from "./milestone_fix_pr.ts";
+import { DEFAULT_LOCK_TTL_SECONDS } from "./pr_branch_lock.ts";
+import {
+  CONFLICT_RESOLUTION_BUDGET,
+  hasExhaustedConflictAttempts,
+  isConflictAttemptDue as isPrConflictAttemptDue,
+  spentConflictAttempts,
+} from "./pr_merge_conflict_scan.ts";
 import { isConflictEscalation } from "./milestone_conflict_triage.ts";
 import {
   conflictEscalationMarkerPrefix,
@@ -85,6 +104,7 @@ import {
   MILESTONE_SYNC_ESCALATION_THRESHOLD,
   openConflictAttempt,
   recordDefaultSha,
+  recordSyncFailure,
   resetConflictLedgerOnSuccess,
   saveSyncCursor,
   saveSyncStreaks,
@@ -313,6 +333,27 @@ export interface MilestoneBranchSyncDeps {
   claimSyncFn?: (repo: string, milestoneBranch: string) => Promise<SyncClaim>;
   /** Release the claim once the sync concluded; best-effort. */
   releaseSyncClaimFn?: (repo: string, milestoneBranch: string) => Promise<void>;
+  /**
+   * Whether another host holds the cross-host PR lock (Issue #2965).
+   *
+   * True means the conflict takeover already owns this PR, so the sync
+   * leaves it alone. Omitted: no lock is consulted. Production wires
+   * {@link prUpdateLockIsHeld}, which ignores a lock the fleet did not post.
+   */
+  prUpdateLockHeldFn?: (repo: string, prNumber: number) => Promise<boolean>;
+  /**
+   * Take the same cross-host PR lock before merging an open milestone PR
+   * (Issue #2965).
+   *
+   * The takeover becomes due at the same moment this pass does. Without the
+   * lock, a takeover that starts while this merge is still running spends a
+   * second attempt in the same window. `acquired: false` means another host
+   * holds it and this pass spends nothing. Omitted: no lock is taken.
+   */
+  acquireHeadLockFn?: (
+    repo: string,
+    prNumber: number,
+  ) => Promise<{ acquired: boolean; release: () => Promise<void> }>;
   /**
    * Optional self-heal event sink (Issue #4260). Production wires
    * `emitSelfHealEventAuto` so every failed sync leaves a forensic
@@ -1280,6 +1321,80 @@ export function recordSuccess(
  * @param deps - Injected dependencies
  * @returns Result with sync summary
  */
+
+/**
+ * Whether the conflict takeover already owns this milestone PR (Issue #2965).
+ *
+ * The cross-host PR lock, the takeover's own fix PR, or a takeover attempt
+ * that is still the newest marker and younger than the lock TTL. An older
+ * open marker is stranded — the reader only closes the newest open attempt,
+ * and a failed withdrawal leaves one open for good — so it must not skip
+ * this PR for the rest of its life. A listing that cannot be read stands
+ * down for this cycle: guessing that no takeover is running is how two
+ * hosts spend the same attempt.
+ */
+function freshOpenTakeover(
+  attempts: readonly {
+    outcome: string;
+    pass: string;
+    atMs: number | undefined;
+  }[],
+  nowMs: number,
+): boolean {
+  const newest = attempts[attempts.length - 1];
+  if (newest === undefined) return false;
+  if (newest.outcome !== "open" || newest.pass !== "takeover") return false;
+  if (newest.atMs === undefined) return false;
+  return nowMs - newest.atMs < DEFAULT_LOCK_TTL_SECONDS * 1000;
+}
+
+async function takeoverOwnsHead(
+  repo: string,
+  milestoneBranch: string,
+  headPr: MilestoneHeadPr,
+  ghCommandFn: GhCommandFn,
+  deps: MilestoneBranchSyncDeps,
+  log: (message: string) => void,
+  nowMs: number,
+): Promise<boolean> {
+  if (freshOpenTakeover(headPr.attempts, nowMs)) {
+    return true;
+  }
+  if (deps.prUpdateLockHeldFn) {
+    try {
+      if (await deps.prUpdateLockHeldFn(repo, headPr.number)) return true;
+    } catch (error) {
+      log(
+        `WARNING: Could not read the PR lock for #${headPr.number} in ` +
+          `${repo} — skipping the sync this cycle (Issue #2965): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      );
+      return true;
+    }
+  }
+  const fleetAuthors = deps.dedupAuthors?.fleetAuthors;
+  const openFix = await findOpenMilestoneFixPr(
+    repo,
+    milestoneBranch,
+    headPr.number,
+    {
+      gh: ghCommandFn,
+      log,
+      ...(fleetAuthors ? { fleetAuthors } : {}),
+    },
+    "takeover-",
+  );
+  if (!openFix.ok) {
+    log(
+      `WARNING: Could not list takeover fix PRs for #${headPr.number} in ` +
+        `${repo} — skipping the sync this cycle (Issue #2965): ${openFix.error.message}`,
+    );
+    return true;
+  }
+  return openFix.value !== null;
+}
+
 export async function syncMilestoneBranches(
   deps: MilestoneBranchSyncDeps,
 ): Promise<Result<MilestoneSyncResult>> {
@@ -1572,6 +1687,73 @@ export async function syncMilestoneBranches(
           continue;
         }
 
+        // The open PR a milestone branch is the head of spends the shared
+        // per-PR conflict-resolution budget rather than the local ledger
+        // (Issue #2998): three resolution attempts per PR in total, not
+        // three per pass. `null` means there is no open PR, or it could not
+        // be read — the local ledger below is then the fallback, exactly as
+        // it was before this change.
+        const headPr = await readMilestoneHeadPr(
+          repo,
+          milestone.milestoneBranch,
+          ghCommandFn,
+          log,
+          deps.dedupAuthors ?? {},
+        );
+        if (headPr && hasExhaustedConflictAttempts(headPr.attempts)) {
+          log(
+            `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
+              `${repo} — PR #${headPr.number} has spent ` +
+              `${spentConflictAttempts(headPr.attempts)} of ` +
+              `${CONFLICT_RESOLUTION_BUDGET} conflict-resolution attempts ` +
+              `(Issue #2998)`,
+          );
+          skipped++;
+          continue;
+        }
+        // Issue #2996: a failed attempt on the open PR leaves it to its
+        // owner for the same 2-hour spacing the ladder uses. A retry a few
+        // minutes later would spend the shared budget before the takeover
+        // ever runs.
+        if (
+          headPr &&
+          !isPrConflictAttemptDue(headPr.attempts, headPr.headSha, now())
+        ) {
+          log(
+            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+              `PR #${headPr.number} failed its last conflict attempt ` +
+              `recently and its head has not moved, so the next attempt ` +
+              `waits out the owner check (Issue #2996)`,
+          );
+          skipped++;
+          continue;
+        }
+
+        // Issue #2965: the takeover and this sync share one head. An open
+        // takeover attempt, its own fix PR, or the cross-host PR lock means
+        // the takeover already owns the next attempt, so this pass spends
+        // nothing beside it.
+        if (
+          headPr &&
+          await takeoverOwnsHead(
+            repo,
+            milestone.milestoneBranch,
+            headPr,
+            ghCommandFn,
+            deps,
+            log,
+            now(),
+          )
+        ) {
+          log(
+            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+              `PR #${headPr.number} is already owned by a conflict takeover ` +
+              `(Issue #2965)`,
+          );
+          skipped++;
+          continue;
+        }
+
         // --- The conflict ledger, before the merge (Issue #1778) --------
         // Every conclusion is charged, paced and recorded here, so a branch
         // that keeps conflicting spends a bounded budget instead of an
@@ -1658,7 +1840,10 @@ export async function syncMilestoneBranches(
           // A branch past its budget belongs to the roll-back, not to another
           // merge: without this guard it keeps conflicting every cycle,
           // charging attempt 3, 4, 5… and re-entering the hand-off each time.
-          if (isConflictBudgetExhausted(entry)) {
+          // Only when there is no open PR (Issue #2998): a PR's own marker
+          // budget is checked above and takes precedence over this local
+          // ledger reading.
+          if (!headPr && isConflictBudgetExhausted(entry)) {
             log(
               `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
                 `${repo} — the conflict budget is spent ` +
@@ -1739,6 +1924,112 @@ export async function syncMilestoneBranches(
             : {}),
         });
         const agentAllowed = grant.agentAllowed;
+
+        // Issue #2965: hold the cross-host PR lock from before the merge
+        // until this pass has posted its attempt marker. Releasing at the
+        // merge lets a takeover that already read the thread spend a second
+        // attempt in the same window. A lock we cannot take means the
+        // takeover already owns this head, so this pass spends nothing.
+        let releaseHeadLock: (() => Promise<void>) | undefined;
+        if (headPr && deps.acquireHeadLockFn) {
+          let held: { acquired: boolean; release: () => Promise<void> };
+          try {
+            held = await deps.acquireHeadLockFn(repo, headPr.number);
+          } catch (error) {
+            log(
+              `WARNING: Could not take the PR lock for #${headPr.number} in ` +
+                `${repo} — skipping the sync this cycle (Issue #2965): ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+            );
+            if (streakPath && streaks[streakKey]?.attemptOpenedAt) {
+              streaks[streakKey] = concludeConflictAttempt(
+                streaks[streakKey]!,
+                "disrupted",
+                "the PR lock could not be taken",
+                defaultSha,
+                now(),
+              );
+              streaksDirty = true;
+            }
+            if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+              await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+                .catch(() => undefined);
+            }
+            skipped++;
+            continue;
+          }
+          if (!held.acquired) {
+            log(
+              `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                `PR #${headPr.number} lock is held, so the takeover owns ` +
+                `this attempt (Issue #2965)`,
+            );
+            if (streakPath && streaks[streakKey]?.attemptOpenedAt) {
+              streaks[streakKey] = concludeConflictAttempt(
+                streaks[streakKey]!,
+                "disrupted",
+                "another host holds the cross-host PR lock",
+                defaultSha,
+                now(),
+              );
+              streaksDirty = true;
+            }
+            if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+              await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+                .catch(() => undefined);
+            }
+            skipped++;
+            continue;
+          }
+          releaseHeadLock = held.release;
+          // The due-ness check above ran before the lock. A takeover can
+          // post its marker in that gap. Re-read under the lock and stand
+          // down when the attempt is no longer due (Issue #2965).
+          const freshHead = await readMilestoneHeadPr(
+            repo,
+            milestone.milestoneBranch,
+            ghCommandFn,
+            log,
+            deps.dedupAuthors ?? {},
+          );
+          const stillDue = freshHead !== null &&
+            !hasExhaustedConflictAttempts(freshHead.attempts) &&
+            isPrConflictAttemptDue(
+              freshHead.attempts,
+              freshHead.headSha,
+              now(),
+            );
+          if (!stillDue) {
+            log(
+              `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+                `PR #${headPr.number} is no longer due once the lock is ` +
+                `held (Issue #2965)`,
+            );
+            await releaseHeadLock().catch(() => undefined);
+            releaseHeadLock = undefined;
+            if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+              await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+                .catch(() => undefined);
+            }
+            // The attempt was opened before the lock. Leaving it open paces
+            // every issue in the milestone on this host until the PR is due
+            // again (Issue #2965).
+            if (streakPath && streaks[streakKey]?.attemptOpenedAt) {
+              streaks[streakKey] = concludeConflictAttempt(
+                streaks[streakKey]!,
+                "disrupted",
+                "no longer due once the PR lock was held",
+                defaultSha,
+                now(),
+              );
+              streaksDirty = true;
+            }
+            skipped++;
+            continue;
+          }
+        }
+
         // Issue #2215: named before it starts, so a slow merge or check is
         // never a silent gap in the log.
         log(
@@ -1748,330 +2039,438 @@ export async function syncMilestoneBranches(
 
         // Attempt sync
         let syncResult: Awaited<ReturnType<SyncBranchFn>>;
+        // The lock stays held through the marker post below. `continue` and
+        // a throw both run the finally, so every path releases it.
         try {
-          syncResult = await syncBranchFn(
-            repo,
-            milestone.milestoneBranch,
-            milestone.defaultBranch,
-            // Issue #2309: an offered rung carries the announcement, which
-            // the rung's own binding fires if and when it is entered.
-            agentAllowed
-              ? {
-                ...grant,
-                onAgentRungEntered: () =>
-                  announceAgentRung(repo, milestone, streakKey),
-              }
-              : grant,
-          );
-        } finally {
-          // The claim guards the sync, not the outcome: it is released on
-          // every path out so a sibling can take the next attempt.
-          if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
-            await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
-              .catch(() => undefined);
+          try {
+            syncResult = await syncBranchFn(
+              repo,
+              milestone.milestoneBranch,
+              milestone.defaultBranch,
+              // Issue #2309: an offered rung carries the announcement, which
+              // the rung's own binding fires if and when it is entered.
+              agentAllowed
+                ? {
+                  ...grant,
+                  onAgentRungEntered: () =>
+                    announceAgentRung(repo, milestone, streakKey),
+                }
+                : grant,
+            );
+          } finally {
+            // The claim guards the sync, not the outcome: it is released on
+            // every path out so a sibling can take the next attempt. The PR
+            // lock is not released here — it stays until the attempt marker
+            // below has been posted.
+            if (deps.claimSyncFn && deps.releaseSyncClaimFn) {
+              await deps.releaseSyncClaimFn(repo, milestone.milestoneBranch)
+                .catch(() => undefined);
+            }
           }
-        }
 
-        if (syncResult.ok) {
-          log(
-            `Synced milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.value.message}`,
-          );
-          synced++;
+          if (syncResult.ok) {
+            const conflict = syncResult.value.conflict;
 
-          // The branch has synced, so any diagnostic the old escalation path
-          // filed for it is describing a condition that is over (Issue #1769).
-          await closeResolvedSyncDiagnostics({
-            repo,
-            milestoneBranch: milestone.milestoneBranch,
-            ghCommandFn,
-            log,
-            ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
-          });
-
-          // Issue #1967: a sync that landed by direct push leaves the sync PR
-          // from an earlier cycle open with an empty diff and auto-merge
-          // still armed — which is what GitHub later retargets onto the
-          // default branch. A PR raised by *this* cycle still carries its
-          // merge, so an empty diff is what tells the two apart.
-          await closeLandedMilestoneSyncPrs({
-            repo,
-            milestoneBranch: milestone.milestoneBranch,
-            ghCommandFn,
-            log,
-          });
-
-          // A merge that conflicted still landed, but the resolution favoured
-          // the default branch and nobody chose it (Issue #1558). Report it
-          // now, while the divergence is one day wide — once per conflicting
-          // default-branch commit, so a branch that keeps conflicting against
-          // the same commit is not reported every cycle.
-          const conflict = syncResult.value.conflict;
-          if (conflict) {
-            // A conflict whose default-branch commit could not be read still
-            // needs a dedup key, or the same report goes out every cycle.
-            const conflictKey = conflict.defaultSha || UNRESOLVED_SHA;
-            let reportedSha = streaks[streakKey]?.conflictEscalatedSha;
-            if (reportedSha !== conflictKey) {
-              const escalated = await escalateSyncConflict(
+            // A merge that conflicted says it landed, but `pushSyncedMilestoneBranch`
+            // can report success for a push a repository rule then refused — so
+            // the landing is confirmed BEFORE anything is counted as synced or
+            // reported (Issue #2998). An unconfirmed landing is a failure, not
+            // a success: nothing here defaults to trusting the push.
+            let landing: LandingCheck | undefined;
+            if (conflict) {
+              landing = await confirmSyncLanding(
                 repo,
-                milestone,
-                conflict,
+                milestone.milestoneBranch,
+                conflict.mergeSha,
                 ghCommandFn,
                 log,
-                deps.dedupAuthors ?? {},
               );
-              // Only a report that went out is remembered: an escalation
-              // that failed must be retried next cycle, not marked done.
-              if (escalated) reportedSha = conflictKey;
+              if (landing.kind === "unconfirmed") {
+                log(
+                  describeUnconfirmedLanding(
+                    repo,
+                    milestone.milestoneBranch,
+                    landing,
+                  ),
+                );
+                failed++;
+                // Issue #2998: every sync attempt with an open PR is charged to
+                // the PR's shared tally, even when the landing itself could
+                // not be confirmed.
+                if (headPr) {
+                  await recordSyncAttemptOnPr(
+                    repo,
+                    headPr,
+                    "failed",
+                    `the merge ${landing.expectedSha} could not be confirmed ` +
+                      `on the milestone tip (observed ${landing.observedSha}): ` +
+                      `${landing.reason}`,
+                    ghCommandFn,
+                    log,
+                  );
+                }
+                if (streakPath) {
+                  let entry = recordSyncFailure(streaks[streakKey]);
+                  if (entry.attemptOpenedAt) {
+                    entry = concludeConflictAttempt(
+                      entry,
+                      "not-charged",
+                      "the merge's landing on the milestone tip could not be confirmed",
+                      defaultSha,
+                      now(),
+                      { host: hostName },
+                    );
+                  }
+                  streaks[streakKey] = entry;
+                  streaksDirty = true;
+                }
+                continue;
+              }
             }
-            if (
+
+            log(
+              `Synced milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.value.message}`,
+            );
+            synced++;
+
+            // The branch has synced, so any diagnostic the old escalation path
+            // filed for it is describing a condition that is over (Issue #1769).
+            await closeResolvedSyncDiagnostics({
+              repo,
+              milestoneBranch: milestone.milestoneBranch,
+              ghCommandFn,
+              log,
+              ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
+            });
+
+            // Issue #1967: a sync that landed by direct push leaves the sync PR
+            // from an earlier cycle open with an empty diff and auto-merge
+            // still armed — which is what GitHub later retargets onto the
+            // default branch. A PR raised by *this* cycle still carries its
+            // merge, so an empty diff is what tells the two apart.
+            await closeLandedMilestoneSyncPrs({
+              repo,
+              milestoneBranch: milestone.milestoneBranch,
+              ghCommandFn,
+              log,
+            });
+
+            // A merge that conflicted still landed, but the resolution favoured
+            // the default branch and nobody chose it (Issue #1558). Report it
+            // now, while the divergence is one day wide — once per conflicting
+            // default-branch commit, so a branch that keeps conflicting against
+            // the same commit is not reported every cycle.
+            if (conflict && landing && landing.kind !== "unconfirmed") {
+              // Narrowed explicitly: by construction `landing` is never
+              // "unconfirmed" here (that path already `continue`d above), but
+              // the discriminant is restated so this block's own type is a
+              // confirmed {@link SyncLanding} rather than the wider check.
+              const confirmedLanding = landing;
+              // A conflict whose default-branch commit could not be read still
+              // needs a dedup key, or the same report goes out every cycle.
+              const conflictKey = conflict.defaultSha || UNRESOLVED_SHA;
+              let reportedSha = streaks[streakKey]?.conflictEscalatedSha;
+              if (reportedSha !== conflictKey) {
+                const report = await escalateSyncConflict(
+                  repo,
+                  milestone,
+                  conflict,
+                  ghCommandFn,
+                  log,
+                  deps.dedupAuthors ?? {},
+                  confirmedLanding,
+                );
+                // Only a report that went out is remembered: an escalation
+                // that failed must be retried next cycle, not marked done.
+                if (report.posted) reportedSha = conflictKey;
+              }
+              if (headPr) {
+                await recordSyncAttemptOnPr(
+                  repo,
+                  headPr,
+                  "resolved",
+                  `merge ${describeSyncLanding(confirmedLanding)}`,
+                  ghCommandFn,
+                  log,
+                  confirmedLanding.sha,
+                );
+              }
+              if (
+                streakPath &&
+                recordSuccess(
+                  streaks,
+                  streakKey,
+                  defaultSha,
+                  reportedSha,
+                  milestoneSha,
+                )
+              ) {
+                streaksDirty = true;
+              }
+            } else if (
               streakPath &&
               recordSuccess(
                 streaks,
                 streakKey,
                 defaultSha,
-                reportedSha,
+                undefined,
                 milestoneSha,
               )
             ) {
+              // A clean success ends the failure streak (Issue #4260) and
+              // records the tip the branch now carries (Issue #1776).
               streaksDirty = true;
             }
-          } else if (
-            streakPath &&
-            recordSuccess(
-              streaks,
-              streakKey,
-              defaultSha,
-              undefined,
-              milestoneSha,
-            )
-          ) {
-            // A clean success ends the failure streak (Issue #4260) and
-            // records the tip the branch now carries (Issue #1776).
-            streaksDirty = true;
-          }
-        } else {
-          log(
-            `WARNING: Failed to sync milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.error.message}`,
-          );
-          failed++;
-          // Forensic record (Issue #4260): a chronically diverging
-          // milestone branch must be visible beyond the scrolling log.
-          await deps.emitSelfHealEvent?.({
-            module: "milestone_branch_sync",
-            action: "sync_failed",
-            reason:
-              `${repo} branch ${milestone.milestoneBranch}: ${syncResult.error.message}`,
-            result: "failed",
-          }).catch(() => undefined);
-          // Streak escalation (Issue #4260, proposal 2): count consecutive
-          // failures and, at the threshold, post one needs-human comment on
-          // the milestone's tracking issue.
-          let entry: SyncStreakEntry | undefined;
-          if (streakPath) {
-            entry = streaks[streakKey] ?? { count: 0, escalated: false };
-            entry.count++;
-            streaks[streakKey] = entry;
-            streaksDirty = true;
-          }
-
-          const conflictError = isConflictEscalation(syncResult.error)
-            ? syncResult.error
-            : undefined;
-
-          // Issue #2309: the refusal is said out loud where it actually cost
-          // something — a branch that conflicted with no rung left to climb.
-          // A branch that merged cleanly was refused nothing worth reporting,
-          // which is why this is here and not beside the grant.
-          if (!agentAllowed && conflictError) {
+          } else {
             log(
-              `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
-                `agent deferred: cycle budget — too little of the cycle was ` +
-                `left to cover a run, so this sync stopped after the rules ` +
-                `(Issue #2309)`,
+              `WARNING: Failed to sync milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.error.message}`,
             );
-          }
+            failed++;
+            // Forensic record (Issue #4260): a chronically diverging
+            // milestone branch must be visible beyond the scrolling log.
+            await deps.emitSelfHealEvent?.({
+              module: "milestone_branch_sync",
+              action: "sync_failed",
+              reason:
+                `${repo} branch ${milestone.milestoneBranch}: ${syncResult.error.message}`,
+              result: "failed",
+            }).catch(() => undefined);
+            // Streak escalation (Issue #4260, proposal 2): count consecutive
+            // failures and, at the threshold, post one needs-human comment on
+            // the milestone's tracking issue.
+            let entry: SyncStreakEntry | undefined;
+            if (streakPath) {
+              entry = recordSyncFailure(streaks[streakKey]);
+              streaks[streakKey] = entry;
+              streaksDirty = true;
+            }
 
-          // Conclude the ledger attempt this failure ends (Issue #1778),
-          // recording what the run cost and what it made of the conflict —
-          // the `merge-fallback` flag reports both runs from these records
-          // (Issue #2311).
-          if (streakPath && entry) {
+            const conflictError = isConflictEscalation(syncResult.error)
+              ? syncResult.error
+              : undefined;
+
+            // Issue #2309: the refusal is said out loud where it actually cost
+            // something — a branch that conflicted with no rung left to climb.
+            // A branch that merged cleanly was refused nothing worth reporting,
+            // which is why this is here and not beside the grant.
+            if (!agentAllowed && conflictError) {
+              log(
+                `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
+                  `agent deferred: cycle budget — too little of the cycle was ` +
+                  `left to cover a run, so this sync stopped after the rules ` +
+                  `(Issue #2309)`,
+              );
+            }
+
+            // The PR's own shared budget is charged independently of the local
+            // ledger (Issue #2998): a milestone branch with an open PR against
+            // it must record the failure there, whether or not a streak file
+            // is wired at all.
             const verdict = judgeSyncFailure(syncResult.error, agentAllowed);
-            entry = concludeConflictAttempt(
-              entry,
-              verdict.outcome,
-              verdict.reason,
-              conflictError ? conflictError.defaultSha : defaultSha,
-              now(),
-              {
-                host: hostName,
-                ...(conflictError?.timings
-                  ? { timings: conflictError.timings }
-                  : {}),
-                ...(conflictError
-                  ? { analysis: describeConflictAnalyses(conflictError) }
-                  : {}),
-              },
-            );
-            streaks[streakKey] = entry;
-            streaksDirty = true;
-            if (verdict.outcome === "failed") {
-              const attempts = entry.conflictAttempts ?? 0;
-              if (isConflictBudgetExhausted(entry)) {
-                // Every automatic rung has been spent, so the branch is
-                // rolled back rather than reported to anyone (Issue #1781).
-                const outcome = await rollbackFn({
+            if (headPr && conflictError && verdict.outcome === "failed") {
+              await recordSyncAttemptOnPr(
+                repo,
+                headPr,
+                "failed",
+                verdict.reason,
+                ghCommandFn,
+                log,
+              );
+            }
+
+            // Conclude the ledger attempt this failure ends (Issue #1778),
+            // recording what the run cost and what it made of the conflict —
+            // the `merge-fallback` flag reports both runs from these records
+            // (Issue #2311).
+            if (streakPath && entry) {
+              entry = concludeConflictAttempt(
+                entry,
+                verdict.outcome,
+                verdict.reason,
+                conflictError ? conflictError.defaultSha : defaultSha,
+                now(),
+                {
+                  host: hostName,
+                  ...(conflictError?.timings
+                    ? { timings: conflictError.timings }
+                    : {}),
+                  ...(conflictError
+                    ? { analysis: describeConflictAnalyses(conflictError) }
+                    : {}),
+                },
+              );
+              streaks[streakKey] = entry;
+              streaksDirty = true;
+              if (verdict.outcome === "failed") {
+                // Issue #2998: a milestone branch with an open PR against it
+                // is exhausted by the PR's own shared tally, not the local
+                // ledger — the two must agree with what `recordSyncAttemptOnPr`
+                // just charged above.
+                const attempts = headPr
+                  ? spentConflictAttempts(headPr.attempts) + 1
+                  : entry.conflictAttempts ?? 0;
+                const exhausted = headPr
+                  ? attempts >= CONFLICT_RESOLUTION_BUDGET
+                  : isConflictBudgetExhausted(entry);
+                if (exhausted) {
+                  // Every automatic rung has been spent, so the branch is
+                  // rolled back rather than reported to anyone (Issue #1781).
+                  const outcome = await rollbackFn({
+                    repo,
+                    milestoneBranch: milestone.milestoneBranch,
+                    defaultBranch: milestone.defaultBranch,
+                    attempts,
+                    reason: verdict.reason,
+                    milestoneTitle: milestone.milestoneTitle,
+                    milestoneNumber: milestone.milestoneNumber,
+                    ...(conflictError
+                      ? {
+                        conflictingPaths: [
+                          ...conflictError.analyses.map((a) => a.path),
+                          ...conflictError.resolved.map((d) => d.path),
+                        ],
+                      }
+                      : {}),
+                    ...(entry.revertedPrs !== undefined
+                      ? { alreadyReverted: entry.revertedPrs }
+                      : {}),
+                  });
+                  if (isRollbackOutcome(outcome)) {
+                    const conflictedFiles = conflictError
+                      ? [
+                        ...conflictError.analyses.map((a) => a.path),
+                        ...conflictError.resolved.map((d) => d.path),
+                      ]
+                      : [];
+                    entry = await applyRollbackOutcome({
+                      repo,
+                      milestone,
+                      entry,
+                      outcome,
+                      attempts,
+                      fallback: {
+                        ...(conflictedFiles.length > 0
+                          ? { conflictedFiles }
+                          : {}),
+                        ...(behindBy !== undefined ? { behindBy } : {}),
+                        ...(await readBehindSince(
+                          repo,
+                          entry.lastSyncedDefaultSha,
+                          milestone.defaultBranch,
+                          ghCommandFn,
+                          log,
+                        )),
+                      },
+                      ...(defaultSha !== undefined ? { defaultSha } : {}),
+                      fileMergeFallbackFn,
+                      ghCommandFn,
+                      log,
+                      emitSelfHealEvent: deps.emitSelfHealEvent,
+                    });
+                    streaks[streakKey] = entry;
+                    streaksDirty = true;
+                  }
+                } else {
+                  // One line, and nothing posted: an automatic attempt still
+                  // remains, so no human is asked about it yet.
+                  log(
+                    `WARNING: Milestone branch '${milestone.milestoneBranch}' ` +
+                      `in ${repo}: conflict attempt ${attempts} of ` +
+                      `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed at rung ` +
+                      `${verdict.rung} (Issue #1778)`,
+                  );
+                }
+              }
+            }
+
+            if (conflictError?.gateFailure && entry) {
+              // A gate refusal, not a conflict (Issue #1778): the resolution
+              // was made and the verification refused it. The budget cannot
+              // conclude it — `judgeSyncFailure` charges it nothing, on
+              // purpose — so the ledger counts the refusal instead, and a
+              // refusal that has repeated is reported as a **worker**
+              // diagnostic rather than as a needs-human comment on a sibling
+              // issue: the conflict was resolved, it is the gate that could
+              // not verify it (Issue #2388). The counting, the keying and the
+              // reporting are the pre-cut sync's too, so they live in one
+              // place rather than twice over.
+              const concluded = await concludeGateRefusal(
+                entry,
+                {
                   repo,
                   milestoneBranch: milestone.milestoneBranch,
                   defaultBranch: milestone.defaultBranch,
-                  attempts,
-                  reason: verdict.reason,
                   milestoneTitle: milestone.milestoneTitle,
-                  milestoneNumber: milestone.milestoneNumber,
-                  ...(conflictError
-                    ? {
-                      conflictingPaths: [
-                        ...conflictError.analyses.map((a) => a.path),
-                        ...conflictError.resolved.map((d) => d.path),
-                      ],
-                    }
+                },
+                conflictError as typeof conflictError & { gateFailure: string },
+                defaultSha,
+                now(),
+                {
+                  ghCommandFn,
+                  log,
+                  ...(deps.dedupAuthors
+                    ? { dedupAuthors: deps.dedupAuthors }
                     : {}),
-                  ...(entry.revertedPrs !== undefined
-                    ? { alreadyReverted: entry.revertedPrs }
-                    : {}),
-                });
-                if (isRollbackOutcome(outcome)) {
-                  const conflictedFiles = conflictError
-                    ? [
-                      ...conflictError.analyses.map((a) => a.path),
-                      ...conflictError.resolved.map((d) => d.path),
-                    ]
-                    : [];
-                  entry = await applyRollbackOutcome({
-                    repo,
-                    milestone,
-                    entry,
-                    outcome,
-                    attempts,
-                    fallback: {
-                      ...(conflictedFiles.length > 0
-                        ? { conflictedFiles }
-                        : {}),
-                      ...(behindBy !== undefined ? { behindBy } : {}),
-                      ...(await readBehindSince(
-                        repo,
-                        entry.lastSyncedDefaultSha,
-                        milestone.defaultBranch,
-                        ghCommandFn,
-                        log,
-                      )),
-                    },
-                    ...(defaultSha !== undefined ? { defaultSha } : {}),
-                    fileMergeFallbackFn,
-                    ghCommandFn,
-                    log,
-                    emitSelfHealEvent: deps.emitSelfHealEvent,
-                  });
-                  streaks[streakKey] = entry;
-                  streaksDirty = true;
-                }
-              } else {
-                // One line, and nothing posted: an automatic attempt still
-                // remains, so no human is asked about it yet.
-                log(
-                  `WARNING: Milestone branch '${milestone.milestoneBranch}' ` +
-                    `in ${repo}: conflict attempt ${attempts} of ` +
-                    `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed at rung ` +
-                    `${verdict.rung} (Issue #1778)`,
+                },
+              );
+              entry = concluded.entry;
+              streaks[streakKey] = entry;
+              streaksDirty = true;
+            } else if (conflictError) {
+              // Nothing is posted for a conflict every rung left undecided
+              // (Issue #1778): the ledger above records why the branch is
+              // still behind, and the budget — not a human — decides when the
+              // automatic attempts are over. The per-conflicting-commit
+              // analysis escalation keyed on `analysisEscalatedSha` is gone:
+              // it fired before any of the automatic attempts had been
+              // spent, which is exactly the "needs-human while a rung remains"
+              // this budget removes.
+            } else if (isMergeGateFailure(syncResult.error)) {
+              // Issue #974: a merged tree the repo's own check rejects is not a
+              // transient condition a retry clears — it needs a human now, not
+              // after three more cycles of the same refusal. `gateEscalated` is
+              // tracked apart from the ordinary streak flag, so a branch that
+              // already escalated for a different reason still reports this.
+              // Without a streak file there is nowhere to record that the
+              // comment was posted, so escalating would repeat every cycle —
+              // the loud WARNING log above stands on its own there.
+              if (entry && !entry.gateEscalated) {
+                const escalated = await escalateMergeGateFailure(
+                  repo,
+                  milestone,
+                  syncResult.error.message,
+                  ghCommandFn,
+                  log,
                 );
+                if (escalated) {
+                  entry.gateEscalated = true;
+                }
               }
-            }
-          }
-
-          if (conflictError?.gateFailure && entry) {
-            // A gate refusal, not a conflict (Issue #1778): the resolution
-            // was made and the verification refused it. The budget cannot
-            // conclude it — `judgeSyncFailure` charges it nothing, on
-            // purpose — so the ledger counts the refusal instead, and a
-            // refusal that has repeated is reported as a **worker**
-            // diagnostic rather than as a needs-human comment on a sibling
-            // issue: the conflict was resolved, it is the gate that could
-            // not verify it (Issue #2388). The counting, the keying and the
-            // reporting are the pre-cut sync's too, so they live in one
-            // place rather than twice over.
-            const concluded = await concludeGateRefusal(
-              entry,
-              {
-                repo,
-                milestoneBranch: milestone.milestoneBranch,
-                defaultBranch: milestone.defaultBranch,
-                milestoneTitle: milestone.milestoneTitle,
-              },
-              conflictError as typeof conflictError & { gateFailure: string },
-              defaultSha,
-              now(),
-              {
-                ghCommandFn,
-                log,
-                ...(deps.dedupAuthors
-                  ? { dedupAuthors: deps.dedupAuthors }
-                  : {}),
-              },
-            );
-            entry = concluded.entry;
-            streaks[streakKey] = entry;
-            streaksDirty = true;
-          } else if (conflictError) {
-            // Nothing is posted for a conflict every rung left undecided
-            // (Issue #1778): the ledger above records why the branch is
-            // still behind, and the budget — not a human — decides when the
-            // automatic attempts are over. The per-conflicting-commit
-            // analysis escalation keyed on `analysisEscalatedSha` is gone:
-            // it fired before any of the automatic attempts had been
-            // spent, which is exactly the "needs-human while a rung remains"
-            // this budget removes.
-          } else if (isMergeGateFailure(syncResult.error)) {
-            // Issue #974: a merged tree the repo's own check rejects is not a
-            // transient condition a retry clears — it needs a human now, not
-            // after three more cycles of the same refusal. `gateEscalated` is
-            // tracked apart from the ordinary streak flag, so a branch that
-            // already escalated for a different reason still reports this.
-            // Without a streak file there is nowhere to record that the
-            // comment was posted, so escalating would repeat every cycle —
-            // the loud WARNING log above stands on its own there.
-            if (entry && !entry.gateEscalated) {
-              const escalated = await escalateMergeGateFailure(
+            } else if (
+              entry && !entry.escalated &&
+              entry.count >= MILESTONE_SYNC_ESCALATION_THRESHOLD
+            ) {
+              // A non-conflict failure — a fetch, a push, an ordinary git
+              // error — that has not cleared for long enough. Conflicts never
+              // reach here: they are answered by the budget, the roll-back and
+              // the `merge-fallback` flag, and the second-occurrence
+              // escalation of Issue #1964 went with them (Issue #2311).
+              const escalated = await escalateSyncFailure(
                 repo,
                 milestone,
+                entry.count,
                 syncResult.error.message,
                 ghCommandFn,
                 log,
               );
               if (escalated) {
-                entry.gateEscalated = true;
+                entry.escalated = true;
               }
             }
-          } else if (
-            entry && !entry.escalated &&
-            entry.count >= MILESTONE_SYNC_ESCALATION_THRESHOLD
-          ) {
-            // A non-conflict failure — a fetch, a push, an ordinary git
-            // error — that has not cleared for long enough. Conflicts never
-            // reach here: they are answered by the budget, the roll-back and
-            // the `merge-fallback` flag, and the second-occurrence
-            // escalation of Issue #1964 went with them (Issue #2311).
-            const escalated = await escalateSyncFailure(
-              repo,
-              milestone,
-              entry.count,
-              syncResult.error.message,
-              ghCommandFn,
-              log,
-            );
-            if (escalated) {
-              entry.escalated = true;
-            }
+          }
+        } finally {
+          if (releaseHeadLock) {
+            await releaseHeadLock().catch(() => undefined);
           }
         }
       }
@@ -2118,18 +2517,32 @@ export async function syncMilestoneBranches(
   return { ok: true, value: { synced, skipped, failed } };
 }
 
+/** What {@link escalateSyncConflict} did, and where the landing it checked stood. */
+export interface SyncConflictReport {
+  /** Whether a report comment actually went out. */
+  posted: boolean;
+  /** The landing the merge was confirmed against, or why it could not be. */
+  landing: LandingCheck;
+}
+
 /**
- * Report a sync merge that conflicted, on the cycle it conflicted
- * (Issue #1558).
+ * Report a sync merge that conflicted, once its landing is confirmed
+ * (Issue #2998), on the cycle it conflicted (Issue #1558).
  *
- * The merge landed — this is not a blocked sync — but the resolution
- * favoured the default branch, so the branch's own version of every
- * conflicting file was replaced by a decision nobody made. Both sides'
- * commits are named so the reader can see what changed on each without
- * reconstructing it days later.
+ * The merge must be **confirmed** to have landed — on the milestone tip
+ * itself, or held by an open sync PR — before anything is posted: a
+ * repository rule can refuse the push `pushSyncedMilestoneBranch` believed
+ * succeeded, and a report that says the merge landed when it did not tells
+ * the reader to check a decision that does not exist yet. An unconfirmed
+ * landing posts nothing and is logged loudly instead.
  *
- * Best-effort, and returns true only when the report went out, so the caller
- * remembers the commit it reported and does not repeat it every cycle.
+ * Once confirmed, the resolution favoured the default branch, so the
+ * branch's own version of every conflicting file was replaced by a decision
+ * nobody made. Both sides' commits are named so the reader can see what
+ * changed on each without reconstructing it days later.
+ *
+ * Best-effort, and `posted` is true only when the report went out, so the
+ * caller remembers the commit it reported and does not repeat it every cycle.
  *
  * Exported so a child run's pre-cut sync reports a conflicted merge through
  * this very function (Issue #1780): a resolution that favoured the default
@@ -2146,7 +2559,27 @@ export async function escalateSyncConflict(
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
   dedupAuthors: AlertDedupAuthorOptions = {},
-): Promise<boolean> {
+  /**
+   * The landing already confirmed by the caller (Issue #2998). Supplied by
+   * {@link syncMilestoneBranches}, which confirms the landing itself before
+   * deciding what else to do with the conflict; omitted callers (the pre-cut
+   * sync) have this function confirm it as before.
+   */
+  landing?: LandingCheck,
+): Promise<SyncConflictReport> {
+  const confirmed = landing ?? await confirmSyncLanding(
+    repo,
+    milestone.milestoneBranch,
+    conflict.mergeSha,
+    ghCommandFn,
+    log,
+  );
+  if (confirmed.kind === "unconfirmed") {
+    log(describeUnconfirmedLanding(repo, milestone.milestoneBranch, confirmed));
+    return { posted: false, landing: confirmed };
+  }
+  const landingConfirmed = confirmed;
+
   const tips = await resolveBranchTips(
     repo,
     [
@@ -2163,6 +2596,7 @@ export async function escalateSyncConflict(
     defaultBranch: milestone.defaultBranch,
     conflict,
     tips,
+    landing: landingConfirmed,
   });
 
   const what = `a conflicting milestone sync merge for ` +
@@ -2181,7 +2615,7 @@ export async function escalateSyncConflict(
         `tracking issue, so the reasoning is on the merge commit rather ` +
         `than in a comment.`,
     );
-    return true;
+    return { posted: true, landing: landingConfirmed };
   }
 
   // Issue #2214: a conflict the worker resolved itself is a notice, not an
@@ -2192,7 +2626,7 @@ export async function escalateSyncConflict(
   // closed, applies no label, and clears the `needs-human` an earlier sync
   // escalation of this very branch left behind.
   if (conflict.resolution === "auto") {
-    return await escalateToExistingIssue(
+    const posted = await escalateToExistingIssue(
       repo,
       milestone,
       body,
@@ -2212,8 +2646,9 @@ export async function escalateSyncConflict(
           ),
       },
     );
+    return { posted, landing: landingConfirmed };
   }
-  return await escalateToExistingIssue(
+  const posted = await escalateToExistingIssue(
     repo,
     milestone,
     body,
@@ -2221,6 +2656,7 @@ export async function escalateSyncConflict(
     ghCommandFn,
     log,
   );
+  return { posted, landing: landingConfirmed };
 }
 
 /** What an unattributable sync-conflict marker costs, in this site's words. */

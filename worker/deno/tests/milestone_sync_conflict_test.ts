@@ -17,16 +17,25 @@ import {
   resolveBranchTips,
   UNRESOLVED_SHA,
 } from "../lib/milestone_sync_conflict.ts";
+import type { SyncLanding } from "../lib/milestone_sync_landing.ts";
 
 const MILESTONE_BRANCH = "milestone/1558-drift";
 const MILESTONE_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const DEFAULT_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const MERGE_SHA = "cccccccccccccccccccccccccccccccccccccccc";
 
 const CONFLICT: MilestoneSyncConflict = {
   files: ["worker/deno/lib/scan_content.ts"],
   milestoneSha: MILESTONE_SHA,
   defaultSha: DEFAULT_SHA,
   resolution: "theirs",
+};
+
+/** The confirmed landing every fixture below reports (Issue #2998). */
+const LANDING: SyncLanding = {
+  kind: "tip",
+  branch: MILESTONE_BRANCH,
+  sha: MERGE_SHA,
 };
 
 Deno.test(
@@ -64,13 +73,18 @@ Deno.test(
         { branch: "main", sha: DEFAULT_SHA, subject: "Issue #1227: scan" },
         { branch: MILESTONE_BRANCH, sha: MILESTONE_SHA, subject: "" },
       ],
+      landing: LANDING,
     });
 
     assertStringIncludes(body, "`a.ts`");
     assertStringIncludes(body, "`b.ts`");
     assertStringIncludes(body, "Issue #1227: scan");
     assertStringIncludes(body, MILESTONE_SHA);
-    assertStringIncludes(body, "was pushed");
+    assertStringIncludes(body, `landed on \`${MILESTONE_BRANCH}\``);
+    assert(
+      !body.includes("pushed"),
+      "the landing is confirmed, not merely pushed (Issue #2998)",
+    );
   },
 );
 
@@ -96,6 +110,7 @@ Deno.test(
       defaultBranch: "main",
       conflict: { ...CONFLICT, files: [] },
       tips: [],
+      landing: LANDING,
     });
 
     assertStringIncludes(body, "git named no conflicting files");
@@ -170,6 +185,7 @@ Deno.test(
         ],
       },
       tips: [{ branch: "main", sha: DEFAULT_SHA, subject: "" }],
+      landing: LANDING,
     });
 
     assertStringIncludes(body, "resolved a conflict automatically");
@@ -200,6 +216,7 @@ Deno.test(
           "the 60s default; because only the interactive path reads it",
       },
       tips: [],
+      landing: LANDING,
     });
 
     assertStringIncludes(
@@ -223,6 +240,7 @@ Deno.test(
       defaultBranch: "main",
       conflict: { ...CONFLICT, resolution: "auto", decisions: [] },
       tips: [],
+      landing: LANDING,
     });
 
     assert(
@@ -256,6 +274,7 @@ Deno.test(
         },
       },
       tips: [],
+      landing: LANDING,
     });
 
     assertStringIncludes(body, "deno task check in . failed (exit 1)");
@@ -274,6 +293,7 @@ Deno.test(
       defaultBranch: "main",
       conflict: { ...CONFLICT, resolution: "auto", decisions: [] },
       tips: [],
+      landing: LANDING,
     });
 
     assert(
@@ -292,6 +312,7 @@ Deno.test(
       defaultBranch: "main",
       conflict: { ...CONFLICT, resolution: "auto" },
       tips: [],
+      landing: LANDING,
     });
 
     assertStringIncludes(body, "no decision was recorded");
