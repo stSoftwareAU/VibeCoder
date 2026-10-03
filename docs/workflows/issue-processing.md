@@ -1585,7 +1585,11 @@ The shape is fixed and machine-checked, so the worker owns it:
    independent-review (#663) gate, the model is asked **one constrained
    question** — the verdict as JSON inside a `<closure_verdict>` block: one
    entry per stated criterion (`met` / `partial` / `missing` / `unrequested`,
-   with `evidence` and `reason`), plus the Standards half;
+   with `evidence` and `reason`), plus the Standards half. The criteria ride
+   inside the run's own untrusted fence, with the boundary-integrity rule
+   naming that fence's nonce, and the question runs with file-writing,
+   sub-agent and web tools denied (`CLOSURE_VERDICT_DISALLOWED_TOOLS`, Issue
+   #3111);
 2. `closure_verdict.ts` renders `## Acceptance Criteria` and
    `## Standards Review` in the `REVIEW_BLOCK_TEMPLATE` shape both validators
    accept, replacing whatever stood under those headings. Every field is
