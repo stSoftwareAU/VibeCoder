@@ -222,13 +222,19 @@ Deno.test("assertLinearGrowth - catches genuinely quadratic work on a real clock
     }
     return hits;
   };
+  // repeats: 3 (not the real-clock default of 1 elsewhere in this file) —
+  // this is the one test here that reads the real clock instead of a
+  // fakeClock, so a single sample is exposed to scheduler/GC noise on a busy
+  // CI runner inflating the base reading and masking the quadratic blow-up.
+  // Keeping the fastest of several runs is the same noise-cancelling
+  // technique measureGrowth itself defaults to (Issue #3174 CI flake).
   assertThrows(
     () =>
       assertLinearGrowth(
         "nested scan",
         (chars) => "ab".repeat(chars / 2),
         quadratic,
-        { baseChars: 2_000, sizeFactor: 4, repeats: 1, graceMs: 5 },
+        { baseChars: 2_000, sizeFactor: 4, repeats: 3, graceMs: 5 },
       ),
     AssertionError,
     "super-linear",

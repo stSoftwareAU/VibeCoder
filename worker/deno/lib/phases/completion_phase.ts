@@ -456,22 +456,34 @@ async function lookupBlockedGatePr(
  * genuine ones.
  *
  * The rule is worth checking; reporting it as "the code did not work" is not.
- * So the outcome depends on whether the work reached a PR:
+ * So the outcome depends on whether this is the run's first summary-rule
+ * block, and whether the work already reached a PR (Issue #3163):
  *
- * - **no PR for this run's branch** — the verdict is recorded on the phase
- *   state and the gate blocks, which `workOnIssueCompletion` recovers from
- *   once inside the run (Issue #2189) before the failure stands;
- * - **a PR already exists** — the degraded-run delivery guard (Issue #2562)
- *   runs first, against this PR, before it is finalised: arming auto-merge
- *   on it ahead of that guard would close the issue with any undelivered
- *   scope recorded nowhere (Issue #3092). Only once the guard succeeds is
- *   the PR finalised the way the recovery path finalises it (body, labels,
- *   link, auto-merge), and the run reports `summary_incomplete`: the work is
- *   done, the summary is short, and the issue stays attached to its PR
- *   instead of going back in the queue. If the guard itself cannot file its
- *   follow-up, this reports `failure` instead and the PR is left
- *   unfinalised. An existing PR whose URL cannot be numbered also fails the
- *   run — before the PR is recovered or finalised (Issue #3139).
+ * - **the run's first block, no PR yet** — the verdict is recorded on the
+ *   phase state and the gate blocks `failure`, which `workOnIssueCompletion`
+ *   recovers from once inside the run (Issue #2189) before the failure
+ *   stands;
+ * - **the run's first block, a PR already exists** — the agent raised that
+ *   PR itself from inside the execute phase, often enough that finalising it
+ *   straight off this first block used to ship it with the gate's shortfall
+ *   unrepaired (#3155/#3158/#3159). The verdict is recorded the same way as
+ *   the no-PR case (carrying the PR's URL), and this also blocks `failure`
+ *   for `workOnIssueCompletion` to recover from in-run — the guard below is
+ *   *not* run and the PR is *not* finalised on this first block;
+ * - **a second (or later) block in the same run, with a PR** — the in-run
+ *   recovery already had its turn and failed to clear the gate, so this is
+ *   where the existing-PR path finalises: the degraded-run delivery guard
+ *   (Issue #2562) runs first, against this PR, before it is finalised:
+ *   arming auto-merge on it ahead of that guard would close the issue with
+ *   any undelivered scope recorded nowhere (Issue #3092). Only once the
+ *   guard succeeds is the PR finalised the way the recovery path finalises
+ *   it (body, labels, link, auto-merge), and the run reports
+ *   `summary_incomplete`: the work is done, the summary is short, and the
+ *   issue stays attached to its PR instead of going back in the queue. If
+ *   the guard itself cannot file its follow-up, this reports `failure`
+ *   instead and the PR is left unfinalised. An existing PR whose URL cannot
+ *   be numbered also fails the run — before the PR is recovered or
+ *   finalised (Issue #3139).
  *
  * On the no-PR branch the guard is *not* run here — a follow-up it files
  * would promise "that run's PR still completes #N on merge" for a PR that
@@ -488,8 +500,11 @@ async function lookupBlockedGatePr(
  *
  * @param reason - The phase-failure reason the gate would have reported.
  * @param comment - The gate's remediation comment for the issue thread.
- * @returns `failure` when no PR exists, `early_exit` carrying the
- *   `summary_incomplete` outcome when one does.
+ * @returns `failure` on the run's first block (PR or no PR, both recovered
+ *   in-run by `workOnIssueCompletion`), or on a later block whose follow-up
+ *   could not be filed, or whose PR URL cannot be numbered; `early_exit`
+ *   carrying the `summary_incomplete` outcome on a later block that reached
+ *   and finalised an existing PR.
  */
 async function reportSummaryRuleBlock(
   reason: string,
@@ -513,8 +528,16 @@ async function reportSummaryRuleBlock(
   // records the shortfall, not the number of attempts at it.
   const verdicts = state.summaryRuleBlocks ?? [];
   const alreadyOnThread = verdicts.some((v) => v.comment === comment);
-  if (!existingPr.ok) {
-    state.summaryRuleBlocks = [...verdicts, { reason, comment }];
+  const isFirstBlock = verdicts.length === 0;
+  if (!existingPr.ok || isFirstBlock) {
+    state.summaryRuleBlocks = [
+      ...verdicts,
+      {
+        reason,
+        comment,
+        ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
+      },
+    ];
   }
   if (alreadyOnThread) {
     logger.info(
@@ -546,6 +569,36 @@ async function reportSummaryRuleBlock(
 
   const prUrl = existingPr.value;
   const prNumber = prNumberFromUrl(prUrl);
+
+  if (isFirstBlock) {
+    // The run's FIRST summary-rule block gets the same in-run recovery turn
+    // whether or not a PR already exists (Issue #3163): finalising an
+    // existing PR straight off this block used to skip
+    // `recoverFromSummaryRuleBlock` entirely, so a PR the agent had already
+    // raised itself shipped with the gate's shortfall unrepaired. Naming the
+    // PR here (when its URL is numberable) is what lets a later failure on
+    // the retried attempt still name the live PR rather than reporting
+    // "no PR" over one (Issue #2044); an unnumberable URL names nothing
+    // (Issues #3136/#3139).
+    logger.warn(
+      "PR-summary rule broken on a run whose agent already raised its PR " +
+        "— giving the agent its one in-run recovery turn before that PR is " +
+        "finalised (Issue #3163)",
+      { repo, issueNumber, prUrl, reason },
+    );
+    if (prNumber > 0) {
+      state.prUrl = prUrl;
+      state.prNumber = prNumber;
+    } else {
+      logger.warn(
+        "Could not read a PR number from the existing PR URL — the " +
+          "summary-rule block names no PR rather than naming #0",
+        { repo, issueNumber, prUrl },
+      );
+    }
+    return { status: "failure", reason };
+  }
+
   logger.warn(
     "PR-summary rule broken on a run that had already raised its PR — " +
       "recording the shortfall against that PR instead of failing the run " +
