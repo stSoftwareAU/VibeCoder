@@ -124,9 +124,13 @@ print the minted token, since tracing is suspended around the mint.
    and this PR must fix it. Only a problem that is already present on the
    base branch, unchanged by the PR, is filed separately; when in doubt, it
    is a finding.
-8. **Review each head commit once.** A new push gets a fresh review. When
-   the fleet pushes a fix to a PR that was sent back, the re-review checks
-   the earlier findings were fixed, and approves once they are.
+8. **Review each head commit once.** A new push that changes the PR's own
+   diff gets a fresh review. When the fleet pushes a fix to a PR that was
+   sent back, the re-review checks the earlier findings were fixed, and
+   approves once they are. When a PR was sent back and the only commits
+   since are merges from the base branch that leave its own diff unchanged,
+   the gate skips it as `awaiting-fix` until the fleet pushes its fix, so the
+   review is not repeated.
 9. **Repeated findings improve the VibeCoder.** Review findings are also
    feedback about the worker itself. After each round, compare blocking
    findings with recent review history. When the same underlying mistake has
