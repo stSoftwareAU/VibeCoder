@@ -453,10 +453,21 @@ async function lookupBlockedGatePr(
  * - **no PR for this run's branch** — the verdict is recorded on the phase
  *   state and the gate blocks, which `workOnIssueCompletion` recovers from
  *   once inside the run (Issue #2189) before the failure stands;
- * - **a PR already exists** — the PR is finalised the way the recovery path
- *   finalises it (body, labels, link, auto-merge), and the run reports
- *   `summary_incomplete`: the work is done, the summary is short, and the
- *   issue stays attached to its PR instead of going back in the queue.
+ * - **a PR already exists** — the degraded-run delivery guard (Issue #2562)
+ *   runs first, against this PR, before it is finalised: arming auto-merge
+ *   on it ahead of that guard would close the issue with any undelivered
+ *   scope recorded nowhere (Issue #3092). Only once the guard succeeds is
+ *   the PR finalised the way the recovery path finalises it (body, labels,
+ *   link, auto-merge), and the run reports `summary_incomplete`: the work is
+ *   done, the summary is short, and the issue stays attached to its PR
+ *   instead of going back in the queue. If the guard itself cannot file its
+ *   follow-up, this reports `failure` instead and the PR is left
+ *   unfinalised.
+ *
+ * On the no-PR branch the guard is *not* run here — a follow-up it files
+ * would promise "that run's PR still completes #N on merge" for a PR that
+ * may never be raised (Issue #3092); the caller decides separately whether
+ * to run the guard before reaching this gate.
  *
  * Either way the gate's remediation comment is posted, so the shortfall is on
  * the issue thread rather than only in this host's log — once per distinct
@@ -531,11 +542,13 @@ async function reportSummaryRuleBlock(
       "(Issue #1140)",
     { repo, issueNumber, prUrl, reason },
   );
+  const guarded = await applyDegradedDeliveryGuard(ctx, state, prBody, deps);
+  if (!guarded.ok) return guarded.result;
   const recovered = await recoverAndFinaliseExistingPr(
     prUrl,
     ctx,
     state,
-    prBody,
+    guarded.prBody,
     deps,
   );
   if (recovered.status !== "continue") return recovered;
@@ -563,6 +576,112 @@ async function reportSummaryRuleBlock(
       problem: reason,
     }),
   };
+}
+
+/**
+ * Degraded-run delivery guard (Issue #2562).
+ *
+ * A run served by a fallback model must not read as complete delivery: on
+ * #2543 a Haiku-fallback run shipped one of seven accepted changes and its
+ * PR closed the issue with the rest recorded nowhere. The PR is still raised
+ * (the work is kept, and a PR that does not close its issue loops — #520),
+ * but every accepted scope item not shown `met` is filed as an `idle-task`
+ * follow-up the fleet picks up, and the PR body names the gap. A healthy
+ * run, or a degraded one that met everything, is untouched.
+ *
+ * Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
+ *
+ * Issue #3092: called both from the gate chokepoint below for a run that has
+ * not yet raised a PR, and from `reportSummaryRuleBlock`'s existing-PR
+ * branch, immediately before it recovers and finalises that PR — so every
+ * summary-rule gate records the degraded follow-up before the PR that would
+ * close the issue is finalised, not only the three gates that happened to
+ * run ahead of this guard in source order.
+ *
+ * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
+ *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
+ *   when the follow-up could not be filed.
+ */
+async function applyDegradedDeliveryGuard(
+  ctx: IssueContext,
+  state: PhaseState,
+  prBody: string,
+  deps: WorkerDeps,
+): Promise<{ ok: true; prBody: string } | { ok: false; result: PhaseResult }> {
+  const { repo, issueNumber, issueTitle, issueBody } = ctx;
+  const logger = deps.logger;
+
+  const degradedDelivery = assessDegradedDelivery({
+    claudeResults: state.claudeRunStats ?? [],
+    issueBody,
+    prBody,
+  });
+  if (degradedNeedsFollowUp(degradedDelivery)) {
+    const labelled = await deps.github.ensureLabelExists(
+      repo,
+      IDLE_TASK_LABEL,
+    );
+    if (!labelled.ok) {
+      logger.warn(
+        "Could not ensure the idle-task label for the degraded-run follow-up; filing anyway",
+        { error: labelled.error.message },
+      );
+    }
+    const followUp = await fileDegradedFollowUp({
+      repo,
+      parentNumber: issueNumber,
+      parentTitle: issueTitle,
+      verdict: degradedDelivery,
+      runId: getRunId(),
+      gh: deps.github.runGhCommand,
+      dedupAuthors: { fleetAuthors: fleetAuthorsFor(ctx) },
+    });
+    if (!followUp.ok) {
+      // Raising the PR now would close the issue with the residue recorded
+      // nowhere — the exact silent loss this guard exists to stop.
+      logger.error(
+        "Degraded run: could not file the follow-up for its undelivered scope — no PR raised",
+        { error: followUp.error.message },
+      );
+      return {
+        ok: false,
+        result: {
+          status: "failure",
+          reason:
+            `Degraded run (${degradedDelivery.reason}) left ${degradedDelivery.shortfalls.length} ` +
+            `accepted scope item(s) short of met, and the follow-up recording them ` +
+            `could not be filed: ${followUp.error.message}`,
+        },
+      };
+    }
+    logger.warn(
+      "Degraded run delivered partial scope — residue recorded in a follow-up",
+      {
+        reason: degradedDelivery.reason,
+        shortfalls: degradedDelivery.shortfalls.length,
+        followUp: followUp.value.number,
+        reused: followUp.value.reused,
+      },
+    );
+    return {
+      ok: true,
+      prBody: buildDegradedPrSection(degradedDelivery, followUp.value.number) +
+        prBody,
+    };
+  } else if (degradedDelivery.shortfalls.length > 0) {
+    logger.warn(
+      "Degraded run: no shortfall partial or missing — no follow-up filed",
+      {
+        reason: degradedDelivery.reason,
+        unassessed: degradedDelivery.shortfalls.length,
+      },
+    );
+    return {
+      ok: true,
+      prBody: buildDegradedNoFollowUpSection(degradedDelivery) + prBody,
+    };
+  }
+  return { ok: true, prBody };
 }
 
 /**
@@ -1963,8 +2082,9 @@ async function completionBody(
   //
   // `recoverFromSummaryRuleBlock` only re-invokes the agent on a run's FIRST
   // summary-rule block; a second block in the same run just fails. The
-  // docs-sweep gate itself runs last (below, after the degraded-run guard),
-  // so a summary that also fails an earlier gate used to consume that one
+  // docs-sweep gate itself runs after the closure, independent-review and
+  // reproduction-status gates (and before the degraded-run guard), so a
+  // summary that also fails an earlier gate used to consume that one
   // recovery turn on the earlier gate alone — the agent was never told about
   // the sweep, fixed only what it was asked, and failed on the second,
   // never-recovered block. `validateDocsSweep` is pure (no side effects), so
@@ -2103,117 +2223,6 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
-  // Docs-sweep gate, no-existing-PR short-circuit (Issue #3085 review).
-  //
-  // The degraded-run guard below files an idle-task follow-up whose body
-  // promises "that run's PR still completes #N on merge". On a branch with
-  // no PR yet, a docs-sweep block can still end the run with no PR raised at
-  // all — recovery may add nothing, or may not run at all when a degraded
-  // run is a rate-limit fallback — leaving that follow-up's promise false and
-  // the parent issue back in the queue alongside it. An existing PR has no
-  // such risk (`reportSummaryRuleBlock` only ever finalises or fails loud for
-  // it), so only the no-PR branch pre-empts the guard; an existing PR still
-  // lets the guard run first, as the comment on the gate below explains.
-  // ---------------------------------------------------------------------
-  if (docsSweepBlocked) {
-    const existingPrForDocsSweep = await deps.pr.findExistingPrForBranch(
-      repo,
-      state.branchName,
-    );
-    if (!existingPrForDocsSweep.ok) {
-      logger.warn(
-        "Docs-sweep gate blocked PR creation before any PR existed — " +
-          "skipping the degraded-run guard rather than file a follow-up for " +
-          "a PR that will not be raised",
-        { changedFilesKnown, codeFiles: docsSweep.codeFiles.length },
-      );
-      return await reportSummaryRuleBlock(
-        docsSweepReason,
-        buildDocsSweepGateComment(docsSweep),
-        ctx,
-        state,
-        prBody,
-        deps,
-      );
-    }
-  }
-
-  // ---------------------------------------------------------------------
-  // Degraded-run delivery guard (Issue #2562).
-  //
-  // A run served by a fallback model must not read as complete delivery: on
-  // #2543 a Haiku-fallback run shipped one of seven accepted changes and its
-  // PR closed the issue with the rest recorded nowhere. The PR is still raised
-  // (the work is kept, and a PR that does not close its issue loops — #520),
-  // but every accepted scope item not shown `met` is filed as an `idle-task`
-  // follow-up the fleet picks up, and the PR body names the gap. A healthy
-  // run, or a degraded one that met everything, is untouched.
-  //
-  // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
-  // ---------------------------------------------------------------------
-  const degradedDelivery = assessDegradedDelivery({
-    claudeResults: state.claudeRunStats ?? [],
-    issueBody: ctx.issueBody,
-    prBody,
-  });
-  if (degradedNeedsFollowUp(degradedDelivery)) {
-    const labelled = await deps.github.ensureLabelExists(
-      repo,
-      IDLE_TASK_LABEL,
-    );
-    if (!labelled.ok) {
-      logger.warn(
-        "Could not ensure the idle-task label for the degraded-run follow-up; filing anyway",
-        { error: labelled.error.message },
-      );
-    }
-    const followUp = await fileDegradedFollowUp({
-      repo,
-      parentNumber: issueNumber,
-      parentTitle: issueTitle,
-      verdict: degradedDelivery,
-      runId: getRunId(),
-      gh: deps.github.runGhCommand,
-      dedupAuthors: { fleetAuthors: fleetAuthorsFor(ctx) },
-    });
-    if (!followUp.ok) {
-      // Raising the PR now would close the issue with the residue recorded
-      // nowhere — the exact silent loss this guard exists to stop.
-      logger.error(
-        "Degraded run: could not file the follow-up for its undelivered scope — no PR raised",
-        { error: followUp.error.message },
-      );
-      return {
-        status: "failure",
-        reason:
-          `Degraded run (${degradedDelivery.reason}) left ${degradedDelivery.shortfalls.length} ` +
-          `accepted scope item(s) short of met, and the follow-up recording them ` +
-          `could not be filed: ${followUp.error.message}`,
-      };
-    }
-    logger.warn(
-      "Degraded run delivered partial scope — residue recorded in a follow-up",
-      {
-        reason: degradedDelivery.reason,
-        shortfalls: degradedDelivery.shortfalls.length,
-        followUp: followUp.value.number,
-        reused: followUp.value.reused,
-      },
-    );
-    prBody = buildDegradedPrSection(degradedDelivery, followUp.value.number) +
-      prBody;
-  } else if (degradedDelivery.shortfalls.length > 0) {
-    logger.warn(
-      "Degraded run: no shortfall partial or missing — no follow-up filed",
-      {
-        reason: degradedDelivery.reason,
-        unassessed: degradedDelivery.shortfalls.length,
-      },
-    );
-    prBody = buildDegradedNoFollowUpSection(degradedDelivery) + prBody;
-  }
-
-  // ---------------------------------------------------------------------
   // Docs-sweep gate (Issue #3073).
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry,
@@ -2222,18 +2231,13 @@ async function completionBody(
   // diff changes a non-test, non-doc file, the summary must name the manual
   // `section:` that documents the surface — not merely that a grep ran.
   //
-  // Issue #3085 (review): this gate must run after the degraded-run delivery
-  // guard above. The guard files the follow-up and prefixes the PR body
-  // *before* any gate is allowed to call reportSummaryRuleBlock, which on an
-  // existing-PR branch finalises that PR via recoverAndFinaliseExistingPr —
-  // arming auto-merge and returning early. Gating here first would let a
-  // degraded run's follow-up and PR-body note go unrecorded whenever the
-  // branch already had an open PR. The no-existing-PR case was already
-  // short-circuited above, before the guard ran, so this is reached only
-  // when an existing PR means the guard's follow-up stays truthful. The
-  // verdict itself was computed once, earlier, so every earlier gate's
-  // recovery turn could ask for it too — it is reused here rather than
-  // recomputed.
+  // Issue #3092: `reportSummaryRuleBlock` now applies the degraded-run
+  // delivery guard itself, against the existing PR, before it recovers and
+  // finalises that PR — so every summary-rule gate, docs sweep included,
+  // records the degraded follow-up before an existing PR is finalised, and
+  // this gate no longer needs to run after the guard or short-circuit around
+  // it for the no-PR case: either way `reportSummaryRuleBlock` does the
+  // right thing by branch below.
   // ---------------------------------------------------------------------
   if (docsSweepBlocked) {
     logger.warn("Docs-sweep gate blocked PR creation", {
@@ -2250,6 +2254,26 @@ async function completionBody(
       deps,
     );
   }
+
+  // ---------------------------------------------------------------------
+  // Degraded-run delivery guard (Issue #2562).
+  //
+  // A run served by a fallback model must not read as complete delivery: on
+  // #2543 a Haiku-fallback run shipped one of seven accepted changes and its
+  // PR closed the issue with the rest recorded nowhere. The PR is still raised
+  // (the work is kept, and a PR that does not close its issue loops — #520),
+  // but every accepted scope item not shown `met` is filed as an `idle-task`
+  // follow-up the fleet picks up, and the PR body names the gap. A healthy
+  // run, or a degraded one that met everything, is untouched.
+  //
+  // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
+  // Issue #3092: extracted to `applyDegradedDeliveryGuard` so this same
+  // chokepoint logic also runs from `reportSummaryRuleBlock`'s existing-PR
+  // branch.
+  // ---------------------------------------------------------------------
+  const guarded = await applyDegradedDeliveryGuard(ctx, state, prBody, deps);
+  if (!guarded.ok) return guarded.result;
+  prBody = guarded.prBody;
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),
   // and Issue #174, which reordered them.
