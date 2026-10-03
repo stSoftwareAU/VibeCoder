@@ -10,12 +10,13 @@
  * assertion, and that PR reached milestone PR GRQ-AutoTrader#2376
  * unnoticed.
  *
- * This module is the deterministic gate for that rule. It activates
- * whenever a PR's diff removes a line from an *existing* test file that
- * looks like a test assertion, and the assertion was not simply moved
- * (reformatted or relocated) rather than deleted. It then requires the PR
- * summary to carry a `## Test Plan` section naming every such removed
- * assertion.
+ * This module is the deterministic gate for that rule. It applies whenever
+ * the branch's changed-files list contains a test file (or could not be
+ * read at all, which fails closed), and in that case requires the PR
+ * summary to carry a `## Test Plan` heading. On top of that, every
+ * assertion a diff removes from a test file — unless it was simply moved
+ * (reformatted or relocated, i.e. re-added verbatim elsewhere in the same
+ * diff) rather than deleted — must be named in that Test Plan.
  *
  * Modelled on `docs_sweep_gate.ts`: pure functions only, hardcoded regexes
  * (never `new RegExp()` built from input), and bounded scans throughout —
@@ -412,7 +413,7 @@ function canonicaliseTestPlanBody(body: string): string {
 
 /** Verdict of the removed-assertion gate. */
 export interface RemovedAssertionGateResult {
-  /** True when the diff removes a line from, or changes, an existing test file. */
+  /** True when the changed files include a test file, or could not be read. */
   applicable: boolean;
   /** True when the gate passes (always true when not applicable). */
   valid: boolean;

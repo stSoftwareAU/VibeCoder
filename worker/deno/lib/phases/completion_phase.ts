@@ -2361,20 +2361,55 @@ async function completionBody(
       codeFiles: docsSweep.codeFiles.length,
       problems: docsSweep.problems,
     });
+    // Issue #3131 and #3124: fold the removed-assertion and placeholder
+    // verdicts in too, so a summary that fails the docs sweep and either
+    // later gate gets told about all of them in this one recovery turn,
+    // not just the one caught first.
+    const folded = foldInLateSummaryVerdicts(
+      docsSweepReason,
+      buildDocsSweepGateComment(docsSweep),
+      [docsSweepVerdict],
+    );
+    return await reportSummaryRuleBlock(
+      folded.reason,
+      folded.comment,
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Removed-assertion gate (Issue #3131).
+  //
+  // The fleet's PR-summary contract already asked the agent to name, in the
+  // `## Test Plan`, every assertion a diff removes from an *existing* test —
+  // together with the issue requirement that makes it untrue — but nothing
+  // checked it. GRQ-AutoTrader#2370 raised a PR with no `## Test Plan` at
+  // all and silently dropped a still-true assertion, and it reached a
+  // milestone PR unnoticed. Blocked the same way as the docs-sweep gate
+  // immediately above: `reportSummaryRuleBlock` applies the degraded-run
+  // delivery guard itself against any existing PR before it recovers and
+  // finalises that PR, so this gate does not need to run after the guard
+  // either.
+  // ---------------------------------------------------------------------
+  if (removedAssertionsBlocked) {
+    logger.warn("Removed-assertion gate blocked PR creation", {
+      changedFilesKnown,
+      testFiles: removedAssertions.testFiles.length,
+      removed: removedAssertions.removed.length,
+      unaccounted: removedAssertions.unaccounted.length,
+      problems: removedAssertions.problems,
+    });
     // Issue #3124: fold the placeholder verdict in too, so a summary that
-    // fails both the docs sweep and the placeholder gate gets told about
-    // both in this one recovery turn, not just the one caught first.
-    const folded = placeholderBlocked
-      ? {
-        reason: `${docsSweepReason}; ${placeholderReason}`,
-        comment: `${buildDocsSweepGateComment(docsSweep)}\n\n---\n\n${
-          buildResultPlaceholderGateComment(placeholderTokens)
-        }`,
-      }
-      : {
-        reason: docsSweepReason,
-        comment: buildDocsSweepGateComment(docsSweep),
-      };
+    // fails both this gate and the placeholder gate gets told about both in
+    // this one recovery turn, not just the one caught first.
+    const folded = foldInLateSummaryVerdicts(
+      removedAssertionsReason,
+      buildRemovedAssertionGateComment(removedAssertions),
+      [docsSweepVerdict, removedAssertionsVerdict],
+    );
     return await reportSummaryRuleBlock(
       folded.reason,
       folded.comment,
@@ -2392,7 +2427,7 @@ async function completionBody(
   // summary where a command's actual result belongs reads as "the gate was
   // run" to anyone who does not know the fleet's internal scaffolding, when
   // nothing was actually reported. Blocked the same way as the docs-sweep
-  // gate immediately above: `reportSummaryRuleBlock` applies the
+  // and removed-assertion gates above: `reportSummaryRuleBlock` applies the
   // degraded-run delivery guard itself against any existing PR before it
   // recovers and finalises that PR, so this gate does not need to run after
   // the guard either.
