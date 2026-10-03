@@ -82,7 +82,7 @@ Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and
 
   for (
     const required of [
-      "a commit does not stop the worker from deferring",
+      "After a commit this deferral is honoured only when the `Depends on` / `Blocked by` line names an issue the worker reads as still open",
       "In an issue run",
       "A CI-fix run is the exception",
       "Base-branch failures",

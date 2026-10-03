@@ -690,10 +690,12 @@ In an issue run, the worker recognises that shape and **defers** the issue: it
 stays open with its discovery label, `Depends on owner/repo#N` is recorded in
 its body, and the dependency gate skips it on every scan until that dependency
 closes. The release comment says `deferred: depends on owner/repo#N`. No human
-is paged and no work is lost. This deferral is honoured whether or not you
-have already committed — a commit does not stop the worker from deferring and
-it raises no PR. A CI-fix run is the exception for a check already red on the
-base branch: `prompts/ci_fix/prompt.md` "Base-branch failures" still ends with
+is paged and no work is lost. After a commit this deferral is honoured only
+when the `Depends on` / `Blocked by` line names an issue the worker reads as
+still open; a closed or unreadable dependency does not defer, and the worker
+hands the issue to a human and raises no PR. A CI-fix run is the exception
+for a check already red on the base branch: `prompts/ci_fix/prompt.md`
+"Base-branch failures" still ends with
 `Depends on owner/repo#N`, and that line defers that check.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are

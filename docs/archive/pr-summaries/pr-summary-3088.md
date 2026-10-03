@@ -89,7 +89,11 @@ and raises a PR).
 
 **Docs sweep:** `DESIGN-PRINCIPLES.md`, `docs/workflows/issue-processing.md`,
 `prompts/issue/prompt.md` and `prompts/coding_guidelines/prompt.md` were
-updated. No `*/README.md` describes the phase list, so none changed.
+updated. DESIGN-PRINCIPLES says a closed dependency, a missing `state`, or a
+lookup that fails does not defer: the committed run hands off to a human and
+raises no PR. The coding-guidelines deferral, after a commit, is honoured
+only when the named issue is still open. No `*/README.md` describes the phase
+list, so none changed.
 
 ## Test Plan
 

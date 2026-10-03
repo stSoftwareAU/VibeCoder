@@ -2751,10 +2751,12 @@ branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
 changes" either — a `declared_handoff` phase runs after execute and before
 `bump_deps` / the quality gate / completion. On that path a `## Blocked:`
 heading defers only when its `Depends on` or `Blocked by` line names a
-dependency the worker reads as open. A closed or unreadable dependency does
-not defer, and the run raises its PR. A time deferral or a planning marker
-is still honoured after a commit, so the worker defers or hands to planning
-rather than sailing through to a `Closes #N` PR. Before any of those
+dependency the worker reads as open. A closed dependency, a missing `state`,
+or a lookup that fails does not defer; the committed run hands off to a
+human (`needs-human`) and raises no PR. A bullet, or a heading with no
+`Depends on` / `Blocked by` line, still continues and raises its PR. A time
+deferral or a planning marker is still honoured after a commit, so the worker
+defers or hands to planning rather than sailing through to a `Closes #N` PR. Before any of those
 hand-offs the phase pushes the branch through `commitAndPushPending`, which
 refuses the default branch and runs `assertSafeToCommit`. The hand-off is
 applied only once nothing is left unpushed. A failed push returns a failure
