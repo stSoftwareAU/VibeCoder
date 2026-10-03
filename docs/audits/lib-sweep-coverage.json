@@ -2460,6 +2460,18 @@
         "setup.ps1",
         "setup.sh"
       ]
+    },
+    {
+      "issue": 3073,
+      "chunk": "top-up-3073",
+      "title": "top-up: the docs-sweep manual gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3073",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: docs_sweep_gate.ts (#3073)",
+      "status": "claimed",
+      "sweptAt": "d2571a0755334c5a447be97ed673ce15c26b55ba",
+      "paths": [
+        "worker/deno/lib/docs_sweep_gate.ts"
+      ]
     }
   ],
   "roots": [
