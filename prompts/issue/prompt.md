@@ -119,6 +119,19 @@ guessing — the analysis-only hand-off then routes it to a human.
      not a shape fitted to the test inputs. Special-casing the values in the
      test — hardcoded returns, branches keyed to a fixture — makes the suite
      green while the feature stays broken for every other input.
+   - **Call the existing owner — never copy it.** Before writing code that
+     formats, orders, ranks, validates or decides something the product
+     already does, find the helper, component or policy that owns it and
+     call it. Open every component or function the issue names — above all
+     in an Implementation section — and grep for the domain term (`rating`,
+     `buy_order`, `Stars`). When the owner is private (`pub(crate)`, not
+     exported), widen its visibility (`pub(crate)` → `pub`, add the export)
+     instead of copying it; that widening is part of this change, not the
+     adjacent refactor **Change Scope** rules out. A hand-made copy drifts
+     from its owner and drops the owner's edge cases. A component the issue
+     says to reuse is a stated requirement: the Spec reviewer judges it as a
+     criterion, and a diff that re-implements it by hand instead of calling
+     it is not `met`.
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
@@ -140,8 +153,19 @@ guessing — the analysis-only hand-off then routes it to a human.
    for each name you removed or changed **and** for the user-visible wording
    you removed — a label, a status sentence, a setting's description — then
    fix every hit, so no manual still describes what the code no longer does.
-   Record the sweep as the **Docs sweep** line in the PR summary (see
-   **PR Summary File** below).
+   In addition to the term grep, find the **manual section** that documents
+   the surface you changed by grepping for the surface's own name — the card
+   or page title for a UI component, the route for an endpoint, the report or
+   command name for a query or read path — even when every name survives the
+   change; read that section through and fix every sentence the change makes
+   false. A grep hit is cleared only after reading the sentence it is in,
+   never by the file's topic. Record the sweep as the **Docs sweep** line in
+   the PR summary, naming that section (e.g.
+   `section: docs/reporting-pwa.md#broker-balance`, or
+   `section: none — <why no manual documents it>`) (see **PR Summary File**
+   below). When the diff changes non-test, non-doc files, the worker will not
+   raise the PR without that line: it asks for it once more, and a second
+   miss fails the run.
    Before new prompt or doc text states how another component behaves —
    above all an exclusive or negative claim ("the only …", "never …", "the
    worker does not …") — open the code that implements it and cite that file
@@ -507,6 +531,8 @@ reviewer its path.
   verdict per stated criterion, plus an `unrequested` entry per change it cannot
   trace to the issue. All four are verdicts and all four are recorded the same
   way, so an `unrequested` entry carries `reviewer: unrequested` like the rest.
+  A helper or component the issue says to reuse counts as a stated criterion:
+  a diff that re-implements it by hand instead of calling it is not `met`.
 - **Standards reviewer** — inputs: the same diff and `CODING-STANDARDS.md`. One
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
@@ -828,9 +854,9 @@ The file MUST contain:
    - For performance changes: Include benchmark results or document why they
      cannot be provided
    - For bug fixes/CLI changes: Reference the tests that verify the fix
-   - Always: a one-line **Docs sweep** — the grep terms you searched and the
-     doc files you updated, or `no hits` — e.g. **Docs sweep** — grep:
-     `retryLimit`, "Retrying in"; updated: `docs/workflows/retries.md`
+   - Always: a one-line **Docs sweep** — the grep terms you searched, the
+     manual section you found and checked, and the doc files you updated, or
+     `no hits` — e.g. **Docs sweep** — grep: `retryLimit`, "Retrying in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
@@ -867,7 +893,15 @@ The file MUST contain:
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding
+   blocking self-review finding. Likewise, a path the diff adds to an outcome
+   an existing path already reaches — an early return, gate, route or direct
+   call that finalises a PR, publishes state, charges an attempt or ends a
+   claim — keeps that path's guards (see **A new path to an existing outcome
+   keeps that outcome's guards** in the guidelines): list each guard kept or
+   excluded with its reason, and a kept guard counts only once a named test
+   reaches the new path with the guard's trigger holding and goes red when
+   the new branch is moved ahead of the guard; a new path that skips a guard
+   with no stated reason is a blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
@@ -909,7 +943,7 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 ![Screenshot of fixed buttons](docs/evidence/button-fix.png)
 
-**Docs sweep** — grep: `flex-wrap`, "stacked buttons"; no hits
+**Docs sweep** — grep: `flex-wrap`, "stacked buttons"; section: `docs/ui.md#action-buttons`; no hits
 
 ## Reproduction
 
