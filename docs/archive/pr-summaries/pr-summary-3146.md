@@ -41,12 +41,11 @@ only; the no-changes path still deferred.
   only set a local `selfFiledDependency` flag and returned no result, relying
   on the caller to reach the hand-off through its own length/shape-dependent
   fall-through. `DeclaredOutcomeHandoff` now exposes `selfFiledDependency`, and
-  `workOnIssueHandleNoChanges` checks it immediately after the
-  usage-limit/interrupted retries and *before* the length check, calling the
-  same `postPartialAnswerAndHandOff` helper the normal textual-output path
-  uses (extracted so both call sites share it). This skips the
-  described-code-change retry and the short-output failure entirely for a
-  self-filed match, regardless of what the output otherwise looks like.
+  `workOnIssueHandleNoChanges` checks it before the usage-limit and
+  interrupted-run retries, calling the same `postPartialAnswerAndHandOff`
+  helper the normal textual-output path uses. A retry would drop the
+  self-filed signal. This also skips the described-code-change retry and
+  the short-output failure, regardless of what the output otherwise looks like.
 
 ```mermaid
 flowchart TD
@@ -63,18 +62,16 @@ The issue cites `handle_no_changes_phase.ts:182/211`, but that logic moved into
 ## Evidence
 
 - **Guards kept vs. excluded on the self-filed short-circuit.** It reaches
-  `analysis_only_handed_off` via a dedicated check placed after the
-  retryable-failure returns but before everything else:
-  - **Kept:** the retryable-failure (usage-limit / interrupted) returns —
-    genuine infrastructure retries still take priority; the already-resolved
-    exclusion, pinned by test (e), since `blocked` stays set regardless of
-    which branch applies it.
-  - **Excluded, with reason:** the structured-output-wrapper skip, the
-    described-code-change retry, and the short-output failure. A self-filed
-    match must hand off on *this* run — reaching any of those three would
-    return a `failure` with no `needs-human`, and the next run's
-    `createdAt >= runStartTime` check no longer treats the same follow-up as
-    self-filed, so the issue would defer onto it instead (test (f) pins this).
+  `analysis_only_handed_off` via a dedicated check placed before the
+  usage-limit and interrupted-run returns:
+  - **Kept:** the already-resolved exclusion, pinned by test (e), since
+    `blocked` stays set regardless of which branch applies it.
+  - **Excluded, with reason:** the usage-limit and interrupted-run retries
+    (a retry starts a new run and loses the self-filed signal; the
+    interrupted check is a wording guess that matches "not finished"), the
+    structured-output-wrapper skip, the described-code-change retry, and the
+    short-output failure. A self-filed match must hand off on *this* run
+    (tests (f) and (g) pin this).
 - **Mutation checks.** Each new test went red with its guard removed, then
   passed once the guard was restored:
 
@@ -142,11 +139,16 @@ New tests in `worker/deno/tests/handle_no_changes_blocked_deferral_test.ts`:
   short-circuit in `handle_no_changes_phase.ts` and re-running this test gave
   `AssertionError: Values are not equal. - failure / + early_exit`, confirming
   it goes red without the fix; restoring the fix made it pass again.
+- **(g) Self-filed dependency whose blocked text says "not finished":**
+  hands off with `needs-human`, `analysis_only_handed_off`. Before the
+  hand-off moved above `detectRunInterrupted`, the same output returned
+  `failure` and added no label.
 
 Results:
 
 - `deno task test:unit` on the five no-changes / declared-handoff test files:
   83 passed, 0 failed (82 before this round's test (f) was added).
+- Test (g): `deno test --frozen --lock=deno.lock --allow-read --allow-env tests/handle_no_changes_blocked_deferral_test.ts` — 15 passed.
 - `./quality.sh`: PASSED (`config integration` skipped, as before). The first
   run this round caught a `no-unused-vars` lint failure on the `config`
   destructure in `workOnIssueHandleNoChanges` left over from extracting

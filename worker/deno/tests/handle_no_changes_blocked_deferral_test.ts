@@ -670,6 +670,54 @@ Depends on ${DEP}
   },
 );
 
+// Issue #3146 (review of PR #3159): detectRunInterrupted matches ordinary
+// blocked wording such as "not finished". That check used to run before the
+// self-filed hand-off and return a plain failure, so the next run deferred
+// onto the follow-up.
+Deno.test(
+  "handle_no_changes_phase - a self-filed dependency hands off even when " +
+    "the blocked text reads as interrupted (Issue #3146)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(calls, "Original body.", [], {
+            author: "testbot",
+            createdAt: "2026-10-03T10:05:00Z",
+            state: "OPEN",
+          }),
+      },
+    });
+    const output = `## Blocked: needs a product decision
+
+The upstream rule set is not finished. I filed stSoftwareAU/NEAT-AI-core#560.
+
+Depends on ${DEP}
+`;
+    const state = makeState(output);
+    state.runStartTime = Date.parse("2026-10-03T10:00:00Z");
+
+    const result = await workOnIssueHandleNoChanges(
+      makeContext(),
+      state,
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    assertEquals(
+      (result as { reason: string }).reason,
+      "analysis_only_handed_off",
+    );
+    assert(calls.addLabel.includes("needs-human"));
+    assertEquals(calls.closeIssue, 0);
+    assert(
+      !calls.editIssue.some((e) => (e.body ?? "").includes("Depends on")),
+      "a self-filed dependency must not be recorded as a real deferral",
+    );
+  },
+);
+
 Deno.test("hasPriorDeferral matches only the same dependency", () => {
   const comments = `Some chatter\n\n${buildDeferralMarker(DEP)}\n`;
   assert(hasPriorDeferral(comments, DEP));

@@ -340,6 +340,22 @@ export async function workOnIssueHandleNoChanges(
   const truncationElapsed = state.executeStartTime > 0
     ? Math.round((Date.now() - state.executeStartTime) / 1000)
     : 0;
+  // Issue #3146: a dependency this fleet filed during the run hands off on
+  // this run, before the usage-limit and interrupted-run checks. Both return
+  // a retryable failure, and a retry starts a new run, so the follow-up's
+  // createdAt is then before runStartTime and the next run defers onto it.
+  // detectRunInterrupted is a wording guess ("not finished"), which ordinary
+  // blocked text matches. A finished Depends on line naming a self-filed
+  // issue is the stronger signal, so it also wins over a usage-limit retry.
+  if (selfFiledDependency) {
+    logger.info(
+      "No-changes run depends on a self-filed dependency — handing off to " +
+        "a human on this run instead of retrying or deferring on a later " +
+        "one (Issue #3146)",
+      { repo, issueNumber },
+    );
+    return await postPartialAnswerAndHandOff(ctx, deps, claudeOutput);
+  }
   if (detectUsageLimit(claudeOutput)) {
     logger.warn("Claude hit the subscription usage limit mid-run (no changes)");
     return {
@@ -371,26 +387,6 @@ export async function workOnIssueHandleNoChanges(
         },
       ),
     };
-  }
-
-  // Issue #3146 (review of PR #3159): `handOffDeclaredOutcome` already
-  // decided this run must hand off rather than defer, because the
-  // dependency it named was filed by this fleet during the run. Letting
-  // execution continue below risks the described-code-change retry or the
-  // "no useful output" failure instead — both return a `failure` with no
-  // `needs-human` — and on the *next* run the same follow-up's `createdAt`
-  // no longer satisfies `runStartTime`, so it defers onto a follow-up
-  // nothing picks up: the exact #3146 failure, one run later. Hand off here,
-  // on the run that detects it, regardless of whether the output also
-  // happens to describe a code change or is short.
-  if (selfFiledDependency) {
-    logger.info(
-      "No-changes run depends on a self-filed dependency — handing off to " +
-        "a human on this run instead of retrying or deferring on a later " +
-        "one (Issue #3146)",
-      { repo, issueNumber },
-    );
-    return await postPartialAnswerAndHandOff(ctx, deps, claudeOutput);
   }
 
   // Check for partial text output (question disguised as issue)
