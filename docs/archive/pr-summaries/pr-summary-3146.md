@@ -103,7 +103,7 @@ The issue cites `handle_no_changes_phase.ts:182/211`, but that logic moved into
   self-filed exception there, next to the repeat-deferral one it already
   named.
 
-  Review follow-up (round 2, this round): that round-1 wording — "falls
+  Review follow-up (round 2): that round-1 wording — "falls
   through to the same analysis-only hand-off" — was itself inaccurate once
   the output also described a code change (see the round-2 fix above).
   Reread `docs/workflows/issue-processing.md:703` and `:793` and
@@ -111,6 +111,16 @@ The issue cites `handle_no_changes_phase.ts:182/211`, but that logic moved into
   `handOffDeclaredOutcome` (this file) and reworded all three to say the
   hand-off is unconditional — it bypasses the described-code-change retry and
   short-output failure — rather than merely "falling through".
+
+  Review follow-up (round 3, this round): rounds 1–2 swept `:703` (the
+  "Blocked on a dependency — deferral" bullet) and the `:773`+ narrative
+  section, but missed the adjacent `:704` bullet ("Analysis-only / no-PR
+  hand-off") and its described-code-change exception, which still read
+  "never escalated as analysis-only" naming only the body-marker override.
+  Added the self-filed-dependency override next to it, and made the same
+  one-line addition to the `analysis_only_handoff.ts` module doc (its
+  "Output that names files to change is excluded … retried rather than
+  handed off" line had the identical gap).
 
 ## Test Plan
 
