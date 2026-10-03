@@ -218,6 +218,20 @@ variants and adds a test for each path that differs, and
 `.pr_response_message` names, per finding, the other paths and copies it
 checked.
 
+#### Recount the Test Plan after a review fix (Issue #3117)
+
+A review fix that adds, removes or renames a test changes the archived PR
+summary's Test Plan, even when nothing else in the summary moves. The
+pr_feedback prompt's "keep the PR summary true to the head" rule tells the
+agent to recount from the head: the list of tests, every per-file test count
+and every quoted total ("N tests", "N passed", "N pinned phrases"),
+re-running the commands the summary cites on the final head so the figures
+are that run's. A number is never carried over from the earlier iteration.
+Review-fix heads had edited the summary in the same push yet left a stale
+count or test list (VibeCoder#3075, #3105, #3108). The PR-body sync
+(Issue #3089) copies such a count faithfully, so the recount has to land
+in the summary file itself.
+
 #### Verify a claim about another component before rewriting it (Issue #3090)
 
 When a finding says prompt, doc or PR-summary text misdescribes how another
