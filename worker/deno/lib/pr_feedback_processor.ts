@@ -42,8 +42,10 @@ import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
   preparePrBranch,
+  prResponseMessagePath,
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
+import { retryReplyPlaceholdersOnce } from "./result_placeholder_gate.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   milestoneFixBranchFor,
@@ -934,6 +936,47 @@ async function _processFeedbackWithHeartbeat(
       error: new Error(failureMessage),
     };
   }
+
+  // Result-placeholder reply recovery (Issue #3124): one in-run retry when
+  // Claude's own `.pr_response_message` still carries a bare fill-in-later
+  // token where a command's result belongs. Peeking here — before the file
+  // is consumed by `readPrResponseMessage` further down this run, and by
+  // every other reply consumer that reads through that same chokepoint —
+  // gives the agent one chance to supply the actual outcome itself; a token
+  // still left afterwards falls through to that chokepoint's fail-loud
+  // backstop. The peek reads without consuming the file, and a failed or
+  // exhausted retry here must not abort an otherwise-successful feedback run.
+  await retryReplyPlaceholdersOnce(
+    prResponseMessagePath(processorDeps.workDir),
+    {
+      readFile: async (path) => {
+        try {
+          return await Deno.readTextFile(path);
+        } catch {
+          return undefined;
+        }
+      },
+      runAgent: async (prompt) => {
+        const retryResult = await deps.claude.runClaudeWithRetry(
+          {
+            prompt,
+            systemPrompt,
+            timeoutSeconds: claudeTimeout,
+            noOutputTimeout: claudeNoOutputTimeout,
+            phase: "pr_feedback",
+            cwd: processorDeps.workDir,
+            logger,
+          },
+          { maxRetries: maxRateLimitRetries },
+        );
+        if (!retryResult.ok) {
+          return { ok: false, error: retryResult.error };
+        }
+        return { ok: true };
+      },
+      logger,
+    },
+  );
 
   // Mark comment as processed
   await deps.pr.markCommentProcessed(repo, commentType, commentId, prNumber);

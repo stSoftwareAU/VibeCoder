@@ -2105,10 +2105,9 @@ async function completionBody(
   // ---------------------------------------------------------------------
   const placeholderTokens = findResultPlaceholders(prBody);
   const placeholderBlocked = placeholderTokens.length > 0;
-  const placeholderReason =
-    `Unfilled result placeholder in the PR summary: ${
-      placeholderTokens.join(", ")
-    }`;
+  const placeholderReason = `Unfilled result placeholder in the PR summary: ${
+    placeholderTokens.join(", ")
+  }`;
 
   /** Fold the docs-sweep and result-placeholder verdicts into an earlier gate's block, when either also fails. */
   function foldInDocsSweep(
@@ -2119,8 +2118,9 @@ async function completionBody(
     let foldedComment = comment;
     if (docsSweepBlocked) {
       foldedReason = `${foldedReason}; ${docsSweepReason}`;
-      foldedComment =
-        `${foldedComment}\n\n---\n\n${buildDocsSweepGateComment(docsSweep)}`;
+      foldedComment = `${foldedComment}\n\n---\n\n${
+        buildDocsSweepGateComment(docsSweep)
+      }`;
     }
     if (placeholderBlocked) {
       foldedReason = `${foldedReason}; ${placeholderReason}`;
@@ -2263,9 +2263,23 @@ async function completionBody(
       codeFiles: docsSweep.codeFiles.length,
       problems: docsSweep.problems,
     });
+    // Issue #3124: fold the placeholder verdict in too, so a summary that
+    // fails both the docs sweep and the placeholder gate gets told about
+    // both in this one recovery turn, not just the one caught first.
+    const folded = placeholderBlocked
+      ? {
+        reason: `${docsSweepReason}; ${placeholderReason}`,
+        comment: `${buildDocsSweepGateComment(docsSweep)}\n\n---\n\n${
+          buildResultPlaceholderGateComment(placeholderTokens)
+        }`,
+      }
+      : {
+        reason: docsSweepReason,
+        comment: buildDocsSweepGateComment(docsSweep),
+      };
     return await reportSummaryRuleBlock(
-      docsSweepReason,
-      buildDocsSweepGateComment(docsSweep),
+      folded.reason,
+      folded.comment,
       ctx,
       state,
       prBody,

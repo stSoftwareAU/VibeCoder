@@ -184,7 +184,7 @@ export function buildResultPlaceholderGateComment(
     `result belongs: ${describeTokens(tokens)}.`,
     "",
     "A fill-in-later token left in place of a result counts as an unreported " +
-    "result, not a passing one — it reads as \"the gate was run\" to anyone " +
+    'result, not a passing one — it reads as "the gate was run" to anyone ' +
     "who does not know the fleet's internal vocabulary, when nothing was " +
     "actually reported.",
     "",
