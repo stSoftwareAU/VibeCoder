@@ -53,7 +53,9 @@
  * The follow-up carries the `idle-task` label — the one work-trigger label the
  * worker may apply itself — so a later run picks the residue up without a
  * human, and a `finding-id` marker keyed on the parent, so a second degraded
- * run on the same issue reuses the open follow-up rather than filing another.
+ * run on the same issue reuses the open follow-up rather than filing
+ * another — and rewrites its body to that later run's shortfalls and
+ * delivered items, so the follow-up never goes stale (Issue #3145).
  *
  * The verdict and the rendering are pure; {@link fileDegradedFollowUp} is the
  * one I/O step, with `gh` injected.
@@ -339,9 +341,15 @@ export function buildDegradedPrSection(
  * File the degraded run's follow-up, or reuse the open one for this parent
  * (Issue #2562).
  *
- * Fails loud: a follow-up that cannot be filed returns an error, and the
- * caller must not raise a PR that would close the parent with the residue
- * recorded nowhere.
+ * On reuse the open follow-up's body is rewritten to this run's verdict —
+ * its finding-id marker is kept, since {@link buildDegradedFollowUpIssue}
+ * emits the same one — so a later run's shortfalls and delivered items
+ * replace the earlier run's stale ones rather than being silently dropped
+ * (Issue #3145). The title is keyed on the parent and is left alone.
+ *
+ * Fails loud: a follow-up that cannot be filed, or a reused one that cannot
+ * be brought up to date, returns an error, and the caller must not raise a
+ * PR that would close the parent with the residue recorded nowhere.
  *
  * @returns The follow-up's issue number.
  */
@@ -392,6 +400,28 @@ export async function fileDegradedFollowUp(args: {
             `follow-up of #${args.parentNumber}`,
         ),
       };
+    }
+    if (filed.skipped) {
+      try {
+        await args.gh([
+          "issue",
+          "edit",
+          String(filed.number),
+          "--repo",
+          args.repo,
+          "--body",
+          issue.body,
+        ]);
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error);
+        return {
+          ok: false,
+          error: new Error(
+            `could not update the reused degraded-run follow-up ` +
+              `#${filed.number} of #${args.parentNumber}: ${cause}`,
+          ),
+        };
+      }
     }
     return { ok: true, value: { number: filed.number, reused: filed.skipped } };
   } catch (error) {
