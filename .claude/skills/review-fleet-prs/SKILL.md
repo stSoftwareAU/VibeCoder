@@ -66,6 +66,12 @@ it, the message says to accept the new permissions on the installation page.
 
 ### Persistent failure escalation
 
+A pass fails when the App token or the gate fails, or when the headless
+Claude round exits non-zero: it could not start (`claude` not on `PATH`),
+it failed, or the 50-minute alarm killed it. `runner.log` then says
+`round failed (exit N)` or `round timed out after 3000s` instead of
+`round done`.
+
 After 12 consecutive failed passes (about an hour at the 5-minute interval),
 `escalate.ts` opens one deduplicated issue in `stSoftwareAU/VibeCoder`,
 titled `review-fleet-prs runner failing on <host>: <error>`, using the host's
