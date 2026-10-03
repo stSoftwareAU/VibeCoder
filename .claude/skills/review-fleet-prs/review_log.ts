@@ -334,6 +334,23 @@ export function previousFindings(
   return last?.outcome === "changes_requested" ? last.findings : [];
 }
 
+// Whether this skill's own log recorded a change-request outcome for this PR
+// at this exact head commit. GitHub's DISMISSED review state cannot tell a
+// stale-dismissed approval apart from a change request the worker claimed
+// (and so dismissed) before pushing the fix; the log is the record of which
+// it was (Issue #3079).
+export function wasChangeRequestAt(
+  records: LogRecord[],
+  repo: string,
+  number: number,
+  headSha: string,
+): boolean {
+  return records.some((r) =>
+    r.repo === repo && r.number === number && r.headSha === headSha &&
+    r.outcome === "changes_requested"
+  );
+}
+
 const clip = (s: string, max = 200) =>
   s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 
