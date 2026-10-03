@@ -23,7 +23,8 @@ import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
-import { buildIdempotencyMarker, buildMilestonePrSection } from "../pr_body.ts";
+import { buildMilestonePrSection } from "../pr_body.ts";
+import { assemblePrBody, finalisePrBodyImages } from "../pr_body_sync.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
@@ -38,11 +39,7 @@ import {
   isVersionBumpOnly,
   validateScreenshotEvidence,
 } from "../screenshot_validation.ts";
-import {
-  convertEvidenceImagesToRawUrls,
-  findScreenshotReferences,
-} from "../pr_evidence.ts";
-import { resolveImagePaths } from "../image_path_resolver.ts";
+import { findScreenshotReferences } from "../pr_evidence.ts";
 import {
   buildClosureGateComment,
   validateAcceptanceClosure,
@@ -1734,11 +1731,12 @@ async function completionBody(
   }
 
   const summaryResult = await loadPrSummary(state.repoPath, issueNumber);
+  let summaryContent: string;
   if (summaryResult.ok && summaryResult.value.content) {
     logger.info("Loaded PR summary file", {
       source: summaryResult.value.source,
     });
-    prBody = summaryResult.value.content + "\n\n";
+    summaryContent = summaryResult.value.content;
   } else {
     if (!summaryResult.ok) {
       logger.warn("Error reading PR summary file", {
@@ -1747,7 +1745,7 @@ async function completionBody(
     } else {
       logger.warn("No PR summary file found, using minimal body");
     }
-    prBody = `## Summary\n\nCloses #${issueNumber}.\n\n`;
+    summaryContent = "";
   }
 
   // Screenshots the agent committed to docs/evidence/ but did not reference
@@ -1755,18 +1753,20 @@ async function completionBody(
   // #4355) are referenced here, so the evidence renders in the PR and the
   // gate below sees it. The relative paths go through the same repair and
   // raw-URL conversion as authored references.
+  let extraSections = "";
   const branchEvidence = findBranchEvidenceImages(changedFiles);
   if (
-    branchEvidence.length > 0 && findScreenshotReferences(prBody).length === 0
+    branchEvidence.length > 0 &&
+    findScreenshotReferences(summaryContent).length === 0
   ) {
     logger.info("Referencing branch evidence images not named in the summary", {
       images: branchEvidence,
     });
-    prBody += formatBranchEvidenceSection(branchEvidence);
+    extraSections += formatBranchEvidenceSection(branchEvidence);
   }
 
   if (milestoneTitle && state.milestoneBranch) {
-    prBody += buildMilestonePrSection({
+    extraSections += buildMilestonePrSection({
       milestoneTitle,
       milestoneBranch: state.milestoneBranch,
       baseBranch,
@@ -1776,16 +1776,22 @@ async function completionBody(
   // Issue #1775: a milestone child run skips the dependency bump, so the PR
   // says so rather than leaving a reviewer to wonder why the lockfile is
   // untouched. Empty for every other bump outcome.
-  prBody += buildBumpSkipNote(state.bumpInfo);
+  extraSections += buildBumpSkipNote(state.bumpInfo);
 
   // Worker footer for multi-worker visibility (Issue #1190)
-  prBody += buildWorkerFooter({
+  const footer = buildWorkerFooter({
     workerName: config.workerName,
     githubUser,
     runId: getRunId(),
   });
-  prBody += buildIdempotencyMarker(issueNumber);
-  prBody = deps.pr.ensurePrReferencesIssue(prBody, issueNumber);
+
+  prBody = assemblePrBody({
+    summaryContent,
+    issueNumber,
+    extraSections,
+    footer,
+    ensureReferences: deps.pr.ensurePrReferencesIssue,
+  });
 
   // Issue #2985: Make evidence image links render in the PR description.
   //
@@ -1795,44 +1801,19 @@ async function completionBody(
   // broken relative path to a real on-disk file (soft gate, Issue #2230), then
   // rewrite in-repo evidence images to commit-pinned raw URLs. Both steps are
   // best-effort — warnings are logged but never block PR creation.
-  const imageResolution = await resolveImagePaths(prBody, state.repoPath);
-  prBody = imageResolution.body;
-  for (const rewrite of imageResolution.rewrites) {
-    logger.info("Repaired evidence image path", {
-      from: rewrite.from,
-      to: rewrite.to,
-    });
-  }
-  for (const warning of imageResolution.warnings) {
-    logger.warn("Could not resolve evidence image path", {
-      path: warning.path,
-      reason: warning.reason,
-    });
-  }
-
   const headShaResult = await deps.git.runGitCommand(
     ["rev-parse", "HEAD"],
     { cwd: state.repoPath },
   );
-  const headSha = headShaResult.ok ? headShaResult.value.stdout.trim() : "";
-  if (headSha) {
-    const conversion = await convertEvidenceImagesToRawUrls(prBody, {
-      repoPath: state.repoPath,
-      githubRepo: repo,
-      commitSha: headSha,
-    });
-    prBody = conversion.content;
-    for (const converted of conversion.conversions) {
-      logger.info("Converted evidence image to raw URL", {
-        from: converted.from,
-        to: converted.to,
-      });
-    }
-  } else {
-    logger.warn(
-      "Could not resolve HEAD SHA — evidence images left as relative paths",
-    );
-  }
+  const headSha = headShaResult.ok
+    ? headShaResult.value.stdout.trim()
+    : undefined;
+
+  prBody = await finalisePrBodyImages(
+    prBody,
+    { repoPath: state.repoPath, githubRepo: repo, headSha },
+    logger,
+  );
 
   // Issue #1185: Screenshot validation before PR creation
   const skipScreenshot =
