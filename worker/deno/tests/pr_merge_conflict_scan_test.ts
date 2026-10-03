@@ -1999,6 +1999,29 @@ Deno.test("findConflictingPr - a moved base offers a parked PR again with a fres
   assertEquals(result.value.selected?.attemptCount, 0);
 });
 
+/**
+ * An injected `abandonRestart` that declines as `already-restarted` naming a
+ * *different* PR (Issue #3033): the real rung no longer produces this
+ * outcome itself, but the scan's parking code still has to handle one when
+ * it arrives — e.g. from an injected rung, or a caller's own bookkeeping.
+ */
+function declinedAbandon(
+  issueNumber: number,
+  restartCount: number,
+): () => Promise<AbandonRestartOutcome> {
+  return () =>
+    Promise.resolve({
+      outcome: "declined",
+      reason: {
+        kind: "already-restarted",
+        issueNumber,
+        samePr: false,
+        restartCount,
+      },
+    });
+}
+
+
 Deno.test("findConflictingPr - a park whose marker cannot be posted is not a park (Issue #2312)", async () => {
   // The comment is what makes the park real: without it nothing records the
   // wait, so the pass must fall back rather than report one.
