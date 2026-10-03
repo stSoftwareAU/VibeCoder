@@ -24,7 +24,8 @@ const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 3147;
 const PR_URL = `https://github.com/${REPO}/pull/4311`;
-const EXISTING_TEST = "worker/deno/tests/completion_phase_branch_outcomes_test.ts";
+const EXISTING_TEST =
+  "worker/deno/tests/completion_phase_branch_outcomes_test.ts";
 const MISSING_TEST = "worker/deno/tests/does_not_exist_test.ts";
 
 const ISSUE_BODY = `## Problem
