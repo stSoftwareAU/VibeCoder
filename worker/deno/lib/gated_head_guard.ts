@@ -33,6 +33,14 @@
  * their fix work on a `milestone-fix/**` side branch and deliver it through
  * a pull request into the gated branch instead of giving up.
  *
+ * Issue #2997: every stand-down comment now names the pass that now owns
+ * the conflict (`conflict takeover` or `milestone sync`) and the UTC moment
+ * the merge-conflict pass takes it back if the head has not moved —
+ * {@link CONFLICT_OWNER_CHECK_HOURS} after the stand-down, carried on the
+ * marker itself as `at="…"` so a restarted worker can still read the clock's
+ * start back out ({@link readLatestStandDownAtMs}) rather than re-starting it
+ * from `Date.now()` every run.
+ *
  * Scope is deliberately narrow — only `milestone/**` heads are assessed. An
  * ordinary feature head under a repo-wide ruleset is left exactly as it was:
  * `GET /rules/branches/{branch}` does not account for the caller's bypass
@@ -45,6 +53,13 @@
 
 import type { Logger } from "../types.ts";
 import { getBranchRules, type GhExec } from "./repo_rulesets.ts";
+import {
+  CONFLICT_OWNER_CHECK_HOURS,
+  CONFLICT_PARKED_MARKER,
+  CONFLICT_WATCHDOG_CHECKED_MARKER,
+  standDownAtAttribute,
+} from "./merge_conflict_markers.ts";
+import { conflictCommentAuthor } from "./conflict_marker_trust.ts";
 
 // ---------------------------------------------------------------------------
 // Assessment
@@ -146,18 +161,70 @@ export async function assessGatedHead(
 // Comment
 // ---------------------------------------------------------------------------
 
+/** The pass that now owns a conflict once a stand-down is posted (Issue #2997). */
+export type StandDownOwner = "milestone sync" | "conflict takeover";
+
+/**
+ * The UTC moment the merge-conflict pass takes a stood-down conflict back
+ * (Issue #2997).
+ *
+ * Throws on a non-finite `standDownAtMs`: a takeover time nobody can compute
+ * is a comment that cannot be posted, not a comment posted with a bogus
+ * clock in it.
+ */
+export function takeoverAtMs(standDownAtMs: number): number {
+  if (!Number.isFinite(standDownAtMs)) {
+    throw new Error(
+      `Refusing to compute a takeover time from a non-finite stand-down ` +
+        `time (${standDownAtMs}) — the stand-down comment is not posted`,
+    );
+  }
+  return standDownAtMs + CONFLICT_OWNER_CHECK_HOURS * 3_600_000;
+}
+
+/**
+ * The two lines every stand-down comment carries naming its owner and the
+ * UTC moment the merge-conflict pass takes the conflict back (Issue #2997).
+ */
+export function standDownNextStepLines(
+  owner: StandDownOwner,
+  standDownAtMs: number,
+): string[] {
+  const iso = new Date(takeoverAtMs(standDownAtMs)).toISOString();
+  return [
+    `**Owner:** \`${owner}\` — the pass that now owns this conflict.`,
+    `**Takeover at ${iso}** (UTC) — if the PR head has not moved by then, ` +
+    "the merge-conflict pass takes the conflict back and fixes it forward.",
+  ];
+}
+
+/** Prefix shared by every gated-head marker for one branch, legacy or current. */
+export function gatedHeadMarkerPrefix(branchName: string): string {
+  return `<!-- vibe-gated-head branch="${branchName}"`;
+}
+
 /** Hidden marker identifying this module's stand-down comment on a PR. */
-export function gatedHeadMarker(branchName: string): string {
-  return `<!-- vibe-gated-head branch="${branchName}" -->`;
+export function gatedHeadMarker(
+  branchName: string,
+  standDownAtMs: number,
+): string {
+  return `${gatedHeadMarkerPrefix(branchName)} ${
+    standDownAtAttribute(standDownAtMs)
+  } -->`;
 }
 
 /** The stand-down comment: what was refused, why, and what a human can do. */
 export function buildGatedHeadComment(
   branchName: string,
   assessment: GatedHeadAssessment,
+  standDownAtMs: number,
 ): string {
+  const nextStepLines = standDownNextStepLines(
+    "conflict takeover",
+    standDownAtMs,
+  );
   return [
-    gatedHeadMarker(branchName),
+    gatedHeadMarker(branchName, standDownAtMs),
     `**Standing down — \`${branchName}\` cannot be pushed to directly.**`,
     "",
     `${capitalise(assessment.detail)}.`,
@@ -169,13 +236,25 @@ export function buildGatedHeadComment(
     "into this branch instead (Issue #2907). An operator can also add the " +
     "fleet account as a bypass actor on the rule.",
     "",
+    ...nextStepLines,
+    "",
     "This comment is posted once per branch, not once per run.",
   ].join("\n");
 }
 
+/** Prefix shared by every milestone-head marker for one branch, legacy or current. */
+export function milestoneHeadMarkerPrefix(branchName: string): string {
+  return `<!-- vibe-milestone-head branch="${branchName}"`;
+}
+
 /** Hidden marker identifying the milestone-sync stand-down comment on a PR. */
-export function milestoneHeadMarker(branchName: string): string {
-  return `<!-- vibe-milestone-head branch="${branchName}" -->`;
+export function milestoneHeadMarker(
+  branchName: string,
+  standDownAtMs: number,
+): string {
+  return `${milestoneHeadMarkerPrefix(branchName)} ${
+    standDownAtAttribute(standDownAtMs)
+  } -->`;
 }
 
 /**
@@ -186,9 +265,13 @@ export function milestoneHeadMarker(branchName: string): string {
  * sync rather than a ruleset, because the stand-down holds whether or not a
  * rule is in force (Issue #1772).
  */
-export function buildMilestoneHeadComment(branchName: string): string {
+export function buildMilestoneHeadComment(
+  branchName: string,
+  standDownAtMs: number,
+): string {
+  const nextStepLines = standDownNextStepLines("milestone sync", standDownAtMs);
   return [
-    milestoneHeadMarker(branchName),
+    milestoneHeadMarker(branchName, standDownAtMs),
     `**Standing down — \`${branchName}\` is resolved by the milestone ` +
     `branch sync.**`,
     "",
@@ -198,6 +281,8 @@ export function buildMilestoneHeadComment(branchName: string): string {
     `Running the merge-conflict pass here as well would duplicate that merge ` +
     `on the same branch and race its push, so no resolution attempt is spent ` +
     `on this PR.`,
+    "",
+    ...nextStepLines,
     "",
     "This comment is posted once per branch, not once per run.",
   ].join("\n");
@@ -230,6 +315,8 @@ export interface GatedHeadGuardOptions {
   logger: Logger;
   /** `gh` runner, used for the rules read and the comment. */
   runGhCommand: (args: string[]) => Promise<string>;
+  /** The current time, injected for tests. Defaults to `Date.now`. */
+  nowMs?: () => number;
 }
 
 /**
@@ -244,7 +331,15 @@ export interface GatedHeadGuardOptions {
 export async function guardGatedHead(
   options: GatedHeadGuardOptions,
 ): Promise<GatedHeadAssessment> {
-  const { repo, prNumber, branchName, pass, logger, runGhCommand } = options;
+  const {
+    repo,
+    prNumber,
+    branchName,
+    pass,
+    logger,
+    runGhCommand,
+    nowMs = Date.now,
+  } = options;
   const assessment = await assessGatedHead(
     repo,
     branchName,
@@ -258,11 +353,14 @@ export async function guardGatedHead(
     { repo, prNumber, branchName, ruleTypes: assessment.ruleTypes.join(",") },
   );
 
+  const standDownAtMs = nowMs();
+  const body = buildGatedHeadComment(branchName, assessment, standDownAtMs);
+
   await recordStandDownOnce({
     repo,
     prNumber,
-    marker: gatedHeadMarker(branchName),
-    body: buildGatedHeadComment(branchName, assessment),
+    markerPrefix: gatedHeadMarkerPrefix(branchName),
+    body,
     logger,
     runGhCommand,
   });
@@ -277,6 +375,8 @@ export interface MilestoneHeadStandDownOptions {
   logger: Logger;
   /** `gh` runner, used for the comment listing and the comment. */
   runGhCommand: (args: string[]) => Promise<string>;
+  /** The current time, injected for tests. Defaults to `Date.now`. */
+  nowMs?: () => number;
 }
 
 /**
@@ -296,7 +396,8 @@ export interface MilestoneHeadStandDownOptions {
 export async function standDownMilestoneHead(
   options: MilestoneHeadStandDownOptions,
 ): Promise<boolean> {
-  const { repo, prNumber, branchName, logger, runGhCommand } = options;
+  const { repo, prNumber, branchName, logger, runGhCommand, nowMs = Date.now } =
+    options;
   if (!isMilestoneHead(branchName)) return false;
 
   logger.info(
@@ -305,11 +406,14 @@ export async function standDownMilestoneHead(
     { repo, prNumber, branchName },
   );
 
+  const standDownAtMs = nowMs();
+  const body = buildMilestoneHeadComment(branchName, standDownAtMs);
+
   await recordStandDownOnce({
     repo,
     prNumber,
-    marker: milestoneHeadMarker(branchName),
-    body: buildMilestoneHeadComment(branchName),
+    markerPrefix: milestoneHeadMarkerPrefix(branchName),
+    body,
     logger,
     runGhCommand,
   });
@@ -317,28 +421,34 @@ export async function standDownMilestoneHead(
 }
 
 /**
- * Post a stand-down comment at most once per branch and marker.
+ * Post a stand-down comment at most once per branch and marker prefix.
  *
  * Once per process via the registry above, and once across runs via the
- * marker on the PR. A comment listing that fails posts nothing — a duplicate
- * comment every run is the noise this exists to remove — and says so in the
- * log.
+ * marker on the PR. Deduped on the **prefix** rather than the full marker
+ * (Issue #2997): the marker now carries an `at="…"` timestamp that is
+ * different on every call, so matching the full string would post a fresh
+ * comment every run; matching the prefix means a legacy marker with no
+ * `at=` still counts as "already recorded" too. A comment listing that fails
+ * posts nothing — a duplicate comment every run is the noise this exists to
+ * remove — and says so in the log.
  */
 async function recordStandDownOnce(options: {
   repo: string;
   prNumber: number;
-  marker: string;
+  markerPrefix: string;
   body: string;
   logger: Logger;
   runGhCommand: (args: string[]) => Promise<string>;
 }): Promise<void> {
-  const { repo, prNumber, marker, body, logger, runGhCommand } = options;
-  const key = `${repo}#${prNumber}#${marker}`;
+  const { repo, prNumber, markerPrefix, body, logger, runGhCommand } = options;
+  const key = `${repo}#${prNumber}#${markerPrefix}`;
   if (reported.has(key)) return;
   reported.add(key);
 
   try {
-    if (await hasStandDownComment(repo, prNumber, marker, runGhCommand)) return;
+    if (
+      await hasStandDownComment(repo, prNumber, markerPrefix, runGhCommand)
+    ) return;
     await runGhCommand([
       "pr",
       "comment",
@@ -352,14 +462,15 @@ async function recordStandDownOnce(options: {
     logger.warn("Could not record the stand-down on the PR", {
       repo,
       prNumber,
-      marker,
+      marker: markerPrefix,
       error: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
 /**
- * Whether the PR already carries the stand-down comment `marker` identifies.
+ * Whether the PR already carries the stand-down comment `markerPrefix`
+ * identifies.
  *
  * Throws when the listing cannot be read or parsed: an unreadable thread is
  * not an empty one, and reading it as empty is how a "posted once" comment
@@ -369,7 +480,7 @@ async function recordStandDownOnce(options: {
 async function hasStandDownComment(
   repo: string,
   prNumber: number,
-  marker: string,
+  markerPrefix: string,
   runGhCommand: (args: string[]) => Promise<string>,
 ): Promise<boolean> {
   const raw = await runGhCommand([
@@ -389,6 +500,92 @@ async function hasStandDownComment(
     );
   }
   return parsed.comments.some((comment) =>
-    typeof comment?.body === "string" && comment.body.includes(marker)
+    typeof comment?.body === "string" && comment.body.includes(markerPrefix)
   );
+}
+
+// ---------------------------------------------------------------------------
+// Reading the stand-down clock back (Issue #2997)
+// ---------------------------------------------------------------------------
+
+/** The literal prefixes {@link readLatestStandDownAtMs} recognises as a stand-down. */
+const STAND_DOWN_MARKER_PREFIXES: readonly string[] = [
+  "<!-- vibe-gated-head ",
+  "<!-- vibe-milestone-head ",
+  CONFLICT_PARKED_MARKER,
+  CONFLICT_WATCHDOG_CHECKED_MARKER,
+];
+
+/** The epoch ms one comment's own `at="…"`/`created_at` carries, or `undefined`. */
+function readOneStandDownAtMs(
+  body: string,
+  createdAt: unknown,
+): number | undefined {
+  for (const prefix of STAND_DOWN_MARKER_PREFIXES) {
+    const start = body.indexOf(prefix);
+    if (start < 0) continue;
+
+    const end = body.indexOf("-->", start);
+    const markerText = body.slice(
+      start,
+      end >= 0 ? end + "-->".length : body.length,
+    );
+    const written = /at="([^"]*)"/.exec(markerText)?.[1];
+    if (written !== undefined) {
+      const parsed = Date.parse(written);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    // Legacy marker (no `at=`), or an `at=` nothing can parse: fall back to
+    // the comment's own `created_at`, the moment it was actually posted.
+    if (typeof createdAt === "string") {
+      const parsed = Date.parse(createdAt);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The newest trusted stand-down's clock start, across every stand-down
+ * marker this module and `merge_conflict_markers.ts`'s park marker write
+ * (Issue #2997).
+ *
+ * The stall watchdog reads this back to know when the
+ * {@link CONFLICT_OWNER_CHECK_HOURS}-hour owner clock started, so the
+ * merge-conflict pass takes a conflict back at the same moment the
+ * stand-down comment itself named — rather than re-measuring from whenever
+ * the watchdog happens to run.
+ *
+ * Author-filtered like every reader in this vocabulary
+ * (`conflict_marker_trust.ts`): a comment with no readable login, or whose
+ * login `isTrustedAuthor` rejects, is skipped entirely, because a forged
+ * stand-down would move another pass's clock.
+ *
+ * @param comments - Raw REST comment objects, oldest first.
+ * @param isTrustedAuthor - Predicate a comment's `user.login` must pass for
+ *   its marker to be read at all.
+ * @returns The greatest (newest) stand-down time found, or `undefined` when
+ *   no trusted comment carries one.
+ */
+export function readLatestStandDownAtMs(
+  comments: readonly unknown[],
+  isTrustedAuthor: (login: string) => boolean,
+): number | undefined {
+  let latest: number | undefined;
+
+  for (const raw of comments) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const comment = raw as { body?: unknown; created_at?: unknown };
+    if (typeof comment.body !== "string") continue;
+
+    const author = conflictCommentAuthor(raw);
+    if (author === undefined || !isTrustedAuthor(author)) continue;
+
+    const atMs = readOneStandDownAtMs(comment.body, comment.created_at);
+    if (atMs === undefined) continue;
+    if (latest === undefined || atMs > latest) latest = atMs;
+  }
+
+  return latest;
 }
