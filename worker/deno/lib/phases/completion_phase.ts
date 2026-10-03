@@ -681,7 +681,7 @@ async function applyDegradedDeliveryGuard(
           reason:
             `Degraded run (${degradedDelivery.reason}) left ${degradedDelivery.shortfalls.length} ` +
             `shortfall(s) (scope items short of met, or gaps the run reported), and the follow-up recording them ` +
-            `could not be filed: ${followUp.error.message}`,
+            `could not be filed or brought up to date: ${followUp.error.message}`,
         },
       };
     }
