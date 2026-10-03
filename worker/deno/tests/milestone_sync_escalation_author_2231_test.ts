@@ -42,6 +42,10 @@ const AUTO_CONFLICT: MilestoneSyncConflict = {
   milestoneSha: "68e2065a403efc022cfde9a8574d71f18ed2e6a4",
   defaultSha: "7e75ebb286a816729bd7ab750166bf8e0179f0af",
   resolution: "auto",
+  // The stub's `api repos/...` branch always answers "abc1234 subject"
+  // (Issue #2998) — this is the same sha, so `confirmSyncLanding` reads the
+  // merge as landed on the milestone tip rather than unconfirmed.
+  mergeSha: "abc1234",
 };
 
 /** An earlier sync escalation's marker for this very branch. */
@@ -94,7 +98,7 @@ Deno.test("escalateSyncConflict - a sync-conflict marker planted by a non-fleet 
     },
   ]);
 
-  const posted = await escalateSyncConflict(
+  const report = await escalateSyncConflict(
     REPO,
     MILESTONE,
     AUTO_CONFLICT,
@@ -103,7 +107,7 @@ Deno.test("escalateSyncConflict - a sync-conflict marker planted by a non-fleet 
     { fleetAuthors: [FLEET] },
   );
 
-  assertEquals(posted, true, "the notice still goes out");
+  assertEquals(report.posted, true, "the notice still goes out");
   assertEquals(
     stub.removed(),
     [],
@@ -121,7 +125,7 @@ Deno.test("escalateSyncConflict - a fleet-authored marker still clears the needs
     },
   ]);
 
-  const posted = await escalateSyncConflict(
+  const report = await escalateSyncConflict(
     REPO,
     MILESTONE,
     AUTO_CONFLICT,
@@ -130,7 +134,7 @@ Deno.test("escalateSyncConflict - a fleet-authored marker still clears the needs
     { fleetAuthors: [FLEET] },
   );
 
-  assertEquals(posted, true);
+  assertEquals(report.posted, true);
   assertEquals(stub.removed(), ["needs-human"], "#2214's behaviour is kept");
   assert(
     stub.body().includes("is cleared: the branch has synced"),

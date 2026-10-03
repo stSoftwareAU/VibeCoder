@@ -65,7 +65,7 @@ import {
 export const BRANCH_UPDATE_LOCK_PREFIX = "<!-- BRANCH_UPDATE_LOCK:";
 
 /** Default lock TTL in seconds (5 minutes). */
-const DEFAULT_LOCK_TTL_SECONDS = 300;
+export const DEFAULT_LOCK_TTL_SECONDS = 300;
 
 /** Default consistency delay in milliseconds. */
 const DEFAULT_CONSISTENCY_DELAY_MS = 3000;
@@ -426,6 +426,88 @@ export async function cleanStaleBranchUpdateLocks(
  * @param options - Lock acquisition options
  * @returns Result with lock outcome
  */
+/**
+ * The worker id of a lock that is still inside its TTL, or null when none is.
+ *
+ * A lock the fleet did not post is not a lock (Issue #1124): the worker id
+ * and timestamp inside the marker are whatever the commenter typed, and a
+ * future timestamp never expires. An untrusted marker is ignored, the same
+ * way {@link acquireBranchUpdateLock} ignores one. A read that fails returns
+ * null and is logged: the caller then proceeds as if the lock were free,
+ * which is the same answer a missing thread gives.
+ */
+export async function activeBranchUpdateLockHolder(options: {
+  repo: string;
+  prNumber: number;
+  ghCommandFn?: (args: string[]) => Promise<string>;
+  nowFn?: () => number;
+  lockTtlSeconds?: number;
+  log?: (message: string) => void;
+  /** Same author gate acquisition uses. Omitted reads the configured fleet. */
+  authorOptions?: AlertDedupAuthorOptions;
+}): Promise<string | null> {
+  const {
+    repo,
+    prNumber,
+    ghCommandFn = runGhCommand,
+    nowFn = defaultNow,
+    lockTtlSeconds = DEFAULT_LOCK_TTL_SECONDS,
+    log = (message: string) => console.warn(message),
+    authorOptions = {},
+  } = options;
+  let lockComments: LockComment[];
+  try {
+    lockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
+  } catch (err) {
+    log(
+      `[pr-branch-lock] ${repo}#${prNumber}: could not read the lock ` +
+        `comments — ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  const fleetLocks = await selectFleetAuthoredComments(
+    lockComments,
+    `branch update lock ${repo}#${prNumber}`,
+    authorOptions,
+    log,
+    "no lock is counted and the milestone sync proceeds — a lock marker " +
+      "anyone can post must not stall a PR indefinitely",
+  );
+  const now = nowFn();
+  for (const comment of fleetLocks) {
+    const lockData = parseLockComment(comment.body);
+    if (
+      lockData !== null && now - lockData.timestamp < lockTtlSeconds
+    ) {
+      return lockData.workerId;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a fleet-authored PR lock is still inside its TTL (Issue #2965).
+ *
+ * The milestone sync's production `prUpdateLockHeldFn`. True only for a
+ * fresh lock a fleet account wrote; an untrusted marker, an expired marker
+ * and a read that fails are all "not held".
+ */
+export async function prUpdateLockIsHeld(
+  repo: string,
+  prNumber: number,
+  options: Omit<
+    Parameters<typeof activeBranchUpdateLockHolder>[0],
+    "repo" | "prNumber"
+  > = {},
+): Promise<boolean> {
+  const holder = await activeBranchUpdateLockHolder({
+    repo,
+    prNumber,
+    ...options,
+  });
+  return holder !== null;
+}
+
 export async function acquireBranchUpdateLock(
   options: BranchUpdateLockOptions,
 ): Promise<Result<BranchUpdateLockResult>> {
