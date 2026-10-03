@@ -42,16 +42,46 @@ const PLACEHOLDER_TOKEN_RE = /\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b/g;
  * inline backtick spans are both "inside code" — a token named for
  * discussion (`` `REDACTION_PLACEHOLDER` ``) is not an unfilled result.
  */
+/** A fence line: the marker character, how long the run is, and the rest of the line. */
+interface FenceLine {
+  char: string;
+  length: number;
+  rest: string;
+}
+
+/**
+ * A line whose first non-space characters are a fence. Indent is ignored, so
+ * a fence under a list item counts. CommonMark's three-space limit does not:
+ * archived summaries indent list fences further than that.
+ */
+function parseFenceLine(line: string): FenceLine | null {
+  // `split` keeps the line break, and `.` does not match it, so trim first.
+  const match = line.trim().match(/^(`{3,}|~{3,})(.*)$/);
+  if (!match) return null;
+  return {
+    char: match[1]![0]!,
+    length: match[1]!.length,
+    rest: match[2] ?? "",
+  };
+}
+
+/** A closer uses the opener's character, is at least as long, and has no info string. */
+function isClosingFence(line: string, opener: FenceLine): boolean {
+  const parsed = parseFenceLine(line);
+  if (!parsed) return false;
+  return parsed.char === opener.char && parsed.length >= opener.length &&
+    parsed.rest.trim() === "";
+}
+
 function splitOutsideCode(
   text: string,
 ): Array<{ value: string; inCode: boolean }> {
   const segments: Array<{ value: string; inCode: boolean }> = [];
-  const FENCE_RE = /^(`{3,}|~{3,})/;
   const lines = text.split(/(?<=\n)/); // keep line terminators attached
   let i = 0;
   let cursor = "";
   let inFence = false;
-  let fenceMarker = "";
+  let opener: FenceLine | null = null;
 
   function flushCursor(inCode: boolean) {
     if (cursor.length > 0) segments.push({ value: cursor, inCode });
@@ -60,21 +90,20 @@ function splitOutsideCode(
 
   while (i < lines.length) {
     const line = lines[i]!;
-    const fenceMatch = line.match(FENCE_RE);
-    if (fenceMatch) {
-      if (!inFence) {
-        flushCursor(false);
-        inFence = true;
-        fenceMarker = fenceMatch[1]![0]!; // '`' or '~'
-        cursor += line;
-      } else if (line.trimStart()[0] === fenceMarker) {
-        cursor += line;
-        flushCursor(true);
-        inFence = false;
-        fenceMarker = "";
-      } else {
-        cursor += line;
-      }
+    const fenceMatch = parseFenceLine(line);
+    if (fenceMatch && !inFence) {
+      flushCursor(false);
+      inFence = true;
+      opener = fenceMatch;
+      cursor += line;
+      i++;
+      continue;
+    }
+    if (inFence && opener && isClosingFence(line, opener)) {
+      cursor += line;
+      flushCursor(true);
+      inFence = false;
+      opener = null;
       i++;
       continue;
     }

@@ -100,7 +100,9 @@ in 5m43s, serial in 1m27s.
   `findResultPlaceholders - names at most ten distinct tokens` (eleven names
   return the first ten) and `findResultPlaceholders - a token only past the
   scan cap is not reported` (a token that begins only after 200,000
-  characters is omitted).
+  characters is omitted). Fences:
+  `findResultPlaceholders - a list-item fence is code, and replace leaves it unchanged`
+  and `findResultPlaceholders - a longer fence is not closed by a shorter one inside it`.
 - `worker/deno/tests/completion_phase_result_placeholder_test.ts`: a
   placeholder alone blocks PR creation through the one recovery turn; folded
   into the docs-sweep block; folded into an earlier gate

@@ -937,9 +937,12 @@ The file MUST contain:
 7. **Test Plan**: List the tests added or modified. Write a result line only
    after the command has run on the final head, and state the actual outcome
    (passed, or failed with its first error) — never write a placeholder token
-   to fill in later; the worker blocks PR creation on an unfilled ALL-CAPS
-   `..._PLACEHOLDER` token (e.g. a bare `` `SOMETHING_PLACEHOLDER` ``) anywhere
-   in the summary. If a gate was not run, say so plainly with the
+   to fill in later. The worker catches an unfilled ALL-CAPS ..._PLACEHOLDER
+   token written outside backticks and code blocks — for example
+   SOMETHING_PLACEHOLDER in prose. It blocks PR creation, or records the
+   shortfall against a PR the run already raised. A token inside backticks or
+   a code block is not caught, and it is still never acceptable in place of
+   a result. If a gate was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or
    under Evidence must exist at the head — in the diff or already tracked;

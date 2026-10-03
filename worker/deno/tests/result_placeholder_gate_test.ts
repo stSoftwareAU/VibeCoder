@@ -27,6 +27,32 @@ Deno.test("findResultPlaceholders - a token only past the scan cap is not report
   assertEquals(findResultPlaceholders(text), []);
 });
 
+Deno.test("findResultPlaceholders - a list-item fence is code, and replace leaves it unchanged", () => {
+  const text = [
+    "- Step one:",
+    "",
+    "  ```ts",
+    "  const x = REDACTION_PLACEHOLDER;",
+    "  ```",
+    "",
+  ].join("\n");
+  assertEquals(findResultPlaceholders(text), []);
+  assertEquals(replaceResultPlaceholders(text, "[result not reported]"), text);
+});
+
+Deno.test("findResultPlaceholders - a longer fence is not closed by a shorter one inside it", () => {
+  const text = [
+    "````",
+    "```",
+    "X_PLACEHOLDER",
+    "```",
+    "````",
+    "",
+  ].join("\n");
+  assertEquals(findResultPlaceholders(text), []);
+  assertEquals(replaceResultPlaceholders(text, "[result not reported]"), text);
+});
+
 Deno.test("findResultPlaceholders - finds a bare token in prose", () => {
   const text = "- Full `./quality.sh`: QUALITY_RESULT_PLACEHOLDER";
   assertEquals(findResultPlaceholders(text), ["QUALITY_RESULT_PLACEHOLDER"]);
