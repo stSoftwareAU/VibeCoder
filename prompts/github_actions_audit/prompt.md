@@ -182,7 +182,7 @@ no quoted row is not filed.
    structured file readers are permitted. `bash`, `node`, `deno run`,
    `python`, `make`, `cargo run`, `npm test`, `act`, and any other
    repo-executing command are forbidden. The only permitted `gh` calls
-   are `gh issue list` (dedup), `gh label create` (defensive, before
+   are `gh label create` (defensive, before
    filing), `gh issue create` (filing), and `gh issue edit` (Phase 4
    only, and only to correct an issue you just filed — see the
    verification step at the end of Phase 4) — plus two **read-only**
@@ -1390,11 +1390,14 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 
 1. **Re-check the dedup lists.** Skip silently if the id is in the
    suppressed or known-open list.
-2. **Re-check the live open-issue list.** Call
-   `gh issue list --state open --label github-actions-audit --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip any finding whose id already
-   has an open issue.
+2. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 3. **File the issue** with `gh issue create` (no `--repo` argument) and
    exactly these labels:
    - `github-actions-audit` (always)
