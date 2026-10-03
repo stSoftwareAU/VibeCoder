@@ -3042,6 +3042,12 @@ PR is never recorded `failure` for a summary-format shortfall alone, and its
 issue stays attached to that PR instead of going back in the queue. With **no**
 PR the gate blocks exactly as before: that is what a pre-PR gate is for.
 
+The run's first summary-rule block gets the one in-run recovery turn whether
+or not the agent already raised the PR itself from inside the execute phase
+(Issue #3163): a PR the agent raised itself is not finalised or auto-merged
+until that turn has run. A block that survives that turn — the run's
+second — finalises an existing PR as before.
+
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in
 `prompts/issue/prompt.md` — stating the verdict field on every surface that names
