@@ -1315,7 +1315,9 @@ computed once, early, so it stands beside — not strictly after — the
 reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
 folded into that gate's own notice (Issue #3085 review), and only a summary
-that passes all three reaches this gate's own, standalone block.
+that passes all three reaches the late summary gates' own block, which reports
+every one of docs sweep, the placeholder-token gate and the branch-outcomes
+gate that fails, at once (Issue #3147).
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
@@ -1432,7 +1434,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the five summary gates above, a finding
+Like the security-fix gate and unlike the six summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1470,9 +1472,9 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the five summary-rule gates — closure,
-independent review, reproduction status, docs sweep and the placeholder-token
-gate — still pre-empts the
+with **no** PR yet, each of the six summary-rule gates — closure,
+independent review, reproduction status, docs sweep, the placeholder-token
+gate and the branch-outcomes gate — still pre-empts the
 guard: a follow-up filed there would promise "that run's PR still
 completes #N on merge" for a PR any of those gates can still prevent from ever being
 raised, so whichever gate blocks first fails the run and the guard never
@@ -1482,7 +1484,7 @@ comment is posted but before that gate's recovery finalises the PR. Before
 Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
 because that gate ran after the guard; the closure, independent-review and
 reproduction-status gates ran ahead of the guard and skipped it. Once all
-five gates pass, `completionBody` runs the same guard once more — via the
+six gates pass, `completionBody` runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
 
@@ -1562,8 +1564,9 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The five summary gates above — acceptance-criteria closure, independent review,
-reproduction status, docs sweep and the placeholder-token gate — sit at the completion phase's PR-creation chokepoint, so
+The six summary gates above — acceptance-criteria closure, independent review,
+reproduction status, docs sweep, the placeholder-token gate and the
+branch-outcomes gate — sit at the completion phase's PR-creation chokepoint, so
 blocking one normally costs the next attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
@@ -1658,7 +1661,7 @@ closes a `security`-labelled finding without its vulnerability-fix evidence stop
 the run, PR or no PR: that one is not a documentation shortfall. Order is what
 enforces it — a `security` run whose summary also broke a format rule would
 otherwise leave through the first summary gate and never be asked for its
-evidence, so the security gate is now evaluated ahead of all five.
+evidence, so the security gate is now evaluated ahead of all six.
 
 **Satisfy the rule rather than fail it.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
