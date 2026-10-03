@@ -98,6 +98,37 @@ Deno.test("detectTimeDeferral - invalid: garbage", () => {
   assertEquals(result?.kind, "invalid");
 });
 
+Deno.test("detectTimeDeferral - backtick-quoted identifiers in the reason are kept", () => {
+  const output = marker(
+    'until="2026-10-07T00:00:00Z" reason="`metrics_export` has not run"',
+  );
+  const result = detectTimeDeferral(output, NOW);
+  assertEquals(result?.kind, "valid");
+  const request = (result as { kind: "valid"; request: TimeDeferralRequest })
+    .request;
+  assertEquals(request.reason, "`metrics_export` has not run");
+});
+
+Deno.test("detectTimeDeferral - a marker inside a code fence or span is not a request", () => {
+  const quoted = marker(
+    'until="2026-10-07T00:00:00Z" reason="quoted template"',
+  );
+  const fenced = ["```", quoted, "```"].join("\n");
+  assertEquals(detectTimeDeferral(fenced, NOW), undefined);
+  assertEquals(
+    detectTimeDeferral(`See \`${quoted}\` in the prompt.`, NOW),
+    undefined,
+  );
+  const real = marker(
+    'until="2026-10-07T00:00:00Z" reason="`metrics_export` has not run"',
+  );
+  const result = detectTimeDeferral(`${fenced}\n${real}`, NOW);
+  assertEquals(result?.kind, "valid");
+  const request = (result as { kind: "valid"; request: TimeDeferralRequest })
+    .request;
+  assertEquals(request.reason, "`metrics_export` has not run");
+});
+
 Deno.test("detectTimeDeferral - invalid: missing reason", () => {
   const output = marker(`until="2026-10-07T00:00:00Z"`);
   const result = detectTimeDeferral(output, NOW);
