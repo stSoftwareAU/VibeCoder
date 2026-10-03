@@ -25,6 +25,7 @@ import {
 } from "../lib/closure_verdict.ts";
 import { validateAcceptanceClosure } from "../lib/acceptance_criteria_gate.ts";
 import { validateIndependentReview } from "../lib/independent_review_gate.ts";
+import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "../lib/closure_verdict_recovery.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 2242;
@@ -125,6 +126,8 @@ interface Outcome {
   commitMessages: string[];
   /** Whether HEAD was reconciled to the branch before the commit. */
   reconciledBefore: boolean;
+  /** Deny lists the model was launched with, in order. */
+  disallowedTools: (string[] | undefined)[];
 }
 
 /** Drive the live completion phase over a summary the agent wrote as prose. */
@@ -140,6 +143,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const comments: string[] = [];
   const prompts: string[] = [];
+  const disallowedTools: (string[] | undefined)[] = [];
   const committedOn: string[] = [];
   const commitMessages: string[] = [];
   let prCreateCalls = 0;
@@ -227,8 +231,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
     },
     claude: {
-      runClaudeWithRetry: (options: { prompt: string }) => {
+      runClaudeWithRetry: (
+        options: { prompt: string; disallowedTools?: string[] },
+      ) => {
         prompts.push(options.prompt);
+        disallowedTools.push(options.disallowedTools);
         const isVerdictQuestion = options.prompt.includes(
           CLOSURE_VERDICT_OPEN,
         );
@@ -290,8 +297,32 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     committedOn,
     commitMessages,
     reconciledBefore: reconcilesBeforeFirstCommit > 0,
+    disallowedTools,
   };
 }
+
+Deno.test(
+  "closure render - the verdict deny list names every write, sub-agent and web tool (Issue #3111)",
+  () => {
+    for (
+      const tool of [
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "Task",
+        "Agent",
+        "WebFetch",
+        "WebSearch",
+      ]
+    ) {
+      assert(
+        CLOSURE_VERDICT_DISALLOWED_TOOLS.includes(tool),
+        `the closure verdict must deny ${tool}`,
+      );
+    }
+  },
+);
 
 Deno.test(
   "closure render - a verdict for every criterion is rendered and the PR is raised",
@@ -304,6 +335,9 @@ Deno.test(
     assertEquals(outcome.prompts.length, 2);
     assertStringIncludes(outcome.prompts[1]!, CLOSURE_VERDICT_OPEN);
     assertStringIncludes(outcome.prompts[1]!, "writes no files");
+    assertEquals(outcome.disallowedTools[1], [
+      ...CLOSURE_VERDICT_DISALLOWED_TOOLS,
+    ]);
 
     // The worker rendered the block the model would not write.
     assertStringIncludes(outcome.summary, "## Acceptance Criteria");
