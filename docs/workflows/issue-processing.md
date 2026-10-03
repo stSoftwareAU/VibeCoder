@@ -1188,6 +1188,21 @@ applies before the outcome, keeping each on the new path or stating why it
 does not apply, and proving each kept guard with a test that goes red when
 the new branch is moved ahead of it.
 
+**A new test must go red without its change (Issue #3093).** Fleet PRs
+added the regression test a fix or a review asked for, and the test passed
+whether or not the change was there: VibeCoder#3091, #3085 and #3079, and
+GRQ-AutoTrader#2218. The guidelines now require a test added to guard a
+change to go red when only that change is removed; a test that stays green
+without its change is a blocking self-review finding. A test that only pins
+current behaviour — the fault was unreproduced or already fixed, and no
+production change was made — is expected green on base, and the Test Plan
+says so. The issue prompt's Test Plan step counts a new test only once it
+has been seen red with only its change removed, and names that exception.
+Documentation-drift tests gained a fourth condition: the pinned phrase
+occurs only in the rule being added. When a review asks for the red run,
+the pr_feedback rule requires the failing line to be quoted in
+`.pr_response_message`.
+
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
 learn what the real tool does, so fleet PRs guessed and built the fake from
