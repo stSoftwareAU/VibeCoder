@@ -776,20 +776,115 @@ Deno.test("repairConflictQueueStall - a declined or failed abandon is reported, 
     step: "pr-close",
     message: "gh pr close failed",
   });
-  const github2 = fakeGitHub(budgetSpentComments.slice());
-  const stall2 = detect(observation(10, budgetSpentComments));
-  assert(stall2 !== null);
-  assertEquals(
-    await repairConflictQueueStall(stall2, {
-      ghCommandFn: github2.gh,
+  assertEquals(await repair(fakeGitHub([tripComment(8.5)]), failed), "failed");
+});
+
+Deno.test("repairConflictQueueStall - a second trip on an issue already redone twice still abandons and re-queues, no needs-human (Issue #3033)", async () => {
+  const ISSUE = 7;
+  const github = fakeGitHub([tripComment(8.5)]);
+  const issue = {
+    labels: ["work-on"],
+    comments: [
+      comment(conflictRestartMarker(REPO, 61), 48),
+      comment(conflictRestartMarker(REPO, 62), 24),
+    ],
+  };
+  const issuePath = `/issues/${ISSUE}/`;
+  const gh = (args: string[]): Promise<string> => {
+    const path = args.find((arg) => arg.includes(issuePath)) ?? "";
+    if (args[0] === "issue" && args[1] === "view") {
+      github.calls.push(args);
+      return Promise.resolve(JSON.stringify({
+        state: "OPEN",
+        labels: issue.labels.map((name) => ({ name })),
+      }));
+    }
+    if (
+      args[0] === "issue" && args[1] === "comment" &&
+      args[2] === String(ISSUE)
+    ) {
+      github.calls.push(args);
+      issue.comments.push(
+        comment(args[args.indexOf("--body") + 1] ?? "", 0),
+      );
+      return Promise.resolve("");
+    }
+    if (path === "") return github.gh(args);
+    github.calls.push(args);
+    if (args[1] !== "-X") {
+      return Promise.resolve(
+        path.includes("page=1") ? JSON.stringify(issue.comments) : "[]",
+      );
+    }
+    const field = args[5] ?? "";
+    if (path.endsWith("/labels")) {
+      issue.labels.push(field.replace(/^labels\[\]=/, ""));
+    } else if (path.endsWith("/comments")) {
+      issue.comments.push(comment(field.replace(/^body=/, ""), 0));
+    }
+    return Promise.resolve("");
+  };
+  const context: ConflictIssueContext = {
+    repo: REPO,
+    prNumber: PR,
+    prSide: {
+      resolved: true,
+      signal: "branch",
+      issue: {
+        number: ISSUE,
+        title: "Fix it",
+        state: "OPEN",
+        body: "",
+        bodyTruncated: false,
+      },
+    },
+    baseSide: [],
+    truncation: {
+      commitCapPaths: [],
+      issueCapHit: false,
+      textTruncatedIssues: [],
+      ghCallCapHit: false,
+    },
+    ghCallsUsed: 0,
+    warnings: [],
+  };
+  const stall = detect(observation(9, [tripComment(8.5)]));
+  assert(stall !== null);
+  const run = () =>
+    repairConflictQueueStall(stall, {
+      ghCommandFn: gh,
       logger,
       isTrustedAuthor,
       nowMs: NOW,
       abandon: failed.abandon,
       acquireLease: failed.acquireLease,
       trustedAuthors: [FLEET],
-    }),
-    "failed",
+      acquireLease: () => ({ release: noop }),
+      abandonDeps: {
+        resolveContext: () => Promise.resolve(context),
+        findOtherPrs: () => Promise.resolve([]),
+      },
+    });
+
+  assertEquals(await run(), "abandoned");
+
+  // A third restart is still a restart, not a hand-off: the pickup label the
+  // issue already carried is kept, and no `needs-human` is ever applied
+  // (Issue #3033).
+  assertEquals(issue.labels, ["work-on"]);
+  assertEquals(issue.comments.length, 3);
+  assertStringIncludes(String(issue.comments[2]?.body), `${REPO}#${PR}`);
+  assertStringIncludes(String(issue.comments[2]?.body), "restart **3**");
+  assert(
+    !issue.comments.some((entry) =>
+      String(entry.body).includes("needs a human") ||
+      String(entry.body).includes("handed to a human")
+    ),
+    "no hand-off comment is posted",
+  );
+  assert(
+    github.calls.some((call) => call[0] === "pr" && call[1] === "close"),
+    "the exhausted PR is closed and the issue re-queued instead",
   );
 });
 
