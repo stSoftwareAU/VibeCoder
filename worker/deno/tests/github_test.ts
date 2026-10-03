@@ -4,11 +4,12 @@
  * Following TDD: These tests are written first to define expected behaviour.
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { buildIssueCommentsPageArgs } from "../lib/issue_comment_pages.ts";
 import {
   createGitHubClient,
   filterReservedLabels,
+  GH_ISSUE_VIEW_JSON_FIELDS,
   hasVisibleContent,
   parseCommentIssueNumber,
   parseCreatedCommentJson,
@@ -339,6 +340,27 @@ Deno.test("github - parseGhIssueJson handles empty string body", () => {
 
   const issue = parseGhIssueJson(json);
   assertEquals(issue.body, "");
+});
+
+Deno.test("github - parseGhIssueJson carries state through, including MERGED (Issue #3088)", () => {
+  const base = {
+    number: 123,
+    title: "Test Issue",
+    body: "Issue description",
+    labels: [],
+    author: { login: "testuser" },
+    assignees: [],
+    createdAt: "2024-01-15T10:00:00Z",
+    updatedAt: "2024-01-15T12:00:00Z",
+  };
+  assertEquals(parseGhIssueJson(base).state, undefined);
+  assertEquals(parseGhIssueJson({ ...base, state: "OPEN" }).state, "OPEN");
+  assertEquals(parseGhIssueJson({ ...base, state: "CLOSED" }).state, "CLOSED");
+  assertEquals(parseGhIssueJson({ ...base, state: "MERGED" }).state, "MERGED");
+});
+
+Deno.test("github - getIssue asks gh for state (Issue #3088)", () => {
+  assertStringIncludes(GH_ISSUE_VIEW_JSON_FIELDS, "state");
 });
 
 // --- parseGhCommentsJson edge cases ---

@@ -136,6 +136,24 @@ export function buildUncommittedWorkWipCommitMessage(options: {
     `a run that raised no PR (Issue #218)`;
 }
 
+/**
+ * Commit message for a dirty tree saved before a declared hand-off
+ * (Issue #3088).
+ *
+ * The `wip:` prefix is the same contract as the other builders here: the
+ * completion phase's half-done guard (Issue #148) refuses a PR whose only
+ * commits ahead of base are worker placeholders. A subject that does not
+ * match lets the next claim raise a `Closes` PR over work the earlier run
+ * declared blocked.
+ */
+export function buildDeclaredHandoffWipCommitMessage(options: {
+  /** Uncommitted files the hand-off is about to commit. */
+  dirtyFiles: number;
+}): string {
+  return `wip: preserving ${options.dirtyFiles} uncommitted file(s) before ` +
+    `a declared hand-off (Issue #3088)`;
+}
+
 /** What a single checkpoint attempt did. */
 export type WipCheckpointOutcome =
   | { kind: "pushed"; committed: boolean; commitsPushed: number }

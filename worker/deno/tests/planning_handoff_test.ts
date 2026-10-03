@@ -10,6 +10,7 @@ import {
   buildPlanningHandoffMarker,
   detectPlanningHandoff,
   handOffToPlanning,
+  hasPlanningRequestMarker,
   hasPriorPlanningHandoff,
   MAX_PLANNING_REASON_LENGTH,
   PLANNING_HANDOFF_REQUEST_MARKER_NAME,
@@ -136,6 +137,64 @@ Deno.test("detectPlanningHandoff - an overlong reason is truncated", () => {
   );
   assert(result !== undefined);
   assertEquals(result.reason.length, MAX_PLANNING_REASON_LENGTH);
+});
+
+Deno.test("detectPlanningHandoff - a marker inside a code fence or span is not a request", () => {
+  const fenced = [
+    "```",
+    '<!-- vibe-needs-planning reason="quoted template" -->',
+    "```",
+  ].join("\n");
+  assertEquals(detectPlanningHandoff(fenced), undefined);
+  assertEquals(
+    detectPlanningHandoff(
+      'See `<!-- vibe-needs-planning reason="inline" -->` in the prompt.',
+    ),
+    undefined,
+  );
+  assertEquals(
+    detectPlanningHandoff(
+      fenced +
+        '\n<!-- vibe-needs-planning reason="the real request" -->',
+    ),
+    { reason: "the real request" },
+  );
+});
+
+Deno.test("detectPlanningHandoff - backtick-quoted identifiers in the reason are kept", () => {
+  const output =
+    '<!-- vibe-needs-planning reason="split `scheduler.ts`, `dashboard.ts` and `telemetry.ts` into one PR each" -->';
+  assertEquals(detectPlanningHandoff(output), {
+    reason:
+      "split `scheduler.ts`, `dashboard.ts` and `telemetry.ts` into one PR each",
+  });
+  assertEquals(
+    detectPlanningHandoff(
+      '<!-- vibe-needs-planning reason="`scheduler.ts`" -->',
+    ),
+    { reason: "`scheduler.ts`" },
+  );
+});
+
+Deno.test("hasPlanningRequestMarker - a fenced or inline marker is ignored, a reason with backticks still counts", () => {
+  const fenced = [
+    "```",
+    '<!-- vibe-needs-planning reason="quoted template" -->',
+    "```",
+  ].join("\n");
+  assertEquals(hasPlanningRequestMarker(fenced), false);
+  assertEquals(
+    hasPlanningRequestMarker(
+      'See `<!-- vibe-needs-planning reason="inline" -->` in the prompt.',
+    ),
+    false,
+  );
+  assertEquals(
+    hasPlanningRequestMarker(
+      '<!-- vibe-needs-planning reason="split `scheduler.ts`" -->',
+    ),
+    true,
+  );
 });
 
 Deno.test("detectPlanningHandoff - a similarly named marker does not match", () => {

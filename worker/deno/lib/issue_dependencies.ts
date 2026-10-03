@@ -132,6 +132,56 @@ export function stripCodeSpans(body: string): string {
 }
 
 /**
+ * Blank fenced blocks and inline code spans with spaces of the same length.
+ *
+ * Unlike {@link stripCodeSpans}, every character stays in place, so a match
+ * index in the masked text is the same index in the original. Callers that
+ * need attribute text from a real marker use that index and then read the
+ * original: stripping would also delete backticks inside the marker's own
+ * attributes (Issue #3088).
+ */
+export function maskCodeSpans(body: string): string {
+  if (!body) return body;
+  const out: string[] = [];
+  let fenceChar: string | null = null;
+  for (const line of body.split("\n")) {
+    const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})/);
+    if (fenceChar === null && !fenceMatch) {
+      out.push(line.replace(/`[^`\n]*`/g, (span) => " ".repeat(span.length)));
+      continue;
+    }
+    if (fenceChar === null && fenceMatch) {
+      fenceChar = fenceMatch[1]![0]!;
+    } else if (fenceMatch && fenceMatch[1]![0] === fenceChar) {
+      fenceChar = null;
+    }
+    out.push(" ".repeat(line.length));
+  }
+  return out.join("\n");
+}
+
+/**
+ * Find `re` in `output`, ignoring a match that sits inside a fence or an
+ * inline code span, and return the match against the original text.
+ *
+ * The probe runs on {@link maskCodeSpans} so a quoted template does not
+ * count. The attributes are then read from the original at the same index,
+ * which keeps backtick-quoted words inside a real marker's `reason`.
+ */
+export function execMarkerOutsideCode(
+  output: string,
+  re: RegExp,
+): RegExpExecArray | undefined {
+  const probe = re.exec(maskCodeSpans(output));
+  re.lastIndex = 0;
+  if (!probe) return undefined;
+  const at = re.exec(output.slice(probe.index));
+  re.lastIndex = 0;
+  if (!at || at.index !== 0) return undefined;
+  return at;
+}
+
+/**
  * Result of checking whether a parent issue is blocked by open children.
  */
 export interface ParentBlockedResult {

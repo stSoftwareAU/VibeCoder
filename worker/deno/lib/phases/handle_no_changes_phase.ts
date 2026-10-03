@@ -30,36 +30,16 @@ import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
 import { hasAnalysisOnlyMarker } from "../analysis_only.ts";
 import { detectDescribedCodeChange } from "../described_code_change.ts";
 import {
-  detectBlockedOutcome,
-  formatDependencyRef,
-} from "../blocked_outcome.ts";
-import {
-  deferBlockedIssue,
-  hasPriorDeferralOnThread,
-} from "../blocked_deferral.ts";
-import {
-  buildDeferralExhaustedComment,
-  countPriorTimeDeferrals,
-  deferIssueUntil,
-  detectTimeDeferral,
-  MAX_TIME_DEFERRALS,
-} from "../time_deferral.ts";
-import {
-  detectPlanningHandoff,
-  handOffToPlanning,
-  hasPriorPlanningHandoffOnThread,
-} from "../planning_handoff.ts";
-import {
   detectAlreadyResolved,
   formatAlreadyResolvedEvidence,
 } from "../already_resolved_outcome.ts";
-import {
-  gateAlreadyResolvedClose,
-  gatePlanningHandoff,
-} from "../image_conclusion_gate.ts";
-import { PLANNING_HANDOFF_ANCHOR } from "../planning_handoff_trust.ts";
+import { gateAlreadyResolvedClose } from "../image_conclusion_gate.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
+import {
+  handOffDeclaredOutcome,
+  publishableSnippet,
+} from "./declared_handoff.ts";
 import {
   IMPLEMENTATION_RUN_STATS_PHASE,
   measureIssuePhaseRun,
@@ -76,22 +56,6 @@ import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
  * metric.
  */
 const WORK_ON_STATS_PHASE = IMPLEMENTATION_RUN_STATS_PHASE;
-
-/**
- * Take the publishable tail of Claude's stdout for a public issue comment.
- *
- * Issue #3636: both no-changes branches embed this tail verbatim in a
- * world-readable comment. The child process inherits `GH_TOKEN` and its
- * Anthropic credentials, and a prompt-injected run can put them in its final
- * summary — which is exactly the text this tail captures. Route it through
- * the `redactSecrets()` chokepoint first, mirroring `label_failure.ts`.
- *
- * Redaction runs *before* the slice: slicing first can cut a credential
- * across the 3000-character boundary, leaving a fragment no rule matches.
- */
-function publishableSnippet(claudeOutput: string): string {
-  return redactSecrets(claudeOutput).slice(-3000);
-}
 
 /**
  * Return true when `ctx` looks like a wrapper filed by a template that
@@ -172,228 +136,15 @@ export async function workOnIssueHandleNoChanges(
   const logger = deps.logger;
   const claudeOutput = state.claudeOutput;
 
-  // Issue #222 — a run that reported itself blocked on another issue is a
-  // DEFERRAL, and it is checked first: its output routinely contains phrases
-  // the completion indicators below match ("no changes needed until #560
-  // lands"), and closing a live task is the one outcome that cannot be undone
-  // by the next scan. The issue stays open with its discovery label, records
-  // `Depends on owner/repo#N`, and the dependency gate skips it until the
-  // dependency closes.
-  const blocked = detectBlockedOutcome(claudeOutput, { repo, issueNumber });
-  // Loop guard: a deferral holds only while the dependency gate skips the
-  // issue. Back here on the *same* dependency means it did not hold, and
-  // deferring again would spin a fresh agent run on every scan — so the repeat
-  // falls through to the analysis-only hand-off and a human sees it. Reads
-  // the full comment thread rather than the budgeted prompt blob, which drops
-  // the marker on a busy issue (Issue #2936).
-  const blockedClient = blocked ? deps.github.createClient(logger) : undefined;
-  const repeatDeferral = blocked !== undefined &&
-    await hasPriorDeferralOnThread({
-      ghClient: blockedClient!,
-      repo,
-      issueNumber,
-      ref: formatDependencyRef(blocked.dependency),
-      fallbackComments: ctx.issueComments,
-      logger,
-    });
-  if (blocked && repeatDeferral) {
-    logger.warn(
-      "Blocked on a dependency already deferred once — handing off to a " +
-        "human instead of deferring again",
-      {
-        repo,
-        issueNumber,
-        dependency: formatDependencyRef(blocked.dependency),
-      },
-    );
-  }
-  if (blocked && !repeatDeferral) {
-    const result = await deferBlockedIssue({
-      ghClient: blockedClient!,
-      repo,
-      issueNumber,
-      githubUser,
-      blocked,
-      outputSnippet: publishableSnippet(claudeOutput),
-      logger,
-      deps: { ensureLabelExists: deps.github.ensureLabelExists },
-    });
-    logger.info("Blocked on a dependency — deferred instead of closing", {
-      repo,
-      issueNumber,
-      dependency: result.ref,
-      recorded: result.recorded,
-    });
-    return {
-      status: "early_exit",
-      reason: `deferred: depends on ${result.ref}`,
-      expectedSkip: true,
-      outcome: result.outcome,
-    };
-  }
-
-  // Issue #2873 — a run that reports the data it needs to analyse does not
-  // exist *yet* (rather than the issue being blocked on another issue, or
-  // genuinely needing a human decision) asks to be parked until a future
-  // time via a `vibe-defer-until` marker. This is checked here, after the
-  // blocked-dependency deferral above (which takes priority when both
-  // appear) and before the #2834 analysis-only hand-off below, which a
-  // missing/invalid/exhausted marker falls through to.
-  const timeDeferral = blocked ? undefined : detectTimeDeferral(
-    claudeOutput,
-    Date.now(),
-  );
-  if (timeDeferral?.kind === "invalid") {
-    logger.warn(
-      "Time-deferral marker present but invalid — falling through to " +
-        "normal handling",
-      { repo, issueNumber, why: timeDeferral.why },
-    );
-  } else if (timeDeferral?.kind === "valid") {
-    const ghClient = deps.github.createClient(logger);
-    const history = await countPriorTimeDeferrals({
-      ghClient,
-      repo,
-      issueNumber,
-      // Fleet-wide, not this host alone (Issue #2933 review): a sibling
-      // host's park comments must count too, or the bound becomes
-      // MAX_TIME_DEFERRALS per login rather than per issue.
-      fleetAuthors: resolveFleetMaintenanceAuthorSet({
-        githubUser,
-        fleetPrAuthors: ctx.config.fleetPrAuthors ?? [],
-        serviceAccounts: ctx.config.serviceAccounts ?? [],
-      }),
-      fallbackComments: ctx.issueComments,
-      logger,
-    });
-    if (history.length < MAX_TIME_DEFERRALS) {
-      const result = await deferIssueUntil({
-        ghClient,
-        repo,
-        issueNumber,
-        githubUser,
-        request: timeDeferral.request,
-        priorCount: history.length,
-        logger,
-      });
-      logger.info(
-        "Data not there yet — deferred until the requested time instead of " +
-          "escalating",
-        {
-          repo,
-          issueNumber,
-          until: timeDeferral.request.until,
-          recorded: result.recorded,
-        },
-      );
-      return {
-        status: "early_exit",
-        reason: `deferred: until ${timeDeferral.request.until}`,
-        expectedSkip: true,
-        outcome: result.outcome,
-      };
-    }
-
-    logger.warn(
-      "Time-deferral limit reached — handing off to a human instead of " +
-        "deferring again",
-      { repo, issueNumber, priorCount: history.length },
-    );
-    try {
-      await ghClient.postComment(
-        repo,
-        issueNumber,
-        buildDeferralExhaustedComment(history, timeDeferral.request),
-      );
-    } catch (err) {
-      logger.error("Failed to post the deferral-exhausted comment", {
-        repo,
-        issueNumber,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-    await handOffAnalysisOnly({
-      ghClient,
-      repo,
-      issueNumber,
-      needsHumanLabel: config.needsHumanLabel,
-      githubUser,
-      trigger: "no_changes",
-      logger,
-      deps: { ensureLabelExists: deps.github.ensureLabelExists },
-    });
-    return { status: "early_exit", reason: "analysis_only_handed_off" };
-  }
-
-  // Issue #2688 — a run that judged the issue too large for one PR asks for
-  // decomposition. The worker applies `planning` itself (audited, and trusted
-  // only while the human `work-on` add anchors it). A repeat request, or a
-  // hand-off that fails, falls through to the human hand-off below.
-  const planningRequest = blocked ? undefined : detectPlanningHandoff(
-    claudeOutput,
-  );
-  // Label security trusts the worker's `planning` only while a human
-  // `work-on` add anchors it, so on any other pickup tier the label would be
-  // flagged and ignored — hand those to a human instead.
-  const planningImageGate = gatePlanningHandoff(ctx.untrustedImages);
-  // Issue #2942: read the loop guard off the full comment thread, not the
-  // budgeted prompt blob, which drops the marker on a busy issue.
-  const planningClient = planningRequest
-    ? deps.github.createClient(logger)
-    : undefined;
-  const repeatPlanning = planningRequest !== undefined &&
-    await hasPriorPlanningHandoffOnThread({
-      ghClient: planningClient!,
-      repo,
-      issueNumber,
-      fallbackComments: ctx.issueComments,
-      logger,
-    });
-  if (planningRequest && repeatPlanning) {
-    logger.warn(
-      "Planning requested again after an earlier hand-off — handing off to " +
-        "a human instead",
-      { repo, issueNumber },
-    );
-  } else if (
-    planningRequest && !ctx.issueLabels.includes(PLANNING_HANDOFF_ANCHOR)
-  ) {
-    logger.warn(
-      `Planning requested on an issue without \`${PLANNING_HANDOFF_ANCHOR}\` ` +
-        "— the hand-off is trusted only on that anchor, so handing off to a " +
-        "human instead",
-      { repo, issueNumber, labels: ctx.issueLabels.join(",") },
-    );
-  } else if (planningRequest && planningImageGate.withheld) {
-    logger.warn(planningImageGate.auditMessage ?? "", {
-      repo,
-      issueNumber,
-      untrustedImages: planningImageGate.imageCount,
-    });
-  } else if (planningRequest) {
-    const handoff = await handOffToPlanning({
-      ghClient: planningClient!,
-      repo,
-      issueNumber,
-      githubUser,
-      reason: planningRequest.reason,
-      outputSnippet: publishableSnippet(claudeOutput),
-      logger,
-      deps: { ensureLabelExists: deps.github.ensureLabelExists },
-    });
-    if (handoff.applied) {
-      logger.info("Too large for one PR — handed off to planning", {
-        repo,
-        issueNumber,
-      });
-      return {
-        status: "early_exit",
-        reason: "handed off to planning",
-        expectedSkip: true,
-        outcome: handoff.outcome,
-      };
-    }
-  }
+  // Issue #3088: the blocked-deferral, time-deferral and planning hand-off
+  // detection/apply logic is shared with the declared-handoff phase (which
+  // catches the same signals on a run that also committed code), so it lives
+  // in `handOffDeclaredOutcome`. A result there is returned unchanged; `blocked`
+  // is still needed below for the "never treated as already resolved"
+  // exclusion.
+  const declaredOutcome = await handOffDeclaredOutcome(ctx, state, deps);
+  if (declaredOutcome.result) return declaredOutcome.result;
+  const { blocked } = declaredOutcome;
 
   // Check whether the run verified the issue was already resolved (Issue #519,
   // tightened by Issue #241). Detection is the explicit

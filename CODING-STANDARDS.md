@@ -1044,12 +1044,15 @@ Standards-review violation the diff itself introduced is fixed before the PR
 is raised, never listed as standing, and a PR whose core deliverable is
 `missing` is not raised over a `Closes #<n>` — finish the work, except when
 the core deliverable is genuinely blocked on another open issue after work
-is committed: then record that criterion as `missing` and name the blocking
-dependency beside the closing keyword. In an issue run, a hand-off (the
-planning marker or the escape hatch) is honoured only while the branch has
-no commits and no uncommitted changes against the base; once work is
-committed the issue run is routed to the PR regardless of a planning or
-escape-hatch marker (Issue #3058). A CI-fix run is the exception: a check
+is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
+(or `Blocked by`) line naming an issue that is still open then defers the
+issue and raises no PR. A closed or unreadable dependency does not defer;
+the committed run hands off to a human and raises no PR.
+In an issue run, a hand-off (the planning marker, a time deferral, or a
+`## Blocked:` dependency) is honoured after a commit as well as before one.
+A free-text escape hatch is honoured only while the branch has no commits
+and no uncommitted changes against the base (Issue #3058, #3088). A CI-fix
+run is the exception: a check
 already red on the base branch still defers on a `Depends on owner/repo#N`
 line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
 in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also

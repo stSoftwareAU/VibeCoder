@@ -2747,6 +2747,28 @@ branch: NEAT-AI-Backpropagation#94's correct, well-evidenced
 "analysis-only / recommendation-only", escalated to `needs-human`, and closed as
 `not planned` by the implementing agent itself.
 
+**Committed runs too (Issue #3088).** Detection no longer requires "no code
+changes" either — a `declared_handoff` phase runs after execute and before
+`bump_deps` / the quality gate / completion. On that path a `## Blocked:`
+heading defers only when its `Depends on` or `Blocked by` line names a
+dependency the worker reads as open. A closed dependency, a missing `state`,
+or a lookup that fails does not defer; the committed run hands off to a
+human (`needs-human`) and raises no PR. A dependency filed during this run
+does not defer either: the worker reads that from the issue, when its author
+is this host's login or another fleet author and its `createdAt` is at or
+after the whole run started. A later execute attempt does not move that
+start. That committed run hands off to a human and raises
+no PR. Wording such as "out of scope" does not turn an older open dependency
+into that case. A bullet, or a heading with no
+`Depends on` / `Blocked by` line, still continues and raises its PR. A time
+deferral or a planning marker is still honoured after a commit, so the worker
+defers or hands to planning rather than sailing through to a `Closes #N` PR. Before any of those
+hand-offs the phase pushes the branch through `commitAndPushPending`, which
+refuses the default branch and runs `assertSafeToCommit`. The hand-off is
+applied only once nothing is left unpushed. A failed push returns a failure
+and posts no comment; the phase raises no PR. See
+[`lib/phases/declared_handoff.ts`](worker/deno/lib/phases/declared_handoff.ts).
+
 A blocked run is now **deferred**:
 
 - the issue stays **open** and keeps its discovery label — no `needs-human`, so
