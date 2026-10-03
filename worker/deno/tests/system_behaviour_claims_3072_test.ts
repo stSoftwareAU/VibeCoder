@@ -8,7 +8,9 @@
  * and the issue prompt must both require verifying a claim about another
  * component's behaviour against the code that implements it before writing
  * it, with security-control claims checked against SECURITY.md and
- * docs/THREAT-MODEL.md.
+ * docs/THREAT-MODEL.md. Issue #3090 — review-fix runs rewrote such a claim
+ * with a new unverified one (#3075, #3068), so the pr_feedback prompt's
+ * Making Changes section must carry the same rule for a fix run.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -59,6 +61,35 @@ Deno.test("issue prompt docs-change step requires verifying claims about other c
     assert(
       text.includes(phrase),
       `Instructions is missing "${phrase}": ${text}`,
+    );
+  }
+});
+
+const PR_FEEDBACK_PROMPT_KEY_PHRASES = [
+  "Verify a claim about another component before you write it",
+  "open the code that implements that behaviour before you write the replacement",
+  "cite the file and the function or line in `.pr_response_message`",
+  "in the PR summary when it repeats the claim",
+  "any new statement your fix adds",
+  "exclusive or negative claim",
+  "must agree with `SECURITY.md` and `docs/THREAT-MODEL.md`",
+  "raise the discrepancy",
+  "drop it: state the rule and the risk it addresses",
+  "Prompt Engineering Guidance",
+];
+
+Deno.test("pr_feedback prompt Making Changes requires verifying claims about other components before rewriting them (Issue #3090)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Making Changes",
+    ),
+  );
+
+  for (const phrase of PR_FEEDBACK_PROMPT_KEY_PHRASES) {
+    assert(
+      text.includes(phrase),
+      `Making Changes is missing "${phrase}": ${text}`,
     );
   }
 });
