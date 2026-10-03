@@ -9,7 +9,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   buildFallbackFlagLinkComment,
   buildParkedPrComment,
@@ -19,7 +24,6 @@ import {
   CONFLICT_RESOLVED_MARKER,
   conflictPrKey,
   countDisruptedAttempts,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
   findConflictingPr,
   type FindConflictingPrOptions,
@@ -28,15 +32,24 @@ import {
   isConflictAttemptDue,
   MERGE_CONFLICT_LABEL,
   parseConflictAttempts,
+  spentConflictAttempts,
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
-  type AbandonRestartOutcome,
   type AbandonRestartRequest,
   type AbandonStep,
   CONFLICT_RESTART_MARKER,
   conflictRestartMarker,
 } from "../lib/conflict_abandon_restart.ts";
-import { conflictParkedMarker } from "../lib/merge_conflict_markers.ts";
+import {
+  CONFLICT_OWNER_CHECK_HOURS,
+  CONFLICT_RESOLUTION_BUDGET,
+  conflictAttemptMarker,
+  conflictFailedMarker,
+  conflictParkedMarker,
+  type ConflictResolutionAttempt,
+  conflictResolvedMarker,
+  readResolutionAttempts,
+} from "../lib/merge_conflict_markers.ts";
 import type { MergeFallbackFiling } from "../lib/merge_fallback_issue.ts";
 import { buildCiFixAttemptMarker } from "../lib/ci_fix_attempt_markers.ts";
 import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
@@ -118,6 +131,8 @@ interface FakeRepoState {
     author?: { login: string };
     /** The base branch's tip, as the listing carries it (Issue #2312). */
     baseRefOid?: string;
+    /** The head branch's tip, as the listing carries it (Issue #2996). */
+    headRefOid?: string;
     /** Labels as the listing carries them (Issue #2728). */
     labels?: Array<{ name: string }>;
   }>;
@@ -410,7 +425,7 @@ function makeState(overrides?: Partial<FakeRepoState>): FakeRepoState {
 /**
  * Marker pairs for `count` attempts that each opened and concluded as failed
  * — the shape that spends the budget (Issue #395), sized from the budget
- * itself so the fixtures track {@link DEFAULT_MAX_CONFLICT_ATTEMPTS}
+ * itself so the fixtures track {@link CONFLICT_RESOLUTION_BUDGET}
  * (Issue #1766).
  */
 function concludedFailures(
@@ -529,52 +544,189 @@ Deno.test("parseConflictAttempts - ignores malformed comment entries", () => {
   assertEquals(history.lastAttemptAt, undefined);
 });
 
-Deno.test("isConflictAttemptDue - no history is always due", () => {
+/** One attempt, built directly rather than through the reader (Issue #2996). */
+function attempt(
+  overrides: Partial<ConflictResolutionAttempt> = {},
+): ConflictResolutionAttempt {
+  return {
+    pass: "ladder",
+    atMs: Date.parse("2026-08-20T10:00:00Z"),
+    headSha: undefined,
+    outcome: "failed",
+    ...overrides,
+  };
+}
+
+Deno.test("isConflictAttemptDue - no attempts at all is always due", () => {
+  assertEquals(isConflictAttemptDue([], undefined, Date.now()), true);
+});
+
+Deno.test("isConflictAttemptDue - a failure at T is not due at T+1h59m, due at T+2h (Issue #2996)", () => {
+  const atMs = Date.parse("2026-08-20T10:00:00Z");
+  const head = "a".repeat(40);
+  const attempts = [attempt({ atMs, headSha: head })];
+
   assertEquals(
-    isConflictAttemptDue({
-      count: 0,
-      disruptedCount: 0,
-      pendingAttempt: false,
-    }),
+    isConflictAttemptDue(attempts, head, atMs + (1 * 3600_000 + 59 * 60_000)),
+    false,
+  );
+  assertEquals(isConflictAttemptDue(attempts, head, atMs + 2 * 3600_000), true);
+});
+
+Deno.test("isConflictAttemptDue - due at once when the current head differs (Issue #2996)", () => {
+  const atMs = Date.parse("2026-08-20T10:00:00Z");
+  const attempts = [attempt({ atMs, headSha: "a".repeat(40) })];
+
+  assertEquals(
+    isConflictAttemptDue(attempts, "b".repeat(40), atMs + 60_000),
     true,
   );
 });
 
-Deno.test("isConflictAttemptDue - a concluded attempt is due again at once (Issue #2305)", () => {
-  // The cooldown is gone: a failure concluded one second ago is due on the
-  // very next pass, which is what this asserts against the old four-hour wait.
-  const justNow = new Date().toISOString();
-  assertEquals(
-    isConflictAttemptDue({
-      count: 1,
-      disruptedCount: 0,
-      pendingAttempt: false,
-      lastAttemptAt: justNow,
-    }),
-    true,
-  );
-});
+Deno.test("isConflictAttemptDue - a legacy failure with no head keeps the spacing (Issue #2996)", () => {
+  // No head recorded, and the current head is known: nothing proves the head
+  // moved, so the conservative direction applies and the spacing still holds.
+  const atMs = Date.parse("2026-08-20T10:00:00Z");
+  const attempts = [attempt({ atMs, headSha: undefined })];
 
-Deno.test("isConflictAttemptDue - an attempt still open is not due (Issue #2305)", () => {
   assertEquals(
-    isConflictAttemptDue({
-      count: 0,
-      disruptedCount: 0,
-      pendingAttempt: true,
-      lastAttemptAt: new Date().toISOString(),
-    }),
+    isConflictAttemptDue(attempts, "a".repeat(40), atMs + 60_000),
     false,
   );
 });
 
-Deno.test("DEFAULT_MAX_CONFLICT_ATTEMPTS - two runs per conflict (Issue #2305)", () => {
-  assertEquals(DEFAULT_MAX_CONFLICT_ATTEMPTS, 2);
+Deno.test("isConflictAttemptDue - an unmeasurable failure is due (the budget still bounds it) (Issue #2996)", () => {
+  const attempts = [attempt({ atMs: undefined, headSha: "a".repeat(40) })];
+  assertEquals(
+    isConflictAttemptDue(attempts, "a".repeat(40), Date.now()),
+    true,
+  );
+});
+
+Deno.test("isConflictAttemptDue - an open attempt does not change due-ness (Issue #2996)", () => {
+  const atMs = Date.parse("2026-08-20T10:00:00Z");
+  const attempts = [
+    attempt({ atMs, headSha: "a".repeat(40) }),
+    attempt({ atMs: atMs + 60_000, outcome: "open", headSha: undefined }),
+  ];
+
+  // Still measured against the failure, not the later open attempt.
+  assertEquals(
+    isConflictAttemptDue(attempts, "a".repeat(40), atMs + 60_000),
+    false,
+  );
+});
+
+Deno.test("isConflictAttemptDue - the owner-check spacing defaults to two hours", () => {
+  assertEquals(CONFLICT_OWNER_CHECK_HOURS, 2);
+});
+
+Deno.test("CONFLICT_RESOLUTION_BUDGET - one shared budget of three attempts (Issue #2996)", () => {
+  assertEquals(CONFLICT_RESOLUTION_BUDGET, 3);
+});
+
+Deno.test("spentConflictAttempts/hasExhaustedConflictAttempts - every pass spends the same budget (Issue #2996)", () => {
+  // One failed ladder, one failed sync and one failed takeover attempt spend
+  // the whole shared budget between them — any two alone do not.
+  const all3 = [
+    attempt({ pass: "ladder" }),
+    attempt({ pass: "sync" }),
+    attempt({ pass: "takeover" }),
+  ];
+  assertEquals(spentConflictAttempts(all3), 3);
+  assertEquals(hasExhaustedConflictAttempts(all3), true);
+
+  for (
+    const pair of [
+      [all3[0], all3[1]],
+      [all3[0], all3[2]],
+      [all3[1], all3[2]],
+    ]
+  ) {
+    assertEquals(
+      hasExhaustedConflictAttempts(pair as ConflictResolutionAttempt[]),
+      false,
+    );
+  }
 });
 
 Deno.test("hasExhaustedConflictAttempts - binds at the configured budget", () => {
-  assertEquals(hasExhaustedConflictAttempts(1, 2), false);
-  assertEquals(hasExhaustedConflictAttempts(2, 2), true);
-  assertEquals(hasExhaustedConflictAttempts(3, 2), true);
+  assertEquals(
+    hasExhaustedConflictAttempts([attempt()], 2),
+    false,
+  );
+  assertEquals(
+    hasExhaustedConflictAttempts([attempt(), attempt()], 2),
+    true,
+  );
+  assertEquals(
+    hasExhaustedConflictAttempts([attempt(), attempt(), attempt()], 2),
+    true,
+  );
+});
+
+Deno.test("readResolutionAttempts/hasExhaustedConflictAttempts - an untrusted failure is not counted (Issue #2996)", () => {
+  const comments = [
+    { body: conflictAttemptMarker(1, "ladder", "a".repeat(40)) },
+    { body: conflictFailedMarker(1, "ladder", "a".repeat(40)) },
+    { body: conflictAttemptMarker(2, "sync", "a".repeat(40)) },
+    { body: conflictFailedMarker(2, "sync", "a".repeat(40)) },
+    {
+      body: conflictFailedMarker(3, "takeover", "a".repeat(40)),
+      user: { login: OUTSIDER },
+    },
+  ].map((c) => ({
+    user: { login: FLEET },
+    created_at: "2026-08-20T10:00:00Z",
+    ...c,
+  }));
+
+  const attempts = readResolutionAttempts(
+    comments,
+    (login) => login === FLEET,
+  );
+  assertEquals(spentConflictAttempts(attempts), 2);
+  assertEquals(hasExhaustedConflictAttempts(attempts), false);
+});
+
+Deno.test("readResolutionAttempts - a legacy marker pair with no pass= counts as ladder (Issue #2996)", () => {
+  const comments = [
+    { body: `${CONFLICT_ATTEMPT_MARKER} n="1" -->` },
+    { body: `${CONFLICT_FAILED_MARKER} n="1" -->` },
+  ].map((c) => ({
+    ...c,
+    user: { login: FLEET },
+    created_at: "2026-08-20T10:00:00Z",
+  }));
+
+  const attempts = readResolutionAttempts(
+    comments,
+    (login) => login === FLEET,
+  );
+  assertEquals(attempts.length, 1);
+  assertEquals(attempts[0]?.pass, "ladder");
+  assertEquals(spentConflictAttempts(attempts), 1);
+});
+
+Deno.test("readResolutionAttempts - a resolved marker resets the tally (Issue #2996)", () => {
+  const comments = [
+    { body: conflictAttemptMarker(1, "ladder", "a".repeat(40)) },
+    { body: conflictFailedMarker(1, "ladder", "a".repeat(40)) },
+    { body: conflictAttemptMarker(2, "ladder", "b".repeat(40)) },
+    { body: conflictResolvedMarker("ladder", "b".repeat(40)) },
+    { body: conflictAttemptMarker(3, "ladder", "c".repeat(40)) },
+    { body: conflictFailedMarker(3, "ladder", "c".repeat(40)) },
+  ].map((c) => ({
+    ...c,
+    user: { login: FLEET },
+    created_at: "2026-08-20T10:00:00Z",
+  }));
+
+  const attempts = readResolutionAttempts(
+    comments,
+    (login) => login === FLEET,
+  );
+  assertEquals(spentConflictAttempts(attempts), 1);
 });
 
 Deno.test("hasExhaustedDisruptedAttempts - binds disrupted retries separately", () => {
@@ -712,7 +864,7 @@ Deno.test("findConflictingPr - refuses a PR that has spent its attempt budget", 
     // a human's — the escalation the last attempt posted is in the thread.
     labels: { 48: ["needs-human"] },
     comments: {
-      48: concludedFailures(DEFAULT_MAX_CONFLICT_ATTEMPTS, old),
+      48: concludedFailures(CONFLICT_RESOLUTION_BUDGET, old),
     },
   });
   const fake = makeFakeGh(state);
@@ -731,7 +883,7 @@ Deno.test("findConflictingPr - one concluded failure still buys the second attem
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
     comments: {
-      48: concludedFailures(DEFAULT_MAX_CONFLICT_ATTEMPTS - 1, old),
+      48: concludedFailures(CONFLICT_RESOLUTION_BUDGET - 1, old),
     },
   });
   const fake = makeFakeGh(state);
@@ -742,7 +894,7 @@ Deno.test("findConflictingPr - one concluded failure still buys the second attem
   assertEquals(result.value.selected?.prNumber, 48);
   assertEquals(
     result.value.selected?.attemptCount,
-    DEFAULT_MAX_CONFLICT_ATTEMPTS - 1,
+    CONFLICT_RESOLUTION_BUDGET - 1,
   );
   assertEquals(
     fake.labelsAdded.some((l) =>
@@ -763,7 +915,7 @@ Deno.test("findConflictingPr - a spent budget falls back rather than stalling (I
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
     comments: {
-      48: concludedFailures(DEFAULT_MAX_CONFLICT_ATTEMPTS, old),
+      48: concludedFailures(CONFLICT_RESOLUTION_BUDGET, old),
     },
   });
   const fake = makeFakeGh(state);
@@ -809,7 +961,7 @@ Deno.test("findConflictingPr - a disrupted attempt is re-attempted, not counted 
   );
 });
 
-Deno.test("findConflictingPr - repeated disruption is logged and left queued, not escalated", async () => {
+Deno.test("findConflictingPr - repeated disruption escalates loudly instead of stalling", async () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
   const old = new Date(now - 48 * 3600_000).toISOString();
   const state = makeState({
@@ -827,7 +979,16 @@ Deno.test("findConflictingPr - repeated disruption is logged and left queued, no
 
   assert(result.ok);
   assertEquals(result.value.selected, null);
-  assertNoNeedsHumanWrites(fake);
+  assertEquals(
+    fake.labelsAdded.some((l) =>
+      l.prNumber === 48 && l.label === "needs-human"
+    ),
+    true,
+  );
+
+  const escalation = fake.commentsPosted.at(-1)?.body ?? "";
+  assertStringIncludes(escalation, "disrupted");
+  assertStringIncludes(escalation, "**Next step:**");
 });
 
 Deno.test("findConflictingPr - the disruption bound is configurable", async () => {
@@ -846,7 +1007,10 @@ Deno.test("findConflictingPr - the disruption bound is configurable", async () =
 
   assert(result.ok);
   assertEquals(result.value.selected, null);
-  assertNoNeedsHumanWrites(fake);
+  assertEquals(
+    fake.labelsAdded.some((l) => l.label === "needs-human"),
+    true,
+  );
 });
 
 Deno.test("findConflictingPr - a disallowed repo is never listed", async () => {
@@ -877,6 +1041,84 @@ Deno.test("findConflictingPr - a repo whose listing fails does not stall the sca
       repos: ["org/broken", "org/repo"],
       ghCommandFn: failingFirst,
     }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.selected?.prNumber, 48);
+});
+
+// ---------------------------------------------------------------------------
+// The owner-check spacing gate (Issue #2996): a failed attempt leaves the PR
+// to its owner for CONFLICT_OWNER_CHECK_HOURS unless the head moves.
+// ---------------------------------------------------------------------------
+
+/** The head sha these spacing fixtures run against. */
+const HEAD_TIP = "3333333333333333333333333333333333333333";
+/** The head sha after a push moved the branch (Issue #2996). */
+const MOVED_HEAD_TIP = "4444444444444444444444444444444444444444";
+
+function spacingState(failedAtMs: number, headRefOid = HEAD_TIP) {
+  return makeState({
+    prs: [{
+      number: 48,
+      headRefName: "issue-16-fix",
+      baseRefName: "main",
+      baseRefOid: BASE_TIP,
+      headRefOid,
+    }],
+    comments: {
+      48: [
+        {
+          body: conflictAttemptMarker(1, "ladder", HEAD_TIP),
+          created_at: new Date(failedAtMs).toISOString(),
+        },
+        {
+          body: conflictFailedMarker(1, "ladder", HEAD_TIP),
+          created_at: new Date(failedAtMs).toISOString(),
+        },
+      ],
+    },
+  });
+}
+
+Deno.test("findConflictingPr - a recent failure with an unchanged head is skipped as owner-check-pending (Issue #2996)", async () => {
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const failedAtMs = now - 60 * 60_000; // one hour ago
+  const fake = makeFakeGh(spacingState(failedAtMs));
+
+  const { result, log } = await scanWith(fake, { nowMs: () => now });
+
+  assertEquals(result.value.selected, null);
+  assertEquals(reasonFor(log, 48), "owner-check-pending");
+  assertEquals(recordFor(log, 48).context?.attemptsSpent, 1);
+  assertEquals(
+    recordFor(log, 48).context?.dueAt,
+    new Date(failedAtMs + CONFLICT_OWNER_CHECK_HOURS * 3600_000).toISOString(),
+  );
+});
+
+Deno.test("findConflictingPr - the same PR is attempted once the spacing has elapsed (Issue #2996)", async () => {
+  const failedAtMs = Date.parse("2026-08-20T12:00:00Z");
+  const fake = makeFakeGh(spacingState(failedAtMs));
+
+  const result = await findConflictingPr(
+    makeOptions(fake, {
+      nowMs: () => failedAtMs + CONFLICT_OWNER_CHECK_HOURS * 3600_000,
+    }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(result.value.selected?.attemptCount, 1);
+});
+
+Deno.test("findConflictingPr - the same PR is attempted at once when its head has moved (Issue #2996)", async () => {
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const failedAtMs = now - 60_000; // a minute ago — well inside the spacing
+  const fake = makeFakeGh(spacingState(failedAtMs, MOVED_HEAD_TIP));
+
+  const result = await findConflictingPr(
+    makeOptions(fake, { nowMs: () => now }),
   );
 
   assert(result.ok);
@@ -1114,7 +1356,7 @@ Deno.test("findConflictingPr - the budget-spent record carries the attempts and 
   const fake = makeFakeGh(makeState({
     comments: {
       48: concludedFailures(
-        DEFAULT_MAX_CONFLICT_ATTEMPTS,
+        CONFLICT_RESOLUTION_BUDGET,
         "2026-08-19T11:00:00Z",
       ),
     },
@@ -1135,16 +1377,11 @@ Deno.test("findConflictingPr - the budget-spent record carries the attempts and 
   assertEquals(reasonFor(log, 48), "budget-spent");
   assertEquals(
     recordFor(log, 48).context?.attemptsSpent,
-    DEFAULT_MAX_CONFLICT_ATTEMPTS,
+    CONFLICT_RESOLUTION_BUDGET,
   );
   assertEquals(
     recordFor(log, 48).context?.maxAttempts,
-    DEFAULT_MAX_CONFLICT_ATTEMPTS,
-  );
-  assertNoNeedsHumanWrites(fake);
-  assertEquals(
-    fake.commentsPosted.some((c) => c.body.includes("needs-human-escalation")),
-    false,
+    CONFLICT_RESOLUTION_BUDGET,
   );
 });
 
@@ -1186,7 +1423,7 @@ Deno.test("findConflictingPr - every labelled PR gets a record, plus one summary
       // the only thing that holds a PR with an unconcluded marker back is
       // the budget itself.
       11: concludedFailures(
-        DEFAULT_MAX_CONFLICT_ATTEMPTS,
+        CONFLICT_RESOLUTION_BUDGET,
         "2026-08-20T11:00:00Z",
       ),
       12: [],
@@ -1339,7 +1576,7 @@ function exhaustedComments() {
     Date.parse("2026-08-20T12:00:00Z") - 48 * 3600_000,
   ).toISOString();
   return Array.from(
-    { length: DEFAULT_MAX_CONFLICT_ATTEMPTS },
+    { length: CONFLICT_RESOLUTION_BUDGET },
     (_, i) => i + 1,
   ).flatMap((n) => [
     { body: `${CONFLICT_ATTEMPT_MARKER} n="${n}" -->`, created_at: old },
@@ -1415,7 +1652,7 @@ Deno.test("findConflictingPr - an exhausted PR with a known issue is abandoned, 
   assertEquals(recordFor(log, 48).context?.issueNumber, 16);
   assertEquals(
     recordFor(log, 48).context?.attemptsSpent,
-    DEFAULT_MAX_CONFLICT_ATTEMPTS,
+    CONFLICT_RESOLUTION_BUDGET,
   );
 
   // Closed, not merged, and the branch is left where it is.
@@ -1554,7 +1791,7 @@ Deno.test("findConflictingPr - the flag filer is handed both runs' analyses, tim
   assertEquals(filings.length, 1);
   const filing = filings[0];
   assertEquals(filing?.requestIdleTask, undefined);
-  assertEquals(filing?.runs?.length, DEFAULT_MAX_CONFLICT_ATTEMPTS);
+  assertEquals(filing?.runs?.length, CONFLICT_RESOLUTION_BUDGET);
   assertEquals(filing?.runs?.[0]?.host, "mel-01");
   assertEquals(filing?.runs?.[0]?.timings, [{ stage: "agent", seconds: 212 }]);
   assertEquals(filing?.behindBy, 41);
@@ -1607,6 +1844,35 @@ Deno.test("findConflictingPr - an exhausted PR with no originating issue is clos
 });
 
 /**
+ * A spent restart budget hands the *originating issue* to a human
+ * (Issue #2804): `needs-human` lands on that issue, never on the PR, whose
+ * place in the conflict queue stays the scan's.
+ */
+function assertNeedsHumanOnIssueOnly(fake: FakeGh, issueNumber: number): void {
+  const issuePath = `/issues/${issueNumber}/`;
+  // A hand-off comment may mention the label by name. Only a call that
+  // applies or removes the label itself counts as the label reaching somewhere.
+  const naming = fake.calls.filter((args) =>
+    args.some((arg) =>
+      arg === "needs-human" || arg.startsWith("labels[]=needs-human")
+    )
+  );
+  assert(
+    naming.some((args) =>
+      args.some((arg) => arg.endsWith(`${issuePath}labels`)) &&
+      args.includes("labels[]=needs-human")
+    ),
+    `needs-human was not added to issue #${issueNumber}`,
+  );
+  const elsewhere = naming.filter((args) =>
+    !args.some((arg) => arg.includes(issuePath)) &&
+    // Creating the repo label itself touches no issue or PR.
+    !args.some((arg) => /^repos\/[^/]+\/[^/]+\/labels$/.test(arg))
+  );
+  assertEquals(elsewhere, [], "needs-human may only reach the issue");
+}
+
+/**
  * A PR whose issue has already been restarted `restarts` times (Issue #2312).
  *
  * The markers live on the *issue*, because the PR that replaced each abandoned
@@ -1656,37 +1922,32 @@ Deno.test("findConflictingPr - one restart on the issue still allows a second (I
   assertNoNeedsHumanWrites(fake);
 });
 
-Deno.test("findConflictingPr - the third exhaustion still abandons and re-queues, with no needs-human (Issue #3033)", async () => {
-  // There is no restart cap any more: a third (or later) round abandons and
-  // re-queues exactly like the first and second, and never hands the issue
-  // to a human.
-  const third = makeFakeGh(restartedState(2));
+Deno.test("findConflictingPr - the third exhaustion parks the PR and hands its issue to a human (Issues #2312, #2804)", async () => {
+  const fake = makeFakeGh(restartedState(2));
 
-  const { log: logThird } = await scanWith(third);
+  const { log } = await scanWith(fake);
 
-  assertEquals(reasonFor(logThird, 61), "abandoned-restarted");
+  assertEquals(reasonFor(log, 61), "parked");
+  assertEquals(recordFor(log, 61).context?.base, BASE_TIP);
+  // Parked, not closed: the work stays where a reader can find it.
   assertEquals(
-    third.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
-    1,
-  );
-  assertEquals(
-    third.commentsPosted.filter((c) =>
-      c.prNumber === 61 && c.body.includes(CONFLICT_PARKED_MARKER)
-    ).length,
+    fake.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
     0,
   );
-  assertNoNeedsHumanWrites(third);
+  assertEquals(escalatedToHuman(fake, 61), false);
+  assertNeedsHumanOnIssueOnly(fake, 16);
 
-  const fifth = makeFakeGh(restartedState(4));
-
-  const { log: logFifth } = await scanWith(fifth);
-
-  assertEquals(reasonFor(logFifth, 61), "abandoned-restarted");
-  assertEquals(
-    fifth.calls.filter((c) => c[0] === "pr" && c[1] === "close").length,
-    1,
+  // One comment, carrying the marker the next pass reads back.
+  const parkComments = fake.commentsPosted.filter((c) =>
+    c.prNumber === 61 && c.body.includes(CONFLICT_PARKED_MARKER)
   );
-  assertNoNeedsHumanWrites(fifth);
+  assertEquals(parkComments.length, 1);
+  assertStringIncludes(parkComments[0]?.body ?? "", `base="${BASE_TIP}"`);
+
+  // …and the event is appended to the PR's own merge-fallback flag.
+  assertEquals(fake.issuesCreated.length, 1);
+  assertStringIncludes(fake.issuesCreated[0]?.title ?? "", "PR #61");
+  assertStringIncludes(parkComments[0]?.body ?? "", "#900");
 });
 
 Deno.test("findConflictingPr - a parked PR on an unmoved base is skipped every pass (Issue #2312)", async () => {
@@ -1745,39 +2006,15 @@ Deno.test("findConflictingPr - a moved base offers a parked PR again with a fres
   assertEquals(result.value.selected?.attemptCount, 0);
 });
 
-/**
- * An injected `abandonRestart` that declines as `already-restarted` naming a
- * *different* PR (Issue #3033): the real rung no longer produces this
- * outcome itself, but the scan's parking code still has to handle one when
- * it arrives — e.g. from an injected rung, or a caller's own bookkeeping.
- */
-function declinedAbandon(
-  issueNumber: number,
-  restartCount: number,
-): () => Promise<AbandonRestartOutcome> {
-  return () =>
-    Promise.resolve({
-      outcome: "declined",
-      reason: {
-        kind: "already-restarted",
-        issueNumber,
-        samePr: false,
-        restartCount,
-      },
-    });
-}
-
 Deno.test("findConflictingPr - a park whose marker cannot be posted is not a park (Issue #2312)", async () => {
   // The comment is what makes the park real: without it nothing records the
   // wait, so the pass must fall back rather than report one.
   const fake = makeFakeGh(restartedState(2, { failOn: "pr comment 61" }));
 
-  const { log } = await scanWith(fake, {
-    abandonRestart: declinedAbandon(16, 2),
-  });
+  const { log } = await scanWith(fake);
 
   assertEquals(reasonFor(log, 61), "budget-spent");
-  assertNoNeedsHumanWrites(fake);
+  assertNeedsHumanOnIssueOnly(fake, 16);
 });
 
 Deno.test("findConflictingPr - an unreadable base tip leaves a parked PR parked (Issue #2312)", async () => {
@@ -1823,9 +2060,7 @@ Deno.test("findConflictingPr - an unreadable base tip cannot park a PR either (I
     }],
   }));
 
-  const { log } = await scanWith(fake, {
-    abandonRestart: declinedAbandon(16, 2),
-  });
+  const { log } = await scanWith(fake);
 
   assertEquals(reasonFor(log, 61), "budget-spent");
   assertEquals(
@@ -1833,7 +2068,7 @@ Deno.test("findConflictingPr - an unreadable base tip cannot park a PR either (I
       .length,
     0,
   );
-  assertNoNeedsHumanWrites(fake);
+  assertNeedsHumanOnIssueOnly(fake, 16);
 });
 
 Deno.test("findConflictingPr - a half-done abandon is not parked away (Issue #2312)", async () => {
@@ -1864,11 +2099,13 @@ Deno.test("findConflictingPr - a half-done abandon is not parked away (Issue #23
 Deno.test("buildParkedPrComment - says so when the flag could not be filed (Issue #2312)", () => {
   // The park stands either way, but a record that does not exist must not be
   // referenced as though it does.
+  const standDownAtMs = Date.parse("2026-08-20T09:00:00.000Z");
   const filed = buildParkedPrComment({
     base: BASE_TIP,
     baseBranch: "main",
     issueNumber: 16,
     flagIssueNumber: 900,
+    standDownAtMs,
   });
   assertStringIncludes(filed, "recorded in #900");
 
@@ -1876,11 +2113,42 @@ Deno.test("buildParkedPrComment - says so when the flag could not be filed (Issu
     base: BASE_TIP,
     baseBranch: "main",
     issueNumber: 16,
+    standDownAtMs,
   });
   assertStringIncludes(unfiled, "could **not** be filed");
   assertStringIncludes(unfiled, "the park itself");
   // Both carry the marker the next pass reads back.
   assertStringIncludes(unfiled, `base="${BASE_TIP}"`);
+});
+
+Deno.test("buildParkedPrComment - names the owner and the UTC takeover time (Issue #2997)", () => {
+  const standDownAtMs = Date.parse("2026-08-20T09:00:00.000Z");
+  const body = buildParkedPrComment({
+    base: BASE_TIP,
+    baseBranch: "main",
+    issueNumber: 16,
+    standDownAtMs,
+  });
+  assertStringIncludes(body, "**Owner:** `conflict takeover`");
+
+  const match = /Takeover at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/
+    .exec(body);
+  assert(match !== null, "a takeover line with an ISO timestamp is posted");
+  const expected = new Date(
+    standDownAtMs + CONFLICT_OWNER_CHECK_HOURS * 3_600_000,
+  ).toISOString();
+  assertEquals(match![1], expected);
+});
+
+Deno.test("buildParkedPrComment - throws on a non-finite stand-down time", () => {
+  assertThrows(() =>
+    buildParkedPrComment({
+      base: BASE_TIP,
+      baseBranch: "main",
+      issueNumber: 16,
+      standDownAtMs: NaN,
+    })
+  );
 });
 
 Deno.test("findConflictingPr - an outsider's park marker cannot silence a PR (Issue #2312)", async () => {
