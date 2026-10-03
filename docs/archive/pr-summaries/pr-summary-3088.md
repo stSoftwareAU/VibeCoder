@@ -58,7 +58,8 @@ had said was unfinished.
   `handOffAnalysisOnly` with the `declared_handoff` trigger. A `## Blocked:`
   heading on a committed run defers only when its `Depends on` / `Blocked by`
   line names a dependency the worker reads as open. A closed or unreadable
-  dependency does not defer, and the run raises its PR.
+  dependency does not defer; the committed run hands off to a human and
+  raises no PR.
 
 ### Undiscoverable Facts
 
@@ -101,11 +102,11 @@ updated. No `*/README.md` describes the phase list, so none changed.
   - a repeat blocked deferral hands off to a human
   - a completed summary that mentions a merged dependency continues
   - a Blocked heading without a declaration line continues
-  - a closed dependency does not defer a committed run
+  - a closed dependency hands off and raises no PR
   - a planning marker inside a code fence continues
   - an exhausted time deferral names the committed hand-off
-  - a dependency lookup that fails does not defer a committed run
-  - a dependency with no state does not defer a committed run
+  - a dependency lookup that fails hands off and raises no PR
+  - a dependency with no state hands off and raises no PR
   - a quoted time-deferral marker continues
   - an over-horizon defer marker hands off, no PR
   - a reasonless planning marker hands off, no PR
@@ -151,8 +152,8 @@ updated. No `*/README.md` describes the phase list, so none changed.
       anchor label and the untrusted-image gate.
 - [x] Error handling: a guard that refuses a declared signal (a repeat
       deferral, planning without the anchor) hands off to a human. A closed
-      or unreadable dependency does not defer; the committed run raises its
-      PR.
+      or unreadable dependency does not defer; the committed run hands off
+      to a human and raises no PR.
 - [x] Dependencies: none added.
 - [x] Path confinement: not applicable.
 </content>

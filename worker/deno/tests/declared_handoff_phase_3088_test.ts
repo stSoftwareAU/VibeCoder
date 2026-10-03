@@ -369,8 +369,9 @@ Deno.test(
 );
 
 // A documented block whose dependency has already closed does not defer.
+// The committed run still hands off to a human and raises no PR.
 Deno.test(
-  "declared_handoff_phase - a closed dependency does not defer a committed run (Issue #3088)",
+  "declared_handoff_phase - a closed dependency hands off and raises no PR (Issue #3088)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -383,9 +384,9 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "continue");
+    assertHumanHandoff(result, calls);
     assertEquals(calls.editIssue, 0);
-    assertEquals(calls.postComment, []);
+    assert(calls.postComment.some((c) => c.includes("committed code changes")));
   },
 );
 
@@ -455,8 +456,9 @@ Deno.test(
 );
 
 // A state that cannot be read, or that the payload omits, does not defer.
+// The committed run still hands off to a human and raises no PR.
 Deno.test(
-  "declared_handoff_phase - a dependency lookup that fails does not defer a committed run (Issue #3088)",
+  "declared_handoff_phase - a dependency lookup that fails hands off and raises no PR (Issue #3088)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -469,15 +471,13 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "continue");
-    assertEquals(calls.postComment, []);
-    assertEquals(calls.addLabel, []);
+    assertHumanHandoff(result, calls);
     assertEquals(calls.editIssue, 0);
   },
 );
 
 Deno.test(
-  "declared_handoff_phase - a dependency with no state does not defer a committed run (Issue #3088)",
+  "declared_handoff_phase - a dependency with no state hands off and raises no PR (Issue #3088)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -492,9 +492,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "continue");
-    assertEquals(calls.postComment, []);
-    assertEquals(calls.addLabel, []);
+    assertHumanHandoff(result, calls);
     assertEquals(calls.editIssue, 0);
   },
 );

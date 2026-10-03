@@ -312,8 +312,10 @@ apply:
   free-text hand-off is not read. If the work is blocked on an issue that is
   still open, end with a `## Blocked:` heading and a `Depends on owner/repo#N`
   (or `Blocked by`) line naming it. A closed or unreadable dependency does not
-  defer. If there is no such issue, name the follow-up you filed on a
-  `Depends on` line, or use the planning marker. A bare `## Blocked:` heading
+  defer; the worker hands the issue to a human and raises no PR. If there is
+  no such issue, name the follow-up you filed on a `Depends on owner/repo#N`
+  line under a `## Blocked:` heading, or use the planning marker. A bare
+  `## Blocked:` heading
   does not defer, and the worker would raise a PR that closes this issue.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
@@ -697,8 +699,9 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   When the core deliverable is genuinely blocked on another open issue and
   work is already committed, end with a `## Blocked:` heading followed by a
   `Depends on owner/repo#N` (or `Blocked by`) line naming an issue that is
-  still open. A closed or unreadable dependency does not defer. The worker
-  defers and raises no PR.
+  still open. A closed or unreadable dependency does not defer; the worker
+  hands the issue to a human and raises no PR. The worker defers and raises
+  no PR when the dependency is open.
   When a lesser criterion stays `partial` or `missing`, the Summary names it
   beside the closing keyword instead of describing the issue as resolved.
 

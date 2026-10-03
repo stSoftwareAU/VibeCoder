@@ -186,8 +186,8 @@ export interface DeclaredOutcomeHandoff {
 
 /**
  * Whether the declared dependency is still open. A committed run is deferred
- * only while it is; a closed dependency, or a state that cannot be read, does
- * not suppress the PR (Issue #3088 review).
+ * only while it is. A closed dependency, or a state that cannot be read, does
+ * not defer, but the run stays declared and hands off to a human.
  */
 async function dependencyStillOpen(
   deps: WorkerDeps,
@@ -240,24 +240,28 @@ export async function handOffDeclaredOutcome(
   // dependency closes.
   // The committed path (`declared_handoff`) only defers the documented
   // shape: a `## Blocked:` heading whose `Depends on` / `Blocked by` line
-  // names a dependency that is still open. A passing mention, a
-  // first-reference fallback, or a dependency that has already merged must
-  // not suppress the PR (Issue #3088 review).
+  // names a dependency that is still open. A passing mention or a heading
+  // with no declaration line still continues. A dependency that is closed,
+  // merged, missing a state, or unreadable does not defer, but the run stays
+  // declared and hands off to a human instead of raising a PR (Issue #3088).
   const committed = trigger === "declared_handoff";
   let blocked = detectBlockedOutcome(
     claudeOutput,
     { repo, issueNumber },
     committed ? { declaredHeadingOnly: true } : undefined,
   );
+  let blockedNotOpen = false;
   if (blocked && committed && !await dependencyStillOpen(deps, repo, blocked)) {
     logger.info(
-      "Committed run names a dependency that is not open — not deferring",
+      "Committed run names a dependency that is not open — not deferring, " +
+        "handing off to a human",
       {
         repo,
         issueNumber,
         dependency: formatDependencyRef(blocked.dependency),
       },
     );
+    blockedNotOpen = true;
     blocked = undefined;
   }
   // Loop guard: a deferral holds only while the dependency gate skips the
@@ -519,7 +523,7 @@ export async function handOffDeclaredOutcome(
   // `declared` and keeps its own fall-through.
   const planningMarker = !blocked && hasPlanningRequestMarker(claudeOutput);
   const declared = blocked !== undefined || planningRequest !== undefined ||
-    timeDeferral?.kind === "invalid" || planningMarker;
+    timeDeferral?.kind === "invalid" || planningMarker || blockedNotOpen;
 
   return { blocked, declared };
 }

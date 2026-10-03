@@ -1040,7 +1040,8 @@ is raised, never listed as standing, and a PR whose core deliverable is
 the core deliverable is genuinely blocked on another open issue after work
 is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
 (or `Blocked by`) line naming an issue that is still open then defers the
-issue and raises no PR. A closed or unreadable dependency does not defer.
+issue and raises no PR. A closed or unreadable dependency does not defer;
+the committed run hands off to a human and raises no PR.
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits

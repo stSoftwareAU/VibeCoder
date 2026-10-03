@@ -51,6 +51,7 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "hands it to a human only while the branch has no commits",
       "Depends on owner/repo#N",
       "A closed or unreadable dependency does not defer",
+      "name the follow-up you filed on a `Depends on owner/repo#N` line under a `## Blocked:` heading",
       "A bare `## Blocked:` heading does not defer",
       "The worker defers and raises no PR",
     ]

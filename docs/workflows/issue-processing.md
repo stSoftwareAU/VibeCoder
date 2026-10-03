@@ -783,9 +783,10 @@ the same matrix plus an "unable to make code changes" note about five times).
 (Issue #3088).** A `declared_handoff` phase runs after execute and before
 `bump_deps` / the quality gate / completion. On that committed path a
 `## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
-names a dependency the worker reads as open. A bullet, a heading with no
-declaration line, a closed dependency, a missing `state`, or a lookup that
-fails does not defer, and the run continues and raises its PR. A
+names a dependency the worker reads as open. A closed dependency, a missing
+`state`, or a lookup that fails does not defer; the run hands off to a human
+and raises no PR. A bullet, or a heading with no declaration line, still
+continues and raises its PR. A
 `vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
 read after a commit, so the worker defers or hands to planning instead of
 raising a PR with `Closes #N`. An invalid or over-horizon deferral, or a
