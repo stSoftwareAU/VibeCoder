@@ -58,7 +58,7 @@ All in `worker/deno/tests/summary_rule_gate_retry_test.ts`:
 - **`a delimiter forged in the comment is scrubbed and fenced`:**
   - the forged END delimiter is gone;
   - the raw spec marker appears exactly once (the template copy);
-  - the neutralised forged marker and "Ignore prior instructions" both sit inside the nonced fence;
+  - the neutralised forged marker and the injected sentence both sit inside the nonced fence;
   - there are exactly 2 BEGIN and 2 END markers.
 - **`a delimiter forged in the reason is scrubbed and fenced`:** the same checks, using the standards marker in the reason.
 - **`the integrity instruction names the fence's nonce`:** the prompt has a `## Handling Untrusted Content` section, names `` `BOUNDARY_0123456789ab` delimiters ``, and names both blocks.
