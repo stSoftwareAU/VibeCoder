@@ -452,6 +452,52 @@ that is load-bearing must be load-bearing in the validator too, not only in
 the README or a code comment: an invariant documented but not validated is a
 blocking self-review finding (Issue #3021).
 
+### Writing a gate over text
+
+A deterministic gate over text — a PR summary, a Markdown file, a diff, a
+closure entry, or source code it counts or scans — fails in two ways its own
+tests rarely show: the matcher misses a realistic variant of the thing it
+exists to catch (or fires on a look-alike it should ignore), and input it
+cannot handle is skipped while the gate reports a clean pass. Fleet PRs have
+shipped both. VibeCoder#3148 counted a commented-out assertion as "moved"
+because its text was a substring of an added block. VibeCoder#3132 recognised
+only column-0 fences and paired inline code spans one line at a time, which a
+run over `docs/archive/pr-summaries/` would have exposed. VibeCoder#3134
+skipped every non-matching closure entry with `continue`, including the
+`partial`/`missing` entries that were the run's own evidence of a gap.
+VibeCoder#3157 counted `Deno.test(` inside string literals and counted
+`Deno.test.ignore` declarations, so it flagged correct Test Plan counts as
+stale. Before calling a gate done (Issue #3149):
+
+1. **Evasion table.** For each thing the gate must catch, add a test per
+   nearby variant an agent or human would plausibly produce — commented out,
+   wrapped in a condition (`if (false)`), loosened, re-wrapped across lines,
+   escaped, indented, moved to another file, deleted with its file, and
+   renamed — each asserting the gate still blocks. Run the table both ways:
+   for each look-alike the gate must ignore — the pattern inside a string or
+   template literal, a skipped or ignored declaration (`Deno.test.ignore`,
+   `it.skip`), an example inside a code block — add a test asserting it does
+   **not** fire. A gate that reads source code blanks out comments and
+   literals before it matches, or uses a tokeniser.
+2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
+   recent PR diffs, closure-verdict logs, the PR's own test files — run the
+   matcher across it and report the false-positive and false-negative counts
+   in the Test Plan. A counting gate compares its count with the tool's own
+   (the number of tests `deno test` reports it ran).
+3. **No silent pass on unread input.** Input the gate truncates, filters out,
+   cannot parse, or skips with `continue` either fails closed or is logged and
+   reported as not checked (for example `testDiffKnown=false`) — never a clean
+   pass, and a test pins that outcome. This is **Never Fail Silently — Fail
+   Loud** applied to a matcher, and each skip is an outcome under **Every
+   outcome of a branch you add needs a test that reaches it** above.
+4. **Compare like with like.** Normalise both sides of a comparison the same
+   way — escapes, whitespace, comments — and use equality on the normalised
+   forms rather than substring containment, unless containment is the
+   contract.
+
+A gate's matcher must also stay cheap on hostile input — see the ReDoS
+guidance under **Unit tests** below.
+
 ### Choosing assertions
 
 - **UI / PWA:** Prefer real/headless-browser user journeys and visible states
