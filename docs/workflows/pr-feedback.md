@@ -194,7 +194,41 @@ Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 is never reported as "addressed"; if the push fails, the reply says so and
 names the finding as still open rather than claiming a fix origin does not
 have. This complements the worker's own final-mile push verification described
-next, which re-checks the push at the git level after the agent runs.
+in **The final mile** below, which re-checks the push at the git level after
+the agent runs.
+
+#### Fix the defect everywhere it lives (Issue #3086)
+
+A finding's file, line, repro and suggested fix are one example of a defect,
+not its full extent. The pr_feedback prompt tells the agent to fix the
+outcome the finding protects — "the issue stays open", say, or "no surface
+says the worker does not scrub" — and, before committing, to grep for every
+other place that can break it: other code paths into the same state (retries,
+timers, other callers) and other copies of the same claim or value (the PR
+title as well as the body, the archived PR summary, other docs, code
+comments). Fleet review fixes used to patch only the named spot and leave the
+same defect on another path or copy (GRQ-AutoTrader#2279, #2227,
+VibeCoder#3071). Those other instances count as "what is needed to resolve"
+the finding under the prompt's Change Scope rule, so fixing them is not scope
+creep. Where a finding gave a repro, the agent also tries its obvious
+variants and adds a test for each path that differs, and
+`.pr_response_message` names, per finding, the other paths and copies it
+checked.
+
+#### Verify a claim about another component before rewriting it (Issue #3090)
+
+When a finding says prompt, doc or PR-summary text misdescribes how another
+component behaves, the pr_feedback prompt tells the agent to open the code
+that implements that behaviour before writing the replacement, and to cite the
+file and function or line in `.pr_response_message` (and in the PR summary
+when it repeats the claim). The same applies to any new statement a fix adds
+about another component, above all an exclusive or negative one ("the only
+…", "any …", "never …", "the worker does not …"); security-control claims
+must agree with `SECURITY.md` and `docs/THREAT-MODEL.md`, and a claim the text
+does not need is dropped in favour of stating the rule and its risk. This is
+the fix-run form of the Issue #3072 rule in **Prompt Engineering Guidance**
+(`CODING-STANDARDS.md`): review fixes had replaced a false claim with a new
+unverified one (VibeCoder#3075, #3068).
 
 #### The final mile — did the push actually land?
 

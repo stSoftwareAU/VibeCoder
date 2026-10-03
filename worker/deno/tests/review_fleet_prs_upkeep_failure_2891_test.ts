@@ -148,3 +148,74 @@ Deno.test("a failed auto-merge is not retried at the same head, but is retried o
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("pass counts a dismissed logged change-request with an unchanged diff as awaiting-fix (Issue #3063)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const record = {
+      at: "2026-10-02T00:00:00Z",
+      repo: "acme/app",
+      number: 41,
+      title: "feat: add widget",
+      url: "https://github.com/acme/app/pull/41",
+      headSha: "X",
+      outcome: "changes_requested",
+      summary: "",
+      findings: [],
+      testChangeNotes: [],
+      removedTests: [],
+    };
+    await Deno.writeTextFile(
+      `${dir}/log.jsonl`,
+      `${JSON.stringify(record)}\n`,
+    );
+    const ahead = JSON.stringify({
+      status: "ahead",
+      total_commits: 1,
+      commits: [{ sha: "m1", parents: [{ sha: "p0" }, { sha: "p1" }] }],
+    });
+    const files = JSON.stringify({
+      files: [{
+        filename: "a.ts",
+        status: "modified",
+        patch: "@@ -1,3 +1,4 @@\n+x",
+      }],
+    });
+    const pr = {
+      ...fleetPr(),
+      headRefOid: "head",
+      reviews: {
+        nodes: [{
+          author: { login: REVIEWER },
+          state: "DISMISSED",
+          body: "",
+          commit: { oid: "X" },
+        }],
+      },
+    };
+    const search = JSON.stringify({
+      data: {
+        search: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: [pr],
+        },
+      },
+    });
+    const gh = (args: string[]): Promise<string> => {
+      if (args[0] === "api" && args[1] === "graphql") {
+        return Promise.resolve(search);
+      }
+      const path = args[1] ?? "";
+      if (path.endsWith("compare/X...head")) return Promise.resolve(ahead);
+      if (path.endsWith("compare/main...X")) return Promise.resolve(files);
+      if (path.endsWith("compare/main...head")) return Promise.resolve(files);
+      if (path.includes("/files")) return Promise.resolve("[]");
+      throw new Error(`unexpected gh ${args.join(" ")}`);
+    };
+    const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+    assertEquals(result.skipped["awaiting-fix"], 1);
+    assertEquals(result.ready, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
