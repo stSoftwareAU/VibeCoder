@@ -928,7 +928,13 @@ The file MUST contain:
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. A negative test — one asserting something does
+   and name that test. Every new test added to guard a change (a fix, a new
+   guard, a new rule) counts only once you have seen it go red with only its
+   change removed (see **A new test must go red without its change** in the
+   guidelines); one that stays green without its change is a blocking
+   self-review finding. A test that only pins current behaviour, because the
+   fault was unreproduced or already fixed and no production change was made,
+   is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard
    broken on purpose (see **A negative test must be able to fail** in the
    guidelines); one that stays green without its guard is a blocking

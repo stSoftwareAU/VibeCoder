@@ -65,6 +65,8 @@ When a code change is needed, fix the defect the comment describes — wherever 
 
 **Every change-request finding ends fixed or rebutted.** Each finding in a `CHANGES_REQUESTED` review — including an earlier-review item it raises again — must end in exactly one of two states: **fixed** in a commit pushed to this PR's branch, or **rebutted** as a false positive with the reason in `.pr_response_message`. Writing it up in the PR summary as a "known limitation", a "follow-up" or an "open violation" is neither: the defect stays in the head and the next review raises it again as unfixed. The Escape Hatch below is the only other exit, and it names a filed follow-up issue in `.pr_response_message` — never a PR-summary note. When you fix a finding that the PR summary recorded as a limitation, follow-up or open violation, delete that text in the same push, as the rule above requires.
 
+**A requested red run is shown, not claimed.** When a finding asks for a test that goes red without the fix, revert the fix locally, run the test, and quote the failing line in `.pr_response_message` before restoring the fix. A test that stays green with the fix reverted does not answer the finding — its input never reaches the failure, so rebuild the input (the slow shape, the forbidden value, the order a re-sort would not repair) until the reverted run fails. See **A new test must go red without its change** in the guidelines.
+
 Commit with a clear message referencing PR #{{PR_NUMBER}}. The quality commands for this repository are in the `<quality_instructions>` block below.
 
 <quality_instructions>
