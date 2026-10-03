@@ -53,7 +53,7 @@ the only direct I/O is reading the run's own PR summary and writing it back.
 | Input | Source | How it is handled |
 | ----- | ------ | ----------------- |
 | the issue's acceptance criteria | the issue body — attacker-supplied | fenced with `fenceUntrustedIssueText`, whose CSPRNG nonce an attacker cannot guess and whose scrub neutralises forged delimiters and HTML comments; `closure_verdict_prompt_test.ts` pins that a forged closing boundary leaves exactly one real boundary |
-| the gates' problem lines | the worker's own gate comment builders, quoting the branch's own summary | interpolated as prompt text, the same trust decision `summary_rule_gate_retry.ts` records for the replayed gate comment |
+| the gates' problem lines | the worker's own gate comment builders, quoting the branch's own summary — entries whose wording the issue's author chose | fenced in their own block under the same nonce and scrubbed, named by the integrity instruction (Issue #3133); `summary_rule_gate_retry.ts` now fences its replayed gate comment the same way (Issue #3152) |
 | the agent's reply | the model | parsed by `parseClosureVerdict` above; an unreadable reply is logged and treated as no verdict |
 | `state.repoPath`, `issueNumber` | the worker's own clone path and the claim it holds | the summary path is `loadPrSummary`'s own source path, or the canonical `docs/archive/pr-summaries/pr-summary-<issue>.md` built from the integer issue number — no model-supplied path ever reaches the filesystem |
 
