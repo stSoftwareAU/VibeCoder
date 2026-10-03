@@ -7,7 +7,10 @@
 
 import { assertEquals } from "@std/assert";
 import { parseClosureEntries } from "../lib/acceptance_criteria_gate.ts";
-import { matchClosureStatuses } from "../lib/closure_criterion_match.ts";
+import {
+  matchClosureEntries,
+  matchClosureStatuses,
+} from "../lib/closure_criterion_match.ts";
 
 const CRITERIA = [
   "The router sends planning to opus.",
@@ -117,6 +120,35 @@ Deno.test("matchClosureStatuses - unrequested entries are ignored entirely", () 
     undefined,
     undefined,
   ]);
+});
+
+Deno.test("matchClosureEntries - an empty-subject partial or missing entry is a gap named by its reason", () => {
+  const entries = entriesFrom(
+    [
+      "- **partial** — reviewer: partial — reason: the table names the wrong model",
+      "- **missing** — reviewer: missing — reason: the docs table still says sonnet",
+    ].join("\n"),
+  );
+  assertEquals(matchClosureEntries(CRITERIA, entries), {
+    statuses: [undefined, undefined, undefined],
+    unassignedGaps: [
+      { status: "partial", subject: "the table names the wrong model" },
+      { status: "missing", subject: "the docs table still says sonnet" },
+    ],
+  });
+});
+
+Deno.test("matchClosureEntries - a missing entry tied between two criteria is kept as a gap", () => {
+  const criteria = ["Ship the router update.", "Ship the docs update."];
+  const entries = entriesFrom(
+    "- **missing** — ship the update — reviewer: missing — reason: either file could be the one",
+  );
+  assertEquals(matchClosureEntries(criteria, entries), {
+    statuses: [undefined, undefined],
+    unassignedGaps: [
+      { status: "missing", subject: "ship the update —" },
+    ],
+  });
 });
 
 Deno.test("matchClosureStatuses - an entry with no subject words matches nothing", () => {

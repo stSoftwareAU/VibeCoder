@@ -68,13 +68,17 @@ flowchart LR
   `top-up-3128`, in `docs/audits/lib-sweep-coverage.json`, following the
   `top-up-2998` and `top-up-2999` precedent.
 - **Docs sweep:** I grepped for `assessDegradedDelivery`, `closure block` and
-  `unassessed` and updated three places:
+  `unassessed` and updated four places:
   - `docs/workflows/issue-processing.md`: the degraded-run "Delivered" bullet
     now describes word matching, `unassessed` for unmatched or ambiguous
     entries, and worst-status-wins for a split criterion.
   - `prompts/issue/prompt.md`: the closure-block guidance now says to write
     each criterion in the issue's own words.
   - The module doc in `degraded_delivery.ts`.
+  - `docs/audits/security-sweep-2562-degraded-delivery.md`: the PR-summary
+    trust row now says an unmatched or subjectless `partial`/`missing` gap's
+    subject or `reason:` text is copied into the follow-up and the PR body
+    after `neutraliseAgentMarkers`.
 - **Related rules checked:** two existing rules in `prompts/issue/prompt.md`
   cover this:
   - "Every stated criterion gets an entry".
@@ -98,13 +102,19 @@ flowchart LR
   - `degradedNeedsFollowUp - a missing entry with no subject still files a
     follow-up (Issue #3128)` — `**missing** — reviewer: missing — reason: …`
     has no subject words and is still a shortfall, named by that reason.
-- `worker/deno/tests/closure_criterion_match_test.ts` (10 tests):
+- `worker/deno/tests/closure_criterion_match_test.ts` (12 tests):
   - Matching: out of order; abbreviated subset; superset with extra words.
   - Rejection: no match and an ambiguous tie both leave the criterion
-    unassessed.
+    unassessed. The tie case there is a `met` entry.
   - Split criteria: met plus missing reads `missing`; met plus partial reads
     `partial`.
   - Ignored entries: `unrequested` entries, and a `met` entry with an empty
-    subject. An empty-subject `partial` or `missing` entry is an unassigned
-    gap, named by its `reason:`.
+    subject.
+  - `matchClosureEntries - an empty-subject partial or missing entry is a gap
+    named by its reason` — each lands in `unassignedGaps`, with `subject`
+    equal to the `reason:` text.
+  - `matchClosureEntries - a missing entry tied between two criteria is kept
+    as a gap` — `ship the update` against `Ship the router update.` /
+    `Ship the docs update.` leaves both statuses undefined and is returned
+    in `unassignedGaps`.
   - Markdown, punctuation and case do not affect matching.
