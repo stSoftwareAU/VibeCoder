@@ -194,7 +194,26 @@ Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 is never reported as "addressed"; if the push fails, the reply says so and
 names the finding as still open rather than claiming a fix origin does not
 have. This complements the worker's own final-mile push verification described
-next, which re-checks the push at the git level after the agent runs.
+in **The final mile** below, which re-checks the push at the git level after
+the agent runs.
+
+#### Fix the defect everywhere it lives (Issue #3086)
+
+A finding's file, line, repro and suggested fix are one example of a defect,
+not its full extent. The pr_feedback prompt tells the agent to fix the
+outcome the finding protects — "the issue stays open", say, or "no surface
+says the worker does not scrub" — and, before committing, to grep for every
+other place that can break it: other code paths into the same state (retries,
+timers, other callers) and other copies of the same claim or value (the PR
+title as well as the body, the archived PR summary, other docs, code
+comments). Fleet review fixes used to patch only the named spot and leave the
+same defect on another path or copy (GRQ-AutoTrader#2279, #2227,
+VibeCoder#3071). Those other instances count as "what is needed to resolve"
+the finding under the prompt's Change Scope rule, so fixing them is not scope
+creep. Where a finding gave a repro, the agent also tries its obvious
+variants and adds a test for each path that differs, and
+`.pr_response_message` names, per finding, the other paths and copies it
+checked.
 
 #### The final mile — did the push actually land?
 
