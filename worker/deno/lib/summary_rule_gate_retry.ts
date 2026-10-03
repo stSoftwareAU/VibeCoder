@@ -1,10 +1,11 @@
 /**
  * In-run recovery from a PR-summary rule block (Issue #2189).
  *
- * The three summary gates at the completion phase's PR-creation chokepoint —
- * acceptance-criteria closure (#518), independent two-axis review (#663) and
- * bug reproduction status (#521) — check a *document*, not the code. When the
- * run had already raised its own PR, `reportSummaryRuleBlock` (#1140) recovers:
+ * The summary gates at the completion phase's PR-creation chokepoint —
+ * acceptance-criteria closure (#518), independent two-axis review (#663), bug
+ * reproduction status (#521) and the docs-sweep line (#3073) — check a
+ * *document*, not the code. When the run had already raised its own PR,
+ * `reportSummaryRuleBlock` (#1140) recovers:
  * the PR is finalised and the run reports `summary_incomplete`. With no PR the
  * block posted its remediation comment and ended the run, so the next run — a
  * whole agent session — existed only to add a documentation block to a pushed,
@@ -91,7 +92,7 @@ ${verdict.comment}
 Do exactly this, and nothing else:
 
 1. Read \`${summaryPath}\` — the summary the gate just read — and \`git diff\` against the base branch, so the block you write describes the change that is actually on the branch.
-2. Fix ONLY what the notice above lists. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it.
+2. Fix ONLY what the notice above lists. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc the notice asks you to sweep is part of the summary fix, not a code change.
 3. Where the notice asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
 4. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost — but a summary that still misses the block will be asked for as a structured verdict instead, which costs the run another turn.
 

@@ -48,6 +48,8 @@ Fixed the injection flaw. Closes #${ISSUE}.
   after the fix.
 - The original attack input is now rejected by the allowlist, so the original
   trigger is closed with no trivial bypass.
+
+**Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits
 `;
 
 /**

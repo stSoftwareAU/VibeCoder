@@ -153,7 +153,7 @@ MUST end with, reproduced verbatim (see Phase 4):
    code.** See "The one sanctioned network exception" above. The permitted
    tools are file readers (`cat`, `grep`, `rg`, `ls`, `find`), the
    allow-listed registry GETs, the allow-listed `gh api` metadata calls,
-   and — for Phase 4 — `gh issue list`, `gh label create`,
+   and — for Phase 4 — `gh label create`,
    `gh issue create`, and `gh issue edit` (only to correct an issue you
    just filed). Metadata lookups for different packages are independent —
    issue them **in parallel rather than one at a time**. Only sequence a
@@ -471,8 +471,9 @@ or past expiry — is reported and never honoured (Phase 3, step 5).
 ## Phase 4 — File one issue per finding (outcome-only)
 
 Your only output for this phase is the `gh` calls themselves — the label
-creations, the dedup lookup, and one `gh issue create` per surviving
-finding, **issue only, never a pull request**; exit immediately after the
+creations and one `gh issue create` per surviving finding, **issue only,
+never a pull request** — preceded by the dedup check below (a comparison
+against the lists above, not a `gh` call); exit immediately after the
 last one. The worker measures success by diffing the repo's open
 `orphan-deps`-labelled issues before and after the run, so anything you
 print instead of filing is invisible to it.
@@ -496,11 +497,14 @@ The `|| true` swallows the "already exists" error so re-runs are safe.
 
 ### For each surviving finding (skip silently if its id is in the suppressed or known-open list)
 
-1. **Re-check the live open-issue list.** Call
-   `gh issue list --state open --label orphan-deps --search "BP- in:body"
-   --json number,body --limit 200` and inspect each body for the
-   `<!-- finding-id: BP-… -->` marker. Skip any finding whose id already
-   has an open issue.
+1. **Dedup finding ids against the known-open list only.** The known-open
+   list above is the only finding-id dedup source: the worker built it
+   from open issues the fleet account authored, so a finding-id marker in
+   an issue anyone else wrote cannot suppress a real finding. Do not run a
+   live `gh issue list` re-check for dedup, and do not skip a finding
+   because some other issue's body carries its id. The open-issue-titles
+   check above is separate and still applies — skip a candidate there on
+   substance, whoever filed it.
 2. **File the issue** with `gh issue create` (no `--repo` argument) and
    exactly these labels:
    - `orphan-deps` (always)

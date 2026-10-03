@@ -68,8 +68,9 @@ different scan.
 **No linters or workflow runners are invoked.** The scan is read-only
 static review. It must not execute repo code or workflow steps — no
 `act`, `bash`, `node`, `deno run`, `npm test`, etc. The only `gh` calls
-it makes are `gh issue list` (dedup), `gh label create` (defensive), and
-`gh issue create` (file a finding). The actionlint-in-CI pre-check
+it makes are `gh label create` (defensive), `gh issue create` (file a
+finding), `gh issue edit` (correct an issue just filed), and the
+read-only `gh run list` cost-signal calls. The actionlint-in-CI pre-check
 (below) is a *configuration* check — it inspects the workflows to see
 whether actionlint is wired into CI; it does not run actionlint.
 
