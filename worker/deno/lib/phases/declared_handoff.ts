@@ -222,18 +222,20 @@ async function readDeclaredDependency(
  *
  * The decision is the issue record, not the run's prose: the author is this
  * host's login or another fleet author, and `createdAt` is at or after the
- * run started. Depending on that issue after a commit is not a real
+ * whole run started (`runStartTime`). A later execute attempt resets
+ * `executeStartTime` and must not move that start. Depending on that issue
+ * after a commit is not a real
  * deferral — the follow-up has no pickup label — so the run stays declared
  * and hands off to a human (Issue #3088).
  */
 function dependencyFiledDuringThisRun(
   issue: GitHubIssue,
   fleetAuthors: readonly string[],
-  executeStartTime: number,
+  runStartTime: number,
 ): boolean {
   if (!isFleetAuthor(issue.author, [...fleetAuthors])) return false;
   const createdMs = Date.parse(issue.createdAt);
-  return Number.isFinite(createdMs) && createdMs >= executeStartTime;
+  return Number.isFinite(createdMs) && createdMs >= runStartTime;
 }
 
 /**
@@ -287,7 +289,7 @@ export async function handOffDeclaredOutcome(
       dependencyFiledDuringThisRun(
         dependency,
         fleetAuthors,
-        state.executeStartTime,
+        state.runStartTime ?? state.executeStartTime,
       );
     if (filedDuringRun && open) {
       logger.info(

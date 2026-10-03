@@ -2756,7 +2756,8 @@ or a lookup that fails does not defer; the committed run hands off to a
 human (`needs-human`) and raises no PR. A dependency filed during this run
 does not defer either: the worker reads that from the issue, when its author
 is this host's login or another fleet author and its `createdAt` is at or
-after the run started, and that committed run hands off to a human and raises
+after the whole run started. A later execute attempt does not move that
+start. That committed run hands off to a human and raises
 no PR. Wording such as "out of scope" does not turn an older open dependency
 into that case. A bullet, or a heading with no
 `Depends on` / `Blocked by` line, still continues and raises its PR. A time

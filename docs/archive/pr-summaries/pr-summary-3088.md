@@ -61,8 +61,9 @@ had said was unfinished.
   dependency does not defer; the committed run hands off to a human and
   raises no PR. A dependency the worker reads as filed during this run —
   its author is this host's login or another fleet author, and it was
-  created at or after the run started — does not defer either: the
-  committed run hands off to a human and raises no PR. Wording in the
+  created at or after the whole run started — does not defer either. A
+  later execute attempt does not move that start, and the committed run
+  hands off to a human and raises no PR. Wording in the
   output does not decide that.
 
 ### Undiscoverable Facts
@@ -96,7 +97,8 @@ and raises a PR).
 updated. DESIGN-PRINCIPLES says a closed dependency, a missing `state`, or a
 lookup that fails does not defer: the committed run hands off to a human and
 raises no PR. It also says a dependency filed during this run — a fleet
-author, created at or after the run started — does not defer. The coding-guidelines deferral, after a commit, is honoured
+author, created at or after the whole run started, which a later execute
+attempt does not move — does not defer. The coding-guidelines deferral, after a commit, is honoured
 only when the named issue is still open. No `*/README.md` describes the phase
 list, so none changed.
 
@@ -115,6 +117,7 @@ list, so none changed.
   - an older open dependency still defers when the output says it is tracked separately
   - a dependency a fleet author filed during this run hands off
   - a fleet-authored dependency created before this run still defers
+  - a dependency filed before a later execute attempt still hands off
   - a closed dependency hands off and raises no PR
   - a planning marker inside a code fence continues
   - an exhausted time deferral names the committed hand-off

@@ -144,6 +144,7 @@ export async function workOnIssue(
     repoPath: "",
     clarityStatus: "not_assessed",
     claudeOutput: "",
+    runStartTime: startedAtMs,
     executeStartTime: 0,
     baselineQualityPassed: true,
     baselineQualityOutput: "",

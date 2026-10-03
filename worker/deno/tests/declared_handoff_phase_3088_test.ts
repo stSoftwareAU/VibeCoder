@@ -512,6 +512,40 @@ Deno.test(
   },
 );
 
+// A later execute attempt must not move the start used for "filed during
+// this run". A follow-up filed on attempt 1 is still this run's.
+Deno.test(
+  "declared_handoff_phase - a dependency filed before a later execute attempt still hands off (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: {
+        createClient: () =>
+          makeClient(
+            calls,
+            [],
+            "OPEN",
+            "ok",
+            "testbot",
+            "2026-10-03T11:00:00Z",
+          ),
+      },
+    });
+    const state = makeState(BLOCKED_OUTPUT);
+    state.runStartTime = Date.parse("2026-10-03T10:00:00Z");
+    state.executeStartTime = Date.parse("2026-10-03T12:00:00Z");
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      state,
+      deps,
+    );
+
+    assertHumanHandoff(result, calls);
+    assertEquals(calls.editIssue, 0);
+  },
+);
+
 // A documented block whose dependency has already closed does not defer.
 // The committed run still hands off to a human and raises no PR.
 Deno.test(
