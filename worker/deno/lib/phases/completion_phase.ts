@@ -64,6 +64,8 @@ import {
   buildRemovedAssertionGateComment,
   MAX_DIFF_CHARS as REMOVED_ASSERTION_MAX_DIFF_CHARS,
   removedAssertionDiffArgs,
+  removedAssertionRenameSidesArgs,
+  testFilesFromRenameSidesList,
   validateRemovedAssertions,
 } from "../removed_assertion_gate.ts";
 import {
@@ -2099,22 +2101,44 @@ async function completionBody(
   // only read when the gate could possibly apply (an unknown changed-files
   // list fails closed and must apply regardless; a known list only applies
   // when some changed file is a test file). When the changed-files list IS
-  // known, the diff is scoped to just those test files via a pathspec, so a
-  // large unrelated hunk (a lockfile, a fixture, generated data) elsewhere
-  // in the branch can never push a test file's own patch past the read cap.
+  // known, the diff is scoped to the test files via a pathspec, so a large
+  // unrelated hunk (a lockfile, a fixture, generated data) elsewhere in the
+  // branch can never push a test file's own patch past the read cap. That
+  // pathspec is both sides of every rename (`--name-only -z --no-renames`),
+  // not the rename-collapsed changed-files list: a pathspec of only the new
+  // name hides the removed lines.
   // A patch that cannot be read — the git command failed, or the scoped
   // patch still reached the cap — is not a silent pass: it is logged loudly
   // and `testDiff` stays `null`, so `validateRemovedAssertions` still
   // enforces the `## Test Plan` heading rule even though the per-assertion
   // rule cannot run.
   // ---------------------------------------------------------------------
-  const removedAssertionTestFiles = changedFilesKnown
-    ? changedFiles.filter((file) => isTestFilePath(file))
-    : [];
+  let removedAssertionTestFiles: string[] = [];
+  let removedAssertionSidesKnown = !changedFilesKnown;
+  if (comparableBase.ok && changedFilesKnown) {
+    const sidesResult = await deps.git.runGitCommand(
+      removedAssertionRenameSidesArgs(comparableBase.value),
+      { cwd: state.repoPath },
+    );
+    if (sidesResult.ok && sidesResult.value.code === 0) {
+      removedAssertionTestFiles = testFilesFromRenameSidesList(
+        sidesResult.value.stdout,
+      );
+      removedAssertionSidesKnown = true;
+    } else {
+      logger.warn(
+        "Could not list both sides of renamed test files for the removed-assertion gate — only the Test Plan heading rule applies",
+      );
+    }
+  }
   const removedAssertionGateCouldApply = !changedFilesKnown ||
-    removedAssertionTestFiles.length > 0;
+    removedAssertionTestFiles.length > 0 ||
+    (changedFilesKnown && changedFiles.some((file) => isTestFilePath(file)));
   let testDiff: string | null = null;
-  if (comparableBase.ok && removedAssertionGateCouldApply) {
+  if (
+    comparableBase.ok && removedAssertionGateCouldApply &&
+    removedAssertionSidesKnown
+  ) {
     const testDiffResult = await deps.git.runGitCommand(
       removedAssertionDiffArgs(
         comparableBase.value,

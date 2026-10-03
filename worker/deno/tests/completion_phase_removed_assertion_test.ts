@@ -227,6 +227,15 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           }
           return ok(scenario.testDiff ?? "");
         }
+        if (
+          cmdArgs[0] === "diff" && cmdArgs.includes("--name-only") &&
+          cmdArgs.includes("-z") && cmdArgs.includes("--no-renames")
+        ) {
+          const paths = scenario.changedFiles.split("\n").filter((path) =>
+            path.length > 0
+          );
+          return ok(paths.length > 0 ? `${paths.join("\0")}\0` : "");
+        }
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok(scenario.changedFiles);
         }

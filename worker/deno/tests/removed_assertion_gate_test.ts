@@ -4,6 +4,8 @@ import {
   findRemovedAssertions,
   findTestPlanSection,
   removedAssertionDiffArgs,
+  removedAssertionRenameSidesArgs,
+  testFilesFromRenameSidesList,
   validateRemovedAssertions,
 } from "../lib/removed_assertion_gate.ts";
 
@@ -546,4 +548,102 @@ Deno.test("buildRemovedAssertionGateComment uses a longer fence when the content
   assertEquals(result.unaccounted.length, 1);
   const comment = buildRemovedAssertionGateComment(result);
   assert(comment.includes("````text"));
+});
+
+Deno.test("testFilesFromRenameSidesList keeps both sides of a rename and drops a non-test", () => {
+  const stdout = [
+    "crates/api/src/lib.rs",
+    "tests/old_test.rs",
+    "tests/new_test.rs",
+    "",
+  ].join("\0");
+  assertEquals(testFilesFromRenameSidesList(stdout), [
+    "tests/old_test.rs",
+    "tests/new_test.rs",
+  ]);
+});
+
+Deno.test("a renamed test file that drops an assertion is still reported", async () => {
+  const dir = await Deno.makeTempDir();
+  const run = async (args: string[]) => {
+    const proc = new Deno.Command("git", {
+      args,
+      cwd: dir,
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const out = await proc.output();
+    const stdout = new TextDecoder().decode(out.stdout);
+    if (out.code !== 0) {
+      const stderr = new TextDecoder().decode(out.stderr);
+      throw new Error(`${args.join(" ")} failed: ${stderr}`);
+    }
+    return stdout;
+  };
+  try {
+    await run(["init", "-b", "main"]);
+    const body = [
+      "fn keep() {",
+      "    let _ = 1;",
+      "    let _ = 2;",
+      "    let _ = 3;",
+      "    let _ = 4;",
+      "    let _ = 5;",
+      '    assert_eq!(rows[0].name, "BBB");',
+      "    let _ = 6;",
+      "    let _ = 7;",
+      "    let _ = 8;",
+      "}",
+      "",
+    ].join("\n");
+    await Deno.mkdir(`${dir}/tests`);
+    await Deno.writeTextFile(`${dir}/tests/old_test.rs`, body);
+    await run(["add", "tests/old_test.rs"]);
+    await run([
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-m",
+      "add test",
+    ]);
+    await run(["checkout", "-b", "feature"]);
+    await run(["mv", "tests/old_test.rs", "tests/new_test.rs"]);
+    await Deno.writeTextFile(
+      `${dir}/tests/new_test.rs`,
+      body.replace('    assert_eq!(rows[0].name, "BBB");\n', ""),
+    );
+    await run(["add", "-A"]);
+    await run([
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "user.name=Test",
+      "commit",
+      "-m",
+      "rename and drop the assertion",
+    ]);
+
+    const sides = await run(removedAssertionRenameSidesArgs("main"));
+    const files = testFilesFromRenameSidesList(sides);
+    assertEquals([...files].sort(), ["tests/new_test.rs", "tests/old_test.rs"]);
+
+    const diff = await run(removedAssertionDiffArgs("main", files));
+    const result = validateRemovedAssertions({
+      changedFiles: ["tests/new_test.rs"],
+      testDiff: diff,
+      prSummaryContent:
+        "## Test Plan\n\n- the rename is noted, not the dropped assertion\n",
+    });
+    assertFalse(result.valid);
+    assert(result.removed.some((assertion) => assertion.text.includes("BBB")));
+
+    const newPathOnly = await run(
+      removedAssertionDiffArgs("main", ["tests/new_test.rs"]),
+    );
+    assertEquals(findRemovedAssertions(newPathOnly), []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

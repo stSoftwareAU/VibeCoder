@@ -1344,8 +1344,14 @@ whenever `git diff --name-only <base>...HEAD` lists a test file
 also when that list cannot be read, fail closed. It then blocks a summary
 with no `## Test Plan` heading.
 
-It reads `git diff --unified=0 --find-renames --diff-filter=AMR <base>...HEAD`
-and, for test files, collects removed lines that start an assertion statement
+It lists both sides of every rename with
+`git diff --name-only -z --no-renames <base>...HEAD` (NUL-separated, so a
+non-ASCII path is not quoted into a pathspec that matches nothing), keeps
+the test files, and reads
+`git diff --unified=0 --find-renames --diff-filter=AMRD <base>...HEAD -- <those test files>`.
+Deleted test files are in that patch. A pathspec of only a rename's new
+name is not used: that would show the file as brand-new and hide the
+removed lines. For those test files it collects removed lines that start an assertion statement
 — `assert…(`, `assert_eq!(`, `assert.x(`, `expect(` not preceded by `.`, and
 Python/bats `assert`/`assert_x` commands; comment lines and `debug_assert!`
 are ignored — extending a statement over the following removed lines until
@@ -1359,8 +1365,9 @@ every unaccounted assertion. The gate checks only that the assertion is
 named — whether the stated requirement truly makes it untrue is left to the
 Standards reviewer, whose brief now asks it to list every assertion the diff
 removes from an existing test and return a `violation` for any that has none.
-When the test-file patch itself cannot be read, only the heading rule
-applies and a warning is logged.
+When the test-file patch itself cannot be read, or it reaches the
+2,000,000-character read cap, only the heading rule applies and a warning
+is logged. The patch is not scanned after a silent cut.
 
 Like the docs-sweep and result-placeholder gates, its verdict is computed
 early and folded into an earlier summary gate's own notice (closure,

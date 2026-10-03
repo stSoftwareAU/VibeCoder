@@ -89,6 +89,7 @@ Related existing rules checked: `CODING-STANDARDS.md` TDD step 3, and `prompts/i
 ## Test Plan
 
 - Added `worker/deno/tests/removed_assertion_gate_test.ts` (21 tests), passed.
+- A later review: the pathspec is both sides of a rename (`git diff --name-only -z --no-renames`), and a real git test renames a test file, drops `assert_eq!(rows[0].name, "BBB")`, and checks the gate blocks. Only the new path hides that assertion.
 - Added `worker/deno/tests/completion_phase_removed_assertion_test.ts` (7 tests), passed. Red-checks:
   - With the standalone gate block disabled, the block, recovery and missing-heading tests went red.
   - With the removed-assertion verdict dropped from the closure fold, the fold test went red.

@@ -62,12 +62,42 @@ const MAX_SUMMARY_SCAN_CHARS = 200_000;
  * assertions, not just the heading rule.
  *
  * `testFiles`, when given and non-empty, scopes the diff to those paths via
- * a `--` pathspec — the caller passes the changed-files list's test files so
- * this never has to read the whole branch diff just to find the test-file
- * hunks within it. The paths are attacker-controlled (the branch under
- * review), so they are placed after a literal `--` and never shell-expanded
- * (this runs through `runGitCommand`'s argv, not a shell).
+ * a `--` pathspec so this never has to read the whole branch diff. The
+ * caller must pass both sides of every rename
+ * ({@link removedAssertionRenameSidesArgs}): a pathspec of only the new
+ * name makes `--find-renames` show a brand-new file and hide the removed
+ * lines. The paths are attacker-controlled (the branch under review), so
+ * they are placed after a literal `--` and never shell-expanded (this runs
+ * through `runGitCommand`'s argv, not a shell).
  */
+export function removedAssertionRenameSidesArgs(base: string): string[] {
+  return [
+    "diff",
+    "--name-only",
+    "-z",
+    "--no-renames",
+    `${base}...HEAD`,
+  ];
+}
+
+/**
+ * Test files from a NUL-separated `--no-renames` name list.
+ *
+ * `-z` leaves paths unquoted, so a non-ASCII path is a real pathspec. Both
+ * sides of a rename are kept. Blank segments from the trailing NUL are
+ * dropped.
+ */
+export function testFilesFromRenameSidesList(stdout: string): string[] {
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const path of stdout.split("\0")) {
+    if (!isTestFilePath(path) || seen.has(path)) continue;
+    seen.add(path);
+    files.push(path);
+  }
+  return files;
+}
+
 export function removedAssertionDiffArgs(
   base: string,
   testFiles?: readonly string[],
