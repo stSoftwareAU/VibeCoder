@@ -1392,7 +1392,7 @@ flowchart TD
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
     G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
     F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
-    F -- "gh failed" --> X["Run fails, no PR —<br/>nothing closes the issue"]
+    F -- "gh failed" --> X["Run fails —<br/>nothing closes the issue"]
     G -- "no — all unassessed" --> N["No follow-up; PR body opens with a<br/>'Degraded run — no follow-up filed'<br/>section saying why"]
 ```
 
@@ -1426,6 +1426,11 @@ flowchart TD
   survives the merge in the follow-up instead.
 - **A healthy run is untouched**, whatever its summary says, and so is a
   degraded run that showed every item `met`.
+- **The "gh failed" branch still fails loud, but the outcome names a live
+  PR** when the run's branch already has one (Issue #3121) — the same lookup
+  the changed-workflow gate below performs. The PR is neither finalised nor
+  auto-merged; the run still fails. See "An exception still has to report the
+  PR it blocked" below.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -1484,6 +1489,13 @@ The outcome kind is what downstream health reporting counts, so "delivered, one
 finding outstanding" is now countable apart from "delivered nothing"
 (Issue #1947). `deriveRunOutcome` attaches the block to **any**
 PR-then-later-step failure, not only this gate's.
+
+The degraded-run guard (see "A degraded run never closes an issue as
+complete" above) follows the same rule: when it cannot file the follow-up
+recording a degraded run's undelivered scope, and the run's branch already
+carries an open PR, the run still fails and that PR is neither finalised nor
+auto-merged, but the outcome is `pr` with `prNumber` plus the block, never
+`no_pr` (Issue #3121).
 
 **Implementation.** `lookupBlockedGatePr` and the gate block in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),

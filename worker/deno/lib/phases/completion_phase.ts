@@ -2159,11 +2159,28 @@ async function completionBody(
     });
     if (!followUp.ok) {
       // Raising the PR now would close the issue with the residue recorded
-      // nowhere — the exact silent loss this guard exists to stop.
-      logger.error(
-        "Degraded run: could not file the follow-up for its undelivered scope — no PR raised",
-        { error: followUp.error.message },
+      // nowhere — the exact silent loss this guard exists to stop. But the
+      // run's own branch may already carry an open PR the agent raised
+      // earlier in the run, and the outcome must name it rather than record
+      // "no PR" over a live one (Issue #3121) — the same risk the
+      // changed-workflow gate above already guards against. This block never
+      // finalises or auto-merges that PR; it only lets the outcome see it.
+      const blockedPr = await lookupBlockedGatePr(
+        repo,
+        state.branchName,
+        deps,
       );
+      logger.error(
+        "Degraded run: could not file the follow-up for its undelivered scope — PR not raised or finalised",
+        {
+          error: followUp.error.message,
+          ...(blockedPr ? { prNumber: blockedPr.number } : {}),
+        },
+      );
+      if (blockedPr) {
+        state.prUrl = blockedPr.url;
+        state.prNumber = blockedPr.number;
+      }
       return {
         status: "failure",
         reason:

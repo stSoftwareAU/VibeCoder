@@ -20,6 +20,7 @@ import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { deriveRunOutcome, type RunOutcome } from "../lib/run_outcome.ts";
 
 const SHA = "9a8b7c6d5e4f30291827364554637281900fedcb";
 const ISSUE = 518;
@@ -170,6 +171,9 @@ interface Outcome {
   reason?: string;
   issueCreates: string[][];
   prBodies: string[];
+  recoverCalls: number;
+  prCreateCalls: number;
+  outcome: RunOutcome;
 }
 
 const EXISTING_PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/777";
@@ -181,6 +185,8 @@ async function runCompletion(opts: {
   failIssueCreate?: boolean;
   /** Issue #3085 review: the branch already has an open PR before this run. */
   prExistsForBranch?: boolean;
+  /** Issue #3121: override the URL `findExistingPrForBranch` reports. */
+  prUrl?: string;
 }): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   if (opts.summary !== null) {
@@ -195,6 +201,8 @@ async function runCompletion(opts: {
 
   const issueCreates: string[][] = [];
   const prBodies: string[] = [];
+  let recoverCalls = 0;
+  let prCreateCalls = 0;
 
   const ctx: IssueContext = {
     repo: "stSoftwareAU/VibeCoder",
@@ -237,6 +245,7 @@ async function runCompletion(opts: {
             );
         }
         if (args[0] === "pr" && args[1] === "create") {
+          prCreateCalls++;
           prBodies.push(args[args.indexOf("--body") + 1] ?? "");
         }
         if (args[0] === "pr" && args[1] === "view") {
@@ -269,7 +278,7 @@ async function runCompletion(opts: {
       findExistingPrForBranch: () =>
         Promise.resolve(
           opts.prExistsForBranch
-            ? { ok: true as const, value: EXISTING_PR_URL }
+            ? { ok: true as const, value: opts.prUrl ?? EXISTING_PR_URL }
             : { ok: false as const, error: new Error("none") },
         ),
       // Captures the body the recovery path writes back to the existing PR
@@ -281,6 +290,7 @@ async function runCompletion(opts: {
         _prUrl: string,
         body?: string,
       ) => {
+        recoverCalls++;
         prBodies.push(body ?? "");
         return Promise.resolve({ ok: true as const, value: "recovered" });
       },
@@ -290,13 +300,27 @@ async function runCompletion(opts: {
   const result = await workOnIssueCompletion(ctx, state, deps);
   await Deno.remove(repoPath, { recursive: true });
 
+  const reason = result.status === "failure" || result.status === "early_exit"
+    ? result.reason
+    : undefined;
+
   return {
     status: result.status,
-    reason: result.status === "failure" || result.status === "early_exit"
-      ? result.reason
-      : undefined,
+    reason,
     issueCreates,
     prBodies,
+    recoverCalls,
+    prCreateCalls,
+    // Issue #3121: the composition `workOnIssue` performs — the failed
+    // result, plus whatever PR fields the phase recorded on its state.
+    outcome: deriveRunOutcome({
+      success: false,
+      phase: "completion",
+      reason: reason ?? "",
+      prUrl: state.prUrl,
+      prNumber: state.prNumber,
+      elapsedSeconds: 42,
+    }),
   };
 }
 
@@ -437,6 +461,58 @@ Deno.test("completion - a degraded run whose follow-up cannot be filed raises no
   assertEquals(outcome.status, "failure");
   assertStringIncludes(outcome.reason ?? "", "follow-up");
   assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
+});
+
+Deno.test("completion - a degraded run whose follow-up cannot be filed names the branch's open PR (Issue #3121)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    failIssueCreate: true,
+    prExistsForBranch: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.outcome.kind, "pr");
+  assert(outcome.outcome.kind === "pr", "narrowing");
+  assertEquals(outcome.outcome.prNumber, 777);
+  assertEquals(outcome.outcome.prUrl, EXISTING_PR_URL);
+  assertEquals(outcome.outcome.blocked?.phase, "completion");
+  assertStringIncludes(
+    outcome.outcome.blocked?.reason ?? "",
+    "follow-up",
+  );
+  assertEquals(outcome.recoverCalls, 0, "the PR must not be recovered");
+  assertEquals(outcome.prBodies.length, 0, "no PR body is ever written");
+  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+});
+
+Deno.test("completion - a degraded run whose follow-up cannot be filed on a branch with no PR raises no PR (Issue #3121)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    failIssueCreate: true,
+    prExistsForBranch: false,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.outcome.kind, "no_pr");
+  assertEquals(outcome.recoverCalls, 0);
+});
+
+Deno.test("completion - a degraded run whose follow-up cannot be filed names no PR for an unnumberable PR URL (Issue #3121)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    failIssueCreate: true,
+    prExistsForBranch: true,
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/not-a-number",
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.outcome.kind, "no_pr");
 });
 
 Deno.test("completion - a docs-sweep block on an existing-PR branch still runs the degraded-delivery guard first (Issue #3085 review)", async () => {
