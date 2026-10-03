@@ -1180,6 +1180,24 @@ gate if a model-generation name reappears in this document.
   what `.vibe-run-budget.md` says (#3066); one called a test the summary
   cites but the diff lacks a violation while the named-test rule accepts a
   test already tracked at the head (#3075).
+- **Scope a rule to the runs it is true for.**
+  `prompts/coding_guidelines/prompt.md` is rendered into every phase that
+  `CODING_GUIDELINES_LAYER_BY_PHASE` (`worker/deno/lib/prompt_builder.ts`)
+  lists for its layer: every phase loads the core layer, and the `code`
+  layer reaches issue, CI-fix, PR-feedback, merge-conflict, custom PR and
+  workflow-setup runs alike, so a layer marker cannot say "issue runs only".
+  Before you add a sentence there about what the worker does (what it reads,
+  honours, defers or ignores), check it against the processor for each run
+  that loads it. If it holds for only some of them, name those runs in the
+  sentence ("In an issue run, …") or move the sentence to that run type's
+  own `prompts/<type>/prompt.md`. Two fleet PRs were sent back for this: one
+  told every run that a `Depends on owner/repo#N` hand-off is not read once
+  work is committed, while a CI-fix run always has commits and
+  `_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts` reads
+  it from `.pr_response_message` (#3075); one said the escape hatch is
+  honoured only when the run leaves no commit, while
+  `worker/deno/lib/pr_feedback_processor.ts` runs `detectEscapeHatch` on
+  `.pr_response_message` whatever the branch holds (#3095).
 
 ## Configuration
 

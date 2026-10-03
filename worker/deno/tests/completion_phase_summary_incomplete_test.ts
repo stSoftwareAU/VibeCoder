@@ -27,7 +27,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { describeRunOutcome } from "../lib/run_outcome.ts";
+import { deriveRunOutcome, describeRunOutcome } from "../lib/run_outcome.ts";
 
 const SHA = "3c2b1a0908f7e6d5c4b3a29180716253440fedcb";
 const PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/1107";
@@ -148,6 +148,8 @@ interface Observed {
   recoverCalls: number;
   finaliseCalls: number;
   comments: string[];
+  prUrl?: string;
+  prNumber?: number;
 }
 
 /** Drive the live completion phase and report what it did. */
@@ -273,6 +275,8 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
     recoverCalls,
     finaliseCalls,
     comments,
+    prUrl: state.prUrl,
+    prNumber: state.prNumber,
   };
 }
 
@@ -385,7 +389,7 @@ Deno.test(
 );
 
 Deno.test(
-  "completion - a summary rule with an unnumberable PR URL fails rather than naming #0",
+  "completion - a summary rule with an unnumberable PR URL fails without recovering the PR or naming #0 (Issue #3139)",
   async () => {
     const observed = await runCompletion({
       issueBody: ISSUE_WITH_CRITERIA,
@@ -397,6 +401,21 @@ Deno.test(
 
     assertEquals(observed.status, "failure");
     assertEquals(observed.outcomeKind, undefined);
+    assertEquals(observed.prUrl, undefined);
+    assertEquals(observed.prNumber, undefined);
+    assertEquals(
+      observed.recoverCalls,
+      0,
+      "an unnumberable URL must fail before the PR is recovered",
+    );
+    const derived = deriveRunOutcome({
+      success: false,
+      phase: "completion",
+      reason: observed.reason ?? "",
+      prUrl: observed.prUrl,
+      prNumber: observed.prNumber,
+    });
+    assertEquals(derived.kind, "no_pr");
   },
 );
 

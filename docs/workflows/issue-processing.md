@@ -1513,7 +1513,7 @@ flowchart TD
     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
     S -- yes --> P
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
-    G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
+    G -- yes --> F["File (or reuse and update)<br/>one idle-task follow-up<br/>naming each shortfall"]
     F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
     F -- "gh failed" --> Q{"Branch already<br/>has an open PR?"}
     Q -- no --> X["Run fails, no PR raised"]
@@ -1547,8 +1547,13 @@ flowchart TD
 - **The follow-up** carries the `idle-task` label — the one work-trigger label
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run
-  on the same issue reuses the open follow-up. It lists what was delivered too,
-  so the next run checks rather than redoes it. Each criterion line is copied
+  on the same issue reuses the open follow-up rather than filing another — and
+  rewrites its body to the later run's shortfalls and delivered items (the
+  marker is kept), so the follow-up never goes stale (Issue #3145). A failed
+  update fails the run just like a failed filing: the caller must not raise a
+  PR that would close the parent with the residue recorded nowhere. It lists
+  what was delivered too, so the next run checks rather than redoes it. Each
+  criterion line is copied
   from the untrusted issue body, or, for an unmatched or subjectless
   `partial`/`missing` gap, from the agent-written closure entry (its subject,
   or its `reason:` when the subject has no words). Delivered lines are copied
@@ -1612,6 +1617,11 @@ A degraded run on an existing-PR branch is the exception to `summary_incomplete`
 When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
 The outcome is `pr` + `blocked` naming that PR, so the release comment does not
 report the run as having delivered nothing.
+
+An existing-PR branch whose URL cannot be numbered is a second exception: even
+once the degraded-run guard succeeds, `reportSummaryRuleBlock` fails the run
+*before* recovering or finalising that PR, so neither the body nor the labels
+are rewritten and state never names `#0`. The outcome is `no_pr` (Issue #3139).
 
 **Two gates are deliberate exceptions, and they run first.** The changed-workflow
 file checks above are the second: a workflow file carrying a finding is a defect
