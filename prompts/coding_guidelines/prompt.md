@@ -1084,6 +1084,18 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A new test must go red without its change.** A test added to guard a
+change — a regression test a fix or a review asks for, a documentation-drift
+test, a growth guard — must go red when only that change is removed. A test
+whose input never reaches the failure passes either way: a fake that throws
+into a catch that returns the expected value, a fixture that a re-sort puts
+in order before the assertion runs, a phrase the section already held before
+the change. Remove the change on purpose (delete the clause, drop the cap,
+restore the old expression), run the test, see it fail, then restore it. A
+new test that stays green without its change is a blocking self-review
+finding. **A negative test must be able to fail** below is this rule for an
+assertion that something does *not* happen.
+
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
 rather than stale — needs a fixture that contains the forbidden thing: a real

@@ -183,7 +183,7 @@ Rule 5 bans keyword checks over documentation; this subsection is the one
 exception, and the `worker/deno/tests/*_docs_test.ts` suites are what it exists
 for. They are the only guard on a documented rule, switch name or rendered line
 drifting away from the code that produces it, so such a suite stays — but it
-earns its place by meeting all three conditions:
+earns its place by meeting all four conditions:
 
 1. **Section-scoped.** Read the page with `readRepoDoc` and narrow it with
    `section` from `worker/deno/tests/support/markdown_docs.ts`, which masks
@@ -200,6 +200,12 @@ earns its place by meeting all three conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
+4. **The pinned phrase occurs only in the rule being added.** A phrase the
+   section already held before the change stays green when the new rule is
+   deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
+   issue prompt already carried. Check the phrase is absent from the base
+   branch's version of that section, or delete the new rule and confirm the
+   test goes red.
 
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
@@ -312,6 +318,18 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A new test must go red without its change.** A test added to guard a
+change — a regression test a fix or a review asks for, a documentation-drift
+test, a growth guard — must go red when only that change is removed. A test
+whose input never reaches the failure passes either way: a fake that throws
+into a catch that returns the expected value, a fixture that a re-sort puts
+in order before the assertion runs, a phrase the section already held before
+the change. Remove the change on purpose (delete the clause, drop the cap,
+restore the old expression), run the test, see it fail, then restore it. A
+new test that stays green without its change is a blocking self-review
+finding. **A negative test must be able to fail** below is this rule for an
+assertion that something does *not* happen.
+
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
 rather than stale — needs a fixture that contains the forbidden thing: a real
@@ -408,7 +426,9 @@ or refactor with the supported behaviour intact. If so, justify it as an
 explicit contract or leave it out. Ask a negative assertion the opposite
 question too: would it fail if the guard it protects were removed? If not,
 its fixture lacks the forbidden value — see **A negative test must be able to
-fail** above. See Playwright's
+fail** above. Ask every new test the same question of its change: would it
+fail if only that change were removed? See **A new test must go red without
+its change** above. See Playwright's
 [user-visible testing guidance](https://playwright.dev/docs/best-practices)
 and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
 
@@ -513,7 +533,11 @@ simply no longer waits out a stopwatch to do it.
   replaced it went red on a loaded laptop reading 30 ms against 355 ms for work
   that is linear. **A fleet of unlike machines under unlike loads has no budget
   and no ratio that means the same thing twice**, and a flaky gate teaches
-  everyone to re-run rather than read the result.
+  everyone to re-run rather than read the result. Whichever form guards it,
+  build the test from the input shape that was slow, and run it against the
+  unfixed pattern to see it hang or fail the growth check before counting it:
+  Issue #3085's growth test fed dots that ran to the end of the value, which
+  never backtracks, when the input that does is dots followed by `x`.
 - **If, and only if, no observable output distinguishes the two, guard by
   shape rather than by clock** — catastrophic backtracking has no wrong output,
   only a runtime one, so such a test must measure. Use
