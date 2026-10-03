@@ -8,7 +8,7 @@ The CI-fix prompt now fixes a red dependency audit in the PR, even when the base
 flowchart TD
     R[Red CI check] --> A{Dependency audit?<br/>deno/cargo audit, GHSA-/RUSTSEC-}
     A -- yes --> F[Fix in this PR:<br/>patched upgrade or edge removed/replaced]
-    F --> T[Track base failure: search open issue or file one,<br/>reply names it with Fixes owner/repo#N]
+    F --> T[Track base failure: Fixes owner/repo#N<br/>in the commit, the reply, and the summary]
     F -. no edge can go .-> H[needs-human + comment naming advisory]
     A -- no --> B{Red on base?}
     B -- yes --> D[Defer: Depends on owner/repo#N]
@@ -27,7 +27,7 @@ A red audit blocks every PR in the repo until one PR fixes it. If every PR defer
 
 - "Fixed" means a patched upgrade, or removing or replacing the dependency edge that pulls in the vulnerable package (the stSoftwareAU/GRQ#5157 precedent). `--ignore`/allow-list entries and audit workflow or command edits never count.
 - `needs-human` is limited to the case where no edge can be upgraded, removed or replaced. It is applied together with a reply that names the advisory ID.
-- The tracking-issue search (`--state open`, descriptive labels only) is kept, so the base-branch failure stays visible. The fixing reply names that issue with `Fixes owner/repo#N`.
+- The tracking-issue search (`--state open`, descriptive labels only) is kept, so the base-branch failure stays visible. `Fixes owner/repo#N` goes in the fixing commit message, the reply, and the committed PR summary. A PR comment does not close the issue.
 - Every other check that is already red on the base branch still defers. The "Base-branch failures" text for those checks is unchanged apart from the new leading exclusion.
 
 ### Undiscoverable Facts
@@ -38,7 +38,7 @@ A red audit blocks every PR in the repo until one PR fixes it. If every PR defer
 ## Evidence
 
 - **Red run against unchanged docs:** run in an `origin/main` worktree with only the new test added, `deno test tests/ci_fix_audit_in_pr_3116_test.ts` gave **7/7 FAILED**. The same test passes 7/7 on this branch.
-- **Docs sweep:** grepped for "Dependency audit failures", "Base-branch failures", "A CI-fix run is the exception", `RUSTSEC` and `Depends on`. Updated `prompts/ci_fix/prompt.md`, `prompts/coding_guidelines/prompt.md`, `CODING-STANDARDS.md` and `docs/security-advisory-triage.md` (that doc already described CI-fix audit behaviour, so it was stale).
+- **Docs sweep:** grepped for "Dependency audit failures", "Base-branch failures", "A CI-fix run is the exception", `RUSTSEC` and `Depends on`. Updated `prompts/ci_fix/prompt.md`, `prompts/coding_guidelines/prompt.md`, `CODING-STANDARDS.md`, `docs/security-advisory-triage.md`, `docs/workflows/ci-fix.md` (section: Base-branch failure) and `docs/PROMPTS.md` (the ci_fix row). Both manuals now link the prompt's Dependency audit failures section.
 
 ## Acceptance Criteria
 
@@ -47,7 +47,7 @@ A red audit blocks every PR in the repo until one PR fixes it. If every PR defer
 3. "Fixed" = patched upgrade, or removed or replaced dependency edge: reviewer: met
 4. Rules out `--ignore`/allow-list entries and audit-workflow edits: reviewer: met
 5. `needs-human` with advisory-naming comment only when no edge can go: reviewer: met
-6. Tracking-issue search-or-file kept; reply names it with `Fixes owner/repo#N`: reviewer: met
+6. Tracking-issue search-or-file kept; `Fixes owner/repo#N` is in the commit message, the reply, and the PR summary: reviewer: met
 7. "Base-branch failures" excludes audits; other deferral text unchanged: reviewer: met
 8. coding_guidelines and CODING-STANDARDS carry the carve-out, scoped to CI-fix runs: reviewer: met
 9. "A CI-fix run is the exception" preserved: reviewer: met
@@ -71,7 +71,7 @@ No material departures found. Checked: rule consistency across prompts, pairing 
 
 ## Test Plan
 
-- [x] `deno test tests/ci_fix_audit_in_pr_3116_test.ts`: 7 passed
+- [x] `deno test tests/ci_fix_audit_in_pr_3116_test.ts`: 9 passed. The extra two pin the audit exception in `docs/workflows/ci-fix.md` and `docs/PROMPTS.md`, and the tracking test now requires the commit message and the summary path.
 - [x] Related tests (`pr_claims_verified_3058`, `2574`, `ci_fix_prompt_v4`): 26 passed
 - [x] `./quality.sh < /dev/null`: exit 0, PASSED (deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep). The config integration step was skipped with "deno or .config.json not available".
 - [x] New test shown red (7/7) against `origin/main` docs

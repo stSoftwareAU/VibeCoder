@@ -57,6 +57,9 @@ Deno.test("Issue #3140 - ci_fix Dependency audit failures section covers the tra
       "--state open",
       "descriptive labels only",
       "`Fixes owner/repo#N`",
+      "the fixing commit message",
+      "docs/archive/pr-summaries/pr-summary-*.md",
+      "A PR comment does not close the issue",
       "Every open PR that is red on the same advisory fixes it itself; none waits for another",
     ]
   ) {
@@ -119,4 +122,32 @@ Deno.test("Issue #3140 - coding_guidelines prompt scopes the audit carve-out ins
 
 Deno.test("Issue #3140 - CODING-STANDARDS scopes the audit carve-out inside the CI-fix exception", async () => {
   await assertCiFixAuditScoping("CODING-STANDARDS.md");
+});
+
+/**
+ * The operator manual and the prompt index must name the same exception the
+ * prompt does, and point at the section that states it.
+ */
+async function assertAuditExceptionLinked(relative: string): Promise<void> {
+  const doc = await readRepoDoc(relative);
+  const text = flat(doc);
+  for (
+    const phrase of [
+      "fixed in the PR even when the base is red",
+      "never deferred",
+      "needs-human",
+      "only when no edge can be upgraded, removed or replaced",
+      "prompts/ci_fix/prompt.md#dependency-audit-failures",
+    ]
+  ) {
+    assertStringIncludes(text, phrase);
+  }
+}
+
+Deno.test("Issue #3140 - CI-fix manual states the audit exception and links the prompt", async () => {
+  await assertAuditExceptionLinked("docs/workflows/ci-fix.md");
+});
+
+Deno.test("Issue #3140 - prompt index states the audit exception and links the prompt", async () => {
+  await assertAuditExceptionLinked("docs/PROMPTS.md");
 });
