@@ -463,7 +463,8 @@ async function lookupBlockedGatePr(
  *   done, the summary is short, and the issue stays attached to its PR
  *   instead of going back in the queue. If the guard itself cannot file its
  *   follow-up, this reports `failure` instead and the PR is left
- *   unfinalised.
+ *   unfinalised. An existing PR whose URL cannot be numbered also fails the
+ *   run — before the PR is recovered or finalised (Issue #3139).
  *
  * On the no-PR branch the guard is *not* run here — a follow-up it files
  * would promise "that run's PR still completes #N on merge" for a PR that
@@ -537,6 +538,7 @@ async function reportSummaryRuleBlock(
   }
 
   const prUrl = existingPr.value;
+  const prNumber = prNumberFromUrl(prUrl);
   logger.warn(
     "PR-summary rule broken on a run that had already raised its PR — " +
       "recording the shortfall against that PR instead of failing the run " +
@@ -549,7 +551,6 @@ async function reportSummaryRuleBlock(
     // is still the run's PR. Naming it here is what makes the outcome `pr`
     // + `blocked` instead of `no_pr` over a live PR (Issue #2044). An
     // unnumberable URL names no PR instead (Issue #3136).
-    const prNumber = prNumberFromUrl(prUrl);
     if (prNumber > 0) {
       state.prUrl = prUrl;
       state.prNumber = prNumber;
@@ -562,6 +563,20 @@ async function reportSummaryRuleBlock(
     }
     return guarded.result;
   }
+
+  // A PR URL this phase cannot number is a PR it cannot name on the
+  // outcome, and an outcome that reads "Raised #0" is worse than a failure
+  // — checked before recovery so neither the PR is rewritten or linked nor
+  // state names #0 (Issue #3139).
+  if (prNumber <= 0) {
+    logger.warn(
+      "Could not read a PR number from the existing PR URL — reporting the " +
+        "summary rule as a failure rather than naming an unnumbered PR",
+      { repo, issueNumber, prUrl },
+    );
+    return { status: "failure", reason };
+  }
+
   const recovered = await recoverAndFinaliseExistingPr(
     prUrl,
     ctx,
@@ -570,19 +585,6 @@ async function reportSummaryRuleBlock(
     deps,
   );
   if (recovered.status !== "continue") return recovered;
-
-  const prNumber = state.prNumber ?? 0;
-  if (prNumber <= 0) {
-    // A PR URL this phase cannot number is a PR it cannot name on the
-    // outcome, and an outcome that reads "Raised #0" is worse than a
-    // failure. Fail loud and let the ordinary retry path have it.
-    logger.warn(
-      "Could not read a PR number from the existing PR URL — reporting the " +
-        "summary rule as a failure rather than naming an unnumbered PR",
-      { repo, issueNumber, prUrl },
-    );
-    return { status: "failure", reason };
-  }
 
   return {
     status: "early_exit",
