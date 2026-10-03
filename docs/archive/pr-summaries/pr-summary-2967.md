@@ -75,4 +75,4 @@ flowchart TD
   - a snapshot failure after a formatter, which makes no add or commit
   - two `outermostConfigDirs` cases
 - `lib_sweep_coverage_test.ts` passes with the new slice.
-- Full `./quality.sh`: QUALITY_RESULT_PLACEHOLDER
+- Full `./quality.sh`: result not recorded

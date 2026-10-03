@@ -420,7 +420,10 @@ blocking self-review finding — add the test or drop the claim, and never commi
 an anchor that references a test that does not exist. A test cited as evidence
 is also run on the final head and its result reported, and a coverage claim
 names the branches its tests exercise — "every branch" with one branch
-untested is an over-claim (Issue #3058).
+untested is an over-claim (Issue #3058). An unresolved placeholder where a
+result belongs — an unfilled ALL-CAPS `..._PLACEHOLDER` token left where
+`./quality.sh`'s outcome should be, say — counts as an unreported result and
+is itself a blocking self-review finding (Issue #3124).
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's
