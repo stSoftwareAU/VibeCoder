@@ -142,6 +142,10 @@ async function assertAuditExceptionLinked(relative: string): Promise<void> {
       "needs-human",
       "only when no edge can be upgraded, removed or replaced",
       "prompts/ci_fix/prompt.md#dependency-audit-failures",
+      // The claim is scoped to what the prompt instructs, not a worker
+      // guarantee — #3141 (still open) is what would make it one.
+      "stSoftwareAU/VibeCoder#3141",
+      "does not enforce this exception",
     ]
   ) {
     assertStringIncludes(text, phrase);
