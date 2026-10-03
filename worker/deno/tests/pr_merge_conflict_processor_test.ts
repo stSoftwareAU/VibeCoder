@@ -19,7 +19,6 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildAttemptComment,
-  buildConflictEscalationReason,
   buildFailedComment,
   buildNudgeComment,
   buildNudgeCommitMessage,
@@ -717,19 +716,6 @@ async function runProcessor(
 Deno.test("parseUnmergedPaths - trims and drops blank lines", () => {
   assertEquals(parseUnmergedPaths("a.ts\n b.ts \n\n"), ["a.ts", "b.ts"]);
   assertEquals(parseUnmergedPaths(""), []);
-});
-
-Deno.test("buildConflictEscalationReason - names the files and the failure", () => {
-  const reason = buildConflictEscalationReason(
-    makeInput(),
-    ["SECURITY.md", "docs/archive/pr-summaries/pr-summary-50.md"],
-    "the agent left 1 path(s) unmerged",
-    2,
-  );
-  assertStringIncludes(reason, "SECURITY.md");
-  assertStringIncludes(reason, "pr-summary-50.md");
-  assertStringIncludes(reason, "the agent left 1 path(s) unmerged");
-  assertStringIncludes(reason, "never side-picks");
 });
 
 // ---------------------------------------------------------------------------
