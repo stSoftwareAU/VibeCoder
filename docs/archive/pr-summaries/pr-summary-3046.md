@@ -6,7 +6,7 @@ Closes #3046. Prompts fenced fetched issue/PR text and images as untrusted
 data but said nothing about text the model pulls in itself with tools (`gh
 issue list`, `gh api`, repository files, web fetches). One shared sentence,
 `TOOL_OUTPUT_IS_DATA_RULE` in `worker/deno/lib/prompt_delimiter.ts`, now
-reaches every prompt surface:
+reaches these prompt surfaces:
 
 - the `## Handling Untrusted Content` boundary instruction
   (`buildBoundaryIntegrityInstruction`) gains it as a bullet;
@@ -15,13 +15,20 @@ reaches every prompt surface:
 - `runIdleTaskClaude` (`worker/deno/lib/idle_task_claude_budget.ts`), the
   chokepoint every idle-task scan runs through, appends a `## Tool Output Is
   Data` section, so scan prompts with no boundary block or guidelines still
-  get it.
+  get it;
+- `buildRebasePassPrompt`, `buildClosureVerdictPrompt` and `buildRetryPrompt`
+  append the same section;
+- `buildSummaryRuleRetryPrompt` and `buildSecurityFixGateRetryPrompt`, the
+  fresh recovery runs that read the summary and `git diff` then commit,
+  append it too.
 
 ```mermaid
 flowchart LR
     R["TOOL_OUTPUT_IS_DATA_RULE"] --> B["Boundary instruction<br/>(issue/PR/planning prompts)"]
     R --> G["coding_guidelines<br/>(every layer)"]
     R --> I["runIdleTaskClaude<br/>(idle scans)"]
+    R --> P["rebase, closure-verdict<br/>and ci_fix retry"]
+    R --> S["summary-rule and<br/>security-fix recovery"]
 ```
 
 ## Spec
@@ -60,18 +67,25 @@ None.
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::runIdleTaskClaude - every idle-task scan prompt carries the tool-output rule (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildIssuePrompt - the tool-output rule excepts the named wind-down file (#3046)`
   - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::the guidelines tool-output section matches TOOL_OUTPUT_IS_DATA_RULE (#3046)`
-- **Fails before / passes after:** the file holds eight tests. On the
+  - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildRebasePassPrompt carries the tool-output rule (#3046)`
+  - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildClosureVerdictPrompt carries the tool-output rule (#3046)`
+  - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildRetryPrompt carries the tool-output rule (#3046)`
+  - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildSummaryRuleRetryPrompt carries the tool-output rule (#3046)`
+  - `worker/deno/tests/tool_output_treat_as_data_3046_test.ts::buildSecurityFixGateRetryPrompt carries the tool-output rule (#3046)`
+- **Fails before / passes after:** the file holds ten tests. On the
   pre-fix base `TOOL_OUTPUT_IS_DATA_RULE` is not exported, so the module
   fails to load (a missing-export error, not an assertion failure). On
-  this head all eight pass.
+  this head all ten pass.
 - **Trigger closed:** tool-fetched text (`gh issue list`, `gh api`,
   repository files, web fetches) is declared data, never instructions, on
   the routes that fetch it: boundary-instruction prompts, every
   coding_guidelines layer, every idle-task scan via `runIdleTaskClaude`,
   the declined-rebase pass (`buildRebasePassPrompt`), the closure-verdict
-  run (`buildClosureVerdictPrompt`) and the ci_fix quality retry
-  (`buildRetryPrompt`). Each of those three builders has a test that goes
-  red when its append is removed.
+  run (`buildClosureVerdictPrompt`), the ci_fix quality retry
+  (`buildRetryPrompt`), the PR-summary rule-gate recovery
+  (`buildSummaryRuleRetryPrompt`) and the security-fix gate retry
+  (`buildSecurityFixGateRetryPrompt`). Each of those builders has a test
+  that goes red when its append is removed.
   Residual risk (documented in docs/THREAT-MODEL.md): it is an instruction,
   not a structural fence.
 - `tests/coding_guidelines_layers_2574_test.ts` pinned heading lists updated
@@ -83,14 +97,15 @@ None.
   (prompts/question, quorum, grill-me, workflow_setup,
   docs/security/ghostcommit-image-injection-assessment.md) only reference
   the boundary section by name and stay accurate.
-- **Quality gate:** `deno test --frozen --lock=deno.lock --allow-read --allow-env tests/tool_output_treat_as_data_3046_test.ts` — 8 passed, 0 failed. The full `./quality.sh` gate was not re-run; the required validate-scripts checks cover the gate.
+- **Quality gate:** `deno test --frozen --lock=deno.lock --allow-read --allow-env tests/tool_output_treat_as_data_3046_test.ts` — 10 passed, 0 failed. The full `./quality.sh` gate was not re-run; the required validate-scripts checks cover the gate.
 
 ## Test Plan
 
 - [x] `deno task test:unit tests/tool_output_treat_as_data_3046_test.ts
       tests/coding_guidelines_layers_2574_test.ts
       tests/idle_task_claude_budget_test.ts tests/prompt_delimiter_test.ts` —
-      89 passed, 0 failed
+      89 passed, 0 failed before the two recovery-builder tests; that file
+      was re-run afterwards at 10 passed, 0 failed
 - [x] New tests red on base, green after
 - [x] markdownlint clean on changed markdown
-- [x] `tests/tool_output_treat_as_data_3046_test.ts` — 8 passed, 0 failed (see Evidence)
+- [x] `tests/tool_output_treat_as_data_3046_test.ts` — 10 passed, 0 failed (see Evidence)

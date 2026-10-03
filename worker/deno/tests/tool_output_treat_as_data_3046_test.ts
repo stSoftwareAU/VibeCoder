@@ -25,6 +25,8 @@ import type {
 } from "../lib/claude_runner.ts";
 import { buildRebasePassPrompt } from "../lib/branch_conflict_pass.ts";
 import { buildClosureVerdictPrompt } from "../lib/closure_verdict_recovery.ts";
+import { buildSecurityFixGateRetryPrompt } from "../lib/security_fix_gate_retry.ts";
+import { buildSummaryRuleRetryPrompt } from "../lib/summary_rule_gate_retry.ts";
 import {
   buildBoundaryIntegrityInstruction,
   TOOL_OUTPUT_IS_DATA_RULE,
@@ -208,5 +210,26 @@ Deno.test("buildClosureVerdictPrompt carries the tool-output rule (#3046)", () =
 
 Deno.test("buildRetryPrompt carries the tool-output rule (#3046)", () => {
   const prompt = buildRetryPrompt("Error: boom");
+  assertStringIncludes(prompt, TOOL_OUTPUT_IS_DATA_RULE);
+});
+
+Deno.test("buildSummaryRuleRetryPrompt carries the tool-output rule (#3046)", () => {
+  const prompt = buildSummaryRuleRetryPrompt(
+    { reason: "closure block missing", comment: "add the closure block" },
+    "o/r",
+    1,
+  );
+  assertStringIncludes(prompt, TOOL_OUTPUT_IS_DATA_RULE);
+});
+
+Deno.test("buildSecurityFixGateRetryPrompt carries the tool-output rule (#3046)", () => {
+  const prompt = buildSecurityFixGateRetryPrompt({
+    repo: "o/r",
+    issueNumber: 1,
+    missing: ["test-identifier-in-diff"],
+    blockedAt: "2026-10-03T00:00:00.000Z",
+    blockCount: 0,
+    declarations: ['Deno.test("example"'],
+  });
   assertStringIncludes(prompt, TOOL_OUTPUT_IS_DATA_RULE);
 });
