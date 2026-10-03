@@ -42,7 +42,10 @@ Deno.test("findResultPlaceholders - ignores a token inside a fenced code block b
 
 Deno.test("findResultPlaceholders - distinct tokens in first-seen order", () => {
   const text = "A_PLACEHOLDER then B_PLACEHOLDER then A_PLACEHOLDER again";
-  assertEquals(findResultPlaceholders(text), ["A_PLACEHOLDER", "B_PLACEHOLDER"]);
+  assertEquals(findResultPlaceholders(text), [
+    "A_PLACEHOLDER",
+    "B_PLACEHOLDER",
+  ]);
 });
 
 Deno.test("validateResultPlaceholders - valid when clean", () => {
@@ -89,14 +92,17 @@ Deno.test("buildReplyPlaceholderRetryPrompt - names the token(s) and the file", 
 Deno.test("retryReplyPlaceholdersOnce - calls runAgent exactly once when a token is present", async () => {
   let runAgentCalls = 0;
   let lastPrompt = "";
-  const outcome = await retryReplyPlaceholdersOnce("/fake/.pr_response_message", {
-    readFile: () => Promise.resolve("Result: QUALITY_RESULT_PLACEHOLDER"),
-    runAgent: (prompt) => {
-      runAgentCalls++;
-      lastPrompt = prompt;
-      return Promise.resolve({ ok: true });
+  const outcome = await retryReplyPlaceholdersOnce(
+    "/fake/.pr_response_message",
+    {
+      readFile: () => Promise.resolve("Result: QUALITY_RESULT_PLACEHOLDER"),
+      runAgent: (prompt) => {
+        runAgentCalls++;
+        lastPrompt = prompt;
+        return Promise.resolve({ ok: true });
+      },
     },
-  });
+  );
   assertEquals(runAgentCalls, 1);
   assertStringIncludes(lastPrompt, "QUALITY_RESULT_PLACEHOLDER");
   assertEquals(outcome.retried, true);
@@ -105,40 +111,49 @@ Deno.test("retryReplyPlaceholdersOnce - calls runAgent exactly once when a token
 
 Deno.test("retryReplyPlaceholdersOnce - does not call runAgent when the file is clean", async () => {
   let runAgentCalls = 0;
-  const outcome = await retryReplyPlaceholdersOnce("/fake/.pr_response_message", {
-    readFile: () => Promise.resolve("All good, nothing to see here."),
-    runAgent: () => {
-      runAgentCalls++;
-      return Promise.resolve({ ok: true });
+  const outcome = await retryReplyPlaceholdersOnce(
+    "/fake/.pr_response_message",
+    {
+      readFile: () => Promise.resolve("All good, nothing to see here."),
+      runAgent: () => {
+        runAgentCalls++;
+        return Promise.resolve({ ok: true });
+      },
     },
-  });
+  );
   assertEquals(runAgentCalls, 0);
   assertEquals(outcome.retried, false);
 });
 
 Deno.test("retryReplyPlaceholdersOnce - does not call runAgent when the file is missing", async () => {
   let runAgentCalls = 0;
-  const outcome = await retryReplyPlaceholdersOnce("/fake/.pr_response_message", {
-    readFile: () => Promise.resolve(undefined),
-    runAgent: () => {
-      runAgentCalls++;
-      return Promise.resolve({ ok: true });
+  const outcome = await retryReplyPlaceholdersOnce(
+    "/fake/.pr_response_message",
+    {
+      readFile: () => Promise.resolve(undefined),
+      runAgent: () => {
+        runAgentCalls++;
+        return Promise.resolve({ ok: true });
+      },
     },
-  });
+  );
   assertEquals(runAgentCalls, 0);
   assertEquals(outcome.retried, false);
 });
 
 Deno.test("retryReplyPlaceholdersOnce - one turn only, even if still dirty afterwards (caller does not re-check)", async () => {
   let runAgentCalls = 0;
-  const outcome = await retryReplyPlaceholdersOnce("/fake/.pr_response_message", {
-    readFile: () => Promise.resolve("Result: QUALITY_RESULT_PLACEHOLDER"),
-    runAgent: () => {
-      runAgentCalls++;
-      // The agent fails to fix it — the helper must not loop or retry again.
-      return Promise.resolve({ ok: true });
+  const outcome = await retryReplyPlaceholdersOnce(
+    "/fake/.pr_response_message",
+    {
+      readFile: () => Promise.resolve("Result: QUALITY_RESULT_PLACEHOLDER"),
+      runAgent: () => {
+        runAgentCalls++;
+        // The agent fails to fix it — the helper must not loop or retry again.
+        return Promise.resolve({ ok: true });
+      },
     },
-  });
+  );
   assertEquals(runAgentCalls, 1);
   assertEquals(outcome.retried, true);
 
