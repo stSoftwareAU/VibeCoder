@@ -288,14 +288,16 @@ apply:
   `needs-human` included, is removed after creation, so name `needs-human` in
   the comment instead.
 - Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
-  as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
-  and hands it to a human.
-- This free-text hand-off is honoured only when the run leaves no commit and
-  no uncommitted change: decide before you edit any file, because the worker
-  commits and pushes the working tree periodically and again at the end of
-  the run. Once a file has changed, end with a `## Blocked:` section or the
-  planning marker instead — a free-text hand-off is not read, and the worker
-  raises a PR that closes this issue.
+  as `{{REPO}}#NNN`), and leave the issue open. The worker releases its claim
+  and hands it to a human only while the branch has no commits and no
+  uncommitted changes against the base. This free-text hand-off is honoured
+  only when the run leaves no commit and no uncommitted change: decide before
+  you edit any file, because the worker commits and pushes the working tree
+  periodically and again at the end of the run. Once a file has changed, end
+  with a `## Blocked:` section or the planning marker instead — a free-text
+  hand-off is not read. That declared hand-off is still read after a commit,
+  and the worker defers or hands off instead of raising a PR that closes
+  this issue.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -308,8 +310,9 @@ change, and end your final message with this marker on its own line:
 <!-- vibe-needs-planning reason="<why it splits — the independent pieces you found>" -->
 ```
 
-The worker applies `planning` through its audited hand-off, posts your reason
-on the issue, and the planning run breaks it into sub-issues. `reason` is
+The worker applies `planning` through its audited hand-off only while the
+branch has no commits and no uncommitted changes against the base. It posts
+your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
 goes to a human instead. This marker is honoured even when you have already
 committed — the worker then raises no PR. The marker applies to `work-on`
@@ -605,6 +608,14 @@ A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
 broken.
 
+**A violation this diff introduced blocks the PR — you enforce this one, not
+the gate.** A doc comment the change made wrong, a test the summary cites that
+exists neither in the diff nor at the head, a standard breached in a line this
+PR wrote: fix it in this diff before you raise the PR, never list it as
+standing. Only a departure that predates the diff, or one the issue itself
+requires, may stand, and its
+`reason:` says which.
+
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
@@ -647,6 +658,29 @@ one is broken:
   silent.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria.
+
+Two more rules no gate parses — a reviewer sends the PR back for either:
+
+- **Demonstrate a criterion; do not assert it.** A test named as evidence must
+  exist in the diff (or at the head) and must have been run on the final head;
+  a coverage claim — "every branch", "all rejections" — names the branches its
+  tests exercise, and one untested branch makes it `partial`.
+- **A missing core deliverable is not a PR.** When the thing the issue asks for
+  is `missing`, finish it. A free-text escape hatch is honoured only while
+  the branch has no commits and no uncommitted changes — the worker's change
+  detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
+  when `git log <base>..HEAD` lists any commit (including one a later revert
+  cancels, or a branch commit a base merge absorbed) or `git diff --stat HEAD`
+  shows any uncommitted change. A `## Blocked:` heading, a time deferral, or
+  a planning marker is still read after that commit: the worker defers or
+  hands off and raises no PR (the suspicious-image flag is the exception: it
+  always stops the run, committed work or not). Otherwise the PR body gets
+  `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
+  When the core deliverable is genuinely blocked on another open issue and
+  work is already committed, end with a `## Blocked:` heading that names the
+  open dependency. The worker defers and raises no PR.
+  When a lesser criterion stays `partial` or `missing`, the Summary names it
+  beside the closing keyword instead of describing the issue as resolved.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -836,6 +870,16 @@ rewrite it, never append to it:
   summary saying the fix is broken or unfinished when the head holds a working,
   tested fix is a wrong record — anyone reading the archive concludes the issue
   is unfixed.
+- Hold every doc the diff adds or edits to the same rule — a README or `docs/`
+  page, an audit record or ledger, the doc comment above a changed function.
+  Each assertion it makes (a count, a list of roots, a file, flag or test it
+  names) must match the head code, and every change it says this PR makes must
+  appear in the diff — but a file or test cited only as existing evidence
+  needs merely to exist at the head, in the diff or already tracked, matching
+  the named-test rule below.
+- After any merge of the base branch into this branch, or on finding the base
+  has advanced, re-run this check: a claim whose subject the merge absorbed is
+  dropped, or the work is redone so the diff carries it again.
 - A body that contradicts the diff — a claimed file, behaviour or criterion the
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
