@@ -72,7 +72,8 @@ const CLOSURE_VERDICT_UNTRUSTED_BLOCK = "the issue's acceptance criteria";
  * gate's problems, for the boundary-integrity instruction. They quote the
  * issue's acceptance criteria, so they are attacker-supplied too (Issue #3133).
  */
-const CLOSURE_VERDICT_PROBLEMS_BLOCK = "the gate's problems with the PR summary";
+const CLOSURE_VERDICT_PROBLEMS_BLOCK =
+  "the gate's problems with the PR summary";
 
 /**
  * What {@link buildClosureVerdictPrompt} tells the model it fenced for the
