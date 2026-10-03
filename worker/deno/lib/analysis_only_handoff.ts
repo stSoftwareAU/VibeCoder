@@ -18,7 +18,9 @@
  *   (b) the post-run signal — Claude made no code changes (the existing
  *       "unable to make code changes" partial-answer path). Output that
  *       names files to change is excluded: it is a failed implementation,
- *       retried rather than handed off (Issue #2687).
+ *       retried rather than handed off (Issue #2687) — except when the
+ *       run's `Depends on` names a follow-up this fleet filed during the
+ *       run, which hands off anyway rather than retrying (Issue #3146).
  *
  * Both route through {@link escalateToHuman}, which applies `needs-human`
  * plus a paired explanation comment (Issue #1471). The label drops the
