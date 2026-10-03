@@ -2501,6 +2501,18 @@
       ]
     },
     {
+      "issue": 3124,
+      "chunk": "top-up-3124",
+      "title": "top-up: the result-placeholder summary gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3124",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: result_placeholder_gate.ts (#3124)",
+      "status": "claimed",
+      "sweptAt": "1317839ae5dbc3e89c11535bd5430cf838ee74ce",
+      "paths": [
+        "worker/deno/lib/result_placeholder_gate.ts"
+      ]
+    },
+    {
       "issue": 3128,
       "chunk": "top-up-3128",
       "title": "top-up: the degraded-run guard's closure-entry criterion matcher",
