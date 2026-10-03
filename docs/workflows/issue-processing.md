@@ -1162,6 +1162,23 @@ contains the forbidden thing and a run with the guard broken on purpose that
 goes red; a negative test that stays green without its guard is a blocking
 self-review finding.
 
+**A refusal test must be refused by the rule it names (Issue #3162).** A
+test that only checks *that* an input was refused passes on a refusal from
+any rule. Fleet PRs were sent back for exactly that: GRQ-AutoTrader#2386's
+schema/loader agreement test probed fields both sides refused for a
+missing companion field, so nothing was compared, and its review-fix push
+left an off-step probe refused by a cross-field rule, hiding a real
+`multipleOf` drift; GRQ-AutoTrader#2393 added a retired-field check that
+now refuses an untouched test's input at the write boundary before it
+reaches the `EquityRequired` rule the test is named for; and in
+VibeCoder#3079 a fake that threw led to the `false` the test expected. The
+guidelines, the issue prompt's Test Plan step and the pr_feedback prompt
+now require asserting the specific error variant or rule, an input that
+satisfies every other rule (the same input with only the probed value made
+legal is accepted, by both sides for a comparison test), and a re-run of
+the existing later-refusal tests whenever a change adds an earlier
+refusal.
+
 **Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
 also sent back for a new branch with one outcome no test reached: a
 stale-remote guard whose stubs all returned `ls-remote` exit 0, so
@@ -1322,12 +1339,12 @@ that passes all three reaches this gate's own, standalone block.
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
-agent one more turn before a block with no PR stands, and a branch that
-already carries a PR instead finalises as `summary_incomplete`. That one
-turn is shared: a summary missing both an earlier gate's requirement and the
-Docs sweep line is asked for both at once, in the earlier gate's notice,
-rather than losing the sweep to a second, unrecovered block (Issue #3085
-review).
+agent one more turn on the run's first block, whether or not the branch
+already carries a PR (Issue #3163); only a second block on an existing-PR
+branch finalises as `summary_incomplete`. That one turn is shared: a summary
+missing both an earlier gate's requirement and the Docs sweep line is asked
+for both at once, in the earlier gate's notice, rather than losing the sweep
+to a second, unrecovered block (Issue #3085 review).
 
 ## 🧪 Removed test assertions must be accounted for
 
@@ -1619,14 +1636,18 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists and a summary rule is unmet, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
-With **no** PR for the run's branch the run recovers in-run before the block
-stands — see [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
-below. Either way the gate's remediation comment is posted, so the shortfall is
-on the issue thread rather than only in one host's log.
+The run's **first** summary-rule block recovers in-run before it stands,
+whether or not the run's branch already carries a PR (Issue #3163) — see
+[the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
+An existing PR is not finalised, labelled or auto-merged across that turn;
+only a block that survives the recovery (the run's second such block) on an
+existing-PR branch finalises as `summary_incomplete`. Either way the gate's
+remediation comment is posted, so the shortfall is on the issue thread rather
+than only in one host's log.
 
 A degraded run on an existing-PR branch is the exception to `summary_incomplete`.
 When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
@@ -1717,12 +1738,12 @@ flowchart TD
     WF -->|"finding or unreadable"| F2
     WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}
     G -->|yes| PR["gh pr create"]
-    G -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
-    Q -->|no| R{"First summary-rule block<br/>of this run?"}
-    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242)"]
+    G -->|no| R{"First summary-rule block<br/>of this run?"}
+    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
+    R -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
+    Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -1765,12 +1786,30 @@ now recover the way the security-fix gate does
 4. whatever the recovery produced is committed on the issue branch;
 5. the quality gate runs again over the changed tree, then the completion gates.
 
-A run that satisfies the gate on the re-run raises its PR. A **second** block in
-the same run fails exactly as a block did before, with the comment already on
-the thread — the same verdict is never posted twice, so the thread records the
-shortfall rather than the number of attempts at it. A recovery invocation the
-worker could not launch at all — a rate limit, a failed spawn — changed nothing
-on the branch, so the original block stands unaltered.
+A run that satisfies the gate on the re-run raises its PR, or, when the run's
+branch already carried a PR from the execute phase, updates and finalises that
+same PR — no second PR is opened. A **second** block in the same run is not
+recovered again: with no PR it fails exactly as a block did before, with the
+comment already on the thread; on an existing-PR branch that PR is finalised
+as `summary_incomplete` (Issue #1140). The same verdict is never posted
+twice, so the thread records the shortfall rather than the number of attempts
+at it. A recovery invocation the worker could not launch at all — a rate
+limit, a failed spawn — changed nothing on the branch: with no PR the
+original block stands unaltered; with an existing PR, completion re-runs and
+that block finalises the PR as `summary_incomplete` rather than failing the
+run over a live PR and returning the issue to the claimable pool for a
+sibling host to redo finished work (Issue #1140).
+
+**Issue #3163.** Before this, a block on a branch that already carried a
+PR — raised by the agent itself from inside the execute phase — skipped the
+recovery turn entirely and finalised that PR as `summary_incomplete`
+straight from the gate comment. VibeCoder#3155, #3158 and #3159 all shipped
+this way: the gate comment landed on the issue seconds after the agent's own
+PR, with no chance to fix the summary, and #3159 went out still describing
+the old no-changes deferral in this manual. The run's first block now always
+takes the one recovery turn, whichever kind of branch it is on; a block that
+survives that turn is handled as before: finalised as `summary_incomplete`
+when a PR exists, failed when none does.
 
 All six summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
