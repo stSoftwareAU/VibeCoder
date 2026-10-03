@@ -186,6 +186,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // growth measurement can tell a linear scan from a quadratic one (#1463).
   "tests/prompt_leak_redaction_test.ts",
   "tests/run_ps1_launcher_test.ts",
+  // Sixteen `assertLinearGrowth` cases across five untrusted-text gates;
+  // only a growth measurement separates each fixed pattern from the
+  // quadratic/cubic one it replaced (Issue #3164).
+  "tests/untrusted_text_regex_bounds_3164_test.ts",
 ];
 
 /**

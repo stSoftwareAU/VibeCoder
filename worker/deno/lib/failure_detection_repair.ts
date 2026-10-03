@@ -67,7 +67,7 @@ const HEADING_RE = /^\s{0,3}#{1,6}\s+failure\s+detection(?:\s*:)?\s*$/i;
 // leading whitespace left in the capture is trimmed at each use site
 // (Issue #3164).
 const BOLD_LABEL_RE =
-  /^\s{0,3}\*\*\s*failure\s+detection(?:\s*:)?\s*\*\*(?:\s*:)?(.*)$/i;
+  /^\s{0,3}\*\*\s*failure\s+detection\s*:?\s*\*\*\s*:?\s*(.*)$/i;
 
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
