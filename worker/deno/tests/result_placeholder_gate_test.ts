@@ -14,6 +14,19 @@ import {
   validateResultPlaceholders,
 } from "../lib/result_placeholder_gate.ts";
 
+Deno.test("findResultPlaceholders - names at most ten distinct tokens", () => {
+  const tokens = Array.from(
+    { length: 11 },
+    (_, i) => `TOKEN_${i}_PLACEHOLDER`,
+  );
+  assertEquals(findResultPlaceholders(tokens.join(" ")), tokens.slice(0, 10));
+});
+
+Deno.test("findResultPlaceholders - a token only past the scan cap is not reported", () => {
+  const text = `${"a".repeat(200_000)} LATE_RESULT_PLACEHOLDER`;
+  assertEquals(findResultPlaceholders(text), []);
+});
+
 Deno.test("findResultPlaceholders - finds a bare token in prose", () => {
   const text = "- Full `./quality.sh`: QUALITY_RESULT_PLACEHOLDER";
   assertEquals(findResultPlaceholders(text), ["QUALITY_RESULT_PLACEHOLDER"]);

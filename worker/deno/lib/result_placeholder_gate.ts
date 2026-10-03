@@ -1,14 +1,12 @@
 /**
  * Result-placeholder gate (Issue #3124).
  *
- * The fleet's prompt templates leave fill-in-later tokens such as
- * `QUALITY_RESULT_PLACEHOLDER` in a few scaffolded sections, on the
- * understanding the agent overwrites each one with the actual outcome before
- * the text is ever shown to a human. A run that skips that step leaves the
- * literal token sitting where a quality-gate (or other command) result
- * belongs — on a PR, that reads as "the gate was run" to anyone who does not
- * know the fleet's internal vocabulary, when in truth nothing was reported at
- * all. A left-over placeholder is therefore treated the same as an unreported
+ * While drafting, the agent sometimes invents its own fill-in-later token —
+ * an all-caps name ending in `_PLACEHOLDER`, such as
+ * `QUALITY_RESULT_PLACEHOLDER` — where a command's result belongs, and then
+ * never replaces it with the outcome. No prompt template supplies that
+ * token. Left bare, it reads as "the gate was run" to anyone who does not
+ * know it is a stand-in, when in truth nothing was reported at all. A left-over placeholder is therefore treated the same as an unreported
  * result: the PR-creation path blocks on it (folded into whichever
  * summary-rule gate also fails, so one recovery turn asks for everything —
  * `completion_phase.ts`), and the reply path never lets one reach a public PR

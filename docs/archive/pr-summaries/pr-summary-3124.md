@@ -95,11 +95,20 @@ in 5m43s, serial in 1m27s.
 ## Test Plan
 
 - `worker/deno/tests/result_placeholder_gate_test.ts`: detection, code-span
-  and fence exemption, replacement, caps on scan size and named tokens, comment
-  and retry-prompt builders, and every `retryReplyPlaceholdersOnce` outcome.
+  and fence exemption, replacement, comment and retry-prompt builders, and
+  every `retryReplyPlaceholdersOnce` outcome. Caps:
+  `findResultPlaceholders - names at most ten distinct tokens` (eleven names
+  return the first ten) and `findResultPlaceholders - a token only past the
+  scan cap is not reported` (a token that begins only after 200,000
+  characters is omitted).
 - `worker/deno/tests/completion_phase_result_placeholder_test.ts`: a
   placeholder alone blocks PR creation through the one recovery turn; folded
-  into the docs-sweep and earlier gate blocks; a clean summary passes.
+  into the docs-sweep block; folded into an earlier gate
+  (`completion - a bare token folds into the reproduction gate's one block
+  (Issue #3124)`, whose reason and comment both name the token, and
+  `completion - a recovery fixing the reproduction block and the placeholder
+  raises the PR once (Issue #3124)`, one recovery invocation); a clean
+  summary passes.
 - `worker/deno/tests/pr_branch_preparation_test.ts`: the reply backstop
   replaces the token and logs at error level; a token inside code survives.
 - `worker/deno/tests/pr_feedback_processor_result_placeholder_test.ts`: the

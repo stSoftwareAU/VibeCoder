@@ -84,6 +84,44 @@ Changed the broker balance card. Closes #${ISSUE}.
 - \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
 `;
 
+/**
+ * A bug-labelled summary: the docs sweep is answered, but the reproduction
+ * block is missing and a bare placeholder stands in for the gate result.
+ * The reproduction gate is the earlier block, so the placeholder folds into it.
+ */
+const SUMMARY_BUG_MISSING_REPRO_WITH_TOKEN = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+
+- Full \`./quality.sh\`: QUALITY_RESULT_PLACEHOLDER
+
+## Test Plan
+
+- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
+`;
+
+/** The same bug summary once both the reproduction block and the token are fixed. */
+const SUMMARY_BUG_BOTH_FIXED = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+
+- Full \`./quality.sh\`: passed
+
+## Reproduction
+
+- **symptom** — the broker balance card showed a stale figure after a refill
+- **status** — \`not-run\` — reason: the fault needs a live broker the container cannot reach
+- **regression test** — \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
+
+## Test Plan
+
+- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
+`;
+
 /** The same summary once BOTH the docs-sweep line and the token have been fixed. */
 const SUMMARY_WITH_BOTH_FIXED = `## Summary
 
@@ -126,6 +164,8 @@ interface Scenario {
   changedFiles: string;
   /** Whether the run's branch already carries an open PR. */
   prExistsForBranch?: boolean;
+  /** Issue labels. Defaults to a non-bug enhancement, so only the placeholder gate applies. */
+  issueLabels?: string[];
 }
 
 interface Outcome {
@@ -159,7 +199,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     issueNumber: ISSUE,
     issueTitle: "Check the result-placeholder gate",
     issueBody: ISSUE_BODY,
-    issueLabels: ["enhancement", "work-on"],
+    issueLabels: scenario.issueLabels ?? ["enhancement", "work-on"],
     issueComments: "",
     githubUser: "testbot",
     config,
@@ -346,6 +386,43 @@ Deno.test(
     assertStringIncludes(outcome.reason ?? "", "Docs sweep");
     assertStringIncludes(outcome.reason ?? "", "placeholder");
     assertStringIncludes(outcome.comments[0]!, "Docs sweep");
+    assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
+  },
+);
+
+Deno.test(
+  "completion - a bare token folds into the reproduction gate's one block (Issue #3124)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_BUG_MISSING_REPRO_WITH_TOKEN,
+      issueLabels: ["bug", "work-on"],
+      changedFiles: "crates/report/src/decisions.rs",
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.reason ?? "", "Reproduction");
+    assertStringIncludes(outcome.reason ?? "", "QUALITY_RESULT_PLACEHOLDER");
+    assertStringIncludes(outcome.comments[0]!, "Reproduction");
+    assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
+  },
+);
+
+Deno.test(
+  "completion - a recovery fixing the reproduction block and the placeholder raises the PR once (Issue #3124)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_BUG_MISSING_REPRO_WITH_TOKEN,
+      retryWrites: SUMMARY_BUG_BOTH_FIXED,
+      issueLabels: ["bug", "work-on"],
+      changedFiles: "crates/report/src/decisions.rs",
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
+    assertEquals(outcome.comments.length, 1);
     assertStringIncludes(outcome.comments[0]!, "QUALITY_RESULT_PLACEHOLDER");
   },
 );
