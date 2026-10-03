@@ -1001,7 +1001,15 @@ The file MUST contain:
    *not* happen — counts only once you have seen it go red with its guard
    broken on purpose (see **A negative test must be able to fail** in the
    guidelines); one that stays green without its guard is a blocking
-   self-review finding. Likewise, each call site the diff changes needs a
+   self-review finding. Likewise, a refusal test — one expecting an input
+   to be refused, rejected or answered with `false` or an error — counts
+   only once it asserts the specific error variant or rule and the same
+   input with only the probed value made legal is accepted (see **A
+   refusal test must be refused by the rule it names** in the
+   guidelines); when the diff adds a refusal that runs before an existing
+   one, re-run the existing tests that expect the later refusal, and one
+   that now stops earlier is a blocking self-review finding. Likewise,
+   each call site the diff changes needs a
    test that goes red when only that caller's change is reverted (see
    **Every changed call site needs a test that goes red without it** in the
    guidelines); a changed call site whose revert leaves the suite green is a
