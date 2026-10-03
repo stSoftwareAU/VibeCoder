@@ -13,7 +13,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import { workOnIssueDeclaredHandoff } from "../lib/phases/declared_handoff_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -691,6 +692,43 @@ Deno.test(
     assertEquals(calls.postComment.length, 0);
     if (result.status === "failure") {
       assert(!result.reason.includes("issue-3088-declared-handoff"));
+      assertStringIncludes(result.reason, "Git push failed");
+      assertStringIncludes(result.reason, "push rejected");
+      assertEquals(detectFailureCategory(result.reason), "push_failure");
+    }
+  },
+);
+
+Deno.test(
+  "declared_handoff_phase - a workflow-scope push refusal is token_scope and applies no hand-off (Issue #3088)",
+  async () => {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+      git: {
+        commitAndPushPending: () =>
+          Promise.resolve({
+            ok: false as const,
+            error: new Error(
+              "remote: refusing to allow an OAuth App to create or update " +
+                "workflow `.github/workflows/ci.yml` without `workflow` scope",
+            ),
+          }),
+      },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "failure");
+    assertEquals(calls.postComment.length, 0);
+    if (result.status === "failure") {
+      assert(!result.reason.includes("issue-3088-declared-handoff"));
+      assertStringIncludes(result.reason, "lacks the 'workflow' scope");
+      assertEquals(detectFailureCategory(result.reason), "token_scope");
     }
   },
 );

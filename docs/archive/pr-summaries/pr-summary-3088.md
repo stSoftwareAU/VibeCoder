@@ -39,11 +39,11 @@ had said was unfinished.
 - **Option (b) for the free-text escape hatch.** Prose such as "out of scope"
   is too ambiguous to override committed work, so the prompts now say it is
   honoured only when the run has made no commit.
-- **The phase itself neither pushes nor raises a PR.** The run ends with
-  `early_exit`. With session resume on (the default), the execute checkpoint
-  has normally already pushed the work to the `issue-<N>-…` branch
-  (`execute_phase.ts` calls `checkpoints.runNow()` through
-  `wip_checkpoint.ts`), and the next claim resumes from it.
+- **The phase pushes before it hands off, and it raises no PR.** It pushes
+  the branch through `commitAndPushPending` (the default-branch guard and
+  `assertSafeToCommit`). The hand-off is applied only once nothing is left
+  unpushed. A failed push returns a failure and posts no comment. The run
+  ends with `early_exit` only after that push succeeds.
 - **Dropping `Closes` was rejected.** A PR without a closing keyword loops
   forever (Issue #520), so the fix stops PR creation rather than editing
   the PR body.
@@ -106,7 +106,9 @@ updated. No `*/README.md` describes the phase list, so none changed.
   - a valid time deferral names the committed branch
   - a committed deferral pushes the branch before the comment, even with
     session resume off
-  - a failed push applies no deferral and names no branch
+  - a failed push applies no deferral, names no branch, and is
+    `push_failure`
+  - a workflow-scope push refusal is `token_scope` and applies no hand-off
 - `worker/deno/tests/issue_worker_test.ts`: "workOnIssue - a commit-producing
   run that also declares a blocked hand-off defers instead of completing
   (Issue #3088)"
@@ -133,7 +135,10 @@ updated. No `*/README.md` describes the phase list, so none changed.
       the existing detectors; nothing from it is executed.
 - [x] Secrets: published snippets go through `redactSecrets` before the
       3000-character tail slice, and no secret files are staged.
-- [x] Injection surface: no new shell, SQL or filesystem calls.
+- [x] Injection surface: the hand-off push goes through
+      `commitAndPushPending` (`git add`, `git commit`, `git push`), with the
+      default-branch guard and `assertSafeToCommit`. Nothing from the agent's
+      output is executed as a command.
 - [x] Output encoding: comments reuse the existing hand-off helpers.
 - [x] Authorisation: the planning hand-off stays gated on the human-applied
       anchor label and the untrusted-image gate.

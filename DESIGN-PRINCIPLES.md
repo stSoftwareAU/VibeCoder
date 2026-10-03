@@ -2754,12 +2754,11 @@ heading defers only when its `Depends on` or `Blocked by` line names a
 dependency the worker reads as open. A closed or unreadable dependency does
 not defer, and the run raises its PR. A time deferral or a planning marker
 is still honoured after a commit, so the worker defers or hands to planning
-rather than sailing through to a `Closes #N` PR. The phase itself neither
-pushes nor raises a PR. With session resume on
-(the default), the execute phase's checkpoint has normally already pushed the
-run's work to the `issue-<N>-…` branch — `execute_phase.ts` calls
-`checkpoints.runNow()`, which commits and pushes through `wip_checkpoint.ts`
-— and the next claim resumes from it. See
+rather than sailing through to a `Closes #N` PR. Before any of those
+hand-offs the phase pushes the branch through `commitAndPushPending`, which
+refuses the default branch and runs `assertSafeToCommit`. The hand-off is
+applied only once nothing is left unpushed. A failed push returns a failure
+and posts no comment; the phase raises no PR. See
 [`lib/phases/declared_handoff.ts`](worker/deno/lib/phases/declared_handoff.ts).
 
 A blocked run is now **deferred**:

@@ -61,6 +61,10 @@ import {
 import { gatePlanningHandoff } from "../image_conclusion_gate.ts";
 import { PLANNING_HANDOFF_ANCHOR } from "../planning_handoff_trust.ts";
 import { redactSecrets } from "../secret_redaction.ts";
+import {
+  isWorkflowScopePushRefusal,
+  workflowScopePushRefusalMessage,
+} from "../workflow_scope.ts";
 
 /**
  * Take the publishable tail of Claude's stdout for a public issue comment.
@@ -98,19 +102,30 @@ export async function pushCommittedBranchForHandoff(
   );
   const stillUnpushed = pushed.ok && pushed.value.finalUnpushedCount > 0;
   if (!pushed.ok || stillUnpushed) {
+    const detail = pushed.ok
+      ? `${pushed.value.finalUnpushedCount} commit(s) still unpushed`
+      : pushed.error.message;
+    // The branch stays in the log only. The reason is what the failure
+    // ladder classifies, and it must not claim a branch the push never
+    // published.
     deps.logger.warn(
       "Declared hand-off not applied — the committed branch could not be pushed",
-      {
-        branch: state.branchName,
-        error: pushed.ok
-          ? `${pushed.value.finalUnpushedCount} commit(s) still unpushed`
-          : pushed.error.message,
-      },
+      { branch: state.branchName, error: detail },
     );
+    // A workflow-scope refusal is the host's token, not a retryable push.
+    // Completion reports it the same way (Issue #1952).
+    if (!pushed.ok && isWorkflowScopePushRefusal(pushed.error.message)) {
+      return {
+        status: "failure",
+        reason: workflowScopePushRefusalMessage(pushed.error.message),
+      };
+    }
     return {
       status: "failure",
+      // "Git push failed" is the phrase detectFailureCategory reads as
+      // push_failure, so the infra retry treats this like completion's push.
       reason:
-        "committed work could not be pushed before the declared hand-off, so no hand-off was applied",
+        `Git push failed before the declared hand-off, so no hand-off was applied: ${detail}`,
     };
   }
   return undefined;

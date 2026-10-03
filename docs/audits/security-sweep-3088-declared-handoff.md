@@ -50,8 +50,15 @@ issue already carries the human-applied `PLANNING_HANDOFF_ANCHOR` label, and
 data the caller already holds (`ctx.issueLabels`, `ctx.untrustedImages`)
 rather than executing agent-controlled text.
 
-No shell command, filesystem write, or subprocess spawn appears in this
-module.
+Before a committed hand-off the module pushes the branch through
+`deps.git.commitAndPushPending`. That helper runs `git add`, `git commit`
+and `git push`. It refuses the default branch and runs `assertSafeToCommit`
+before the commit. The hand-off comment is posted only once nothing is left
+unpushed. A failed push returns a failure and posts no comment. A
+workflow-scope refusal is reported through `workflowScopePushRefusalMessage`
+so the run is `token_scope`; any other push failure starts with
+`Git push failed` so it is `push_failure`. The git commands are the helper's.
+Nothing taken from the agent's output is executed.
 
 ## `worker/deno/lib/phases/declared_handoff_phase.ts`
 
@@ -61,9 +68,11 @@ true but no guard let the signal apply — calls the same `handOffAnalysisOnly`
 helper and returns `early_exit`. When nothing was declared it returns
 `{ status: "continue" }`, letting the run proceed to `bump_deps` as normal.
 
-Because this phase runs only after a commit-producing execute phase, the
-key property is what it does not do: it never pushes the run's local commits
-and never raises a pull request. Every path either defers to a human via a
-comment/label, or returns `continue` and leaves the unchanged `bump_deps` →
-`quality_gate` → `completion` pipeline to decide whether to push and open a
-PR. No new network, filesystem, or subprocess surface appears here either.
+Because this phase runs only after a commit-producing execute phase, it
+calls `pushCommittedBranchForHandoff` before applying a declared hand-off.
+That is the push described above: `commitAndPushPending`, with its
+default-branch guard and `assertSafeToCommit`. The hand-off is applied only
+once nothing is left unpushed. A failed push returns that failure and posts
+no comment. The phase never raises a pull request. A path with no declared
+signal returns `{ status: "continue" }` and leaves `bump_deps` →
+`quality_gate` → `completion` to open the PR.
