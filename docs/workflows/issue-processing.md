@@ -1420,7 +1420,7 @@ or recovered:
 flowchart TD
     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
     D -- no --> P["PR as today"]
-    D -- yes --> S{"Every accepted scope<br/>item shown met?"}
+    D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
     S -- yes --> P
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
     G -- yes --> F["File (or reuse) one idle-task<br/>follow-up naming each shortfall"]
@@ -1436,7 +1436,14 @@ flowchart TD
   neither is named whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
-  is a shortfall.
+  is a shortfall. Entries are matched to scope items by their words, not by
+  position (Issue #3128): an entry matching no criterion, or two equally
+  well, does not assess that criterion, so the criterion stays `unassessed`.
+  A `partial` or `missing` entry left that way is still a shortfall, named
+  by its own subject, or by its `reason:` when the subject has no words, so
+  the follow-up is filed. A criterion split across
+  several entries takes the worst of their statuses (`missing` beats
+  `partial` beats `met`).
 - **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).
   An `unassessed` item carries no evidence of a gap, and a follow-up built only
   from those just restated the whole issue as a `Finish #N` ticket no later run
@@ -1451,16 +1458,21 @@ flowchart TD
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run
   on the same issue reuses the open follow-up. It lists what was delivered too,
-  so the next run checks rather than redoes it. Every criterion and delivered
-  line is copied from the untrusted issue body, so its HTML-comment
-  delimiters are neutralised first (`neutraliseAgentMarkers`, Issue #2778):
-  only the worker's own marker is live, and a `finding-id` hidden in a
-  criterion cannot suppress an unrelated finding.
+  so the next run checks rather than redoes it. Each criterion line is copied
+  from the untrusted issue body, or, for an unmatched or subjectless
+  `partial`/`missing` gap, from the agent-written closure entry (its subject,
+  or its `reason:` when the subject has no words). Delivered lines are copied
+  from the issue body. Both are neutralised by `neutraliseAgentMarkers`
+  before they are copied (Issue #2778): only the worker's own marker is live,
+  and a `finding-id` hidden in a criterion or a closure entry cannot suppress
+  an unrelated finding.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
   survives the merge in the follow-up instead.
-- **A healthy run is untouched**, whatever its summary says, and so is a
-  degraded run that showed every item `met`.
+- **A healthy run is untouched**, whatever its summary says. A degraded run
+  that showed every scope item `met` is left alone only when it reported no
+  unmatched `partial` or `missing` entry. An unmatched entry like that is
+  still a shortfall, and the follow-up is filed.
 - **The "gh failed" branch still fails loud.** When the guard runs from
   `completionBody` after every summary gate has passed, the outcome is
   `pr` plus the block when the branch lookup succeeds and the URL yields a
