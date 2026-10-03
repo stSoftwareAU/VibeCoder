@@ -498,15 +498,18 @@ flowchart TD
   resolved the conflict. A label a human or another pass applied is never
   removed; on the milestone route the label stays until the fix PR lands.
 - The milestone sync takes the same cross-host PR lock before it merges and
-  releases it afterwards, so a takeover that becomes due while the merge is
-  still running finds the lock held and posts nothing (Issue #2965). The
-  sync also stands down when the lock is already held, when the takeover's
-  own fix PR is open, or when a trusted `pass="takeover"` attempt is the
-  newest marker and younger than the lock TTL. A stranded older open marker
-  does not skip the PR for the rest of its life. A lock comment counts only
-  when a fleet account wrote it, and a fix PR from a fork or from an author
-  outside the fleet is not this pass's fix PR. At the 2-hour mark only the
-  pass that holds the lock spends an attempt.
+  holds it until its attempt marker is posted, so a takeover that becomes
+  due in that window finds the lock held and posts nothing (Issue #2965).
+  Once it holds the lock the takeover re-reads the tally and stands down if
+  an attempt landed while it waited. The sync also stands down when the lock
+  is already held, when the takeover's own fix PR is open, or when a trusted
+  `pass="takeover"` attempt is the newest marker and younger than the lock
+  TTL. A stranded older open marker does not skip the PR for the rest of its
+  life. A lock comment counts only when a fleet account wrote it, and a fix
+  PR from a fork or from an author outside the fleet is not this pass's fix
+  PR. A later takeover in the same watchdog pass reads the clock again, and
+  the pass stops once the time left is under the agent floor. At the 2-hour
+  mark only the pass that holds the lock spends an attempt.
 
 ```mermaid
 flowchart TD

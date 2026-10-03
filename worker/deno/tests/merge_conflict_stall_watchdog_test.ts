@@ -39,11 +39,16 @@ import type {
   AbandonRestartOutcome,
   AbandonRestartRequest,
 } from "../lib/conflict_abandon_restart.ts";
-import type {
-  ConflictTakeoverDeps,
-  ConflictTakeoverOutcome,
-  ConflictTakeoverPr,
+import {
+  type ConflictTakeoverDeps,
+  type ConflictTakeoverOutcome,
+  type ConflictTakeoverPr,
+  runConflictTakeover,
 } from "../lib/conflict_takeover.ts";
+import {
+  DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
+  DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
+} from "../lib/merge_conflict_drain.ts";
 import type { RepoLease } from "../lib/maintenance_lane.ts";
 
 const HOUR = 3600_000;
@@ -883,6 +888,93 @@ Deno.test("scanConflictQueueStalls - reads headRefOid from the listing and the c
       call[0] === "api" && (call[1] ?? "").includes(`/commits/${HEAD_SHA}`)
     ),
     "the commit date is fetched for the head sha",
+  );
+});
+
+Deno.test("scanConflictQueueStalls - a later takeover reads the clock again and declines under the floor (Issue #2965)", async () => {
+  const floor = DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT +
+    DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS;
+  const deadline = NOW + floor + 1_000;
+  let clock = NOW;
+  const second = PR + 1;
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    const [verb, noun] = args;
+    if (verb === "pr" && noun === "list") {
+      return Promise.resolve(JSON.stringify([PR, second].map((number) => ({
+        number,
+        labels: [{ name: MERGE_CONFLICT_LABEL }],
+        mergeable: "CONFLICTING",
+        headRefOid: HEAD_SHA,
+      }))));
+    }
+    if (verb === "pr" && noun === "view") {
+      if (args.includes("--jq")) {
+        return Promise.resolve(`${MERGE_CONFLICT_LABEL}\n`);
+      }
+      return Promise.resolve(JSON.stringify({
+        headRefName: "issue-7-branch",
+        baseRefName: "main",
+        headRefOid: HEAD_SHA,
+      }));
+    }
+    if (verb === "api" && args[1]?.includes("/commits/")) {
+      return Promise.resolve(new Date(NOW - 9 * HOUR).toISOString());
+    }
+    if (verb === "api" && args[1]?.includes("/timeline")) {
+      const timeline = [{
+        event: "labeled",
+        label: { name: MERGE_CONFLICT_LABEL },
+        actor: { login: FLEET },
+        created_at: new Date(NOW - 9 * HOUR).toISOString(),
+      }];
+      return Promise.resolve(
+        args[1].includes("page=1") ? JSON.stringify(timeline) : "[]",
+      );
+    }
+    if (verb === "api" && args[1]?.includes("/comments")) {
+      return Promise.resolve("[]");
+    }
+    if (verb === "pr" && noun === "comment") {
+      return Promise.resolve(
+        "https://github.com/org/repo/pull/1#issuecomment-1\n",
+      );
+    }
+    return Promise.resolve("");
+  };
+
+  const outcomes: string[] = [];
+  const scan = await scanConflictQueueStalls({
+    repos: [REPO],
+    ghCommandFn: gh,
+    isTrustedAuthor,
+    nowMs: () => clock,
+    logger,
+    trustedAuthors: [FLEET],
+    deadlineEpochMs: deadline,
+    acquireLease: () => ({ release: noop }),
+    takeoverResolvers: {
+      resolveViaLadder: () =>
+        Promise.resolve({ resolved: true, detail: "merged" }),
+      resolveOnFixBranch: () =>
+        Promise.resolve({ resolved: true, detail: "merged" }),
+    },
+    takeover: async (pr, deps) => {
+      const outcome = await runConflictTakeover(pr, deps);
+      outcomes.push(outcome.kind);
+      clock = deadline;
+      return outcome;
+    },
+  });
+
+  assertEquals(outcomes, ["resolved", "declined-time"]);
+  assertEquals(scan.length, 2);
+  assertEquals(
+    calls.filter((call) =>
+      call[0] === "pr" && call[1] === "comment" && call.includes(String(second))
+    ),
+    [],
   );
 });
 

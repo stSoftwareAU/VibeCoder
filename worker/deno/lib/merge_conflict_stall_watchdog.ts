@@ -685,6 +685,14 @@ export async function repairConflictQueueStall(
         );
         return "takeover-declined";
       }
+      if (outcome.kind === "no-longer-due") {
+        logger.info(
+          "Merge-conflict stall repair: the attempt tally changed after " +
+            "the lock was taken, so this pass posts nothing",
+          { repo, prNumber },
+        );
+        return "no-longer-stalled";
+      }
       if (outcome.kind === "lock-held") {
         logger.info(
           "Merge-conflict stall repair: another host holds the PR lock",
@@ -1225,11 +1233,15 @@ export async function scanConflictQueueStalls(
       stalls.push(stall);
 
       // Never throws — it logs its own outcome, and the next pass retries.
+      // `now` classified the stall. The repair's clock is read here, so a
+      // takeover earlier in this pass cannot leave the next one measuring
+      // against the scan start (Issue #2965).
+      const repairNow = nowMs();
       await repairConflictQueueStall(stall, {
         ghCommandFn,
         logger,
         isTrustedAuthor,
-        nowMs: now,
+        nowMs: repairNow,
         ...(options.trustedAuthors !== undefined
           ? { trustedAuthors: options.trustedAuthors }
           : {}),

@@ -180,6 +180,11 @@ export interface ConflictTakeoverDeps {
 export type ConflictTakeoverOutcome =
   /** The shared budget was already spent; nothing was posted. */
   | { kind: "declined-budget"; attemptsSpent: number }
+  /**
+   * The thread changed between the tally read and the lock: another pass
+   * posted its attempt, so this one stands down and posts nothing.
+   */
+  | { kind: "no-longer-due" }
   /** A fix PR for this milestone PR is already open; nothing was attempted. */
   | { kind: "fix-pr-reused"; fixPr: MilestoneFixPr }
   /** The gated route resolved and a fix PR now carries it into the head. */
@@ -419,7 +424,35 @@ export async function runConflictTakeover(
   }
 
   try {
-    const attemptNumber = spent + 1;
+    // The tally above was read before the lock. A sync can post its marker
+    // in that gap and then release; re-read under the lock and stand down
+    // when the thread changed, so both passes cannot spend an attempt in
+    // the same window (Issue #2965).
+    const freshComments = await fetchIssueCommentPages(pr.repo, pr.number, gh);
+    const freshAttempts = readResolutionAttempts(
+      freshComments,
+      isTrustedAuthor,
+    );
+    const freshSpent = spentConflictAttempts(freshAttempts);
+    if (freshSpent >= CONFLICT_RESOLUTION_BUDGET) {
+      logger.info(
+        `Conflict takeover declined for PR #${pr.number}: the shared budget ` +
+          `was spent while this pass waited for the lock ` +
+          `(${freshSpent}/${CONFLICT_RESOLUTION_BUDGET})`,
+        { ...context, attemptsSpent: freshSpent },
+      );
+      return { kind: "declined-budget", attemptsSpent: freshSpent };
+    }
+    if (attemptStamp(freshAttempts) !== attemptStamp(attempts)) {
+      logger.info(
+        `Conflict takeover for PR #${pr.number}: standing down, an attempt ` +
+          `landed while this pass waited for the lock`,
+        context,
+      );
+      return { kind: "no-longer-due" };
+    }
+
+    const attemptNumber = freshSpent + 1;
     const route = useFixRoute ? "milestone-fix PR" : "ordinary resolve";
     const attemptPosted = await postComment(
       pr,
@@ -554,6 +587,24 @@ export async function runConflictTakeover(
     held.renewal?.stop();
     await held.release();
   }
+}
+
+/** Identity of the attempt list, so a marker that lands mid-wait is visible. */
+function attemptStamp(
+  attempts: readonly {
+    outcome: string;
+    atMs?: number;
+    headSha?: string;
+    pass?: string;
+  }[],
+): string {
+  return attempts
+    .map((attempt) =>
+      `${attempt.outcome}:${attempt.atMs ?? ""}:${attempt.headSha ?? ""}:${
+        attempt.pass ?? ""
+      }`
+    )
+    .join("|");
 }
 
 /** Take the ladder's cross-host lock, or report that another host holds it. */

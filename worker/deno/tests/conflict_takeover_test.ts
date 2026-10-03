@@ -646,3 +646,51 @@ Deno.test("runConflictTakeover - a fork takeover fix PR is not reused (Issue #29
   assertEquals(outcome.kind, "fix-pr-raised");
   assert(fixCalled);
 });
+
+Deno.test("runConflictTakeover - a sync marker that lands before the lock spends no second attempt (Issue #2965)", async () => {
+  const comments: unknown[] = [];
+  const fake = makeFakeGh({ gated: false, comments });
+  let released = 0;
+  const deps = makeDeps(fake, {
+    workerId: "host-b",
+    acquireLockFn: () => {
+      comments.push(
+        trustedComment(
+          [
+            conflictAttemptMarker(1, "sync", HEAD_SHA),
+            conflictFailedMarker(1, "sync", HEAD_SHA),
+          ].join("\n"),
+        ),
+      );
+      return Promise.resolve({
+        ok: true,
+        value: { acquired: true, lockCommentId: 9 },
+      });
+    },
+    releaseLockFn: () => {
+      released++;
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+    startLockRenewalFn: () => ({ stop() {} }),
+    resolveViaLadder: () => {
+      throw new Error(
+        "must not resolve after the sync already spent the attempt",
+      );
+    },
+  });
+
+  const outcome = await runConflictTakeover(nonGatedPr(), deps);
+
+  assertEquals(outcome.kind, "no-longer-due");
+  assertEquals(commentsCalls(fake.calls).length, 0);
+  assertEquals(released, 1);
+  assertEquals(
+    spentConflictAttempts(
+      readResolutionAttempts(
+        comments,
+        (login) => isFleetAuthor(login, [TRUSTED]),
+      ),
+    ),
+    1,
+  );
+});

@@ -609,7 +609,7 @@ Deno.test(
       return Promise.resolve({
         acquired: true,
         release: () => {
-          order.push("unlock");
+          order.push(`unlock:${prCommentCalls(calls).length}`);
           return Promise.resolve();
         },
       });
@@ -619,7 +619,11 @@ Deno.test(
     assertEquals(syncs, 1);
     assertEquals(order[0], "lock");
     assertEquals(order[1], "sync");
-    assertEquals(order.at(-1), "unlock");
+    assertEquals(
+      order.at(-1),
+      "unlock:1",
+      "the lock is released only after the failed sync marker is posted",
+    );
   },
 );
 
