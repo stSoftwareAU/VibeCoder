@@ -124,13 +124,17 @@ sequenceDiagram
 
 ## Test Plan
 
-- `worker/deno/tests/pr_body_sync_test.ts` (12 tests):
+- `worker/deno/tests/pr_body_sync_test.ts` (14 tests):
   - assembly: summary present, empty fallback, closing keyword appended;
   - sync updated;
   - sync skips: summary unchanged, no marker, no `beforeSha`, summary file
     deleted;
   - errors: `gh pr edit` throws, `git diff` fails, empty `repoPath`;
-  - milestone and bump-note carry-over.
+  - milestone and bump-note carry-over;
+  - keeps a leading degraded-run section and drops the old summary's H1
+    (`sync - keeps a leading degraded-run section`);
+  - `runPrBodySync` warns once when the sync fails and does not fail the
+    caller (`runPrBodySync - a failed sync warns once and does not fail the caller`).
 - `worker/deno/tests/pr_ci_processor_test.ts` and
   `worker/deno/tests/pr_feedback_processor_test.ts`:
   - syncs once after a verified push;
