@@ -1,0 +1,89 @@
+# PR Summary — Issue #3128
+
+## Summary
+
+The degraded-run guard (`assessDegradedDelivery`) read each closure-block
+entry's status by **position** (`assessments[index]?.status`). If the closure
+block listed criteria in a different order, or split one criterion across two
+entries, it attributed statuses to the wrong criteria and could record an
+undelivered criterion as delivered. This PR matches entries to criteria by
+**content** instead.
+
+Closes #3128
+
+```mermaid
+flowchart LR
+    E["Closure entry<br/>(subject words)"] --> M{"Word sets:<br/>one a subset<br/>of the other?"}
+    M -- no --> U["criterion stays<br/>unassessed"]
+    M -- yes --> J{"Unique highest<br/>Jaccard score?"}
+    J -- tie --> U
+    J -- yes --> C["assign to criterion<br/>(several entries →<br/>worst status wins)"]
+```
+
+## Spec
+
+- New `worker/deno/lib/closure_criterion_match.ts` exports
+  `matchClosureStatuses(criteria, entries)`:
+  - Each entry's subject is its text with the leading `**status**` removed,
+    cut off before any `Evidence:` / `Reviewer:` / `Reason:` label. The
+    subject is reduced to a set of lowercase words.
+  - An entry is a candidate for a criterion when either word set contains the
+    other. That covers abbreviated entries and entries with extra words.
+  - The entry goes to the criterion with the strictly highest Jaccard score.
+    A tie leaves the entry unassigned.
+  - `unrequested` entries and entries with an empty subject are ignored.
+  - When several entries match one criterion, the worst status wins
+    (`missing` > `partial` > `met`).
+  - A criterion that no entry matches returns `undefined`, so it stays
+    `unassessed`. This keeps the guard's existing fail-closed behaviour.
+- `worker/deno/lib/degraded_delivery.ts` now uses
+  `matchClosureStatuses(...)[index]` in place of the positional read, and its
+  module doc is updated to match.
+
+## Evidence
+
+- **Red on base:** with the positional read restored, both new
+  `degraded_delivery_test.ts` tests fail. The reorder test showed `delivered`
+  holding the docs and floor criteria instead of router and docs (28 passed,
+  1 failed for the reorder case on its own).
+- **Green:** `deno task test:unit tests/degraded_delivery_test.ts
+  tests/closure_criterion_match_test.ts` passes.
+- **Gate:** `./quality.sh < /dev/null` returned `Result: PASSED (with skipped
+  checks)`. The only skip was config integration (no `.config.json` in the
+  worktree). All of these passed: deno tests, lint, fmt, type check,
+  completeness checks, markdownlint, semgrep and mermaid.
+- **Sweep coverage:** the new module is registered as a `claimed` slice,
+  `top-up-3128`, in `docs/audits/lib-sweep-coverage.json`, following the
+  `top-up-2998` and `top-up-2999` precedent.
+- **Docs sweep:** I grepped for `assessDegradedDelivery`, `closure block` and
+  `unassessed` and updated three places:
+  - `docs/workflows/issue-processing.md`: the degraded-run "Delivered" bullet
+    now describes word matching, `unassessed` for unmatched or ambiguous
+    entries, and worst-status-wins for a split criterion.
+  - `prompts/issue/prompt.md`: the closure-block guidance now says to write
+    each criterion in the issue's own words.
+  - The module doc in `degraded_delivery.ts`.
+- **Related rules checked:** two existing rules in `prompts/issue/prompt.md`
+  cover this:
+  - "Every stated criterion gets an entry".
+  - The closure-block shape ("one entry per stated criterion").
+
+  Neither conflicts with this change. The new sentence extends them by asking
+  for the issue's own wording, because matching is now by words.
+
+## Test Plan
+
+- `worker/deno/tests/degraded_delivery_test.ts`:
+  - `assessDegradedDelivery - #3128: closure entries out of order are matched
+    by content, not position` — the required test. It also checks that the
+    follow-up body names the criterion that is actually missing, and leaves
+    it out of "Already delivered".
+  - `#3128: a criterion split across a met and a missing entry reads missing`.
+- `worker/deno/tests/closure_criterion_match_test.ts` (10 tests):
+  - Matching: out of order; abbreviated subset; superset with extra words.
+  - Rejection: no match and an ambiguous tie both leave the criterion
+    unassessed.
+  - Split criteria: met plus missing reads `missing`; met plus partial reads
+    `partial`.
+  - Ignored entries: `unrequested` entries and an empty subject.
+  - Markdown, punctuation and case do not affect matching.
