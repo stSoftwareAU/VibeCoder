@@ -42,6 +42,25 @@ Closes #3147.
   arm reaches and the only shape with no prior coverage: a missing named test
   blocks and is listed in `missingTests`, and an existing named test passes.
   Confirmed red with the body arm (`branch_outcomes_gate.ts:221`) removed.
+  A second PR #3160 review round found two more problems, both now fixed and
+  tested: `BRANCH_OUTCOMES_HEADING_RE` had two adjacent `\s*` around the
+  optional `:?`, which backtracked quadratically on a heading line with a
+  long trailing space run before a non-matching character; the new growth
+  test (`## Branch outcomes` + N spaces + `x`) confirmed red against the
+  unfixed pattern (25,020 chars took 266 ms, 100,020 chars took 4,213 ms —
+  over the 2,125 ms a linear rule allows) and green after dropping the
+  trailing `\s*`. `lookupTestsAtHead` had no direct unit test even though
+  the Test Plan claimed "HEAD lookup" coverage; five new tests call it
+  directly — empty paths give an empty set without invoking `runGit`, a
+  failed `runGit` and a non-zero exit each give `null`, stdout lines parse
+  into the returned set, and the argv is
+  `--literal-pathspecs ls-tree -r --name-only HEAD -- <paths>`. The doc
+  comment above `lookupTestsAtHead`, which said empty `paths` returns `null`,
+  is corrected to match the code (an empty set, no git call). The new growth
+  test uses a real clock, so it is registered in
+  `worker/deno/lib/parallel_unsafe_test_manifest.ts`'s `WALL_CLOCK_TEST_FILES`
+  (`check:manifests` and the quality gate's `--parallel` pass failed until it
+  was).
 - `worker/deno/tests/completion_phase_branch_outcomes_test.ts`: the gate
   wired into the completion phase, including the fold into earlier gates'
   blocks. PR #3160 review added a case for a code diff missing BOTH the Docs
@@ -67,7 +86,10 @@ Closes #3147.
 - `deno test --allow-all tests/branch_outcomes_gate_test.ts
   tests/completion_phase_branch_outcomes_test.ts
   tests/branch_outcomes_record_3147_test.ts` (final head, after the PR #3160
-  review fixes): 39 passed, 0 failed.
+  review fixes): 45 passed, 0 failed.
+- `./quality.sh` (final head): PASSED (with skipped checks — `config
+  integration` skipped, deno/`.config.json` unavailable in this
+  environment).
 
 ## Evidence
 

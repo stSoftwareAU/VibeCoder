@@ -7,10 +7,12 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildBranchOutcomesGateComment,
+  lookupTestsAtHead,
   namedTestPaths,
   parseBranchOutcomes,
   validateBranchOutcomes,
 } from "../lib/branch_outcomes_gate.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // ---------------------------------------------------------------------------
 // parseBranchOutcomes
@@ -278,4 +280,114 @@ Deno.test("parseBranchOutcomes - a long run of spaces in the inline body returns
   const content = `**Branch outcomes:**${spaces}none added\n`;
   const record = parseBranchOutcomes(content);
   assert(record.present);
+});
+
+Deno.test(
+  "parseBranchOutcomes - a heading line with a long trailing space run scales linearly (PR #3160 review)",
+  () => {
+    // `## Branch outcomes` + N spaces + a trailing `x` is the shape that
+    // makes two adjacent `\s*` around the optional `:?` backtrack: the run
+    // of spaces matches both `\s*`s in every split, and `x` never lets the
+    // `$` anchor succeed. Run this against the unfixed
+    // `/^#{1,6}\s*branch\s+outcomes\s*:?\s*$/i` first to see it hang.
+    const buildSummary = (chars: number) =>
+      `## Branch outcomes${" ".repeat(chars)}x\n`;
+
+    const result = assertLinearGrowth(
+      "branch-outcomes heading trailing-space scan",
+      buildSummary,
+      (input) => parseBranchOutcomes(input),
+      { baseChars: 25_000 },
+    );
+
+    // The trailing `x` means the heading never matches, so the header is
+    // never found at all.
+    assertEquals(result.present, false);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// lookupTestsAtHead
+// ---------------------------------------------------------------------------
+
+Deno.test("lookupTestsAtHead - empty paths returns an empty set without calling git", async () => {
+  let called = false;
+  const runGit = () => {
+    called = true;
+    return Promise.resolve({
+      ok: true as const,
+      value: { code: 0, stdout: "", stderr: "" },
+    });
+  };
+  const result = await lookupTestsAtHead([], runGit);
+  assertEquals(result, new Set());
+  assertEquals(called, false);
+});
+
+Deno.test("lookupTestsAtHead - a failed git invocation returns null", async () => {
+  const runGit = () =>
+    Promise.resolve({ ok: false as const, error: new Error("spawn failed") });
+  const result = await lookupTestsAtHead(
+    ["worker/deno/tests/foo_test.ts"],
+    runGit,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("lookupTestsAtHead - a non-zero exit returns null", async () => {
+  const runGit = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: { code: 128, stdout: "", stderr: "fatal: bad object HEAD" },
+    });
+  const result = await lookupTestsAtHead(
+    ["worker/deno/tests/foo_test.ts"],
+    runGit,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("lookupTestsAtHead - parses stdout lines into the returned set", async () => {
+  const runGit = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: {
+        code: 0,
+        stdout:
+          "worker/deno/tests/foo_test.ts\nworker/deno/tests/bar_test.ts\n",
+        stderr: "",
+      },
+    });
+  const result = await lookupTestsAtHead(
+    ["worker/deno/tests/foo_test.ts", "worker/deno/tests/bar_test.ts"],
+    runGit,
+  );
+  assertEquals(
+    result,
+    new Set(["worker/deno/tests/foo_test.ts", "worker/deno/tests/bar_test.ts"]),
+  );
+});
+
+Deno.test("lookupTestsAtHead - invokes git with --literal-pathspecs ls-tree -r --name-only HEAD --", async () => {
+  let seenArgs: string[] = [];
+  const runGit = (args: string[]) => {
+    seenArgs = args;
+    return Promise.resolve({
+      ok: true as const,
+      value: { code: 0, stdout: "", stderr: "" },
+    });
+  };
+  await lookupTestsAtHead(["worker/deno/tests/foo_test.ts"], runGit);
+  assertEquals(
+    seenArgs,
+    [
+      "--literal-pathspecs",
+      "ls-tree",
+      "-r",
+      "--name-only",
+      "HEAD",
+      "--",
+      "worker/deno/tests/foo_test.ts",
+    ],
+  );
 });

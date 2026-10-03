@@ -50,8 +50,14 @@ const HEADING_RE = /^\s{0,3}#{1,6}\s/;
 /** The `Branch outcomes` prefix once markdown decoration is stripped. */
 const BRANCH_OUTCOMES_PREFIX_RE = /^branch\s+outcomes\s*[:\-–—]/i;
 
-/** A markdown heading form of the header: `# Branch outcomes` (colon optional). */
-const BRANCH_OUTCOMES_HEADING_RE = /^#{1,6}\s*branch\s+outcomes\s*:?\s*$/i;
+/**
+ * A markdown heading form of the header: `# Branch outcomes` (colon
+ * optional). No trailing `\s*` before `$`: `stripDecoration` already trims
+ * the line, and a second `\s*` adjacent to the optional `:?` let a long run
+ * of spaces followed by a non-matching character backtrack quadratically
+ * (PR #3160 review).
+ */
+const BRANCH_OUTCOMES_HEADING_RE = /^#{1,6}\s*branch\s+outcomes\s*:?$/i;
 
 /**
  * Strip list marker and `*`/backtick decoration from a line.
@@ -471,8 +477,9 @@ export function buildBranchOutcomesGateComment(
  *
  * Paths come from untrusted PR-summary text but are passed as argv entries
  * after `--`, never interpolated into a shell, and `--literal-pathspecs`
- * stops git treating any of them as a glob. Returns `null` on any error or
- * non-zero exit (fail closed) or when `paths` is empty (nothing to confirm).
+ * stops git treating any of them as a glob. Returns an empty set without
+ * calling git when `paths` is empty (nothing to confirm), and returns `null`
+ * (fail closed) on any error or non-zero exit.
  */
 export async function lookupTestsAtHead(
   paths: readonly string[],
