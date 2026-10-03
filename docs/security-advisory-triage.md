@@ -156,16 +156,16 @@ This emergency path is purely about *expediting a legitimate fix* — it does no
 weaken the quarantine for any other dependency.
 
 **The CI-fix agent applies the same publish-age bypass automatically.** When a
-dependency audit (`deno audit`, `cargo audit`, or any check whose log names a GHSA or
-RUSTSEC advisory) is red on a pull request the worker maintains, the CI-fix
-prompt (`prompts/ci_fix/prompt.md`, "Dependency audit failures") tells the agent
-to apply the advisory-clearing change — a direct bump, a `deno.json` /
-`package.json` override for a transitive npm entry, or a `Cargo.toml` `[patch]`
-or parent-crate bump — regardless of the fixed version's publish age. Its
-**trigger** is narrower than the maintainer path above rather than the same: no
-judgement about active exploitation is made, and no maintainer approval is
-sought — a red audit naming an advisory against the version currently in the
-lockfile is the whole condition.
+dependency audit (`deno audit`, `cargo audit`, or any check whose log reports
+a `GHSA-` or `RUSTSEC-` advisory) is red on a pull request the worker maintains,
+the CI-fix prompt (`prompts/ci_fix/prompt.md`, "Dependency audit failures")
+tells the agent to apply the advisory-clearing change — a direct bump, a
+`deno.json` / `package.json` override for a transitive npm entry, or a
+`Cargo.toml` `[patch]` or parent-crate bump — regardless of the fixed
+version's publish age. Its **trigger** is narrower than the maintainer path
+above rather than the same: no judgement about active exploitation is made,
+and no maintainer approval is sought — a red audit naming an advisory against
+the version currently in the lockfile is the whole condition.
 
 The limit is the same as a maintainer's. The agent passes an explicit zero age
 for **that package only** (`deno outdated --update --minimum-dependency-age=0
@@ -173,6 +173,14 @@ for **that package only** (`deno outdated --update --minimum-dependency-age=0
 `minimumDependencyAge` config or its `exclude` globs, so there is no temporary
 rule to revert afterwards. Every other bump in the same run keeps the full 24h
 floor.
+
+The CI-fix agent fixes a red audit in the pull request itself, even when the
+same advisory is red on the base branch — it never defers it on a
+`Depends on` line. Removing or replacing the dependency edge that pulls the
+vulnerable package in also counts as a fix; an `--ignore` or allow-list
+entry, or an edit to the audit workflow or audit command, never does. Only
+when no edge can be upgraded, removed or replaced does the agent add
+`needs-human` to the pull request, with a comment naming the advisory ID.
 
 ## 4. Documentation outcome
 
