@@ -36,10 +36,19 @@ A third PR #3160 review round found two classes of gap, both fixed:
 
 - Three branches had no test reaching them: the `!changedFilesKnown` arm of
   `branchOutcomesApplicable` (`completion_phase.ts:2145`), the `./`-strip and
-  leading-`/` skips in `namedTestPaths` (`branch_outcomes_gate.ts:210, 237,
-  239`), and the three fail-open caps `MAX_ENTRIES`, `MAX_TOKEN_CHARS` and
+  leading-`/` skip in `namedTestPaths` (`branch_outcomes_gate.ts:210, 239`),
+  and the three fail-open caps `MAX_ENTRIES`, `MAX_TOKEN_CHARS` and
   `MAX_NAMED_TEST_PATHS`. Each is now covered and confirmed red with its arm
-  removed (see Test Plan).
+  removed (see Test Plan). A fourth PR #3160 review round found that the raw-
+  token skip at the old line 237 (`if (rawToken.startsWith("/")) continue;`)
+  was dead code — `normaliseToken` keeps a leading `/`, so the
+  post-normalisation skip at line 239 (now 238) already caught everything it
+  did — and that this earlier claim over-stated coverage: deleting line 237
+  alone, or loosening line 239 alone, both left the suite green, so neither
+  skip was actually pinned on its own. Line 237 is deleted; a new case for a
+  `.//`-prefixed citation (which only becomes absolute after the `./` strip)
+  pins the sole remaining guard and is confirmed red with it removed (see Test
+  Plan).
 - `lookupTestsAtHead` resolves every named path relative to the **repository
   root** (it runs from `state.repoPath`), but the guidance it sends agents to
   — **A named test must exist** — checks with `git ls-files <path>`, which
@@ -117,21 +126,118 @@ Closes #3147.
   with a summary naming an existing test — the one scenario that reaches
   the `!changedFilesKnown` arm of `branchOutcomesApplicable`. Confirmed red
   (status `failure` instead of `continue`) with that arm removed.
+- A fourth PR #3160 review round found the two leading-`/` skips in
+  `namedTestPaths` were not each pinned: deleting the raw-token skip (then
+  `branch_outcomes_gate.ts:237`) alone, or loosening the post-normalisation
+  skip (then `:239`) alone, both left `branch_outcomes_gate_test.ts` green.
+  The raw-token skip is dead code (`normaliseToken` keeps a leading `/`, so
+  the post-normalisation skip already catches everything it caught) and is
+  deleted; a new case feeds a `.//`-prefixed citation, which only becomes
+  absolute after the `./` strip, so it reaches the post-normalisation skip
+  and nothing else. Confirmed red: with that skip loosened to `if (!token)
+  continue;`, both the pre-existing absolute-path test and the new `.//`
+  test failed (36 passed, 2 failed); restoring the guard returned the file
+  to green.
 - `deno test --allow-all tests/branch_outcomes_gate_test.ts
   tests/completion_phase_branch_outcomes_test.ts
-  tests/branch_outcomes_record_3147_test.ts` (final head, after the third
-  PR #3160 review round): 52 passed, 0 failed.
-- `./quality.sh` (final head): PASSED (with skipped checks — `config
-  integration` skipped, deno/`.config.json` unavailable in this
-  environment).
+  tests/branch_outcomes_record_3147_test.ts` (final head, after the fourth
+  PR #3160 review round): 53 passed, 0 failed.
+- `deno fmt` and `deno lint` on the two touched files: clean.
+- `./quality.sh` (final head, fourth PR #3160 review round): PASSED (with
+  skipped checks — `config integration` skipped, deno/`.config.json`
+  unavailable in this environment).
+
+**Branch outcomes:** (moved here from the Evidence section per the fourth
+PR #3160 review round — the rule puts this list in the Test Plan, and a
+diff that adds the enumeration artefact itself must not say it added no
+branch). Covers every branch `completion_phase.ts` and
+`branch_outcomes_gate.ts` add across this PR, not only this round's commits:
+
+- `worker/deno/lib/phases/completion_phase.ts:2145` — `branchOutcomesApplicable`
+  true via `!changedFilesKnown` (diff unreadable) —
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - an unreadable changed-files diff with a Branch outcomes list naming an existing test still raises the PR`
+  — confirmed red with that arm removed (status `failure` instead of
+  `continue`; see Test Plan).
+- `worker/deno/lib/phases/completion_phase.ts:2146` — applicable via
+  `codeChangingFiles(changedFiles).length > 0` —
+  `tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
+- `completion_phase.ts:2147-2149` — not applicable → `[]` named tests (no
+  git lookup needed) —
+  `tests/completion_phase_branch_outcomes_test.ts::completion - a docs-only diff with no Branch outcomes list raises the PR`.
+- `completion_phase.ts:2150-2155` — named tests present → `lookupTestsAtHead`
+  called, vs none named → `new Set()` with no git call —
+  `tests/completion_phase_branch_outcomes_test.ts::completion - 'none added' raises the PR`
+  (no-call path) and
+  `::completion - a Branch outcomes list naming only an existing test raises the PR`
+  (call path).
+- `completion_phase.ts:2191-2196` — `branchOutcomesBlocked` folded into an
+  earlier gate's comment/reason —
+  `tests/completion_phase_branch_outcomes_test.ts::completion - a code diff missing BOTH the Docs sweep line and the Branch outcomes list names both in one block (Issue #3160)`
+  — confirmed red against the reviewer's `branchOutcomesBlocked &&
+  reasons.length === 0` mutation at `completion_phase.ts:2350` (see Test
+  Plan).
+- `completion_phase.ts:2350-2358` — the late-gate block's own
+  `branchOutcomesBlocked` arm (single-gate failure, no fold) —
+  `tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
+- `worker/deno/lib/branch_outcomes_gate.ts:346` —
+  `validateBranchOutcomes` with `changedFiles === null` —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - changedFiles null is applicable (fail closed)`.
+- `branch_outcomes_gate.ts:351` — `codeFiles.length === 0` → not
+  applicable —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - a non-code diff (docs + test files only) is not applicable`.
+- `branch_outcomes_gate.ts:378` — `!record.present` → problem —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - missing list blocks when the diff changes code`.
+- `branch_outcomes_gate.ts:385` — `record.noneDeclared` → valid —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - 'none added' passes`.
+- `branch_outcomes_gate.ts:387` — empty entries and empty body → problem —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - an empty list blocks`.
+- `branch_outcomes_gate.ts:391` — bare placeholder → problem —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare placeholder blocks`.
+- `branch_outcomes_gate.ts:395` — named tests present, `testsAtHead ===
+  null` → problem (fail closed) —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - testsAtHead null with named tests blocks (fail closed)`.
+- `branch_outcomes_gate.ts:399-412` — a named test missing at HEAD →
+  problem —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - a test absent from testsAtHead blocks and is named in missingTests`;
+  all present → valid —
+  `::validateBranchOutcomes - all named tests present passes`.
+- `branch_outcomes_gate.ts:210` — `./`-prefix stripped by `normaliseToken` —
+  `branch_outcomes_gate_test.ts::namedTestPaths - a ./-prefixed citation is normalised, dropping the ./`.
+- `branch_outcomes_gate.ts:238` — post-normalisation absolute-path token
+  dropped —
+  `branch_outcomes_gate_test.ts::namedTestPaths - an absolute-path token is not returned`
+  and
+  `::namedTestPaths - a .//-prefixed citation normalises to an absolute path and is dropped`
+  — confirmed red this round with the guard loosened to `if (!token)
+  continue;` (36 passed, 2 failed; see Test Plan). The redundant raw-token
+  skip this finding was about (then line 237) is deleted — it was dead code,
+  never reached by an input the line-238 guard did not already catch.
+- `branch_outcomes_gate.ts:197` / `236` — `MAX_TOKEN_CHARS` cap —
+  `branch_outcomes_gate_test.ts::namedTestPaths - a token over 300 chars is skipped`.
+- `branch_outcomes_gate.ts:200` / `245` — `MAX_NAMED_TEST_PATHS` cap —
+  `branch_outcomes_gate_test.ts::namedTestPaths - more than 50 named test paths are capped at 50`.
+- `branch_outcomes_gate.ts` `collectEntries`/`capEntry` — `MAX_ENTRIES` cap —
+  `branch_outcomes_gate_test.ts::parseBranchOutcomes - more than 100 entries are capped at 100`.
+- `branch_outcomes_gate.ts:227` — the inline body is scanned when
+  `!record.noneDeclared && record.body` —
+  `branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline body naming a missing test blocks (Issue #3160)`
+  and
+  `::validateBranchOutcomes - an inline body naming an existing test passes (Issue #3160)`.
+- `branch_outcomes_gate.ts:501` — `lookupTestsAtHead` with `paths.length
+  === 0` → empty set, no git call —
+  `branch_outcomes_gate_test.ts::lookupTestsAtHead - empty paths returns an empty set without calling git`.
+- `branch_outcomes_gate.ts:513` — `!result.ok` or non-zero exit → `null`
+  (fail closed) —
+  `branch_outcomes_gate_test.ts::lookupTestsAtHead - a failed git invocation returns null`
+  and `::lookupTestsAtHead - a non-zero exit returns null`.
+- `branch_outcomes_gate.ts:515-520` — success → parsed path set —
+  `branch_outcomes_gate_test.ts::lookupTestsAtHead - parses stdout lines into the returned set`.
+
+Each listed outcome was confirmed red with its arm removed or its guard
+loosened, as recorded against the corresponding change in the Test Plan
+entries above (third and fourth PR #3160 review rounds); the `.//`-prefix
+case was reverified this round (see above).
 
 ## Evidence
 
 **Docs sweep** — grep: `foldInDocsSweep`, `foldInLateSummaryGates`, `branch_outcomes_gate`, `Branch outcomes`, `summary_rule_gate_retry`, `docs_sweep_gate`, `result_placeholder_gate`, `lookupTestsAtHead`, "relative to the repository root", "five summary gates", "all five", "summary-rule gate", "placeholder-token gate"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`, plus the docs-sweep gate, degraded-delivery guard, "A summary shortfall after the PR is not a failed run", security-gate-ordering and in-run recovery passages of the same file; updated (third PR #3160 review round): that section now says the `git ls-tree` lookup runs from the repository root, so a named path must itself be repository-root-relative. Reviewed and left unchanged: `docs/CONFIGURATION.md` (its placeholder mention covers the PR-reply chokepoint, which this change does not touch) and `docs/audits/security-sweep-2189-summary-rule-gate-retry.md` (a dated audit of #2189).
-
-**Branch outcomes:** none added — this round's production change
-(`worker/deno/lib/branch_outcomes_gate.ts`) only edits message and
-doc-comment text (the missing-test problem message, the gate comment's item
-5, and `lookupTestsAtHead`'s doc comment); it adds no new condition, match
-arm or exit path. The round's substantive work is test coverage for
-branches that already existed but that no test reached — see Test Plan.

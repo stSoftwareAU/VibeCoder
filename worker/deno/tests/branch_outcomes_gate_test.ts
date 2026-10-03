@@ -143,6 +143,18 @@ Deno.test("namedTestPaths - an absolute-path token is not returned", () => {
   assertEquals(namedTestPaths(record), []);
 });
 
+// PR #3160 fourth review round: a `.//`-prefixed citation only becomes an
+// absolute path (`/worker/...`) after normaliseToken's `./` strip, so it
+// reaches the post-normalisation `token.startsWith("/")` skip and nothing
+// else. This is the one case that pins that skip on its own.
+Deno.test("namedTestPaths - a .//-prefixed citation normalises to an absolute path and is dropped", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:**\n" +
+      "- success — .//worker/deno/tests/foo_test.ts::case\n",
+  );
+  assertEquals(namedTestPaths(record), []);
+});
+
 // ---------------------------------------------------------------------------
 // Fail-open caps (PR #3160 review): MAX_ENTRIES, MAX_TOKEN_CHARS and
 // MAX_NAMED_TEST_PATHS had no test either.

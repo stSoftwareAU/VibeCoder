@@ -234,7 +234,6 @@ export function namedTestPaths(record: BranchOutcomesRecord): string[] {
     for (const rawToken of withoutUrls.split(TOKEN_SPLIT_RE)) {
       if (!rawToken) continue;
       if (rawToken.length > MAX_TOKEN_CHARS) continue;
-      if (rawToken.startsWith("/")) continue;
       const token = normaliseToken(rawToken);
       if (!token || token.startsWith("/")) continue;
       if (!PATH_SHAPE_RE.test(token)) continue;
