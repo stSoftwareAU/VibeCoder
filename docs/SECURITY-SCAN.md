@@ -448,7 +448,7 @@ the template appends to the wrapper close comment.
 Three dedup mechanisms operate on different surfaces and do not overlap:
 
 1. **Issue dedup** — Phase 4 skips a finding whose `SEC-<hex>` id already
-   appears in an open `security` issue (see
+   appears in an open fleet-authored `security` issue (see
    [Dedup against open and recently-closed findings](#dedup-against-open-and-recently-closed-findings)).
 2. **Code-scanning dedup** — GitHub reconciles re-uploaded results by rule id
    and `partialFingerprints`, so re-scanning the same unchanged code updates the
@@ -467,18 +467,19 @@ Three dedup mechanisms operate on different surfaces and do not overlap:
 ## Dedup against open and recently-closed findings
 
 The v5 prompt instructs Claude to skip findings whose stable
-`SEC-<hex>` id is already present in an issue body. Before filing
-each finding, Phase 4 runs:
-
-```text
-gh issue list --repo <owner/repo> --state open --label security \
-  --search "SEC- in:body" --json number,body --limit 200
-```
-
-and inspects each body for a `<!-- finding-id: SEC-… -->` marker.
-Findings whose id matches an **open** issue are skipped — there is no
-in-place update path any more. The expectation is that the human
-operator triages the open issue (close it, fix it, or add a
+`SEC-<hex>` id is already present in an issue body. Dedup now relies
+solely on `{{KNOWN_OPEN_FINDING_IDS}}`, the list the worker builds at
+prompt-build time from open issues the **fleet account authored**.
+Phase 4 no longer runs a live `gh issue list --search "SEC- in:body"`
+re-check: an issue body is attacker-writable, but its author is not,
+so a finding-id marker planted in an issue someone else filed must
+not be able to suppress a real finding (Issue #3045).
+`run-security-scan` builds that same list when
+`--known-open-finding-ids` is omitted, and unions the flag with the
+list when the flag is set. Findings whose
+id matches an entry in that fleet-filtered list are skipped — there
+is no in-place update path any more. The expectation is that the
+human operator triages the open issue (close it, fix it, or add a
 `security-scan-ignore: SEC-…` comment in the source); the next scan
 will re-detect the same root cause and either skip it (still open),
 re-file it (closed + re-introduced after the dedup window), or omit
@@ -753,8 +754,9 @@ in \`<file>\`: <summary>`.
 **Follow-up processing.** The tracker is informational — it is not re-read by
 the scanner on the next run. A subsequent scan re-runs the full four-phase
 pipeline against the current source tree, so any finding that still exists in
-the code will simply be re-detected and re-filed (subject to the live dedup
-query against open `security` issues that Phase 4 runs before each filing).
+the code will simply be re-detected and re-filed unless its id is already in
+the fleet-authored known-open list built when the prompt is built, or the
+open-issue-titles check catches it.
 The operator workflow is therefore:
 
 1. Triage the six filed issues — close, fix, or add a
@@ -986,7 +988,7 @@ enforcement (LLM06, `label_security.ts`), and secret handling (LLM02).
 | Wrapper closed with `0 findings.`                                            | Either the scan was clean or every candidate was deduplicated against an existing open `security` issue. No action needed unless that pattern persists when you expect new findings. |
 | Wrapper closed with `Newly-filed count unavailable …`                        | A before/after snapshot `gh` lookup failed or returned an unparseable payload (Issue #1105). The scan ran and any findings it filed are open as issues — only the count and the SARIF upload were lost. Check the log for the matching `[idle-task-snapshot] list security numbers:` line; the next scan re-uploads. |
 | Wrapper closed with `security-scan failed: …` or `security-scan threw: …`    | The scanner exited non-zero, timed out, or threw before finishing. Inspect the worker log for the matching `[security-scan]` lines; the run will be retried on the next idle pass once the repo's cooldown window expires. |
-| Filed finding looks wrong                                                    | Either close the issue (the live `gh issue list` dedup query keeps the scanner from re-filing while it is open), or add a `security-scan-ignore: SEC-… — reason` comment at the cited line so future scans skip it. |
+| Filed finding looks wrong                                                    | Either close the issue (dedup reads only the worker-built, fleet-authored `{{KNOWN_OPEN_FINDING_IDS}}` list, so a closed fleet issue no longer suppresses the finding), or add a `security-scan-ignore: SEC-… — reason` comment at the cited line so future scans skip it. |
 | Scan filed a `security-scan-overflow` tracker                                | Resolve the six filed issues, then wait for the next idle trigger to run another batch against the same repo.                                                                  |
 | Scan filed a `security-scan-overflow: N chunks not reached` tracker | The bounded sweep stopped early. Plan follow-up work for the chunks listed `— never recorded` only; a chunk listed `— recorded in <record path> at <commit>` with `0 modules changed since` is already covered by that record and needs no action. A recorded chunk with a non-zero count needs only its changed modules re-swept. |
 | Wrapper comment ends `SARIF: code scanning unavailable (HTTP 403\|404) …`    | Code scanning is disabled for that repo, or the worker token lacks the `security_events` scope. Enable code scanning (or grant the scope) if you want the alerts; the findings are already filed as issues either way. |
