@@ -27,7 +27,7 @@ injected `gh` function that production binds to the `gh` spawn chokepoint.
 | Input | Source | Handling |
 | ----- | ------ | -------- |
 | issue body (scope items) | untrusted — issue author | copied into the follow-up body and the PR body as markdown list text; never interpolated into a command, path or regex. `gh` receives it as one argv element, not through a shell |
-| PR summary (closure statuses) | agent-written | read only for its `met` / `partial` / `missing` words; a forged `met` can only suppress a follow-up for the run that wrote it, the same trust the closure gate already extends |
+| PR summary (closure statuses) | agent-written | the `met` / `partial` / `missing` word judges the criterion. For an unmatched or subjectless `partial` / `missing` gap, the entry's subject or `reason:` text is copied into the follow-up and the PR body after `neutraliseAgentMarkers`. A forged `met` can only suppress a follow-up for the run that wrote it, the same trust the closure gate already extends |
 | issue title | untrusted — issue author | used in the follow-up title (truncated to 250 characters) as one argv element |
 | degraded reason | worker-derived (model ids) | rendered as text |
 | dedup match | open issues carrying `<!-- finding-id: degraded-follow-up-<N> -->` | only a **fleet-authored** match suppresses a filing (`fileFindingOnce`, Issue #1243), so a planted issue cannot silence the follow-up |

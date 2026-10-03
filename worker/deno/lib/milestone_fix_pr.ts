@@ -24,6 +24,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
 
 /** `owner/repo` with the character set GitHub actually allows. */
@@ -108,6 +109,15 @@ export interface MilestoneFixPrDeps {
   log?: (message: string) => void;
   /** Sink for the one warning; falls back to {@link log}. */
   warn?: (message: string) => void;
+  /**
+   * When set, a listed PR counts only when it lives in this repository and
+   * one of these logins opened it (Issue #2965). A fork PR, or one whose
+   * author is not in the set, is ignored: `gh pr list --base` includes both,
+   * and a name match alone would make the sync skip and the takeover report
+   * `fix-pr-reused` forever. Omitted keeps the name match, for callers that
+   * have not been given a fleet set.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 /** An open fix PR raised into a gated milestone branch. */
@@ -130,8 +140,16 @@ export async function findOpenMilestoneFixPr(
   milestoneBranch: string,
   prNumber: number,
   deps: MilestoneFixPrDeps,
+  /**
+   * When set, only a head that continues the shared prefix with this
+   * discriminator matches. The takeover passes `takeover-` so an open CI
+   * or review-feedback fix PR is not mistaken for its own (Issue #2965).
+   */
+  discriminator?: string,
 ): Promise<Result<MilestoneFixPr | null>> {
   const prefix = milestoneFixPrefixFor(milestoneBranch, prNumber);
+  const needle = discriminator ? `${prefix}${discriminator}` : prefix;
+  const fleetAuthors = deps.fleetAuthors;
   let listed: string;
   try {
     listed = await deps.gh([
@@ -144,7 +162,9 @@ export async function findOpenMilestoneFixPr(
       "--base",
       milestoneBranch,
       "--json",
-      "number,url,headRefName",
+      fleetAuthors
+        ? "number,url,headRefName,author,isCrossRepository"
+        : "number,url,headRefName",
       "--limit",
       "100",
     ]);
@@ -176,12 +196,32 @@ export async function findOpenMilestoneFixPr(
       ),
     };
   }
-  const match = (parsed as Array<
-    { number?: unknown; url?: unknown; headRefName?: unknown }
-  >).find((entry) =>
-    typeof entry.headRefName === "string" &&
-    entry.headRefName.startsWith(prefix)
-  );
+  const match = (parsed as Array<{
+    number?: unknown;
+    url?: unknown;
+    headRefName?: unknown;
+    isCrossRepository?: unknown;
+    author?: unknown;
+  }>).find((entry) => {
+    if (
+      typeof entry.headRefName !== "string" ||
+      !entry.headRefName.startsWith(needle)
+    ) {
+      return false;
+    }
+    if (!fleetAuthors) return true;
+    // Same repository only. Missing or true is a fork, or an answer that
+    // did not say, and neither is this fleet's fix PR.
+    if (entry.isCrossRepository !== false) return false;
+    const author = entry.author;
+    const login = typeof author === "string"
+      ? author
+      : author !== null && typeof author === "object" &&
+          typeof (author as { login?: unknown }).login === "string"
+      ? (author as { login: string }).login
+      : undefined;
+    return login !== undefined && isFleetAuthor(login, [...fleetAuthors]);
+  });
   if (
     !match || typeof match.number !== "number" ||
     typeof match.url !== "string"

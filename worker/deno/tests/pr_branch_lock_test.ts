@@ -11,13 +11,16 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   acquireBranchUpdateLock,
+  activeBranchUpdateLockHolder,
   BRANCH_UPDATE_LOCK_PREFIX,
   buildLockBody,
   buildLockComment,
   cleanStaleBranchUpdateLocks,
+  DEFAULT_LOCK_TTL_SECONDS,
   DEFAULT_MAX_STALE_LOCK_DELETIONS,
   parseLockComment,
   parseLockCommentPages,
+  prUpdateLockIsHeld,
   releaseBranchUpdateLock,
   startBranchUpdateLockRenewal,
 } from "../lib/pr_branch_lock.ts";
@@ -1168,4 +1171,95 @@ Deno.test("pr_branch_lock - an expired lock nobody could delete does not stall t
     assertEquals(result.value.acquired, true);
     assertEquals(result.value.lockCommentId, 101);
   }
+});
+
+/** One lock comment, as the paginated read returns it. */
+function lockPage(
+  workerId: string,
+  timestamp: number,
+  author: string,
+): string {
+  return JSON.stringify([{
+    id: 50,
+    body: `<!-- BRANCH_UPDATE_LOCK:${workerId}:${timestamp} -->`,
+    created_at: "2023-11-14T22:13:20Z",
+    author,
+  }]);
+}
+
+Deno.test("activeBranchUpdateLockHolder - a fresh fleet lock is held", async () => {
+  const now = 1_700_000_000;
+  const holder = await activeBranchUpdateLockHolder({
+    repo: "org/repo",
+    prNumber: 42,
+    nowFn: () => now,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    ghCommandFn: () =>
+      Promise.resolve(lockPage("worker-01", now, FLEET_AUTHOR)),
+  });
+  assertEquals(holder, "worker-01");
+});
+
+Deno.test("activeBranchUpdateLockHolder - an expired fleet lock is not held", async () => {
+  const now = 1_700_000_000;
+  const holder = await activeBranchUpdateLockHolder({
+    repo: "org/repo",
+    prNumber: 42,
+    nowFn: () => now,
+    lockTtlSeconds: DEFAULT_LOCK_TTL_SECONDS,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    ghCommandFn: () =>
+      Promise.resolve(
+        lockPage("worker-01", now - DEFAULT_LOCK_TTL_SECONDS, FLEET_AUTHOR),
+      ),
+  });
+  assertEquals(holder, null);
+});
+
+Deno.test("activeBranchUpdateLockHolder - an untrusted lock is not held", async () => {
+  const now = 1_700_000_000;
+  const holder = await activeBranchUpdateLockHolder({
+    repo: "org/repo",
+    prNumber: 42,
+    nowFn: () => now,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    ghCommandFn: () =>
+      Promise.resolve(lockPage("squatter", now + 10_000, "drive-by-account")),
+  });
+  assertEquals(holder, null);
+});
+
+Deno.test("activeBranchUpdateLockHolder - a read failure is not held", async () => {
+  const holder = await activeBranchUpdateLockHolder({
+    repo: "org/repo",
+    prNumber: 42,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+    ghCommandFn: () => Promise.reject(new Error("github down")),
+  });
+  assertEquals(holder, null);
+});
+
+Deno.test("prUpdateLockIsHeld - the production path ignores an untrusted lock", async () => {
+  const now = 1_700_000_000;
+  const options = {
+    nowFn: () => now,
+    authorOptions: FLEET_OPTIONS,
+    log: () => {},
+  };
+  const untrusted = await prUpdateLockIsHeld("org/repo", 42, {
+    ...options,
+    ghCommandFn: () =>
+      Promise.resolve(lockPage("squatter", now, "drive-by-account")),
+  });
+  const fleet = await prUpdateLockIsHeld("org/repo", 42, {
+    ...options,
+    ghCommandFn: () =>
+      Promise.resolve(lockPage("worker-01", now, FLEET_AUTHOR)),
+  });
+  assertEquals(untrusted, false);
+  assertEquals(fleet, true);
 });

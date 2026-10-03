@@ -42,8 +42,10 @@ import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
   preparePrBranch,
+  prResponseMessagePath,
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
+import { retryReplyPlaceholdersOnce } from "./result_placeholder_gate.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   milestoneFixBranchFor,
@@ -74,6 +76,8 @@ import { verifyFollowUpIssueExists } from "./escape_hatch_verify.ts";
 import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
 import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
+import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
+import { getRunId } from "./run_id.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -255,6 +259,17 @@ export interface PrFeedbackProcessorDeps {
    * while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
+  /**
+   * Override the PR body refresh after a successful push (Issue #3089).
+   * Injected by tests; production leaves it undefined and gets
+   * {@link syncPrBodyFromSummary}.
+   */
+  syncPrBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Configured worker name, used in the refreshed PR body's footer
+   * (Issue #3089). Omitted → empty string.
+   */
+  workerName?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +937,47 @@ async function _processFeedbackWithHeartbeat(
     };
   }
 
+  // Result-placeholder reply recovery (Issue #3124): one in-run retry when
+  // Claude's own `.pr_response_message` still carries a bare fill-in-later
+  // token where a command's result belongs. Peeking here — before the file
+  // is consumed by `readPrResponseMessage` further down this run, and by
+  // every other reply consumer that reads through that same chokepoint —
+  // gives the agent one chance to supply the actual outcome itself; a token
+  // still left afterwards falls through to that chokepoint's fail-loud
+  // backstop. The peek reads without consuming the file, and a failed or
+  // exhausted retry here must not abort an otherwise-successful feedback run.
+  await retryReplyPlaceholdersOnce(
+    prResponseMessagePath(processorDeps.workDir),
+    {
+      readFile: async (path) => {
+        try {
+          return await Deno.readTextFile(path);
+        } catch {
+          return undefined;
+        }
+      },
+      runAgent: async (prompt) => {
+        const retryResult = await deps.claude.runClaudeWithRetry(
+          {
+            prompt,
+            systemPrompt,
+            timeoutSeconds: claudeTimeout,
+            noOutputTimeout: claudeNoOutputTimeout,
+            phase: "pr_feedback",
+            cwd: processorDeps.workDir,
+            logger,
+          },
+          { maxRetries: maxRateLimitRetries },
+        );
+        if (!retryResult.ok) {
+          return { ok: false, error: retryResult.error };
+        }
+        return { ok: true };
+      },
+      logger,
+    },
+  );
+
   // Mark comment as processed
   await deps.pr.markCommentProcessed(repo, commentType, commentId, prNumber);
 
@@ -1073,6 +1129,31 @@ async function _processFeedbackWithHeartbeat(
         finalUnpushedCount: finalUnpushedCount ?? "not measured",
       });
     }
+  }
+
+  // Refresh the PR body from a rewritten summary file (Issue #3089). Only
+  // on the PR's own branch — a fix branch's push is not yet visible on the
+  // PR head, so there is nothing to refresh until the fix PR lands.
+  if (pushSucceeded && hasChanges && fixBranch === undefined) {
+    const syncFn = processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary;
+    await runPrBodySync(
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir,
+        beforeSha,
+        workerName: processorDeps.workerName ?? "",
+        githubUser: processorDeps.githubUser ??
+          Deno.env.get("GITHUB_USER") ?? "",
+        runId: getRunId(),
+      },
+      {
+        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
+        runGitCommand: deps.git.runGitCommand,
+        logger,
+      },
+      syncFn,
+    );
   }
 
   // Read .pr_response_message if Claude created one (Issue #1458).

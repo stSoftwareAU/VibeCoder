@@ -1288,6 +1288,9 @@ export async function syncMilestoneBranchWithDefault(
   const repaired = repair?.status === "repaired" ? repair.record : undefined;
   // Where the sync's minutes went (Issue #2308).
   const timings = recordTimings();
+  // The merge commit this resolution produced (Issue #2998), so a later
+  // report can confirm it actually landed rather than trusting this push.
+  const mergeSha = await readRef("HEAD", options);
   return {
     ok: true,
     value: {
@@ -1307,6 +1310,7 @@ export async function syncMilestoneBranchWithDefault(
         // milestone path.
         ...(ladder.agentReply ? { agentReply: ladder.agentReply } : {}),
         timings,
+        ...(mergeSha ? { mergeSha } : {}),
       },
     },
   };

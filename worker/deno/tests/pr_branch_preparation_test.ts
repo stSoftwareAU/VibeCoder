@@ -451,3 +451,95 @@ Deno.test("readPrResponseMessage - leaves marker-free prose byte-exact (Issue #2
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test(
+  "readPrResponseMessage - a bare result-placeholder token is replaced and logged loudly (Issue #3124)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir();
+    try {
+      const message = "Full `./quality.sh`: QUALITY_RESULT_PLACEHOLDER";
+      await Deno.writeTextFile(`${tmpDir}/.pr_response_message`, message);
+      const errors: Array<[string, unknown?]> = [];
+      const logger: Logger = {
+        ...makeSilentLogger(),
+        error: (msg: string, details?: unknown) =>
+          void errors.push([msg, details]),
+      };
+
+      const result = await readPrResponseMessage(tmpDir, logger);
+
+      assert(result !== undefined, "expected a message");
+      assertEquals(
+        result!.includes("QUALITY_RESULT_PLACEHOLDER"),
+        false,
+        "the bare token must never reach a public PR comment",
+      );
+      assert(
+        result!.includes("[result not reported]"),
+        "the token must be replaced with a plain not-reported marker",
+      );
+      assertEquals(
+        errors.length,
+        1,
+        "the chokepoint backstop must log loudly, not swallow the problem",
+      );
+      assert(
+        String(errors[0]?.[0]).includes("QUALITY_RESULT_PLACEHOLDER"),
+        "the error must name the offending token",
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "readPrResponseMessage - a token mentioned only inside backticks is left untouched (Issue #3124)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir();
+    try {
+      const message =
+        "Discussed the `QUALITY_RESULT_PLACEHOLDER` convention in review.";
+      await Deno.writeTextFile(`${tmpDir}/.pr_response_message`, message);
+      const errors: unknown[] = [];
+      const logger: Logger = {
+        ...makeSilentLogger(),
+        error: (...args: unknown[]) => void errors.push(args),
+      };
+
+      const result = await readPrResponseMessage(tmpDir, logger);
+
+      assertEquals(result, message);
+      assertEquals(
+        errors.length,
+        0,
+        "a backtick-wrapped mention is discussion, not an unresolved result",
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "readPrResponseMessage - a clean message with no placeholder token is unaffected (Issue #3124)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir();
+    try {
+      const message = "Full `./quality.sh`: passed";
+      await Deno.writeTextFile(`${tmpDir}/.pr_response_message`, message);
+      const errors: unknown[] = [];
+      const logger: Logger = {
+        ...makeSilentLogger(),
+        error: (...args: unknown[]) => void errors.push(args),
+      };
+
+      const result = await readPrResponseMessage(tmpDir, logger);
+
+      assertEquals(result, message);
+      assertEquals(errors.length, 0);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);

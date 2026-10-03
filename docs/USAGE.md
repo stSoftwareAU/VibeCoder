@@ -87,7 +87,11 @@ committed to the repository as permanent documentation and contains:
 - A test plan listing tests added or modified
 
 The worker reads this file and includes its contents in the PR body. If no PR
-summary file is created, a warning note is included in the PR body.
+summary file is created, a warning note is included in the PR body. A later
+PR-feedback, CI-fix or merge-conflict run that pushes a change to this file
+has the PR description re-synced from it by `syncPrBodyFromSummary`
+(`worker/deno/lib/pr_body_sync.ts`), so the description never drifts from a
+summary rewritten after creation.
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -95,7 +99,11 @@ record of an earlier iteration never reaches the archive (Issue #2879). Every
 file or behaviour it claims must appear in `git diff <base>...HEAD` — not merely
 exist at the head, since a merge from the base branch can supersede the change —
 and a summary that contradicts the diff is a blocking self-review finding
-(Issue #3015).
+(Issue #3015). The same appear-in-diff rule holds for every doc the diff adds
+or edits, for any claim that this PR changes something, and each claim is
+re-verified after any merge of the base branch — but a test or file cited only
+as existing evidence needs merely to exist and have run on the final head, in
+the diff or already tracked (Issue #3058).
 
  moved every `pr-summary-*.md` file into `docs/archive/pr-summaries/`
 so `docs/` root remains a curated table of contents. The worker still checks the

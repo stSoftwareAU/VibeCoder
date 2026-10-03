@@ -135,6 +135,12 @@ export interface PhaseState {
   repoPath: string;
   clarityStatus: "not_assessed" | "skipped" | "assessed_clear";
   claudeOutput: string;
+  /**
+   * Wall-clock start of the whole `work-on` run (Issue #3088). Set once when
+   * the state is built. A later execute attempt resets `executeStartTime`
+   * and must not move this.
+   */
+  runStartTime?: number;
   executeStartTime: number;
   baselineQualityPassed: boolean;
   baselineQualityOutput: string;

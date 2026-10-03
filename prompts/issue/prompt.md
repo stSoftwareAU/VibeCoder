@@ -159,7 +159,12 @@ guessing — the analysis-only hand-off then routes it to a human.
    command name for a query or read path — even when every name survives the
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
-   never by the file's topic. Record the sweep as the **Docs sweep** line in
+   never by the file's topic.
+   When the change adds a member to an existing set — a field, enum variant,
+   kind, flag or column — also grep for one or two of its existing sibling
+   members: every list of the set those hits find names the new member, or is
+   reworded so it no longer reads as complete.
+   Record the sweep as the **Docs sweep** line in
    the PR summary, naming that section (e.g.
    `section: docs/reporting-pwa.md#broker-balance`, or
    `section: none — <why no manual documents it>`) (see **PR Summary File**
@@ -174,7 +179,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the
    discrepancy. A rule that needs no such claim states the rule and the risk
    it addresses instead (see **Prompt Engineering Guidance** in
-   `CODING-STANDARDS.md`). Before adding or changing a rule in
+   `CODING-STANDARDS.md`). Hold prose about this PR's own change to the code
+   that decides it: for each sentence the diff adds or edits that says
+   **when** the new behaviour happens or **what it costs**, list every
+   condition and every path in the head code that reaches it, and name each
+   condition or scope the sentence to the path it describes. An absolute
+   word ("only", "never", "always", "any", "automatically", "exactly as
+   before") needs a line of head code that guarantees it, or the sentence is
+   rewritten; a change that moves a cost (a download, a retry, a push, a
+   fallback) says where the cost now lands; and a sentence about history
+   ("before this fix, X skipped Y") is checked against the base-branch code
+   (see **Prose about the PR's own change** in `CODING-STANDARDS.md`). Before
+   adding or changing a rule in
    `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
    under `worker/deno/lib/`, grep those files for existing rules on the same
    subject — the nouns the rule governs, not only the issue's wording — and
@@ -226,13 +242,17 @@ evidence survive.
   it — one module at a time, not all at the end. Progress then shows in the tree
   and survives a stopped run.
 - **Bound irreversible actions.** `git push --force` (and any history rewrite),
-  `rm -rf`, and deleting a branch or a remote are not routine steps. Prefer the
-  reversible alternative (a normal commit, a revert, a new branch). If one of
-  these genuinely is the only way forward, state the justification in the commit
-  message or PR summary before you run it. Bypassing the pre-commit gate is
-  **not** on that list and has no justification clause: the guidelines forbid it
-  outright, because a bypass is what lets a staged secret through, and the
-  remedy for a false positive is to fix the allowlist by PR.
+  `rm -rf`, and deleting a branch or a remote are not routine steps. Prefer
+  the reversible alternative (a normal commit, a revert, a new branch). If
+  one of these genuinely is the only way forward, state the justification in
+  the commit message or PR summary before you run it. Destructive code you
+  *write* — an `rm -rf`, a clone or `.git` swap, a `git reset --hard` that
+  runs later at runtime — is a different case: see **Code that deletes or
+  replaces state proves everything it destroys is safe to lose** in the
+  guidelines. Bypassing the pre-commit gate is **not** on that list and has
+  no justification clause: the guidelines forbid it outright, because a
+  bypass is what lets a staged secret through, and the remedy for a false
+  positive is to fix the allowlist by PR.
 - **Delegate sparingly.** A subagent is worth it only for isolated parallel
   exploration too large for this context — surveying an unfamiliar subsystem,
   for example. Routine searches and single-file edits are faster done directly.
@@ -288,8 +308,22 @@ apply:
   `needs-human` included, is removed after creation, so name `needs-human` in
   the comment instead.
 - Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
-  as `{{REPO}}#NNN`), and leave the issue open: the worker releases its claim
-  and hands it to a human.
+  as `{{REPO}}#NNN`), and leave the issue open. The worker releases its claim
+  and hands it to a human only while the branch has no commits and no
+  uncommitted changes against the base. This free-text hand-off is honoured
+  only when the run leaves no commit and no uncommitted change: decide before
+  you edit any file, because the worker commits and pushes the working tree
+  periodically and again at the end of the run. Once a file has changed, a
+  free-text hand-off is not read. If the work is blocked on an issue that is
+  still open, end with a `## Blocked:` heading and a `Depends on owner/repo#N`
+  (or `Blocked by`) line naming it. A closed or unreadable dependency does not
+  defer; the worker hands the issue to a human and raises no PR. If there is
+  no such issue, this is not a deferral: fix the root cause, or use the
+  escape hatch while the branch has no commits. Do not file a follow-up and
+  depend on it. After a commit, a `Depends on` line that names the follow-up
+  this run filed hands the issue to a human and raises no PR. A bare
+  `## Blocked:` heading
+  does not defer, and the worker would raise a PR that closes this issue.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -302,12 +336,14 @@ change, and end your final message with this marker on its own line:
 <!-- vibe-needs-planning reason="<why it splits — the independent pieces you found>" -->
 ```
 
-The worker applies `planning` through its audited hand-off, posts your reason
-on the issue, and the planning run breaks it into sub-issues. `reason` is
+The worker applies `planning` through its audited hand-off, whether or not the
+branch already has commits. It posts
+your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
 required; a marker without one, or a second request after an earlier hand-off,
-goes to a human instead. The marker applies to `work-on` issues only: on any
-other pickup label, or when the issue body carried an image from an untrusted
-author, the worker hands the issue to a human rather than to planning. Sheer
+goes to a human instead. The marker applies to `work-on`
+issues only: on any other pickup label, or when the issue body carried an
+image from an untrusted author, the worker hands the issue to a human rather
+than to planning. Sheer
 volume in one coherent change is not a reason:
 a large PR that lands as one unit is still one PR.
 
@@ -597,6 +633,14 @@ A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
 broken.
 
+**A violation this diff introduced blocks the PR — you enforce this one, not
+the gate.** A doc comment the change made wrong, a test the summary cites that
+exists neither in the diff nor at the head, a standard breached in a line this
+PR wrote: fix it in this diff before you raise the PR, never list it as
+standing. Only a departure that predates the diff, or one the issue itself
+requires, may stand, and its
+`reason:` says which.
+
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
@@ -620,7 +664,11 @@ Rules — a gate checks these before the PR is raised, and blocks PR creation wh
 one is broken:
 
 - **Every stated criterion gets an entry.** A criterion you did not touch is
-  `missing`, not omitted.
+  `missing`, not omitted. Write `<criterion>` in the issue's own words — the
+  degraded-run guard matches each entry to its criterion by those words, not
+  by position. A paraphrased entry leaves its criterion unassessed, and a
+  paraphrased `partial` or `missing` entry is still filed as a shortfall
+  under its own wording.
 - **`met` and `partial` must name the evidence** — the file, the test, or the
   test identifier that demonstrates it. "Implemented" with nothing to point at
   is not evidence.
@@ -639,6 +687,36 @@ one is broken:
   silent.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria.
+
+Two more rules no gate parses — a reviewer sends the PR back for either:
+
+- **Demonstrate a criterion; do not assert it.** A test named as evidence must
+  exist in the diff (or at the head) and must have been run on the final head;
+  a coverage claim — "every branch", "all rejections" — names the branches its
+  tests exercise, and one untested branch makes it `partial`.
+- **A missing core deliverable is not a PR.** When the thing the issue asks for
+  is `missing`, finish it. A free-text escape hatch is honoured only while
+  the branch has no commits and no uncommitted changes — the worker's change
+  detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
+  when `git log <base>..HEAD` lists any commit (including one a later revert
+  cancels, or a branch commit a base merge absorbed) or `git diff --stat HEAD`
+  shows any uncommitted change. A `## Blocked:` heading followed by a
+  `Depends on` or `Blocked by` line naming an open issue, a time deferral, or
+  a planning marker is still read after that commit: the worker defers or
+  hands off and raises no PR (the suspicious-image flag is the exception: it
+  always stops the run, committed work or not). A bare `## Blocked:` heading
+  does not defer. Otherwise the PR body gets
+  `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
+  When the core deliverable is genuinely blocked on another open issue and
+  work is already committed, end with a `## Blocked:` heading followed by a
+  `Depends on owner/repo#N` (or `Blocked by`) line naming an issue that is
+  still open. A closed or unreadable dependency does not defer; the worker
+  hands the issue to a human and raises no PR. A follow-up this run filed is
+  not that dependency: depending on it after a commit hands the issue to a
+  human and raises no PR. The worker defers and raises
+  no PR when the dependency is open.
+  When a lesser criterion stays `partial` or `missing`, the Summary names it
+  beside the closing keyword instead of describing the issue as resolved.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -828,6 +906,16 @@ rewrite it, never append to it:
   summary saying the fix is broken or unfinished when the head holds a working,
   tested fix is a wrong record — anyone reading the archive concludes the issue
   is unfixed.
+- Hold every doc the diff adds or edits to the same rule — a README or `docs/`
+  page, an audit record or ledger, the doc comment above a changed function.
+  Each assertion it makes (a count, a list of roots, a file, flag or test it
+  names) must match the head code, and every change it says this PR makes must
+  appear in the diff — but a file or test cited only as existing evidence
+  needs merely to exist at the head, in the diff or already tracked, matching
+  the named-test rule below.
+- After any merge of the base branch into this branch, or on finding the base
+  has advanced, re-run this check: a claim whose subject the merge absorbed is
+  dropped, or the work is redone so the diff carries it again.
 - A body that contradicts the diff — a claimed file, behaviour or criterion the
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
@@ -871,7 +959,17 @@ The file MUST contain:
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
    merged or reranked
-7. **Test Plan**: List the tests added or modified. Every test named here or
+7. **Test Plan**: List the tests added or modified. Write a result line only
+   after the command has run on the final head, and state the actual outcome
+   (passed, or failed with its first error) — never write a placeholder token
+   to fill in later. The worker catches an unfilled ALL-CAPS ..._PLACEHOLDER
+   token written outside backticks and code blocks — for example
+   SOMETHING_PLACEHOLDER in prose. It blocks PR creation, or records the
+   shortfall against a PR the run already raised. A token inside backticks or
+   a code block is not caught, and it is still never acceptable in place of
+   a result. If a gate was not run, say so plainly with the
+   `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
+   above describes. Every test named here or
    under Evidence must exist at the head — in the diff or already tracked;
    check each path with `git ls-files <path>` before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
@@ -880,7 +978,13 @@ The file MUST contain:
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. A negative test — one asserting something does
+   and name that test. Every new test added to guard a change (a fix, a new
+   guard, a new rule) counts only once you have seen it go red with only its
+   change removed (see **A new test must go red without its change** in the
+   guidelines); one that stays green without its change is a blocking
+   self-review finding. A test that only pins current behaviour, because the
+   fault was unreproduced or already fixed and no production change was made,
+   is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard
    broken on purpose (see **A negative test must be able to fail** in the
    guidelines); one that stays green without its guard is a blocking
@@ -901,7 +1005,15 @@ The file MUST contain:
    excluded with its reason, and a kept guard counts only once a named test
    reaches the new path with the guard's trigger holding and goes red when
    the new branch is moved ahead of the guard; a new path that skips a guard
-   with no stated reason is a blocking self-review finding
+   with no stated reason is a blocking self-review finding. Likewise, code
+   the diff adds that deletes or replaces state — an `rm -rf`, a clone or
+   `.git` swap, a `git reset --hard` or `git clean -fdx` — proves everything
+   it destroys is safe to lose (see **Code that deletes or replaces state
+   proves everything it destroys is safe to lose** in the guidelines): list
+   the inventory of what the old copy holds, with what is guarded and what
+   is accepted as lost, and name a test per refusal whose fixture holds that
+   state and asserts it survives; a destructive operation that deletes state
+   it never checked is a blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
@@ -913,6 +1025,12 @@ flowchart LR
     A[Issue] --> B[Plan] --> C[PR]
 ```
 ````
+
+Every evidence or result line in the skeleton below — the `./quality.sh`
+verdict under Acceptance Criteria, the Reproduction status, the Test Plan
+entry — follows the rule under **Test Plan** above: write it only after the
+check has actually run against the head, with its real outcome, never a
+placeholder token.
 
 This is the shape your own `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md`
 should take — these sections, in this order (the `## Reproduction` block only for

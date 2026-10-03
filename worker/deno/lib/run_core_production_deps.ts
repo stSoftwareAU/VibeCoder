@@ -171,6 +171,15 @@ import {
   listedOpenPrs,
   scanConflictQueueStalls,
 } from "./merge_conflict_stall_watchdog.ts";
+import { takeoverAgentTimeoutSeconds } from "./conflict_takeover.ts";
+import {
+  acquireBranchUpdateLock,
+  prUpdateLockIsHeld,
+  releaseBranchUpdateLock,
+  startBranchUpdateLockRenewal,
+} from "./pr_branch_lock.ts";
+import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts";
+import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -381,6 +390,7 @@ import { getRunId } from "./run_id.ts";
 import {
   type FleetAuthorSetInput,
   isFleetAuthor,
+  resolveEffectiveFleetPrAuthors,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -2248,6 +2258,8 @@ export async function createProductionRunCoreDeps(
             repoConfigs: config.repoConfig,
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
+            // Issue #3089: feeds the refreshed PR body's footer.
+            workerName: config.workerName,
           },
         );
 
@@ -2493,6 +2505,9 @@ export async function createProductionRunCoreDeps(
             fleetLogins: resolveFleetMaintenanceAuthorSet(fleetPrAuthorInput),
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
+            // Issue #3089: feed the refreshed PR body's footer.
+            workerName: config.workerName,
+            githubUser,
           },
         );
 
@@ -2886,6 +2901,9 @@ export async function createProductionRunCoreDeps(
             // Issue #1247: the abandon rung reads its restart bound off comment
             // markers, so it needs to know whose markers count.
             trustedAuthors,
+            // Issue #3089: feed the refreshed PR body's footer.
+            workerName: config.workerName,
+            githubUser,
           });
 
           if (!result.ok) {
@@ -2925,11 +2943,14 @@ export async function createProductionRunCoreDeps(
       });
 
       // Issue #1112: the ladder above is attempt-driven, so it cannot see the
-      // stall where no attempt record exists at all. This watchdog keys on the
-      // age of the `merge-conflict` label instead, and repairs a PR that has
-      // carried it for hours with nothing concluding (Issue #2803): rerun the
-      // ladder once, then abandon and redo — never `needs-human`, which would
-      // remove it from this very lane (Issue #569).
+      // stall where no attempt record exists at all. This watchdog instead
+      // trips 2 hours after the latest of: the `merge-conflict` label landing,
+      // a stand-down, the last resolution attempt, or a head change — then
+      // fixes the PR forward through the conflict takeover (Issue #3001)
+      // while the shared budget remains, and only once that budget is spent
+      // does it climb the guarded abandon-and-redo rung — never
+      // `needs-human`, which would remove it from this very lane
+      // (Issue #569).
       // Skipped once the cycle's deadline has passed: the drain stops there
       // for the same reason, and a watchdog that observes is never worth
       // running into the next pass's time.
@@ -2954,9 +2975,52 @@ export async function createProductionRunCoreDeps(
               await fetchAllOpenPRs(repo, issueCache, STALL_OPEN_PR_LIMIT),
             ),
           openPrListingLimit: STALL_OPEN_PR_LIMIT,
-          // Issue #2803: the second trip abandons and redoes through the
-          // same rung, which declines without the fleet's own logins.
+          // Issue #2803/#3001: both the conflict takeover's shared tally and
+          // the guarded abandon-and-redo rung decline without the fleet's own
+          // logins to attribute spend to.
           trustedAuthors: [...trustedAuthors],
+          workerId: getWorkerUniqueId(config.workerName),
+          ...(opts?.deadlineEpochMs !== undefined
+            ? { deadlineEpochMs: opts.deadlineEpochMs }
+            : {}),
+          takeoverResolvers: bindConflictTakeoverResolvers({
+            checkout: async (repo: string) => {
+              const setup = await setupRepo(repo, workDir);
+              if (!setup.success) {
+                throw new Error(
+                  `repo setup failed for ${repo}: ${setup.message}`,
+                );
+              }
+              return setup.message;
+            },
+            agentFn: (request) => {
+              const agentTimeoutSeconds = takeoverAgentTimeoutSeconds(
+                opts?.deadlineEpochMs,
+                config.claudeTimeout,
+                Date.now(),
+              );
+              const bound = bindMilestoneConflictAgent({
+                repo: request.repo,
+                grant: {
+                  agentAllowed: true,
+                  ...(agentTimeoutSeconds !== undefined
+                    ? { agentTimeoutSeconds }
+                    : {}),
+                },
+                config,
+                logger,
+              });
+              if (!bound) {
+                return Promise.resolve({
+                  ok: false,
+                  error: new Error(
+                    `no resolution agent for ${request.repo}`,
+                  ),
+                });
+              }
+              return bound(request);
+            },
+          }),
         });
       }
 
@@ -6165,6 +6229,73 @@ async function syncMilestoneBranchesFn(
         options: { cwd: `${workDir}/${repo.split("/")[1]}` },
         hostLabel: getWorkerUniqueId(config.workerName),
       }),
+    // Issue #2965: a takeover that already holds the PR lock owns the head.
+    // The sync stands down rather than spending a second attempt beside it.
+    prUpdateLockHeldFn: (repo, prNumber) =>
+      prUpdateLockIsHeld(repo, prNumber, {
+        ghCommandFn: runGhCommand,
+        log: (message: string) => logger.warn(message),
+        authorOptions: {
+          fleetAuthors: resolveEffectiveFleetPrAuthors(
+            config.fleetPrAuthors,
+            config.serviceAccounts,
+          ),
+        },
+      }),
+    acquireHeadLockFn: async (repo, prNumber) => {
+      const workerId = getWorkerUniqueId(config.workerName);
+      const lock = await acquireBranchUpdateLock({
+        repo,
+        prNumber,
+        workerId,
+        ghCommandFn: runGhCommand,
+        authorOptions: {
+          fleetAuthors: resolveEffectiveFleetPrAuthors(
+            config.fleetPrAuthors,
+            config.serviceAccounts,
+          ),
+        },
+        log: (message: string) => logger.warn(message),
+        note: `🔀 Syncing the milestone branch (worker \`${workerId}\`).`,
+      });
+      if (
+        !lock.ok || !lock.value.acquired ||
+        lock.value.lockCommentId === undefined
+      ) {
+        return { acquired: false, release: () => Promise.resolve() };
+      }
+      const lockCommentId = lock.value.lockCommentId;
+      const renewal = startBranchUpdateLockRenewal({
+        repo,
+        lockCommentId,
+        workerId,
+        ghCommandFn: runGhCommand,
+        note: `🔀 Syncing the milestone branch (worker \`${workerId}\`).`,
+        onError: (message: string) =>
+          logger.warn(
+            `milestone_sync_lock=renew-failed ${message}`,
+            { repo, prNumber },
+          ),
+      });
+      return {
+        acquired: true,
+        release: async () => {
+          renewal.stop();
+          await releaseBranchUpdateLock({
+            repo,
+            prNumber,
+            lockCommentId,
+            ghCommandFn: runGhCommand,
+          });
+        },
+      };
+    },
+    dedupAuthors: {
+      fleetAuthors: resolveEffectiveFleetPrAuthors(
+        config.fleetPrAuthors,
+        config.serviceAccounts,
+      ),
+    },
     releaseSyncClaimFn: async (repo, milestoneBranch) => {
       const released = await releaseMilestoneSyncClaim(milestoneBranch, {
         cwd: `${workDir}/${repo.split("/")[1]}`,
