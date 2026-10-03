@@ -1422,9 +1422,11 @@ flowchart TD
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
   is a shortfall. Entries are matched to scope items by their words, not by
   position (Issue #3128): an entry matching no criterion, or two equally
-  well, assesses nothing, so that criterion counts as `unassessed`. A
-  criterion split across several entries takes the worst of their statuses
-  (`missing` beats `partial` beats `met`).
+  well, does not assess that criterion, so the criterion stays `unassessed`.
+  A `partial` or `missing` entry left that way is still a shortfall, named
+  by its own subject, so the follow-up is filed. A criterion split across
+  several entries takes the worst of their statuses (`missing` beats
+  `partial` beats `met`).
 - **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).
   An `unassessed` item carries no evidence of a gap, and a follow-up built only
   from those just restated the whole issue as a `Finish #N` ticket no later run

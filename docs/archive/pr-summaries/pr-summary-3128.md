@@ -35,10 +35,13 @@ flowchart LR
   - When several entries match one criterion, the worst status wins
     (`missing` > `partial` > `met`).
   - A criterion that no entry matches returns `undefined`, so it stays
-    `unassessed`. This keeps the guard's existing fail-closed behaviour.
-- `worker/deno/lib/degraded_delivery.ts` now uses
-  `matchClosureStatuses(...)[index]` in place of the positional read, and its
-  module doc is updated to match.
+    `unassessed`.
+  - A `partial` or `missing` entry that matches nothing, or ties, is not
+    dropped. `matchClosureEntries` returns it in `unassignedGaps`, and the
+    guard records that subject as its own shortfall, so the follow-up is
+    still filed.
+- `worker/deno/lib/degraded_delivery.ts` now uses `matchClosureEntries` in
+  place of the positional read, and its module doc is updated to match.
 
 ## Evidence
 
@@ -79,6 +82,10 @@ flowchart LR
     follow-up body names the criterion that is actually missing, and leaves
     it out of "Already delivered".
   - `#3128: a criterion split across a met and a missing entry reads missing`.
+  - `degradedNeedsFollowUp - a reworded in-order missing entry still files a
+    follow-up (Issue #3128)` — an in-order `missing` entry that paraphrases
+    its criterion still makes `degradedNeedsFollowUp` true, and the follow-up
+    names that subject.
 - `worker/deno/tests/closure_criterion_match_test.ts` (10 tests):
   - Matching: out of order; abbreviated subset; superset with extra words.
   - Rejection: no match and an ambiguous tie both leave the criterion

@@ -34,8 +34,10 @@
  * count here: the run was not handed to a fallback model. Closure entries are
  * matched to scope items by their words, not by their position in the list
  * (Issue #3128): an entry that matches no scope item, or matches more than
- * one equally well, assesses nothing, so that item reads `unassessed`; one
- * split across several entries takes their worst status. A scope item is
+ * one equally well, does not assess that item, so it reads `unassessed`; one
+ * split across several entries takes their worst status. A `partial` or
+ * `missing` entry left unassigned is still a shortfall, named by its own
+ * subject. A scope item is
  * delivered only when it is matched to a `met` entry (and nothing worse); a
  * `partial` or `missing` match, or no match at all, is a shortfall. A
  * degraded run on an issue that states no scope names the issue itself as
@@ -63,7 +65,7 @@ import {
   extractAcceptedScope,
   parseClosureEntries,
 } from "./acceptance_criteria_gate.ts";
-import { matchClosureStatuses } from "./closure_criterion_match.ts";
+import { matchClosureEntries } from "./closure_criterion_match.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { IMPLEMENTATION_RUN_STATS_PHASE } from "./issue_run_stats_comment.ts";
 import {
@@ -149,15 +151,17 @@ export function assessDegradedDelivery(args: {
   // Closure entries are matched to criteria by their words, not by list
   // position (Issue #3128): an entry that matches no criterion, or more than
   // one equally well, assesses nothing, so its criterion is `unassessed`; a
-  // criterion split across several entries takes their worst status.
-  const matched = stated.length > 0
-    ? matchClosureStatuses(stated, parseClosureEntries(args.prBody))
-    : [];
+  // criterion split across several entries takes their worst status. A
+  // `partial` or `missing` entry left unassigned is still a shortfall, named
+  // by its own subject, so a paraphrased gap is not dropped.
+  const match = stated.length > 0
+    ? matchClosureEntries(stated, parseClosureEntries(args.prBody))
+    : { statuses: [], unassignedGaps: [] };
 
   const delivered: string[] = [];
   const shortfalls: DegradedShortfall[] = [];
   scope.forEach((criterion, index) => {
-    const status = stated.length > 0 ? matched[index] : undefined;
+    const status = stated.length > 0 ? match.statuses[index] : undefined;
     if (status === "met") {
       delivered.push(criterion);
     } else if (status === "partial" || status === "missing") {
@@ -166,6 +170,9 @@ export function assessDegradedDelivery(args: {
       shortfalls.push({ criterion, status: "unassessed" });
     }
   });
+  for (const gap of match.unassignedGaps) {
+    shortfalls.push({ criterion: gap.subject, status: gap.status });
+  }
 
   return {
     degraded: true,

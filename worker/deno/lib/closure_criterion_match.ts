@@ -76,18 +76,26 @@ function worseOf(a: CriterionStatus, b: CriterionStatus): CriterionStatus {
  * and entries whose subject has no words, are skipped. A criterion assigned
  * no entry is `undefined`; one assigned several takes their worst status.
  *
+ * A `partial` or `missing` entry that matches nothing, or ties, is not
+ * dropped: it is returned in `unassignedGaps` so the degraded-run guard can
+ * still file a follow-up that names it (Issue #3128).
+ *
  * @param criteria - The stated scope items, in issue order.
  * @param entries - The parsed closure-block entries, in summary order.
- * @returns One status per criterion, same order as `criteria`.
  */
-export function matchClosureStatuses(
+export function matchClosureEntries(
   criteria: readonly string[],
   entries: readonly ClosureEntry[],
-): (CriterionStatus | undefined)[] {
+): {
+  statuses: (CriterionStatus | undefined)[];
+  unassignedGaps: { status: "partial" | "missing"; subject: string }[];
+} {
   const criterionWords = criteria.map((c) => words(c));
   const assigned: (CriterionStatus | undefined)[] = criteria.map(() =>
     undefined
   );
+  const unassignedGaps: { status: "partial" | "missing"; subject: string }[] =
+    [];
 
   // SIMPLE-ON-PURPOSE: a quadratic scan over criteria x entries is fine here
   // — an issue states a handful of criteria, not hundreds.
@@ -113,7 +121,15 @@ export function matchClosureStatuses(
         tied = true;
       }
     }
-    if (bestIndex === -1 || tied) continue;
+    if (bestIndex === -1 || tied) {
+      if (entry.status === "partial" || entry.status === "missing") {
+        unassignedGaps.push({
+          status: entry.status,
+          subject: subjectOf(entry),
+        });
+      }
+      continue;
+    }
 
     const status = entry.status;
     const existing = assigned[bestIndex];
@@ -122,7 +138,20 @@ export function matchClosureStatuses(
       : worseOf(existing, status);
   }
 
-  return assigned;
+  return { statuses: assigned, unassignedGaps };
+}
+
+/**
+ * One status per criterion, same order as `criteria`.
+ *
+ * Prefer {@link matchClosureEntries} when an unassigned `partial` or
+ * `missing` entry must still be reported.
+ */
+export function matchClosureStatuses(
+  criteria: readonly string[],
+  entries: readonly ClosureEntry[],
+): (CriterionStatus | undefined)[] {
+  return matchClosureEntries(criteria, entries).statuses;
 }
 
 function isSubsetOf(a: Set<string>, b: Set<string>): boolean {

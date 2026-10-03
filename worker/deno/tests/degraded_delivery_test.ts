@@ -487,6 +487,35 @@ Deno.test("degradedNeedsFollowUp - (b) stated criteria all unassessed files no f
   assertEquals(degradedNeedsFollowUp(verdict), false);
 });
 
+Deno.test("degradedNeedsFollowUp - a reworded in-order missing entry still files a follow-up (Issue #3128)", () => {
+  const prBody = `## Acceptance Criteria
+
+- **met** — the router sends planning to opus — evidence: \`router.ts\` — reviewer: met
+- **missing** — the docs table names opus as the planning model — reason: the table still says sonnet
+`;
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody,
+  });
+
+  assertEquals(degradedNeedsFollowUp(verdict), true);
+  assert(
+    verdict.shortfalls.some((s) =>
+      s.status === "missing" &&
+      s.criterion.includes("docs table names opus")
+    ),
+    "the paraphrased gap is named on the follow-up",
+  );
+  const followUp = buildDegradedFollowUpIssue({
+    parentNumber: 3128,
+    parentTitle: "match closure entries",
+    verdict,
+    runId: "test",
+  });
+  assertStringIncludes(followUp.body, "docs table names opus");
+});
+
 Deno.test("degradedNeedsFollowUp - (c) one partial criterion files a follow-up", () => {
   const verdict = assessDegradedDelivery({
     claudeResults: HAIKU_FALLBACK,
