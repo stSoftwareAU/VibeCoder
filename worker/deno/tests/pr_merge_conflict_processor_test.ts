@@ -44,6 +44,8 @@ import {
   CONFLICT_REBASE_MARKER,
   CONFLICT_RESOLUTION_BUDGET,
   CONFLICT_RUNG_FAILED_MARKER,
+  conflictAttemptMarker,
+  conflictFailedMarker,
   conflictNudgeMarker,
   conflictRebaseMarker,
   conflictRungFailedMarker,
@@ -460,7 +462,11 @@ function makeGithub(
    * The raw REST comment thread `fetchIssueCommentPages` reads (Issue #2278),
    * author and all — a rung marker only counts when the fleet wrote it.
    */
-  threadComments: readonly { body: string; author: string }[] = [],
+  threadComments: readonly {
+    body: string;
+    author: string;
+    createdAt?: string;
+  }[] = [],
   /** Error `gh pr comment` rejects with, when the post must fail. */
   commentPostError?: string,
 ): Partial<GitHubDeps> {
@@ -550,9 +556,10 @@ function makeGithub(
         return Promise.resolve(
           JSON.stringify(
             page === "1"
-              ? threadComments.map(({ body, author }) => ({
+              ? threadComments.map(({ body, author, createdAt }) => ({
                 body,
                 user: { login: author },
+                ...(createdAt !== undefined ? { created_at: createdAt } : {}),
               }))
               : [],
           ),
@@ -1327,6 +1334,50 @@ Deno.test("processMergeConflict - the PR lock is refreshed while the agent works
   const afterRun = captured.lockRenewals.length;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assertEquals(captured.lockRenewals.length, afterRun);
+});
+
+Deno.test("processMergeConflict - a failure that lands before the lock spends no attempt", async () => {
+  const head = "a".repeat(40);
+  const thread: { body: string; author: string; createdAt: string }[] = [];
+  let released = 0;
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 0 }),
+    makeGitScript(),
+    {
+      workerId: "worker-a",
+      trustedAuthors: ["vibe-coder"],
+      acquireLockFn: (() => {
+        thread.push({
+          body: [
+            conflictAttemptMarker(1, "takeover", head),
+            conflictFailedMarker(1, "takeover", head),
+          ].join("\n"),
+          author: "vibe-coder",
+          createdAt: new Date().toISOString(),
+        });
+        return Promise.resolve({
+          ok: true,
+          value: { acquired: true, lockCommentId: 7 },
+        });
+      }) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+      releaseLockFn: (() => {
+        released++;
+        return Promise.resolve({ ok: true, value: undefined });
+      }) as unknown as MergeConflictProcessorDeps["releaseLockFn"],
+    },
+    {
+      threadComments: thread,
+      prHeadState: { headRefOid: head, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(result.ok);
+  if (result.ok) assertEquals(result.value.processed, false);
+  assertEquals(
+    captured.comments.some((body) => body.includes(CONFLICT_ATTEMPT_MARKER)),
+    false,
+  );
+  assertEquals(released, 1);
 });
 
 Deno.test("processMergeConflict - a PR locked by another worker is left alone", async () => {

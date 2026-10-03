@@ -81,6 +81,8 @@ import {
   conflictResolvedMarker,
   conflictRungFailedMarker,
   isConflictHeadSha,
+  readResolutionAttempts,
+  spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -120,8 +122,11 @@ import {
 import {
   clearMergeConflictLabel,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
+  hasExhaustedConflictAttempts,
+  isConflictAttemptDue,
   recordConflictDecision,
 } from "./pr_merge_conflict_scan.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1016,7 +1021,23 @@ export async function processMergeConflict(
   }
 
   try {
-    return await resolveConflict(input, processorDeps);
+    let resolutionInput = input;
+    if (lockCommentId !== undefined) {
+      const fresh = await freshAttemptUnderLock(input, processorDeps);
+      if (fresh.kind === "stand-down") {
+        return {
+          ok: true,
+          value: {
+            processed: false,
+            merged: false,
+            escalated: false,
+            summary: fresh.summary,
+          },
+        };
+      }
+      resolutionInput = { ...input, attemptCount: fresh.attemptCount };
+    }
+    return await resolveConflict(resolutionInput, processorDeps);
   } finally {
     renewal?.stop();
     if (heartbeatHandle) await stopHeartbeat(heartbeatHandle);
@@ -1024,6 +1045,81 @@ export async function processMergeConflict(
       await releaseLock({ repo, prNumber, lockCommentId });
     }
   }
+}
+
+/**
+ * Re-read the attempt thread once this pass holds the PR lock (Issue #2965).
+ *
+ * The scan's due-ness is from before the lock. A takeover can post its
+ * failure in that gap and release, and this pass would then spend a second
+ * attempt in the same window. Standing down posts no marker.
+ */
+async function freshAttemptUnderLock(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+): Promise<
+  | { kind: "proceed"; attemptCount: number }
+  | { kind: "stand-down"; summary: string }
+> {
+  const { repo, prNumber } = input;
+  const { logger } = processorDeps;
+  const gh = processorDeps.deps.github.runGhCommand;
+  const trusted = processorDeps.trustedAuthors ?? [];
+  let comments: unknown[];
+  let headSha: string | undefined;
+  try {
+    comments = await fetchIssueCommentPages(repo, prNumber, gh);
+    const view = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid",
+      ]),
+    ) as { headRefOid?: unknown };
+    headSha = typeof view.headRefOid === "string" ? view.headRefOid : undefined;
+  } catch (error) {
+    logger.warn(
+      "Merge-conflict resolution: could not re-read the attempt thread " +
+        "under the lock — spending nothing",
+      {
+        repo,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return {
+      kind: "stand-down",
+      summary: `PR #${prNumber} attempt thread could not be re-read under ` +
+        "the lock — no attempt spent",
+    };
+  }
+
+  const attempts = readResolutionAttempts(
+    comments,
+    (login) => isFleetAuthor(login, [...trusted]),
+  );
+  const now = processorDeps.nowMsFn?.() ?? Date.now();
+  const budget = processorDeps.maxAttempts ?? CONFLICT_RESOLUTION_BUDGET;
+  if (
+    hasExhaustedConflictAttempts(attempts, budget) ||
+    !isConflictAttemptDue(attempts, headSha, now)
+  ) {
+    logger.info(
+      "Merge-conflict resolution: the attempt is no longer due once the " +
+        "lock is held — spending nothing",
+      { repo, prNumber },
+    );
+    return {
+      kind: "stand-down",
+      summary: `PR #${prNumber} is no longer due once the lock is held — ` +
+        "no attempt spent",
+    };
+  }
+  return { kind: "proceed", attemptCount: spentConflictAttempts(attempts) };
 }
 
 async function resolveConflict(

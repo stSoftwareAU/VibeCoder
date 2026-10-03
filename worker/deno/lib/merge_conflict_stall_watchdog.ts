@@ -54,6 +54,7 @@ import {
   type AbandonRestartRequest,
 } from "./conflict_abandon_restart.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
+import { updateIssueComment } from "./marker_comment_pages.ts";
 import { getLabelLastAddInfoComplete } from "./issue_query.ts";
 import {
   acquireMaintenanceRepoLease,
@@ -71,6 +72,7 @@ import {
   CONFLICT_OWNER_CHECK_HOURS,
   CONFLICT_RESOLUTION_BUDGET,
   CONFLICT_RESOLVED_MARKER,
+  CONFLICT_WATCHDOG_CHECKED_MARKER,
   conflictWatchdogCheckedMarker,
   isConflictHeadSha,
   readParkedBase,
@@ -508,16 +510,64 @@ export type ConflictStallRepairAction =
   | "failed";
 
 /**
- * Post the note that restarts the owner-check clock after a no-op outcome.
+ * The id of the newest trusted watchdog-checked note, when the thread has one.
+ *
+ * Restarting the clock edits that note. Posting another every window leaves
+ * a comment on the PR until a human acts (Issue #2965).
+ */
+function trustedWatchdogCheckedCommentId(
+  comments: readonly unknown[],
+  isTrustedAuthor: (login: string) => boolean,
+): number | undefined {
+  for (let index = comments.length - 1; index >= 0; index--) {
+    const raw = comments[index];
+    if (typeof raw !== "object" || raw === null) continue;
+    const row = raw as {
+      id?: unknown;
+      body?: unknown;
+      user?: { login?: unknown };
+    };
+    if (
+      typeof row.body !== "string" ||
+      !row.body.includes(CONFLICT_WATCHDOG_CHECKED_MARKER)
+    ) {
+      continue;
+    }
+    const login = row.user?.login;
+    if (typeof login !== "string" || !isTrustedAuthor(login)) continue;
+    if (typeof row.id === "number" && Number.isInteger(row.id) && row.id > 0) {
+      return row.id;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Restart the owner-check clock after a no-op outcome.
+ *
  * A declined abandon and a reused fix PR otherwise leave the thread unchanged,
- * so the next cycle trips the same PR again.
+ * so the next cycle trips the same PR again. The first check posts the note.
+ * Later checks edit that same note's `at=` rather than adding another comment.
  */
 async function postWatchdogChecked(
   repo: string,
   prNumber: number,
   atMs: number,
+  comments: readonly unknown[],
+  isTrustedAuthor: (login: string) => boolean,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<void> {
+  const body = [
+    "The conflict watchdog checked this PR and had nothing new to post, " +
+    "so this note restarts the owner-check clock.",
+    "",
+    conflictWatchdogCheckedMarker(atMs),
+  ].join("\n");
+  const existing = trustedWatchdogCheckedCommentId(comments, isTrustedAuthor);
+  if (existing !== undefined) {
+    await updateIssueComment(repo, existing, body, ghCommandFn);
+    return;
+  }
   await ghCommandFn([
     "pr",
     "comment",
@@ -525,12 +575,7 @@ async function postWatchdogChecked(
     "--repo",
     repo,
     "--body",
-    [
-      "The conflict watchdog checked this PR and had nothing new to post, " +
-      "so this note restarts the owner-check clock.",
-      "",
-      conflictWatchdogCheckedMarker(atMs),
-    ].join("\n"),
+    body,
   ]);
 }
 
@@ -703,7 +748,14 @@ export async function repairConflictQueueStall(
       if (outcome.kind === "fix-pr-reused") {
         // Reusing an open fix PR posts no attempt marker, so the clock
         // would trip again every cycle. This note restarts it.
-        await postWatchdogChecked(repo, prNumber, options.nowMs, ghCommandFn);
+        await postWatchdogChecked(
+          repo,
+          prNumber,
+          options.nowMs,
+          comments,
+          isTrustedAuthor,
+          ghCommandFn,
+        );
       }
       logger.info("Merge-conflict stall repair: took the conflict over", {
         repo,
@@ -742,7 +794,14 @@ export async function repairConflictQueueStall(
       case "declined": {
         // A decline posts nothing on the PR. Restart the clock so the next
         // cycle does not trip the same steady state again.
-        await postWatchdogChecked(repo, prNumber, options.nowMs, ghCommandFn);
+        await postWatchdogChecked(
+          repo,
+          prNumber,
+          options.nowMs,
+          comments,
+          isTrustedAuthor,
+          ghCommandFn,
+        );
         const steady = outcome.reason.kind === "already-restarted";
         const message = steady
           ? "Merge-conflict stall repair: the hand-off was already posted"

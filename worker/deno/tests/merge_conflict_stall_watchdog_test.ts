@@ -407,6 +407,11 @@ function fakeGitHub(
   headRefOid = HEAD_SHA,
 ) {
   const calls: string[][] = [];
+  let nextCommentId = 1;
+  for (const existing of prComments) {
+    if (typeof existing.id !== "number") existing.id = nextCommentId++;
+    else nextCommentId = Math.max(nextCommentId, existing.id + 1);
+  }
   const timeline = [{
     event: "labeled",
     label: { name: MERGE_CONFLICT_LABEL },
@@ -443,13 +448,26 @@ function fakeGitHub(
         args[1].includes("page=1") ? JSON.stringify(timeline) : "[]",
       );
     }
+    if (verb === "api" && args.includes("PATCH")) {
+      const endpoint = args.find((arg) => arg.includes("/issues/comments/")) ??
+        "";
+      const id = Number(endpoint.split("/issues/comments/")[1]);
+      const flag = args[args.indexOf("-f") + 1] ?? "";
+      const body = flag.startsWith("body=") ? flag.slice("body=".length) : flag;
+      const row = prComments.find((existing) => existing.id === id);
+      if (row) row.body = body;
+      return Promise.resolve("");
+    }
     if (verb === "api" && args[1]?.includes("/comments")) {
       return Promise.resolve(
         args[1].includes("page=1") ? JSON.stringify(prComments) : "[]",
       );
     }
     if (verb === "pr" && noun === "comment") {
-      prComments.push(comment(args[args.indexOf("--body") + 1] ?? "", 0));
+      prComments.push({
+        ...comment(args[args.indexOf("--body") + 1] ?? "", 0),
+        id: nextCommentId++,
+      });
       return Promise.resolve("");
     }
     return Promise.resolve("");
@@ -822,6 +840,54 @@ Deno.test("repairConflictQueueStall - a declined abandon restarts the clock so t
     "abandon-declined",
   );
   assertEquals(detect(observation(10, github.prComments)), null);
+});
+
+Deno.test("repairConflictQueueStall - a spent restart edits the one watchdog note across later windows", async () => {
+  const declined = fakeAbandon({
+    outcome: "declined",
+    reason: {
+      kind: "already-restarted",
+      issueNumber: 7,
+      samePr: true,
+      restartCount: 2,
+    },
+  });
+  const github = fakeGitHub(budgetSpentComments.slice());
+
+  for (let window = 0; window < 3; window++) {
+    const now = NOW + window * (2 * HOUR + 60_000);
+    const stall = detectConflictQueueStall(
+      observation(10, github.prComments),
+      { nowMs: now, isTrustedAuthor },
+    );
+    assert(stall !== null, `window ${window} should trip`);
+    assertEquals(
+      await repairConflictQueueStall(stall, {
+        ghCommandFn: github.gh,
+        logger,
+        isTrustedAuthor,
+        nowMs: now,
+        abandon: declined.abandon,
+        acquireLease: declined.acquireLease,
+        trustedAuthors: [FLEET],
+      }),
+      "abandon-declined",
+    );
+    assertEquals(
+      detectConflictQueueStall(observation(10, github.prComments), {
+        nowMs: now,
+        isTrustedAuthor,
+      }),
+      null,
+      `window ${window} should restart the clock`,
+    );
+  }
+
+  const notes = github.prComments.filter((row) =>
+    String(row.body ?? "").includes("vibe-conflict-watchdog-checked")
+  );
+  assertEquals(notes.length, 1);
+  assertEquals(postedComments(github.calls).length, 1);
 });
 
 Deno.test("repairConflictQueueStall - a reused fix PR restarts the clock so the next check does not trip", async () => {

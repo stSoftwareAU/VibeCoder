@@ -503,7 +503,9 @@ flowchart TD
   Once it holds the lock the takeover re-reads the thread and stands down
   unless that attempt is still due, including when a failure landed after
   the watchdog's read and before its own. The sync re-reads the same way
-  after it takes the lock. When that re-read finds the attempt no longer
+  after it takes the lock, and the ladder does the same before it posts its
+  attempt marker, taking the attempt number from that fresh tally. When that
+  re-read finds the attempt no longer
   due, the sync closes the local-ledger attempt it opened, as `disrupted`,
   so the milestone is not paced for the rest of the window. The sync also
   stands down when the lock
@@ -514,7 +516,10 @@ flowchart TD
   PR from a fork or from an author outside the fleet is not this pass's fix
   PR. A later takeover in the same watchdog pass reads the clock again, and
   the pass stops once the time left is under the agent floor. At the 2-hour
-  mark only the pass that holds the lock spends an attempt.
+  mark only the pass that holds the lock spends an attempt. A declined
+  abandon or a reused fix PR restarts that clock by editing the one
+  watchdog note already on the PR, rather than posting a new comment each
+  window.
 
 ```mermaid
 flowchart TD
