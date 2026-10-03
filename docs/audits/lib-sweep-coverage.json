@@ -2193,7 +2193,7 @@
     {
       "issue": 2688,
       "chunk": "top-up-2688",
-      "title": "top-up: worker work-on → planning hand-off",
+      "title": "top-up: worker work-on \u2192 planning hand-off",
       "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: planning_handoff.ts, planning_handoff_trust.ts (#2688)",
       "status": "swept",
@@ -2460,6 +2460,32 @@
         "run.sh",
         "setup.ps1",
         "setup.sh"
+      ]
+    },
+    {
+      "issue": 2998,
+      "chunk": "top-up-2998",
+      "title": "top-up: the milestone sync landing check and its per-PR budget",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2998",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_sync_landing.ts, milestone_sync_pr_budget.ts (#2998)",
+      "status": "claimed",
+      "sweptAt": "84b3700e047d33d75bffde20dcc1aa7127db5f43",
+      "paths": [
+        "worker/deno/lib/milestone_sync_landing.ts",
+        "worker/deno/lib/milestone_sync_pr_budget.ts"
+      ]
+    },
+    {
+      "issue": 2999,
+      "chunk": "top-up-2999",
+      "title": "top-up: the conflict takeover pass and its milestone-fix resolvers",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2999",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_takeover.ts, conflict_takeover_resolvers.ts (#2999)",
+      "status": "claimed",
+      "sweptAt": "e6a89d49eb3ec840e1f661ee5c3a1326f43582ac",
+      "paths": [
+        "worker/deno/lib/conflict_takeover.ts",
+        "worker/deno/lib/conflict_takeover_resolvers.ts"
       ]
     },
     {

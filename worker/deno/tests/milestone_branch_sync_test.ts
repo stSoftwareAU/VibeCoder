@@ -1554,7 +1554,8 @@ Deno.test("syncMilestoneBranches - the same tip is tried again on the very next 
       failure: "conflict",
     }];
 
-    // Cycle 1: the first conflict failure charges one of the two attempts.
+    // Cycle 1: the first conflict failure charges one of the budget's
+    // attempts.
     await syncMilestoneBranches(ledgerDeps([], {
       milestones,
       streakPath,
@@ -1562,23 +1563,26 @@ Deno.test("syncMilestoneBranches - the same tip is tried again on the very next 
     }));
     assertEquals((await readLedger(streakPath))?.conflictAttempts, 1);
 
-    // Cycle 2, ten seconds later, same tip: the old ledger paced this for
-    // four hours. The second attempt runs now, and spends the budget.
-    let attempts = 0;
+    // Cycles 2..budget, ten seconds apart, same tip: the old ledger paced
+    // this for four hours. Each attempt runs with no wait, and the last one
+    // spends the budget and triggers the roll-back.
     const rollbacks: string[] = [];
-    const deps = ledgerDeps([], {
-      milestones,
-      streakPath,
-      nowMs: 20_000,
-      rollbacks,
-    });
-    const inner = deps.syncBranchFn;
-    deps.syncBranchFn = (repo, branch, base, opts) => {
-      attempts++;
-      return inner(repo, branch, base, opts);
-    };
-    await syncMilestoneBranches(deps);
-    assertEquals(attempts, 1, "no wait between the two attempts");
+    for (let cycle = 2; cycle <= MILESTONE_CONFLICT_ATTEMPT_BUDGET; cycle++) {
+      let attempts = 0;
+      const deps = ledgerDeps([], {
+        milestones,
+        streakPath,
+        nowMs: cycle * 10_000,
+        rollbacks,
+      });
+      const inner = deps.syncBranchFn;
+      deps.syncBranchFn = (repo, branch, base, opts) => {
+        attempts++;
+        return inner(repo, branch, base, opts);
+      };
+      await syncMilestoneBranches(deps);
+      assertEquals(attempts, 1, "no wait between attempts");
+    }
     assertEquals(
       (await readLedger(streakPath))?.conflictAttempts,
       MILESTONE_CONFLICT_ATTEMPT_BUDGET,
@@ -1587,22 +1591,27 @@ Deno.test("syncMilestoneBranches - the same tip is tried again on the very next 
       `owner/repo|${LEDGER_BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
     ]);
 
-    // Cycle 3: the budget is spent, so the branch belongs to the roll-back
-    // and no third merge is attempted however far the tip has moved.
-    let thirdAttempts = 0;
+    // One more cycle: the budget is spent, so the branch belongs to the
+    // roll-back and no further merge is attempted however far the tip has
+    // moved.
+    let finalAttempts = 0;
     const spentDeps = ledgerDeps([], {
       milestones,
       streakPath,
       defaultSha: MOVED_SHA,
-      nowMs: 30_000,
+      nowMs: (MILESTONE_CONFLICT_ATTEMPT_BUDGET + 1) * 10_000,
     });
     const spentInner = spentDeps.syncBranchFn;
     spentDeps.syncBranchFn = (repo, branch, base, opts) => {
-      thirdAttempts++;
+      finalAttempts++;
       return spentInner(repo, branch, base, opts);
     };
     const spent = await syncMilestoneBranches(spentDeps);
-    assertEquals(thirdAttempts, 0, "two runs per conflict, and no more");
+    assertEquals(
+      finalAttempts,
+      0,
+      "the budget's runs per conflict, and no more",
+    );
     assertEquals(spent.ok && spent.value.skipped, 1);
   } finally {
     await Deno.remove(dir, { recursive: true });
