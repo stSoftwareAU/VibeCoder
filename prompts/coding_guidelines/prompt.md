@@ -912,10 +912,11 @@ this **instead of looping**:
    branch that already has commits.
    **Do not close the issue yourself**: the `gh` guard refuses
    `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
-   The worker releases its claim and hands the issue to a human
-   (`needs-human`) only while the branch has no commits and no uncommitted
-   changes against the base. Once work is committed, this free-text hand-off
-   is not read. A human decides whether to close the issue.
+   In an issue run, the worker releases its claim and hands the issue to a
+   human (`needs-human`) only while the branch has no commits and no
+   uncommitted changes against the base; once work is committed, an
+   issue-comment hand-off is not read. A human decides whether to close the
+   issue.
 4. Exit cleanly. Do not retry the original change.
 
 **Do not invoke this lightly.** Make a serious attempt first. Use the escape
