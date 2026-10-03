@@ -72,7 +72,9 @@ flowchart LR
   degraded-run delivery guard bullets); updated:
   `docs/workflows/issue-processing.md`, `prompts/issue/prompt.md`,
   `worker/deno/lib/degraded_delivery.ts` (module doc),
-  `docs/audits/security-sweep-2562-degraded-delivery.md`.
+  `docs/audits/security-sweep-2562-degraded-delivery.md`,
+  `worker/deno/lib/phases/completion_phase.ts` (the guard's comment and
+  the failure reason, which also names an unmatched gap).
   The same read updated four places:
   - `docs/workflows/issue-processing.md`: the degraded-run "Delivered" bullet
     now describes word matching, `unassessed` for unmatched or ambiguous

@@ -85,7 +85,7 @@ import type { Result } from "../types.ts";
 /** Why a scope item counts as not delivered. */
 export type ShortfallStatus = "partial" | "missing" | "unassessed";
 
-/** One accepted scope item a degraded run did not show as met. */
+/** One shortfall a degraded run files: a scope item not shown as met, or an unmatched gap the closure block reported. */
 export interface DegradedShortfall {
   /**
    * The scope item, as the issue states it. A gap the closure block left
@@ -105,7 +105,7 @@ export interface DegradedDeliveryVerdict {
   reason?: string;
   /** Scope items the summary marks `met`. Empty on a healthy run. */
   delivered: string[];
-  /** Scope items short of `met`. Always empty on a healthy run. */
+  /** Scope items short of `met`, plus unmatched `partial` or `missing` gaps. Always empty on a healthy run. */
   shortfalls: DegradedShortfall[];
 }
 
