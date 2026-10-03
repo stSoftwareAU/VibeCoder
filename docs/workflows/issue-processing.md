@@ -1725,9 +1725,11 @@ now recover the way the security-fix gate does
 1. the verdict is recorded on the run state and the log reads
    `PR-summary rule block — recovering once in-run`;
 2. the agent is re-invoked **fresh** — never `--resume`, because the previous
-   turn already concluded the work was finished — with the gate's own
-   remediation comment replayed into the prompt, told to edit the summary file
-   and commit, and nothing else;
+   turn already concluded the work was finished — with the gate's own reason
+   and remediation comment fenced as untrusted data under a per-render nonce,
+   a boundary-integrity rule naming that fence's nonce, and the genuine
+   review-block markers printed outside it (Issue #3152); told to edit the
+   summary file and commit, and nothing else;
 3. the worker renders the closure block itself when that summary still fails
    either criteria gate (Issue #2242, below);
 4. whatever the recovery produced is committed on the issue branch;
