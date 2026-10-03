@@ -46,6 +46,34 @@ Deno.test("summary-rule retry - the prompt forbids new work and PR creation", ()
   assertStringIncludes(prompt, "reviewer sub-agents");
 });
 
+Deno.test("summary-rule retry - no existing PR says the worker will raise one", () => {
+  const prompt = buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 7);
+
+  assertStringIncludes(
+    prompt,
+    "the worker will re-run the quality gate and raise the PR as soon as " +
+      "the summary satisfies the gate",
+  );
+});
+
+Deno.test("summary-rule retry - an existing PR says the worker will not finalise it yet", () => {
+  const prompt = buildSummaryRuleRetryPrompt(
+    { ...VERDICT, existingPrUrl: "https://github.com/org/repo/pull/42" },
+    "org/repo",
+    7,
+  );
+
+  assertStringIncludes(prompt, "a PR is already open for this branch");
+  assertStringIncludes(
+    prompt,
+    "the worker will not finalise it (or arm auto-merge on it) until the " +
+      "summary satisfies the gate",
+  );
+  assertStringIncludes(prompt, "Do not create the PR yourself");
+  // The URL itself is never interpolated into the prompt.
+  assertEquals(prompt.includes("https://github.com/org/repo/pull/42"), false);
+});
+
 Deno.test("summary-rule retry - an unusable issue number fails loud", () => {
   assertThrows(
     () => buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 0),
