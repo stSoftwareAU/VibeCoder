@@ -26,8 +26,8 @@ Untrusted inputs, and how each reaches the output:
 
 | Input | Source | How it is handled |
 | ----- | ------ | ----------------- |
-| `verdict.comment` | the summary gate's own comment builder (`acceptance_criteria_gate.ts`, `independent_review_gate.ts`, `reproduction_status_gate.ts`) — worker-authored template text, quoting entry lines from the branch's own PR summary | interpolated into the prompt **verbatim**, between named notice markers. Deliberately not scrubbed: the agent has to reproduce the block's `<!-- vibe-spec-review -->` markers exactly, and `neutraliseHtmlComments` would destroy the brief it is being given. Empty or whitespace-only is refused before a prompt exists |
-| `verdict.reason` | the same gate, as the phase-failure reason | one interpolated line of worker-authored text, stated apart from the notice |
+| `verdict.comment` | the summary gate's own comment builder (`acceptance_criteria_gate.ts`, `independent_review_gate.ts`, `reproduction_status_gate.ts`) — worker-authored template text, quoting entry lines from the branch's own PR summary, which carry wording the issue's author chose | fenced with `fenceUntrustedIssueText` under a per-render CSPRNG nonce (forged delimiters and HTML comments scrubbed), named by a `buildBoundaryIntegrityInstruction` rule (Issue #3152). The genuine `<!-- vibe-spec-review -->` / `<!-- vibe-standards-review -->` markers the agent must reproduce come from the trusted `review_block_template.ts` text printed outside the fence, so scrubbing the notice never costs the agent the markers it needs. Empty or whitespace-only is still refused before a prompt exists |
+| `verdict.reason` | the same gate, as the phase-failure reason | fenced the same way, under the same nonce, named by the same integrity instruction (Issue #3152) |
 | `issueNumber` | the claim the run already holds | validated as a positive integer, then interpolated into prompt text and a summary path *string*. No filesystem call is made with it here |
 | `repo` | the claim the run already holds | named in the prompt's first line only |
 | `state.repoPath` | the worker's own clone path | passed through as the invocation's `cwd`, unchanged |
@@ -43,12 +43,19 @@ Untrusted inputs, and how each reaches the output:
 | resource bounds | one invocation per run, enforced by the caller's `=== 1` entry condition; the invocation itself is bounded by the run's configured `claudeTimeout` / `claudeKillAfter` and `maxRateLimitRetries` |
 | fail direction | fail-loud in the direction that matters: an unusable issue number or an empty remediation comment **throws** rather than producing a prompt that would send the agent to re-derive the shortfall itself; a verdict-less call and a failed launch each log a warning and return the gate's original `failure` unchanged, so no path turns a block into a pass |
 
-No finding. The one deliberate trust decision is replaying the gate comment
-**unfenced**. Its text is worker-generated — each gate prints its own template
-and problem lines — and the only agent-influenced fragments are the summary
-entry lines the gate quotes back, from a file this same run's agent wrote on
-this run's branch. Fencing it would neutralise the HTML-comment markers the
-agent must copy, which is the whole content of the brief. The prompt bounds what
-that content can achieve: the invocation is told to edit the one summary file
-and commit, never to create the PR, close the issue or start new work, and the
-gates all run again over the result before any PR exists.
+No finding. An earlier version of this record read the gate comment as
+worker-generated and replayed it **unfenced**; #3152 superseded that decision,
+because the summary entry lines each gate quotes back carry wording the
+issue's author chose, not just the worker's own template text — the same
+attacker-influenced-input reasoning #3133 already applied to the closure
+gate's problem lines. Both `verdict.reason` and `verdict.comment` are now
+fenced under a per-render CSPRNG nonce with a boundary-integrity instruction
+naming it, so a forged delimiter or HTML comment inside the quoted text
+cannot pass as a real one; the markers the agent must reproduce come from the
+trusted review-block template printed outside the fence, never from the
+notice. The prompt still bounds what the fenced content can achieve: the
+invocation is told to edit the one summary file and commit, never to create
+the PR, close the issue or start new work, and the gates all run again over
+the result before any PR exists. The invocation keeps its full tool grant
+regardless — it is deliberately allowed to edit and commit, because that is
+the recovery's job.
