@@ -20,6 +20,15 @@
  * **Preconditions are checked before anything is destroyed.** The order below
  * is the safety property, not an implementation detail:
  *
+ * 0. the shared {@link CONFLICT_RESOLUTION_BUDGET} has actually been spent —
+ *    `failedAttempts < CONFLICT_RESOLUTION_BUDGET` declines the abandon
+ *    outright, before anything else runs (Issue #3000). The stale-verdict
+ *    ladder's own rung-failed count used to be the only gate standing between
+ *    a single judged attempt and a close-and-redo; this reads the same
+ *    PR-side tally {@link spentConflictAttempts} does, so abandon-and-redo
+ *    never runs ahead of the budget it is supposed to follow. Exempt: a
+ *    `stalled` reason (the stall-repair pass's second trip, Issue #2802) is
+ *    not a conflict-resolution outcome at all and has its own two-trip bound;
  * 1. the PR's originating issue is known — and when it is not, the PR is still
  *    closed, but only after the `merge-fallback` flag issue has been filed as
  *    the re-do item, carrying `idle-task` and the PR's diff summary
@@ -78,8 +87,13 @@ import {
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
+  CONFLICT_RESOLUTION_BUDGET,
+  type ConflictResolutionAttempt,
   MERGE_CONFLICT_LABEL,
+  readResolutionAttempts,
+  spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 import {
   type ParsedStageTimings,
   parseStageTimingsLine,
@@ -100,9 +114,15 @@ import { sanitiseIssueText } from "./conflict_intent_context.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
-import { buildDedupMarker, escalateToHuman } from "./needs_human_escalation.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
+import {
+  buildDedupMarker,
+  buildEscalationCommentBody,
+} from "./needs_human_escalation.ts";
 import { createLogger } from "./logger.ts";
+import {
+  getLabelColour,
+  getLabelDescription,
+} from "../setup/label_definitions.ts";
 
 // ---------------------------------------------------------------------------
 // Marker
@@ -216,6 +236,13 @@ export interface FailedAttemptHistory {
    * base side needs a clone to walk, and by now there is none.
    */
   consultedIssues: number[];
+  /**
+   * The shared-budget attempt history (Issue #2996, #3000), read back with
+   * {@link readResolutionAttempts} over the same trusted comments. This is
+   * what {@link renderAttemptTable} renders, and what the spent-budget guard
+   * in {@link abandonAndRestart} tallies with {@link spentConflictAttempts}.
+   */
+  resolutionAttempts: ConflictResolutionAttempt[];
 }
 
 /** Issues named in one attempt comment's consulted-issues section. */
@@ -246,9 +273,15 @@ function attemptNumberFrom(body: string): number | null {
  * The reasons are the failure comments' own words rather than a re-derivation:
  * the abandon comment must say what the fleet actually recorded, and only the
  * comments know that once the run that wrote them is gone.
+ *
+ * @param comments - The PR's thread, oldest first.
+ * @param trustedAuthors - Fleet logins (Issue #1247) — also what
+ *   {@link readResolutionAttempts} attributes {@link ConflictResolutionAttempt}
+ *   markers against for {@link FailedAttemptHistory.resolutionAttempts}.
  */
 export function summariseFailedAttempts(
   comments: readonly unknown[],
+  trustedAuthors: readonly string[],
 ): FailedAttemptHistory {
   const attempts: FailedAttemptSummary[] = [];
   const conflictedPaths: string[] = [];
@@ -300,6 +333,10 @@ export function summariseFailedAttempts(
     attempts,
     conflictedPaths: conflictedPaths.slice(0, MAX_CONFLICTED_PATHS),
     consultedIssues,
+    resolutionAttempts: readResolutionAttempts(
+      comments,
+      (login) => isFleetAuthor(login, [...trustedAuthors]),
+    ),
   };
 }
 
@@ -403,6 +440,68 @@ export function describeConcludedAttempts(
 }
 
 // ---------------------------------------------------------------------------
+// The attempt table (Issue #3000)
+// ---------------------------------------------------------------------------
+
+/** One PR's recorded attempts, as one link in a restart chain. */
+export interface RestartChainLink {
+  /** The PR number this link's attempts were recorded against. */
+  prNumber: number;
+  /** From {@link readResolutionAttempts}, oldest first. */
+  attempts: readonly ConflictResolutionAttempt[];
+}
+
+/** One attempt's time, as `YYYY-MM-DD HH:MM UTC`, or `unknown` when unset. */
+function attemptTimeCell(atMs: number | undefined): string {
+  if (atMs === undefined) return "unknown";
+  return `${new Date(atMs).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/** One attempt's outcome, as a table cell. */
+function attemptOutcomeCell(
+  outcome: ConflictResolutionAttempt["outcome"],
+): string {
+  return outcome === "open" ? "open (never concluded)" : outcome;
+}
+
+/**
+ * A markdown table of every resolution attempt across a restart chain
+ * (Issue #3000) — one row per attempt, counted from one within each PR.
+ *
+ * `repo` is config, not user-controlled text, and every other cell comes off
+ * a closed union ({@link ConflictResolutionPass}, the outcome word) or a
+ * formatted epoch ms — nothing here needs {@link sanitiseIssueText}.
+ *
+ * @param repo - Repository in `owner/repo` form, shared by every link.
+ * @param chain - Every PR's attempts, oldest PR first. A PR with no recorded
+ *   attempts still gets one row, saying so.
+ */
+export function renderAttemptTable(
+  repo: string,
+  chain: readonly RestartChainLink[],
+): string[] {
+  const rows: string[] = [
+    "| PR | Attempt | Pass | Time (UTC) | Outcome |",
+    "| --- | --- | --- | --- | --- |",
+  ];
+  for (const link of chain) {
+    const prCell = `${repo}#${link.prNumber}`;
+    if (link.attempts.length === 0) {
+      rows.push(`| ${prCell} | — | — | — | no attempt recorded |`);
+      continue;
+    }
+    link.attempts.forEach((attempt, index) => {
+      rows.push(
+        `| ${prCell} | ${index + 1} | ${attempt.pass} | ` +
+          `${attemptTimeCell(attempt.atMs)} | ` +
+          `${attemptOutcomeCell(attempt.outcome)} |`,
+      );
+    });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
 // Outcome taxonomy
 // ---------------------------------------------------------------------------
 
@@ -449,7 +548,17 @@ export type AbandonDeclineReason =
     claimCount: number;
   }
   /** The issue already has another PR of its own. */
-  | { kind: "other-open-pr"; issueNumber: number; prUrl: string };
+  | { kind: "other-open-pr"; issueNumber: number; prUrl: string }
+  /**
+   * The shared {@link CONFLICT_RESOLUTION_BUDGET} has not actually been
+   * spent (Issue #3000): abandon-and-redo runs only once every attempt the
+   * budget allows has been spent and failed — the stale-verdict ladder
+   * reached this rung with fewer failures than the budget allows. Not
+   * produced for a `stalled` {@link AbandonReason}: a stall repair's second
+   * trip is not a conflict-resolution outcome, and has its own two-trip
+   * bound.
+   */
+  | { kind: "attempts-not-spent"; failedAttempts: number; budget: number };
 
 /** The steps an abandon runs, in order. Named in the failure outcome. */
 export type AbandonStep =
@@ -602,6 +711,15 @@ export function exhaustedEscalationRoute(
         detail: `Issue #${reason.issueNumber} already has another open PR ` +
           `(${sanitiseIssueText(reason.prUrl)}), so re-queuing it would have ` +
           "raced that one.",
+      };
+    case "attempts-not-spent":
+      return {
+        kind: "abandon-declined",
+        detail: `This PR has ${reason.failedAttempts} failed merge-conflict ` +
+          `resolution attempt(s) recorded of the ${reason.budget} the shared ` +
+          "budget allows, so it was not abandoned: abandon-and-redo runs " +
+          "only after every attempt has been spent and failed. It stays " +
+          "open on `merge-conflict` for the next attempt.",
       };
   }
   const unhandled: never = reason;
@@ -1085,6 +1203,12 @@ export function buildRestartIssueComment(args: {
     "",
     ...paths,
     "",
+    "**Resolution attempts on this PR**",
+    "",
+    ...renderAttemptTable(request.repo, [
+      { prNumber: request.prNumber, attempts: history.resolutionAttempts },
+    ]),
+    "",
     whatHappensNow,
     "",
     restartNumber >= MAX_RESTARTS_PER_ISSUE
@@ -1260,10 +1384,20 @@ export function restartsSpentDedupKey(prNumber: number): string {
   return `merge-conflict-restarts-spent-${prNumber}`;
 }
 
-/** The hand-off comment's parts: what failed, and what a human decides. */
+/**
+ * The hand-off comment's parts: what failed, and what a human decides
+ * (Issue #2804). `chain` (Issue #3000) is every attempt recorded across the
+ * whole restart chain — every earlier PR, then the current one — rendered as
+ * one table appended to `reason`, so a human reading the hand-off sees every
+ * judged attempt rather than just the count. `unreadableClaims` is restart
+ * claims naming a PR whose thread could not be read, so their attempts could
+ * not be listed — said out loud rather than silently dropped from the table.
+ */
 export function buildRestartsSpentHandOff(args: {
   request: AbandonRestartRequest;
   restartCount: number;
+  chain: readonly RestartChainLink[];
+  unreadableClaims: number;
 }): { heading: string; reason: string; nextStep: string } {
   const { request } = args;
   const pr = `${request.repo}#${request.prNumber}`;
@@ -1277,12 +1411,17 @@ export function buildRestartsSpentHandOff(args: {
     } did not clear it`
     : `spent its merge-conflict budget: GitHub still will not merge ` +
       `\`${branch}\` into \`${base}\``;
+  const unreadableNote = args.unreadableClaims > 0
+    ? ` ${args.unreadableClaims} restart claim(s) name no readable PR, so ` +
+      "their attempts could not be listed below."
+    : "";
+  const table = renderAttemptTable(request.repo, args.chain).join("\n");
   return {
     heading: "Both automatic redos are used — this issue needs a human",
     reason: `${pr} (\`${branch}\`) ${failure}. This issue has already been ` +
       `redone ${MAX_RESTARTS_PER_ISSUE} times (${args.restartCount} restarts ` +
       "recorded above), so there is no third redo: the PR is left open and " +
-      "this issue is not re-queued.",
+      `this issue is not re-queued.${unreadableNote}\n\n${table}`,
     nextStep: `Decide one of: fix ${pr} by hand; rescope this issue so a ` +
       "fresh attempt can land; or close this issue (and the PR) if the work " +
       "is no longer wanted.",
@@ -1291,14 +1430,25 @@ export function buildRestartsSpentHandOff(args: {
 
 /**
  * Hand the originating issue to a human once its restarts are spent
- * (Issue #2804): `needs-human` plus one comment, through the shared
- * `escalateToHuman` chokepoint. Returns a `failed` outcome when either side
- * effect did not land, and `undefined` when the hand-off is in place.
+ * (Issue #2804): `needs-human` plus one comment, applied through an explicit,
+ * ordered sequence (Issue #3000) rather than the generic `escalateToHuman`
+ * chokepoint — the two side effects here must land **together, exactly once,
+ * never one without the other**, which the chokepoint's independently
+ * fault-tolerant steps do not guarantee. Returns a `failed` outcome when a
+ * step does not land, and `undefined` when the hand-off is in place.
  *
  * Idempotent: an issue already carrying `needs-human` **and** the fleet's own
  * hand-off comment for this PR is left alone. Both are checked, so a pass
  * whose comment failed after the label landed is retried rather than read as
  * done; the dedup key stops a label-only retry from commenting twice.
+ *
+ * Builds the restart chain (Issue #3000) before anything is labelled or
+ * commented on: every earlier PR a trusted restart claim names, oldest first,
+ * then this PR — each PR's own thread read back with
+ * {@link readResolutionAttempts} over its trusted comments, so the hand-off
+ * comment can list every judged attempt, not just the count. A thread that
+ * cannot be read fails the whole hand-off at `pr-thread`, named `issueNumber`
+ * because the issue, not any one PR, is what this step is about.
  */
 async function handOffSpentRestarts(
   request: AbandonRestartRequest,
@@ -1306,18 +1456,15 @@ async function handOffSpentRestarts(
   issueNumber: number,
   restartCount: number,
   issueComments: readonly unknown[],
+  trustedClaims: readonly unknown[],
+  currentAttempts: readonly ConflictResolutionAttempt[],
   failed: FailedReporter,
 ): Promise<AbandonRestartOutcome | undefined> {
   const { repo, prNumber } = request;
   const gh = deps.gh;
   const logger = deps.logger ?? createLogger();
 
-  let snapshot: IssueSnapshot;
-  try {
-    snapshot = await fetchIssueSnapshot(repo, issueNumber, gh);
-  } catch (error) {
-    return failed("issue-state", error, issueNumber);
-  }
+  // --- Already done? ---------------------------------------------------
   const marker = buildDedupMarker(restartsSpentDedupKey(prNumber));
   const commented = partitionConflictComments(
     issueComments.filter((raw) => {
@@ -1326,57 +1473,142 @@ async function handOffSpentRestarts(
     }),
     deps.trustedAuthors,
   ).trusted.length > 0;
-  if (commented && snapshot.labels.includes(RESTARTS_SPENT_LABEL)) {
+  if (commented) {
     logger.info(
       `Issue #${issueNumber} has spent its restarts and already carries ` +
-        `\`${RESTARTS_SPENT_LABEL}\` — nothing more to say`,
+        "the fleet's own hand-off comment — nothing more to say. A human " +
+        `may have removed \`${RESTARTS_SPENT_LABEL}\` since, and that is not ` +
+        "re-added.",
       { repo, prNumber, issueNumber },
     );
     return undefined;
   }
 
-  const escalation = await escalateToHuman({
-    ghClient: createGhEscalationClient(gh, (message) => logger.warn(message)),
-    repo,
-    target: { kind: "issue", number: issueNumber },
-    needsHumanLabel: RESTARTS_SPENT_LABEL,
-    ...buildRestartsSpentHandOff({ request, restartCount }),
-    dedupKey: restartsSpentDedupKey(prNumber),
-    deps: {
-      github: {
-        ensureLabelExists: (labelRepo, name, colour, description) =>
-          ensureLabelExists(labelRepo, name, colour, description, {
-            ghCommandFn: gh,
-          }),
-      },
-      dedupAuthors: { fleetAuthors: deps.trustedAuthors },
-    },
-    logger,
-  });
-  // `escalateToHuman` is best-effort per side effect; here both must land.
-  if (!escalation.ok) {
-    return failed("issue-label", escalation.error, issueNumber);
+  // --- Build the restart chain before anything is labelled or commented on.
+  const claimedPrNumbers = restartMarkerPrNumbers(trustedClaims);
+  const unreadableClaims =
+    claimedPrNumbers.filter((claimed) => claimed === null).length;
+  const earlierPrNumbers: number[] = [];
+  for (const claimed of claimedPrNumbers) {
+    if (claimed === null || claimed === prNumber) continue;
+    if (!earlierPrNumbers.includes(claimed)) earlierPrNumbers.push(claimed);
   }
-  if (!escalation.value.labelAdded) {
-    return failed(
-      "issue-label",
-      new Error(
-        `\`${RESTARTS_SPENT_LABEL}\` could not be applied to issue ` +
-          `#${issueNumber} after its restarts were spent`,
+  const chain: RestartChainLink[] = [];
+  for (const earlierPrNumber of earlierPrNumbers) {
+    let trustedThread: readonly unknown[];
+    try {
+      trustedThread = partitionConflictComments(
+        await fetchIssueCommentPages(repo, earlierPrNumber, gh),
+        deps.trustedAuthors,
+      ).trusted;
+    } catch (error) {
+      return failed("pr-thread", error, issueNumber);
+    }
+    chain.push({
+      prNumber: earlierPrNumber,
+      attempts: readResolutionAttempts(
+        trustedThread,
+        (login) => isFleetAuthor(login, [...deps.trustedAuthors]),
       ),
-      issueNumber,
+    });
+  }
+  chain.push({ prNumber, attempts: currentAttempts });
+
+  // --- Issue state: is `needs-human` already there? ---------------------
+  let snapshot: IssueSnapshot;
+  try {
+    snapshot = await fetchIssueSnapshot(repo, issueNumber, gh);
+  } catch (error) {
+    return failed("issue-state", error, issueNumber);
+  }
+  const labelledBefore = snapshot.labels.includes(RESTARTS_SPENT_LABEL);
+
+  // --- Ensure the label exists (best-effort). ----------------------------
+  const ensured = await ensureLabelExists(
+    repo,
+    RESTARTS_SPENT_LABEL,
+    getLabelColour(RESTARTS_SPENT_LABEL),
+    getLabelDescription(RESTARTS_SPENT_LABEL),
+    { ghCommandFn: gh },
+  );
+  if (!ensured.ok) {
+    logger.warn(
+      `Issue #${issueNumber}: could not ensure \`${RESTARTS_SPENT_LABEL}\` ` +
+        "exists — the label add is attempted anyway",
+      { repo, prNumber, issueNumber, error: ensured.error.message },
     );
   }
-  if (!escalation.value.commentPosted && !escalation.value.dedupSkipped) {
+
+  // --- Add the label. Not ok, or it throws, and no comment is posted. ----
+  try {
+    const labelled = deps.addLabel
+      ? await deps.addLabel(repo, issueNumber, RESTARTS_SPENT_LABEL)
+      : await addLabelToIssue(repo, issueNumber, RESTARTS_SPENT_LABEL, {
+        ghCommandFn: gh,
+      });
+    if (!labelled.ok) return failed("issue-label", labelled.error, issueNumber);
+  } catch (error) {
+    return failed("issue-label", error, issueNumber);
+  }
+
+  // --- Post the hand-off comment. -----------------------------------------
+  const body = buildEscalationCommentBody({
+    ...buildRestartsSpentHandOff({
+      request,
+      restartCount,
+      chain,
+      unreadableClaims,
+    }),
+    dedupKey: restartsSpentDedupKey(prNumber),
+  });
+  try {
+    await gh([
+      "issue",
+      "comment",
+      String(issueNumber),
+      "--repo",
+      repo,
+      "--body",
+      body,
+    ]);
+  } catch (error) {
+    // Issue #2951: roll the label back only when this flow can prove it
+    // applied it — a human who labelled the issue beforehand keeps their
+    // label regardless of whether this comment lands.
+    let rollbackNote = "";
+    if (!labelledBefore) {
+      try {
+        await gh([
+          "issue",
+          "edit",
+          String(issueNumber),
+          "--repo",
+          repo,
+          "--remove-label",
+          RESTARTS_SPENT_LABEL,
+        ]);
+      } catch (rollbackError) {
+        rollbackNote = ` (and the \`${RESTARTS_SPENT_LABEL}\` rollback also ` +
+          `failed: ${errorMessage(rollbackError)})`;
+        logger.error(
+          `Issue #${issueNumber}: failed to roll back ` +
+            `\`${RESTARTS_SPENT_LABEL}\` after its hand-off comment failed`,
+          {
+            repo,
+            prNumber,
+            issueNumber,
+            error: errorMessage(rollbackError),
+          },
+        );
+      }
+    }
     return failed(
       "issue-comment",
-      new Error(
-        `The spent-restarts comment could not be posted on issue ` +
-          `#${issueNumber}`,
-      ),
+      new Error(`${errorMessage(error)}${rollbackNote}`),
       issueNumber,
     );
   }
+
   logger.warn(
     `Issue #${issueNumber} has spent its ${MAX_RESTARTS_PER_ISSUE} restarts ` +
       `and PR #${prNumber} failed again — handed to a human ` +
@@ -1509,7 +1741,7 @@ async function abandonWithoutOriginatingIssue(
   } catch (error) {
     return failed("pr-thread", error);
   }
-  const history = summariseFailedAttempts(comments);
+  const history = summariseFailedAttempts(comments, deps.trustedAuthors);
 
   // Best-effort context: a read that failed renders as `not recorded` in the
   // flag body rather than as a guess, and never stops the fallback.
@@ -1669,6 +1901,58 @@ export async function abandonAndRestart(
     };
   };
 
+  // --- Precondition 0: the shared budget has actually been spent
+  // (Issue #3000). Read once, at the very top, before anything else —
+  // including the originating-issue lookup — runs. A read failure here means
+  // nothing has changed yet, so it fails as `pr-thread` rather than reaching
+  // a later step under a half-read thread.
+  let trustedThread: readonly unknown[];
+  try {
+    trustedThread = partitionConflictComments(
+      request.prComments ?? await fetchIssueCommentPages(repo, prNumber, gh),
+      deps.trustedAuthors,
+    ).trusted;
+  } catch (error) {
+    return failed("pr-thread", error);
+  }
+
+  const attempts = readResolutionAttempts(
+    trustedThread,
+    (login) => isFleetAuthor(login, [...deps.trustedAuthors]),
+  );
+  const failedAttempts = spentConflictAttempts(attempts);
+  // A `stalled` reason is exempt (Issue #2802): the stall-repair pass's
+  // second trip is not a conflict-resolution outcome at all, and has its own
+  // two-trip bound — this guard only ever applies to the merge-conflict route.
+  //
+  // With no fleet identity resolved (`deps.trustedAuthors` empty),
+  // `partitionConflictComments` can never call anything "trusted" — so a
+  // computed `failedAttempts` of 0 would be a false "not spent yet" rather
+  // than a genuine read of the thread. Decline no earlier than the
+  // restart-marker check further down, which already declines an
+  // unattributable claim explicitly (Issue #1247) instead of silently
+  // reading it as a healthy zero.
+  if (
+    deps.trustedAuthors.length > 0 &&
+    request.reason?.kind !== "stalled" &&
+    failedAttempts < CONFLICT_RESOLUTION_BUDGET
+  ) {
+    logger?.info?.(
+      `PR #${prNumber} has ${failedAttempts} failed merge-conflict ` +
+        `resolution attempt(s) recorded of the ${CONFLICT_RESOLUTION_BUDGET} ` +
+        "the shared budget allows — not abandoned yet",
+      { repo, prNumber, failedAttempts, budget: CONFLICT_RESOLUTION_BUDGET },
+    );
+    return {
+      outcome: "declined",
+      reason: {
+        kind: "attempts-not-spent",
+        failedAttempts,
+        budget: CONFLICT_RESOLUTION_BUDGET,
+      },
+    };
+  }
+
   // --- Precondition 1: the originating issue. No issue, no *re-queue* — the
   // PR is still closed, against a flag issue filed as the re-do item in its
   // place (Issue #2310).
@@ -1693,7 +1977,7 @@ export async function abandonAndRestart(
     // becomes the re-do item, because a PR parked for a human who never comes
     // loses the work just as surely as closing one with no record.
     return await abandonWithoutOriginatingIssue(
-      request,
+      { ...request, prComments: trustedThread },
       deps,
       context.prSide.reason,
       failed,
@@ -1752,6 +2036,8 @@ export async function abandonAndRestart(
         issueNumber,
         claimed.length,
         issueComments,
+        attribution.trusted,
+        attempts,
         failed,
       );
       if (handOffFailed !== undefined) return handOffFailed;
@@ -1799,26 +2085,8 @@ export async function abandonAndRestart(
   // waiting on a label a person must apply is not re-queued at all.
   const requeueLabel = planRequeueLabel(snapshot.labels);
 
-  let history: FailedAttemptHistory;
-  try {
-    // Attributed here too (Issue #1247), whichever side supplied the thread:
-    // this comment is permanent and public, so quoting an outsider's text
-    // back as "what the attempts recorded" would publish a fabricated
-    // record — and the consulted-issue numbers it lists come from the same
-    // bodies. Idempotent when the caller already filtered.
-    history = summariseFailedAttempts(
-      partitionConflictComments(
-        request.prComments ??
-          await fetchIssueCommentPages(repo, prNumber, gh),
-        deps.trustedAuthors,
-      ).trusted,
-    );
-  } catch (error) {
-    // The abandon comment quotes this thread. Publishing "no failure comment
-    // survives" because the read failed would be a fabricated fact on a
-    // permanent comment, so the rung stops and the caller escalates.
-    return failed("pr-thread", error, issueNumber);
-  }
+  // Read once, at the top of this call (Issue #3000) — not re-fetched here.
+  const history = summariseFailedAttempts(trustedThread, deps.trustedAuthors);
 
   // --- Step 1: claim the restart on the issue, marker first. --------------
   try {

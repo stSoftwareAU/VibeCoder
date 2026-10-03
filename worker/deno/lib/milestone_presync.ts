@@ -755,7 +755,7 @@ export async function presyncMilestoneBranchForIssueRun(
               conflict,
               ghFn,
               (message: string) => logger.info(message),
-            ),
+            ).then((report) => report.posted),
           reportGateWedge: (entry, conflict, tipSha) =>
             concludeGateRefusal(
               entry,
