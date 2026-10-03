@@ -38,10 +38,82 @@ export function isCountableTestPath(path: string): boolean {
  * this single-pass scanner can, because it tracks literal boundaries rather
  * than matching text wherever it appears.
  */
-function stripNonCode(source: string): string {
+interface StripResult {
+  code: string;
+  /** A comment, string, or template was still open at the end of the scan. */
+  unclosed: boolean;
+}
+
+/**
+ * Consume one template literal starting at the backtick at `start`.
+ * Nested templates and plain `{` / `}` inside `${...}` are tracked, so a
+ * `}` that belongs to a callback does not end the interpolation early.
+ */
+function consumeTemplate(
+  source: string,
+  start: number,
+): { next: number; closed: boolean } {
+  type Frame = { kind: "tpl" } | { kind: "interp"; depth: number };
+  const stack: Frame[] = [{ kind: "tpl" }];
+  let i = start + 1;
+  const n = source.length;
+  while (i < n && stack.length > 0) {
+    const top = stack[stack.length - 1]!;
+    const c = source[i]!;
+    if (c === "\\") {
+      i += 2;
+      continue;
+    }
+    if (top.kind === "tpl") {
+      if (c === "`") {
+        stack.pop();
+        i++;
+        continue;
+      }
+      if (c === "$" && source[i + 1] === "{") {
+        stack.push({ kind: "interp", depth: 1 });
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const quote = c;
+      i++;
+      while (i < n && source[i] !== quote) {
+        i += source[i] === "\\" ? 2 : 1;
+      }
+      if (i >= n) return { next: n, closed: false };
+      i++;
+      continue;
+    }
+    if (c === "`") {
+      stack.push({ kind: "tpl" });
+      i++;
+      continue;
+    }
+    if (c === "{") {
+      top.depth++;
+      i++;
+      continue;
+    }
+    if (c === "}") {
+      top.depth--;
+      i++;
+      if (top.depth === 0) stack.pop();
+      continue;
+    }
+    i++;
+  }
+  return { next: i, closed: stack.length === 0 };
+}
+
+function stripNonCode(source: string): StripResult {
   let out = "";
   let i = 0;
   let prev = "";
+  let unclosed = false;
   const n = source.length;
   while (i < n) {
     const c = source[i]!;
@@ -54,7 +126,8 @@ function stripNonCode(source: string): string {
     if (c === "/" && c2 === "*") {
       i += 2;
       while (i < n && !(source[i] === "*" && source[i + 1] === "/")) i++;
-      i += 2;
+      if (i >= n) unclosed = true;
+      else i += 2;
       continue;
     }
     if (c === "'" || c === '"') {
@@ -63,44 +136,25 @@ function stripNonCode(source: string): string {
       while (i < n && source[i] !== quote) {
         i += source[i] === "\\" ? 2 : 1;
       }
-      i++;
+      if (i >= n) unclosed = true;
+      else i++;
       out += " ";
       prev = quote;
       continue;
     }
     if (c === "`") {
-      i++;
-      let depth = 0;
-      while (i < n) {
-        if (source[i] === "\\") {
-          i += 2;
-          continue;
-        }
-        if (source[i] === "`" && depth === 0) {
-          i++;
-          break;
-        }
-        if (source[i] === "$" && source[i + 1] === "{") {
-          depth++;
-          i += 2;
-          continue;
-        }
-        if (source[i] === "}" && depth > 0) {
-          depth--;
-          i++;
-          continue;
-        }
-        i++;
-      }
+      const consumed = consumeTemplate(source, i);
+      if (!consumed.closed) unclosed = true;
+      i = consumed.next;
       out += " ";
       prev = "`";
       continue;
     }
     // Regex literal, only after a token that cannot end an expression
     // (operator, opening bracket, or start of input) — distinguishes
-    // `const re = /foo/;` from a division `a / b` (same heuristic common
-    // tokenizers use; a missed case merely falls back to the old,
-    // over-counting behaviour rather than mis-stripping real code).
+    // `const re = /foo/;` from a division `a / b`. A scan that cannot
+    // prove the literal closed marks the file uncountable; it is left
+    // out of the head recount rather than compared to a wrong count.
     if (c === "/" && /^[([{,;:!&|?=~^%+\-*]?$/.test(prev)) {
       let j = i + 1;
       let inClass = false;
@@ -132,7 +186,123 @@ function stripNonCode(source: string): string {
     if (!/\s/.test(c)) prev = c;
     i++;
   }
-  return out;
+  return { code: out, unclosed };
+}
+
+/** A declaration the recount will not compare against a Test Plan line. */
+export interface RecountResult {
+  counts: TestDeclarationCounts;
+  /**
+   * False when a declaration sits inside a block, parentheses, or a loop,
+   * or the scan ended inside a literal or with unbalanced depth. The file
+   * is then left out of the head recount.
+   */
+  countable: boolean;
+}
+
+const CONTROL_KEYWORD = /\b(?:for|while|if|else|do|switch)\b/;
+
+function matchCall(
+  code: string,
+  i: number,
+): { end: number; modifier: string; skipped: ReadonlySet<string> } | null {
+  let rest = code.slice(i);
+  let kind: "deno" | "it" | null = null;
+  if (rest.startsWith("Deno.test")) {
+    kind = "deno";
+    rest = rest.slice("Deno.test".length);
+  } else if (
+    /(?<![\w.$])it/.test(code.slice(Math.max(0, i - 1), i + 2)) &&
+    (i === 0 || !/[\w.$]/.test(code[i - 1]!)) &&
+    rest.startsWith("it")
+  ) {
+    kind = "it";
+    rest = rest.slice(2);
+  } else {
+    return null;
+  }
+  const mod = /^(?:\.(only|ignore|skip))?(\s*)\(/.exec(rest);
+  if (!mod) return null;
+  if (kind === "deno" && mod[1] === "skip") return null;
+  const skipped = kind === "deno"
+    ? DENO_SKIPPED_MODIFIERS
+    : IT_SKIPPED_MODIFIERS;
+  const prefix = kind === "deno" ? "Deno.test".length : 2;
+  // Stop on the opening '(' so the depth walk still sees it.
+  return {
+    end: i + prefix + mod[0].length - 1,
+    modifier: mod[1] ?? "",
+    skipped,
+  };
+}
+
+/**
+ * Count top-level declarations and say whether that count is safe to
+ * compare with a Test Plan line.
+ */
+export function recountTestFile(source: string): RecountResult {
+  const capped = source.slice(0, MAX_SCAN_CHARS);
+  const stripped = stripNonCode(capped);
+  const code = stripped.code;
+  let brace = 0;
+  let paren = 0;
+  let unbalanced = false;
+  let nested = false;
+  let total = 0;
+  let runnable = 0;
+  let statementStart = 0;
+
+  for (let i = 0; i < code.length;) {
+    const c = code[i]!;
+    if (c === "{") {
+      brace++;
+      statementStart = i + 1;
+      i++;
+      continue;
+    }
+    if (c === "}") {
+      if (brace === 0) unbalanced = true;
+      else brace--;
+      statementStart = i + 1;
+      i++;
+      continue;
+    }
+    if (c === "(") {
+      paren++;
+      i++;
+      continue;
+    }
+    if (c === ")") {
+      if (paren === 0) unbalanced = true;
+      else paren--;
+      i++;
+      continue;
+    }
+    if (c === ";") {
+      statementStart = i + 1;
+      i++;
+      continue;
+    }
+    const call = matchCall(code, i);
+    if (call) {
+      const atDepth = brace > 0 || paren > 0;
+      const statement = code.slice(statementStart, i);
+      if (atDepth || CONTROL_KEYWORD.test(statement)) nested = true;
+      else {
+        total++;
+        if (!call.skipped.has(call.modifier)) runnable++;
+      }
+      i = call.end;
+      continue;
+    }
+    i++;
+  }
+
+  return {
+    counts: { total, runnable },
+    countable: !stripped.unclosed && !unbalanced && !nested &&
+      brace === 0 && paren === 0,
+  };
 }
 
 /** Declaration counts: every declaration, and only the ones `deno test` runs. */
@@ -147,40 +317,15 @@ export interface TestDeclarationCounts {
 const DENO_SKIPPED_MODIFIERS = new Set(["ignore"]);
 const IT_SKIPPED_MODIFIERS = new Set(["ignore", "skip"]);
 
-function countCalls(
-  text: string,
-  re: RegExp,
-  skippedModifiers: ReadonlySet<string>,
-): TestDeclarationCounts {
-  let total = 0;
-  let runnable = 0;
-  for (const m of text.matchAll(re)) {
-    total++;
-    if (!skippedModifiers.has(m[1] ?? "")) runnable++;
-  }
-  return { total, runnable };
-}
-
 /**
  * Count test declarations in a test file's source, both the total and the
- * subset `deno test` actually runs.
+ * subset `deno test` actually runs. Nested declarations are omitted; use
+ * `recountTestFile` to learn whether the file was countable at all.
  */
 export function countTestDeclarationsDetailed(
   source: string,
 ): TestDeclarationCounts {
-  const capped = source.slice(0, MAX_SCAN_CHARS);
-  const code = stripNonCode(capped);
-
-  const denoTestRe = /\bDeno\.test(?:\.(only|ignore))?\s*\(/g;
-  const itRe = /(?<![\w.$])it(?:\.(only|ignore|skip))?\s*\(/g;
-
-  const deno = countCalls(code, denoTestRe, DENO_SKIPPED_MODIFIERS);
-  const it = countCalls(code, itRe, IT_SKIPPED_MODIFIERS);
-
-  return {
-    total: deno.total + it.total,
-    runnable: deno.runnable + it.runnable,
-  };
+  return recountTestFile(source).counts;
 }
 
 /** Count test declarations in a test file's source (every declaration). */
@@ -254,9 +399,39 @@ function resolveToken(
 
 const TOKEN_RE =
   /[A-Za-z0-9_./-]+(?:_test|\.test|\.spec)\.(?:ts|tsx|js|jsx|mjs|mts)/g;
-// Captures the claim word too: a "passed" figure is what `deno test` actually
-// ran (`.ignore`/`.skip` excluded); a "tests" figure is every declaration.
-const CLAIM_RE = /(?<![\w.])(\d{1,5})\s+(tests?|passed)\b/gi;
+// `#` is excluded so `Issue #3143 tests` is not read as a count of 3143.
+// A "passed" figure is what `deno test` actually ran (`.ignore`/`.skip`
+// excluded); a "tests" figure is every declaration.
+const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
+const PARTIAL_ADD_RE = /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b/i;
+
+/** Join a wrapped list item or a slash-continued command into one claim. */
+function logicalBlocks(section: string): string[] {
+  const lines = section.split("\n");
+  const blocks: string[][] = [];
+  let current: string[] | null = null;
+  const isItem = (line: string) => /^\s*(?:[-*+]|\d+[.)])\s/.test(line);
+  const isBlank = (line: string) =>
+    /^\s*$/.test(line) || /^#{1,6}\s/.test(line);
+  const isIndented = (line: string) => /^\s+\S/.test(line);
+  const endsWithSlash = (line: string) => /[/\\]\s*$/.test(line.trimEnd());
+
+  for (const line of lines) {
+    if (isBlank(line)) {
+      if (current) blocks.push(current);
+      current = null;
+      continue;
+    }
+    const prev = current?.[current.length - 1];
+    const cont = prev !== undefined && !isItem(line) &&
+      (isIndented(line) || endsWithSlash(prev));
+    if (current && !cont) blocks.push(current);
+    if (!current || !cont) current = [];
+    current.push(line.trim());
+  }
+  if (current) blocks.push(current);
+  return blocks.map((block) => block.join(" ").replace(/\s+/g, " ").trim());
+}
 
 export function findTestPlanMismatches(opts: {
   summary: string;
@@ -269,7 +444,7 @@ export function findTestPlanMismatches(opts: {
   const section = extractTestPlanSection(opts.summary);
   const results: TestPlanMismatch[] = [];
 
-  for (const rawLine of section.split("\n")) {
+  for (const rawLine of logicalBlocks(section)) {
     if (rawLine.includes("--filter")) continue;
 
     const tokens = [...rawLine.matchAll(TOKEN_RE)].map((m) => m[0]);
@@ -299,6 +474,10 @@ export function findTestPlanMismatches(opts: {
     );
     const isPassedClaim = words.has("passed");
     if (isPassedClaim && words.size > 1) continue;
+    // "Added to file (3 tests)" describes tests added to an existing file,
+    // not the file's whole declaration count. A "passed" command result
+    // is still the whole run.
+    if (!isPassedClaim && PARTIAL_ADD_RE.test(rawLine)) continue;
 
     const claimed = claims[0] as number;
     let actual = 0;

@@ -52,10 +52,10 @@ import {
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
 import {
-  countTestDeclarationsDetailed,
   describeTestPlanMismatch,
   findTestPlanMismatches,
   isCountableTestPath,
+  recountTestFile,
   type TestDeclarationCounts,
 } from "./test_plan_recount.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
@@ -579,7 +579,9 @@ async function computeHeadCounts(
     if (!isCountableTestPath(path)) continue;
     const content = await readIfExists(repoPath, path);
     if (content === undefined) continue;
-    const counts = countTestDeclarationsDetailed(content);
+    const recounted = recountTestFile(content);
+    if (!recounted.countable) continue;
+    const counts = recounted.counts;
     if (counts.total > 0) map.set(path, counts);
   }
   return map;

@@ -273,11 +273,17 @@ Three checks run, each only when it applies:
    base (capped at 40 files): list every sentence the code change makes
    false or leaves incomplete, quoted verbatim.
 2. **Deterministic Test Plan recount** — whenever the PR diff carries a
-   summary, the worker counts `Deno.test(` / `it(` declarations at the head
-   for every test file the PR diff adds or edits, and flags a `## Test Plan`
-   line naming those files with a test count that disagrees. Lines it cannot
-   total (an uncounted file, `--filter`, two different numbers, "N new
-   tests") are skipped.
+   summary, the worker counts top-level `Deno.test(` / `it(` declarations
+   at the head for every test file the PR diff adds or edits, and flags a
+   `## Test Plan` line naming those files with a test count that disagrees.
+   A file is left out when a declaration is inside a block, parentheses, or
+   a loop, or the scan ends inside a literal or with unbalanced depth.
+   Wrapped list items and slash-continued commands are read as one claim.
+   An issue number (`#3143`) is not a count, and a line that says tests
+   were added to or extended an existing file (`added to`, `extended`,
+   `with N tests`) is not compared with that file's whole count. Lines it
+   cannot total (an uncounted file, `--filter`, two different numbers, "N
+   new tests") are skipped.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files.

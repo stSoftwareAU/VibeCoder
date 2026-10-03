@@ -7,6 +7,7 @@ import {
   extractTestPlanSection,
   findTestPlanMismatches,
   isCountableTestPath,
+  recountTestFile,
   type TestDeclarationCounts,
 } from "../lib/test_plan_recount.ts";
 
@@ -294,6 +295,87 @@ Deno.test("describeTestPlanMismatch describes a multi-file mismatch", () => {
   );
 });
 
+Deno.test("recountTestFile leaves out a file whose Deno.test sits in a loop", () => {
+  const source = `
+for (const c of CLAUSES) Deno.test("generated", () => {});
+Deno.test("top", () => {});
+`;
+  assertEquals(recountTestFile(source).countable, false);
+});
+
+Deno.test("recountTestFile counts declarations after a nested template literal", () => {
+  const source = [
+    '`x ${ps.map((n) => `{{${n}}}`).join("\\n")}`',
+    'Deno.test("a", () => {});',
+    'Deno.test("b", () => {});',
+  ].join("\n");
+  const result = recountTestFile(source);
+  assertEquals(result.countable, true);
+  assertEquals(result.counts, { total: 2, runnable: 2 });
+});
+
+Deno.test("recountTestFile leaves out a file when a template literal never closes", () => {
+  const source = '`never closed\nDeno.test("a", () => {});';
+  assertEquals(recountTestFile(source).countable, false);
+});
+
+Deno.test("findTestPlanMismatches does not read an issue number as a test count", () => {
+  const summary = `## Test Plan
+- \`worker/deno/tests/foo_test.ts\` — the Issue #3143 tests pass.
+`;
+  const headCounts = counts({ "worker/deno/tests/foo_test.ts": 2 });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }).length, 0);
+});
+
+Deno.test("findTestPlanMismatches joins a slash-wrapped command before comparing the passed count", () => {
+  const summary = `## Test Plan
+\`deno task test tests/host_escalation_test.ts /
+tests/untrusted_marker_action_verification_test.ts /
+tests/outcome_record_gate_test.ts\` → \`ok | 35 passed\`
+`;
+  const headCounts = counts({
+    "tests/host_escalation_test.ts": 3,
+    "tests/untrusted_marker_action_verification_test.ts": 25,
+    "tests/outcome_record_gate_test.ts": 7,
+  });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }).length, 0);
+});
+
+Deno.test("findTestPlanMismatches skips a count of tests added to an existing file", () => {
+  const summary = `## Test Plan
+- Added to \`worker/deno/tests/config_test.ts\` (3 tests).
+`;
+  const headCounts = counts({ "worker/deno/tests/config_test.ts": 117 });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }).length, 0);
+});
+
+Deno.test("findTestPlanMismatches skips a count of tests that extended an existing file", () => {
+  const summary = `## Test Plan
+- Extended \`worker/deno/tests/config_test.ts\` (3 tests).
+`;
+  const headCounts = counts({ "worker/deno/tests/config_test.ts": 117 });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }).length, 0);
+});
+
+Deno.test("findTestPlanMismatches skips a 'with N tests' addition to an existing file", () => {
+  const summary = `## Test Plan
+- \`worker/deno/tests/config_test.ts\` with 3 tests.
+`;
+  const headCounts = counts({ "worker/deno/tests/config_test.ts": 117 });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }).length, 0);
+});
+
+Deno.test("findTestPlanMismatches still flags a whole-file count that is not an addition", () => {
+  const summary = `## Test Plan
+- \`worker/deno/tests/config_test.ts\` (3 tests).
+`;
+  const headCounts = counts({ "worker/deno/tests/config_test.ts": 117 });
+  const mismatches = findTestPlanMismatches({ summary, headCounts });
+  assertEquals(mismatches.length, 1);
+  assertEquals(mismatches[0]?.claimed, 3);
+  assertEquals(mismatches[0]?.actual, 117);
+});
+
 // Pins the recount of this very file (Issue #3143 review): before the fix,
 // `deno test` ran 21 tests here while the counter returned 29 — this file's
 // own `Deno.test(` fixtures embedded in template literals were counted as
@@ -303,5 +385,5 @@ Deno.test("countTestDeclarations recount of this file matches its own real Deno.
   const source = await Deno.readTextFile(
     new URL(import.meta.url),
   );
-  assertEquals(countTestDeclarations(source), 29);
+  assertEquals(countTestDeclarations(source), 38);
 });
