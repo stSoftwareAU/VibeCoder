@@ -438,3 +438,201 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
     await cleanup(tmpDir);
   }
 });
+
+/** Two commits that both change shared.ts, so a merge conflicts. */
+async function divergeOnShared(
+  localPath: string,
+  branch: string,
+): Promise<string> {
+  await Deno.writeTextFile(`${localPath}/shared.ts`, "base\n");
+  await runGitCommand(["add", "shared.ts"], { cwd: localPath });
+  await runGitCommand(["commit", "-m", "Add shared"], { cwd: localPath });
+  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+
+  await runGitCommand(["checkout", "-b", branch], { cwd: localPath });
+  await Deno.writeTextFile(`${localPath}/shared.ts`, "head version\n");
+  await runGitCommand(["add", "shared.ts"], { cwd: localPath });
+  await runGitCommand(["commit", "-m", "Head change"], { cwd: localPath });
+  await runGitCommand(["push", "origin", branch], { cwd: localPath });
+  const headCommit = await headSha(localPath, branch);
+
+  await runGitCommand(["checkout", "main"], { cwd: localPath });
+  await Deno.writeTextFile(`${localPath}/shared.ts`, "main version\n");
+  await runGitCommand(["add", "shared.ts"], { cwd: localPath });
+  await runGitCommand(["commit", "-m", "Main change"], { cwd: localPath });
+  await runGitCommand(["push", "origin", "main"], { cwd: localPath });
+  return headCommit;
+}
+
+function resolvingAgent(localContents: string) {
+  return async (
+    request: { workDir: string },
+  ): Promise<Result<{ terminated: boolean }>> => {
+    await Deno.writeTextFile(`${request.workDir}/shared.ts`, localContents);
+    await runGitCommand(["add", "shared.ts"], { cwd: request.workDir });
+    return { ok: true, value: { terminated: false } };
+  };
+}
+
+Deno.test("resolveViaLadder - the agent resolves a genuine conflict and the head is pushed (Issue #2965)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    const { localPath } = await setupTestRepos(tmpDir);
+    const headCommit = await divergeOnShared(localPath, "feature/x");
+    const resolvers = bindConflictTakeoverResolvers({
+      checkout: () => Promise.resolve(localPath),
+      agentFn: resolvingAgent("head version\nmain version\n"),
+    });
+
+    const outcome = await resolvers.resolveViaLadder(
+      makePr({
+        headRefName: "feature/x",
+        headSha: headCommit,
+        baseRefName: "main",
+      }),
+    );
+
+    assertEquals(outcome.resolved, true);
+    const shown = await runGitCommand(
+      ["show", "origin/feature/x:shared.ts"],
+      { cwd: localPath },
+    );
+    assert(shown.ok && shown.value.code === 0);
+    assertStringIncludes(shown.ok ? shown.value.stdout : "", "head version");
+    assertStringIncludes(shown.ok ? shown.value.stdout : "", "main version");
+    const remoteHead = await headSha(localPath, "origin/feature/x");
+    assert(remoteHead !== headCommit);
+  } finally {
+    await cleanup(tmpDir);
+  }
+});
+
+Deno.test("resolveViaLadder - an agent that leaves the conflict unresolved pushes nothing (Issue #2965)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    const { localPath } = await setupTestRepos(tmpDir);
+    const headCommit = await divergeOnShared(localPath, "feature/x");
+    let agentCalled = false;
+    const resolvers = bindConflictTakeoverResolvers({
+      checkout: () => Promise.resolve(localPath),
+      agentFn: () => {
+        agentCalled = true;
+        return Promise.resolve({ ok: true, value: { terminated: false } });
+      },
+    });
+
+    const outcome = await resolvers.resolveViaLadder(
+      makePr({
+        headRefName: "feature/x",
+        headSha: headCommit,
+        baseRefName: "main",
+      }),
+    );
+
+    assertEquals(outcome.resolved, false);
+    assertEquals(outcome.disrupted, undefined);
+    assert(agentCalled);
+    assertEquals(await headSha(localPath, "origin/feature/x"), headCommit);
+    const merging = await runGitCommand(
+      ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+      { cwd: localPath },
+    );
+    assert(merging.ok && merging.value.code !== 0);
+  } finally {
+    await cleanup(tmpDir);
+  }
+});
+
+Deno.test("resolveViaLadder - a non-conflict update error never calls the agent (Issue #2965)", async () => {
+  let agentCalled = false;
+  const resolvers = bindConflictTakeoverResolvers({
+    checkout: () => Promise.resolve("/tmp"),
+    updateBranch: () =>
+      Promise.resolve({ ok: false, error: new Error("fetch failed") }),
+    agentFn: () => {
+      agentCalled = true;
+      return Promise.resolve({ ok: true, value: { terminated: false } });
+    },
+  });
+
+  const outcome = await resolvers.resolveViaLadder(
+    makePr({ headRefName: "feature/x", headSha: "a".repeat(40) }),
+  );
+
+  assertEquals(outcome.resolved, false);
+  assertStringIncludes(outcome.detail, "fetch failed");
+  assert(!agentCalled);
+});
+
+Deno.test("resolveViaLadder - a terminated agent and an unavailable provider are disrupted (Issue #2965)", async () => {
+  for (
+    const agentFn of [
+      () => Promise.resolve({ ok: true as const, value: { terminated: true } }),
+      () =>
+        Promise.resolve({
+          ok: true as const,
+          value: { terminated: false, providerUnavailable: "402" },
+        }),
+    ]
+  ) {
+    const tmpDir = await createTempDir();
+    try {
+      const { localPath } = await setupTestRepos(tmpDir);
+      const headCommit = await divergeOnShared(localPath, "feature/x");
+      const resolvers = bindConflictTakeoverResolvers({
+        checkout: () => Promise.resolve(localPath),
+        agentFn,
+      });
+      const outcome = await resolvers.resolveViaLadder(
+        makePr({
+          headRefName: "feature/x",
+          headSha: headCommit,
+          baseRefName: "main",
+        }),
+      );
+      assertEquals(outcome.resolved, false);
+      assertEquals(outcome.disrupted, true);
+      assertEquals(await headSha(localPath, "origin/feature/x"), headCommit);
+    } finally {
+      await cleanup(tmpDir);
+    }
+  }
+});
+
+Deno.test("resolveOnFixBranch - an agent that cannot resolve pushes nothing (Issue #2965)", async () => {
+  const tmpDir = await createTempDir();
+  try {
+    const { localPath, remotePath } = await setupTestRepos(tmpDir);
+    const headCommit = await divergeOnShared(localPath, "milestone/x");
+    const resolvers = bindConflictTakeoverResolvers({
+      checkout: () => Promise.resolve(localPath),
+      agentFn: () =>
+        Promise.resolve({ ok: true, value: { terminated: false } }),
+    });
+
+    const outcome = await resolvers.resolveOnFixBranch(
+      makePr({ headSha: headCommit, headRefName: "milestone/x" }),
+      "milestone-fix/x/pr-42-takeover-abc",
+    );
+
+    assertEquals(outcome.resolved, false);
+    assertEquals(outcome.disrupted, undefined);
+    const remoteHead = await runGitCommand(
+      ["rev-parse", "refs/heads/milestone/x"],
+      { cwd: remotePath },
+    );
+    assertEquals(remoteHead.ok && remoteHead.value.stdout.trim(), headCommit);
+    const fixRef = await runGitCommand(
+      ["rev-parse", "refs/heads/milestone-fix/x/pr-42-takeover-abc"],
+      { cwd: remotePath },
+    );
+    assert(!fixRef.ok || fixRef.value.code !== 0);
+    const merging = await runGitCommand(
+      ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"],
+      { cwd: localPath },
+    );
+    assert(merging.ok && merging.value.code !== 0);
+  } finally {
+    await cleanup(tmpDir);
+  }
+});

@@ -171,6 +171,8 @@ import {
   listedOpenPrs,
   scanConflictQueueStalls,
 } from "./merge_conflict_stall_watchdog.ts";
+import { takeoverAgentTimeoutSeconds } from "./conflict_takeover.ts";
+import { activeBranchUpdateLockHolder } from "./pr_branch_lock.ts";
 import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
@@ -2975,9 +2977,19 @@ export async function createProductionRunCoreDeps(
               return setup.message;
             },
             agentFn: (request) => {
+              const agentTimeoutSeconds = takeoverAgentTimeoutSeconds(
+                opts?.deadlineEpochMs,
+                config.claudeTimeout,
+                Date.now(),
+              );
               const bound = bindMilestoneConflictAgent({
                 repo: request.repo,
-                grant: { agentAllowed: true },
+                grant: {
+                  agentAllowed: true,
+                  ...(agentTimeoutSeconds !== undefined
+                    ? { agentTimeoutSeconds }
+                    : {}),
+                },
                 config,
                 logger,
               });
@@ -6200,6 +6212,17 @@ async function syncMilestoneBranchesFn(
         options: { cwd: `${workDir}/${repo.split("/")[1]}` },
         hostLabel: getWorkerUniqueId(config.workerName),
       }),
+    // Issue #2965: a takeover that already holds the PR lock owns the head.
+    // The sync stands down rather than spending a second attempt beside it.
+    prUpdateLockHeldFn: async (repo, prNumber) => {
+      const holder = await activeBranchUpdateLockHolder({
+        repo,
+        prNumber,
+        ghCommandFn: runGhCommand,
+        log: (message: string) => logger.warn(message),
+      });
+      return holder !== null;
+    },
     releaseSyncClaimFn: async (repo, milestoneBranch) => {
       const released = await releaseMilestoneSyncClaim(milestoneBranch, {
         cwd: `${workDir}/${repo.split("/")[1]}`,

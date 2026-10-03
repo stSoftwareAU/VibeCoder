@@ -16,6 +16,7 @@ import {
   type ConflictTakeoverDeps,
   type ConflictTakeoverPr,
   runConflictTakeover,
+  takeoverAgentTimeoutSeconds,
 } from "../lib/conflict_takeover.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
@@ -139,9 +140,11 @@ function makeFakeGh(options: FakeGhOptions = {}): FakeGh {
       return Promise.resolve('{"users":[],"teams":[]}');
     }
 
-    // pr comment.
+    // pr comment. The URL is what lets a cut-short attempt be withdrawn.
     if (args[0] === "pr" && args[1] === "comment") {
-      return Promise.resolve("");
+      return Promise.resolve(
+        "https://github.com/org/repo/pull/48#issuecomment-1001\n",
+      );
     }
 
     return Promise.resolve("");
@@ -233,7 +236,7 @@ Deno.test("runConflictTakeover - an already-open fix PR is reused, nothing attem
     openFixPr: {
       number: 77,
       url: "https://github.com/org/repo/pull/77",
-      headRefName: "milestone-fix/2965-x/pr-48-x",
+      headRefName: "milestone-fix/2965-x/pr-48-takeover-abc",
     },
   });
   let ladderCalled = false;
@@ -455,4 +458,94 @@ Deno.test("runConflictTakeover - empty trustedAuthors rejects before any pr comm
 
   await assertRejects(() => runConflictTakeover(nonGatedPr(), deps));
   assertEquals(commentsCalls(fake.calls).length, 0);
+});
+
+Deno.test("runConflictTakeover - an ungated milestone head still uses the fix-PR route (Issue #2965)", async () => {
+  const fake = makeFakeGh({ gated: false });
+  let fixCalled = false;
+  const deps = makeDeps(fake, {
+    resolveOnFixBranch: () => {
+      fixCalled = true;
+      return Promise.resolve({
+        resolved: true,
+        detail: "fixed on side branch",
+      });
+    },
+    resolveViaLadder: () => {
+      throw new Error("resolveViaLadder must not push a milestone head");
+    },
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), deps);
+
+  assertEquals(outcome.kind, "fix-pr-raised");
+  assert(fixCalled);
+});
+
+Deno.test("runConflictTakeover - an open CI fix PR does not block the takeover (Issue #2965)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: {
+      number: 77,
+      url: "https://github.com/org/repo/pull/77",
+      headRefName: "milestone-fix/2965-x/pr-48-ci-abc",
+    },
+  });
+  let fixCalled = false;
+  const deps = makeDeps(fake, {
+    resolveOnFixBranch: () => {
+      fixCalled = true;
+      return Promise.resolve({
+        resolved: true,
+        detail: "fixed on side branch",
+      });
+    },
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), deps);
+
+  assertEquals(outcome.kind, "fix-pr-raised");
+  assert(fixCalled);
+});
+
+Deno.test("runConflictTakeover - a cut-short agent spends no budget (Issue #2965)", async () => {
+  for (
+    const detail of [
+      "the run was ended by the worker before the agent finished",
+      "the agent provider was unavailable — 402",
+    ]
+  ) {
+    const fake = makeFakeGh({ gated: false });
+    const deps = makeDeps(fake, {
+      resolveViaLadder: () =>
+        Promise.resolve({ resolved: false, disrupted: true, detail }),
+    });
+
+    const outcome = await runConflictTakeover(nonGatedPr(), deps);
+
+    assertEquals(outcome.kind, "disrupted");
+    const comments = commentsCalls(fake.calls);
+    assertEquals(comments.length, 1);
+    assert(!commentBody(comments[0]!).includes(CONFLICT_FAILED_MARKER));
+    assert(
+      fake.calls.some((args) =>
+        args.includes("DELETE") &&
+        args.some((arg) => arg.includes("issues/comments/1001"))
+      ),
+    );
+  }
+});
+
+Deno.test("takeoverAgentTimeoutSeconds is the time the handler still has", () => {
+  const now = 1_000_000;
+  assertEquals(takeoverAgentTimeoutSeconds(undefined, 3600, now), undefined);
+  assertEquals(
+    takeoverAgentTimeoutSeconds(now + 600_000, 3600, now),
+    600,
+  );
+  assertEquals(
+    takeoverAgentTimeoutSeconds(now + 7_200_000, 3600, now),
+    3600,
+  );
+  assertEquals(takeoverAgentTimeoutSeconds(now + 400, 3600, now), 1);
 });

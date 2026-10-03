@@ -56,9 +56,11 @@ import {
   type LandingCheck,
 } from "./milestone_sync_landing.ts";
 import {
+  type MilestoneHeadPr,
   readMilestoneHeadPr,
   recordSyncAttemptOnPr,
 } from "./milestone_sync_pr_budget.ts";
+import { findOpenMilestoneFixPr } from "./milestone_fix_pr.ts";
 import {
   CONFLICT_RESOLUTION_BUDGET,
   hasExhaustedConflictAttempts,
@@ -330,6 +332,13 @@ export interface MilestoneBranchSyncDeps {
   claimSyncFn?: (repo: string, milestoneBranch: string) => Promise<SyncClaim>;
   /** Release the claim once the sync concluded; best-effort. */
   releaseSyncClaimFn?: (repo: string, milestoneBranch: string) => Promise<void>;
+  /**
+   * Whether another host holds the cross-host PR lock (Issue #2965).
+   *
+   * True means the conflict takeover already owns this PR, so the sync
+   * leaves it alone. Omitted: no lock is consulted.
+   */
+  prUpdateLockHeldFn?: (repo: string, prNumber: number) => Promise<boolean>;
   /**
    * Optional self-heal event sink (Issue #4260). Production wires
    * `emitSelfHealEventAuto` so every failed sync leaves a forensic
@@ -1297,6 +1306,60 @@ export function recordSuccess(
  * @param deps - Injected dependencies
  * @returns Result with sync summary
  */
+
+/**
+ * Whether the conflict takeover already owns this milestone PR (Issue #2965).
+ *
+ * An open takeover attempt, the takeover's own fix PR, or the cross-host PR
+ * lock means a second pass must not spend the shared budget beside it.
+ * A listing that cannot be read stands down for this cycle: guessing that
+ * no takeover is running is how two hosts spend the same attempt.
+ */
+async function takeoverOwnsHead(
+  repo: string,
+  milestoneBranch: string,
+  headPr: MilestoneHeadPr,
+  ghCommandFn: GhCommandFn,
+  deps: MilestoneBranchSyncDeps,
+  log: (message: string) => void,
+): Promise<boolean> {
+  if (
+    headPr.attempts.some((attempt) =>
+      attempt.outcome === "open" && attempt.pass === "takeover"
+    )
+  ) {
+    return true;
+  }
+  if (deps.prUpdateLockHeldFn) {
+    try {
+      if (await deps.prUpdateLockHeldFn(repo, headPr.number)) return true;
+    } catch (error) {
+      log(
+        `WARNING: Could not read the PR lock for #${headPr.number} in ` +
+          `${repo} — skipping the sync this cycle (Issue #2965): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      );
+      return true;
+    }
+  }
+  const openFix = await findOpenMilestoneFixPr(
+    repo,
+    milestoneBranch,
+    headPr.number,
+    { gh: ghCommandFn, log },
+    "takeover-",
+  );
+  if (!openFix.ok) {
+    log(
+      `WARNING: Could not list takeover fix PRs for #${headPr.number} in ` +
+        `${repo} — skipping the sync this cycle (Issue #2965): ${openFix.error.message}`,
+    );
+    return true;
+  }
+  return openFix.value !== null;
+}
+
 export async function syncMilestoneBranches(
   deps: MilestoneBranchSyncDeps,
 ): Promise<Result<MilestoneSyncResult>> {
@@ -1626,6 +1689,30 @@ export async function syncMilestoneBranches(
               `PR #${headPr.number} failed its last conflict attempt ` +
               `recently and its head has not moved, so the next attempt ` +
               `waits out the owner check (Issue #2996)`,
+          );
+          skipped++;
+          continue;
+        }
+
+        // Issue #2965: the takeover and this sync share one head. An open
+        // takeover attempt, its own fix PR, or the cross-host PR lock means
+        // the takeover already owns the next attempt, so this pass spends
+        // nothing beside it.
+        if (
+          headPr &&
+          await takeoverOwnsHead(
+            repo,
+            milestone.milestoneBranch,
+            headPr,
+            ghCommandFn,
+            deps,
+            log,
+          )
+        ) {
+          log(
+            `Skipping sync for '${milestone.milestoneTitle}' in ${repo} — ` +
+              `PR #${headPr.number} is already owned by a conflict takeover ` +
+              `(Issue #2965)`,
           );
           skipped++;
           continue;

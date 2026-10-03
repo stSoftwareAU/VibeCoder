@@ -29,6 +29,8 @@ import {
   readResolutionAttempts,
 } from "../lib/merge_conflict_markers.ts";
 import { isFleetAuthor } from "../lib/fleet_authors.ts";
+import { spentConflictAttempts } from "../lib/pr_merge_conflict_scan.ts";
+import { milestoneFixPrefixFor } from "../lib/milestone_fix_pr.ts";
 
 const MILESTONE_TITLE = "v1.0";
 const REPO = "owner/repo";
@@ -45,6 +47,8 @@ const TIP_SHA = "d".repeat(40);
 interface GhState {
   prListRaw: string;
   prComments: unknown[];
+  /** When set, a `--base` listing returns this instead of {@link prListRaw}. */
+  basePrListRaw?: string;
   /** When set, the milestone branch's commit tip `confirmSyncLanding` reads. */
   tipSha?: string;
 }
@@ -67,6 +71,9 @@ function makeGhCommandFn(
       return Promise.resolve(MILESTONE_SHA);
     }
     if (args[0] === "pr" && args[1] === "list") {
+      if (args.includes("--base") && state.basePrListRaw !== undefined) {
+        return Promise.resolve(state.basePrListRaw);
+      }
       return Promise.resolve(state.prListRaw);
     }
     if (/issues\/\d+\/comments\?/.test(key)) {
@@ -399,5 +406,122 @@ Deno.test(
     );
     assert(result.ok);
     assertEquals(called, 1, "an untrusted thread cannot spend the PR budget");
+  },
+);
+
+/** A fleet failure old enough that the 2-hour owner check has elapsed. */
+function dueFailure(pass: ConflictResolutionPass = "takeover"): unknown {
+  return {
+    user: { login: FLEET },
+    created_at: new Date(Date.now() - (2 * 60 + 1) * 60 * 1000).toISOString(),
+    body: [
+      conflictAttemptMarker(1, pass, HEAD_SHA),
+      conflictFailedMarker(1, pass, HEAD_SHA),
+    ].join("\n"),
+  };
+}
+
+Deno.test(
+  "milestone sync and the takeover are both due at 2 hours, and the held lock spends only the one attempt (Issue #2965)",
+  async () => {
+    const calls: string[][] = [];
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [dueFailure()],
+    };
+    let syncs = 0;
+    const deps = baseDeps(calls, state, () => {
+      syncs++;
+      return Promise.resolve({ ok: false as const, error: conflictFailure() });
+    });
+    deps.prUpdateLockHeldFn = () => Promise.resolve(true);
+
+    const result = await syncMilestoneBranches(deps);
+
+    assert(result.ok);
+    assertEquals(syncs, 0);
+    assertEquals(prCommentCalls(calls).length, 0);
+    const attempts = readResolutionAttempts(
+      state.prComments,
+      (login) => isFleetAuthor(login, [FLEET]),
+    );
+    assertEquals(spentConflictAttempts(attempts), 1);
+  },
+);
+
+Deno.test(
+  "milestone sync stands down while a takeover attempt is still open (Issue #2965)",
+  async () => {
+    const calls: string[][] = [];
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [
+        dueFailure(),
+        {
+          user: { login: FLEET },
+          created_at: new Date().toISOString(),
+          body: conflictAttemptMarker(2, "takeover", HEAD_SHA),
+        },
+      ],
+    };
+    let syncs = 0;
+    const result = await syncMilestoneBranches(
+      baseDeps(calls, state, () => {
+        syncs++;
+        return Promise.resolve({
+          ok: false as const,
+          error: conflictFailure(),
+        });
+      }),
+    );
+    assert(result.ok);
+    assertEquals(syncs, 0);
+    assertEquals(
+      spentConflictAttempts(
+        readResolutionAttempts(
+          state.prComments,
+          (login) => isFleetAuthor(login, [FLEET]),
+        ),
+      ),
+      1,
+    );
+  },
+);
+
+Deno.test(
+  "milestone sync stands down for an open takeover fix PR and not for a CI fix PR (Issue #2965)",
+  async () => {
+    const prefix = milestoneFixPrefixFor(MILESTONE_BRANCH, 42);
+    const calls: string[][] = [];
+    const state: GhState = {
+      prListRaw: JSON.stringify([{ number: 42, headRefOid: HEAD_SHA }]),
+      prComments: [dueFailure("sync")],
+      basePrListRaw: JSON.stringify([{
+        number: 77,
+        url: "https://github.com/owner/repo/pull/77",
+        headRefName: `${prefix}takeover-abc`,
+      }]),
+    };
+    let syncs = 0;
+    const syncBranchFn = () => {
+      syncs++;
+      return Promise.resolve({ ok: false as const, error: conflictFailure() });
+    };
+    const held = await syncMilestoneBranches(
+      baseDeps(calls, state, syncBranchFn),
+    );
+    assert(held.ok);
+    assertEquals(syncs, 0);
+
+    state.basePrListRaw = JSON.stringify([{
+      number: 78,
+      url: "https://github.com/owner/repo/pull/78",
+      headRefName: `${prefix}ci-abc`,
+    }]);
+    const proceeded = await syncMilestoneBranches(
+      baseDeps(calls, state, syncBranchFn),
+    );
+    assert(proceeded.ok);
+    assertEquals(syncs, 1);
   },
 );

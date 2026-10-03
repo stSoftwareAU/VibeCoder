@@ -55,11 +55,12 @@ import {
   fetchPrLabels,
   spentConflictAttempts,
 } from "./pr_merge_conflict_scan.ts";
-import { assessGatedHead } from "./gated_head_guard.ts";
+import { assessGatedHead, isMilestoneHead } from "./gated_head_guard.ts";
 import {
   acquireBranchUpdateLock,
   type BranchLockRenewalHandle,
   type BranchUpdateLockOptions,
+  parsePostedCommentId,
   releaseBranchUpdateLock,
   startBranchUpdateLockRenewal,
 } from "./pr_branch_lock.ts";
@@ -95,6 +96,32 @@ export interface TakeoverResolution {
   resolved: boolean;
   /** One line naming what happened — carried into the conclusion comment. */
   detail: string;
+  /**
+   * True when the agent was cut short by the worker, or the provider refused
+   * the run, so the attempt must not be charged (Issues #1693, #2613).
+   */
+  disrupted?: boolean;
+}
+
+/**
+ * Seconds the takeover agent may run, sized to the handler's remaining
+ * deadline (Issue #1693).
+ *
+ * Undefined when the pass declared no deadline: the binding then keeps the
+ * configured timeout. Otherwise the grant is the lesser of that timeout and
+ * the time still left, and never below one second.
+ */
+export function takeoverAgentTimeoutSeconds(
+  deadlineEpochMs: number | undefined,
+  claudeTimeoutSeconds: number,
+  nowMs: number,
+): number | undefined {
+  if (deadlineEpochMs === undefined) return undefined;
+  const remainingMs = deadlineEpochMs - nowMs;
+  return Math.max(
+    1,
+    Math.floor(Math.min(claudeTimeoutSeconds * 1000, remainingMs) / 1000),
+  );
 }
 
 /** Injected seams for {@link runConflictTakeover}. */
@@ -155,6 +182,15 @@ export type ConflictTakeoverOutcome =
     route: "milestone-fix" | "ladder";
     detail: string;
   }
+  /**
+   * The agent was cut short or the provider refused the run. The attempt
+   * marker is withdrawn and nothing is charged.
+   */
+  | {
+    kind: "disrupted";
+    route: "milestone-fix" | "ladder";
+    detail: string;
+  }
   /** Another host holds the cross-host PR lock; nothing was posted. */
   | { kind: "lock-held"; holder: string };
 
@@ -202,6 +238,46 @@ function buildFailedComment(
     "",
     conflictFailedMarker(attemptNumber, "takeover", headSha),
   ].join("\n");
+}
+
+/**
+ * Delete the attempt marker a cut-short run posted, so it spends nothing.
+ *
+ * A marker that cannot be deleted is left open and said out loud: the next
+ * scan reads it as disrupted and retries it, which is the same bound the
+ * processor already uses (Issue #1693).
+ */
+async function withdrawTakeoverAttempt(
+  pr: ConflictTakeoverPr,
+  commentId: number | null,
+  why: string,
+  gh: ConflictTakeoverDeps["gh"],
+  logger: Logger,
+): Promise<void> {
+  if (commentId === null) {
+    logger.warn(
+      "Could not withdraw the takeover attempt marker — no comment id was " +
+        "reported when it was posted",
+      { repo: pr.repo, prNumber: pr.number, why },
+    );
+    return;
+  }
+  try {
+    await gh([
+      "api",
+      "-X",
+      "DELETE",
+      `repos/${pr.repo}/issues/comments/${commentId}`,
+    ]);
+  } catch (error) {
+    logger.warn("Could not withdraw the takeover attempt marker", {
+      repo: pr.repo,
+      prNumber: pr.number,
+      commentId,
+      why,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** Post one PR comment. */
@@ -271,6 +347,10 @@ export async function runConflictTakeover(
   }
 
   const assessment = await assessGatedHead(pr.repo, pr.headRefName, gh);
+  // Every milestone head goes through a fix PR, gated or not. An ungated or
+  // unreadable ruleset must not push the agent's merge onto milestone/**
+  // (Issue #2965): that push skips the merge gate and races the sync.
+  const useFixRoute = assessment.gated || isMilestoneHead(pr.headRefName);
 
   const milestoneDeps: MilestoneFixPrDeps = {
     gh,
@@ -278,12 +358,13 @@ export async function runConflictTakeover(
     warn: (m) => logger.warn(m),
   };
 
-  if (assessment.gated) {
+  if (useFixRoute) {
     const existing = await findOpenMilestoneFixPr(
       pr.repo,
       pr.headRefName,
       pr.number,
       milestoneDeps,
+      "takeover-",
     );
     if (!existing.ok) throw existing.error;
     if (existing.value !== null) {
@@ -309,12 +390,13 @@ export async function runConflictTakeover(
 
   try {
     const attemptNumber = spent + 1;
-    const route = assessment.gated ? "milestone-fix PR" : "ordinary resolve";
-    await postComment(
+    const route = useFixRoute ? "milestone-fix PR" : "ordinary resolve";
+    const attemptPosted = await postComment(
       pr,
       buildAttemptComment(attemptNumber, headSha, route),
       gh,
     );
+    const attemptCommentId = parsePostedCommentId(attemptPosted);
 
     let appliedLabel = false;
     let outcome: ConflictTakeoverOutcome;
@@ -327,7 +409,7 @@ export async function runConflictTakeover(
         gh,
       );
 
-      if (assessment.gated) {
+      if (useFixRoute) {
         const fixBranch = milestoneFixBranchFor(
           pr.headRefName,
           pr.number,
@@ -335,11 +417,17 @@ export async function runConflictTakeover(
         );
         const resolution = await deps.resolveOnFixBranch(pr, fixBranch);
         if (!resolution.resolved) {
-          outcome = {
-            kind: "failed",
-            route: "milestone-fix",
-            detail: resolution.detail,
-          };
+          outcome = resolution.disrupted
+            ? {
+              kind: "disrupted",
+              route: "milestone-fix",
+              detail: resolution.detail,
+            }
+            : {
+              kind: "failed",
+              route: "milestone-fix",
+              detail: resolution.detail,
+            };
         } else {
           const raised = await raiseMilestoneFixPr({
             repo: pr.repo,
@@ -359,6 +447,12 @@ export async function runConflictTakeover(
         const resolution = await deps.resolveViaLadder(pr);
         outcome = resolution.resolved
           ? { kind: "resolved" }
+          : resolution.disrupted
+          ? {
+            kind: "disrupted",
+            route: "ladder",
+            detail: resolution.detail,
+          }
           : { kind: "failed", route: "ladder", detail: resolution.detail };
       }
     } catch (error) {
@@ -389,7 +483,15 @@ export async function runConflictTakeover(
         ? "the base merged into the head cleanly and the head was pushed"
         : `delivered into the gated head through fix PR ${outcome.fixPr.url}`;
       await postComment(pr, buildResolvedComment(headSha, detail), gh);
-    } else {
+    } else if (outcome.kind === "disrupted") {
+      await withdrawTakeoverAttempt(
+        pr,
+        attemptCommentId,
+        outcome.detail,
+        gh,
+        logger,
+      );
+    } else if (outcome.kind === "failed") {
       await postComment(
         pr,
         buildFailedComment(attemptNumber, headSha, outcome.detail),

@@ -130,8 +130,15 @@ export async function findOpenMilestoneFixPr(
   milestoneBranch: string,
   prNumber: number,
   deps: MilestoneFixPrDeps,
+  /**
+   * When set, only a head that continues the shared prefix with this
+   * discriminator matches. The takeover passes `takeover-` so an open CI
+   * or review-feedback fix PR is not mistaken for its own (Issue #2965).
+   */
+  discriminator?: string,
 ): Promise<Result<MilestoneFixPr | null>> {
   const prefix = milestoneFixPrefixFor(milestoneBranch, prNumber);
+  const needle = discriminator ? `${prefix}${discriminator}` : prefix;
   let listed: string;
   try {
     listed = await deps.gh([
@@ -180,7 +187,7 @@ export async function findOpenMilestoneFixPr(
     { number?: unknown; url?: unknown; headRefName?: unknown }
   >).find((entry) =>
     typeof entry.headRefName === "string" &&
-    entry.headRefName.startsWith(prefix)
+    entry.headRefName.startsWith(needle)
   );
   if (
     !match || typeof match.number !== "number" ||

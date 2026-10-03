@@ -464,15 +464,18 @@ flowchart TD
 - Read-only checks first: reads the shared tally from trusted markers
   (`readResolutionAttempts`); declines with no marker at all when
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
-  with `assessGatedHead`; on a gated head looks for an open fix PR
-  (`findOpenMilestoneFixPr`) and, when one is open, reuses it — no marker, no
-  second PR. An unreadable fix-PR listing fails loud rather than reading as
-  "none".
+  with `assessGatedHead`. Every `milestone/**` head, gated or not, looks for
+  the takeover's own open fix PR (`findOpenMilestoneFixPr` with the
+  `takeover-` discriminator) and, when that one is open, reuses it — no
+  marker, no second PR. An open CI or review-feedback fix PR does not count.
+  An unreadable fix-PR listing fails loud rather than reading as "none".
 - Then posts an attempt marker `pass="takeover"` with the head sha, e.g.
   `<!-- vibe-coder:merge-conflict-attempt n="2" pass="takeover" head="abc1234" -->`,
-  before any work.
-- Gated milestone head (the worker must not push to it, GH013): names a side
-  branch with `milestoneFixBranchFor`
+  before any work. The production agent grant is
+  `takeoverAgentTimeoutSeconds`, the lesser of `claudeTimeout` and the
+  handler time still left (Issue #1693).
+- Every milestone head (the worker must not push to it, GH013 or not): names
+  a side branch with `milestoneFixBranchFor`
   (`milestone-fix/<leaf>/pr-<N>-takeover-<sha12>`), resolves and pushes only
   that branch, and opens a PR into the milestone branch with
   `raiseMilestoneFixPr` (Issue #2907). Nothing is pushed to the head branch.
@@ -480,24 +483,31 @@ flowchart TD
   resolver seams are marker-free by contract — the takeover owns the attempt
   and conclusion markers, so one takeover spends at most one unit of the
   shared budget.
-- Every exit after the attempt marker posts a conclusion marker: `resolved`
-  (`pass="takeover"`) when the merge was pushed or the fix PR was raised,
-  `failed` when the resolver could not resolve, and `failed` when anything
-  threw — then the error is re-raised, never swallowed.
+- A judged exit after the attempt marker posts a conclusion marker:
+  `resolved` (`pass="takeover"`) when the merge was pushed or the fix PR was
+  raised, `failed` when the resolver could not resolve, and `failed` when
+  anything threw — then the error is re-raised, never swallowed. A cut-short
+  agent (`AGENT_RUN_ENDED_BY_WORKER`) or a provider refusal
+  (`AGENT_PROVIDER_UNAVAILABLE`) withdraws the attempt marker instead, so
+  that attempt is not charged (Issues #1693, #2613).
 - Labels (Issue #2951): the pass adds `merge-conflict` only when it is absent,
   and removes it only when it added it in that run and the ordinary route
   resolved the conflict. A label a human or another pass applied is never
-  removed; on the gated route the label stays until the fix PR lands.
+  removed; on the milestone route the label stays until the fix PR lands.
+- The milestone sync stands down while this pass owns the head: the
+  cross-host PR lock is held, a trusted `pass="takeover"` attempt is still
+  open, or the takeover's own fix PR is open (Issue #2965). At the 2-hour
+  mark only one of the two passes spends an attempt.
 
 ```mermaid
 flowchart TD
     A[Takeover invoked] --> B{"Budget spent?"}
     B -- "Yes" --> C["Decline<br/>(no marker)"]
-    B -- "No" --> D{"Gated head?"}
+    B -- "No" --> D{"Milestone head?"}
     D -- "No" --> E[Post attempt marker]
     E --> F[Ordinary resolve<br/>via ladder]
     F --> G[Conclusion marker]
-    D -- "Yes" --> H{"Open fix PR<br/>already exists?"}
+    D -- "Yes" --> H{"Open takeover<br/>fix PR?"}
     H -- "Yes" --> I["Reuse it<br/>(no marker)"]
     H -- "No" --> J[Post attempt marker]
     J --> K[Resolve on<br/>milestone-fix branch]

@@ -20,6 +20,8 @@ import type { Result } from "../types.ts";
 import { type GitCommandOutput, runGitCommand } from "./git_timeout.ts";
 import { isPrBranchConflictError, updatePrBranch } from "./git_pull.ts";
 import {
+  AGENT_PROVIDER_UNAVAILABLE,
+  AGENT_RUN_ENDED_BY_WORKER,
   climbConflictLadder,
   listUnmergedPaths,
   type MilestoneConflictAgentRequest,
@@ -132,6 +134,7 @@ async function resolveOnFixBranch(
     `merge of '${pr.baseRefName}' into '${fixBranch}' conflicted: ${
       describeResult(merged)
     }`;
+  let disrupted = false;
   if (!(merged.ok && merged.value.code === 0) && agentFn) {
     const finished = await finishConflictedMerge(
       cwd,
@@ -140,7 +143,10 @@ async function resolveOnFixBranch(
       run,
       agentFn,
     );
-    if (!finished.resolved) conflictDetail = finished.detail;
+    if (!finished.resolved) {
+      conflictDetail = finished.detail;
+      disrupted = finished.disrupted === true;
+    }
     if (finished.resolved) {
       const pushed = await run(buildPushArgs("origin", fixBranch));
       if (!pushed.ok || pushed.value.code !== 0) {
@@ -194,6 +200,7 @@ async function resolveOnFixBranch(
   return {
     resolved: false,
     detail: conflictDetail,
+    ...(disrupted ? { disrupted: true } : {}),
   };
 }
 
@@ -246,7 +253,11 @@ export function bindConflictTakeoverResolvers(
       );
       if (!finished.resolved) {
         await abortMergeIfStarted(run, pr, pr.headRefName);
-        return { resolved: false, detail: finished.detail };
+        return {
+          resolved: false,
+          detail: finished.detail,
+          ...(finished.disrupted ? { disrupted: true } : {}),
+        };
       }
       return await pushResolved(
         run,
@@ -334,10 +345,15 @@ async function finishConflictedMerge(
     const why = ladder.escalations
       .map((file) => `${file.path}: ${file.reason}`)
       .join("; ");
+    const disrupted = ladder.escalations.some((file) =>
+      file.reason.includes(AGENT_RUN_ENDED_BY_WORKER) ||
+      file.reason.includes(AGENT_PROVIDER_UNAVAILABLE)
+    );
     return {
       resolved: false,
       detail:
         `merge of '${pr.baseRefName}' into '${intoBranch}' conflicted: ${why}`,
+      ...(disrupted ? { disrupted: true } : {}),
     };
   }
   const committed = await run(["commit", "--no-edit"]);

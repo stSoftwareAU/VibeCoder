@@ -426,6 +426,50 @@ export async function cleanStaleBranchUpdateLocks(
  * @param options - Lock acquisition options
  * @returns Result with lock outcome
  */
+/**
+ * The worker id of a lock that is still inside its TTL, or null when none is.
+ *
+ * A read that fails returns null and is logged: the caller then proceeds as
+ * if the lock were free, which is the same answer a missing thread gives.
+ */
+export async function activeBranchUpdateLockHolder(options: {
+  repo: string;
+  prNumber: number;
+  ghCommandFn?: (args: string[]) => Promise<string>;
+  nowFn?: () => number;
+  lockTtlSeconds?: number;
+  log?: (message: string) => void;
+}): Promise<string | null> {
+  const {
+    repo,
+    prNumber,
+    ghCommandFn = runGhCommand,
+    nowFn = defaultNow,
+    lockTtlSeconds = DEFAULT_LOCK_TTL_SECONDS,
+    log = (message: string) => console.warn(message),
+  } = options;
+  let lockComments: LockComment[];
+  try {
+    lockComments = await fetchLockComments(repo, prNumber, ghCommandFn);
+  } catch (err) {
+    log(
+      `[pr-branch-lock] ${repo}#${prNumber}: could not read the lock ` +
+        `comments — ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
+  const now = nowFn();
+  for (const comment of lockComments) {
+    const lockData = parseLockComment(comment.body);
+    if (
+      lockData !== null && now - lockData.timestamp < lockTtlSeconds
+    ) {
+      return lockData.workerId;
+    }
+  }
+  return null;
+}
+
 export async function acquireBranchUpdateLock(
   options: BranchUpdateLockOptions,
 ): Promise<Result<BranchUpdateLockResult>> {
