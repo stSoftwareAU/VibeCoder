@@ -63,15 +63,31 @@ async function run(home: string, ...args: string[]) {
   return runBash(home, [RUNNER, ...args]);
 }
 
+// Replaces the Claude stub with `body`, or removes it when `body` is null so
+// `claude` is not on PATH at all.
+async function claudeStub(home: string, body: string | null) {
+  const path = `${home}/bin/claude`;
+  if (body === null) {
+    await Deno.remove(path);
+    return;
+  }
+  await Deno.writeTextFile(path, `#!/bin/sh\n${body}\n`);
+  await Deno.chmod(path, 0o755);
+}
+
 // Runs under `bash -x`, to check the minted token is never traced.
 async function runTraced(home: string, ...args: string[]) {
   return runBash(home, ["-x", RUNNER, ...args]);
 }
 
-async function runBash(home: string, bashArgs: string[]) {
+async function runBash(
+  home: string,
+  bashArgs: string[],
+  env: Record<string, string> = {},
+) {
   const out = await new Deno.Command("bash", {
     args: bashArgs,
-    env: { HOME: home, PATH: `${home}/bin:/usr/bin:/bin` },
+    env: { HOME: home, PATH: `${home}/bin:/usr/bin:/bin`, ...env },
     clearEnv: true,
     stdout: "piped",
     stderr: "piped",
@@ -269,4 +285,59 @@ Deno.test("run.sh logs, but does not fail on, an escalate.ts failure", async () 
     await Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`),
     "escalation failed",
   );
+});
+
+const runnerLog = (home: string) =>
+  Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`);
+
+Deno.test("run.sh fails and escalates a Claude round that exits non-zero", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, 'echo "model overloaded" >&2; exit 3');
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  const log = await runnerLog(home);
+  assertStringIncludes(log, "round failed (exit 3)");
+  assert(!log.includes("round done"), log);
+  const args = await recorded(home, "escalate-args");
+  assertStringIncludes(args!, "--result=fail");
+  assertStringIncludes(args!, "model overloaded");
+});
+
+Deno.test("run.sh fails a round whose claude is not on PATH, rather than reporting it done", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, null);
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  const log = await runnerLog(home);
+  assertStringIncludes(log, "round failed");
+  assertStringIncludes(log, "cannot run claude");
+  assert(!log.includes("round done"), log);
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "--result=fail",
+  );
+});
+
+Deno.test("run.sh reports a round the alarm killed as timed out", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exec sleep 30");
+  const { code } = await runBash(home, [RUNNER, "--once"], {
+    REVIEW_FLEET_PRS_ROUND_TIMEOUT: "1",
+  });
+  assertEquals(code, 1);
+  const log = await runnerLog(home);
+  assertStringIncludes(log, "round timed out after 1s");
+  assert(!log.includes("round done"), log);
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "--error=round timed out after 1s",
+  );
+});
+
+Deno.test("run.sh logs round done and escalates ok when the round succeeds", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertStringIncludes(await runnerLog(home), "round done");
+  assertStringIncludes((await recorded(home, "escalate-args"))!, "--result=ok");
 });
