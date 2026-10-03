@@ -37,13 +37,19 @@ had said was unfinished.
   skipped. The same `handOffDeclaredOutcome` serves both phases, so the
   behaviour cannot drift.
 - **Option (b) for the free-text escape hatch.** Prose such as "out of scope"
-  is too ambiguous to override committed work, so the prompts now say it is
-  honoured only when the run has made no commit.
+  is too ambiguous to override committed work on an issue run, so the issue
+  prompt and the issue-run sentences in the coding guidelines say that
+  free-text hand-off is honoured only when the run has made no commit. A
+  PR-feedback or CI-fix run still uses the `.pr_response_message` escape
+  hatch on a branch that already has commits.
 - **The phase pushes before it hands off, and it raises no PR.** It pushes
   the branch through `commitAndPushPending` (the default-branch guard and
-  `assertSafeToCommit`). The hand-off is applied only once nothing is left
-  unpushed. A failed push returns a failure and posts no comment. The run
-  ends with `early_exit` only after that push succeeds.
+  `assertSafeToCommit`). When that push commits a dirty tree, the subject is
+  a `wip:` placeholder (`buildDeclaredHandoffWipCommitMessage`), so the
+  completion phase's half-done guard still refuses a PR built only from it.
+  The hand-off is applied only once nothing is left unpushed. A failed push
+  returns a failure and posts no comment. The run ends with `early_exit`
+  only after that push succeeds.
 - **Dropping `Closes` was rejected.** A PR without a closing keyword loops
   forever (Issue #520), so the fix stops PR creation rather than editing
   the PR body.
@@ -106,6 +112,7 @@ updated. No `*/README.md` describes the phase list, so none changed.
   - a valid time deferral names the committed branch
   - a committed deferral pushes the branch before the comment, even with
     session resume off
+  - the hand-off commit subject is a WIP marker
   - a failed push applies no deferral, names no branch, and is
     `push_failure`
   - a workflow-scope push refusal is `token_scope` and applies no hand-off

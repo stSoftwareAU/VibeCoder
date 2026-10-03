@@ -86,6 +86,8 @@ Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and
       "A CI-fix run is the exception",
       "Base-branch failures",
       "hands the issue to a human (`needs-human`) only while the branch has no commits",
+      "In an issue run, this free-text hand-off is honoured only when the run leaves no commit",
+      "A PR-feedback or CI-fix run keeps using the `.pr_response_message` escape hatch",
     ]
   ) {
     assertStringIncludes(guidelines, required);

@@ -890,13 +890,16 @@ this **instead of looping**:
    For PR feedback or CI fix work, write the message to `.pr_response_message`
    in the working directory — the worker posts it as the PR reply. For issue
    work, post the message as a comment on the current issue — and stop there.
-   This free-text hand-off is honoured only when the run leaves no commit and
-   no uncommitted change. Decide before you edit any file, because the worker
-   commits and pushes the working tree periodically and again at the end of
-   the run. Once a file has changed, a free-text hand-off is not read. Name
-   the follow-up you filed on a `Depends on owner/repo#N` line under a
-   `## Blocked:` heading, or use the planning marker. A bare `## Blocked:`
-   heading does not defer, and the worker raises a PR that closes the issue.
+   In an issue run, this free-text hand-off is honoured only when the run
+   leaves no commit and no uncommitted change. Decide before you edit any
+   file, because the worker commits and pushes the working tree periodically
+   and again at the end of the run. Once a file has changed, a free-text
+   hand-off is not read. In an issue run, name the follow-up you filed on a
+   `Depends on owner/repo#N` line under a `## Blocked:` heading, or use the
+   planning marker. A bare `## Blocked:` heading does not defer, and the
+   worker raises a PR that closes the issue. A PR-feedback or CI-fix run
+   keeps using the `.pr_response_message` escape hatch above, including on a
+   branch that already has commits.
    **Do not close the issue yourself**: the `gh` guard refuses
    `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
    The worker releases its claim and hands the issue to a human

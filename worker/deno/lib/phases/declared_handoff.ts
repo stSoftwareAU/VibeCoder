@@ -31,6 +31,7 @@ import type {
   PhaseState,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
+import { buildDeclaredHandoffWipCommitMessage } from "../wip_checkpoint.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   type AnalysisOnlyTrigger,
@@ -95,9 +96,10 @@ export async function pushCommittedBranchForHandoff(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult | undefined> {
+  const dirtyFiles = await uncommittedFileCount(state, deps);
   const pushed = await deps.git.commitAndPushPending(
     state.branchName,
-    "Preserve committed work before a declared hand-off",
+    buildDeclaredHandoffWipCommitMessage({ dirtyFiles }),
     { cwd: state.repoPath },
   );
   const stillUnpushed = pushed.ok && pushed.value.finalUnpushedCount > 0;
@@ -129,6 +131,26 @@ export async function pushCommittedBranchForHandoff(
     };
   }
   return undefined;
+}
+
+/**
+ * How many paths `git status --porcelain` reports, for the hand-off commit
+ * subject. A status that cannot be read counts as none: the subject still
+ * carries the `wip:` prefix, and the push itself reports a real failure.
+ */
+async function uncommittedFileCount(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<number> {
+  const status = await deps.git.runGitCommand(
+    ["status", "--porcelain"],
+    { cwd: state.repoPath },
+  );
+  if (!status.ok || status.value.code !== 0) return 0;
+  return status.value.stdout.split("\n").filter((line) =>
+    line.trim().length > 0
+  )
+    .length;
 }
 
 /**

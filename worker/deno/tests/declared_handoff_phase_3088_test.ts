@@ -22,6 +22,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, GitHubComment } from "../types.ts";
 import { buildDeferralMarker } from "../lib/blocked_deferral.ts";
 import { buildPlanningHandoffMarker } from "../lib/planning_handoff.ts";
+import { isWipCommitSubject } from "../lib/wip_commit_marker.ts";
 
 const REPO = "stSoftwareAU/Example";
 
@@ -664,6 +665,50 @@ Deno.test(
     assert(
       calls.postComment.some((c) => c.includes("issue-3088-declared-handoff")),
     );
+  },
+);
+
+Deno.test(
+  "declared_handoff_phase - the hand-off commit subject is a WIP marker (Issue #3088)",
+  async () => {
+    let subject = "";
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(makeCalls()) },
+      git: {
+        commitAndPushPending: (_branch: string, message: string) => {
+          subject = message;
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+              finalUnpushedSource: "remote-head" as const,
+            },
+          });
+        },
+        runGitCommand: (args: string[]) => {
+          const stdout = args[0] === "status" && args[1] === "--porcelain"
+            ? " M worker/deno/lib/example.ts\n"
+            : "";
+          return Promise.resolve({
+            ok: true as const,
+            value: { code: 0, stdout, stderr: "" },
+          });
+        },
+      },
+    });
+
+    const result = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+
+    assertEquals(result.status, "early_exit");
+    assertEquals(isWipCommitSubject(subject), true, subject);
+    assertStringIncludes(subject, "1 uncommitted file(s)");
+    assertStringIncludes(subject, "declared hand-off");
   },
 );
 
