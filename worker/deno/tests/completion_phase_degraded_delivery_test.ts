@@ -580,7 +580,11 @@ Deno.test("completion - a healthy run blocked by the independent-review gate on 
   });
 
   assertEquals(outcome.status, "early_exit", outcome.reason);
-  assertEquals(outcome.issueCreates.length, 0, "a healthy run files no follow-up");
+  assertEquals(
+    outcome.issueCreates.length,
+    0,
+    "a healthy run files no follow-up",
+  );
   assertEquals(outcome.prBodies.length, 1);
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
 });

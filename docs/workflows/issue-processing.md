@@ -1336,17 +1336,22 @@ rediscovered by hand and refiled as #2560.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
-Its place depends on whether the branch already has an open PR (Issue #3085
-review). On an existing-PR branch the guard still runs after the closure,
-independent-review and reproduction-status gates but before the docs-sweep
-gate blocks: a failing summary gate finalises that PR via its own recovery
-path, and the docs-sweep gate is the one of the four that fires on almost
-every code-changing run, so letting it run ahead of the guard dropped the
-degraded-run follow-up and PR-body note whenever a PR already existed. On a
-branch with **no** PR yet, the docs-sweep gate instead pre-empts the guard: a
-follow-up filed there would promise "that run's PR still completes #N on
-merge" for a PR this gate can still prevent from ever being raised, so the
-gate blocks first and the guard never runs:
+Its place depends on whether the branch already has an open PR. On a branch
+with **no** PR yet, each of the four summary-rule gates — closure,
+independent review, reproduction status and docs sweep — still pre-empts the
+guard: a follow-up filed there would promise "that run's PR still completes
+#N on merge" for a PR any of those gates can still prevent from ever being
+raised, so whichever gate blocks first fails the run and the guard never
+runs. On an existing-PR branch the guard instead runs from inside
+`reportSummaryRuleBlock` itself (Issue #3092), after whichever gate's own
+comment is posted but before that gate's recovery finalises the PR — so
+every gate takes the guard with it uniformly, rather than only the gates
+ahead of one fixed point in the chokepoint (the ordering VibeCoder#3085
+first established, and VibeCoder#3092 found still let the docs-sweep gate
+skip the guard on an existing-PR branch because that gate ran after the
+guard's one inline call site). Once all four gates pass, the same guard
+runs once more — via the shared `applyDegradedDeliveryGuard` helper — ahead
+of raising a brand new PR:
 
 ```mermaid
 flowchart TD
