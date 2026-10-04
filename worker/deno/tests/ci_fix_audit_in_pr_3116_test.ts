@@ -159,3 +159,7 @@ Deno.test("Issue #3140 - CI-fix manual states the audit exception and links the 
 Deno.test("Issue #3140 - prompt index states the audit exception and links the prompt", async () => {
   await assertAuditExceptionLinked("docs/PROMPTS.md");
 });
+
+Deno.test("Issue #3140 - advisory-triage manual states the audit exception and links the prompt", async () => {
+  await assertAuditExceptionLinked("docs/security-advisory-triage.md");
+});

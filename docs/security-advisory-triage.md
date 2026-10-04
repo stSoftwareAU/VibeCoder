@@ -174,13 +174,21 @@ for **that package only** (`deno outdated --update --minimum-dependency-age=0
 rule to revert afterwards. Every other bump in the same run keeps the full 24h
 floor.
 
-The CI-fix agent fixes a red audit in the pull request itself, even when the
-same advisory is red on the base branch — it never defers it on a
-`Depends on` line. Removing or replacing the dependency edge that pulls the
-vulnerable package in also counts as a fix; an `--ignore` or allow-list
-entry, or an edit to the audit workflow or audit command, never does. Only
-when no edge can be upgraded, removed or replaced does the agent add
-`needs-human` to the pull request, with a comment naming the advisory ID.
+The CI-fix prompt tells the agent that a red audit is fixed in the PR even
+when the base is red — the same advisory red on the base branch is never
+deferred on a `Depends on` line
+([Dependency audit failures](../prompts/ci_fix/prompt.md#dependency-audit-failures)).
+Removing or replacing the dependency edge that pulls the vulnerable package
+in also counts as a fix; an `--ignore` or allow-list entry, or an edit to the
+audit workflow or audit command, never does. The agent adds `needs-human` to
+the pull request, with a comment naming the advisory ID, only when no edge
+can be upgraded, removed or replaced.
+
+That is the prompt's instruction, not a worker guarantee. Until
+stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this exception:
+an audit reply that still ends in `Depends on` on a red base is deferred like
+any other check, and a PR already parked on an audit `vibe-ci-fix-deferred`
+marker stays parked until its tracking issue closes.
 
 ## 4. Documentation outcome
 
