@@ -39,6 +39,7 @@ import type { IssueData } from "../lib/issue_data.ts";
 import { fetchIssueData } from "../lib/issue_data.ts";
 import { enforceIssueBodyLimit, validateIssueInput } from "../lib/security.ts";
 import { buildImplementationCommentContext } from "../lib/implementation_comments.ts";
+import { fetchMilestoneParentDirection } from "../lib/owner_direction.ts";
 import { annotateIssueContentWithTrust } from "../lib/issue_content_trust_filter.ts";
 import {
   handleIdleTaskIssue,
@@ -303,6 +304,20 @@ export async function runWorkOnIssueCommand(
     }
   }
 
+  // Owner direction on the milestone parent (Issue #3205): the owner often
+  // replaces a design on the parent after the sub-issues were written.
+  const parentOwnerDirection = await fetchMilestoneParentDirection(
+    {
+      repo,
+      issueNumber,
+      milestoneTitle: milestoneTitle || issueData.milestoneTitle,
+      allowedAuthors: config.allowedAuthors ?? [],
+      authorisedCommenters: config.authorisedCommenters ?? [],
+      workerLogin: githubUser,
+    },
+    commandDeps.fetchIssueData,
+  );
+
   // Build the IssueContext
   const ctx: IssueContext = {
     repo,
@@ -322,6 +337,7 @@ export async function runWorkOnIssueCommand(
     untrustedImages: contentTrust.untrustedImages,
     githubUser,
     milestoneTitle,
+    ...(parentOwnerDirection ? { parentOwnerDirection } : {}),
     milestoneNumber: issueData.milestoneNumber, // Issue #1322: session branching
     config,
   };

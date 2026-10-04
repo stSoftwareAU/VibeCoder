@@ -17,6 +17,12 @@ export interface IssueComment {
   author: string;
   /** Comment body text */
   body: string;
+  /**
+   * When the comment was posted, as GitHub's ISO-8601 timestamp (Issue
+   * #3205). Optional: older constructors and fixtures carry none, and a
+   * reader must treat its absence as "unknown", never as "old".
+   */
+  createdAt?: string;
 }
 
 /**
@@ -63,7 +69,9 @@ interface GhIssueViewJson {
   title?: string;
   body?: string;
   labels?: Array<{ name: string }>;
-  comments?: Array<{ author: { login: string }; body: string }>;
+  comments?: Array<
+    { author: { login: string }; body: string; createdAt?: string }
+  >;
   state?: string;
   milestone?: { title: string; number?: number } | null;
 }
@@ -153,6 +161,7 @@ export function parseIssueDataJson(jsonStr: string): IssueData {
       comments: (json.comments ?? []).map((c) => ({
         author: c.author.login,
         body: c.body,
+        ...(c.createdAt ? { createdAt: c.createdAt } : {}),
       })),
       state: json.state ?? "",
       milestoneTitle: json.milestone?.title ?? "",

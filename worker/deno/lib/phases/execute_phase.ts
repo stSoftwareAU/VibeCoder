@@ -607,6 +607,11 @@ async function executeClaudeBody(
     ...(ctx.commentBoundaryId
       ? { commentBoundaryId: ctx.commentBoundaryId }
       : {}),
+    // Owner direction on the milestone parent (Issue #3205): a design the
+    // owner replaced on the parent after this sub-issue was written.
+    ...(ctx.parentOwnerDirection
+      ? { parentOwnerDirection: ctx.parentOwnerDirection }
+      : {}),
     qualityInstructions,
     customInstructions,
     milestoneBranch: state.milestoneBranch,
