@@ -814,8 +814,12 @@ export async function listSubIssuesViaIssueList(
     // template uses "Part of #N"; "Parent: #N" and "Child of #N" are
     // accepted variants. A static regex captures the issue number for
     // numeric comparison — avoids dynamic RegExp() construction (ReDoS risk).
+    // Each branch owns its trailing whitespace, and `parent` takes
+    // `\s*(?::\s*)?`: `parent\s*:?\s*` followed by a shared `\s*` was three
+    // runs splitting one run of spaces, cubic before a rejected character
+    // (Issue #3206).
     const parentLinkRe =
-      /\b(?:part\s+of|parent\s*:?\s*|child\s+of)\s*#(\d+)\b/i;
+      /\b(?:part\s+of\s*|parent\s*(?::\s*)?|child\s+of\s*)#(\d+)\b/i;
 
     const matches: SubIssueRow[] = [];
     for (const item of parsed) {
