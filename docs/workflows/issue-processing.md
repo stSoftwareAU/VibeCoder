@@ -1058,8 +1058,8 @@ each given the finished diff and nothing from the author's context:
   hand is not `met` (Issue #3084).
 - **Standards reviewer** — inputs the same diff and `CODING-STANDARDS.md`. Its
   findings go under a separate `## Standards Review` heading as `violation`
-  entries (with `file:line` and whether the violation was fixed) and the `clean`
-  areas it checked. Three departures are always a `violation` (Issues #3011,
+  entries (with `file:line` and `reason: fixed in this diff`, or
+  `reason: pre-existing, filed #<n>`) and the `clean` areas it checked. Three departures are always a `violation` (Issues #3011,
   #3021): a named-but-absent test — a comment, anchor or PR claim naming a
   test file that is not in the repository — a test stub for another
   repository's binary that is more permissive than the real callee, with no
@@ -1071,10 +1071,16 @@ each given the finished diff and nothing from the author's context:
 **A violation the diff introduced blocks the PR.** A Standards finding in a
 line this PR wrote — a doc comment the change made wrong, a cited test that
 exists neither in the diff nor at the head — is fixed in the same diff before
-the PR is raised; only a departure that predates the diff, or one the issue
-requires, may stand with a
-`reason:` saying which. The run enforces this rule itself; the gate does not
-parse it (Issue #3058).
+the PR is raised (Issue #3058). Only a departure that predates the diff may
+stand, and its `reason:` links the follow-up issue the run filed
+(`pre-existing, filed #<n>`); one the issue itself requires names that issue.
+The gate cannot see the diff, so it does not check which lines a finding sits
+on, but it does refuse every other way out: a `violation` whose reason neither
+opens with `fixed` (or `corrected` / `resolved`) nor links an issue (`#123`,
+`owner/repo#123` or an issue URL) blocks PR creation. "Stands" and "left for a
+follow-up" used to pass, and fleet review then sent the PR back for the breach
+its own summary admitted (Issue #3196: VibeCoder#3065, GRQ-AutoTrader#2210 and
+#2479).
 
 **The reviewer challenges; it does not silently win.** A reviewer that saw only
 the diff is sometimes wrong about a criterion satisfied by code it could not
@@ -1087,7 +1093,8 @@ runs beside the closure gate at the same PR-creation chokepoint and blocks when
 the criteria block carries no `vibe-spec-review` provenance marker, when an entry
 names no `reviewer:` verdict, when a departure from that verdict carries no
 reason, when the `## Standards Review` section is absent, unsourced or empty,
-when a `violation` names no evidence or outcome, or when either axis carries the
+when a `violation` names no evidence or a reason that is neither
+`fixed in this diff` nor a linked follow-up issue, or when either axis carries the
 other's findings — never merged, never reranked, because a change can pass one
 axis and fail the other and reporting them together lets one mask the other.
 Issues with **no** acceptance criteria are unaffected: no reviewers, no blocks,

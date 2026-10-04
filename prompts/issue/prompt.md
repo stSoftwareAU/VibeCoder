@@ -618,7 +618,7 @@ the summary says who judged it:
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: <fixed here, or why it stands>
+- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: fixed in this diff
 - **clean** — <the areas the reviewer checked and found compliant>
 ```
 
@@ -642,8 +642,15 @@ the summary says who judged it:
   `reason:` line is the record, and it is what a human reads. Reaching for
   `unrequested` because the reviewer was unclear is the one wrong answer — say
   `missing` and explain, so the doubt is visible rather than dismissed.
-- **Every `violation` names evidence and a reason** — the `file:line`, and
-  whether you fixed it in this diff or why it stands.
+- **Every `violation` names evidence and one of two reasons** — the
+  `file:line`, then `reason: fixed in this diff`, or, only for a breach the
+  Standards reviewer saw in unchanged context already on the base branch,
+  `reason: pre-existing, filed #<n>` linking the follow-up issue you filed.
+  A breach in a line this diff adds or changes may not be deferred: "stands",
+  "left for a follow-up" and "out of scope" are not reasons, and the gate
+  blocks PR creation on any reason that neither records a fix nor links an
+  issue. Fleet review reads your Standards Review, and an admitted breach in
+  your own lines sends the PR straight back.
 - **Never fabricate a verdict.** If a reviewer sub-agent genuinely cannot be
   dispatched, quote the exact error in your final message and stop. Writing the
   marker for a review you did not run is the over-claim this gate exists to
@@ -659,9 +666,9 @@ broken.
 the gate.** A doc comment the change made wrong, a test the summary cites that
 exists neither in the diff nor at the head, a standard breached in a line this
 PR wrote: fix it in this diff before you raise the PR, never list it as
-standing. Only a departure that predates the diff, or one the issue itself
-requires, may stand, and its
-`reason:` says which.
+standing. Only a departure that predates the diff may stand, and its `reason:`
+links the follow-up issue you filed for it (`pre-existing, filed #<n>`); one
+the issue itself requires names that issue (`required by #<n>`).
 
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
