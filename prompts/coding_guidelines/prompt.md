@@ -1184,6 +1184,20 @@ List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
 
+**A new branch must be reachable by the input it exists for.** When you add
+a branch, guard, capture or hand-off below existing early exits in the same
+function or its caller (`return`, `continue`, `break`, `exit`, a retry or
+failure return), list each exit above the insertion point and what fires it.
+For each one, ask whether a realistic input for the new case can fire it
+first. Free-text heuristics, empty or short-input filters and "nothing to do"
+exits are the usual culprits. If one can, move the new branch above it, or
+state in the PR summary why that exit must win. A real infrastructure signal
+can justify that; a wording guess cannot. Then add a test whose input is the
+realistic case and also trips each earlier exit the new branch now precedes.
+Move the new branch back below that exit and confirm the test goes red. A
+new branch that a realistic input for its own case cannot reach is a
+blocking self-review finding (Issue #3167).
+
 **Code that deletes or replaces state proves everything it destroys is safe
 to lose.** When a change adds code that `rm -rf`s a directory, swaps a new
 clone or `.git` in for an old one, runs `git reset --hard` or `git clean -fdx`,
