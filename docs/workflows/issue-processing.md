@@ -1439,6 +1439,24 @@ documentation or source when the case cannot be observed safely. The issue
 prompt's Bugs/Enhancements requirement makes a fake built from expected
 rather than observed behaviour a blocking self-review finding.
 
+**A fake mirrors the production implementation it stands in for (Issue #3224).**
+The stub-contract and observe-real-tool rules cover external callees —
+another repository's binary, git, `gh`, the GitHub API. Fleet
+PRs instead relied on a property of the repository's own port that only
+the in-repo fake had: GRQ-AutoTrader#2546 assumed `broker.open_orders()`
+lists hand-placed orders, as `FakeBroker` does, while `IbkrRest::reports`
+drops every order with no `order_ref`; #2460's newest-first early stop
+lived only in the DynamoDB client no test reached; and #2407's in-memory
+store never loses a conditional write. The guidelines now require reading
+the production implementation first and confirming it has the property
+the change relies on, fixing whichever side is wrong, pinning fake and
+production together with one contract test (or testing at the production
+adapter), and naming in the PR summary the production implementation
+each load-bearing fake stands in for and the property relied on. The
+issue prompt's Bugs/Enhancements requirement makes a change whose only
+proof is a fake more permissive than its production implementation a
+blocking self-review finding.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
