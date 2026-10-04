@@ -171,9 +171,12 @@ export function commitMessagesReferenceIssue(
   // Static regex (no dynamic RegExp construction) capturing the referenced
   // number, then compare numerically so `#2481` does not match `#24810` or
   // `#481`. The closing-keyword branch requires the `#` so "Fixed 42 bugs"
-  // cannot be read as a reference to issue 42.
+  // cannot be read as a reference to issue 42. The separator is
+  // `\s*(?::\s*)?`, not `\s*:?\s*`: two whitespace runs with only an
+  // optional colon between them split a long run of spaces in every way
+  // before a rejected character, which is quadratic (Issue #3206).
   const pattern =
-    /\bissue\s*:?\s*#?(\d+)|\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)/gi;
+    /\bissue\s*(?::\s*)?#?(\d+)|\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*(?::\s*)?#(\d+)/gi;
   for (const match of messages.matchAll(pattern)) {
     const captured = match[1] ?? match[2];
     if (captured && Number(captured) === issueNumber) {
