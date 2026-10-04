@@ -18,6 +18,18 @@
  * `file:line` (or `file:start-end`). Stale hits block the summary through the
  * same one in-run recovery turn as the rest of the gate.
  *
+ * The same terms are also re-run over source files outside `docs/`
+ * (`SOURCE_COMMENT_PATHSPECS`), keeping only hits on a whole comment line
+ * (Issue #3219). Fleet PRs fixed the manuals and the comment above the code
+ * they edited, but left doc comments on a shared constant, a reader or a
+ * helper in another file describing the removed behaviour (VibeCoder#3215,
+ * GRQ-AutoTrader#2460, #2393). Those hits are cleared the same way — a line
+ * the diff changed, or `file:line` in the Docs sweep line — and the
+ * broad-term cap is counted for docs and source comments apart, so a term
+ * common in comments cannot set aside its doc hits. A code line, or a
+ * comment trailing code, is not read: the issue is stale prose, and a
+ * term's own definition is not a sentence to clear.
+ *
  * Terms are literal: every regex metacharacter is escaped before the pattern
  * reaches `git grep -E`, except a `\w*` / `\w+` stem marker, which becomes a
  * word-character run so `replac\w*` finds "replaced" and "replaces". No
@@ -38,6 +50,62 @@ export const DOCS_SWEEP_PATHSPECS: readonly string[] = [
   "docs",
   ":(exclude)docs/archive",
 ];
+
+/** Source-file globs whose comment lines the re-run reads (Issue #3219). */
+const SOURCE_FILE_GLOBS: readonly string[] = [
+  "*.ts",
+  "*.tsx",
+  "*.js",
+  "*.jsx",
+  "*.mjs",
+  "*.cjs",
+  "*.rs",
+  "*.py",
+  "*.go",
+  "*.java",
+  "*.kt",
+  "*.swift",
+  "*.c",
+  "*.h",
+  "*.cc",
+  "*.cpp",
+  "*.cs",
+  "*.rb",
+  "*.sh",
+  "*.ps1",
+  "*.psm1",
+];
+
+/**
+ * Source files outside `docs/` (which the docs pass already reads), as git
+ * pathspecs. Git's default pathspec `*` crosses `/`, so `*.ts` matches at
+ * any depth.
+ */
+export const SOURCE_COMMENT_PATHSPECS: readonly string[] = [
+  ...SOURCE_FILE_GLOBS,
+  ":(exclude)docs",
+];
+
+/** Every file either pass reads — the diff is taken over these. */
+const DIFF_PATHSPECS: readonly string[] = [
+  "README.md",
+  "*/README.md",
+  "docs",
+  ...SOURCE_FILE_GLOBS,
+  ":(exclude)docs/archive",
+];
+
+/**
+ * A whole comment line: `//` (and `///`, `//!`), `/*`, a `*` block-comment
+ * continuation, or `#` followed by a space or the end of the line. `#[…]`,
+ * `#!` and `#include` are code, and so is a comment trailing code.
+ */
+const SOURCE_COMMENT_RE = /^\s*(?:\/\/|\/\*|\*(?:\s|\/|$)|#(?:\s|$))/;
+
+/** Whether a source line is a whole comment line (Issue #3219). */
+export function isSourceCommentLine(text: string): boolean {
+  return SOURCE_COMMENT_RE.test(text);
+}
 
 /** Up to how many grep terms are re-run from one Docs sweep line. */
 export const MAX_TERMS = 20;
@@ -272,7 +340,8 @@ export function parseChangedLines(
 
 /**
  * A term with more stale hits than this in doc files the diff did not touch
- * is a locator word (a section name, a common verb), not a removed claim:
+ * (or, counted apart, in source comment lines — Issue #3219) is a locator
+ * word (a section name, a common verb), not a removed claim:
  * its hits in untouched files are not listed one by one, and the term is
  * reported as `broadTerms` for the caller to log as not checked line by
  * line. Its hits in files the diff touched are always listed — that is
@@ -329,8 +398,9 @@ async function readGit(
 }
 
 /**
- * Re-run a Docs sweep line's grep terms over the head's docs and return the
- * hits the branch neither changed nor named as left alone.
+ * Re-run a Docs sweep line's grep terms over the head's docs and the
+ * comment lines of its source files, and return the hits the branch neither
+ * changed nor named as left alone.
  *
  * @param opts.rawBody - The Docs sweep entry (`DocsSweepLine.rawBody`).
  * @param opts.base - The ref the branch's diff is taken against.
@@ -349,10 +419,12 @@ export async function checkDocsSweepTerms(opts: {
     };
   }
 
-  try {
-    const hits: DocsSweepHit[] = [];
-    for (const term of terms) {
-      const stdout = await readGit(opts.runGit, [
+  const grepHead = async (
+    term: string,
+    pathspecs: readonly string[],
+  ): Promise<DocsSweepHit[]> =>
+    parseGitGrepOutput(
+      await readGit(opts.runGit, [
         "grep",
         "-n",
         "-z",
@@ -363,11 +435,23 @@ export async function checkDocsSweepTerms(opts: {
         termToGitGrepPattern(term),
         "HEAD",
         "--",
-        ...DOCS_SWEEP_PATHSPECS,
-      ], [0, 1]);
-      hits.push(...parseGitGrepOutput(stdout, term));
+        ...pathspecs,
+      ], [0, 1]),
+      term,
+    );
+
+  try {
+    const docHits: DocsSweepHit[] = [];
+    const sourceHits: DocsSweepHit[] = [];
+    for (const term of terms) {
+      docHits.push(...await grepHead(term, DOCS_SWEEP_PATHSPECS));
+      sourceHits.push(
+        ...(await grepHead(term, SOURCE_COMMENT_PATHSPECS)).filter((hit) =>
+          isSourceCommentLine(hit.text)
+        ),
+      );
     }
-    if (hits.length === 0) {
+    if (docHits.length === 0 && sourceHits.length === 0) {
       return { status: "checked", terms, staleHits: [], broadTerms: [] };
     }
 
@@ -380,22 +464,30 @@ export async function checkDocsSweepTerms(opts: {
       "--unified=0",
       `${opts.base}...HEAD`,
       "--",
-      ...DOCS_SWEEP_PATHSPECS,
+      ...DIFF_PATHSPECS,
     ], [0]);
     const changed = parseChangedLines(diff);
     const named = extractNamedLines(opts.rawBody);
 
     const seen = new Set<string>();
-    const staleHits: DocsSweepHit[] = [];
-    for (const hit of hits) {
-      const key = `${hit.path}:${hit.line}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (inRanges(changed.get(hit.path), hit.line)) continue;
-      if (inRanges(named.get(hit.path), hit.line)) continue;
-      staleHits.push(hit);
-    }
-    return { status: "checked", terms, ...splitBroadTerms(staleHits, changed) };
+    const stale = (hits: readonly DocsSweepHit[]): DocsSweepHit[] =>
+      hits.filter((hit) => {
+        const key = `${hit.path}:${hit.line}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return !inRanges(changed.get(hit.path), hit.line) &&
+          !inRanges(named.get(hit.path), hit.line);
+      });
+    // The broad-term cap is counted per surface, so a term common in source
+    // comments never sets aside its hits in the docs (Issue #3219).
+    const docs = splitBroadTerms(stale(docHits), changed);
+    const source = splitBroadTerms(stale(sourceHits), changed);
+    return {
+      status: "checked",
+      terms,
+      staleHits: [...docs.staleHits, ...source.staleHits],
+      broadTerms: [...new Set([...docs.broadTerms, ...source.broadTerms])],
+    };
   } catch (err) {
     return {
       status: "not_checked",
@@ -420,7 +512,7 @@ export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
   const named = hits.slice(0, 5).map((h) => `${h.path}:${h.line}`).join(", ");
   const extra = hits.length - 5;
   return `the Docs sweep's own grep terms still hit ${hits.length} doc ` +
-    `line(s) outside the diff and not named as still true: ${named}${
+    `or source-comment line(s) outside the diff and not named as still true: ${named}${
       extra > 0 ? ` and ${extra} more` : ""
     }`;
 }
@@ -441,8 +533,9 @@ export function buildDocsSweepHitsComment(
   return [
     "⚠️ **Docs sweep terms still hit the head.** Re-running the grep terms " +
     "your **Docs sweep** line quotes over `README.md`, `*/README.md` and " +
-    "`docs/` (excluding `docs/archive/`) at the head finds lines the diff " +
-    "did not change and the line does not name:",
+    "`docs/` (excluding `docs/archive/`), and over the comment lines in source " +
+    "files outside `docs/`, at the head finds lines the diff did not change " +
+    "and the line does not name:",
     "",
     ...listed,
     "",

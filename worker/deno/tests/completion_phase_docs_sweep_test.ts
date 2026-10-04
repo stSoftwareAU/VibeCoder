@@ -93,6 +93,11 @@ interface Scenario {
    * terms (Issue #3172), in `git grep -n -z HEAD` shape. Omitted, no hit.
    */
   grepOutput?: string;
+  /**
+   * What `git grep` over source files outside `docs/` answers — the
+   * comment-line pass (Issue #3219). Omitted, no hit.
+   */
+  sourceGrepOutput?: string;
   /** Exit code `git grep` returns; defaults to 0 with output, 1 without. */
   grepCode?: number;
   /** Ordered event log shared across the mocked deps, for assertion. */
@@ -176,7 +181,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "grep") {
-          const stdout = scenario.grepOutput ?? "";
+          const stdout = cmdArgs.includes(":(exclude)docs")
+            ? scenario.sourceGrepOutput ?? ""
+            : scenario.grepOutput ?? "";
           return Promise.resolve({
             ok: true as const,
             value: {
@@ -579,6 +586,52 @@ Deno.test(
       summary: SUMMARY_WITH_LINE,
       changedFiles: "docs/guide.md",
       grepOutput: STALE_HIT,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 0);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #3219: the terms are also re-run over source comment lines.
+// ---------------------------------------------------------------------------
+
+/** A doc comment in a source file the diff did not touch (VibeCoder#3215). */
+const STALE_SOURCE_COMMENT =
+  "HEAD:crates/report/src/balance.rs\u000042\u0000/// BrokerBalance is shared by the two old callers\n";
+
+Deno.test(
+  "completion - a stale doc comment in an untouched source file blocks like a manual hit (Issue #3219)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      sourceGrepOutput: STALE_SOURCE_COMMENT,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "crates/report/src/balance.rs:42",
+    );
+    assertStringIncludes(
+      outcome.comments[0] ?? "",
+      "BrokerBalance is shared by the two old callers",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a source hit on a code line, not a comment, does not block (Issue #3219)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      sourceGrepOutput:
+        "HEAD:crates/report/src/balance.rs\u000043\u0000pub struct BrokerBalance {\n",
     });
 
     assertEquals(outcome.status, "continue");

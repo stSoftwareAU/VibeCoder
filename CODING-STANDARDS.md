@@ -1083,8 +1083,16 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   setting or endpoint while keeping its name also owes a docs change — the
   rename rule alone misses it, because there is no old name to grep for.
 - Grep for the **unchanged name**, then re-read every hit — including the doc
-  comment directly above the changed code and the prose beside any example you
-  updated — and fix any that still describe the old behaviour.
+  comment directly above the changed code, the doc comments on the definitions
+  and callers of what changed, wherever they live, and the prose beside any
+  example you updated — and fix any that still describe the old behaviour.
+- **Doc comments outside the diff go stale too.** Grep source files, not only
+  the manuals: for each name the change removes or whose behaviour it changes,
+  and for the shared constants, types and helpers the changed code defines or
+  calls. Read every doc comment and module doc a hit lands in, and fix any
+  sentence the change makes false, including in a file the diff does not
+  otherwise touch. A constant's definition, a reader's safety argument and a
+  helper's list of callers are where these go stale.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
 - **Adding a member owes a docs change too.** When you add a field, enum
@@ -1178,7 +1186,8 @@ for every PR summary — containing:
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
    check it: the worker re-runs the line's quoted terms over the head's docs
-   and refuses a hit outside the diff that the line does not name.
+   and the comment lines of its source files, and refuses a hit outside the
+   diff that the line does not name.
 4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
