@@ -313,6 +313,18 @@ export interface IssueFinderDiagnostics {
   /** Log the final candidate selection */
   logFinalSelection(repo: string, issueNumber: number, source: string): void;
   /**
+   * Log that the selected candidate was a pending merge-conflict redo
+   * (Issue #3034) — its restart claim made it the next pickup in its repo.
+   * Written unconditionally, like `logCloseOutSelection`, so the reorder is
+   * auditable without `ISSUE_FINDER_DEBUG`.
+   */
+  logConflictRedoSelection(info: {
+    repo: string;
+    number: number;
+    source: string;
+    restartedAt: string;
+  }): void;
+  /**
    * Log that a started, fleet-viable milestone was closed out ahead of
    * a lower-tier candidate that would have opened a new stream
    * (Issue #2009). Written unconditionally so the choice is auditable
@@ -690,6 +702,21 @@ export function createDiagnostics(options: {
       emit(
         `[issue-finder] selected repo=${repo} issue=#${issueNumber} source=${source}`,
       );
+    },
+
+    logConflictRedoSelection(info: {
+      repo: string;
+      number: number;
+      source: string;
+      restartedAt: string;
+    }): void {
+      const message = `[issue-finder] selected repo=${
+        sanitiseLogField(info.repo)
+      } issue=#${info.number} reason=conflict-redo source=${
+        sanitiseLogField(info.source)
+      } restarted-at=${sanitiseLogField(info.restartedAt)}`;
+      messages.push(message);
+      write(message);
     },
 
     logCloseOutSelection(info: CloseOutSelectionInfo): void {

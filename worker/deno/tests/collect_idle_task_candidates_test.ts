@@ -26,11 +26,14 @@ import {
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
 import type { WorkerConfig } from "../types.ts";
+import { conflictRestartMarker } from "../lib/conflict_abandon_restart.ts";
 
 interface MockGhData {
   issues?: Record<string, unknown>[];
   timeline?: Record<string, unknown>[];
   issueView?: { title?: string; body?: string };
+  /** Issue #3034: raw REST comment objects for the conflict-redo lookup. */
+  comments?: Record<string, unknown>[];
 }
 
 function createTestCache(): IssueCache {
@@ -74,6 +77,9 @@ function createMockGh(data: MockGhData): (args: string[]) => Promise<string> {
     }
     if (command.includes("timeline")) {
       return Promise.resolve(JSON.stringify(data.timeline ?? []));
+    }
+    if (command.includes("/comments?")) {
+      return Promise.resolve(JSON.stringify(data.comments ?? []));
     }
     return Promise.resolve("[]");
   };
@@ -883,5 +889,126 @@ Deno.test(
       isIssueInCooldown: (_repo, n) => n === 600,
     });
     assertEquals(result2.found, false);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Conflict-redo pickup ordering (Issue #3034)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_idle_task_candidates - a fleet-authored restart marker flags conflictRedo on the candidate",
+  async () => {
+    const config = makeConfig();
+    const restartedAt = "2026-01-02T03:04:05Z";
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 520,
+          title: SECURITY_SCAN_ISSUE_TITLE,
+          url: "https://github.com/owner/repo/issues/520",
+          assignees: [],
+          labels: [{ name: IDLE_TASK_LABEL }],
+          createdAt: "2024-04-01T00:00:00Z",
+          author: { login: "bot" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: IDLE_TASK_LABEL },
+          actor: { login: "bot" },
+          created_at: "2024-04-01T00:00:00Z",
+        },
+      ],
+      issueView: {
+        title: SECURITY_SCAN_ISSUE_TITLE,
+        body: "<!-- idle-task: template=security-scan -->",
+      },
+      comments: [
+        {
+          body: conflictRestartMarker("owner/repo", 99, "work/issue-520"),
+          created_at: restartedAt,
+          user: { login: "bot" },
+        },
+      ],
+    });
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(mockGh);
+
+    const candidates = await collectIdleTaskCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, cache),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(candidates.length, 1);
+    const c = candidates[0]!;
+    assertEquals(c.number, 520);
+    assertEquals(c.conflictRedo?.restartedAt, restartedAt);
+  },
+);
+
+Deno.test(
+  "collect_idle_task_candidates - an outsider-authored restart marker does not flag conflictRedo",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issues: [
+        {
+          number: 521,
+          title: SECURITY_SCAN_ISSUE_TITLE,
+          url: "https://github.com/owner/repo/issues/521",
+          assignees: [],
+          labels: [{ name: IDLE_TASK_LABEL }],
+          createdAt: "2024-04-01T00:00:00Z",
+          author: { login: "bot" },
+          milestone: null,
+        },
+      ],
+      timeline: [
+        {
+          event: "labeled",
+          label: { name: IDLE_TASK_LABEL },
+          actor: { login: "bot" },
+          created_at: "2024-04-01T00:00:00Z",
+        },
+      ],
+      issueView: {
+        title: SECURITY_SCAN_ISSUE_TITLE,
+        body: "<!-- idle-task: template=security-scan -->",
+      },
+      comments: [
+        {
+          body: conflictRestartMarker("owner/repo", 99, "work/issue-521"),
+          created_at: "2026-01-02T03:04:05Z",
+          user: { login: "outsider" },
+        },
+      ],
+    });
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(mockGh);
+
+    const candidates = await collectIdleTaskCandidates(
+      "owner/repo",
+      config,
+      buildOptions(mockGh, cache),
+      [],
+      [],
+      fetcher,
+      [],
+    );
+
+    assertEquals(candidates.length, 1);
+    const c = candidates[0]!;
+    assertEquals(c.number, 521);
+    assertEquals(c.conflictRedo, undefined);
   },
 );

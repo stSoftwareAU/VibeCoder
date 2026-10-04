@@ -33,6 +33,13 @@ import type { UnworkableChainRoot } from "./dependency_chain_promotion.ts";
  *                          every other tier is empty (Issue #1961). The
  *                          single label the Vibe Coder may self-apply.
  *
+ * Conflict-redo (Issue #3034): once the tier ladder above has picked a repo,
+ * an issue in that repo re-queued by merge-conflict abandon-and-redo (whose
+ * redo has not yet raised a PR) is worked next, ahead of every other
+ * candidate in that repo — regardless of its own tier. It never displaces
+ * another repo's winner, and week-pace (Issue #1885) still refuses a
+ * low-priority/idle-task redo exactly as it refuses those tiers today.
+ *
  * Issue #1063: `nice` is a tie-breaker *within* a priority band, never a band
  * of its own. Urgency is expressed by the label; `nice` shapes throughput
  * between repos that are equally urgent. So a `top-priority` issue in a
@@ -90,6 +97,12 @@ export interface IssueCandidate {
    * still names the label the issue actually carries.
    */
   promotedBy?: { repo: string; number: number };
+  /**
+   * Set when the issue was re-queued by merge-conflict abandon-and-redo and its
+   * redo has not yet raised a PR (Issue #3034). `restartedAt` is the trusted
+   * restart claim's ISO time. Selection makes a redo the next pickup in its repo.
+   */
+  conflictRedo?: { restartedAt: string };
 }
 
 /**
@@ -343,6 +356,33 @@ function compareCandidates(a: IssueCandidate, b: IssueCandidate): number {
 }
 
 /**
+ * Pick the oldest-restarted conflict-redo candidate in `repo` from `pool`
+ * (Issue #3034), or null when none. Used to lift a merge-conflict
+ * abandon-and-redo issue to the front of its repo once that repo has
+ * already won its tier — it never decides *which* repo wins.
+ *
+ * @param repo - Repo to search within
+ * @param pool - Candidates to search (any tier)
+ * @returns The oldest-restarted redo in `repo`, or null
+ */
+function pickConflictRedo(
+  repo: string,
+  pool: readonly IssueCandidate[],
+): IssueCandidate | null {
+  const redos = pool.filter(
+    (c) => c.repo === repo && c.conflictRedo !== undefined,
+  );
+  if (redos.length === 0) return null;
+
+  const sorted = [...redos].sort((a, b) => {
+    const diff = Date.parse(a.conflictRedo!.restartedAt) -
+      Date.parse(b.conflictRedo!.restartedAt);
+    return diff !== 0 ? diff : compareCandidates(a, b);
+  });
+  return sorted[0] ?? null;
+}
+
+/**
  * Select a candidate from a list, with optional randomisation within
  * equal-priority tiers (Issue #1089).
  *
@@ -424,7 +464,8 @@ export function selectFairWithinTier(
 
   // Deterministic path: identical to selectOldestCandidate (parity).
   if (!options?.randomFn) {
-    return sorted[0] ?? null;
+    const chosen = sorted[0]!;
+    return pickConflictRedo(chosen.repo, candidates) ?? chosen;
   }
 
   // Winning priority sub-tier — candidates sharing the lowest labelIndex.
@@ -441,7 +482,10 @@ export function selectFairWithinTier(
   // Fairly pick a repo, then take the oldest-first candidate within it.
   const repoIndex = Math.floor(options.randomFn() * repos.length);
   const chosenRepo = repos[repoIndex] ?? repos[0]!;
-  return sameTier.find((c) => c.repo === chosenRepo) ?? sorted[0]!;
+  const chosen = sameTier.find((c) => c.repo === chosenRepo) ?? sorted[0]!;
+  // Issue #3034: once a repo has won the tier, its oldest-restarted
+  // merge-conflict redo (if any) is the next pickup ahead of same-repo peers.
+  return pickConflictRedo(chosen.repo, candidates) ?? chosen;
 }
 
 /**
@@ -473,7 +517,8 @@ export function sortCandidatesByAge(
  *   2. Walk the `nice` tiers ascending (lower `nice` = worked sooner).
  *   3. Within each tier, the **first** emitted candidate is the within-tier
  *      fair choice from {@link selectFairWithinTier} (oldest-first within a
- *      repo, fair rotation across equal repos when a `randomFn` is injected);
+ *      repo, fair rotation across equal repos when a `randomFn` is injected,
+ *      and — Issue #3034 — a merge-conflict redo ahead of same-repo peers);
  *      the remainder follow oldest-first so the all-results consumers still
  *      get a sensible order.
  *
@@ -595,6 +640,20 @@ function selectAcrossNiceTiers(
  * it never outranks `top-priority`, and week-pace still drops tiers 3 and
  * 4 so a low-priority close-out is not claimed while the quota is short.
  *
+ * Issue #3034: once the ladder above has picked a repo, a merge-conflict
+ * abandon-and-redo candidate in *that* repo (one whose redo has not yet
+ * raised a PR) is returned instead of the ladder's own winner, so the redo
+ * is the next pickup in its repo ahead of every other candidate there —
+ * including `top-priority`. A redo never changes *which* repo wins: it is
+ * only consulted after the ladder has committed to one, so it can never
+ * displace another repo's candidate. Redo candidates are also exempt from
+ * the `reposWithOpenWorkOn` / `reposWithOpenLowPriority` suppression rules
+ * above: the suppressor is other pending work in the same repo, and a redo
+ * must not wait behind it while its conflict window keeps running — the
+ * base keeps moving underneath it. Week-pace still drops low-priority/
+ * idle-task redos from consideration exactly as it drops those tiers
+ * (Issue #1885).
+ *
  * @param result - Selection result with all candidates and metadata
  * @returns Selected candidate, or null if none eligible
  */
@@ -636,17 +695,28 @@ export function selectHighestPriority(
   // dependency is frequently a low-priority issue in the same repo, so
   // suppressing it would deadlock the repo. Those repos' low-priority
   // backlog stays eligible here so the dependency chain can be worked.
+  //
+  // Issue #3034: a conflict-redo candidate is exempt from both suppression
+  // rules above. The suppressor here is other pending work in the same
+  // repo, and a redo must not wait behind it while its conflict window
+  // keeps running — the base keeps moving underneath it.
   const eligibleLowPriority =
     reposWithOpenWorkOn && reposWithOpenWorkOn.size > 0
-      ? lowPriorityCandidates.filter((c) => !reposWithOpenWorkOn.has(c.repo))
+      ? lowPriorityCandidates.filter((c) =>
+        c.conflictRedo !== undefined || !reposWithOpenWorkOn.has(c.repo)
+      )
       : lowPriorityCandidates;
   const eligibleIdleTask = (() => {
     let list = idleTaskCandidates;
     if (reposWithOpenWorkOn && reposWithOpenWorkOn.size > 0) {
-      list = list.filter((c) => !reposWithOpenWorkOn.has(c.repo));
+      list = list.filter((c) =>
+        c.conflictRedo !== undefined || !reposWithOpenWorkOn.has(c.repo)
+      );
     }
     if (reposWithOpenLowPriority && reposWithOpenLowPriority.size > 0) {
-      list = list.filter((c) => !reposWithOpenLowPriority.has(c.repo));
+      list = list.filter((c) =>
+        c.conflictRedo !== undefined || !reposWithOpenLowPriority.has(c.repo)
+      );
     }
     return list;
   })();
@@ -681,40 +751,62 @@ export function selectHighestPriority(
   // point is to redirect the remaining quota, never to stop working.
   const weekPaceEngaged = options?.weekPaceEngaged === true;
 
-  const selectedLabel = selectAcrossNiceTiers(
-    labelCandidates,
-    repoNice,
-    options,
-  );
-  if (selectedLabel) return selectedLabel;
+  // The ladder itself, unchanged from before Issue #3034 (extracted so the
+  // conflict-redo lift below can be applied once to whichever tier wins).
+  const selectFromTierLadder = (): IssueCandidate | null => {
+    const selectedLabel = selectAcrossNiceTiers(
+      labelCandidates,
+      repoNice,
+      options,
+    );
+    if (selectedLabel) return selectedLabel;
 
-  // Issue #2009: finish a started, fleet-viable milestone before opening
-  // another. Drawn from the raw lower-tier lists so a same-repo unstarted
-  // work-on (the #2164 suppressor) cannot hide the leftover that would
-  // close the started stream. `nice` does not apply — close-out is a
-  // band of its own, not a within-tier tie-break.
-  const closeOutSelected = selectCloseOutCandidate(
-    [
-      ...eligibleWorkOn,
-      ...selfDiagnosticCandidates,
-      ...(weekPaceEngaged ? [] : lowPriorityCandidates),
-      ...(weekPaceEngaged ? [] : idleTaskCandidates),
-    ],
-    closeOutMilestones,
-  );
-  if (closeOutSelected) return closeOutSelected;
+    // Issue #2009: finish a started, fleet-viable milestone before opening
+    // another. Drawn from the raw lower-tier lists so a same-repo unstarted
+    // work-on (the #2164 suppressor) cannot hide the leftover that would
+    // close the started stream. `nice` does not apply — close-out is a
+    // band of its own, not a within-tier tie-break.
+    const closeOutSelected = selectCloseOutCandidate(
+      [
+        ...eligibleWorkOn,
+        ...selfDiagnosticCandidates,
+        ...(weekPaceEngaged ? [] : lowPriorityCandidates),
+        ...(weekPaceEngaged ? [] : idleTaskCandidates),
+      ],
+      closeOutMilestones,
+    );
+    if (closeOutSelected) return closeOutSelected;
 
-  const tiers: IssueCandidate[][] = [
-    eligibleWorkOn,
-    selfDiagnosticCandidates,
-    ...(weekPaceEngaged ? [] : [eligibleLowPriority, eligibleIdleTask]),
+    const tiers: IssueCandidate[][] = [
+      eligibleWorkOn,
+      selfDiagnosticCandidates,
+      ...(weekPaceEngaged ? [] : [eligibleLowPriority, eligibleIdleTask]),
+    ];
+
+    for (const tier of tiers) {
+      const selected = selectAcrossNiceTiers(tier, repoNice, options);
+      if (selected) return selected;
+    }
+    return null;
+  };
+
+  const winner = selectFromTierLadder();
+  if (!winner) return null;
+
+  // Issue #3034: once the ladder has chosen a repo, that repo's
+  // oldest-restarted merge-conflict redo (if any) is the next pickup —
+  // ahead of every other candidate in the repo, including the winner
+  // itself. It never displaces another repo's winner, and week-pace
+  // deliberately excludes low-priority/idle-task redos from the pool here
+  // (Issue #1885) by omitting those lists when engaged.
+  const redoPool = [
+    ...labelCandidates,
+    ...eligibleWorkOn,
+    ...selfDiagnosticCandidates,
+    ...(weekPaceEngaged ? [] : eligibleLowPriority),
+    ...(weekPaceEngaged ? [] : eligibleIdleTask),
   ];
-
-  for (const tier of tiers) {
-    const selected = selectAcrossNiceTiers(tier, repoNice, options);
-    if (selected) return selected;
-  }
-  return null;
+  return pickConflictRedo(winner.repo, redoPool) ?? winner;
 }
 
 /**
