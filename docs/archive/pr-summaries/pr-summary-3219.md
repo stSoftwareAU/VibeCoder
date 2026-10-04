@@ -107,7 +107,13 @@ code", `DOCS_SWEEP_PATHSPECS`, "doc line"; section:
 `CODING-STANDARDS.md`, `prompts/issue/prompt.md`, `prompts/pr_feedback/prompt.md`,
 `prompts/coding_guidelines/prompt.md`, `worker/deno/lib/docs_sweep_hits.ts`,
 `worker/deno/lib/phases/completion_phase.ts`; re-run on the final head with
-this PR's own `checkDocsSweepTerms`: no remaining hits outside the diff
+this PR's own `checkDocsSweepTerms` (which found the second hit, a source
+comment), remaining hits:
+`docs/audits/security-sweep-2184-commands-setup-delta.md:115` — still true
+because it is about a JSDoc line in another module, not the Docs sweep;
+`worker/deno/tests/completion_phase_docs_sweep_test.ts:92` — still true
+because `grepOutput` is the docs pass's answer and the source pass now has its
+own `sourceGrepOutput`
 
 ## Test Plan
 
