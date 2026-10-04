@@ -2536,6 +2536,18 @@
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
       ]
+    },
+    {
+      "issue": 3172,
+      "chunk": "top-up-3172",
+      "title": "top-up: the docs-sweep term re-run at the head",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3172",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: docs_sweep_hits.ts (#3172)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/docs_sweep_hits.ts"
+      ]
     }
   ],
   "roots": [

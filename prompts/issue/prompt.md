@@ -172,6 +172,15 @@ guessing — the analysis-only hand-off then routes it to a human.
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
    never by the file's topic.
+   Grep for the **stem** of a behavioural claim, not one inflection
+   (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
+   list as updated, read every passage that mentions the changed surface,
+   not only the section you edited. Then re-run every grep **on the final
+   head, after editing**, and record each hit you leave in place in the
+   Docs sweep line as `file:line — still true because …`. The worker
+   re-runs the line's quoted terms over the head's docs itself: a hit
+   outside the lines your diff changed that the line does not name as
+   `file:line` blocks the PR the same way a missing line does.
    When the change adds a member to an existing set — a field, enum variant,
    kind, flag or column — also grep for one or two of its existing sibling
    members: every list of the set those hits find names the new member, or is
@@ -957,7 +966,7 @@ The file MUST contain:
    - For bug fixes/CLI changes: Reference the tests that verify the fix
    - Always: a one-line **Docs sweep** — the grep terms you searched, the
      manual section you found and checked, and the doc files you updated, or
-     `no hits` — e.g. **Docs sweep** — grep: `retryLimit`, "Retrying in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`
+     `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering

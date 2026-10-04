@@ -254,6 +254,12 @@ not after a reviewer finds it weeks later.
   UI copy, and the docs prose for those fields. Make each one true for **every
   case** the new behaviour produces, not only the common one. Grep for the
   variant or field name **and** for the old wording.
+- Grep for the **stem** of a behavioural claim, not one inflection
+  (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
+  final head after editing. In a file you update, read every passage that
+  mentions the changed surface, not only the section you edited. Each
+  remaining hit goes in the Docs sweep line by `file:line` with the reason it
+  is still true.
 
 ## Visual Documentation
 

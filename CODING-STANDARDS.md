@@ -1034,6 +1034,12 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   UI copy, and the docs prose for those fields. Make each one true for **every
   case** the new behaviour produces, not only the common one. Grep for the
   variant or field name **and** for the old wording.
+- Grep for the **stem** of a behavioural claim, not one inflection
+  (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
+  final head after editing. In a file you update, read every passage that
+  mentions the changed surface, not only the section you edited. Each
+  remaining hit goes in the Docs sweep line by `file:line` with the reason it
+  is still true.
 
 ## A Contract a Deployed Extension Reads Is Additive-Only
 
@@ -1088,6 +1094,10 @@ for every PR summary — containing:
    `no hits` (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
    worker refuses to raise a PR whose diff changes code with no such line.
+   Re-run the grep on the final head and list each hit you leave in place as
+   `file:line — still true because …`, so the worker and the reviewer can
+   check it: the worker re-runs the line's quoted terms over the head's docs
+   and refuses a hit outside the diff that the line does not name.
 4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
