@@ -73,6 +73,7 @@ import {
 import { resolveIssueForRevertedPr } from "./milestone_rollback_requeue.ts";
 import { buildRollbackMarker } from "./milestone_rollback_marker.ts";
 import { addLabelToIssue } from "./label_operations.ts";
+import { conflictResolvedMarker } from "./merge_conflict_markers.ts";
 
 // ---------------------------------------------------------------------------
 // Merged sub-PR listing
@@ -307,6 +308,10 @@ export function buildMilestoneRebuildPrComment(
       }`
     );
   return [
+    // Issue #3036: the rebuild is a fresh start, so it restarts the shared
+    // budget — the redo gets its own attempts rather than inheriting the
+    // spent ones that triggered it, and the next pass does not rebuild again.
+    conflictResolvedMarker("takeover", outcome.rebuildSha),
     `♻️ **\`${outcome.milestoneBranch}\` was rebuilt from ` +
     `\`${outcome.baseBranch}\`**`,
     "",
