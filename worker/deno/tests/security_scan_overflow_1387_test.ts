@@ -8,7 +8,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 
 import { createDefaultProbeDeps } from "../lib/references_source_probe.ts";
 import {
@@ -88,7 +93,7 @@ Deno.test("SEC-08c4f1a7e2b9 - redacts the key inside an ImgBB upload URL", () =>
     `https://api.imgbb.com/1/upload?key=${IMGBB_SHAPED_KEY}&name=x`,
   );
   assertEquals(out.includes(IMGBB_SHAPED_KEY), false, out);
-  assert(out.includes("api.imgbb.com"), out);
+  assertStringIncludes(out, "api.imgbb.com", out);
 });
 
 Deno.test("SEC-08c4f1a7e2b9 - leaves longer hex runs alone", () => {

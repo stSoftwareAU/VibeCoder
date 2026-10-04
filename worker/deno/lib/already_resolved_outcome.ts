@@ -27,6 +27,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import { detectAlreadyComplete } from "./claude_executor.ts";
 
 /**
@@ -126,10 +127,7 @@ function sameRepo(a: string, b: string): boolean {
  */
 function flattenField(raw: string | undefined, maxLen: number): string {
   if (!raw) return "";
-  let out = raw
-    // Keep a space inside the token so a longer run cannot re-form it.
-    .replace(/-->/g, "- ->")
-    .replace(/<!--/g, "<!- -")
+  let out = neutraliseCommentDelimiters(raw)
     // deno-lint-ignore no-control-regex
     .replace(/[\x00-\x1F\x7F]/g, " ")
     .replace(/\s+/g, " ")

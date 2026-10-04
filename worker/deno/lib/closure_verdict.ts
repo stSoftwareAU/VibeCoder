@@ -153,7 +153,7 @@ const MAX_ENTRIES = 100;
 function sanitiseField(raw: string): string {
   return raw
     .replace(/[\r\n]+/g, " ")
-    .replace(/<!--|-->/g, " ")
+    .replace(/<!--|--!?>/g, " ")
     .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
     .replace(/[`*_|]/g, " ")
     .replace(/#(?!\d)/g, " ")

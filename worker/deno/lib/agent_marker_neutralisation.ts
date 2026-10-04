@@ -47,8 +47,13 @@ const MAX_NAME_LENGTH = 64;
 /** Opening delimiter of an HTML comment — how every marker starts. */
 const COMMENT_OPEN = /<!--/g;
 
-/** Closing delimiter — how every marker ends. */
-const COMMENT_CLOSE = /-->/g;
+/**
+ * Closing delimiter — how every marker ends.
+ *
+ * HTML parsers also close a comment on `--!>`, so a filter that matches only
+ * `-->` leaves a working closer behind (CodeQL js/bad-tag-filter).
+ */
+const COMMENT_CLOSE = /--!?>/g;
 
 /**
  * The name directly after an opening delimiter.
@@ -97,8 +102,23 @@ export function neutraliseAgentMarkers(
   }
 
   return {
-    text: text.replace(COMMENT_CLOSE, "- ->").replace(COMMENT_OPEN, "<!- -"),
+    text: neutraliseCommentDelimiters(text),
     neutralised: opens + closes,
     names,
   };
+}
+
+/**
+ * Make every HTML-comment opener and closer in `text` inert.
+ *
+ * The one copy of the replacement every body writer uses before it fences or
+ * files untrusted output, so a closer form added here is added everywhere.
+ * A space is kept inside each token (`<!- -`, `- ->`) so a longer dash run
+ * cannot re-form the delimiter from the surviving characters.
+ *
+ * @param text - Untrusted text bound for an issue or comment body
+ * @returns The text with no comment delimiter left in it
+ */
+export function neutraliseCommentDelimiters(text: string): string {
+  return text.replace(COMMENT_CLOSE, "- ->").replace(COMMENT_OPEN, "<!- -");
 }

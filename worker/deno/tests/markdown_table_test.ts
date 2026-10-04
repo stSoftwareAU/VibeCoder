@@ -13,6 +13,7 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  escapeTableCell,
   exceedsTableScanCap,
   findMarkdownTable,
   MAX_TABLE_SCAN_CHARS,
@@ -158,4 +159,15 @@ Deno.test("findMarkdownTable - a blob past the scan cap is rejected, not scanned
   // The same table under the cap is still found, so it is the cap that
   // rejected the blob and not the parser.
   assert(findMarkdownTable(table, hasColumns(/ask/i)) !== null);
+});
+
+Deno.test("escapeTableCell - a pipe is escaped so it cannot split the cell", () => {
+  assertEquals(escapeTableCell("a|b"), "a\\|b");
+});
+
+Deno.test("escapeTableCell - a backslash is escaped before the pipe", () => {
+  // Escaping the pipe alone turns `a\|b` into `a\\|b`: an escaped
+  // backslash followed by a bare pipe, which splits the cell (CodeQL
+  // js/incomplete-sanitization).
+  assertEquals(escapeTableCell("a\\|b"), "a\\\\\\|b");
 });

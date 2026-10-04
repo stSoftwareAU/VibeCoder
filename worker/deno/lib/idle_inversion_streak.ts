@@ -58,6 +58,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupRow,
@@ -253,8 +254,7 @@ export function withClaimRefusals(
 
 /** Escape so script output cannot close our fence or forge a marker. */
 function bodySafe(text: string): string {
-  return text.replace(/<!--/g, "<!- -").replace(/-->/g, "- ->")
-    .replace(/```/g, "'''");
+  return neutraliseCommentDelimiters(text).replace(/```/g, "'''");
 }
 
 /** `#4326, #4376` — the issues, or an empty string when none were passed. */

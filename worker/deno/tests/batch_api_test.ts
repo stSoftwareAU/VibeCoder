@@ -428,7 +428,7 @@ Deno.test("batch_api - estimateBatchSavings handles zero tokens", () => {
 // =============================================================================
 
 Deno.test("batch_api - BATCH_API_BASE_URL uses Anthropic API endpoint", () => {
-  assert(BATCH_API_BASE_URL.includes("anthropic.com"));
+  assertEquals(new URL(BATCH_API_BASE_URL).hostname, "api.anthropic.com");
   assert(BATCH_API_BASE_URL.includes("messages/batches"));
 });
 

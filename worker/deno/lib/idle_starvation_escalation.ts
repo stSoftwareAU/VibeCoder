@@ -77,6 +77,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupRow,
@@ -370,8 +371,7 @@ export interface IdleStarvationReport {
 
 /** Escape so log output cannot close our fence or forge a marker. */
 function bodySafe(text: string): string {
-  return text.replace(/<!--/g, "<!- -").replace(/-->/g, "- ->")
-    .replace(/```/g, "'''");
+  return neutraliseCommentDelimiters(text).replace(/```/g, "'''");
 }
 
 /** `4.2 days (101h)` — the duration in the units an operator thinks in. */
