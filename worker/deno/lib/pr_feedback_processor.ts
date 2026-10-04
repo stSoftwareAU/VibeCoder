@@ -19,6 +19,8 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 import { type CommentType, removeProcessedMark } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
+import { fetchIssueData } from "./issue_data.ts";
+import { fetchPrOwnerDirection } from "./owner_direction.ts";
 import {
   buildPrFeedbackPrompt,
   type PrFeedbackPromptOptions,
@@ -234,6 +236,21 @@ export interface PrFeedbackProcessorDeps {
    * When empty or omitted, no bundling occurs.
    */
   trustedReviewBots?: readonly string[];
+  /**
+   * The trust lists that decide whose comments on the linked issue and its
+   * milestone parent count as owner direction (Issue #3205). Omitted → no
+   * owner direction is fetched, and the prompt is as it was.
+   */
+  ownerDirectionAuthors?: {
+    allowedAuthors: readonly string[];
+    authorisedCommenters: readonly string[];
+  };
+  /**
+   * Override the owner-direction fetch (Issue #3205). Injected by tests;
+   * production leaves it undefined and gets {@link fetchPrOwnerDirection}
+   * over this run's `gh`.
+   */
+  fetchOwnerDirectionFn?: typeof fetchPrOwnerDirection;
   /**
    * Per-repo configuration map, used to resolve the pre-flight enforcement
    * gate (Issue #3577). Omitted → no gate.
@@ -813,6 +830,23 @@ async function _processFeedbackWithHeartbeat(
     }
   }
 
+  // Owner direction posted after the branch began (Issue #3205): the
+  // trusted-author comments on the linked issue and its milestone parent, or
+  // on a milestone PR's tracking issue. A failed fetch yields no section.
+  const ownerDirection = processorDeps.ownerDirectionAuthors
+    ? await (processorDeps.fetchOwnerDirectionFn ?? fetchPrOwnerDirection)(
+      {
+        repo,
+        branchName: input.branchName,
+        ...processorDeps.ownerDirectionAuthors,
+        ...(processorDeps.githubUser
+          ? { workerLogin: processorDeps.githubUser }
+          : {}),
+      },
+      (r, n) => fetchIssueData(r, n, (args) => deps.github.runGhCommand(args)),
+    )
+    : "";
+
   // Build prompt
   const promptOptions: PrFeedbackPromptOptions = {
     repo,
@@ -827,6 +861,7 @@ async function _processFeedbackWithHeartbeat(
     additionalReviewComments: additionalReviewComments?.ok
       ? additionalReviewComments.value
       : undefined,
+    ...(ownerDirection ? { ownerDirection } : {}),
     promptsDir: processorDeps.promptsDir,
   };
 

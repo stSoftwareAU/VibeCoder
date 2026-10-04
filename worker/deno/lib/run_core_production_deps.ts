@@ -130,6 +130,7 @@ import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
 import { buildImplementationCommentContext } from "./implementation_comments.ts";
+import { fetchMilestoneParentDirection } from "./owner_direction.ts";
 import { observeUntrustedIssueImages } from "./issue_content_trust_filter.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
 import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
@@ -2288,6 +2289,11 @@ export async function createProductionRunCoreDeps(
             // the worker filed under its own login as trusted.
             githubUser,
             trustedReviewBots: config.trustedReviewBots ?? [],
+            // Issue #3205: whose comments count as owner direction.
+            ownerDirectionAuthors: {
+              allowedAuthors: config.allowedAuthors ?? [],
+              authorisedCommenters: config.authorisedCommenters ?? [],
+            },
             repoConfigs: config.repoConfig,
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
@@ -4504,6 +4510,18 @@ export async function createProductionRunCoreDeps(
         });
       }
 
+      // Owner direction on the milestone parent (Issue #3205), shared with
+      // the `work-on-issue` command: a design the owner replaced on the
+      // parent after this sub-issue was written.
+      const parentOwnerDirection = await fetchMilestoneParentDirection({
+        repo: issue.repo,
+        issueNumber: issue.issueNumber,
+        milestoneTitle: issue.milestoneTitle || issueData.milestoneTitle,
+        allowedAuthors: config.allowedAuthors ?? [],
+        authorisedCommenters: config.authorisedCommenters ?? [],
+        workerLogin: githubUser,
+      });
+
       const ctx = {
         repo: issue.repo,
         issueNumber: issue.issueNumber,
@@ -4527,6 +4545,7 @@ export async function createProductionRunCoreDeps(
         ),
         githubUser,
         milestoneTitle: issue.milestoneTitle || undefined,
+        ...(parentOwnerDirection ? { parentOwnerDirection } : {}),
         config,
         // Issue #4254: bound the execute timeout by the cycle deadline.
         cycleDeadlineEpochMs,

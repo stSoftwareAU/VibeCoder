@@ -37,6 +37,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { escapeRegExp } from "./regexp_escape.ts";
 import { sanitiseDelimiterPatterns } from "./prompt_delimiter.ts";
 
 /** Marker opening the grill-me understanding block in an issue body. */
@@ -256,11 +257,6 @@ function safeExcerpt(raw: string): string {
     ? `${filtered.slice(0, 57)}...`
     : filtered;
   return sanitiseDelimiterPatterns(truncated);
-}
-
-/** Escape a literal term for use inside a RegExp. */
-function escapeRegExp(term: string): string {
-  return term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

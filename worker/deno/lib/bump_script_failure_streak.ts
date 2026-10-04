@@ -30,6 +30,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupRow,
@@ -139,10 +140,7 @@ export function formatBumpScriptFailureTitle(scriptName: string): string {
  * block, nor forge an HTML comment that a later marker read would trust.
  */
 function bodySafe(text: string): string {
-  return text
-    .replace(/<!--/g, "<!- -")
-    .replace(/-->/g, "- ->")
-    .replace(/```/g, "'''");
+  return neutraliseCommentDelimiters(text).replace(/```/g, "'''");
 }
 
 /** What the bump phase knows about the failing script. */

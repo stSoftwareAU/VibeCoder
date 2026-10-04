@@ -85,6 +85,12 @@ export interface IssueContext {
   untrustedImages?: readonly ImageReference[];
   githubUser: string;
   milestoneTitle?: string;
+  /**
+   * Trusted-author comments on the milestone parent, formatted by
+   * `owner_direction.ts` (Issue #3205). Absent when the issue has no
+   * milestone parent or the parent carries no owner direction.
+   */
+  parentOwnerDirection?: string;
   /** Milestone number (API ID) for session branching (Issue #1322). */
   milestoneNumber?: number;
   config: WorkerConfig;

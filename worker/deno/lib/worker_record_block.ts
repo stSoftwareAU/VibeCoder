@@ -26,6 +26,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { escapeRegExp } from "./regexp_escape.ts";
+
 /** Opening delimiter of the machine-owned block. */
 export const WORKER_RECORD_START = "<!-- vibe-worker-record-start -->";
 
@@ -54,10 +56,6 @@ const PERMITTED_LINE =
 /** Strict `Deferred until <ISO-8601 UTC>` line — no fractional seconds. */
 const DEFERRED_UNTIL_LINE =
   /^Deferred until \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
-
-function escapeRegExp(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 /** Matches a delimited block, capturing its content; tolerates CRLF. */
 function blockPattern(): RegExp {

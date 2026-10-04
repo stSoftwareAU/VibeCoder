@@ -734,6 +734,22 @@ Deno.test("github - hasVisibleContent returns false for HTML comment only", () =
   );
 });
 
+Deno.test("github - hasVisibleContent returns false for an unterminated comment", () => {
+  // GitHub hides everything after an unclosed `<!--`, so nothing renders.
+  assertEquals(hasVisibleContent("<!-- PR_COMMENT_CLAIM:worker:123"), false);
+});
+
+Deno.test("github - hasVisibleContent treats `--!>` as a comment closer", () => {
+  assertEquals(hasVisibleContent("<!-- A --!>"), false);
+  assertEquals(hasVisibleContent("<!-- A --!> visible"), true);
+});
+
+Deno.test("github - hasVisibleContent counts text a stripped comment leaves behind", () => {
+  // Removing the inner comment must not re-form a comment out of the rest:
+  // GitHub renders `<!` and `-- x -->` here as visible text.
+  assertEquals(hasVisibleContent("<!<!-- A -->-- x -->"), true);
+});
+
 Deno.test("github - hasVisibleContent returns false for multiple HTML comments and whitespace", () => {
   const body = "<!-- A -->\n  <!-- B -->\n";
   assertEquals(hasVisibleContent(body), false);

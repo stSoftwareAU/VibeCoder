@@ -23,6 +23,7 @@
  * Australian English spelling used throughout.
  */
 
+import { escapeRegExp } from "../lib/regexp_escape.ts";
 import { assert, assertEquals } from "@std/assert";
 import { parseRtkOutput, RTK_OUTPUT_KEYS } from "../lib/rtk_output_config.ts";
 import {
@@ -207,7 +208,7 @@ Deno.test("the comparison rule pairs the statuses the runner really returns", as
   }
   assert(
     /1\.7\.0/.test(comparison) &&
-      new RegExp(RTK_STATS_PREFIX.replace(/[*]/g, "\\$&")).test(comparison),
+      new RegExp(escapeRegExp(RTK_STATS_PREFIX)).test(comparison),
     "the comparison rule must exclude pre-1.7.0 runs, which carry no RTK line",
   );
   assert(
