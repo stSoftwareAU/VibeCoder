@@ -638,6 +638,13 @@ export interface ProductionDepsOptions {
    * in a recorder rather than mutating the environment every test shares.
    */
   setEnv?: (name: string, value: string) => void;
+
+  /**
+   * The agent health probe behind `checkClaudeHealth` (Issue #3180).
+   * Defaults to {@link claudeHealthCheck}; a test hands in a fake so the
+   * wiring can be checked without spawning a real agent.
+   */
+  agentHealthCheck?: typeof claudeHealthCheck;
 }
 
 // ---------------------------------------------------------------------------
@@ -1479,6 +1486,7 @@ export async function createProductionRunCoreDeps(
 
   // Health cache working directory
   const healthCacheDir = workDir;
+  const agentHealthCheck = options.agentHealthCheck ?? claudeHealthCheck;
 
   // Build RunCoreConfig
   const runCoreConfig = createDefaultRunCoreConfig();
@@ -1956,7 +1964,7 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: { healthy: true } };
       }
       try {
-        const result = await claudeHealthCheck(
+        const result = await agentHealthCheck(
           30,
           logger,
           provider,
@@ -1999,7 +2007,11 @@ export async function createProductionRunCoreDeps(
         }
         return {
           ok: true,
-          value: { healthy: false, exitCode: result.exitCode },
+          value: {
+            healthy: false,
+            exitCode: result.exitCode,
+            message: result.message,
+          },
         };
       } catch (err) {
         invalidateHealthCache(healthCacheDir, cacheType);

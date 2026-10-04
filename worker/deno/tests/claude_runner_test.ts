@@ -38,6 +38,7 @@ import {
   ISSUE_EXECUTOR_AGENT_NAME,
 } from "../lib/issue_executor_agents.ts";
 import type { Result } from "../types.ts";
+import { createLogger } from "../lib/logger.ts";
 import { getDailySummary } from "../lib/credit_tracker.ts";
 import {
   type AgentStub,
@@ -482,6 +483,37 @@ Deno.test({
     assertEquals(result.exitCode, 2);
     assertStringIncludes(result.message, "claude login");
   },
+});
+
+Deno.test("checkClaudeHealth - a runner that fails before spawning logs the underlying error (Issue #3180)", async () => {
+  // GRQ-23: a read-only root filesystem stopped the runner creating its temp
+  // files, and the only log line was "health check failed — skipping cycle".
+  const lines: string[] = [];
+  const capture = (msg: string) => lines.push(msg);
+  const logger = createLogger({ write: capture, host: "" });
+  const failingRunner = (_options: RunClaudeOptions) =>
+    Promise.resolve<Result<ClaudeExecutionResult>>({
+      ok: false,
+      error: new Error("Read-only file system (os error 30): mkdtemp"),
+    });
+
+  const result = await checkClaudeHealth(
+    30,
+    logger,
+    undefined,
+    undefined,
+    undefined,
+    failingRunner,
+  );
+
+  assertEquals(result.healthy, false);
+  assertStringIncludes(result.message, "Read-only file system (os error 30)");
+  assert(
+    lines.some((l) =>
+      l.includes("ERROR") && l.includes("Read-only file system (os error 30)")
+    ),
+    `expected a logged ERROR line naming the cause, got:\n${lines.join("\n")}`,
+  );
 });
 
 // ---------------------------------------------------------------------------
