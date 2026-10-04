@@ -1833,35 +1833,6 @@ Deno.test("findConflictingPr - an exhausted PR with no originating issue is clos
 });
 
 /**
- * A spent restart budget hands the *originating issue* to a human
- * (Issue #2804): `needs-human` lands on that issue, never on the PR, whose
- * place in the conflict queue stays the scan's.
- */
-function assertNeedsHumanOnIssueOnly(fake: FakeGh, issueNumber: number): void {
-  const issuePath = `/issues/${issueNumber}/`;
-  // A hand-off comment may mention the label by name. Only a call that
-  // applies or removes the label itself counts as the label reaching somewhere.
-  const naming = fake.calls.filter((args) =>
-    args.some((arg) =>
-      arg === "needs-human" || arg.startsWith("labels[]=needs-human")
-    )
-  );
-  assert(
-    naming.some((args) =>
-      args.some((arg) => arg.endsWith(`${issuePath}labels`)) &&
-      args.includes("labels[]=needs-human")
-    ),
-    `needs-human was not added to issue #${issueNumber}`,
-  );
-  const elsewhere = naming.filter((args) =>
-    !args.some((arg) => arg.includes(issuePath)) &&
-    // Creating the repo label itself touches no issue or PR.
-    !args.some((arg) => /^repos\/[^/]+\/[^/]+\/labels$/.test(arg))
-  );
-  assertEquals(elsewhere, [], "needs-human may only reach the issue");
-}
-
-/**
  * A PR whose issue has already been restarted `restarts` times (Issue #2312).
  *
  * The markers live on the *issue*, because the PR that replaced each abandoned
