@@ -510,6 +510,7 @@ import {
   summariseWorkVolumePrune,
 } from "./work_volume_prune.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
+import { createRootFilesystemCheck } from "./root_filesystem_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import {
   describeGuestReclaimToHost,
@@ -5267,6 +5268,16 @@ export async function createProductionRunCoreDeps(
     // Present only when an operator configured a ceiling; otherwise the run
     // loop skips the check entirely.
     ...(checkSpendCeiling ? { checkSpendCeiling } : {}),
+
+    // -- Root filesystem (Issue #3179) --
+    // The container's scratch and state volumes, probed at the top of every
+    // cycle; a read-only or I/O-faulted one ends the run for a fresh
+    // container rather than failing the health check until the launch cap.
+    checkRootFilesystem: createRootFilesystemCheck({
+      workDir,
+      ...(env("TMPDIR") ? { tmpDir: env("TMPDIR") } : {}),
+      warn: (message) => logger.warn(message),
+    }),
 
     // -- Misc --
     touchPidFile: () => Promise.resolve(),

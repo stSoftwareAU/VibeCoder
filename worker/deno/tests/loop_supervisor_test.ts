@@ -207,6 +207,50 @@ Deno.test({
 
 Deno.test({
   name:
+    "loop.sh - a read-only root is named and relaunched, not reported as a crash (Issue #3179)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // ROOT_FS_FAULT_EXIT: the worker found its container's root filesystem
+    // read-only and ended the run for a fresh container.
+    const harness = await setupHarness({
+      runStub:
+        '#!/bin/bash\necho "$(date +%s.%N)" >> invocations.log\nexit 74\n',
+    });
+    const child = spawnLoopLogging(harness.tmpDir);
+    try {
+      await delay(3500);
+      const log = await Deno.readTextFile(join(harness.tmpDir, "loop.log"));
+
+      assert(
+        log.includes("root filesystem went read-only"),
+        `the host fault must be named, got: ${log}`,
+      );
+      assert(
+        log.includes("relaunching into a fresh container"),
+        `the supervisor must say what it does about it, got: ${log}`,
+      );
+      assertEquals(
+        log.includes("exited with status 74 — backing off and retrying"),
+        false,
+        "a read-only root must not be described as an ordinary crash",
+      );
+
+      // Relaunched without a human: the next cycle comes round.
+      const count = await readInvocationCount(harness.tmpDir);
+      assert(
+        count >= 2,
+        `expected loop.sh to relaunch run.sh, got ${count}`,
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
     "loop.sh - continues iterating when run.sh exits non-zero (Issue #1836)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
