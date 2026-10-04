@@ -113,6 +113,7 @@ EOF
 # sets $LAST_ERROR to a one-line gist of why, for escalate_result to report.
 pass() {
   local reviewer=() ready dir prompt minted errfile token_rc gate_rc round_rc
+  local entry input
   LAST_ERROR=""
   errfile="$STATE_DIR/last-error"
   # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
@@ -154,6 +155,17 @@ pass() {
     log "gate failed; skipping this pass"
     return 1
   fi
+  # Issue #3142: a red dependency audit CI-fix could not clear is sent back
+  # with the gate's ready-made review; post.ts posts it, no model round.
+  input="$STATE_DIR/audit-blocked.json"
+  while IFS= read -r entry; do
+    jq -c '{pr: del(.review), review}' <<<"$entry" >"$input"
+    log "audit send-back: $(jq -r '"\(.repo)#\(.number)"' <<<"$entry"): $(
+      cd "$SKILL_DIR" && deno run --allow-run=gh,osascript --allow-read \
+        --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts \
+        --input="$input" 2>&1)"
+  done < <(jq -c '.auditBlocked[]?' <<<"$ready" 2>/dev/null)
+  ready=$(jq -c 'del(.auditBlocked)' <<<"$ready" 2>/dev/null || echo "$ready")
   if [[ $(jq '.ready | length' <<<"$ready" 2>/dev/null) == 0 ]]; then
     # One short line per idle pass, so the log shows the gate is running.
     log "gate: nothing ready ($(jq -r '.skipped | to_entries
