@@ -1465,11 +1465,16 @@ C-like files; `#` and triple quotes for Python; `#` for shell and bats), so
 an assertion inside a comment or a string is not an assertion. In C-like
 files (TypeScript, JavaScript and the like) a regex literal is blanked as
 well: a `/` where an expression can begin — at the start of the file, after
-`(` `,` `=` `:` `[` `!` `&` `|` `?` `{` `}` `;`, or after a keyword such as
-`return` or `typeof` — opens a one-line regex that ends at an unescaped `/`
-outside a `[…]` class. So a quote or backtick inside a regex (`` /[*_`>]/g ``)
-does not open a string that hides the lines below it. A `/` with no closing
-`/` on its line is division. It then
+`(` `,` `=` `:` `[` `!` `&` `|` `?` `{` `}` `;`, after any other operator
+(including the `>` of an arrow, so `` => /`/.test(c) `` is a regex), or
+after a keyword such as `return` or `typeof` — opens a one-line regex that
+ends at an unescaped `/` outside a `[…]` class. So a quote or backtick
+inside a regex (`` /[*_`>]/g ``) does not open a string that hides the lines
+below it. A `/` with no closing `/` on its line is division. A template
+literal's `${…}` substitutions are lexed as code, with a stack of brace
+depths that resumes the template at the matching `}`, so a nested template
+or quote inside a substitution (`` `'${v.replaceAll("'", `'\\''`)}'` ``)
+does not close the outer template early. It then
 collects every assertion statement — `assert…(`, `assert_eq!(`,
 `assert.x(`, `expect(` not preceded by `.`, and Python/bats
 `assert`/`assert_x` commands; `debug_assert!` and a declaration such as
@@ -1486,7 +1491,14 @@ ignoring whitespace, **and** the same context:
   group, a test function (`#[test]`, `test_…`) or a type or module is part
   of the context: an `if`/`else`/`match`, a loop, a `with` or `try`, a
   callback such as `.forEach(`, a wrapper helper, or a helper function that
-  may never be called. When an enclosing line continues a chain — `else`,
+  may never be called. A head wrapped over several lines is part of the
+  context whole, every line of its condition: `deno fmt`'s
+  `if (`…`) {`, black's `if (`…`):`, rustfmt's `if a` / `&& b` / `{`, an
+  Allman `{`, a Python `\` continuation, and a `for (` whose array of
+  cases spans lines. These are found as one logical line: lines inside an
+  open `(` or `[`, lines that lead with `&&`, `||`, `.` or `?`, and a bare
+  `{` all continue the line above. A head longer than 200 lines is
+  reported, since the gate cannot key it whole. When an enclosing line continues a chain — `else`,
   `elif`, `} else if`, `except`, `catch`, `finally`, a `case`/`default:`
   arm or a Rust match arm — the earlier heads of that chain back to its
   opening `if`, `try`, `switch` or `match` are part of the context too. They
@@ -1501,7 +1513,13 @@ ignoring whitespace, **and** the same context:
   `@unittest.skip`, `pytestmark`.
 - **The same early exits before it** in its innermost function: `return`,
   `continue`, `break`, `throw`, `raise`, `panic!`, `pytest.skip(`,
-  `t.Skip(` and the like, outside a closure opened on the same line.
+  `t.Skip(` and the like, outside a closure opened on the same line. An
+  exit inside a function or closure body that closed before the assertion
+  is not counted: a `{` opened by `=> {`, `function (…) {`, `|x| {` or an
+  object method such as `async run(args) {`, or a nested Python `def`. A
+  `return` in a mock or callback cannot stop a later assertion from
+  running, so changing it does not mark that assertion removed. An exit in
+  a closed `if` or loop block still counts.
 
 Copies are counted, so deleting one of two identical assertions is a
 removal. Everything else is removed: an edit to any line of a multi-line
@@ -1518,7 +1536,12 @@ lexer entered already inside a carried-over string or block comment is
 always reported, even when the same text is re-added: the gate cannot read
 its context, so it fails closed. An assertion-shaped line in a multi-line
 template literal or block comment that the diff removes or moves must
-therefore be named in the Test Plan too.
+therefore be named in the Test Plan too. Valid source never ends inside a
+string, template, `${…}` substitution or block comment, so when either
+side's lexer reaches the end of a file still inside one, it has lost its
+place. If the file changes at or after the line where that literal opened,
+every assertion-shaped line of the old side from that line on is reported.
+A copy on such a new side from that line on cannot vouch for a move.
 
 Each remaining removed assertion must appear, ignoring whitespace, in the
 Test Plan section; otherwise PR creation is blocked and the notice lists

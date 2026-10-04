@@ -1043,3 +1043,432 @@ Deno.test("growth: many assertions after many early exits stay linear", () => {
   );
   assertEquals(removed, []);
 });
+
+// --- PR #3148 review: wrapped heads, template substitutions, closures -------
+
+/** Whether the gate blocks `patch` under the vague Test Plan. */
+const blocks = (path: string, patch: string) =>
+  !validateRemovedAssertions({
+    changedFiles: [path],
+    testDiff: patch,
+    prSummaryContent: VAGUE_PLAN,
+  }).valid;
+
+/** A `deno fmt`-wrapped `if (` guard over an assertion, condition given. */
+const wrappedIfTest = (condition: string) =>
+  src(
+    'Deno.test("rows", () => {',
+    "  const rows = load();",
+    "  if (",
+    `    ${condition} &&`,
+    '    rows[0].name !== ""',
+    "  ) {",
+    '    assertEquals(rows[0].name, "AAA");',
+    "  }",
+    "});",
+  );
+
+Deno.test("wrapped head: a `deno fmt` multi-line `if (` condition loosened above an unchanged assertion is removed", async () => {
+  const path = "worker/deno/tests/rows_test.ts";
+  const patch = await gatePatch({
+    [path]: [wrappedIfTest("rows.length > 5"), wrappedIfTest("false")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assertEquals(rows[0].name, "AAA");',
+  ]);
+  assert(blocks(path, patch));
+});
+
+Deno.test("wrapped head: a multi-line `if (` head above an unchanged `} else {` assertion is removed when it changes", async () => {
+  const path = "worker/deno/tests/rows_test.ts";
+  const chain = (condition: string) =>
+    src(
+      'Deno.test("rows", () => {',
+      "  const rows = load();",
+      "  if (",
+      `    ${condition} &&`,
+      '    rows[0].name !== ""',
+      "  ) {",
+      "    log(rows);",
+      "  } else {",
+      '    assertEquals(rows[0].name, "AAA");',
+      "  }",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [chain("rows.length > 5"), chain("true ||")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assertEquals(rows[0].name, "AAA");',
+  ]);
+  assert(blocks(path, patch));
+});
+
+Deno.test("wrapped head: a rustfmt-wrapped `if a\\n && b\\n{` condition changed above an unchanged assertion is removed", async () => {
+  const path = "tests/rows_test.rs";
+  const rust = (condition: string) =>
+    src(
+      "#[test]",
+      "fn rows_cover_aaa() {",
+      "    let rows = load();",
+      `    if ${condition}`,
+      '        && rows[0].name != ""',
+      "        && rows[1].name != rows[0].name",
+      "    {",
+      '        assert_eq!(rows[0].name, "AAA");',
+      "    }",
+      "}",
+    );
+  const patch = await gatePatch({
+    [path]: [rust("rows.len() > 5"), rust("false")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assert_eq!(rows[0].name, "AAA");',
+  ]);
+  assert(blocks(path, patch));
+});
+
+Deno.test("wrapped head: a black-style `if (\\n cond\\n):` condition changed above an unchanged assertion is removed", async () => {
+  const path = "tests/test_rows.py";
+  const python = (condition: string) =>
+    src(
+      "def test_rows():",
+      "    rows = load()",
+      "    if (",
+      `        ${condition}`,
+      '        and rows[0].name != ""',
+      "    ):",
+      '        assert rows[0].name == "AAA"',
+    );
+  const patch = await gatePatch({
+    [path]: [python("len(rows) > 5"), python("False")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assert rows[0].name == "AAA"',
+  ]);
+  assert(blocks(path, patch));
+});
+
+Deno.test("wrapped head: an id dropped from a multi-line `for (\\n const id of [ … ]\\n) {` head is removed", async () => {
+  const path = "worker/deno/tests/admin_only_finding_test.ts";
+  const loop = (...ids: string[]) =>
+    src(
+      'Deno.test("admin-only ids", () => {',
+      "  for (",
+      "    const id of [",
+      ...ids.map((id) => `      "${id}",`),
+      "    ]",
+      "  ) {",
+      "    assertEquals(isAdminOnly(id), true);",
+      "  }",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [
+      loop("SA-1", "SA-2", "SA-3", "SA-4"),
+      loop("SA-1"),
+    ],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    "assertEquals(isAdminOnly(id), true);",
+  ]);
+  assert(blocks(path, patch));
+});
+
+Deno.test("wrapped head: an Allman `if (x)\\n{` condition changed above an unchanged assertion is removed", async () => {
+  const path = "worker/deno/tests/rows_test.ts";
+  const allman = (condition: string) =>
+    src(
+      'Deno.test("rows", () => {',
+      `  if (${condition})`,
+      "  {",
+      '    assertEquals(rows[0].name, "AAA");',
+      "  }",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [allman("rows.length > 5"), allman("false")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assertEquals(rows[0].name, "AAA");',
+  ]);
+});
+
+Deno.test("no flag: an unchanged wrapped `if (` head is not reported when another line changes", async () => {
+  const path = "worker/deno/tests/rows_test.ts";
+  const patch = await gatePatch({
+    [path]: [
+      wrappedIfTest("rows.length > 5"),
+      wrappedIfTest("rows.length > 5").replace("load()", "loadAll()"),
+    ],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
+/**
+ * Helpers that lose a lexer without `${…}` and arrow-regex handling: the
+ * nested template from first_run_script_test.ts:251, and a regex literal
+ * holding a backtick straight after `=>`.
+ */
+const LEXER_TRAPS: Record<string, string> = {
+  "nested template in `${…}`": src(
+    "function shellQuote(value: string): string {",
+    "  return `'${value.replaceAll(\"'\", `'\\\\''`)}'`;",
+    "}",
+    "",
+  ),
+  "`=> /`/` regex": src(
+    "const tick = (c: string) => /`/.test(c);",
+    "",
+  ),
+};
+
+/** A test below `helper`, then the same test with one context edit. */
+const CONTEXT_EDITS: Record<string, [string, string]> = {
+  "a `Deno.test.ignore(` rename": [
+    src(
+      'Deno.test("quote", () => {',
+      '  assertEquals(shellQuote("a"), "\'a\'");',
+      "});",
+    ),
+    src(
+      'Deno.test.ignore("quote", () => {',
+      '  assertEquals(shellQuote("a"), "\'a\'");',
+      "});",
+    ),
+  ],
+  "an inserted `return;`": [
+    src(
+      'Deno.test("quote", () => {',
+      '  assertEquals(shellQuote("a"), "\'a\'");',
+      "});",
+    ),
+    src(
+      'Deno.test("quote", () => {',
+      "  return;",
+      '  assertEquals(shellQuote("a"), "\'a\'");',
+      "});",
+    ),
+  ],
+  "a guard condition change": [
+    src(
+      'Deno.test("quote", () => {',
+      "  if (rows.length > 1) {",
+      '    assertEquals(shellQuote("a"), "\'a\'");',
+      "  }",
+      "});",
+    ),
+    src(
+      'Deno.test("quote", () => {',
+      "  if (false) {",
+      '    assertEquals(shellQuote("a"), "\'a\'");',
+      "  }",
+      "});",
+    ),
+  ],
+};
+
+for (const [trap, helper] of Object.entries(LEXER_TRAPS)) {
+  for (const [edit, [before, after]] of Object.entries(CONTEXT_EDITS)) {
+    Deno.test(`lexer: below a ${trap} helper, ${edit} around an unchanged assertion is removed`, async () => {
+      const path = "worker/deno/tests/quote_test.ts";
+      const patch = await gatePatch({
+        [path]: [helper + before, helper + after],
+      });
+      assertEquals(texts(findRemovedAssertions(patch)), [
+        'assertEquals(shellQuote("a"), "\'a\'");',
+      ]);
+      assert(blocks(path, patch));
+    });
+  }
+}
+
+for (const [trap, helper] of Object.entries(LEXER_TRAPS)) {
+  Deno.test(`no flag: below a ${trap} helper, an assertion moved unguarded to another file is moved`, async () => {
+    const body = src(
+      'Deno.test("quote", () => {',
+      '  assertEquals(shellQuote("a"), "\'a\'");',
+      "});",
+    );
+    const patch = await gatePatch({
+      "worker/deno/tests/quote_test.ts": [helper + body, helper],
+      "worker/deno/tests/quote_more_test.ts": [null, body],
+    });
+    assertEquals(findRemovedAssertions(patch), []);
+  });
+}
+
+/**
+ * A regex literal after an `if (…)` head's `)` — read as a division by any
+ * lexer that only looks one token back — whose backtick then opens a
+ * template literal that never closes.
+ */
+const UNLEXABLE_HELPER = src(
+  "function ticks(s: string): number {",
+  "  if (s) /`/.test(s) && count();",
+  "  return 0;",
+  "}",
+  "",
+);
+
+Deno.test("fail closed: when a side's lexer ends inside a string, an unchanged assertion below a changed guard is reported", async () => {
+  const path = "worker/deno/tests/ticks_test.ts";
+  const guarded = (condition: string) =>
+    UNLEXABLE_HELPER + src(
+      'Deno.test("ticks", () => {',
+      `  if (${condition}) {`,
+      '    assertEquals(ticks("a"), 1);',
+      "  }",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [guarded("rows.length > 1"), guarded("false")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assertEquals(ticks("a"), 1);',
+  ]);
+  assert(blocks(path, patch));
+});
+
+Deno.test("fail closed: a side whose lexer ends inside a string is not reported when the file changes only above that point", async () => {
+  const path = "worker/deno/tests/ticks_test.ts";
+  const body = src(
+    'Deno.test("ticks", () => {',
+    '  assertEquals(ticks("a"), 1);',
+    "});",
+  );
+  const patch = await gatePatch({
+    [path]: [
+      "const a = 1;\n" + UNLEXABLE_HELPER + body,
+      "const a = 2;\n" + UNLEXABLE_HELPER + body,
+    ],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
+Deno.test("no flag: a multi-line mock closure's `return` changing above unchanged assertions is not an early exit", async () => {
+  const path = "worker/deno/tests/mint_test.ts";
+  const mocked = (value: string) =>
+    src(
+      'Deno.test("mints a token", async () => {',
+      "  const deps = mockDeps({ run: () => {",
+      `    return ok(${value}); } });`,
+      "  const fetchMock = async (url: string) => {",
+      '    if (url.endsWith("/tokens")) {',
+      `      return json(201, { token: ${value} });`,
+      "    }",
+      '    return Promise.reject(new Error("unexpected"));',
+      "  };",
+      "  const minted = await mint(deps, fetchMock);",
+      '  assertEquals(minted, { token: "ghs_x", login: BOT });',
+      "  assertEquals(deps.calls.length, 1);",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [mocked('""'), mocked('"x"')],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
+Deno.test("no flag: a `return` changed in an object method shorthand above unchanged assertions is not an early exit", async () => {
+  const path = "worker/deno/tests/mint_test.ts";
+  const mocked = (value: string) =>
+    src(
+      'Deno.test("mints a token", async () => {',
+      "  const gh = {",
+      "    async run(args: string[]) {",
+      `      return ${value};`,
+      "    },",
+      "  };",
+      "  assertEquals(await mint(gh), 1);",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [mocked('"a"'), mocked('"b"')],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
+Deno.test("no flag: a `return` changed in a closed nested Python `def` above an unchanged assertion is not an early exit", async () => {
+  const path = "tests/test_mint.py";
+  const nested = (value: string) =>
+    src(
+      "def test_mint():",
+      "    def fake_run(args):",
+      `        return ${value}`,
+      "    result = mint(fake_run)",
+      "    assert result == 1",
+    );
+  const patch = await gatePatch({
+    [path]: [nested('"a"'), nested('"b"')],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
+Deno.test("exit: a `return` changed inside a closed multi-line `if` block still counts for the assertions after it", async () => {
+  const path = "worker/deno/tests/foo_test.ts";
+  const guarded = (exit: string) =>
+    src(
+      'Deno.test("x", () => {',
+      "  const ready = setUp();",
+      "  if (!ready.ok) {",
+      `    ${exit}`,
+      "  }",
+      "  assertEquals(ready.code, 0);",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [guarded('log("not ready");'), guarded("return;")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    "assertEquals(ready.code, 0);",
+  ]);
+});
+
+Deno.test("exit: a `return` after a closure closes on the same line (`}); return;`) still counts", async () => {
+  const path = "worker/deno/tests/foo_test.ts";
+  const after = (tail: string) =>
+    src(
+      'Deno.test("x", () => {',
+      "  const off = listen(() => {",
+      `    log("x"); });${tail}`,
+      "  assertEquals(off.code, 0);",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [after(""), after(" return;")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    "assertEquals(off.code, 0);",
+  ]);
+});
+
+Deno.test("growth: a long wrapped head and many template substitutions stay linear", () => {
+  const removed = assertLinearGrowth(
+    "removed-assertion wrapped-head scan",
+    (chars) =>
+      addedFilePatch(
+        "if (\n" + "  a &&\n".repeat(chars / 40) + ") {\n" +
+          "  `${`${x}`}` && assert(x);\n".repeat(chars / 40) + "}\n",
+      ),
+    (input) => findRemovedAssertions(input),
+    { baseChars: 20_000 },
+  );
+  assertEquals(removed, []);
+});
+
+Deno.test("no flag: a fixture added to a wrapped `def test_…(\\n…\\n):` signature does not report its assertions", async () => {
+  const path = "tests/test_rows.py";
+  const signature = (...params: string[]) =>
+    src(
+      "def test_rows(",
+      ...params.map((param) => `    ${param},`),
+      "):",
+      "    rows = load(db)",
+      '    assert rows[0].name == "AAA"',
+    );
+  const patch = await gatePatch({
+    [path]: [signature("db"), signature("db", "tmp_path")],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
